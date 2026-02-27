@@ -19,9 +19,15 @@ export class Indexer {
 
       for await (const filePath of adapter.listSessionFiles()) {
         try {
-          const fileStat = await stat(filePath)
-          // 跳过已索引且文件大小未变的
-          if (this.db.isIndexed(filePath, fileStat.size)) continue
+          // 虚拟路径（如 cursor: dbPath?composer=id）stat 会失败，跳过 dedup 直接尝试索引
+          let fileSize = 0
+          try {
+            const fileStat = await stat(filePath)
+            fileSize = fileStat.size
+          } catch { /* virtual path */ }
+
+          // 跳过已索引且文件大小未变的（虚拟路径 fileSize=0 时始终尝试，由 upsertSession 幂等处理）
+          if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) continue
 
           const info = await adapter.parseSessionInfo(filePath)
           if (!info) continue
@@ -57,7 +63,9 @@ export class Indexer {
   // 索引单个文件（文件变化时增量更新用）
   async indexFile(adapter: SessionAdapter, filePath: string): Promise<boolean> {
     try {
-      const fileStat = await stat(filePath)
+      let fileSize = 0
+      try { fileSize = (await stat(filePath)).size } catch { /* virtual path */ }
+
       const info = await adapter.parseSessionInfo(filePath)
       if (!info) return false
 
@@ -65,7 +73,7 @@ export class Indexer {
         info.project = await resolveProjectName(info.cwd)
       }
 
-      this.db.upsertSession({ ...info, sizeBytes: fileStat.size })
+      this.db.upsertSession({ ...info, sizeBytes: info.sizeBytes || fileSize })
 
       const messages: { role: string; content: string }[] = []
       for await (const msg of adapter.streamMessages(filePath)) {
