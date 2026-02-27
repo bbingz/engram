@@ -2,19 +2,25 @@
 import chokidar from 'chokidar'
 import { homedir } from 'os'
 import { join } from 'path'
-import type { SessionAdapter } from '../adapters/types.js'
+import type { SessionAdapter, SourceName } from '../adapters/types.js'
 import type { Indexer } from './indexer.js'
 
 export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): void {
   const home = homedir()
-  const watchMap: Record<string, SessionAdapter> = {
-    [join(home, '.codex', 'sessions')]: adapters.find(a => a.name === 'codex')!,
-    [join(home, '.claude', 'projects')]: adapters.find(a => a.name === 'claude-code')!,
-    [join(home, '.gemini', 'tmp')]: adapters.find(a => a.name === 'gemini-cli')!,
-    [join(home, '.iflow', 'projects')]: adapters.find(a => a.name === 'iflow')!,
-    [join(home, '.qwen', 'projects')]: adapters.find(a => a.name === 'qwen')!,
-    [join(home, '.kimi', 'sessions')]: adapters.find(a => a.name === 'kimi')!,
-    [join(home, '.cline', 'data', 'tasks')]: adapters.find(a => a.name === 'cline')!,
+  const adaptersByName = new Map(adapters.map(a => [a.name, a]))
+  const watchEntries: Array<[string, SourceName]> = [
+    [join(home, '.codex', 'sessions'), 'codex'],
+    [join(home, '.claude', 'projects'), 'claude-code'],
+    [join(home, '.gemini', 'tmp'), 'gemini-cli'],
+    [join(home, '.iflow', 'projects'), 'iflow'],
+    [join(home, '.qwen', 'projects'), 'qwen'],
+    [join(home, '.kimi', 'sessions'), 'kimi'],
+    [join(home, '.cline', 'data', 'tasks'), 'cline'],
+  ]
+  const watchMap: Record<string, SessionAdapter> = {}
+  for (const [path, name] of watchEntries) {
+    const adapter = adaptersByName.get(name)
+    if (adapter) watchMap[path] = adapter
   }
 
   const watchPaths = Object.keys(watchMap).filter(p => watchMap[p] !== undefined)
