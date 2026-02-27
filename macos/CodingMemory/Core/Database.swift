@@ -10,6 +10,7 @@ enum DatabaseError: Error {
 class DatabaseManager: ObservableObject {
     private let dbPath: String
     private var pool: DatabasePool?
+    private var writerPool: DatabasePool?
 
     init(path: String? = nil) {
         self.dbPath = path ?? FileManager.default.homeDirectoryForCurrentUser
@@ -23,8 +24,8 @@ class DatabaseManager: ObservableObject {
         pool = try DatabasePool(path: dbPath, configuration: readConfig)
 
         // Separate writable connection only for Swift-managed extension tables
-        let writer = try DatabasePool(path: dbPath)
-        try writer.write { db in
+        writerPool = try DatabasePool(path: dbPath)
+        try writerPool!.write { db in
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS favorites (
                     session_id TEXT PRIMARY KEY,
@@ -156,7 +157,7 @@ class DatabaseManager: ObservableObject {
 
     // MARK: - Favorites (writable extension table)
     func addFavorite(sessionId: String) throws {
-        let writer = try DatabasePool(path: dbPath)
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
         try writer.write { db in
             try db.execute(sql: """
                 INSERT OR IGNORE INTO favorites (session_id, created_at)
@@ -166,7 +167,7 @@ class DatabaseManager: ObservableObject {
     }
 
     func removeFavorite(sessionId: String) throws {
-        let writer = try DatabasePool(path: dbPath)
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
         try writer.write { db in
             try db.execute(sql: "DELETE FROM favorites WHERE session_id = ?",
                            arguments: [sessionId])

@@ -34,11 +34,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Start Node.js indexer
         // Look for daemon.js in the bundle Resources/node/ directory
-        let nodePath   = "/usr/local/bin/node"
+        let nodePath = UserDefaults.standard.string(forKey: "nodejsPath") ?? "/usr/local/bin/node"
+        let resolvedNodePath: String
+        if FileManager.default.fileExists(atPath: nodePath) {
+            resolvedNodePath = nodePath
+        } else if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/node") {
+            resolvedNodePath = "/opt/homebrew/bin/node"
+        } else {
+            resolvedNodePath = nodePath  // fall back, will fail with a clear error
+        }
+        let portPref = UserDefaults.standard.integer(forKey: "httpPort")
+        let _ = portPref > 0 ? portPref : 3456  // reserved for future MCPServer port wiring
         let scriptPath = Bundle.main.path(forResource: "daemon", ofType: "js", inDirectory: "node") ?? ""
 
         if !scriptPath.isEmpty {
-            indexer.start(nodePath: nodePath, scriptPath: scriptPath)
+            indexer.start(nodePath: resolvedNodePath, scriptPath: scriptPath)
         } else {
             print("Warning: daemon.js not bundled — indexer disabled (normal during development)")
         }

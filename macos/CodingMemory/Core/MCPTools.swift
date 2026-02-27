@@ -80,7 +80,8 @@ class MCPTools {
         case "initialize":
             return .object([
                 "protocolVersion": .string("2024-11-05"),
-                "capabilities": .object(["tools": .object([:])])
+                "capabilities": .object(["tools": .object([:])]),
+                "serverInfo": .object(["name": .string("CodingMemory"), "version": .string("1.0")])
             ])
         case "tools/list":
             let tools = Self.toolList.map { t -> JSONValue in

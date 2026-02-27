@@ -20,3 +20,5 @@ if [ -d node_modules ]; then
 fi
 
 echo "[CodingMemory] Node bundle copied to $DEST"
+
+touch "${DERIVED_FILE_DIR}/node-bundle.stamp"
