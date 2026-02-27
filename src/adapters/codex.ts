@@ -144,7 +144,8 @@ export class CodexAdapter implements SessionAdapter {
     return (
       text.startsWith('# AGENTS.md instructions for ') ||
       text.includes('<INSTRUCTIONS>') ||
-      text.startsWith('<local-command-caveat>')
+      text.startsWith('<local-command-caveat>') ||
+      text.startsWith('<environment_context>')
     )
   }
 

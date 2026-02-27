@@ -11,7 +11,7 @@ export const listSessionsTool = {
     properties: {
       source: {
         type: 'string',
-        enum: ['codex', 'claude-code', 'gemini-cli', 'opencode'],
+        enum: ['codex', 'claude-code', 'gemini-cli', 'opencode', 'iflow', 'qwen', 'kimi', 'cline'],
         description: '过滤特定工具的会话',
       },
       project: { type: 'string', description: '过滤特定项目（部分匹配）' },

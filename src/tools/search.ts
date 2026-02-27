@@ -10,7 +10,7 @@ export const searchTool = {
     required: ['query'],
     properties: {
       query: { type: 'string', description: '搜索关键词（至少 3 个字符）' },
-      source: { type: 'string', enum: ['codex', 'claude-code', 'gemini-cli', 'opencode'] },
+      source: { type: 'string', enum: ['codex', 'claude-code', 'gemini-cli', 'opencode', 'iflow', 'qwen', 'kimi', 'cline'] },
       project: { type: 'string' },
       since: { type: 'string' },
       limit: { type: 'number', description: '默认 10，最大 50' },
