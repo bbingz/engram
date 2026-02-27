@@ -131,7 +131,11 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     return (
       text.startsWith('# AGENTS.md instructions for ') ||
       text.includes('<INSTRUCTIONS>') ||
-      text.startsWith('<local-command-caveat>')
+      text.startsWith('<local-command-caveat>') ||
+      text.startsWith('<local-command-stdout>') ||
+      text.includes('<command-name>') ||
+      text.includes('<command-message>') ||
+      text.startsWith('Unknown skill: ')
     )
   }
 
