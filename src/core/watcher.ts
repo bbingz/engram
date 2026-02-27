@@ -1,0 +1,36 @@
+// src/core/watcher.ts
+import chokidar from 'chokidar'
+import { homedir } from 'os'
+import { join } from 'path'
+import type { SessionAdapter } from '../adapters/types.js'
+import type { Indexer } from './indexer.js'
+
+export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): void {
+  const home = homedir()
+  const watchMap: Record<string, SessionAdapter> = {
+    [join(home, '.codex', 'sessions')]: adapters.find(a => a.name === 'codex')!,
+    [join(home, '.claude', 'projects')]: adapters.find(a => a.name === 'claude-code')!,
+    [join(home, '.gemini', 'tmp')]: adapters.find(a => a.name === 'gemini-cli')!,
+  }
+
+  const watchPaths = Object.keys(watchMap).filter(p => watchMap[p] !== undefined)
+  if (watchPaths.length === 0) return
+
+  const watcher = chokidar.watch(watchPaths, {
+    persistent: true,
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 500 },
+  })
+
+  const handleChange = async (filePath: string) => {
+    for (const [watchPath, adapter] of Object.entries(watchMap)) {
+      if (filePath.startsWith(watchPath)) {
+        await indexer.indexFile(adapter, filePath)
+        break
+      }
+    }
+  }
+
+  watcher.on('add', handleChange)
+  watcher.on('change', handleChange)
+}
