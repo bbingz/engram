@@ -31,7 +31,7 @@ export class IflowAdapter implements SessionAdapter {
         try {
           const files = await readdir(projectPath)
           for (const file of files) {
-            if (file.endsWith('.jsonl')) {
+            if (file.startsWith('session-') && file.endsWith('.jsonl')) {
               yield join(projectPath, file)
             }
           }
