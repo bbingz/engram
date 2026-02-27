@@ -1,0 +1,3 @@
+{"id":"conv-001","title":"Fix auth bug","createdAt":"2026-02-20T10:00:00.000Z","updatedAt":"2026-02-20T10:30:00.000Z"}
+{"role":"user","content":"There's a bug in auth.ts","timestamp":"2026-02-20T10:00:00.000Z"}
+{"role":"assistant","content":"I can see the issue. The token expiry check is inverted.","timestamp":"2026-02-20T10:00:30.000Z"}
