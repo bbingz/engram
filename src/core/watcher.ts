@@ -11,6 +11,10 @@ export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): void
     [join(home, '.codex', 'sessions')]: adapters.find(a => a.name === 'codex')!,
     [join(home, '.claude', 'projects')]: adapters.find(a => a.name === 'claude-code')!,
     [join(home, '.gemini', 'tmp')]: adapters.find(a => a.name === 'gemini-cli')!,
+    [join(home, '.iflow', 'projects')]: adapters.find(a => a.name === 'iflow')!,
+    [join(home, '.qwen', 'projects')]: adapters.find(a => a.name === 'qwen')!,
+    [join(home, '.kimi', 'sessions')]: adapters.find(a => a.name === 'kimi')!,
+    [join(home, '.cline', 'data', 'tasks')]: adapters.find(a => a.name === 'cline')!,
   }
 
   const watchPaths = Object.keys(watchMap).filter(p => watchMap[p] !== undefined)

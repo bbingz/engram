@@ -17,6 +17,10 @@ import { CodexAdapter } from './adapters/codex.js'
 import { ClaudeCodeAdapter } from './adapters/claude-code.js'
 import { GeminiCliAdapter } from './adapters/gemini-cli.js'
 import { OpenCodeAdapter } from './adapters/opencode.js'
+import { IflowAdapter } from './adapters/iflow.js'
+import { QwenAdapter } from './adapters/qwen.js'
+import { KimiAdapter } from './adapters/kimi.js'
+import { ClineAdapter } from './adapters/cline.js'
 
 import { listSessionsTool, handleListSessions } from './tools/list_sessions.js'
 import { getSessionTool, handleGetSession } from './tools/get_session.js'
@@ -35,6 +39,10 @@ const adapters = [
   new ClaudeCodeAdapter(),
   new GeminiCliAdapter(),
   new OpenCodeAdapter(),
+  new IflowAdapter(),
+  new QwenAdapter(),
+  new KimiAdapter(),
+  new ClineAdapter(),
 ]
 
 const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))

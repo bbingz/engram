@@ -16,6 +16,18 @@ sources:
   opencode:
     enabled: true
 
+  iflow:
+    enabled: true
+
+  qwen:
+    enabled: true
+
+  kimi:
+    enabled: true
+
+  cline:
+    enabled: true
+
 index:
   db_path: ~/.coding-memory/index.sqlite
 
