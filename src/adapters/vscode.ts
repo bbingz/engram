@@ -39,7 +39,7 @@ export class VsCodeAdapter implements SessionAdapter {
 
   async *listSessionFiles(): AsyncGenerator<string> {
     try {
-      const pattern = join(this.workspaceStorageDir, '**', 'chatSessions', '*.jsonl')
+      const pattern = join(this.workspaceStorageDir, '*', 'chatSessions', '*.jsonl')
       for await (const file of glob(pattern)) {
         yield file
       }

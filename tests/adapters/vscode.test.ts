@@ -20,7 +20,7 @@ describe('VsCodeAdapter', () => {
   })
 
   it('parseSessionInfo reads from JSONL first line', async () => {
-    const jsonlPath = join(FIXTURE_DIR, 'chatSessions/sess-001.jsonl')
+    const jsonlPath = join(FIXTURE_DIR, 'ws-abc123/chatSessions/sess-001.jsonl')
     const info = await adapter.parseSessionInfo(jsonlPath)
     expect(info).not.toBeNull()
     expect(info!.id).toBe('sess-001')
@@ -30,7 +30,7 @@ describe('VsCodeAdapter', () => {
   })
 
   it('streamMessages yields user and assistant alternating', async () => {
-    const jsonlPath = join(FIXTURE_DIR, 'chatSessions/sess-001.jsonl')
+    const jsonlPath = join(FIXTURE_DIR, 'ws-abc123/chatSessions/sess-001.jsonl')
     const msgs: { role: string; content: string }[] = []
     for await (const m of adapter.streamMessages(jsonlPath)) msgs.push(m)
     expect(msgs).toHaveLength(4)
