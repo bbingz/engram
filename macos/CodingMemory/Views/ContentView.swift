@@ -30,7 +30,6 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
         }
-        .frame(width: 500, height: 600)
     }
 
     var statusColor: Color {
