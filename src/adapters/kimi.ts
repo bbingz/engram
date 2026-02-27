@@ -94,7 +94,7 @@ export class KimiAdapter implements SessionAdapter {
       return {
         id: sessionId,
         source: 'kimi',
-        startTime,
+        startTime: startTime || new Date(fileStat.mtimeMs - 60000).toISOString(),
         endTime: endTime !== startTime ? endTime : undefined,
         cwd,
         messageCount: totalCount,
@@ -174,8 +174,13 @@ export class KimiAdapter implements SessionAdapter {
   private async *readLines(filePath: string): AsyncGenerator<string> {
     const stream = createReadStream(filePath, { encoding: 'utf8' })
     const rl = createInterface({ input: stream, crlfDelay: Infinity })
-    for await (const line of rl) {
-      if (line.trim()) yield line
+    try {
+      for await (const line of rl) {
+        if (line.trim()) yield line
+      }
+    } finally {
+      rl.close()
+      stream.destroy()
     }
   }
 
