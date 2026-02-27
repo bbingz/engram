@@ -7,7 +7,8 @@ struct CodingMemoryApp: App {
 
     var body: some Scene {
         Settings {
-            Text("Settings coming soon").padding()
+            SettingsView()
+                .environmentObject(appDelegate.indexer)
         }
     }
 }

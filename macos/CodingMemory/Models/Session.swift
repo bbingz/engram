@@ -33,6 +33,11 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     var displayDate: String  { String(startTime.prefix(10)) }
 }
 
+extension Session: Hashable {
+    static func == (lhs: Session, rhs: Session) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
 // MARK: - Favorite (managed by Swift app — NOT in Node.js schema)
 struct Favorite: FetchableRecord, PersistableRecord, Codable {
     static let databaseTableName = "favorites"

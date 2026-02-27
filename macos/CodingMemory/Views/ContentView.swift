@@ -6,14 +6,39 @@ struct ContentView: View {
     @EnvironmentObject var indexer: IndexerProcess
 
     var body: some View {
-        VStack(spacing: 12) {
-            Text("CodingMemory")
-                .font(.headline)
-            Text(indexer.status.displayString)
-                .foregroundStyle(.secondary)
-                .font(.caption)
+        VStack(spacing: 0) {
+            TabView {
+                SessionListView()
+                    .tabItem { Label("Sessions", systemImage: "list.bullet.rectangle") }
+                SearchView()
+                    .tabItem { Label("Search", systemImage: "magnifyingglass") }
+                TimelineView()
+                    .tabItem { Label("Timeline", systemImage: "timeline.selection") }
+                FavoritesView()
+                    .tabItem { Label("Favorites", systemImage: "star") }
+            }
+            Divider()
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 7, height: 7)
+                Text(indexer.status.displayString)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
         }
-        .frame(width: 300, height: 200)
-        .padding()
+        .frame(width: 500, height: 600)
+    }
+
+    var statusColor: Color {
+        switch indexer.status {
+        case .running:  return .green
+        case .starting: return .yellow
+        case .error:    return .red
+        case .stopped:  return .gray
+        }
     }
 }
