@@ -1,0 +1,88 @@
+#!/bin/bash
+# macos/scripts/build-release.sh
+# Full release build pipeline: clean, xcodegen, archive, export, then print notarytool/DMG instructions.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MACOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+SCHEME="CodingMemory"
+PROJECT="$MACOS_DIR/CodingMemory.xcodeproj"
+ARCHIVE_PATH="$MACOS_DIR/build/CodingMemory.xcarchive"
+EXPORT_PATH="$MACOS_DIR/build/CodingMemoryExport"
+
+echo "======================================"
+echo " CodingMemory Release Build"
+echo "======================================"
+echo "MACOS_DIR:    $MACOS_DIR"
+echo "PROJECT:      $PROJECT"
+echo "ARCHIVE_PATH: $ARCHIVE_PATH"
+echo "EXPORT_PATH:  $EXPORT_PATH"
+echo ""
+
+# 1. Clean DerivedData for CodingMemory
+echo "[1/4] Cleaning DerivedData..."
+rm -rf ~/Library/Developer/Xcode/DerivedData/CodingMemory-*
+echo "      Done."
+echo ""
+
+# 2. Regenerate Xcode project from project.yml
+echo "[2/4] Running xcodegen generate..."
+cd "$MACOS_DIR"
+xcodegen generate
+echo "      Done."
+echo ""
+
+# 3. Archive
+echo "[3/4] Archiving..."
+xcodebuild archive \
+  -project "$PROJECT" \
+  -scheme "$SCHEME" \
+  -configuration Release \
+  -archivePath "$ARCHIVE_PATH" \
+  CODE_SIGN_STYLE=Automatic \
+  | xcpretty || true
+echo "      Archive created at: $ARCHIVE_PATH"
+echo ""
+
+# 4. Export archive
+echo "[4/4] Exporting archive..."
+xcodebuild -exportArchive \
+  -archivePath "$ARCHIVE_PATH" \
+  -exportOptionsPlist "$MACOS_DIR/ExportOptions.plist" \
+  -exportPath "$EXPORT_PATH"
+echo "      Export created at: $EXPORT_PATH"
+echo ""
+
+echo "======================================"
+echo " Build complete!"
+echo " Exported app: $EXPORT_PATH/CodingMemory.app"
+echo "======================================"
+echo ""
+
+echo "--------------------------------------"
+echo " Next steps (run manually):"
+echo "--------------------------------------"
+echo ""
+echo "# 1. Notarize the app:"
+echo "xcrun notarytool submit \"$EXPORT_PATH/CodingMemory.app\" \\"
+echo "  --apple-id \"YOUR_APPLE_ID\" \\"
+echo "  --team-id \"YOUR_TEAM_ID\" \\"
+echo "  --password \"YOUR_APP_SPECIFIC_PASSWORD\" \\"
+echo "  --wait"
+echo ""
+echo "# 2. Staple the notarization ticket:"
+echo "xcrun stapler staple \"$EXPORT_PATH/CodingMemory.app\""
+echo ""
+echo "# 3. Create a DMG for distribution (requires: brew install create-dmg):"
+echo "create-dmg \\"
+echo "  --volname \"CodingMemory\" \\"
+echo "  --window-pos 200 120 \\"
+echo "  --window-size 800 400 \\"
+echo "  --icon-size 100 \\"
+echo "  --icon \"CodingMemory.app\" 200 190 \\"
+echo "  --hide-extension \"CodingMemory.app\" \\"
+echo "  --app-drop-link 600 185 \\"
+echo "  \"CodingMemory.dmg\" \\"
+echo "  \"$EXPORT_PATH/\""
+echo ""
