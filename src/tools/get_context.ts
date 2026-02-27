@@ -1,6 +1,7 @@
 // src/tools/get_context.ts
 import { basename } from 'path'
 import type { Database } from '../core/db.js'
+import { toLocalDate } from '../utils/time.js'
 
 export const getContextTool = {
   name: 'get_context',
@@ -45,7 +46,7 @@ export async function handleGetContext(
 
   for (const session of sessions) {
     if (!session.summary) continue
-    const line = `[${session.source}] ${session.startTime.slice(0, 10)} — ${session.summary}\n`
+    const line = `[${session.source}] ${toLocalDate(session.startTime)} — ${session.summary}\n`
     if (totalChars + line.length > maxChars) break
     contextParts.push(line)
     totalChars += line.length

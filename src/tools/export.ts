@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import type { Database } from '../core/db.js'
 import type { SessionAdapter } from '../adapters/types.js'
+import { toLocalDate, toLocalDateTime } from '../utils/time.js'
 
 export const exportTool = {
   name: 'export',
@@ -37,7 +38,7 @@ export async function handleExport(
   await mkdir(outputDir, { recursive: true })
 
   const safeId = session.id.slice(0, 8)
-  const filename = `${session.source}-${safeId}-${session.startTime.slice(0, 10)}.${format === 'json' ? 'json' : 'md'}`
+  const filename = `${session.source}-${safeId}-${toLocalDate(session.startTime)}.${format === 'json' ? 'json' : 'md'}`
   const outputPath = join(outputDir, filename)
 
   let content: string
@@ -48,7 +49,7 @@ export async function handleExport(
       `# Session: ${session.id}`,
       '',
       `**Source:** ${session.source}`,
-      `**Date:** ${session.startTime}`,
+      `**Date:** ${toLocalDateTime(session.startTime)}`,
       `**Project:** ${session.project ?? session.cwd}`,
       `**Messages:** ${session.messageCount}`,
       '',

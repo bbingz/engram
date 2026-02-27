@@ -73,7 +73,10 @@ export class ClaudeCodeAdapter implements SessionAdapter {
           userCount++
           if (!firstUserText) {
             const msg = obj.message as Record<string, unknown>
-            firstUserText = this.extractContent(msg?.content)
+            const text = this.extractContent(msg?.content)
+            if (!this.isSystemInjection(text)) {
+              firstUserText = text
+            }
           }
         }
       }
@@ -122,6 +125,14 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       }
       yielded++
     }
+  }
+
+  private isSystemInjection(text: string): boolean {
+    return (
+      text.startsWith('# AGENTS.md instructions for ') ||
+      text.includes('<INSTRUCTIONS>') ||
+      text.startsWith('<local-command-caveat>')
+    )
   }
 
   // 解码 Claude Code 目录名：-Users-bing--Code--project → /Users/bing/-Code-/project

@@ -1,5 +1,6 @@
 // src/tools/project_timeline.ts
 import type { Database } from '../core/db.js'
+import { toLocalDateTime } from '../utils/time.js'
 
 export const projectTimelineTool = {
   name: 'project_timeline',
@@ -29,7 +30,7 @@ export async function handleProjectTimeline(
 
   const timeline = sessions
     .map(s => ({
-      time: s.startTime,
+      time: toLocalDateTime(s.startTime),
       source: s.source,
       summary: s.summary ?? '（无摘要）',
       sessionId: s.id,

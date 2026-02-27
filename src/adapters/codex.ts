@@ -60,7 +60,10 @@ export class CodexAdapter implements SessionAdapter {
             if (role === 'user') {
               userCount++
               if (!firstUserText) {
-                firstUserText = this.extractText(payload.content as unknown[])
+                const text = this.extractText(payload.content as unknown[])
+                if (!this.isSystemInjection(text)) {
+                  firstUserText = text
+                }
               }
             }
             if (obj.timestamp) {
@@ -135,6 +138,14 @@ export class CodexAdapter implements SessionAdapter {
     } catch {
       return null
     }
+  }
+
+  private isSystemInjection(text: string): boolean {
+    return (
+      text.startsWith('# AGENTS.md instructions for ') ||
+      text.includes('<INSTRUCTIONS>') ||
+      text.startsWith('<local-command-caveat>')
+    )
   }
 
   private extractText(content: unknown[]): string {

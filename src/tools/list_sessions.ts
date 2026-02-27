@@ -1,6 +1,7 @@
 // src/tools/list_sessions.ts
 import type { Database, ListSessionsOptions } from '../core/db.js'
 import type { SourceName } from '../adapters/types.js'
+import { toLocalDateTime } from '../utils/time.js'
 
 export const listSessionsTool = {
   name: 'list_sessions',
@@ -49,8 +50,8 @@ export async function handleListSessions(
     sessions: sessions.map(s => ({
       id: s.id,
       source: s.source,
-      startTime: s.startTime,
-      endTime: s.endTime,
+      startTime: toLocalDateTime(s.startTime),
+      endTime: toLocalDateTime(s.endTime),
       cwd: s.cwd,
       project: s.project,
       model: s.model,

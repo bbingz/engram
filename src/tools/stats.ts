@@ -1,5 +1,6 @@
 // src/tools/stats.ts
 import type { Database } from '../core/db.js'
+import { toLocalDate, toLocalWeekStart } from '../utils/time.js'
 
 export const statsTool = {
   name: 'stats',
@@ -32,12 +33,9 @@ export async function handleStats(
     let key: string
     if (groupBy === 'source') key = s.source
     else if (groupBy === 'project') key = s.project ?? '(unknown)'
-    else if (groupBy === 'day') key = s.startTime.slice(0, 10)
-    else if (groupBy === 'week') {
-      const d = new Date(s.startTime)
-      d.setDate(d.getDate() - d.getDay())
-      key = d.toISOString().slice(0, 10)
-    } else key = s.source
+    else if (groupBy === 'day') key = toLocalDate(s.startTime)
+    else if (groupBy === 'week') key = toLocalWeekStart(s.startTime)
+    else key = s.source
 
     if (!groups[key]) groups[key] = { sessionCount: 0, messageCount: 0, userMessageCount: 0 }
     groups[key].sessionCount++
