@@ -1,0 +1,195 @@
+// macos/CodingMemory/Core/Database.swift
+import Foundation
+import GRDB
+
+enum DatabaseError: Error {
+    case notOpen
+}
+
+@MainActor
+class DatabaseManager: ObservableObject {
+    private let dbPath: String
+    private var pool: DatabasePool?
+
+    init(path: String? = nil) {
+        self.dbPath = path ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".coding-memory/index.sqlite").path
+    }
+
+    func open() throws {
+        // Read-only pool for Node.js-managed tables
+        var readConfig = Configuration()
+        readConfig.readonly = true
+        pool = try DatabasePool(path: dbPath, configuration: readConfig)
+
+        // Separate writable connection only for Swift-managed extension tables
+        let writer = try DatabasePool(path: dbPath)
+        try writer.write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS favorites (
+                    session_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS tags (
+                    session_id TEXT NOT NULL,
+                    tag        TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, tag)
+                );
+            """)
+        }
+    }
+
+    // MARK: - list_sessions
+    func listSessions(
+        source: String? = nil,
+        project: String? = nil,
+        since: String? = nil,
+        limit: Int = 20,
+        offset: Int = 0
+    ) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            var parts = ["SELECT * FROM sessions WHERE 1=1"]
+            var args: [DatabaseValueConvertible] = []
+            if let source  { parts.append("AND source = ?");             args.append(source) }
+            if let project { parts.append("AND project LIKE ?");         args.append("%\(project)%") }
+            if let since   { parts.append("AND start_time >= ?");        args.append(since) }
+            parts.append("ORDER BY start_time DESC LIMIT ? OFFSET ?")
+            args.append(limit); args.append(offset)
+            return try Session.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
+        }
+    }
+
+    func getSession(id: String) throws -> Session? {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Session.fetchOne(db, sql: "SELECT * FROM sessions WHERE id = ?", arguments: [id])
+        }
+    }
+
+    func countSessions() throws -> Int {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions") ?? 0
+        }
+    }
+
+    // MARK: - search (FTS5 trigram)
+    func search(query: String, limit: Int = 10) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        guard query.count >= 3 else { return [] }
+        return try pool.read { db in
+            let matches = try FtsMatch.fetchAll(db,
+                sql: "SELECT session_id, content FROM sessions_fts WHERE sessions_fts MATCH ? ORDER BY rank LIMIT ?",
+                arguments: [query, limit * 3])
+            var seen = Set<String>()
+            var results: [Session] = []
+            for match in matches {
+                guard !seen.contains(match.sessionId) else { continue }
+                seen.insert(match.sessionId)
+                if let s = try Session.fetchOne(db,
+                    sql: "SELECT * FROM sessions WHERE id = ?",
+                    arguments: [match.sessionId]) {
+                    results.append(s)
+                    if results.count >= limit { break }
+                }
+            }
+            return results
+        }
+    }
+
+    // MARK: - project_timeline
+    func projectTimeline(project: String? = nil) throws -> [TimelineEntry] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            var sql = """
+                SELECT project, COUNT(*) as session_count, MAX(start_time) as last_updated
+                FROM sessions
+                """
+            var args: [DatabaseValueConvertible] = []
+            if let project {
+                sql += " WHERE project LIKE ?"
+                args.append("%\(project)%")
+            }
+            sql += " GROUP BY project ORDER BY last_updated DESC"
+            return try TimelineEntry.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+        }
+    }
+
+    // MARK: - stats
+    struct StatsResult {
+        let totalSessions: Int
+        let totalMessages: Int
+        let bySource: [String: Int]
+    }
+
+    func stats() throws -> StatsResult {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let total    = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions") ?? 0
+            let messages = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(message_count), 0) FROM sessions") ?? 0
+            let counts   = try SourceCount.fetchAll(db,
+                sql: "SELECT source, COUNT(*) as count FROM sessions GROUP BY source ORDER BY count DESC")
+            return StatsResult(totalSessions: total, totalMessages: messages,
+                               bySource: Dictionary(uniqueKeysWithValues: counts.map { ($0.source, $0.count) }))
+        }
+    }
+
+    // MARK: - get_context
+    func getContext(cwd: String, limit: Int = 5) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let project = URL(fileURLWithPath: cwd).lastPathComponent
+            var results = try Session.fetchAll(db,
+                sql: "SELECT * FROM sessions WHERE project LIKE ? AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
+                arguments: ["%\(project)%", limit])
+            if results.isEmpty && !cwd.isEmpty {
+                results = try Session.fetchAll(db,
+                    sql: "SELECT * FROM sessions WHERE cwd LIKE ? ORDER BY start_time DESC LIMIT ?",
+                    arguments: ["%\(cwd)%", limit])
+            }
+            return results
+        }
+    }
+
+    // MARK: - Favorites (writable extension table)
+    func addFavorite(sessionId: String) throws {
+        let writer = try DatabasePool(path: dbPath)
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO favorites (session_id, created_at)
+                VALUES (?, datetime('now'))
+            """, arguments: [sessionId])
+        }
+    }
+
+    func removeFavorite(sessionId: String) throws {
+        let writer = try DatabasePool(path: dbPath)
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM favorites WHERE session_id = ?",
+                           arguments: [sessionId])
+        }
+    }
+
+    func listFavorites() throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Session.fetchAll(db, sql: """
+                SELECT s.* FROM sessions s
+                JOIN favorites f ON f.session_id = s.id
+                ORDER BY f.created_at DESC
+            """)
+        }
+    }
+
+    func isFavorite(sessionId: String) throws -> Bool {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Favorite.fetchOne(db,
+                sql: "SELECT * FROM favorites WHERE session_id = ?",
+                arguments: [sessionId]) != nil
+        }
+    }
+}
