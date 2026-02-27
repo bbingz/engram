@@ -34,7 +34,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
 }
 
 // MARK: - Favorite (managed by Swift app — NOT in Node.js schema)
-struct Favorite: FetchableRecord, PersistableRecord, Decodable {
+struct Favorite: FetchableRecord, PersistableRecord, Codable {
     static let databaseTableName = "favorites"
     let sessionId: String
     let createdAt: String
@@ -45,7 +45,7 @@ struct Favorite: FetchableRecord, PersistableRecord, Decodable {
 }
 
 // MARK: - Tag (managed by Swift app)
-struct Tag: FetchableRecord, PersistableRecord, Decodable {
+struct Tag: FetchableRecord, PersistableRecord, Codable {
     static let databaseTableName = "tags"
     let sessionId: String
     let tag: String

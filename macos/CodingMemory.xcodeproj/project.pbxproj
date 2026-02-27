@@ -12,6 +12,11 @@
 		51E018A5DABE1596B77BCB01 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4717937207781020CB4E9F49 /* MenuBarController.swift */; };
 		7682C96F1FE693056EA494E4 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 16D7AEDD0FDBFDD8DD3F0990 /* GRDB */; };
 		9CC67982D64E9DF1D7EAFCA0 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5104A76186BCF2FE8BC26A4C /* App.swift */; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B3C4D5E6F7A8B9C0D1E2F3 /* Database.swift */; };
+		A3B4C5D6E7F8A9B0C1D2E3F4 /* IndexerProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B5C6D7E8F9A0B1C2D3E4F5 /* IndexerProcess.swift */; };
+		A5B6C7D8E9F0A1B2C3D4E5F6 /* MCPTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B7C8D9E0F1A2B3C4D5E6F7 /* MCPTools.swift */; };
+		A7B8C9D0E1F2A3B4C5D6E7F8 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B9C0D1E2F3A4B5C6D7E8F9 /* MCPServer.swift */; };
+		A9B0C1D2E3F4A5B6C7D8E9F0 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C1D2E3F4A5B6C7D8E9F0A1 /* Session.swift */; };
 		B378DF4A1F1FA0BB09ED4DF4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C2DFDAAA1CDE80568533EEE /* ContentView.swift */; };
 		B982C9177502778D37C53A1C /* MCPProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19AC9B877B91ABAFE968E0F5 /* MCPProtocol.swift */; };
 		C0ECC00C7AAF1161E5006F9B /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = 82ED1285B32AF851780C7736 /* ArgumentParser */; };
@@ -26,7 +31,12 @@
 		7C2DFDAAA1CDE80568533EEE /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		902B18B8A887464F345551B9 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		997F527DD3884950B6187742 /* CodingMemoryCLI */ = {isa = PBXFileReference; includeInIndex = 0; path = CodingMemoryCLI; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2B3C4D5E6F7A8B9C0D1E2F3 /* Database.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Database.swift; sourceTree = "<group>"; };
+		A4B5C6D7E8F9A0B1C2D3E4F5 /* IndexerProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexerProcess.swift; sourceTree = "<group>"; };
+		A6B7C8D9E0F1A2B3C4D5E6F7 /* MCPTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPTools.swift; sourceTree = "<group>"; };
+		A8B9C0D1E2F3A4B5C6D7E8F9 /* MCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServer.swift; sourceTree = "<group>"; };
 		A83ED791FEDE6D0B1B55F53C /* CodingMemory.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodingMemory.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B0C1D2E3F4A5B6C7D8E9F0A1 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,12 +85,33 @@
 			path = Views;
 			sourceTree = "<group>";
 		};
+		C1D2E3F4A5B6C7D8E9F0A1B2 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				A2B3C4D5E6F7A8B9C0D1E2F3 /* Database.swift */,
+				A4B5C6D7E8F9A0B1C2D3E4F5 /* IndexerProcess.swift */,
+				A6B7C8D9E0F1A2B3C4D5E6F7 /* MCPTools.swift */,
+				A8B9C0D1E2F3A4B5C6D7E8F9 /* MCPServer.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		C2D3E4F5A6B7C8D9E0F1A2B3 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B0C1D2E3F4A5B6C7D8E9F0A1 /* Session.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
 		9AAE845444345BF07BDCF32E /* CodingMemory */ = {
 			isa = PBXGroup;
 			children = (
 				5104A76186BCF2FE8BC26A4C /* App.swift */,
 				4736A7B2E236C49D7F359434 /* Info.plist */,
 				4717937207781020CB4E9F49 /* MenuBarController.swift */,
+				C1D2E3F4A5B6C7D8E9F0A1B2 /* Core */,
+				C2D3E4F5A6B7C8D9E0F1A2B3 /* Models */,
 				54EFA14D622B7755CF82F60C /* Views */,
 			);
 			path = CodingMemory;
@@ -198,6 +229,11 @@
 				B378DF4A1F1FA0BB09ED4DF4 /* ContentView.swift in Sources */,
 				B982C9177502778D37C53A1C /* MCPProtocol.swift in Sources */,
 				51E018A5DABE1596B77BCB01 /* MenuBarController.swift in Sources */,
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* Database.swift in Sources */,
+				A3B4C5D6E7F8A9B0C1D2E3F4 /* IndexerProcess.swift in Sources */,
+				A5B6C7D8E9F0A1B2C3D4E5F6 /* MCPTools.swift in Sources */,
+				A7B8C9D0E1F2A3B4C5D6E7F8 /* MCPServer.swift in Sources */,
+				A9B0C1D2E3F4A5B6C7D8E9F0 /* Session.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -214,7 +250,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.codingmemory.app;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
@@ -229,7 +265,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.codingmemory.cli;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
@@ -244,7 +280,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.codingmemory.cli;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
@@ -296,7 +332,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -317,7 +353,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.codingmemory.app;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
@@ -375,7 +411,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
