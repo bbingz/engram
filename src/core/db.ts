@@ -151,6 +151,10 @@ export class Database {
     return row !== undefined
   }
 
+  countSessions(): number {
+    return (this.db.prepare('SELECT COUNT(*) as n FROM sessions').get() as { n: number }).n
+  }
+
   close(): void {
     this.db.close()
   }
