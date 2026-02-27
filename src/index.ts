@@ -21,6 +21,10 @@ import { IflowAdapter } from './adapters/iflow.js'
 import { QwenAdapter } from './adapters/qwen.js'
 import { KimiAdapter } from './adapters/kimi.js'
 import { ClineAdapter } from './adapters/cline.js'
+import { CursorAdapter } from './adapters/cursor.js'
+import { VsCodeAdapter } from './adapters/vscode.js'
+import { AntigravityAdapter } from './adapters/antigravity.js'
+import { WindsurfAdapter } from './adapters/windsurf.js'
 
 import { listSessionsTool, handleListSessions } from './tools/list_sessions.js'
 import { getSessionTool, handleGetSession } from './tools/get_session.js'
@@ -32,6 +36,8 @@ import { exportTool, handleExport } from './tools/export.js'
 
 const DB_DIR = join(homedir(), '.coding-memory')
 mkdirSync(DB_DIR, { recursive: true })
+mkdirSync(join(homedir(), '.coding-memory', 'cache', 'antigravity'), { recursive: true })
+mkdirSync(join(homedir(), '.coding-memory', 'cache', 'windsurf'), { recursive: true })
 const db = new Database(join(DB_DIR, 'index.sqlite'))
 
 const adapters = [
@@ -43,6 +49,10 @@ const adapters = [
   new QwenAdapter(),
   new KimiAdapter(),
   new ClineAdapter(),
+  new CursorAdapter(),
+  new VsCodeAdapter(),
+  new AntigravityAdapter(),
+  new WindsurfAdapter(),
 ]
 
 const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
