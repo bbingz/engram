@@ -103,10 +103,10 @@ export class CursorAdapter implements SessionAdapter {
             const bubble = JSON.parse(row.value) as BubbleData
             const role = bubble.type === 1 ? 'user' : bubble.type === 2 ? 'assistant' : null
             if (!role) continue
-            if (count < offset) { count++; continue }
-            count++
             const content = bubble.text || bubble.rawText || ''
             if (!content.trim()) continue
+            if (count < offset) { count++; continue }
+            count++
             const ts = bubble.timingInfo?.clientStartTime
             yield {
               role,
