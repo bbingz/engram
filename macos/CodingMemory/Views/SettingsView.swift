@@ -31,6 +31,17 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section("Launch") {
+                if #available(macOS 13.0, *) {
+                    Toggle("Launch at Login", isOn: Binding(
+                        get: { LaunchAgent.isEnabled },
+                        set: { LaunchAgent.setEnabled($0) }
+                    ))
+                } else {
+                    Text("Login item requires macOS 13+")
+                        .foregroundStyle(.secondary)
+                }
+            }
             Section("About") {
                 HStack {
                     Text("MCP HTTP endpoint")

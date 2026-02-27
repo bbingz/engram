@@ -10,6 +10,7 @@
 		095122F801385B2C2F7A1A31 /* MCPProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19AC9B877B91ABAFE968E0F5 /* MCPProtocol.swift */; };
 		1C4E2E1F2904EB1E8162BF11 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4B3361ABF0CD0F71C660FDF /* Session.swift */; };
 		1FC9D3C5FCD5729725F87E42 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F5A1DEFE73DAD80EAB20040 /* Database.swift */; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* LaunchAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A7B8C9D0E1F2A3 /* LaunchAgent.swift */; };
 		4AB88585230038920256C0D1 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 902B18B8A887464F345551B9 /* main.swift */; };
 		51E018A5DABE1596B77BCB01 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4717937207781020CB4E9F49 /* MenuBarController.swift */; };
 		6B36437CAA7AA79ABF230305 /* MCPTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EA03365CDEAD0D5EDC18FA4 /* MCPTools.swift */; };
@@ -47,6 +48,7 @@
 		902B18B8A887464F345551B9 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		997F527DD3884950B6187742 /* CodingMemoryCLI */ = {isa = PBXFileReference; includeInIndex = 0; path = CodingMemoryCLI; sourceTree = BUILT_PRODUCTS_DIR; };
 		A5AA074930D81C9750797A95 /* IndexerProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexerProcess.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6A7B8C9D0E1F2A3 /* LaunchAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAgent.swift; sourceTree = "<group>"; };
 		A83ED791FEDE6D0B1B55F53C /* CodingMemory.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodingMemory.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D4B3361ABF0CD0F71C660FDF /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -121,6 +123,7 @@
 			children = (
 				0F5A1DEFE73DAD80EAB20040 /* Database.swift */,
 				A5AA074930D81C9750797A95 /* IndexerProcess.swift */,
+				B2C3D4E5F6A7B8C9D0E1F2A3 /* LaunchAgent.swift */,
 				242C456C988F14E26E39DBF8 /* MCPServer.swift */,
 				0EA03365CDEAD0D5EDC18FA4 /* MCPTools.swift */,
 			);
@@ -282,6 +285,7 @@
 				6B36437CAA7AA79ABF230305 /* MCPTools.swift in Sources */,
 				51E018A5DABE1596B77BCB01 /* MenuBarController.swift in Sources */,
 				1C4E2E1F2904EB1E8162BF11 /* Session.swift in Sources */,
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* LaunchAgent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
