@@ -1,6 +1,6 @@
 // src/adapters/types.ts
 
-export type SourceName = 'codex' | 'claude-code' | 'gemini-cli' | 'opencode' | 'iflow' | 'qwen' | 'kimi' | 'cline'
+export type SourceName = 'codex' | 'claude-code' | 'gemini-cli' | 'opencode' | 'iflow' | 'qwen' | 'kimi' | 'cline' | 'cursor' | 'vscode' | 'antigravity' | 'windsurf'
 
 export interface SessionInfo {
   id: string
