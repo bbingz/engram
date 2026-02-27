@@ -1,0 +1,26 @@
+# coding-memory 配置文件
+# 可选——不存在时使用默认路径
+
+sources:
+  codex:
+    enabled: true
+    # paths:
+    #   - ~/.codex/sessions  # 覆盖默认路径
+
+  claude-code:
+    enabled: true
+
+  gemini-cli:
+    enabled: true
+
+  opencode:
+    enabled: true
+
+index:
+  db_path: ~/.coding-memory/index.sqlite
+
+# 隐私：敏感信息脱敏（正则，会在索引时过滤）
+privacy:
+  redact_patterns:
+    - 'sk-[a-zA-Z0-9]{20,}'
+    - 'AKIA[A-Z0-9]{16}'
