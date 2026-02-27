@@ -8,35 +8,35 @@
 
 /* Begin PBXBuildFile section */
 		095122F801385B2C2F7A1A31 /* MCPProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19AC9B877B91ABAFE968E0F5 /* MCPProtocol.swift */; };
+		1C4E2E1F2904EB1E8162BF11 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4B3361ABF0CD0F71C660FDF /* Session.swift */; };
+		1FC9D3C5FCD5729725F87E42 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F5A1DEFE73DAD80EAB20040 /* Database.swift */; };
 		4AB88585230038920256C0D1 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 902B18B8A887464F345551B9 /* main.swift */; };
 		51E018A5DABE1596B77BCB01 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4717937207781020CB4E9F49 /* MenuBarController.swift */; };
+		6B36437CAA7AA79ABF230305 /* MCPTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EA03365CDEAD0D5EDC18FA4 /* MCPTools.swift */; };
 		7682C96F1FE693056EA494E4 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 16D7AEDD0FDBFDD8DD3F0990 /* GRDB */; };
+		890457D6FB6CD9FA4FFAD272 /* IndexerProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5AA074930D81C9750797A95 /* IndexerProcess.swift */; };
 		9CC67982D64E9DF1D7EAFCA0 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5104A76186BCF2FE8BC26A4C /* App.swift */; };
-		A1B2C3D4E5F6A7B8C9D0E1F2 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B3C4D5E6F7A8B9C0D1E2F3 /* Database.swift */; };
-		A3B4C5D6E7F8A9B0C1D2E3F4 /* IndexerProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B5C6D7E8F9A0B1C2D3E4F5 /* IndexerProcess.swift */; };
-		A5B6C7D8E9F0A1B2C3D4E5F6 /* MCPTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B7C8D9E0F1A2B3C4D5E6F7 /* MCPTools.swift */; };
-		A7B8C9D0E1F2A3B4C5D6E7F8 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B9C0D1E2F3A4B5C6D7E8F9 /* MCPServer.swift */; };
-		A9B0C1D2E3F4A5B6C7D8E9F0 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C1D2E3F4A5B6C7D8E9F0A1 /* Session.swift */; };
 		B378DF4A1F1FA0BB09ED4DF4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C2DFDAAA1CDE80568533EEE /* ContentView.swift */; };
 		B982C9177502778D37C53A1C /* MCPProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19AC9B877B91ABAFE968E0F5 /* MCPProtocol.swift */; };
 		C0ECC00C7AAF1161E5006F9B /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = 82ED1285B32AF851780C7736 /* ArgumentParser */; };
 		E0D10C142E3EE7BBE957EE65 /* Hummingbird in Frameworks */ = {isa = PBXBuildFile; productRef = AFBE61E952B10D4B5BC5FCAF /* Hummingbird */; };
+		E4F774198291F2E36CA1CAD9 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 242C456C988F14E26E39DBF8 /* MCPServer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0EA03365CDEAD0D5EDC18FA4 /* MCPTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPTools.swift; sourceTree = "<group>"; };
+		0F5A1DEFE73DAD80EAB20040 /* Database.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Database.swift; sourceTree = "<group>"; };
 		19AC9B877B91ABAFE968E0F5 /* MCPProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPProtocol.swift; sourceTree = "<group>"; };
+		242C456C988F14E26E39DBF8 /* MCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServer.swift; sourceTree = "<group>"; };
 		4717937207781020CB4E9F49 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
 		4736A7B2E236C49D7F359434 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		5104A76186BCF2FE8BC26A4C /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		7C2DFDAAA1CDE80568533EEE /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		902B18B8A887464F345551B9 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		997F527DD3884950B6187742 /* CodingMemoryCLI */ = {isa = PBXFileReference; includeInIndex = 0; path = CodingMemoryCLI; sourceTree = BUILT_PRODUCTS_DIR; };
-		A2B3C4D5E6F7A8B9C0D1E2F3 /* Database.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Database.swift; sourceTree = "<group>"; };
-		A4B5C6D7E8F9A0B1C2D3E4F5 /* IndexerProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexerProcess.swift; sourceTree = "<group>"; };
-		A6B7C8D9E0F1A2B3C4D5E6F7 /* MCPTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPTools.swift; sourceTree = "<group>"; };
-		A8B9C0D1E2F3A4B5C6D7E8F9 /* MCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServer.swift; sourceTree = "<group>"; };
+		A5AA074930D81C9750797A95 /* IndexerProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexerProcess.swift; sourceTree = "<group>"; };
 		A83ED791FEDE6D0B1B55F53C /* CodingMemory.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodingMemory.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		B0C1D2E3F4A5B6C7D8E9F0A1 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
+		D4B3361ABF0CD0F71C660FDF /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,36 +85,28 @@
 			path = Views;
 			sourceTree = "<group>";
 		};
-		C1D2E3F4A5B6C7D8E9F0A1B2 /* Core */ = {
-			isa = PBXGroup;
-			children = (
-				A2B3C4D5E6F7A8B9C0D1E2F3 /* Database.swift */,
-				A4B5C6D7E8F9A0B1C2D3E4F5 /* IndexerProcess.swift */,
-				A6B7C8D9E0F1A2B3C4D5E6F7 /* MCPTools.swift */,
-				A8B9C0D1E2F3A4B5C6D7E8F9 /* MCPServer.swift */,
-			);
-			path = Core;
-			sourceTree = "<group>";
-		};
-		C2D3E4F5A6B7C8D9E0F1A2B3 /* Models */ = {
-			isa = PBXGroup;
-			children = (
-				B0C1D2E3F4A5B6C7D8E9F0A1 /* Session.swift */,
-			);
-			path = Models;
-			sourceTree = "<group>";
-		};
 		9AAE845444345BF07BDCF32E /* CodingMemory */ = {
 			isa = PBXGroup;
 			children = (
 				5104A76186BCF2FE8BC26A4C /* App.swift */,
 				4736A7B2E236C49D7F359434 /* Info.plist */,
 				4717937207781020CB4E9F49 /* MenuBarController.swift */,
-				C1D2E3F4A5B6C7D8E9F0A1B2 /* Core */,
-				C2D3E4F5A6B7C8D9E0F1A2B3 /* Models */,
+				9CE92AA03B36B44D6BF14F91 /* Core */,
+				F3C45FB84862719F5E090296 /* Models */,
 				54EFA14D622B7755CF82F60C /* Views */,
 			);
 			path = CodingMemory;
+			sourceTree = "<group>";
+		};
+		9CE92AA03B36B44D6BF14F91 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				0F5A1DEFE73DAD80EAB20040 /* Database.swift */,
+				A5AA074930D81C9750797A95 /* IndexerProcess.swift */,
+				242C456C988F14E26E39DBF8 /* MCPServer.swift */,
+				0EA03365CDEAD0D5EDC18FA4 /* MCPTools.swift */,
+			);
+			path = Core;
 			sourceTree = "<group>";
 		};
 		B4EC43081BC9E2EDD91FC96F = {
@@ -125,6 +117,14 @@
 				11F9630223B3B48D864C53F5 /* Shared */,
 				31DB6D80C332D96F1057C1B4 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		F3C45FB84862719F5E090296 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				D4B3361ABF0CD0F71C660FDF /* Session.swift */,
+			);
+			path = Models;
 			sourceTree = "<group>";
 		};
 		FD3C258080AA4EBFB6EBE4F7 /* CodingMemoryCLI */ = {
@@ -142,6 +142,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 294883FF9A0EAA6F4E4A98A6 /* Build configuration list for PBXNativeTarget "CodingMemory" */;
 			buildPhases = (
+				3DB40F59CE9B8ABF1FAD7F1A /* Bundle Node.js Daemon */,
 				4D8F267367890E6A79E9649F /* Sources */,
 				9C0E9C4F488262BFEB203849 /* Frameworks */,
 			);
@@ -211,6 +212,29 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		3DB40F59CE9B8ABF1FAD7F1A /* Bundle Node.js Daemon */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle Node.js Daemon";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/node-bundle.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "${SRCROOT}/scripts/build-node-bundle.sh";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		149EBAA99377A87C8284A975 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -227,13 +251,13 @@
 			files = (
 				9CC67982D64E9DF1D7EAFCA0 /* App.swift in Sources */,
 				B378DF4A1F1FA0BB09ED4DF4 /* ContentView.swift in Sources */,
+				1FC9D3C5FCD5729725F87E42 /* Database.swift in Sources */,
+				890457D6FB6CD9FA4FFAD272 /* IndexerProcess.swift in Sources */,
 				B982C9177502778D37C53A1C /* MCPProtocol.swift in Sources */,
+				E4F774198291F2E36CA1CAD9 /* MCPServer.swift in Sources */,
+				6B36437CAA7AA79ABF230305 /* MCPTools.swift in Sources */,
 				51E018A5DABE1596B77BCB01 /* MenuBarController.swift in Sources */,
-				A1B2C3D4E5F6A7B8C9D0E1F2 /* Database.swift in Sources */,
-				A3B4C5D6E7F8A9B0C1D2E3F4 /* IndexerProcess.swift in Sources */,
-				A5B6C7D8E9F0A1B2C3D4E5F6 /* MCPTools.swift in Sources */,
-				A7B8C9D0E1F2A3B4C5D6E7F8 /* MCPServer.swift in Sources */,
-				A9B0C1D2E3F4A5B6C7D8E9F0 /* Session.swift in Sources */,
+				1C4E2E1F2904EB1E8162BF11 /* Session.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

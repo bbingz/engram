@@ -31,6 +31,13 @@ targets:
         product: GRDB
       - package: Hummingbird
         product: Hummingbird
+    prebuildScripts:
+      - name: Bundle Node.js Daemon
+        script: "${SRCROOT}/scripts/build-node-bundle.sh"
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/node-bundle.stamp
+        runForInstallBuildsOnly: false
+        basedOnDependencyAnalysis: false
     info:
       path: CodingMemory/Info.plist
       properties:
