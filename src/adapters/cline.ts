@@ -90,8 +90,13 @@ export class ClineAdapter implements SessionAdapter {
   }
 
   private async loadMessages(filePath: string): Promise<UiMessage[]> {
-    const raw = await readFile(filePath, 'utf8')
-    return JSON.parse(raw) as UiMessage[]
+    try {
+      const raw = await readFile(filePath, 'utf8')
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed as UiMessage[] : []
+    } catch {
+      return []
+    }
   }
 
   private extractCwd(msgs: UiMessage[]): string {
