@@ -20,6 +20,17 @@ echo "ARCHIVE_PATH: $ARCHIVE_PATH"
 echo "EXPORT_PATH:  $EXPORT_PATH"
 echo ""
 
+# Read team ID from ExportOptions.plist and validate
+TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print teamID" "$MACOS_DIR/ExportOptions.plist" 2>/dev/null || echo "")
+if [[ -z "$TEAM_ID" || "$TEAM_ID" == "REPLACE_TEAM_ID" ]]; then
+  echo ""
+  echo "ERROR: You must set your Apple Developer Team ID in macos/ExportOptions.plist"
+  echo "       Replace 'REPLACE_TEAM_ID' with your 10-character Team ID"
+  echo "       Find it at: https://developer.apple.com/account → Membership → Team ID"
+  echo ""
+  exit 1
+fi
+
 # 1. Clean DerivedData for CodingMemory
 echo "[1/4] Cleaning DerivedData..."
 rm -rf ~/Library/Developer/Xcode/DerivedData/CodingMemory-*
@@ -40,8 +51,7 @@ xcodebuild archive \
   -scheme "$SCHEME" \
   -configuration Release \
   -archivePath "$ARCHIVE_PATH" \
-  CODE_SIGN_STYLE=Automatic \
-  | xcpretty || true
+  CODE_SIGN_STYLE=Automatic
 echo "      Archive created at: $ARCHIVE_PATH"
 echo ""
 
@@ -65,7 +75,9 @@ echo " Next steps (run manually):"
 echo "--------------------------------------"
 echo ""
 echo "# 1. Notarize the app:"
-echo "xcrun notarytool submit \"$EXPORT_PATH/CodingMemory.app\" \\"
+echo "ditto -c -k --keepParent \"$EXPORT_PATH/CodingMemory.app\" \\"
+echo "    \"$EXPORT_PATH/CodingMemory.zip\""
+echo "xcrun notarytool submit \"$EXPORT_PATH/CodingMemory.zip\" \\"
 echo "  --apple-id \"YOUR_APPLE_ID\" \\"
 echo "  --team-id \"YOUR_TEAM_ID\" \\"
 echo "  --password \"YOUR_APP_SPECIFIC_PASSWORD\" \\"
