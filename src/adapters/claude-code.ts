@@ -136,7 +136,8 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       text.includes('<command-name>') ||
       text.includes('<command-message>') ||
       text.startsWith('Unknown skill: ') ||
-      text.startsWith('Invoke the superpowers:')
+      text.startsWith('Invoke the superpowers:') ||
+      text.startsWith('Base directory for this skill:')
     )
   }
 
