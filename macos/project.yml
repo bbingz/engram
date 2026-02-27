@@ -3,7 +3,7 @@ name: CodingMemory
 options:
   bundleIdPrefix: com.codingmemory
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
   xcodeVersion: "15.0"
   createIntermediateGroups: true
 
@@ -22,7 +22,7 @@ targets:
   CodingMemory:
     type: application
     platform: macOS
-    deploymentTarget: "13.0"
+    deploymentTarget: "14.0"
     sources:
       - path: CodingMemory
       - path: Shared
@@ -40,12 +40,12 @@ targets:
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.codingmemory.app
       SWIFT_VERSION: "5.9"
-      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
 
   CodingMemoryCLI:
     type: tool
     platform: macOS
-    deploymentTarget: "13.0"
+    deploymentTarget: "14.0"
     sources:
       - path: CodingMemoryCLI
       - path: Shared
@@ -55,4 +55,4 @@ targets:
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.codingmemory.cli
       SWIFT_VERSION: "5.9"
-      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
