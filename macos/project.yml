@@ -1,0 +1,58 @@
+name: CodingMemory
+
+options:
+  bundleIdPrefix: com.codingmemory
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    majorVersion: 6.0.0
+  Hummingbird:
+    url: https://github.com/hummingbird-project/hummingbird
+    majorVersion: 2.0.0
+  ArgumentParser:
+    url: https://github.com/apple/swift-argument-parser
+    majorVersion: 1.0.0
+
+targets:
+  CodingMemory:
+    type: application
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: CodingMemory
+      - path: Shared
+    dependencies:
+      - package: GRDB
+        product: GRDB
+      - package: Hummingbird
+        product: Hummingbird
+    info:
+      path: CodingMemory/Info.plist
+      properties:
+        LSUIElement: true
+        CFBundleDisplayName: CodingMemory
+        NSPrincipalClass: NSApplication
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.codingmemory.app
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+  CodingMemoryCLI:
+    type: tool
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: CodingMemoryCLI
+      - path: Shared
+    dependencies:
+      - package: ArgumentParser
+        product: ArgumentParser
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.codingmemory.cli
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
