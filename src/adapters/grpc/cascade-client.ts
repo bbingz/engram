@@ -37,8 +37,14 @@ message GetAllCascadeTrajectoriesResponse {
   map<string, CascadeTrajectorySummary> trajectory_summaries = 1;
 }
 
+// Trajectory message used as input to ConvertTrajectoryToMarkdown
+// Field 6 = cascade_id (the .pb file UUID / map key from GetAllCascadeTrajectories)
+message Trajectory {
+  string cascade_id = 6;
+}
+
 message ConvertTrajectoryToMarkdownRequest {
-  string cascade_id = 1;
+  Trajectory trajectory = 1;
 }
 
 message ConvertTrajectoryToMarkdownResponse {
@@ -170,7 +176,7 @@ export class CascadeGrpcClient {
   async getMarkdown(cascadeId: string): Promise<string> {
     return new Promise((resolve, reject) => {
       this.client.convertTrajectoryToMarkdown(
-        { cascadeId },
+        { trajectory: { cascadeId } },
         this.metadata(),
         { deadline: Date.now() + 15000 },
         (err: Error | null, response: ConvertResponse) => {
