@@ -1,0 +1,31 @@
+{
+  "name": "coding-memory",
+  "version": "0.1.0",
+  "description": "MCP Server: 读取多个 AI 编程助手的会话日志，实现跨工具历史上下文共享",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "coding-memory": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.2",
+    "better-sqlite3": "^11.9.1",
+    "chokidar": "^4.0.3",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.13.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  }
+}
