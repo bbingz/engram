@@ -61,11 +61,14 @@ export class AntigravityAdapter implements SessionAdapter {
         } catch { /* pb or cache doesn't exist — proceed with fetch */ }
 
         try {
-          const markdown = await client.getMarkdown(conv.cascadeId)
-          let messages = parseMarkdownToMessages(markdown)
-          // Cascade agentic sessions often have no interactive dialogue.
-          // Fall back to using the summary as a synthetic message so the session
-          // is searchable and shows something meaningful instead of "no messages".
+          // Primary: use ConnectRPC GetCascadeTrajectory for full conversation steps
+          let messages = await client.getTrajectoryMessages(conv.cascadeId)
+          // Fallback: try ConvertTrajectoryToMarkdown (older servers)
+          if (messages.length === 0) {
+            const markdown = await client.getMarkdown(conv.cascadeId)
+            messages = parseMarkdownToMessages(markdown)
+          }
+          // Last resort: use the summary from GetAllCascadeTrajectories
           if (messages.length === 0 && conv.summary) {
             messages = [{ role: 'assistant', content: conv.summary }]
           }

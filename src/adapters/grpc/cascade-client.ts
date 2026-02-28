@@ -83,15 +83,22 @@ interface ConvertResponse {
   markdown?: string
 }
 
+export interface TrajectoryMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export class CascadeGrpcClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private client: any
   private csrfToken: string
+  private port: number
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private constructor(client: any, csrfToken: string) {
+  private constructor(client: any, csrfToken: string, port: number) {
     this.client = client
     this.csrfToken = csrfToken
+    this.port = port
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -167,7 +174,7 @@ export class CascadeGrpcClient {
           })
         })
 
-        if (works) return new CascadeGrpcClient(client, csrfToken)
+        if (works) return new CascadeGrpcClient(client, csrfToken, port)
         client.close()
       }
 
@@ -196,7 +203,7 @@ export class CascadeGrpcClient {
 
       const client = CascadeGrpcClient.buildGrpcClient(`localhost:${config.httpPort}`)
       if (!client) return null
-      return new CascadeGrpcClient(client, config.csrfToken)
+      return new CascadeGrpcClient(client, config.csrfToken, config.httpPort)
     } catch {
       return null
     }
@@ -247,6 +254,52 @@ export class CascadeGrpcClient {
         }
       )
     })
+  }
+
+  /**
+   * Get conversation messages via ConnectRPC JSON (GetCascadeTrajectory).
+   * This is the primary API for reading full conversation content.
+   * Falls back to ConvertTrajectoryToMarkdown if the ConnectRPC call fails.
+   */
+  async getTrajectoryMessages(cascadeId: string): Promise<TrajectoryMessage[]> {
+    try {
+      const resp = await fetch(
+        `http://localhost:${this.port}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-codeium-csrf-token': this.csrfToken,
+          },
+          body: JSON.stringify({ cascadeId }),
+          signal: AbortSignal.timeout(15000),
+        }
+      )
+      if (!resp.ok) return []
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = await resp.json() as any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const steps: any[] = data?.trajectory?.steps ?? []
+
+      const messages: TrajectoryMessage[] = []
+      for (const step of steps) {
+        const type = step?.type as string ?? ''
+        if (type.includes('USER_INPUT')) {
+          const text = step?.userInput?.userResponse ?? ''
+          if (text) messages.push({ role: 'user', content: text })
+        } else if (type.includes('PLANNER_RESPONSE')) {
+          const text = step?.plannerResponse?.response ?? ''
+          if (text) messages.push({ role: 'assistant', content: text })
+        } else if (type.includes('NOTIFY_USER')) {
+          const text = step?.notifyUser?.notificationContent ?? ''
+          if (text) messages.push({ role: 'assistant', content: text })
+        }
+      }
+      return messages
+    } catch {
+      return []
+    }
   }
 
   close(): void {
