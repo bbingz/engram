@@ -46,6 +46,7 @@ class DatabaseManager: ObservableObject {
         source: String? = nil,
         project: String? = nil,
         since: String? = nil,
+        subAgent: Bool? = nil,   // nil=all, true=only sub-agents, false=hide sub-agents
         limit: Int = 20,
         offset: Int = 0
     ) throws -> [Session] {
@@ -56,6 +57,10 @@ class DatabaseManager: ObservableObject {
             if let source  { parts.append("AND source = ?");             args.append(source) }
             if let project { parts.append("AND project LIKE ?");         args.append("%\(project)%") }
             if let since   { parts.append("AND start_time >= ?");        args.append(since) }
+            if let subAgent {
+                if subAgent { parts.append("AND file_path LIKE '%/subagents/%'") }
+                else        { parts.append("AND file_path NOT LIKE '%/subagents/%'") }
+            }
             parts.append("ORDER BY start_time DESC LIMIT ? OFFSET ?")
             args.append(limit); args.append(offset)
             return try Session.fetchAll(db, sql: parts.joined(separator: " "),

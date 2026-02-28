@@ -31,6 +31,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
 
     var displayTitle: String { summary ?? "Untitled" }
     var displayDate: String  { String(startTime.prefix(10)) }
+    var isSubAgent: Bool     { filePath.contains("/subagents/") }
 }
 
 extension Session: Hashable {
