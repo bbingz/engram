@@ -58,6 +58,7 @@ export interface ConversationSummary {
   summary: string
   createdAt: string
   updatedAt: string
+  cwd: string          // workspace folder path (from workspaces[0].workspaceFolderAbsoluteUri)
 }
 
 interface DaemonConfig {
@@ -221,6 +222,59 @@ export class CascadeGrpcClient {
   }
 
   async listConversations(): Promise<ConversationSummary[]> {
+    // Use ConnectRPC JSON instead of gRPC proto to get full response including workspaces
+    try {
+      const resp = await fetch(
+        `http://localhost:${this.port}/exa.language_server_pb.LanguageServerService/GetAllCascadeTrajectories`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-codeium-csrf-token': this.csrfToken,
+          },
+          body: '{}',
+          signal: AbortSignal.timeout(10000),
+        }
+      )
+      if (!resp.ok) return this.listConversationsGrpc()
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = await resp.json() as any
+      const summaries = data?.trajectorySummaries ?? {}
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return Object.entries(summaries).map(([cascadeId, s]: [string, any]) => {
+        // Extract workspace folder path from workspaces array
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ws = (s?.workspaces as any[])?.[0]
+        let cwd = ''
+        if (ws?.workspaceFolderAbsoluteUri) {
+          // Strip "file://" prefix → absolute path
+          cwd = decodeURIComponent(ws.workspaceFolderAbsoluteUri.replace(/^file:\/\//, ''))
+        }
+
+        // ConnectRPC JSON returns ISO 8601 strings for timestamps
+        const createdAt = typeof s?.createdTime === 'string' ? s.createdTime
+          : s?.createdTime?.seconds ? new Date(Number(s.createdTime.seconds) * 1000).toISOString() : ''
+        const updatedAt = typeof s?.lastModifiedTime === 'string' ? s.lastModifiedTime
+          : s?.lastModifiedTime?.seconds ? new Date(Number(s.lastModifiedTime.seconds) * 1000).toISOString() : ''
+
+        return {
+          cascadeId,
+          title: s?.summary ?? '',  // ConnectRPC: summary IS the title (no annotations field)
+          summary: s?.summary ?? '',
+          createdAt,
+          updatedAt,
+          cwd,
+        }
+      })
+    } catch {
+      return this.listConversationsGrpc()
+    }
+  }
+
+  /** Fallback: list conversations via gRPC proto (no workspace info) */
+  private async listConversationsGrpc(): Promise<ConversationSummary[]> {
     return new Promise((resolve, reject) => {
       this.client.getAllCascadeTrajectories(
         {},
@@ -235,6 +289,7 @@ export class CascadeGrpcClient {
             summary: s.summary ?? '',
             createdAt: this.toISOString(s.createdTime?.seconds),
             updatedAt: this.toISOString(s.lastModifiedTime?.seconds),
+            cwd: '',
           }))
           resolve(result)
         }

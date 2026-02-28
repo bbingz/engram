@@ -4,6 +4,14 @@
 
 ### 新功能
 
+#### Antigravity 会话项目识别（`src/adapters/grpc/cascade-client.ts`、`src/adapters/antigravity.ts`）
+- **从 `GetAllCascadeTrajectories` 提取项目路径**：将 `listConversations()` 改为 ConnectRPC JSON 调用（gRPC proto 中未定义 `workspaces` 字段），从 `workspaces[0].workspaceFolderAbsoluteUri` 提取 `cwd`（去掉 `file://` 前缀）。
+- **时间格式适配**：ConnectRPC JSON 返回 ISO 8601 字符串（如 `"2026-02-20T10:14:41.164983Z"`），而非 gRPC 的 `{seconds: number}` 格式，兼容两种格式。
+- **标题来源修正**：ConnectRPC JSON 没有 `annotations.title` 字段，title 就是 `summary` 字段。
+- **gRPC 降级**：ConnectRPC JSON 失败时回退到 `listConversationsGrpc()`（无 workspace 信息但仍可列出会话）。
+- **扫描 `.pb` 文件补全旧会话**：`GetAllCascadeTrajectories` 只返回最近 ~10 个会话，但 `.pb` 目录有全部历史。新增 `syncFromPbFiles()` 方法扫描 `~/.gemini/antigravity/conversations/*.pb`，对 API 未覆盖的 ID 逐个调用 `GetCascadeTrajectory` 读取内容，用文件 mtime/birthtime 作为时间。
+- 示例：原先只有 10 个会话 → 现在全部 46 个会话（2025-11 至 2026-02）都能读取，项目信息也正确关联。
+
 #### Antigravity 会话完整内容读取（`src/adapters/grpc/cascade-client.ts`）
 - **通过 `GetCascadeTrajectory` API 读取完整对话**：发现 `ConvertTrajectoryToMarkdown` 返回空正文是因为它需要传入完整 trajectory 对象而非仅 ID。真正的消息读取 API 是 `GetCascadeTrajectory`（ConnectRPC JSON 协议），返回所有 trajectory steps。
 - **解析三类步骤为用户/助手消息**：

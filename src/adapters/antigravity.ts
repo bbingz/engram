@@ -13,6 +13,7 @@ interface CacheMetaLine {
   summary?: string  // AI-generated summary from GetAllCascadeTrajectories
   createdAt: string
   updatedAt: string
+  cwd?: string       // workspace folder path from GetAllCascadeTrajectories
   pbSizeBytes?: number  // .pb file size stored for dedup consistency
 }
 
@@ -48,9 +49,11 @@ export class AntigravityAdapter implements SessionAdapter {
 
     try {
       const conversations = await client.listConversations()
+      const syncedIds = new Set<string>()
 
       for (const conv of conversations) {
         if (!conv.cascadeId) continue
+        syncedIds.add(conv.cascadeId)
         const cachePath = join(this.cacheDir, `${conv.cascadeId}.jsonl`)
         const pbPath = join(this.conversationsDir, `${conv.cascadeId}.pb`)
 
@@ -82,6 +85,7 @@ export class AntigravityAdapter implements SessionAdapter {
             summary: conv.summary || undefined,
             createdAt: conv.createdAt,
             updatedAt: conv.updatedAt,
+            cwd: conv.cwd || undefined,
             pbSizeBytes,
           }
           const lines = [
@@ -89,10 +93,60 @@ export class AntigravityAdapter implements SessionAdapter {
             ...messages.map(m => JSON.stringify(m)),
           ]
           await writeFile(cachePath, lines.join('\n') + '\n', 'utf8')
-        } catch { /* skip if markdown fetch fails */ }
+        } catch { /* skip if fetch fails */ }
       }
+
+      // Scan .pb directory for sessions not returned by API (API only returns ~10 recent)
+      await this.syncFromPbFiles(client, syncedIds)
     } finally {
       client.close()
+    }
+  }
+
+  /**
+   * Sync .pb files not covered by GetAllCascadeTrajectories (which only returns ~10 recent).
+   * For each uncached .pb, fetches content via GetCascadeTrajectory and creates a cache entry.
+   */
+  private async syncFromPbFiles(client: CascadeGrpcClient, syncedIds: Set<string>): Promise<void> {
+    let pbFiles: string[]
+    try {
+      pbFiles = (await readdir(this.conversationsDir)).filter(f => f.endsWith('.pb'))
+    } catch { return }
+
+    for (const file of pbFiles) {
+      const cascadeId = file.replace(/\.pb$/, '')
+      if (syncedIds.has(cascadeId)) continue
+
+      const cachePath = join(this.cacheDir, `${cascadeId}.jsonl`)
+      const pbPath = join(this.conversationsDir, file)
+
+      // Skip if cache already exists with content
+      try {
+        const cacheStat = await stat(cachePath)
+        if (cacheStat.size > 200) continue
+      } catch { /* no cache yet */ }
+
+      try {
+        let messages = await client.getTrajectoryMessages(cascadeId)
+        if (messages.length === 0) {
+          const markdown = await client.getMarkdown(cascadeId)
+          messages = parseMarkdownToMessages(markdown)
+        }
+
+        const pbStat = await stat(pbPath)
+        const metaLine: CacheMetaLine = {
+          id: cascadeId,
+          title: '',  // no title available from .pb scan
+          createdAt: pbStat.birthtime.toISOString(),
+          updatedAt: pbStat.mtime.toISOString(),
+          pbSizeBytes: pbStat.size,
+        }
+        const lines = [
+          JSON.stringify(metaLine),
+          ...messages.map(m => JSON.stringify(m)),
+        ]
+        await writeFile(cachePath, lines.join('\n') + '\n', 'utf8')
+      } catch { /* skip on error */ }
     }
   }
 
@@ -153,7 +207,7 @@ export class AntigravityAdapter implements SessionAdapter {
         source: 'antigravity',
         startTime: meta.createdAt,
         endTime: meta.updatedAt !== meta.createdAt ? meta.updatedAt : undefined,
-        cwd: '',
+        cwd: meta.cwd || '',
         messageCount: totalCount,
         userMessageCount: userCount,
         summary: (meta.title || meta.summary || firstUserText).slice(0, 200) || undefined,
