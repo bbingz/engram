@@ -83,10 +83,149 @@ struct SettingsView: View {
                         .font(.caption)
                 }
             }
+
+            Section("MCP Client Setup") {
+                MCPSetupGuideView(nodejsPath: nodejsPath)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 520)
         .padding()
+    }
+}
+
+// MARK: - MCP Setup Guide
+
+struct MCPClientDef {
+    let name: String
+    let configPath: String
+    let snippet: (String, String) -> String  // (nodePath, scriptPath) -> config
+}
+
+struct MCPSetupGuideView: View {
+    let nodejsPath: String
+    @AppStorage("mcpScriptPath") var scriptPath: String = "~/.coding-memory/dist/index.js"
+
+    private var resolvedScript: String {
+        (scriptPath as NSString).expandingTildeInPath
+    }
+
+    private var clients: [MCPClientDef] {[
+        MCPClientDef(
+            name: "Claude Code",
+            configPath: "~/.claude.json or: claude mcp add",
+            snippet: { node, script in
+                "claude mcp add coding-memory \(node) \(script)"
+            }
+        ),
+        MCPClientDef(
+            name: "Gemini CLI",
+            configPath: "~/.gemini/settings.json",
+            snippet: { node, script in
+                """
+                "coding-memory": {
+                  "command": "\(node)",
+                  "args": ["\(script)"],
+                  "trust": true
+                }
+                """
+            }
+        ),
+        MCPClientDef(
+            name: "Codex CLI",
+            configPath: "~/.codex/config.yaml or: codex --mcp",
+            snippet: { node, script in
+                "codex --mcp-server \(node) \(script)"
+            }
+        ),
+        MCPClientDef(
+            name: "Cursor / VS Code",
+            configPath: ".cursor/mcp.json or .vscode/mcp.json",
+            snippet: { node, script in
+                """
+                "coding-memory": {
+                  "command": "\(node)",
+                  "args": ["\(script)"]
+                }
+                """
+            }
+        ),
+    ]}
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("MCP Script")
+                    .frame(width: 90, alignment: .leading)
+                TextField("~/.coding-memory/dist/index.js", text: $scriptPath)
+                    .font(.caption)
+                    .textFieldStyle(.roundedBorder)
+                scriptExistsIndicator
+            }
+            Text("Add coding-memory to your MCP clients using the configurations below.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(clients, id: \.name) { client in
+                MCPClientRow(client: client, nodePath: nodejsPath, scriptPath: resolvedScript)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scriptExistsIndicator: some View {
+        let exists = FileManager.default.fileExists(atPath: resolvedScript)
+        Circle()
+            .fill(exists ? Color.green : Color.red)
+            .frame(width: 8, height: 8)
+            .help(exists ? "Script exists" : "Script not found")
+    }
+}
+
+struct MCPClientRow: View {
+    let client: MCPClientDef
+    let nodePath: String
+    let scriptPath: String
+    @State private var copied = false
+
+    private var snippet: String {
+        client.snippet(nodePath, scriptPath)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(client.name)
+                    .font(.caption.bold())
+                Text(client.configPath)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(snippet, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                } label: {
+                    Text(copied ? "Copied!" : "Copy")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(copied ? Color.green.opacity(0.15) : Color.secondary.opacity(0.1))
+                        .foregroundStyle(copied ? .green : .secondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+            }
+            Text(snippet)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
     }
 }
 
