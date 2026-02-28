@@ -42,6 +42,15 @@ class IndexerProcess: ObservableObject {
         guard process == nil else { return }
         status = .starting
 
+        // Kill any orphaned indexer processes from previous app runs (e.g. Xcode SIGKILL)
+        let killer = Process()
+        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        killer.arguments = ["-f", "node.*\(URL(fileURLWithPath: scriptPath).lastPathComponent)"]
+        killer.standardOutput = FileHandle.nullDevice
+        killer.standardError  = FileHandle.nullDevice
+        try? killer.run()
+        killer.waitUntilExit()
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: nodePath)
         var args = [scriptPath]

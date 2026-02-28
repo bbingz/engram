@@ -12,6 +12,7 @@ interface CacheMetaLine {
   title: string
   createdAt: string
   updatedAt: string
+  pbSizeBytes?: number  // .pb file size stored for dedup consistency
 }
 
 export class AntigravityAdapter implements SessionAdapter {
@@ -50,21 +51,25 @@ export class AntigravityAdapter implements SessionAdapter {
         const cachePath = join(this.cacheDir, `${conv.cascadeId}.jsonl`)
         const pbPath = join(this.conversationsDir, `${conv.cascadeId}.pb`)
 
-        // Check if cache is fresh (pb mtime <= cache mtime)
+        // Check if cache is fresh (pb mtime <= cache mtime) AND has actual content (> meta-only)
         try {
           const [pbStat, cacheStat] = await Promise.all([stat(pbPath), stat(cachePath)])
-          if (cacheStat.mtimeMs >= pbStat.mtimeMs) continue  // cache is fresh
+          if (cacheStat.mtimeMs >= pbStat.mtimeMs && cacheStat.size > 200) continue  // cache is fresh with content
         } catch { /* pb or cache doesn't exist — proceed with fetch */ }
 
         try {
           const markdown = await client.getMarkdown(conv.cascadeId)
           const messages = parseMarkdownToMessages(markdown)
 
+          let pbSizeBytes: number | undefined
+          try { pbSizeBytes = (await stat(pbPath)).size } catch { /* pb may not exist */ }
+
           const metaLine: CacheMetaLine = {
             id: conv.cascadeId,
             title: conv.title,
             createdAt: conv.createdAt,
             updatedAt: conv.updatedAt,
+            pbSizeBytes,
           }
           const lines = [
             JSON.stringify(metaLine),
@@ -92,12 +97,25 @@ export class AntigravityAdapter implements SessionAdapter {
 
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
     try {
-      const fileStat = await stat(filePath)
       const firstLine = await readFirstLine(filePath)
       if (!firstLine) return null
 
       const meta = JSON.parse(firstLine) as CacheMetaLine
       if (!meta.id) return null
+
+      // Use .pb file size (the real conversation).
+      // Prefer value embedded in meta (written during sync), else stat the .pb directly.
+      let sizeBytes: number
+      if (meta.pbSizeBytes && meta.pbSizeBytes > 0) {
+        sizeBytes = meta.pbSizeBytes
+      } else {
+        const pbPath = join(this.conversationsDir, `${meta.id}.pb`)
+        try {
+          sizeBytes = (await stat(pbPath)).size
+        } catch {
+          sizeBytes = (await stat(filePath)).size
+        }
+      }
 
       // Count messages (skip first meta line)
       let userCount = 0
@@ -127,7 +145,7 @@ export class AntigravityAdapter implements SessionAdapter {
         userMessageCount: userCount,
         summary: (meta.title || firstUserText).slice(0, 200) || undefined,
         filePath,
-        sizeBytes: fileStat.size,
+        sizeBytes,
       }
     } catch { return null }
   }

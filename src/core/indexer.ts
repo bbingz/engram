@@ -26,11 +26,15 @@ export class Indexer {
             fileSize = fileStat.size
           } catch { /* virtual path */ }
 
-          // 跳过已索引且文件大小未变的（虚拟路径 fileSize=0 时始终尝试，由 upsertSession 幂等处理）
+          // 快速跳过：文件大小与 DB 记录一致（适用于大多数适配器）
           if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) continue
 
           const info = await adapter.parseSessionInfo(filePath)
           if (!info) continue
+
+          // 二段跳过：某些适配器（如 antigravity）的 sizeBytes 与文件本身大小不同
+          // 例如 antigravity 用 .pb 文件大小，此时用 info.sizeBytes 再做一次 dedup
+          if (info.sizeBytes !== fileSize && info.sizeBytes > 0 && this.db.isIndexed(filePath, info.sizeBytes)) continue
 
           // 解析项目名（如果没有）
           if (info.cwd && !info.project) {

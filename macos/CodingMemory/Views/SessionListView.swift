@@ -10,6 +10,8 @@ struct SessionListView: View {
     @State private var selectedSources: Set<String> = []
     @State private var selectedProjects: Set<String> = []
     @State private var availableProjects: [String] = []
+    @State private var sourceCounts: [String: Int] = [:]
+    @State private var projectCounts: [String: Int] = [:]
     @State private var agentFilter: Bool? = false
     @State private var sortField: SortField = .created
     @State private var sortAsc = false
@@ -38,12 +40,14 @@ struct SessionListView: View {
                         emptyLabel: "All sources",
                         icon: "cpu",
                         items: allSources,
+                        counts: sourceCounts,
                         selected: $selectedSources
                     )
                     MultiSelectPicker(
                         emptyLabel: "All projects",
                         icon: "folder",
                         items: availableProjects,
+                        counts: projectCounts,
                         selected: $selectedProjects
                     )
                     Spacer()
@@ -83,6 +87,8 @@ struct SessionListView: View {
         }
         .task {
             availableProjects = (try? db.listProjects()) ?? []
+            sourceCounts  = (try? db.countsBySource())  ?? [:]
+            projectCounts = (try? db.countsByProject()) ?? [:]
             await reload()
         }
         .task(id: selectedSources)  { await reload() }
@@ -149,6 +155,7 @@ struct MultiSelectPicker: View {
     let emptyLabel: String
     let icon: String
     let items: [String]
+    var counts: [String: Int] = [:]
     @Binding var selected: Set<String>
     @State private var showPopover = false
 
@@ -209,7 +216,15 @@ struct MultiSelectPicker: View {
                                         Text(item)
                                             .font(.caption)
                                             .foregroundStyle(on ? Color.accentColor : Color.primary)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
                                         Spacer()
+                                        if let n = counts[item] {
+                                            Text("\(n)")
+                                                .font(.caption2)
+                                                .foregroundStyle(.tertiary)
+                                                .monospacedDigit()
+                                        }
                                         if on {
                                             Image(systemName: "checkmark")
                                                 .font(.caption2.bold())
@@ -226,10 +241,11 @@ struct MultiSelectPicker: View {
                         }
                         .padding(.vertical, 4)
                     }
+                    .scrollIndicators(.hidden)
                     .frame(maxHeight: 280)
                 }
             }
-            .frame(minWidth: 180)
+            .frame(minWidth: 180, maxWidth: 240)
         }
     }
 }

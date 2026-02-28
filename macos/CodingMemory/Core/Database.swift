@@ -96,6 +96,27 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    func countsBySource() throws -> [String: Int] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT source, COUNT(*) as n FROM sessions GROUP BY source
+            """)
+            return Dictionary(uniqueKeysWithValues: rows.map { ($0["source"] as String, $0["n"] as Int) })
+        }
+    }
+
+    func countsByProject() throws -> [String: Int] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT project, COUNT(*) as n FROM sessions
+                WHERE project IS NOT NULL GROUP BY project
+            """)
+            return Dictionary(uniqueKeysWithValues: rows.map { ($0["project"] as String, $0["n"] as Int) })
+        }
+    }
+
     func listSessionsForProject(_ project: String?, subAgent: Bool? = nil, limit: Int = 100) throws -> [Session] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
