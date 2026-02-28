@@ -17,6 +17,9 @@ struct SessionListView: View {
     @State private var sortAsc = false
     @State private var pendingSelection: Session?
     @Binding var deepLinkSession: Session?
+    @State private var totalCount: Int = 0
+    @State private var hasMore = true
+    private let pageSize = 50
 
     let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "cline",
@@ -72,7 +75,27 @@ struct SessionListView: View {
                 List(sessions, selection: $selectedSession) { session in
                     SessionRow(session: session)
                         .tag(session)
+                        .onAppear {
+                            if session == sessions.last && hasMore {
+                                Task { await loadMore() }
+                            }
+                        }
                 }
+
+                // Footer: count + loading indicator
+                HStack {
+                    Text("\(sessions.count) of \(totalCount)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                    Spacer()
+                    if hasMore {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
             }
             .frame(minWidth: 260, maxWidth: 380)
 
@@ -114,18 +137,39 @@ struct SessionListView: View {
     }
 
     func reload() async {
+        totalCount = (try? db.countSessions(
+            sources: selectedSources,
+            projects: selectedProjects,
+            subAgent: agentFilter
+        )) ?? 0
         sessions = (try? db.listSessions(
             sources: selectedSources,
             projects: selectedProjects,
             subAgent: agentFilter,
-            sort: currentSort
+            sort: currentSort,
+            limit: pageSize
         )) ?? []
+        hasMore = sessions.count < totalCount
         if let pending = pendingSelection, sessions.contains(pending) {
             selectedSession = pending
             pendingSelection = nil
         } else if selectedSession == nil || !sessions.contains(selectedSession!) {
             selectedSession = sessions.first
         }
+    }
+
+    func loadMore() async {
+        guard hasMore else { return }
+        let next = (try? db.listSessions(
+            sources: selectedSources,
+            projects: selectedProjects,
+            subAgent: agentFilter,
+            sort: currentSort,
+            limit: pageSize,
+            offset: sessions.count
+        )) ?? []
+        sessions.append(contentsOf: next)
+        hasMore = sessions.count < totalCount
     }
 
     @ViewBuilder
@@ -297,10 +341,21 @@ struct SessionRow: View {
                     .font(.callout)
                     .lineLimit(1)
                 Spacer()
-                Text(session.formattedSize)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
+                HStack(spacing: 2) {
+                    if session.sizeCategory == .huge {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                    Text(session.formattedSize)
+                        .font(.caption2)
+                        .fontWeight(session.sizeCategory != .normal ? .bold : .regular)
+                        .foregroundColor(
+                            session.sizeCategory == .huge ? .red :
+                            session.sizeCategory == .large ? .orange : .gray
+                        )
+                        .monospacedDigit()
+                }
             }
             HStack(spacing: 4) {
                 Image(systemName: "calendar")

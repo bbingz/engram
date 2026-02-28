@@ -147,10 +147,31 @@ class DatabaseManager: ObservableObject {
         }
     }
 
-    func countSessions() throws -> Int {
+    func countSessions(
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        subAgent: Bool? = nil
+    ) throws -> Int {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions") ?? 0
+            var parts = ["SELECT COUNT(*) FROM sessions WHERE 1=1"]
+            var args: [DatabaseValueConvertible] = []
+            if !sources.isEmpty {
+                let ph = sources.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND source IN (\(ph))")
+                sources.forEach { args.append($0) }
+            }
+            if !projects.isEmpty {
+                let ph = projects.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND project IN (\(ph))")
+                projects.forEach { args.append($0) }
+            }
+            if let subAgent {
+                if subAgent { parts.append("AND agent_role IS NOT NULL") }
+                else        { parts.append("AND agent_role IS NULL") }
+            }
+            return try Int.fetchOne(db, sql: parts.joined(separator: " "),
+                                    arguments: StatementArguments(args)) ?? 0
         }
     }
 

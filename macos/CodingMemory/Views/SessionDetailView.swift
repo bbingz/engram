@@ -17,6 +17,24 @@ struct SessionDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                 Section(header: headerView) {
+                    if session.sizeCategory != .normal {
+                        HStack(spacing: 6) {
+                            Image(systemName: session.sizeCategory == .huge
+                                  ? "exclamationmark.triangle.fill"
+                                  : "info.circle.fill")
+                                .foregroundStyle(session.sizeCategory == .huge ? .red : .orange)
+                            Text("This session is \(session.formattedSize) — loading may take a moment")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            (session.sizeCategory == .huge ? Color.red : Color.orange)
+                                .opacity(0.08)
+                        )
+                    }
                     if isLoadingMessages {
                         ProgressView()
                             .frame(maxWidth: .infinity)

@@ -41,6 +41,13 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         if kb < 1024 { return String(format: "%.0f KB", kb.rounded()) }
         return String(format: "%.1f MB", kb / 1024)
     }
+
+    enum SizeCategory { case normal, large, huge }
+    var sizeCategory: SizeCategory {
+        if sizeBytes >= 100 * 1024 * 1024 { return .huge }
+        if sizeBytes >= 10 * 1024 * 1024  { return .large }
+        return .normal
+    }
 }
 
 extension Session: Hashable {
