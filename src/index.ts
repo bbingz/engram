@@ -126,5 +126,9 @@ indexer.indexAll().then(count => {
 // 启动文件监听
 startWatcher(adapters, indexer)
 
+// Exit when the MCP client closes stdin (session ends).
+// Without this, file watchers keep the event loop alive indefinitely.
+process.stdin.on('close', () => process.exit(0))
+
 const transport = new StdioServerTransport()
 await server.connect(transport)
