@@ -13,6 +13,7 @@ import { mkdirSync } from 'fs'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
+import { setupProcessLifecycle } from './core/lifecycle.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { ClaudeCodeAdapter } from './adapters/claude-code.js'
 import { GeminiCliAdapter } from './adapters/gemini-cli.js'
@@ -77,7 +78,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: allTools,
 }))
 
+let heartbeat = () => {} // assigned after transport connects
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  heartbeat()
   const { name, arguments: args } = request.params
   const a = (args ?? {}) as Record<string, unknown>
 
@@ -124,11 +128,13 @@ indexer.indexAll().then(count => {
 }).catch(() => {})
 
 // 启动文件监听
-startWatcher(adapters, indexer)
-
-// Exit when the MCP client closes stdin (session ends).
-// Without this, file watchers keep the event loop alive indefinitely.
-process.stdin.on('close', () => process.exit(0))
+const watcher = startWatcher(adapters, indexer)
 
 const transport = new StdioServerTransport()
 await server.connect(transport)
+
+// Multi-layer process lifecycle — MUST be after transport connects
+// so that stdin.resume() doesn't race with StdioServerTransport's stdin reader.
+;({ heartbeat } = setupProcessLifecycle({
+  onExit: () => { watcher?.close() },
+}))

@@ -1,11 +1,11 @@
 // src/core/watcher.ts
-import chokidar from 'chokidar'
+import chokidar, { type FSWatcher } from 'chokidar'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { SessionAdapter, SourceName } from '../adapters/types.js'
 import type { Indexer } from './indexer.js'
 
-export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): void {
+export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): FSWatcher | null {
   const home = homedir()
   const adaptersByName = new Map(adapters.map(a => [a.name, a]))
   const watchEntries: Array<[string, SourceName]> = [
@@ -24,7 +24,7 @@ export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): void
   }
 
   const watchPaths = Object.keys(watchMap).filter(p => watchMap[p] !== undefined)
-  if (watchPaths.length === 0) return
+  if (watchPaths.length === 0) return null
 
   const watcher = chokidar.watch(watchPaths, {
     persistent: true,
@@ -43,4 +43,6 @@ export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): void
 
   watcher.on('add', handleChange)
   watcher.on('change', handleChange)
+
+  return watcher
 }

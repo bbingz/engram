@@ -8,6 +8,7 @@ import { mkdirSync } from 'fs'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
+import { setupProcessLifecycle } from './core/lifecycle.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { ClaudeCodeAdapter } from './adapters/claude-code.js'
 import { GeminiCliAdapter } from './adapters/gemini-cli.js'
@@ -59,4 +60,10 @@ indexer.indexAll().then(indexed => {
 })
 
 // File watcher (persistent — keeps process alive)
-startWatcher(adapters, indexer)
+const watcher = startWatcher(adapters, indexer)
+
+// Lifecycle: stdin/parent/signal layers, no idle timeout for daemon
+setupProcessLifecycle({
+  idleTimeoutMs: 0,
+  onExit: () => { watcher?.close() },
+})
