@@ -1,5 +1,6 @@
 // src/adapters/grpc/cascade-client.ts
 import { readdir, readFile } from 'fs/promises'
+import { execSync } from 'child_process'
 import { join } from 'path'
 import { writeFileSync, unlinkSync } from 'fs'
 import * as grpc from '@grpc/grpc-js'
@@ -38,9 +39,8 @@ message GetAllCascadeTrajectoriesResponse {
 }
 
 // Trajectory message used as input to ConvertTrajectoryToMarkdown
-// Field 6 = cascade_id (the .pb file UUID / map key from GetAllCascadeTrajectories)
 message Trajectory {
-  string cascade_id = 6;
+  string cascade_id = 1;
 }
 
 message ConvertTrajectoryToMarkdownRequest {
@@ -94,13 +94,99 @@ export class CascadeGrpcClient {
     this.csrfToken = csrfToken
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private static buildGrpcClient(address: string): any {
+    const tmpProtoPath = join('/tmp', `cascade-${Date.now()}.proto`)
+    writeFileSync(tmpProtoPath, PROTO_DEFINITION)
+    try {
+      const pkgDef = loadSync(tmpProtoPath, { keepCase: false, defaults: true, oneofs: true })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const proto = grpc.loadPackageDefinition(pkgDef) as any
+      const ServiceClass = proto?.exa?.language_server_pb?.LanguageServerService
+      if (!ServiceClass) return null
+      return new ServiceClass(address, grpc.credentials.createInsecure())
+    } finally {
+      try { unlinkSync(tmpProtoPath) } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * New-style discovery: parse `ps aux` to find the language_server process,
+   * extract --csrf_token and the listening port via lsof.
+   * Works with Antigravity 1.18+ which no longer writes a JSON discovery file.
+   */
+  static async fromProcess(): Promise<CascadeGrpcClient | null> {
+    try {
+      const psOutput = execSync('ps aux', { encoding: 'utf8', timeout: 5000 })
+      const lsLine = psOutput.split('\n').find(line =>
+        line.includes('language_server_macos') || line.includes('language_server_linux')
+      )
+      if (!lsLine) return null
+
+      const tokenMatch = lsLine.match(/--csrf_token\s+([a-f0-9-]+)/)
+      if (!tokenMatch) return null
+      const csrfToken = tokenMatch[1]
+
+      // PID is the second field in ps aux output
+      const pid = lsLine.trim().split(/\s+/)[1]
+
+      // Find the HTTP listening port (not the one used for extension server IPC)
+      const extensionPortMatch = lsLine.match(/--extension_server_port\s+(\d+)/)
+      const extensionPort = extensionPortMatch ? extensionPortMatch[1] : null
+
+      // Filter by PID column — lsof -p doesn't reliably filter LISTEN lines on macOS
+      const lsofOutput = execSync(
+        `lsof -i -P -n 2>/dev/null | grep "^[^ ]*[[:space:]]*${pid}[[:space:]].*LISTEN"`,
+        { encoding: 'utf8', timeout: 5000 }
+      )
+      // Collect all candidate ports (language server may have TLS + plaintext)
+      const ports: number[] = []
+      for (const line of lsofOutput.split('\n')) {
+        const portMatch = line.match(/:(\d+)\s+\(LISTEN\)/)
+        if (portMatch && portMatch[1] !== extensionPort) {
+          ports.push(parseInt(portMatch[1]))
+        }
+      }
+      if (ports.length === 0) return null
+
+      // The server has both TLS and plaintext gRPC ports.
+      // Probe each: insecure gRPC fails fast (~16ms) on TLS ports.
+      // Return the first port that accepts cleartext connections.
+      for (const port of ports) {
+        const client = CascadeGrpcClient.buildGrpcClient(`localhost:${port}`)
+        if (!client) continue
+
+        const meta = new grpc.Metadata()
+        meta.add('x-codeium-csrf-token', csrfToken)
+
+        const works = await new Promise<boolean>(resolve => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          client.getAllCascadeTrajectories({}, meta, { deadline: Date.now() + 2000 }, (err: any) => {
+            // code 14 = UNAVAILABLE (no TCP connection established) → TLS or not gRPC
+            resolve(!err || err.code !== 14)
+          })
+        })
+
+        if (works) return new CascadeGrpcClient(client, csrfToken)
+        client.close()
+      }
+
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Old-style discovery: read JSON config file written by the language server.
+   * Works with Antigravity < 1.18 and potentially Windsurf.
+   */
   static async fromDaemonDir(daemonDir: string): Promise<CascadeGrpcClient | null> {
     try {
       const files = await readdir(daemonDir)
       const jsonFiles = files.filter(f => f.endsWith('.json'))
       if (jsonFiles.length === 0) return null
 
-      // Pick the most recent json file (ls_*.json)
       const jsonFile = jsonFiles.sort().at(-1)!
       const config = JSON.parse(
         await readFile(join(daemonDir, jsonFile), 'utf8')
@@ -108,32 +194,8 @@ export class CascadeGrpcClient {
 
       if (!config.httpPort || !config.csrfToken) return null
 
-      // Write proto to temp file (protoLoader doesn't support inline strings)
-      const tmpProtoPath = join('/tmp', `cascade-${Date.now()}.proto`)
-      writeFileSync(tmpProtoPath, PROTO_DEFINITION)
-
-      let pkgDef
-      try {
-        pkgDef = loadSync(tmpProtoPath, {
-          keepCase: false,
-          defaults: true,
-          oneofs: true,
-        })
-      } finally {
-        try { unlinkSync(tmpProtoPath) } catch { /* ignore */ }
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const proto = grpc.loadPackageDefinition(pkgDef) as any
-      const ServiceClass = proto?.exa?.language_server_pb?.LanguageServerService
-      if (!ServiceClass) return null
-
-      // Use httpPort with insecure credentials (httpsPort uses self-signed cert that fails)
-      const client = new ServiceClass(
-        `localhost:${config.httpPort}`,
-        grpc.credentials.createInsecure()
-      )
-
+      const client = CascadeGrpcClient.buildGrpcClient(`localhost:${config.httpPort}`)
+      if (!client) return null
       return new CascadeGrpcClient(client, config.csrfToken)
     } catch {
       return null

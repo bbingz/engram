@@ -10,6 +10,7 @@ import { CascadeGrpcClient } from './grpc/cascade-client.js'
 interface CacheMetaLine {
   id: string
   title: string
+  summary?: string  // AI-generated summary from GetAllCascadeTrajectories
   createdAt: string
   updatedAt: string
   pbSizeBytes?: number  // .pb file size stored for dedup consistency
@@ -40,7 +41,9 @@ export class AntigravityAdapter implements SessionAdapter {
   // Sync runs before listing — fetches new/updated conversations from gRPC, saves to cache
   async sync(): Promise<void> {
     await mkdir(this.cacheDir, { recursive: true })
-    const client = await CascadeGrpcClient.fromDaemonDir(this.daemonDir)
+    // Try new process-based discovery first (Antigravity 1.18+), then old JSON file method
+    const client = await CascadeGrpcClient.fromProcess()
+               ?? await CascadeGrpcClient.fromDaemonDir(this.daemonDir)
     if (!client) return  // app not running, use existing cache
 
     try {
@@ -59,7 +62,13 @@ export class AntigravityAdapter implements SessionAdapter {
 
         try {
           const markdown = await client.getMarkdown(conv.cascadeId)
-          const messages = parseMarkdownToMessages(markdown)
+          let messages = parseMarkdownToMessages(markdown)
+          // Cascade agentic sessions often have no interactive dialogue.
+          // Fall back to using the summary as a synthetic message so the session
+          // is searchable and shows something meaningful instead of "no messages".
+          if (messages.length === 0 && conv.summary) {
+            messages = [{ role: 'assistant', content: conv.summary }]
+          }
 
           let pbSizeBytes: number | undefined
           try { pbSizeBytes = (await stat(pbPath)).size } catch { /* pb may not exist */ }
@@ -67,6 +76,7 @@ export class AntigravityAdapter implements SessionAdapter {
           const metaLine: CacheMetaLine = {
             id: conv.cascadeId,
             title: conv.title,
+            summary: conv.summary || undefined,
             createdAt: conv.createdAt,
             updatedAt: conv.updatedAt,
             pbSizeBytes,
@@ -143,7 +153,7 @@ export class AntigravityAdapter implements SessionAdapter {
         cwd: '',
         messageCount: totalCount,
         userMessageCount: userCount,
-        summary: (meta.title || firstUserText).slice(0, 200) || undefined,
+        summary: (meta.title || meta.summary || firstUserText).slice(0, 200) || undefined,
         filePath,
         sizeBytes,
       }
