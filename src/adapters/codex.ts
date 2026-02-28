@@ -76,6 +76,7 @@ export class CodexAdapter implements SessionAdapter {
       if (!meta) return null
 
       const payload = meta as Record<string, unknown>
+      const agentRole = payload.agent_role as string | undefined
       return {
         id: payload.id as string,
         source: 'codex',
@@ -88,6 +89,7 @@ export class CodexAdapter implements SessionAdapter {
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
+        agentRole: agentRole || undefined,
       }
     } catch {
       return null

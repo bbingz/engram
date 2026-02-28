@@ -29,10 +29,23 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       for (const dir of projectDirs) {
         const projectPath = join(this.projectsRoot, dir)
         try {
-          const files = await readdir(projectPath)
-          for (const file of files) {
-            if (file.endsWith('.jsonl')) {
-              yield join(projectPath, file)
+          const entries = await readdir(projectPath, { withFileTypes: true })
+          for (const entry of entries) {
+            if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+              yield join(projectPath, entry.name)
+            } else if (entry.isDirectory()) {
+              // UUID subdirectory — look for subagents/ inside it
+              const subagentsPath = join(projectPath, entry.name, 'subagents')
+              try {
+                const subFiles = await readdir(subagentsPath)
+                for (const file of subFiles) {
+                  if (file.endsWith('.jsonl')) {
+                    yield join(subagentsPath, file)
+                  }
+                }
+              } catch {
+                // no subagents dir, skip
+              }
             }
           }
         } catch {
@@ -48,6 +61,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     try {
       const fileStat = await stat(filePath)
       let sessionId = ''
+      let agentId = ''
       let cwd = ''
       let startTime = ''
       let endTime = ''
@@ -63,6 +77,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         if (type !== 'user' && type !== 'assistant') continue
 
         if (!sessionId && obj.sessionId) sessionId = obj.sessionId as string
+        if (!agentId && obj.agentId) agentId = obj.agentId as string
         if (!cwd && obj.cwd) cwd = obj.cwd as string
         if (!startTime && obj.timestamp) startTime = obj.timestamp as string
         if (obj.timestamp) endTime = obj.timestamp as string
@@ -83,8 +98,12 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
       if (!sessionId) return null
 
+      const isSubagent = filePath.includes('/subagents/')
+      // Subagent files share sessionId with the parent — use agentId as the unique DB key
+      const id = isSubagent && agentId ? agentId : sessionId
+
       return {
-        id: sessionId,
+        id,
         source: 'claude-code',
         startTime,
         endTime: endTime !== startTime ? endTime : undefined,
@@ -94,6 +113,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
+        agentRole: isSubagent ? 'subagent' : undefined,
       }
     } catch {
       return null

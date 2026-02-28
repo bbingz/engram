@@ -6,6 +6,13 @@ enum DatabaseError: Error {
     case notOpen
 }
 
+enum SessionSort: String {
+    case createdDesc = "start_time DESC"
+    case createdAsc  = "start_time ASC"
+    case updatedDesc = "COALESCE(end_time, start_time) DESC"
+    case updatedAsc  = "COALESCE(end_time, start_time) ASC"
+}
+
 @MainActor
 class DatabaseManager: ObservableObject {
     private let dbPath: String
@@ -43,26 +50,70 @@ class DatabaseManager: ObservableObject {
 
     // MARK: - list_sessions
     func listSessions(
-        source: String? = nil,
-        project: String? = nil,
+        sources: Set<String> = [],   // empty = all
+        projects: Set<String> = [],  // empty = all
         since: String? = nil,
-        subAgent: Bool? = nil,   // nil=all, true=only sub-agents, false=hide sub-agents
-        limit: Int = 20,
+        subAgent: Bool? = nil,       // nil=all, true=only sub-agents, false=hide sub-agents
+        sort: SessionSort = .createdDesc,
+        limit: Int = 200,
         offset: Int = 0
     ) throws -> [Session] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
             var parts = ["SELECT * FROM sessions WHERE 1=1"]
             var args: [DatabaseValueConvertible] = []
-            if let source  { parts.append("AND source = ?");             args.append(source) }
-            if let project { parts.append("AND project LIKE ?");         args.append("%\(project)%") }
-            if let since   { parts.append("AND start_time >= ?");        args.append(since) }
-            if let subAgent {
-                if subAgent { parts.append("AND file_path LIKE '%/subagents/%'") }
-                else        { parts.append("AND file_path NOT LIKE '%/subagents/%'") }
+            if !sources.isEmpty {
+                let ph = sources.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND source IN (\(ph))")
+                sources.forEach { args.append($0) }
             }
-            parts.append("ORDER BY start_time DESC LIMIT ? OFFSET ?")
+            if !projects.isEmpty {
+                let ph = projects.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND project IN (\(ph))")
+                projects.forEach { args.append($0) }
+            }
+            if let since { parts.append("AND start_time >= ?"); args.append(since) }
+            if let subAgent {
+                if subAgent { parts.append("AND agent_role IS NOT NULL") }
+                else        { parts.append("AND agent_role IS NULL") }
+            }
+            parts.append("ORDER BY \(sort.rawValue) LIMIT ? OFFSET ?")
             args.append(limit); args.append(offset)
+            return try Session.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
+        }
+    }
+
+    // MARK: - list projects
+    func listProjects() throws -> [String] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT DISTINCT project FROM sessions
+                WHERE project IS NOT NULL
+                ORDER BY project
+            """)
+        }
+    }
+
+    func listSessionsForProject(_ project: String?, subAgent: Bool? = nil, limit: Int = 100) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            var parts: [String]
+            var args: [DatabaseValueConvertible]
+            if let project {
+                parts = ["SELECT * FROM sessions WHERE project = ?"]
+                args  = [project]
+            } else {
+                parts = ["SELECT * FROM sessions WHERE project IS NULL"]
+                args  = []
+            }
+            if let subAgent {
+                if subAgent { parts.append("AND agent_role IS NOT NULL") }
+                else        { parts.append("AND agent_role IS NULL") }
+            }
+            parts.append("ORDER BY start_time DESC LIMIT ?")
+            args.append(limit)
             return try Session.fetchAll(db, sql: parts.joined(separator: " "),
                                         arguments: StatementArguments(args))
         }

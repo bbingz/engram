@@ -4,18 +4,26 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
+    @State private var selectedTab = 0
+    @State private var deepLinkSession: Session?
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView {
-                SessionListView()
+            // Small top inset so the tab bar doesn't press against the popover edge
+            Color.clear.frame(height: 6)
+            TabView(selection: $selectedTab) {
+                SessionListView(deepLinkSession: $deepLinkSession)
                     .tabItem { Label("Sessions", systemImage: "list.bullet.rectangle") }
+                    .tag(0)
                 SearchView()
                     .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                TimelineView()
+                    .tag(1)
+                TimelineView(selectedTab: $selectedTab, deepLinkSession: $deepLinkSession)
                     .tabItem { Label("Timeline", systemImage: "timeline.selection") }
+                    .tag(2)
                 FavoritesView()
                     .tabItem { Label("Favorites", systemImage: "star") }
+                    .tag(3)
             }
             Divider()
             HStack(spacing: 6) {

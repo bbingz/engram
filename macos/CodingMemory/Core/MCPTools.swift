@@ -108,12 +108,14 @@ class MCPTools {
         let text: String
         switch name {
         case "list_sessions":
+            let src  = args["source"]?.stringValue.map  { Set([$0]) } ?? []
+            let proj = args["project"]?.stringValue.map { Set([$0]) } ?? []
             let sessions = try db.listSessions(
-                source:  args["source"]?.stringValue,
-                project: args["project"]?.stringValue,
-                since:   args["since"]?.stringValue,
-                limit:   args["limit"]?.intValue ?? 20,
-                offset:  args["offset"]?.intValue ?? 0)
+                sources:  src,
+                projects: proj,
+                since:    args["since"]?.stringValue,
+                limit:    args["limit"]?.intValue ?? 20,
+                offset:   args["offset"]?.intValue ?? 0)
             text = formatSessions(sessions)
 
         case "get_session":

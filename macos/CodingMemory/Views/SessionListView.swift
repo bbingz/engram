@@ -1,66 +1,76 @@
 // macos/CodingMemory/Views/SessionListView.swift
 import SwiftUI
 
+enum SortField: String { case created, updated }
+
 struct SessionListView: View {
     @EnvironmentObject var db: DatabaseManager
     @State private var sessions: [Session] = []
-    @State private var selectedSource: String? = nil
     @State private var selectedSession: Session?
-    // nil=all, true=only agents, false=hide agents
-    @State private var agentFilter: Bool? = nil
+    @State private var selectedSources: Set<String> = []
+    @State private var selectedProjects: Set<String> = []
+    @State private var availableProjects: [String] = []
+    @State private var agentFilter: Bool? = false
+    @State private var sortField: SortField = .created
+    @State private var sortAsc = false
+    @State private var pendingSelection: Session?
+    @Binding var deepLinkSession: Session?
 
-    let sources = ["claude-code", "codex", "cursor", "gemini-cli",
-                   "opencode", "iflow", "qwen", "kimi", "cline",
-                   "vscode", "antigravity", "windsurf"]
+    let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
+                      "opencode", "iflow", "qwen", "kimi", "cline",
+                      "vscode", "antigravity", "windsurf"]
+
+    var currentSort: SessionSort {
+        switch (sortField, sortAsc) {
+        case (.created, false): return .createdDesc
+        case (.created, true):  return .createdAsc
+        case (.updated, false): return .updatedDesc
+        case (.updated, true):  return .updatedAsc
+        }
+    }
 
     var body: some View {
         HSplitView {
             VStack(spacing: 0) {
-                // Source chips
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        Chip(label: "All", selected: selectedSource == nil && agentFilter == nil) {
-                            selectedSource = nil
-                            agentFilter = nil
-                        }
-                        ForEach(sources, id: \.self) { src in
-                            Chip(label: src, selected: selectedSource == src) {
-                                selectedSource = selectedSource == src ? nil : src
-                                agentFilter = nil
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                }
-                // Agent filter row
+                // Row 1: Source picker | Project picker | Sort
                 HStack(spacing: 6) {
-                    Chip(
-                        label: "Agent only",
-                        selected: agentFilter == true,
-                        color: .purple
-                    ) {
-                        agentFilter = agentFilter == true ? nil : true
-                        selectedSource = nil
-                    }
-                    Chip(
-                        label: "Hide agents",
-                        selected: agentFilter == false,
-                        color: .orange
-                    ) {
-                        agentFilter = agentFilter == false ? nil : false
-                    }
+                    MultiSelectPicker(
+                        emptyLabel: "All sources",
+                        icon: "cpu",
+                        items: allSources,
+                        selected: $selectedSources
+                    )
+                    MultiSelectPicker(
+                        emptyLabel: "All projects",
+                        icon: "folder",
+                        items: availableProjects,
+                        selected: $selectedProjects
+                    )
+                    Spacer()
+                    sortButton("Created", field: .created)
+                    sortButton("Updated", field: .updated)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                // Row 2: Agent filter
+                HStack(spacing: 6) {
+                    Chip(label: "All",         selected: agentFilter == nil,   color: .secondary) { agentFilter = nil }
+                    Chip(label: "Agent only",  selected: agentFilter == true,  color: .purple)    { agentFilter = true }
+                    Chip(label: "Hide agents", selected: agentFilter == false, color: .orange)    { agentFilter = false }
                     Spacer()
                 }
                 .padding(.horizontal, 12)
-                .padding(.bottom, 6)
+                .padding(.bottom, 8)
+
                 Divider()
+
                 List(sessions, selection: $selectedSession) { session in
                     SessionRow(session: session)
                         .tag(session)
                 }
             }
-            .frame(minWidth: 220, maxWidth: 340)
+            .frame(minWidth: 260, maxWidth: 380)
 
             if let session = selectedSession {
                 SessionDetailView(session: session)
@@ -71,17 +81,160 @@ struct SessionListView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: selectedSource) { await reload() }
-        .task(id: agentFilter) { await reload() }
+        .task {
+            availableProjects = (try? db.listProjects()) ?? []
+            await reload()
+        }
+        .task(id: selectedSources)  { await reload() }
+        .task(id: selectedProjects) { await reload() }
+        .task(id: agentFilter)      { await reload() }
+        .task(id: sortField)        { await reload() }
+        .task(id: sortAsc)          { await reload() }
+        .onChange(of: deepLinkSession) { _, session in
+            guard let session else { return }
+            pendingSelection = session
+            selectedSources = []
+            selectedProjects = []
+            agentFilter = nil
+            deepLinkSession = nil
+        }
+        .task(id: pendingSelection?.id) {
+            guard let pending = pendingSelection else { return }
+            if sessions.contains(pending) {
+                selectedSession = pending
+                pendingSelection = nil
+            }
+        }
     }
 
     func reload() async {
-        sessions = (try? db.listSessions(source: selectedSource, subAgent: agentFilter, limit: 100)) ?? []
-        if selectedSession == nil || !sessions.contains(selectedSession!) {
+        sessions = (try? db.listSessions(
+            sources: selectedSources,
+            projects: selectedProjects,
+            subAgent: agentFilter,
+            sort: currentSort
+        )) ?? []
+        if let pending = pendingSelection, sessions.contains(pending) {
+            selectedSession = pending
+            pendingSelection = nil
+        } else if selectedSession == nil || !sessions.contains(selectedSession!) {
             selectedSession = sessions.first
         }
     }
+
+    @ViewBuilder
+    func sortButton(_ label: String, field: SortField) -> some View {
+        let active = sortField == field
+        Button {
+            if active { sortAsc.toggle() }
+            else { sortField = field; sortAsc = false }
+        } label: {
+            HStack(spacing: 2) {
+                Text(label)
+                Image(systemName: active ? (sortAsc ? "arrow.up" : "arrow.down") : "arrow.up.arrow.down")
+                    .opacity(active ? 1 : 0.3)
+            }
+            .font(.caption2)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(active ? Color.accentColor.opacity(0.15) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
+    }
 }
+
+// MARK: - MultiSelectPicker
+
+struct MultiSelectPicker: View {
+    let emptyLabel: String
+    let icon: String
+    let items: [String]
+    @Binding var selected: Set<String>
+    @State private var showPopover = false
+
+    var buttonLabel: String {
+        switch selected.count {
+        case 0:  return emptyLabel
+        case 1:  return selected.first!
+        default: return "\(selected.count) selected"
+        }
+    }
+    var isFiltered: Bool { !selected.isEmpty }
+
+    var body: some View {
+        Button { showPopover.toggle() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .foregroundStyle(isFiltered ? Color.accentColor : Color.secondary)
+                Text(buttonLabel)
+                    .lineLimit(1)
+                    .foregroundStyle(isFiltered ? Color.accentColor : Color.primary)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(isFiltered
+                ? Color.accentColor.opacity(0.12)
+                : Color.secondary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showPopover, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 0) {
+                if isFiltered {
+                    Button("Clear") { selected = [] }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                    Divider()
+                }
+                if items.isEmpty {
+                    Text("No items")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(12)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(items, id: \.self) { item in
+                                let on = selected.contains(item)
+                                Button {
+                                    if on { selected.remove(item) } else { selected.insert(item) }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Text(item)
+                                            .font(.caption)
+                                            .foregroundStyle(on ? Color.accentColor : Color.primary)
+                                        Spacer()
+                                        if on {
+                                            Image(systemName: "checkmark")
+                                                .font(.caption2.bold())
+                                                .foregroundStyle(Color.accentColor)
+                                        }
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 5)
+                                    .background(on ? Color.accentColor.opacity(0.08) : Color.clear)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .frame(maxHeight: 280)
+                }
+            }
+            .frame(minWidth: 180)
+        }
+    }
+}
+
+// MARK: - Chip
 
 struct Chip: View {
     let label: String
@@ -102,6 +255,8 @@ struct Chip: View {
         .buttonStyle(.plain)
     }
 }
+
+// MARK: - SessionRow
 
 struct SessionRow: View {
     let session: Session
@@ -125,9 +280,23 @@ struct SessionRow: View {
                 Text(session.displayTitle)
                     .font(.callout)
                     .lineLimit(1)
+                Spacer()
+                Text(session.formattedSize)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
             }
             HStack(spacing: 4) {
+                Image(systemName: "calendar")
+                    .font(.caption2)
+                    .foregroundStyle(.quaternary)
                 Text(session.displayDate)
+                if session.displayUpdatedDate != session.displayDate {
+                    Image(systemName: "arrow.right")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                    Text(session.displayUpdatedDate)
+                }
                 Text("·")
                 Text("\(session.messageCount) msgs")
                 if let proj = session.project {

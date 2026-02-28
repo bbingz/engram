@@ -17,6 +17,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let filePath: String
     let sizeBytes: Int
     let indexedAt: String
+    let agentRole: String?
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -27,11 +28,18 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case filePath         = "file_path"
         case sizeBytes        = "size_bytes"
         case indexedAt        = "indexed_at"
+        case agentRole        = "agent_role"
     }
 
-    var displayTitle: String { summary ?? "Untitled" }
-    var displayDate: String  { String(startTime.prefix(10)) }
-    var isSubAgent: Bool     { filePath.contains("/subagents/") }
+    var displayTitle: String       { summary ?? "Untitled" }
+    var displayDate: String        { String(startTime.prefix(10)) }
+    var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }
+    var isSubAgent: Bool           { agentRole != nil }
+    var formattedSize: String {
+        let kb = Double(sizeBytes) / 1024
+        if kb < 1024 { return String(format: "%.0f KB", kb.rounded()) }
+        return String(format: "%.1f MB", kb / 1024)
+    }
 }
 
 extension Session: Hashable {

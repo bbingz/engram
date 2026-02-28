@@ -28,6 +28,12 @@ export class Database {
   }
 
   private migrate(): void {
+    // Add agent_role column if it doesn't exist (migration for existing DBs)
+    const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]
+    if (cols.length > 0 && !cols.some(c => c.name === 'agent_role')) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN agent_role TEXT")
+    }
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -42,13 +48,15 @@ export class Database {
         summary TEXT,
         file_path TEXT NOT NULL,
         size_bytes INTEGER NOT NULL DEFAULT 0,
-        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        agent_role TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
       CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
       CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
       CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
+      CREATE INDEX IF NOT EXISTS idx_sessions_agent_role ON sessions(agent_role);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
         session_id UNINDEXED,
@@ -61,16 +69,17 @@ export class Database {
   upsertSession(session: SessionInfo): void {
     this.db.prepare(`
       INSERT INTO sessions (id, source, start_time, end_time, cwd, project, model,
-        message_count, user_message_count, summary, file_path, size_bytes, indexed_at)
+        message_count, user_message_count, summary, file_path, size_bytes, indexed_at, agent_role)
       VALUES (@id, @source, @startTime, @endTime, @cwd, @project, @model,
-        @messageCount, @userMessageCount, @summary, @filePath, @sizeBytes, datetime('now'))
+        @messageCount, @userMessageCount, @summary, @filePath, @sizeBytes, datetime('now'), @agentRole)
       ON CONFLICT(id) DO UPDATE SET
         end_time = excluded.end_time,
         message_count = excluded.message_count,
         user_message_count = excluded.user_message_count,
         summary = excluded.summary,
         size_bytes = excluded.size_bytes,
-        indexed_at = excluded.indexed_at
+        indexed_at = excluded.indexed_at,
+        agent_role = excluded.agent_role
     `).run({
       id: session.id,
       source: session.source,
@@ -84,6 +93,7 @@ export class Database {
       summary: session.summary ?? null,
       filePath: session.filePath,
       sizeBytes: session.sizeBytes,
+      agentRole: session.agentRole ?? null,
     })
   }
 
@@ -173,6 +183,7 @@ export class Database {
       summary: row.summary as string | undefined,
       filePath: row.file_path as string,
       sizeBytes: row.size_bytes as number,
+      agentRole: row.agent_role as string | undefined,
     }
   }
 }
