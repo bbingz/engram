@@ -2,6 +2,17 @@
 
 ## [未发布]
 
+### 新功能
+
+#### Antigravity 会话完整内容读取（`src/adapters/grpc/cascade-client.ts`）
+- **通过 `GetCascadeTrajectory` API 读取完整对话**：发现 `ConvertTrajectoryToMarkdown` 返回空正文是因为它需要传入完整 trajectory 对象而非仅 ID。真正的消息读取 API 是 `GetCascadeTrajectory`（ConnectRPC JSON 协议），返回所有 trajectory steps。
+- **解析三类步骤为用户/助手消息**：
+  - `CORTEX_STEP_TYPE_USER_INPUT` → `userInput.userResponse` → 用户消息
+  - `CORTEX_STEP_TYPE_PLANNER_RESPONSE` → `plannerResponse.response` → AI 回复
+  - `CORTEX_STEP_TYPE_NOTIFY_USER` → `notifyUser.notificationContent` → AI 通知
+- **三级降级策略**：优先 `GetCascadeTrajectory`（ConnectRPC JSON），若失败回退到 `ConvertTrajectoryToMarkdown`（gRPC），最后用 `summary` 字段兜底。
+- 示例：原先所有会话 0 条消息 → 现在 "Analyzing Log Exploits" 会话读出 4 条用户消息 + 4 条 AI 回复。
+
 ### 修复
 
 #### Antigravity 适配器 gRPC 端口检测（`src/adapters/grpc/cascade-client.ts`）
