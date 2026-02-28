@@ -114,7 +114,7 @@ class MenuBarController: NSObject, NSMenuDelegate {
         win.title = "CodingMemory"
         win.setContentSize(NSSize(width: 900, height: 640))
         win.minSize = NSSize(width: 600, height: 400)
-        win.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         win.isReleasedWhenClosed = false   // keep object alive so we can reopen
         win.center()
         win.makeKeyAndOrderFront(nil)

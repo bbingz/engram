@@ -32,7 +32,7 @@ struct SessionListView: View {
                         .tag(session)
                 }
             }
-            .frame(minWidth: 200, maxWidth: 280)
+            .frame(minWidth: 220, maxWidth: 340)
 
             if let session = selectedSession {
                 SessionDetailView(session: session)
@@ -48,6 +48,9 @@ struct SessionListView: View {
 
     func reload() async {
         sessions = (try? db.listSessions(source: selectedSource, limit: 100)) ?? []
+        if selectedSession == nil || !sessions.contains(selectedSession!) {
+            selectedSession = sessions.first
+        }
     }
 }
 
