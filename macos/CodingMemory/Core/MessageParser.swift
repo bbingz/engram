@@ -3,8 +3,9 @@ import Foundation
 
 struct ChatMessage: Identifiable {
     let id = UUID()
-    let role: String   // "user" or "assistant"
+    let role: String    // "user" or "assistant"
     let content: String
+    let isSystem: Bool  // system injection — hidden in clean view
 }
 
 struct MessageParser {
@@ -12,11 +13,11 @@ struct MessageParser {
     static func parse(filePath: String, source: String) -> [ChatMessage] {
         switch source {
         case "claude-code", "qwen", "iflow":
-            return parseTypeMessageFormat(filePath: filePath)
+            return parseTypeMessageFormat(filePath: filePath, source: source)
         case "kimi":
-            return parseRoleDirectFormat(filePath: filePath, skipFirst: false)
+            return parseRoleDirectFormat(filePath: filePath, skipFirst: false, source: source)
         case "antigravity", "windsurf":
-            return parseRoleDirectFormat(filePath: filePath, skipFirst: true)
+            return parseRoleDirectFormat(filePath: filePath, skipFirst: true, source: source)
         case "codex":
             return parseCodexFormat(filePath: filePath)
         case "gemini-cli":
@@ -24,14 +25,14 @@ struct MessageParser {
         case "cline":
             return parseClineFormat(filePath: filePath)
         default:
-            // cursor / opencode / vscode use SQLite virtual paths — not supported here
+            // cursor / opencode / vscode — SQLite virtual paths, not supported
             return []
         }
     }
 
     // MARK: - claude-code / qwen / iflow
     // {"type":"user"/"assistant", "message":{"content": string | [{type,text}]}, ...}
-    private static func parseTypeMessageFormat(filePath: String) -> [ChatMessage] {
+    private static func parseTypeMessageFormat(filePath: String, source: String) -> [ChatMessage] {
         guard let lines = readLines(filePath) else { return [] }
         return lines.compactMap { line in
             guard let obj = parseJSON(line),
@@ -39,13 +40,15 @@ struct MessageParser {
                   type_ == "user" || type_ == "assistant",
                   let msg = obj["message"] as? [String: Any] else { return nil }
             let content = extractMessageContent(msg["content"])
-            return content.isEmpty ? nil : ChatMessage(role: type_, content: content)
+            guard !content.isEmpty else { return nil }
+            let sys = type_ == "user" && isSystemInjection(content: content, source: source)
+            return ChatMessage(role: type_, content: content, isSystem: sys)
         }
     }
 
     // MARK: - kimi / antigravity / windsurf
     // {"role":"user"/"assistant", "content":"..."}  (antigravity/windsurf skip first meta line)
-    private static func parseRoleDirectFormat(filePath: String, skipFirst: Bool) -> [ChatMessage] {
+    private static func parseRoleDirectFormat(filePath: String, skipFirst: Bool, source: String) -> [ChatMessage] {
         guard let lines = readLines(filePath) else { return [] }
         return lines.enumerated().compactMap { (i, line) in
             if skipFirst && i == 0 { return nil }
@@ -54,12 +57,13 @@ struct MessageParser {
                   role == "user" || role == "assistant",
                   let content = obj["content"] as? String,
                   !content.isEmpty else { return nil }
-            return ChatMessage(role: role, content: content)
+            let sys = role == "user" && isSystemInjection(content: content, source: source)
+            return ChatMessage(role: role, content: content, isSystem: sys)
         }
     }
 
     // MARK: - codex
-    // {"type":"response_item", "payload":{"type":"message","role":..,"content":[{"text":..}]}}
+    // {"type":"response_item","payload":{"type":"message","role":...,"content":[{"text":...}]}}
     private static func parseCodexFormat(filePath: String) -> [ChatMessage] {
         guard let lines = readLines(filePath) else { return [] }
         return lines.compactMap { line in
@@ -70,7 +74,9 @@ struct MessageParser {
                   let role = payload["role"] as? String,
                   role == "user" || role == "assistant" else { return nil }
             let content = extractTextArray(payload["content"])
-            return content.isEmpty ? nil : ChatMessage(role: role, content: content)
+            guard !content.isEmpty else { return nil }
+            let sys = role == "user" && isSystemInjection(content: content, source: "codex")
+            return ChatMessage(role: role, content: content, isSystem: sys)
         }
     }
 
@@ -85,7 +91,8 @@ struct MessageParser {
                   type_ == "user" || type_ == "model",
                   let content = msg["content"] as? String,
                   !content.isEmpty else { return nil }
-            return ChatMessage(role: type_ == "model" ? "assistant" : "user", content: content)
+            let role = type_ == "model" ? "assistant" : "user"
+            return ChatMessage(role: role, content: content, isSystem: false)
         }
     }
 
@@ -98,13 +105,31 @@ struct MessageParser {
             guard let say = msg["say"] as? String else { return nil }
             if say == "task" || say == "user_feedback" {
                 let content = msg["text"] as? String ?? ""
-                return content.isEmpty ? nil : ChatMessage(role: "user", content: content)
+                return content.isEmpty ? nil : ChatMessage(role: "user", content: content, isSystem: false)
             } else if say == "text", !(msg["partial"] as? Bool ?? false) {
                 let content = msg["text"] as? String ?? ""
-                return content.isEmpty ? nil : ChatMessage(role: "assistant", content: content)
+                return content.isEmpty ? nil : ChatMessage(role: "assistant", content: content, isSystem: false)
             }
             return nil
         }
+    }
+
+    // MARK: - System injection detection
+
+    static func isSystemInjection(content: String, source: String) -> Bool {
+        if content.hasPrefix("# AGENTS.md instructions for ")  { return true }
+        if content.contains("<INSTRUCTIONS>")                  { return true }
+        if content.hasPrefix("<local-command-caveat>")         { return true }
+        if content.hasPrefix("<local-command-stdout>")         { return true }
+        if content.contains("<command-name>")                  { return true }
+        if content.contains("<command-message>")               { return true }
+        if content.hasPrefix("Unknown skill: ")                { return true }
+        if content.hasPrefix("Invoke the superpowers:")        { return true }
+        if content.hasPrefix("Base directory for this skill:") { return true }
+        if content.hasPrefix("<system-reminder>")              { return true }
+        if content.hasPrefix("<environment_context>")          { return true }
+        if content.hasPrefix("<EXTREMELY_IMPORTANT>")          { return true }
+        return false
     }
 
     // MARK: - Helpers
@@ -120,20 +145,16 @@ struct MessageParser {
         return obj
     }
 
-    // claude-code: message.content is string or [{type:"text", text:"..."}]
     private static func extractMessageContent(_ content: Any?) -> String {
         if let str = content as? String { return str }
         if let arr = content as? [[String: Any]] {
             for item in arr {
-                if item["type"] as? String == "text", let text = item["text"] as? String {
-                    return text
-                }
+                if item["type"] as? String == "text", let text = item["text"] as? String { return text }
             }
         }
         return ""
     }
 
-    // codex: content is [{text:"..."} | {input_text:"..."}]
     private static func extractTextArray(_ content: Any?) -> String {
         guard let arr = content as? [[String: Any]] else { return "" }
         for item in arr {
