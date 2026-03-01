@@ -173,7 +173,7 @@ struct SessionDetailView: View {
 
     var unsupportedMessage: String {
         switch session.source {
-        case "cursor", "opencode", "vscode":
+        case "opencode", "vscode":
             return "This source (\(session.source)) uses a SQLite database — conversation preview is not yet supported."
         default:
             return "No messages found."

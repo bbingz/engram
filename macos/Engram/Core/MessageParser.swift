@@ -1,5 +1,6 @@
 // macos/Engram/Core/MessageParser.swift
 import Foundation
+import GRDB
 
 struct ChatMessage: Identifiable {
     let id = UUID()
@@ -24,8 +25,10 @@ struct MessageParser {
             return parseGeminiFormat(filePath: filePath)
         case "cline":
             return parseClineFormat(filePath: filePath)
+        case "cursor":
+            return parseCursorFormat(filePath: filePath)
         default:
-            // cursor / opencode / vscode — SQLite virtual paths, not supported
+            // opencode / vscode — not yet supported
             return []
         }
     }
@@ -112,6 +115,41 @@ struct MessageParser {
             }
             return nil
         }
+    }
+
+    // MARK: - cursor (SQLite: state.vscdb?composer=<id>)
+    // Table: cursorDiskKV, keys: bubbleId:<composerId>:<msgId>
+    // Value JSON: {type: 1=user/2=assistant, text/rawText: "..."}
+    private static func parseCursorFormat(filePath: String) -> [ChatMessage] {
+        guard let qRange = filePath.range(of: "?composer=") else { return [] }
+        let dbPath = String(filePath[..<qRange.lowerBound])
+        let composerId = String(filePath[qRange.upperBound...])
+        guard !composerId.isEmpty else { return [] }
+
+        var config = Configuration()
+        config.readonly = true
+        guard let queue = try? DatabaseQueue(path: dbPath, configuration: config) else { return [] }
+
+        return (try? queue.read { db in
+            let rows = try Row.fetchAll(db,
+                sql: "SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC",
+                arguments: ["bubbleId:\(composerId):%"])
+            return rows.compactMap { row -> ChatMessage? in
+                guard let jsonStr: String = row["value"],
+                      let data = jsonStr.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let type = obj["type"] as? Int else { return nil }
+                let role: String
+                switch type {
+                case 1: role = "user"
+                case 2: role = "assistant"
+                default: return nil
+                }
+                let content = (obj["text"] as? String) ?? (obj["rawText"] as? String) ?? ""
+                guard !content.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+                return ChatMessage(role: role, content: content, isSystem: false)
+            }
+        }) ?? []
     }
 
     // MARK: - System injection detection
