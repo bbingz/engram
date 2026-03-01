@@ -1,4 +1,4 @@
-// macos/CodingMemory/Views/ContentView.swift
+// macos/Engram/Views/ContentView.swift
 import SwiftUI
 
 struct ContentView: View {

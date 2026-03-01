@@ -1,4 +1,4 @@
-// macos/CodingMemory/Views/SessionDetailView.swift
+// macos/Engram/Views/SessionDetailView.swift
 import SwiftUI
 
 struct SessionDetailView: View {

@@ -1,4 +1,4 @@
-// macos/CodingMemory/Core/MCPTools.swift
+// macos/Engram/Core/MCPTools.swift
 import Foundation
 
 enum MCPError: Error {
@@ -81,7 +81,7 @@ class MCPTools {
             return .object([
                 "protocolVersion": .string("2024-11-05"),
                 "capabilities": .object(["tools": .object([:])]),
-                "serverInfo": .object(["name": .string("CodingMemory"), "version": .string("1.0")])
+                "serverInfo": .object(["name": .string("Engram"), "version": .string("1.0")])
             ])
         case "tools/list":
             let tools = Self.toolList.map { t -> JSONValue in

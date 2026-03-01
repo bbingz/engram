@@ -1,8 +1,8 @@
-// macos/CodingMemory/App.swift
+// macos/Engram/App.swift
 import SwiftUI
 
 @main
-struct CodingMemoryApp: App {
+struct EngramApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {

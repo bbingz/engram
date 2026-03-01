@@ -1,4 +1,4 @@
-# coding-memory 配置文件
+# engram 配置文件
 # 可选——不存在时使用默认路径
 
 sources:
@@ -29,7 +29,7 @@ sources:
     enabled: true
 
 index:
-  db_path: ~/.coding-memory/index.sqlite
+  db_path: ~/.engram/index.sqlite
 
 # 隐私：敏感信息脱敏（正则，会在索引时过滤）
 privacy:

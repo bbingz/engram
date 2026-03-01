@@ -1,4 +1,4 @@
-// macos/CodingMemory/Views/SessionListView.swift
+// macos/Engram/Views/SessionListView.swift
 import SwiftUI
 
 enum SortField: String { case created, updated }

@@ -23,7 +23,7 @@ export class WindsurfAdapter implements SessionAdapter {
   constructor(daemonDir?: string, cacheDir?: string, conversationsDir?: string) {
     const home = homedir()
     this.daemonDir = daemonDir ?? join(home, '.codeium', 'windsurf', 'daemon')
-    this.cacheDir = cacheDir ?? join(home, '.coding-memory', 'cache', 'windsurf')
+    this.cacheDir = cacheDir ?? join(home, '.engram', 'cache', 'windsurf')
     this.conversationsDir = conversationsDir ?? join(home, '.codeium', 'windsurf', 'cascade')
   }
 

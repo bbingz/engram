@@ -1,4 +1,4 @@
-// macos/CodingMemory/Views/SettingsView.swift
+// macos/Engram/Views/SettingsView.swift
 import SwiftUI
 
 struct DataSourceDef {
@@ -104,7 +104,7 @@ struct MCPClientDef {
 
 struct MCPSetupGuideView: View {
     let nodejsPath: String
-    @AppStorage("mcpScriptPath") var scriptPath: String = "~/.coding-memory/dist/index.js"
+    @AppStorage("mcpScriptPath") var scriptPath: String = "~/.engram/dist/index.js"
 
     private var resolvedScript: String {
         (scriptPath as NSString).expandingTildeInPath
@@ -115,7 +115,7 @@ struct MCPSetupGuideView: View {
             name: "Claude Code",
             configPath: "~/.claude.json or: claude mcp add",
             snippet: { node, script in
-                "claude mcp add coding-memory \(node) \(script)"
+                "claude mcp add engram \(node) \(script)"
             }
         ),
         MCPClientDef(
@@ -123,7 +123,7 @@ struct MCPSetupGuideView: View {
             configPath: "~/.gemini/settings.json",
             snippet: { node, script in
                 """
-                "coding-memory": {
+                "engram": {
                   "command": "\(node)",
                   "args": ["\(script)"],
                   "trust": true
@@ -143,7 +143,7 @@ struct MCPSetupGuideView: View {
             configPath: ".cursor/mcp.json or .vscode/mcp.json",
             snippet: { node, script in
                 """
-                "coding-memory": {
+                "engram": {
                   "command": "\(node)",
                   "args": ["\(script)"]
                 }
@@ -157,12 +157,12 @@ struct MCPSetupGuideView: View {
             HStack(spacing: 8) {
                 Text("MCP Script")
                     .frame(width: 90, alignment: .leading)
-                TextField("~/.coding-memory/dist/index.js", text: $scriptPath)
+                TextField("~/.engram/dist/index.js", text: $scriptPath)
                     .font(.caption)
                     .textFieldStyle(.roundedBorder)
                 scriptExistsIndicator
             }
-            Text("Add coding-memory to your MCP clients using the configurations below.")
+            Text("Add engram to your MCP clients using the configurations below.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -281,7 +281,7 @@ struct DatabaseInfoView: View {
     @State private var dbSize: String = "..."
     @State private var sessionCount: String = "..."
     private let dbPath = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".coding-memory/index.sqlite").path
+        .appendingPathComponent(".engram/index.sqlite").path
 
     var body: some View {
         HStack {

@@ -26,7 +26,7 @@ export class AntigravityAdapter implements SessionAdapter {
   constructor(daemonDir?: string, cacheDir?: string, conversationsDir?: string) {
     const home = homedir()
     this.daemonDir = daemonDir ?? join(home, '.gemini', 'antigravity', 'daemon')
-    this.cacheDir = cacheDir ?? join(home, '.coding-memory', 'cache', 'antigravity')
+    this.cacheDir = cacheDir ?? join(home, '.engram', 'cache', 'antigravity')
     this.conversationsDir = conversationsDir ?? join(home, '.gemini', 'antigravity', 'conversations')
   }
 

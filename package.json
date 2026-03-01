@@ -1,11 +1,11 @@
 {
-  "name": "coding-memory",
+  "name": "engram",
   "version": "0.1.0",
   "description": "MCP Server: 读取多个 AI 编程助手的会话日志，实现跨工具历史上下文共享",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "coding-memory": "dist/index.js"
+    "engram": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",

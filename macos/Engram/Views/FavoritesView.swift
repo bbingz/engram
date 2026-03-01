@@ -1,4 +1,4 @@
-// macos/CodingMemory/Views/FavoritesView.swift
+// macos/Engram/Views/FavoritesView.swift
 import SwiftUI
 
 struct FavoritesView: View {

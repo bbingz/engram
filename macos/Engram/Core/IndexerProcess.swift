@@ -1,4 +1,4 @@
-// macos/CodingMemory/Core/IndexerProcess.swift
+// macos/Engram/Core/IndexerProcess.swift
 import Foundation
 import Combine
 

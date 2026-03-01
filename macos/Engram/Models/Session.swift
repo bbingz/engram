@@ -1,4 +1,4 @@
-// macos/CodingMemory/Models/Session.swift
+// macos/Engram/Models/Session.swift
 import Foundation
 import GRDB
 

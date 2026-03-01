@@ -1,4 +1,4 @@
-// macos/CodingMemory/Core/MCPServer.swift
+// macos/Engram/Core/MCPServer.swift
 import Foundation
 import Hummingbird
 import NIOCore
@@ -13,7 +13,7 @@ class MCPServer: ObservableObject {
     private let socketPath: String
     private var serverTask: Task<Void, Error>?
 
-    init(tools: MCPTools, port: Int = 3456, socketPath: String = "/tmp/coding-memory.sock") {
+    init(tools: MCPTools, port: Int = 3456, socketPath: String = "/tmp/engram.sock") {
         self.tools = tools
         self.port = port
         self.socketPath = socketPath
@@ -49,7 +49,7 @@ class MCPServer: ObservableObject {
     }
 
     private static func runHTTP(tools: MCPTools, address: BindAddress) async throws {
-        var logger = Logger(label: "coding-memory.mcp")
+        var logger = Logger(label: "engram.mcp")
         logger.logLevel = .warning
 
         let router = Router()

@@ -1,4 +1,4 @@
-// macos/CodingMemory/Views/TimelineView.swift
+// macos/Engram/Views/TimelineView.swift
 import SwiftUI
 
 struct TimelineView: View {

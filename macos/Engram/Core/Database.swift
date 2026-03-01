@@ -1,4 +1,4 @@
-// macos/CodingMemory/Core/Database.swift
+// macos/Engram/Core/Database.swift
 import Foundation
 import GRDB
 
@@ -21,7 +21,7 @@ class DatabaseManager: ObservableObject {
 
     init(path: String? = nil) {
         self.dbPath = path ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".coding-memory/index.sqlite").path
+            .appendingPathComponent(".engram/index.sqlite").path
     }
 
     func open() throws {

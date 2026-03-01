@@ -1,4 +1,4 @@
-// macos/CodingMemory/Views/SearchView.swift
+// macos/Engram/Views/SearchView.swift
 import SwiftUI
 
 struct SearchView: View {

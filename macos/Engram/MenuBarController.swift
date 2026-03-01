@@ -1,4 +1,4 @@
-// macos/CodingMemory/MenuBarController.swift
+// macos/Engram/MenuBarController.swift
 import AppKit
 import SwiftUI
 
@@ -31,7 +31,7 @@ class MenuBarController: NSObject, NSMenuDelegate {
 
         if let btn = statusItem.button {
             btn.image = NSImage(systemSymbolName: "brain.head.profile",
-                                accessibilityDescription: "CodingMemory")
+                                accessibilityDescription: "Engram")
             // Receive both left and right mouse-up so we can distinguish them
             btn.sendAction(on: [.leftMouseUp, .rightMouseUp])
             btn.action = #selector(handleClick)
@@ -76,7 +76,7 @@ class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit CodingMemory",
+        let quitItem = NSMenuItem(title: "Quit Engram",
                                    action: #selector(NSApplication.terminate(_:)),
                                    keyEquivalent: "q")
         menu.addItem(quitItem)
@@ -111,7 +111,7 @@ class MenuBarController: NSObject, NSMenuDelegate {
         )
 
         let win = NSWindow(contentViewController: hostingController)
-        win.title = "CodingMemory"
+        win.title = "Engram"
         win.setContentSize(NSSize(width: 900, height: 640))
         win.minSize = NSSize(width: 600, height: 400)
         win.styleMask = [.titled, .closable, .miniaturizable, .resizable]

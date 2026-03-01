@@ -1,4 +1,4 @@
-// macos/CodingMemory/Core/MessageParser.swift
+// macos/Engram/Core/MessageParser.swift
 import Foundation
 
 struct ChatMessage: Identifiable {

@@ -1,7 +1,7 @@
-name: CodingMemory
+name: Engram
 
 options:
-  bundleIdPrefix: com.codingmemory
+  bundleIdPrefix: com.engram
   deploymentTarget:
     macOS: "14.0"
   xcodeVersion: "15.0"
@@ -19,12 +19,12 @@ packages:
     majorVersion: 1.0.0
 
 targets:
-  CodingMemory:
+  Engram:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
     sources:
-      - path: CodingMemory
+      - path: Engram
       - path: Shared
     dependencies:
       - package: GRDB
@@ -39,27 +39,27 @@ targets:
         runForInstallBuildsOnly: false
         basedOnDependencyAnalysis: false
     info:
-      path: CodingMemory/Info.plist
+      path: Engram/Info.plist
       properties:
         LSUIElement: true
-        CFBundleDisplayName: CodingMemory
+        CFBundleDisplayName: Engram
         NSPrincipalClass: NSApplication
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.codingmemory.app
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.app
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
-  CodingMemoryCLI:
+  EngramCLI:
     type: tool
     platform: macOS
     deploymentTarget: "14.0"
     sources:
-      - path: CodingMemoryCLI
+      - path: EngramCLI
       - path: Shared
     dependencies:
       - package: ArgumentParser
         product: ArgumentParser
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.codingmemory.cli
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.cli
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"

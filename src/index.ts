@@ -14,6 +14,7 @@ import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
+import { migrateDataDir } from './core/migrate.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { ClaudeCodeAdapter } from './adapters/claude-code.js'
 import { GeminiCliAdapter } from './adapters/gemini-cli.js'
@@ -35,10 +36,11 @@ import { statsTool, handleStats } from './tools/stats.js'
 import { getContextTool, handleGetContext } from './tools/get_context.js'
 import { exportTool, handleExport } from './tools/export.js'
 
-const DB_DIR = join(homedir(), '.coding-memory')
+migrateDataDir()
+const DB_DIR = join(homedir(), '.engram')
 mkdirSync(DB_DIR, { recursive: true })
-mkdirSync(join(homedir(), '.coding-memory', 'cache', 'antigravity'), { recursive: true })
-mkdirSync(join(homedir(), '.coding-memory', 'cache', 'windsurf'), { recursive: true })
+mkdirSync(join(homedir(), '.engram', 'cache', 'antigravity'), { recursive: true })
+mkdirSync(join(homedir(), '.engram', 'cache', 'windsurf'), { recursive: true })
 const db = new Database(join(DB_DIR, 'index.sqlite'))
 
 const adapters = [
@@ -70,7 +72,7 @@ const allTools = [
 ]
 
 const server = new Server(
-  { name: 'coding-memory', version: '0.1.0' },
+  { name: 'engram', version: '0.1.0' },
   { capabilities: { tools: {} } }
 )
 
@@ -123,7 +125,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // 启动时建立索引
 indexer.indexAll().then(count => {
   if (count > 0) {
-    process.stderr.write(`[coding-memory] Indexed ${count} new sessions\n`)
+    process.stderr.write(`[engram] Indexed ${count} new sessions\n`)
   }
 }).catch(() => {})
 

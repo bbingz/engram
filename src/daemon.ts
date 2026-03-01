@@ -9,6 +9,7 @@ import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
+import { migrateDataDir } from './core/migrate.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { ClaudeCodeAdapter } from './adapters/claude-code.js'
 import { GeminiCliAdapter } from './adapters/gemini-cli.js'
@@ -22,7 +23,8 @@ import { VsCodeAdapter } from './adapters/vscode.js'
 import { AntigravityAdapter } from './adapters/antigravity.js'
 import { WindsurfAdapter } from './adapters/windsurf.js'
 
-const DB_DIR = join(homedir(), '.coding-memory')
+migrateDataDir()
+const DB_DIR = join(homedir(), '.engram')
 mkdirSync(DB_DIR, { recursive: true })
 mkdirSync(join(DB_DIR, 'cache', 'antigravity'), { recursive: true })
 mkdirSync(join(DB_DIR, 'cache', 'windsurf'), { recursive: true })

@@ -1,10 +1,10 @@
 import Foundation
 import Network
 
-// CodingMemoryCLI — stdio bridge to MCPServer via Unix socket HTTP
+// EngramCLI — stdio bridge to MCPServer via Unix socket HTTP
 // Reads JSON-RPC lines from stdin, sends as HTTP POST /mcp, writes response to stdout.
 
-let socketPath = "/tmp/coding-memory.sock"
+let socketPath = "/tmp/engram.sock"
 
 // Read one line from stdin
 func readStdinLine() -> String? {

@@ -1,4 +1,4 @@
-// macos/CodingMemory/Core/LaunchAgent.swift
+// macos/Engram/Core/LaunchAgent.swift
 import Foundation
 import ServiceManagement
 
@@ -23,14 +23,14 @@ enum LaunchAgent {
 
     private static func setLegacy(_ enabled: Bool) {
         let plistURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/com.codingmemory.app.plist")
+            .appendingPathComponent("Library/LaunchAgents/com.engram.app.plist")
         if !enabled {
             try? FileManager.default.removeItem(at: plistURL)
             return
         }
         guard let exe = Bundle.main.executablePath else { return }
         let plist: [String: Any] = [
-            "Label":            "com.codingmemory.app",
+            "Label":            "com.engram.app",
             "ProgramArguments": [exe],
             "RunAtLoad":        true,
             "KeepAlive":        false,
