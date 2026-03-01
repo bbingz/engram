@@ -27,8 +27,10 @@ struct MessageParser {
             return parseClineFormat(filePath: filePath)
         case "cursor":
             return parseCursorFormat(filePath: filePath)
+        case "opencode":
+            return parseOpenCodeFormat(filePath: filePath)
         default:
-            // opencode / vscode — not yet supported
+            // vscode — not yet supported
             return []
         }
     }
@@ -171,6 +173,44 @@ struct MessageParser {
             guard !content.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
             return ChatMessage(role: role, content: content, isSystem: false)
         }
+    }
+
+    // MARK: - opencode (SQLite: opencode.db::<sessionId>)
+    // Tables: message (role) + part (content, type=text)
+    private static func parseOpenCodeFormat(filePath: String) -> [ChatMessage] {
+        guard let sepRange = filePath.range(of: "::", options: .backwards) else { return [] }
+        let dbPath = String(filePath[..<sepRange.lowerBound])
+        let sessionId = String(filePath[sepRange.upperBound...])
+        guard !sessionId.isEmpty else { return [] }
+
+        var config = Configuration()
+        config.readonly = true
+        guard let queue = try? DatabaseQueue(path: dbPath, configuration: config) else { return [] }
+
+        return (try? queue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT m.data AS mdata, p.data AS pdata
+                FROM message m
+                JOIN part p ON p.message_id = m.id
+                WHERE m.session_id = ?
+                ORDER BY m.time_created ASC, p.time_created ASC
+                """, arguments: [sessionId])
+            return rows.compactMap { row -> ChatMessage? in
+                guard let mdataStr: String = row["mdata"],
+                      let pdataStr: String = row["pdata"],
+                      let md = mdataStr.data(using: .utf8),
+                      let pd = pdataStr.data(using: .utf8),
+                      let mobj = try? JSONSerialization.jsonObject(with: md) as? [String: Any],
+                      let pobj = try? JSONSerialization.jsonObject(with: pd) as? [String: Any],
+                      let role = mobj["role"] as? String,
+                      (role == "user" || role == "assistant"),
+                      pobj["type"] as? String == "text"
+                else { return nil }
+                let content = (pobj["text"] as? String) ?? (pobj["value"] as? String) ?? ""
+                guard !content.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+                return ChatMessage(role: role, content: content, isSystem: false)
+            }
+        }) ?? []
     }
 
     // MARK: - System injection detection

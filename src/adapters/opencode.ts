@@ -148,9 +148,13 @@ export class OpenCodeAdapter implements SessionAdapter {
     try {
       db = new Database(dbPath, { readonly: true })
 
-      const rows = db.prepare<[string], MessageRow>(
-        'SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC'
-      ).all(sessionId)
+      const rows = db.prepare(
+        `SELECT m.data AS mdata, p.data AS pdata, m.time_created
+         FROM message m
+         JOIN part p ON p.message_id = m.id
+         WHERE m.session_id = ?
+         ORDER BY m.time_created ASC, p.time_created ASC`
+      ).all(sessionId) as { mdata: string; pdata: string; time_created: number }[]
 
       let count = 0
       let yielded = 0
@@ -158,25 +162,25 @@ export class OpenCodeAdapter implements SessionAdapter {
       for (const row of rows) {
         if (yielded >= limit) break
 
-        let data: MessageData
+        let mdata: MessageData
+        let pdata: { type: string; text?: string; value?: string }
         try {
-          data = JSON.parse(row.data) as MessageData
-        } catch {
-          continue
-        }
+          mdata = JSON.parse(row.mdata)
+          pdata = JSON.parse(row.pdata)
+        } catch { continue }
 
-        if (data.role !== 'user' && data.role !== 'assistant') continue
+        if (mdata.role !== 'user' && mdata.role !== 'assistant') continue
+        if (pdata.type !== 'text') continue
+        const content = pdata.text || pdata.value || ''
+        if (!content.trim()) continue
 
         if (count < offset) { count++; continue }
         count++
 
-        const content = this.extractContent(data.content)
-        const timestamp = new Date(row.time_created).toISOString()
-
         yield {
-          role: data.role,
+          role: mdata.role,
           content,
-          timestamp,
+          timestamp: new Date(row.time_created).toISOString(),
         }
         yielded++
       }
