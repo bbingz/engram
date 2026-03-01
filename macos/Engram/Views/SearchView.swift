@@ -24,14 +24,12 @@ struct SearchView: View {
                 }
             }
             .padding(10)
-            .background(Color.secondary.opacity(0.1))
+            .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .padding(12)
 
             if results.isEmpty && query.count >= 3 {
-                Text("No results for \"\(query)\"")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView.search(text: query)
             } else {
                 List(results) { session in
                     SessionRow(session: session)

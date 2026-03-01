@@ -114,31 +114,42 @@ struct TimelineView: View {
 struct TimelineSessionRow: View {
     let session: Session
 
+    private var sourceColor: Color {
+        switch session.source {
+        case "claude-code":  return .orange
+        case "codex":        return .green
+        case "cursor":       return .blue
+        case "gemini-cli", "antigravity": return .cyan
+        case "opencode":     return .indigo
+        case "iflow":        return .purple
+        case "qwen":        return .teal
+        case "kimi":        return .pink
+        case "cline":       return .mint
+        case "windsurf":    return .brown
+        default:            return .gray
+        }
+    }
+
     var body: some View {
         HStack(spacing: 6) {
+            Circle()
+                .fill(sourceColor)
+                .frame(width: 6, height: 6)
             Text(verbatim: session.source)
-                .font(.caption2).bold()
-                .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if session.isSubAgent {
                 Text("agent")
                     .font(.caption2)
                     .foregroundStyle(.purple)
             }
             Text(verbatim: session.displayTitle)
-                .font(.caption)
+                .font(.subheadline)
                 .lineLimit(1)
             Spacer()
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(verbatim: session.displayDate)
-                if session.displayUpdatedDate != session.displayDate {
-                    Text(verbatim: "→ \(session.displayUpdatedDate)")
-                        .foregroundStyle(.quaternary)
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
+            Text(verbatim: session.displayDate)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
         .help("Double-click to open in Sessions")

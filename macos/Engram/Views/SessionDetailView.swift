@@ -38,20 +38,21 @@ struct SessionDetailView: View {
                     if isLoadingMessages {
                         ProgressView()
                             .frame(maxWidth: .infinity)
-                            .padding(32)
+                            .padding(40)
                     } else if displayMessages.isEmpty && !messages.isEmpty {
-                        // All messages were system injections
-                        Text("No user-visible messages. Tap \"Raw\" to see raw content.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
+                        ContentUnavailableView {
+                            Label("System Messages Only", systemImage: "eye.slash")
+                        } description: {
+                            Text("All messages are system injections. Tap \"Raw\" to see raw content.")
+                        }
+                        .padding(.top, 20)
                     } else if messages.isEmpty {
-                        Text(unsupportedMessage)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
+                        ContentUnavailableView {
+                            Label("No Messages", systemImage: "bubble.left.and.bubble.right")
+                        } description: {
+                            Text(unsupportedMessage)
+                        }
+                        .padding(.top, 20)
                     } else if showRaw {
                         ForEach(displayMessages) { msg in
                             RawMessageRow(message: msg)
@@ -211,43 +212,38 @@ struct CleanMessageBubble: View {
             // User: right-aligned bubble
             HStack(alignment: .top, spacing: 0) {
                 Spacer(minLength: 60)
-                VStack(alignment: .trailing, spacing: 4) {
+                VStack(alignment: .trailing, spacing: 3) {
                     Text("You")
-                        .font(.caption.bold())
-                        .foregroundStyle(Color.accentColor)
-                        .padding(.trailing, 2)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Text(verbatim: message.content)
-                        .font(.callout)
+                        .font(.body)
                         .textSelection(.enabled)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.accentColor.opacity(0.13))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color.accentColor.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
         } else {
-            // Assistant: left-aligned, no bubble background
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "sparkles")
-                    .font(.footnote)
-                    .foregroundStyle(.purple)
-                    .frame(width: 16)
-                    .padding(.top, 2)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(verbatim: assistantLabel)
-                        .font(.caption.bold())
-                        .foregroundStyle(.purple.opacity(0.8))
-                    Text(verbatim: message.content)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Spacer(minLength: 0)
+            // Assistant: full-width, subtle background
+            VStack(alignment: .leading, spacing: 3) {
+                Text(verbatim: assistantLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(verbatim: message.content)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
         }
     }
 }

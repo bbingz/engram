@@ -8,13 +8,11 @@ struct FavoritesView: View {
     var body: some View {
         Group {
             if sessions.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "star").font(.largeTitle).foregroundStyle(.secondary)
-                    Text("No favorites yet").foregroundStyle(.secondary)
-                    Text("Star sessions in the Sessions tab.")
-                        .font(.caption).foregroundStyle(.tertiary)
+                ContentUnavailableView {
+                    Label("No Favorites", systemImage: "star")
+                } description: {
+                    Text("Star sessions in the Sessions tab to see them here.")
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(sessions) { session in
                     SessionRow(session: session)

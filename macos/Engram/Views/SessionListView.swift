@@ -159,9 +159,12 @@ struct SessionListView: View {
                 SessionDetailView(session: session)
                     .frame(minWidth: 200)
             } else {
-                Text("Select a session")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView {
+                    Label("No Selection", systemImage: "bubble.left.and.text.bubble.right")
+                } description: {
+                    Text("Select a session to view its conversation.")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .task {
@@ -407,63 +410,77 @@ struct Chip: View {
 struct SessionRow: View {
     let session: Session
 
+    private var sourceColor: Color {
+        switch session.source {
+        case "claude-code":  return .orange
+        case "codex":        return .green
+        case "cursor":       return .blue
+        case "gemini-cli", "antigravity": return .cyan
+        case "opencode":     return .indigo
+        case "iflow":        return .purple
+        case "qwen":        return .teal
+        case "kimi":        return .pink
+        case "cline":       return .mint
+        case "windsurf":    return .brown
+        default:            return .gray
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Text(verbatim: session.source)
-                    .font(.caption2).bold()
-                    .padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                if session.isSubAgent {
-                    Text("agent")
-                        .font(.caption2).bold()
-                        .padding(.horizontal, 5).padding(.vertical, 2)
-                        .background(Color.purple.opacity(0.15))
-                        .foregroundStyle(.purple)
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                }
+        VStack(alignment: .leading, spacing: 4) {
+            // Line 1: title + size warning
+            HStack(spacing: 0) {
                 Text(verbatim: session.displayTitle)
-                    .font(.callout)
+                    .font(.body)
+                    .fontWeight(.medium)
                     .lineLimit(1)
-                Spacer()
-                HStack(spacing: 2) {
-                    if session.sizeCategory == .huge {
-                        Image(systemName: "exclamationmark.triangle.fill")
+                Spacer(minLength: 8)
+                if session.sizeCategory != .normal {
+                    HStack(spacing: 2) {
+                        if session.sizeCategory == .huge {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                        }
+                        Text(session.formattedSize)
                             .font(.caption2)
-                            .foregroundStyle(.red)
+                            .monospacedDigit()
                     }
-                    Text(session.formattedSize)
-                        .font(.caption2)
-                        .fontWeight(session.sizeCategory != .normal ? .bold : .regular)
-                        .foregroundColor(
-                            session.sizeCategory == .huge ? .red :
-                            session.sizeCategory == .large ? .orange : .gray
-                        )
-                        .monospacedDigit()
+                    .foregroundStyle(session.sizeCategory == .huge ? .red : .orange)
                 }
             }
-            HStack(spacing: 4) {
-                Image(systemName: "calendar")
-                    .font(.caption2)
-                    .foregroundStyle(.quaternary)
-                Text(verbatim: session.displayDate)
-                if session.displayUpdatedDate != session.displayDate {
-                    Image(systemName: "arrow.right")
+
+            // Line 2: source dot + source name + agent badge + date + msg count + project
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(sourceColor)
+                    .frame(width: 7, height: 7)
+                Text(verbatim: session.source)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if session.isSubAgent {
+                    Text("agent")
                         .font(.caption2)
-                        .foregroundStyle(.quaternary)
-                    Text(verbatim: session.displayUpdatedDate)
+                        .foregroundStyle(.purple)
                 }
-                Text(verbatim: "·")
+                Spacer(minLength: 4)
+                Text(verbatim: session.displayDate)
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+            }
+
+            // Line 3: message count + project
+            HStack(spacing: 4) {
                 Text("\(session.messageCount) msgs")
                 if let proj = session.project {
                     Text(verbatim: "·")
+                    Image(systemName: "folder")
+                        .imageScale(.small)
                     Text(verbatim: proj).lineLimit(1)
                 }
             }
             .font(.caption)
             .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
     }
 }
