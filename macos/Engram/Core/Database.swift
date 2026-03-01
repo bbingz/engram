@@ -336,4 +336,22 @@ class DatabaseManager: ObservableObject {
             return db.changesCount
         }
     }
+
+    // MARK: - Hidden sessions (trash)
+
+    func listHiddenSessions(limit: Int = 200, offset: Int = 0) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Session.fetchAll(db,
+                sql: "SELECT * FROM sessions WHERE hidden_at IS NOT NULL ORDER BY hidden_at DESC LIMIT ? OFFSET ?",
+                arguments: [limit, offset])
+        }
+    }
+
+    func countHiddenSessions() throws -> Int {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NOT NULL") ?? 0
+        }
+    }
 }

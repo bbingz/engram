@@ -21,6 +21,8 @@ struct SessionListView: View {
     @State private var hasMore = true
     @State private var renameTarget: Session?
     @State private var renameText: String = ""
+    @State private var showingTrash = false
+    @State private var hiddenCount: Int = 0
     private let pageSize = 50
 
     let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
@@ -78,14 +80,21 @@ struct SessionListView: View {
                     SessionRow(session: session)
                         .tag(session)
                         .contextMenu {
-                            Button("Rename...") {
-                                renameText = session.customName ?? session.summary ?? ""
-                                renameTarget = session
-                            }
-                            Divider()
-                            Button("Delete", role: .destructive) {
-                                try? db.hideSession(id: session.id)
-                                Task { await reload() }
+                            if showingTrash {
+                                Button("Restore") {
+                                    try? db.unhideSession(id: session.id)
+                                    Task { await reload() }
+                                }
+                            } else {
+                                Button("Rename...") {
+                                    renameText = session.customName ?? session.summary ?? ""
+                                    renameTarget = session
+                                }
+                                Divider()
+                                Button("Delete", role: .destructive) {
+                                    try? db.hideSession(id: session.id)
+                                    Task { await reload() }
+                                }
                             }
                         }
                         .onAppear {
@@ -95,27 +104,48 @@ struct SessionListView: View {
                         }
                 }
 
-                // Footer: count + clean empty + loading indicator
-                HStack {
+                // Footer: count + clean empty + trash + loading
+                HStack(spacing: 6) {
                     Text("\(sessions.count) of \(totalCount)")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .monospacedDigit()
                     Spacer()
-                    Button {
-                        if let n = try? db.hideEmptySessions(), n > 0 {
-                            Task { await reload() }
+                    if !showingTrash {
+                        Button {
+                            if let n = try? db.hideEmptySessions(), n > 0 {
+                                Task { await reload() }
+                            }
+                        } label: {
+                            Text("Clean Empty")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.1))
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
                         }
+                        .buttonStyle(.plain)
+                        .help("Hide all sessions with 0 messages")
+                    }
+                    Button {
+                        showingTrash.toggle()
                     } label: {
-                        Text("Clean Empty")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                        HStack(spacing: 2) {
+                            Image(systemName: showingTrash ? "trash.fill" : "trash")
+                            if hiddenCount > 0 {
+                                Text("\(hiddenCount)")
+                                    .monospacedDigit()
+                            }
+                        }
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(showingTrash ? Color.red.opacity(0.15) : Color.secondary.opacity(0.1))
+                        .foregroundStyle(showingTrash ? .red : .secondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.plain)
-                    .help("Hide all sessions with 0 messages")
+                    .help(showingTrash ? "Back to sessions" : "Show hidden sessions")
                     if hasMore {
                         ProgressView()
                             .controlSize(.mini)
@@ -146,6 +176,7 @@ struct SessionListView: View {
         .task(id: agentFilter)      { await reload() }
         .task(id: sortField)        { await reload() }
         .task(id: sortAsc)          { await reload() }
+        .task(id: showingTrash)     { await reload() }
         .onChange(of: deepLinkSession) { _, session in
             guard let session else { return }
             pendingSelection = session
@@ -165,8 +196,8 @@ struct SessionListView: View {
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }
         )) {
-            TextField("Session name", text: $renameText)
-            Button("Rename") {
+            TextField("Note", text: $renameText)
+            Button("Save") {
                 guard let target = renameTarget else { return }
                 let name = renameText.trimmingCharacters(in: .whitespaces)
                 try? db.renameSession(id: target.id, name: name.isEmpty ? nil : name)
@@ -175,23 +206,29 @@ struct SessionListView: View {
             }
             Button("Cancel", role: .cancel) { renameTarget = nil }
         } message: {
-            Text("Enter a new name for this session.")
+            Text("Displayed as: note | original title. Leave empty to clear.")
         }
     }
 
     func reload() async {
-        totalCount = (try? db.countSessions(
-            sources: selectedSources,
-            projects: selectedProjects,
-            subAgent: agentFilter
-        )) ?? 0
-        sessions = (try? db.listSessions(
-            sources: selectedSources,
-            projects: selectedProjects,
-            subAgent: agentFilter,
-            sort: currentSort,
-            limit: pageSize
-        )) ?? []
+        hiddenCount = (try? db.countHiddenSessions()) ?? 0
+        if showingTrash {
+            totalCount = hiddenCount
+            sessions = (try? db.listHiddenSessions(limit: pageSize)) ?? []
+        } else {
+            totalCount = (try? db.countSessions(
+                sources: selectedSources,
+                projects: selectedProjects,
+                subAgent: agentFilter
+            )) ?? 0
+            sessions = (try? db.listSessions(
+                sources: selectedSources,
+                projects: selectedProjects,
+                subAgent: agentFilter,
+                sort: currentSort,
+                limit: pageSize
+            )) ?? []
+        }
         hasMore = sessions.count < totalCount
         if let pending = pendingSelection, sessions.contains(pending) {
             selectedSession = pending
@@ -203,14 +240,19 @@ struct SessionListView: View {
 
     func loadMore() async {
         guard hasMore else { return }
-        let next = (try? db.listSessions(
-            sources: selectedSources,
-            projects: selectedProjects,
-            subAgent: agentFilter,
-            sort: currentSort,
-            limit: pageSize,
-            offset: sessions.count
-        )) ?? []
+        let next: [Session]
+        if showingTrash {
+            next = (try? db.listHiddenSessions(limit: pageSize, offset: sessions.count)) ?? []
+        } else {
+            next = (try? db.listSessions(
+                sources: selectedSources,
+                projects: selectedProjects,
+                subAgent: agentFilter,
+                sort: currentSort,
+                limit: pageSize,
+                offset: sessions.count
+            )) ?? []
+        }
         sessions.append(contentsOf: next)
         hasMore = sessions.count < totalCount
     }

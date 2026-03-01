@@ -35,7 +35,13 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case customName       = "custom_name"
     }
 
-    var displayTitle: String       { customName ?? summary ?? "Untitled" }
+    var displayTitle: String {
+        if let cn = customName {
+            if let s = summary { return "\(cn) | \(s)" }
+            return cn
+        }
+        return summary ?? "Untitled"
+    }
     var displayDate: String        { String(startTime.prefix(10)) }
     var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }
     var isSubAgent: Bool           { agentRole != nil }

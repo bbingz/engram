@@ -99,12 +99,6 @@ struct SessionDetailView: View {
                     Text(session.displayTitle)
                         .font(.headline)
                         .lineLimit(2)
-                    if session.customName != nil, let summary = session.summary {
-                        Text(summary)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
                     Text("\(session.source) · \(session.displayDate) · \(session.messageCount) msgs")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -152,6 +146,25 @@ struct SessionDetailView: View {
             }
             .font(.caption)
             .foregroundStyle(.tertiary)
+
+            HStack(spacing: 4) {
+                Text(session.id)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.quaternary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(session.id, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                }
+                .buttonStyle(.plain)
+                .help("Copy session ID")
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
