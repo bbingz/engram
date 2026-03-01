@@ -200,6 +200,8 @@ struct CleanMessageBubble: View {
         case "cursor":       return "Cursor"
         case "windsurf":     return "Windsurf"
         case "antigravity":  return "Antigravity"
+        case "opencode":     return "OpenCode"
+        case "iflow":        return "iFlow"
         default:             return source
         }
     }

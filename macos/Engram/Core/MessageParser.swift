@@ -36,7 +36,8 @@ struct MessageParser {
     }
 
     // MARK: - claude-code / qwen / iflow
-    // {"type":"user"/"assistant", "message":{"content": string | [{type,text}]}, ...}
+    // claude-code/iflow: {"type":"user"/"assistant", "message":{"content": string | [{type,text}]}, ...}
+    // qwen:             {"type":"user"/"assistant", "message":{"parts":[{text:"..."}]}, ...}
     private static func parseTypeMessageFormat(filePath: String, source: String) -> [ChatMessage] {
         guard let lines = readLines(filePath) else { return [] }
         return lines.compactMap { line in
@@ -44,7 +45,9 @@ struct MessageParser {
                   let type_ = obj["type"] as? String,
                   type_ == "user" || type_ == "assistant",
                   let msg = obj["message"] as? [String: Any] else { return nil }
-            let content = extractMessageContent(msg["content"])
+            var content = extractMessageContent(msg["content"])
+            // Qwen uses message.parts[].text instead of message.content
+            if content.isEmpty { content = extractPartsContent(msg["parts"]) }
             guard !content.isEmpty else { return nil }
             let sys = type_ == "user" && isSystemInjection(content: content, source: source)
             return ChatMessage(role: type_, content: content, isSystem: sys)
@@ -228,6 +231,8 @@ struct MessageParser {
         if content.hasPrefix("<system-reminder>")              { return true }
         if content.hasPrefix("<environment_context>")          { return true }
         if content.hasPrefix("<EXTREMELY_IMPORTANT>")          { return true }
+        if content.hasPrefix("\nYou are Qwen Code")            { return true }
+        if content.hasPrefix("You are Qwen Code")             { return true }
         return false
     }
 
@@ -250,6 +255,15 @@ struct MessageParser {
             for item in arr {
                 if item["type"] as? String == "text", let text = item["text"] as? String { return text }
             }
+        }
+        return ""
+    }
+
+    /// Qwen format: message.parts = [{text: "..."}]
+    private static func extractPartsContent(_ parts: Any?) -> String {
+        guard let arr = parts as? [[String: Any]] else { return "" }
+        for item in arr {
+            if let text = item["text"] as? String, !text.isEmpty { return text }
         }
         return ""
     }
