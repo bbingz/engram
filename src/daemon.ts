@@ -30,8 +30,21 @@ indexer.indexAll().then(indexed => {
 // File watcher (persistent — keeps process alive)
 const watcher = startWatcher(adapters, indexer)
 
+// Periodic re-scan every 10 minutes to catch files the watcher might miss
+// (e.g. rsync'd files, SQLite-based sources like Cursor/OpenCode/VS Code)
+const RESCAN_INTERVAL = 10 * 60 * 1000
+const rescanTimer = setInterval(async () => {
+  try {
+    const indexed = await indexer.indexAll()
+    if (indexed > 0) {
+      const total = db.countSessions()
+      emit({ event: 'rescan', indexed, total })
+    }
+  } catch (_) { /* ignore */ }
+}, RESCAN_INTERVAL)
+
 // Lifecycle: stdin/parent/signal layers, no idle timeout for daemon
 setupProcessLifecycle({
   idleTimeoutMs: 0,
-  onExit: () => { watcher?.close() },
+  onExit: () => { clearInterval(rescanTimer); watcher?.close() },
 })

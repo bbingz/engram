@@ -12,6 +12,7 @@ export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): FSWa
     [join(home, '.codex', 'sessions'), 'codex'],
     [join(home, '.claude', 'projects'), 'claude-code'],
     [join(home, '.gemini', 'tmp'), 'gemini-cli'],
+    [join(home, '.gemini', 'antigravity'), 'antigravity'],
     [join(home, '.iflow', 'projects'), 'iflow'],
     [join(home, '.qwen', 'projects'), 'qwen'],
     [join(home, '.kimi', 'sessions'), 'kimi'],
