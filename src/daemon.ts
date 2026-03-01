@@ -2,51 +2,17 @@
 // Stripped-down daemon: indexer + watcher only, no MCP server.
 // Outputs JSON lines to stdout for the Swift app to parse.
 // Usage: node dist/daemon.js [db-path]
-import { homedir } from 'os'
 import { join } from 'path'
-import { mkdirSync } from 'fs'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
-import { migrateDataDir } from './core/migrate.js'
-import { CodexAdapter } from './adapters/codex.js'
-import { ClaudeCodeAdapter } from './adapters/claude-code.js'
-import { GeminiCliAdapter } from './adapters/gemini-cli.js'
-import { OpenCodeAdapter } from './adapters/opencode.js'
-import { IflowAdapter } from './adapters/iflow.js'
-import { QwenAdapter } from './adapters/qwen.js'
-import { KimiAdapter } from './adapters/kimi.js'
-import { ClineAdapter } from './adapters/cline.js'
-import { CursorAdapter } from './adapters/cursor.js'
-import { VsCodeAdapter } from './adapters/vscode.js'
-import { AntigravityAdapter } from './adapters/antigravity.js'
-import { WindsurfAdapter } from './adapters/windsurf.js'
+import { ensureDataDirs, createAdapters } from './core/bootstrap.js'
 
-migrateDataDir()
-const DB_DIR = join(homedir(), '.engram')
-mkdirSync(DB_DIR, { recursive: true })
-mkdirSync(join(DB_DIR, 'cache', 'antigravity'), { recursive: true })
-mkdirSync(join(DB_DIR, 'cache', 'windsurf'), { recursive: true })
-
+const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
 const db = new Database(dbPath)
-
-const adapters = [
-  new CodexAdapter(),
-  new ClaudeCodeAdapter(),
-  new GeminiCliAdapter(),
-  new OpenCodeAdapter(),
-  new IflowAdapter(),
-  new QwenAdapter(),
-  new KimiAdapter(),
-  new ClineAdapter(),
-  new CursorAdapter(),
-  new VsCodeAdapter(),
-  new AntigravityAdapter(),
-  new WindsurfAdapter(),
-]
-
+const adapters = createAdapters()
 const indexer = new Indexer(db, adapters)
 
 function emit(obj: object): void {

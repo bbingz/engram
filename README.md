@@ -1,4 +1,4 @@
-# coding-memory
+# Engram
 
 > MCP Server：聚合多个 AI 编程助手的历史会话，实现跨工具上下文共享。
 
@@ -13,9 +13,9 @@
        └─────────────────┼────────────────────┘
                          ▼
               ┌──────────────────────┐
-              │   coding-memory      │
+              │   engram      │
               │   (MCP Server)       │
-              │  ~/.coding-memory/   │
+              │  ~/.engram/   │
               │   index.sqlite       │
               └──────────┬───────────┘
                          │  MCP
@@ -54,8 +54,8 @@
 
 ```bash
 # 1. 克隆并构建
-git clone https://github.com/bbingz/coding-memory
-cd coding-memory
+git clone https://github.com/bbingz/engram
+cd engram
 npm install && npm run build
 
 # 2. 注册到你使用的 AI 工具（见下一节）
@@ -64,14 +64,14 @@ npm install && npm run build
 # get_context cwd=/your/project/path
 ```
 
-首次启动时，MCP Server 会自动扫描所有会话文件并建立索引（存储在 `~/.coding-memory/index.sqlite`）。之后通过文件监听增量更新，无需手动维护。
+首次启动时，MCP Server 会自动扫描所有会话文件并建立索引（存储在 `~/.engram/index.sqlite`）。之后通过文件监听增量更新，无需手动维护。
 
 ## 注册为 MCP Server
 
 ### Claude Code
 
 ```bash
-claude mcp add --scope user coding-memory node /absolute/path/to/coding-memory/dist/index.js
+claude mcp add --scope user engram node /absolute/path/to/engram/dist/index.js
 ```
 
 或者手动编辑 `~/.claude/settings.json`：
@@ -79,9 +79,9 @@ claude mcp add --scope user coding-memory node /absolute/path/to/coding-memory/d
 ```json
 {
   "mcpServers": {
-    "coding-memory": {
+    "engram": {
       "command": "node",
-      "args": ["/absolute/path/to/coding-memory/dist/index.js"]
+      "args": ["/absolute/path/to/engram/dist/index.js"]
     }
   }
 }
@@ -92,9 +92,9 @@ claude mcp add --scope user coding-memory node /absolute/path/to/coding-memory/d
 编辑 `~/.codex/config.toml`：
 
 ```toml
-[mcp_servers.coding-memory]
+[mcp_servers.engram]
 command = "node"
-args = ["/absolute/path/to/coding-memory/dist/index.js"]
+args = ["/absolute/path/to/engram/dist/index.js"]
 ```
 
 ### 其他支持 MCP 的客户端
@@ -104,7 +104,7 @@ args = ["/absolute/path/to/coding-memory/dist/index.js"]
 ```json
 {
   "command": "node",
-  "args": ["/absolute/path/to/coding-memory/dist/index.js"]
+  "args": ["/absolute/path/to/engram/dist/index.js"]
 }
 ```
 
@@ -286,7 +286,7 @@ sources:
 
 # 索引数据库路径
 index:
-  db_path: ~/.coding-memory/index.sqlite
+  db_path: ~/.engram/index.sqlite
 
 # 隐私：敏感信息脱敏（正则匹配，在索引时过滤）
 privacy:
@@ -315,7 +315,7 @@ interface SessionAdapter {
 
 1. 在 `src/adapters/types.ts` 的 `SourceName` 联合类型中添加新工具名称
 2. 新建 `src/adapters/<tool-name>.ts`，实现 `SessionAdapter` 接口
-3. 在 `src/index.ts` 中将新适配器加入 `adapters` 数组
+3. 在 `src/core/bootstrap.ts` 的 `createAdapters()` 中注册新适配器
 4. 在 `src/core/watcher.ts` 中添加对应的监听路径
 5. 参照现有测试（`tests/adapters/codex.test.ts`）编写测试
 
@@ -323,7 +323,7 @@ interface SessionAdapter {
 
 ## 数据存储与隐私
 
-- **索引库位置：** `~/.coding-memory/index.sqlite`，仅存储元数据（会话 ID、时间、路径、摘要）和全文搜索索引，不存储完整对话内容。
+- **索引库位置：** `~/.engram/index.sqlite`，仅存储元数据（会话 ID、时间、路径、摘要）和全文搜索索引，不存储完整对话内容。
 - **原始文件：** 完整消息内容始终从 AI 工具的原始日志文件流式读取，不做额外拷贝。
 - **隐私脱敏：** 可在 `config.yaml` 的 `privacy.redact_patterns` 中配置正则，匹配内容在建立搜索索引时会被替换为 `[REDACTED]`。
 - **数据不离本机：** MCP Server 本地运行，所有数据存储和检索均在本地完成，不向任何远程服务发送数据。

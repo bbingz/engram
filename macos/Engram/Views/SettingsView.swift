@@ -110,7 +110,7 @@ struct MCPSetupGuideView: View {
         (scriptPath as NSString).expandingTildeInPath
     }
 
-    private var clients: [MCPClientDef] {[
+    private static let clients: [MCPClientDef] = [
         MCPClientDef(
             name: "Claude Code",
             configPath: "~/.claude.json or: claude mcp add",
@@ -150,7 +150,7 @@ struct MCPSetupGuideView: View {
                 """
             }
         ),
-    ]}
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -160,26 +160,18 @@ struct MCPSetupGuideView: View {
                 TextField("~/.engram/dist/index.js", text: $scriptPath)
                     .font(.caption)
                     .textFieldStyle(.roundedBorder)
-                scriptExistsIndicator
+                PathExistsIndicator(path: resolvedScript)
             }
             Text("Add engram to your MCP clients using the configurations below.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            ForEach(clients, id: \.name) { client in
+            ForEach(Self.clients, id: \.name) { client in
                 MCPClientRow(client: client, nodePath: nodejsPath, scriptPath: resolvedScript)
             }
         }
     }
 
-    @ViewBuilder
-    private var scriptExistsIndicator: some View {
-        let exists = FileManager.default.fileExists(atPath: resolvedScript)
-        Circle()
-            .fill(exists ? Color.green : Color.red)
-            .frame(width: 8, height: 8)
-            .help(exists ? "Script exists" : "Script not found")
-    }
 }
 
 struct MCPClientRow: View {
@@ -229,6 +221,27 @@ struct MCPClientRow: View {
     }
 }
 
+// MARK: - Shared Components
+
+struct PathExistsIndicator: View {
+    let exists: Bool
+
+    init(exists: Bool) {
+        self.exists = exists
+    }
+
+    init(path: String) {
+        self.exists = FileManager.default.fileExists(atPath: path)
+    }
+
+    var body: some View {
+        Circle()
+            .fill(exists ? Color.green : Color.red)
+            .frame(width: 8, height: 8)
+            .help(exists ? "Path exists" : "Path not found")
+    }
+}
+
 // MARK: - Data Source Row
 
 struct DataSourceRow: View {
@@ -248,10 +261,7 @@ struct DataSourceRow: View {
                     checkExists(newValue)
                 }
             if let exists {
-                Circle()
-                    .fill(exists ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
-                    .help(exists ? "Path exists" : "Path not found")
+                PathExistsIndicator(exists: exists)
             }
         }
         .onAppear {
