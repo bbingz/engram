@@ -96,10 +96,10 @@ struct SessionDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(session.displayTitle)
+                    Text(verbatim: session.displayTitle)
                         .font(.headline)
                         .lineLimit(2)
-                    Text("\(session.source) · \(session.displayDate) · \(session.messageCount) msgs")
+                    Text(verbatim: "\(session.source) · \(session.displayDate) · \(session.messageCount) msgs")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -109,7 +109,7 @@ struct SessionDetailView: View {
                 Button {
                     showRaw.toggle()
                 } label: {
-                    Text(showRaw ? "Clean" : "Raw")
+                    Text(showRaw ? LocalizedStringKey("Clean") : LocalizedStringKey("Raw"))
                         .font(.caption)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -136,10 +136,10 @@ struct SessionDetailView: View {
 
             HStack(spacing: 12) {
                 if let project = session.project {
-                    Label(project, systemImage: "folder")
+                    Label { Text(verbatim: project) } icon: { Image(systemName: "folder") }
                 }
                 if !session.cwd.isEmpty {
-                    Label(session.cwd, systemImage: "terminal")
+                    Label { Text(verbatim: session.cwd) } icon: { Image(systemName: "terminal") }
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -148,7 +148,7 @@ struct SessionDetailView: View {
             .foregroundStyle(.tertiary)
 
             HStack(spacing: 4) {
-                Text(session.id)
+                Text(verbatim: session.id)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.quaternary)
                     .lineLimit(1)
@@ -171,7 +171,7 @@ struct SessionDetailView: View {
         .background(.bar)
     }
 
-    var unsupportedMessage: String {
+    var unsupportedMessage: LocalizedStringKey {
         switch session.source {
         case "vscode":
             return "This source (\(session.source)) uses a SQLite database — conversation preview is not yet supported."
@@ -216,7 +216,7 @@ struct CleanMessageBubble: View {
                         .font(.caption.bold())
                         .foregroundStyle(Color.accentColor)
                         .padding(.trailing, 2)
-                    Text(message.content)
+                    Text(verbatim: message.content)
                         .font(.callout)
                         .textSelection(.enabled)
                         .padding(.horizontal, 12)
@@ -236,10 +236,10 @@ struct CleanMessageBubble: View {
                     .frame(width: 16)
                     .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(assistantLabel)
+                    Text(verbatim: assistantLabel)
                         .font(.caption.bold())
                         .foregroundStyle(.purple.opacity(0.8))
-                    Text(message.content)
+                    Text(verbatim: message.content)
                         .font(.callout)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -262,7 +262,7 @@ struct RawMessageRow: View {
         return message.role == "user" ? Color.accentColor : .purple
     }
 
-    var roleLabel: String {
+    var roleLabel: LocalizedStringKey {
         if message.isSystem { return "[system]" }
         return message.role == "user" ? "[user]" : "[assistant]"
     }
@@ -272,7 +272,7 @@ struct RawMessageRow: View {
             Text(roleLabel)
                 .font(.caption.monospaced().bold())
                 .foregroundStyle(roleColor)
-            Text(message.content)
+            Text(verbatim: message.content)
                 .font(.caption.monospaced())
                 .textSelection(.enabled)
                 .foregroundStyle(message.isSystem ? .secondary : .primary)

@@ -48,7 +48,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Status")
                     Spacer()
-                    Text(indexer.status.displayString)
+                    Text(verbatim: indexer.status.displayString)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -78,7 +78,7 @@ struct SettingsView: View {
                 HStack {
                     Text("MCP HTTP endpoint")
                     Spacer()
-                    Text("http://localhost:\(httpPort)/mcp")
+                    Text(verbatim: "http://localhost:\(httpPort)/mcp")
                         .foregroundStyle(.secondary)
                         .font(.caption)
                 }
@@ -187,9 +187,9 @@ struct MCPClientRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
-                Text(client.name)
+                Text(verbatim: client.name)
                     .font(.caption.bold())
-                Text(client.configPath)
+                Text(verbatim: client.configPath)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Spacer()
@@ -199,7 +199,7 @@ struct MCPClientRow: View {
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                 } label: {
-                    Text(copied ? "Copied!" : "Copy")
+                    Text(copied ? LocalizedStringKey("Copied!") : LocalizedStringKey("Copy"))
                         .font(.caption2)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -209,7 +209,7 @@ struct MCPClientRow: View {
                 }
                 .buttonStyle(.plain)
             }
-            Text(snippet)
+            Text(verbatim: snippet)
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -238,7 +238,7 @@ struct PathExistsIndicator: View {
         Circle()
             .fill(exists ? Color.green : Color.red)
             .frame(width: 8, height: 8)
-            .help(exists ? "Path exists" : "Path not found")
+            .help(exists ? LocalizedStringKey("Path exists") : LocalizedStringKey("Path not found"))
     }
 }
 
@@ -251,7 +251,7 @@ struct DataSourceRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(def.name)
+            Text(verbatim: def.name)
                 .frame(width: 90, alignment: .leading)
             TextField(def.defaultPath, text: $path)
                 .font(.caption)
@@ -297,7 +297,7 @@ struct DatabaseInfoView: View {
         HStack {
             Text("Path")
             Spacer()
-            Text(dbPath)
+            Text(verbatim: dbPath)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -306,14 +306,14 @@ struct DatabaseInfoView: View {
         HStack {
             Text("Size")
             Spacer()
-            Text(dbSize)
+            Text(verbatim: dbSize)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         HStack {
             Text("Sessions")
             Spacer()
-            Text(sessionCount)
+            Text(verbatim: sessionCount)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

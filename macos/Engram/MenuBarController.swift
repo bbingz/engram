@@ -70,13 +70,17 @@ class MenuBarController: NSObject, NSMenuDelegate {
     private func showContextMenu() {
         let menu = NSMenu()
 
-        let openItem = NSMenuItem(title: "Open Window", action: #selector(openWindow), keyEquivalent: "")
+        let openItem = NSMenuItem(title: String(localized: "Open Window"), action: #selector(openWindow), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
 
+        let settingsItem = NSMenuItem(title: String(localized: "Settings..."), action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit Engram",
+        let quitItem = NSMenuItem(title: String(localized: "Quit Engram"),
                                    action: #selector(NSApplication.terminate(_:)),
                                    keyEquivalent: "q")
         menu.addItem(quitItem)
@@ -89,6 +93,17 @@ class MenuBarController: NSObject, NSMenuDelegate {
     // Remove the menu after it closes so left-click still triggers the popover
     nonisolated func menuDidClose(_ menu: NSMenu) {
         Task { @MainActor in self.statusItem.menu = nil }
+    }
+
+    @objc func openSettings() {
+        if popover.isShown { popover.performClose(nil) }
+        // macOS 14+: use the modern API to show Settings window
+        if #available(macOS 14.0, *) {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        } else {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Standalone window

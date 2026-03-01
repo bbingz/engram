@@ -109,7 +109,6 @@ struct SessionListView: View {
                     Text("\(sessions.count) of \(totalCount)")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
-                        .monospacedDigit()
                     Spacer()
                     if !showingTrash {
                         Button {
@@ -258,7 +257,7 @@ struct SessionListView: View {
     }
 
     @ViewBuilder
-    func sortButton(_ label: String, field: SortField) -> some View {
+    func sortButton(_ label: LocalizedStringKey, field: SortField) -> some View {
         let active = sortField == field
         Button {
             if active { sortAsc.toggle() }
@@ -281,28 +280,30 @@ struct SessionListView: View {
 // MARK: - MultiSelectPicker
 
 struct MultiSelectPicker: View {
-    let emptyLabel: String
+    let emptyLabel: LocalizedStringKey
     let icon: String
     let items: [String]
     var counts: [String: Int] = [:]
     @Binding var selected: Set<String>
     @State private var showPopover = false
 
-    var buttonLabel: String {
+    var isFiltered: Bool { !selected.isEmpty }
+
+    @ViewBuilder
+    var buttonText: some View {
         switch selected.count {
-        case 0:  return emptyLabel
-        case 1:  return selected.first!
-        default: return "\(selected.count) selected"
+        case 0:  Text(emptyLabel)
+        case 1:  Text(verbatim: selected.first!)
+        default: Text("\(selected.count) selected")
         }
     }
-    var isFiltered: Bool { !selected.isEmpty }
 
     var body: some View {
         Button { showPopover.toggle() } label: {
             HStack(spacing: 4) {
                 Image(systemName: icon)
                     .foregroundStyle(isFiltered ? Color.accentColor : Color.secondary)
-                Text(buttonLabel)
+                buttonText
                     .lineLimit(1)
                     .foregroundStyle(isFiltered ? Color.accentColor : Color.primary)
                 Image(systemName: "chevron.down")
@@ -342,7 +343,7 @@ struct MultiSelectPicker: View {
                                     if on { selected.remove(item) } else { selected.insert(item) }
                                 } label: {
                                     HStack(spacing: 8) {
-                                        Text(item)
+                                        Text(verbatim: item)
                                             .font(.caption)
                                             .foregroundStyle(on ? Color.accentColor : Color.primary)
                                             .lineLimit(1)
@@ -382,7 +383,7 @@ struct MultiSelectPicker: View {
 // MARK: - Chip
 
 struct Chip: View {
-    let label: String
+    let label: LocalizedStringKey
     let selected: Bool
     var color: Color = .accentColor
     let action: () -> Void
@@ -409,7 +410,7 @@ struct SessionRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
-                Text(session.source)
+                Text(verbatim: session.source)
                     .font(.caption2).bold()
                     .padding(.horizontal, 5).padding(.vertical, 2)
                     .background(Color.secondary.opacity(0.12))
@@ -422,7 +423,7 @@ struct SessionRow: View {
                         .foregroundStyle(.purple)
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                 }
-                Text(session.displayTitle)
+                Text(verbatim: session.displayTitle)
                     .font(.callout)
                     .lineLimit(1)
                 Spacer()
@@ -446,18 +447,18 @@ struct SessionRow: View {
                 Image(systemName: "calendar")
                     .font(.caption2)
                     .foregroundStyle(.quaternary)
-                Text(session.displayDate)
+                Text(verbatim: session.displayDate)
                 if session.displayUpdatedDate != session.displayDate {
                     Image(systemName: "arrow.right")
                         .font(.caption2)
                         .foregroundStyle(.quaternary)
-                    Text(session.displayUpdatedDate)
+                    Text(verbatim: session.displayUpdatedDate)
                 }
-                Text("·")
+                Text(verbatim: "·")
                 Text("\(session.messageCount) msgs")
                 if let proj = session.project {
-                    Text("·")
-                    Text(proj).lineLimit(1)
+                    Text(verbatim: "·")
+                    Text(verbatim: proj).lineLimit(1)
                 }
             }
             .font(.caption)

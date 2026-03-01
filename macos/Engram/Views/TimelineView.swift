@@ -85,7 +85,7 @@ struct TimelineView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "folder")
                                 .foregroundStyle(.secondary)
-                            Text(entry.project ?? "(unknown)")
+                            Text(verbatim: entry.project ?? String(localized: "(unknown)"))
                                 .fontWeight(.medium)
                             Spacer()
                             Text("\(entry.sessionCount)")
@@ -116,7 +116,7 @@ struct TimelineSessionRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(session.source)
+            Text(verbatim: session.source)
                 .font(.caption2).bold()
                 .padding(.horizontal, 4).padding(.vertical, 1)
                 .background(Color.secondary.opacity(0.12))
@@ -126,14 +126,14 @@ struct TimelineSessionRow: View {
                     .font(.caption2)
                     .foregroundStyle(.purple)
             }
-            Text(session.displayTitle)
+            Text(verbatim: session.displayTitle)
                 .font(.caption)
                 .lineLimit(1)
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
-                Text(session.displayDate)
+                Text(verbatim: session.displayDate)
                 if session.displayUpdatedDate != session.displayDate {
-                    Text("→ \(session.displayUpdatedDate)")
+                    Text(verbatim: "→ \(session.displayUpdatedDate)")
                         .foregroundStyle(.quaternary)
                 }
             }

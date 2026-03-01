@@ -6,6 +6,7 @@ options:
     macOS: "14.0"
   xcodeVersion: "15.0"
   createIntermediateGroups: true
+  defaultLocalization: en
 
 packages:
   GRDB:

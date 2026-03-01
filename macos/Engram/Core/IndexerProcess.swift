@@ -19,10 +19,10 @@ class IndexerProcess: ObservableObject {
 
         var displayString: String {
             switch self {
-            case .stopped:          return "Stopped"
-            case .starting:         return "Starting..."
-            case .running(let n):   return "\(n) sessions indexed"
-            case .error(let msg):   return "Error: \(msg)"
+            case .stopped:          return String(localized: "Stopped")
+            case .starting:         return String(localized: "Starting...")
+            case .running(let n):   return String(localized: "\(n) sessions indexed")
+            case .error(let msg):   return String(localized: "Error: \(msg)")
             }
         }
 
