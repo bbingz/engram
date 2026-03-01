@@ -327,12 +327,12 @@ class DatabaseManager: ObservableObject {
         }
     }
 
-    /// Hide all sessions with 0 messages. Returns the count of hidden sessions.
+    /// Hide truly empty sessions (0 messages AND < 1 KB). Returns count hidden.
     func hideEmptySessions() throws -> Int {
         guard let writer = writerPool else { throw DatabaseError.notOpen }
         return try writer.write { db in
             try db.execute(
-                sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE message_count = 0 AND hidden_at IS NULL")
+                sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE message_count = 0 AND size_bytes < 1024 AND hidden_at IS NULL")
             return db.changesCount
         }
     }
