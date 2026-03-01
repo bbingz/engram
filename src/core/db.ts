@@ -30,8 +30,11 @@ export class Database {
   private migrate(): void {
     // Add agent_role column if it doesn't exist (migration for existing DBs)
     const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]
-    if (cols.length > 0 && !cols.some(c => c.name === 'agent_role')) {
-      this.db.exec("ALTER TABLE sessions ADD COLUMN agent_role TEXT")
+    if (cols.length > 0) {
+      const colNames = new Set(cols.map(c => c.name))
+      if (!colNames.has('agent_role')) this.db.exec("ALTER TABLE sessions ADD COLUMN agent_role TEXT")
+      if (!colNames.has('hidden_at')) this.db.exec("ALTER TABLE sessions ADD COLUMN hidden_at TEXT")
+      if (!colNames.has('custom_name')) this.db.exec("ALTER TABLE sessions ADD COLUMN custom_name TEXT")
     }
 
     this.db.exec(`
@@ -49,7 +52,9 @@ export class Database {
         file_path TEXT NOT NULL,
         size_bytes INTEGER NOT NULL DEFAULT 0,
         indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
-        agent_role TEXT
+        agent_role TEXT,
+        hidden_at TEXT,
+        custom_name TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -103,7 +108,7 @@ export class Database {
   }
 
   listSessions(opts: ListSessionsOptions = {}): SessionInfo[] {
-    const conditions: string[] = []
+    const conditions: string[] = ['hidden_at IS NULL']
     const params: Record<string, unknown> = {}
 
     if (opts.source) { conditions.push('source = @source'); params.source = opts.source }
@@ -111,7 +116,7 @@ export class Database {
     if (opts.since) { conditions.push('start_time >= @since'); params.since = opts.since }
     if (opts.until) { conditions.push('start_time <= @until'); params.until = opts.until }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const where = `WHERE ${conditions.join(' AND ')}`
     const limit = opts.limit ?? 20
     const offset = opts.offset ?? 0
 
@@ -141,10 +146,11 @@ export class Database {
 
   searchSessions(query: string, limit = 20): FtsMatch[] {
     return this.db.prepare(`
-      SELECT session_id as sessionId, content, rank
-      FROM sessions_fts
-      WHERE sessions_fts MATCH ?
-      ORDER BY rank
+      SELECT f.session_id as sessionId, f.content, f.rank
+      FROM sessions_fts f
+      JOIN sessions s ON s.id = f.session_id
+      WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+      ORDER BY f.rank
       LIMIT ?
     `).all(query, limit) as FtsMatch[]
   }
@@ -155,6 +161,7 @@ export class Database {
   }
 
   isIndexed(filePath: string, sizeBytes: number): boolean {
+    // Also returns true for hidden sessions with unchanged size (keeps them hidden)
     const row = this.db.prepare(
       'SELECT id FROM sessions WHERE file_path = ? AND size_bytes = ?'
     ).get(filePath, sizeBytes)
@@ -162,7 +169,7 @@ export class Database {
   }
 
   countSessions(): number {
-    return (this.db.prepare('SELECT COUNT(*) as n FROM sessions').get() as { n: number }).n
+    return (this.db.prepare('SELECT COUNT(*) as n FROM sessions WHERE hidden_at IS NULL').get() as { n: number }).n
   }
 
   close(): void {

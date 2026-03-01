@@ -99,6 +99,12 @@ struct SessionDetailView: View {
                     Text(session.displayTitle)
                         .font(.headline)
                         .lineLimit(2)
+                    if session.customName != nil, let summary = session.summary {
+                        Text(summary)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                     Text("\(session.source) · \(session.displayDate) · \(session.messageCount) msgs")
                         .font(.caption)
                         .foregroundStyle(.secondary)

@@ -18,6 +18,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let sizeBytes: Int
     let indexedAt: String
     let agentRole: String?
+    let hiddenAt: String?
+    let customName: String?
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -29,9 +31,11 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case sizeBytes        = "size_bytes"
         case indexedAt        = "indexed_at"
         case agentRole        = "agent_role"
+        case hiddenAt         = "hidden_at"
+        case customName       = "custom_name"
     }
 
-    var displayTitle: String       { summary ?? "Untitled" }
+    var displayTitle: String       { customName ?? summary ?? "Untitled" }
     var displayDate: String        { String(startTime.prefix(10)) }
     var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }
     var isSubAgent: Bool           { agentRole != nil }

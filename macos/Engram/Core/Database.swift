@@ -45,6 +45,10 @@ class DatabaseManager: ObservableObject {
                     PRIMARY KEY (session_id, tag)
                 );
             """)
+            // Idempotent column additions for hide/rename
+            for col in ["hidden_at TEXT", "custom_name TEXT"] {
+                try? db.execute(sql: "ALTER TABLE sessions ADD COLUMN \(col)")
+            }
         }
     }
 
@@ -60,7 +64,7 @@ class DatabaseManager: ObservableObject {
     ) throws -> [Session] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
-            var parts = ["SELECT * FROM sessions WHERE 1=1"]
+            var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
             var args: [DatabaseValueConvertible] = []
             if !sources.isEmpty {
                 let ph = sources.map { _ in "?" }.joined(separator: ", ")
@@ -90,7 +94,7 @@ class DatabaseManager: ObservableObject {
         return try pool.read { db in
             try String.fetchAll(db, sql: """
                 SELECT DISTINCT project FROM sessions
-                WHERE project IS NOT NULL
+                WHERE project IS NOT NULL AND hidden_at IS NULL
                 ORDER BY project
             """)
         }
@@ -100,7 +104,7 @@ class DatabaseManager: ObservableObject {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT source, COUNT(*) as n FROM sessions GROUP BY source
+                SELECT source, COUNT(*) as n FROM sessions WHERE hidden_at IS NULL GROUP BY source
             """)
             return Dictionary(uniqueKeysWithValues: rows.map { ($0["source"] as String, $0["n"] as Int) })
         }
@@ -111,7 +115,7 @@ class DatabaseManager: ObservableObject {
         return try pool.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT project, COUNT(*) as n FROM sessions
-                WHERE project IS NOT NULL GROUP BY project
+                WHERE project IS NOT NULL AND hidden_at IS NULL GROUP BY project
             """)
             return Dictionary(uniqueKeysWithValues: rows.map { ($0["project"] as String, $0["n"] as Int) })
         }
@@ -123,10 +127,10 @@ class DatabaseManager: ObservableObject {
             var parts: [String]
             var args: [DatabaseValueConvertible]
             if let project {
-                parts = ["SELECT * FROM sessions WHERE project = ?"]
+                parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL AND project = ?"]
                 args  = [project]
             } else {
-                parts = ["SELECT * FROM sessions WHERE project IS NULL"]
+                parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL AND project IS NULL"]
                 args  = []
             }
             if let subAgent {
@@ -154,7 +158,7 @@ class DatabaseManager: ObservableObject {
     ) throws -> Int {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
-            var parts = ["SELECT COUNT(*) FROM sessions WHERE 1=1"]
+            var parts = ["SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL"]
             var args: [DatabaseValueConvertible] = []
             if !sources.isEmpty {
                 let ph = sources.map { _ in "?" }.joined(separator: ", ")
@@ -189,7 +193,7 @@ class DatabaseManager: ObservableObject {
                 guard !seen.contains(match.sessionId) else { continue }
                 seen.insert(match.sessionId)
                 if let s = try Session.fetchOne(db,
-                    sql: "SELECT * FROM sessions WHERE id = ?",
+                    sql: "SELECT * FROM sessions WHERE id = ? AND hidden_at IS NULL",
                     arguments: [match.sessionId]) {
                     results.append(s)
                     if results.count >= limit { break }
@@ -206,10 +210,11 @@ class DatabaseManager: ObservableObject {
             var sql = """
                 SELECT project, COUNT(*) as session_count, MAX(start_time) as last_updated
                 FROM sessions
+                WHERE hidden_at IS NULL
                 """
             var args: [DatabaseValueConvertible] = []
             if let project {
-                sql += " WHERE project LIKE ?"
+                sql += " AND project LIKE ?"
                 args.append("%\(project)%")
             }
             sql += " GROUP BY project ORDER BY last_updated DESC"
@@ -227,10 +232,10 @@ class DatabaseManager: ObservableObject {
     func stats() throws -> StatsResult {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
-            let total    = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions") ?? 0
-            let messages = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(message_count), 0) FROM sessions") ?? 0
+            let total    = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL") ?? 0
+            let messages = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(message_count), 0) FROM sessions WHERE hidden_at IS NULL") ?? 0
             let counts   = try SourceCount.fetchAll(db,
-                sql: "SELECT source, COUNT(*) as count FROM sessions GROUP BY source ORDER BY count DESC")
+                sql: "SELECT source, COUNT(*) as count FROM sessions WHERE hidden_at IS NULL GROUP BY source ORDER BY count DESC")
             return StatsResult(totalSessions: total, totalMessages: messages,
                                bySource: Dictionary(uniqueKeysWithValues: counts.map { ($0.source, $0.count) }))
         }
@@ -242,11 +247,11 @@ class DatabaseManager: ObservableObject {
         return try pool.read { db in
             let project = URL(fileURLWithPath: cwd).lastPathComponent
             var results = try Session.fetchAll(db,
-                sql: "SELECT * FROM sessions WHERE project LIKE ? AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
+                sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND project LIKE ? AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
                 arguments: ["%\(project)%", limit])
             if results.isEmpty && !cwd.isEmpty {
                 results = try Session.fetchAll(db,
-                    sql: "SELECT * FROM sessions WHERE cwd LIKE ? ORDER BY start_time DESC LIMIT ?",
+                    sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND cwd LIKE ? ORDER BY start_time DESC LIMIT ?",
                     arguments: ["%\(cwd)%", limit])
             }
             return results
@@ -278,6 +283,7 @@ class DatabaseManager: ObservableObject {
             try Session.fetchAll(db, sql: """
                 SELECT s.* FROM sessions s
                 JOIN favorites f ON f.session_id = s.id
+                WHERE s.hidden_at IS NULL
                 ORDER BY f.created_at DESC
             """)
         }
@@ -289,6 +295,45 @@ class DatabaseManager: ObservableObject {
             try Favorite.fetchOne(db,
                 sql: "SELECT * FROM favorites WHERE session_id = ?",
                 arguments: [sessionId]) != nil
+        }
+    }
+
+    // MARK: - Hide / Unhide / Rename (writable — sessions table)
+
+    func hideSession(id: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE id = ?",
+                arguments: [id])
+        }
+    }
+
+    func unhideSession(id: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = NULL WHERE id = ?",
+                arguments: [id])
+        }
+    }
+
+    func renameSession(id: String, name: String?) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET custom_name = ? WHERE id = ?",
+                arguments: [name, id])
+        }
+    }
+
+    /// Hide all sessions with 0 messages. Returns the count of hidden sessions.
+    func hideEmptySessions() throws -> Int {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        return try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE message_count = 0 AND hidden_at IS NULL")
+            return db.changesCount
         }
     }
 }

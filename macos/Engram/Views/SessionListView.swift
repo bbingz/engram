@@ -19,6 +19,8 @@ struct SessionListView: View {
     @Binding var deepLinkSession: Session?
     @State private var totalCount: Int = 0
     @State private var hasMore = true
+    @State private var renameTarget: Session?
+    @State private var renameText: String = ""
     private let pageSize = 50
 
     let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
@@ -75,6 +77,17 @@ struct SessionListView: View {
                 List(sessions, selection: $selectedSession) { session in
                     SessionRow(session: session)
                         .tag(session)
+                        .contextMenu {
+                            Button("Rename...") {
+                                renameText = session.customName ?? session.summary ?? ""
+                                renameTarget = session
+                            }
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                try? db.hideSession(id: session.id)
+                                Task { await reload() }
+                            }
+                        }
                         .onAppear {
                             if session == sessions.last && hasMore {
                                 Task { await loadMore() }
@@ -82,13 +95,27 @@ struct SessionListView: View {
                         }
                 }
 
-                // Footer: count + loading indicator
+                // Footer: count + clean empty + loading indicator
                 HStack {
                     Text("\(sessions.count) of \(totalCount)")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .monospacedDigit()
                     Spacer()
+                    Button {
+                        if let n = try? db.hideEmptySessions(), n > 0 {
+                            Task { await reload() }
+                        }
+                    } label: {
+                        Text("Clean Empty")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Hide all sessions with 0 messages")
                     if hasMore {
                         ProgressView()
                             .controlSize(.mini)
@@ -133,6 +160,22 @@ struct SessionListView: View {
                 selectedSession = pending
                 pendingSelection = nil
             }
+        }
+        .alert("Rename Session", isPresented: Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )) {
+            TextField("Session name", text: $renameText)
+            Button("Rename") {
+                guard let target = renameTarget else { return }
+                let name = renameText.trimmingCharacters(in: .whitespaces)
+                try? db.renameSession(id: target.id, name: name.isEmpty ? nil : name)
+                renameTarget = nil
+                Task { await reload() }
+            }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        } message: {
+            Text("Enter a new name for this session.")
         }
     }
 
