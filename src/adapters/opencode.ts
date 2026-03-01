@@ -1,5 +1,5 @@
 // src/adapters/opencode.ts
-import { existsSync } from 'fs'
+import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import Database from 'better-sqlite3'
@@ -127,7 +127,7 @@ export class OpenCodeAdapter implements SessionAdapter {
         userMessageCount,
         summary: session.title || undefined,
         filePath,
-        sizeBytes: session.time_updated,
+        sizeBytes: (() => { try { return statSync(dbPath).size } catch { return 0 } })(),
       }
     } catch {
       return null
