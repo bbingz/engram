@@ -118,8 +118,9 @@ struct MessageParser {
     }
 
     // MARK: - cursor (SQLite: state.vscdb?composer=<id>)
-    // Table: cursorDiskKV, keys: bubbleId:<composerId>:<msgId>
-    // Value JSON: {type: 1=user/2=assistant, text/rawText: "..."}
+    // New format: conversation array inside composerData:<id>
+    // Old format: separate bubbleId:<composerId>:<msgId> keys
+    // Both: {type: 1=user/2=assistant, text/rawText: "..."}
     private static func parseCursorFormat(filePath: String) -> [ChatMessage] {
         guard let qRange = filePath.range(of: "?composer=") else { return [] }
         let dbPath = String(filePath[..<qRange.lowerBound])
@@ -131,25 +132,45 @@ struct MessageParser {
         guard let queue = try? DatabaseQueue(path: dbPath, configuration: config) else { return [] }
 
         return (try? queue.read { db in
+            // Try new format first: conversation embedded in composerData
+            if let row = try Row.fetchOne(db,
+                sql: "SELECT value FROM cursorDiskKV WHERE key = ?",
+                arguments: ["composerData:\(composerId)"]),
+               let jsonStr: String = row["value"],
+               let data = jsonStr.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let conversation = obj["conversation"] as? [[String: Any]],
+               !conversation.isEmpty {
+                return parseCursorBubbles(conversation)
+            }
+            // Fallback: old format with separate bubbleId keys
             let rows = try Row.fetchAll(db,
                 sql: "SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC",
                 arguments: ["bubbleId:\(composerId):%"])
-            return rows.compactMap { row -> ChatMessage? in
+            let bubbles: [[String: Any]] = rows.compactMap { row in
                 guard let jsonStr: String = row["value"],
                       let data = jsonStr.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let type = obj["type"] as? Int else { return nil }
-                let role: String
-                switch type {
-                case 1: role = "user"
-                case 2: role = "assistant"
-                default: return nil
-                }
-                let content = (obj["text"] as? String) ?? (obj["rawText"] as? String) ?? ""
-                guard !content.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-                return ChatMessage(role: role, content: content, isSystem: false)
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { return nil }
+                return obj
             }
+            return parseCursorBubbles(bubbles)
         }) ?? []
+    }
+
+    private static func parseCursorBubbles(_ bubbles: [[String: Any]]) -> [ChatMessage] {
+        bubbles.compactMap { obj in
+            guard let type = obj["type"] as? Int else { return nil }
+            let role: String
+            switch type {
+            case 1: role = "user"
+            case 2: role = "assistant"
+            default: return nil
+            }
+            let content = (obj["text"] as? String) ?? (obj["rawText"] as? String) ?? ""
+            guard !content.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            return ChatMessage(role: role, content: content, isSystem: false)
+        }
     }
 
     // MARK: - System injection detection

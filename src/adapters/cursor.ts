@@ -92,29 +92,45 @@ export class CursorAdapter implements SessionAdapter {
     try {
       const db = new BetterSqlite3(dbPath, { readonly: true })
       try {
-        const rows = db.prepare(
-          `SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC`
-        ).all(`bubbleId:${composerId}:%`) as { value: string }[]
+        // Try new format: conversation embedded in composerData
+        let bubbles: BubbleData[] = []
+        const composerRow = db.prepare(
+          `SELECT value FROM cursorDiskKV WHERE key = ?`
+        ).get(`composerData:${composerId}`) as { value: string } | undefined
+        if (composerRow) {
+          try {
+            const data = JSON.parse(composerRow.value)
+            if (Array.isArray(data.conversation) && data.conversation.length > 0) {
+              bubbles = data.conversation
+            }
+          } catch { /* malformed */ }
+        }
+        // Fallback: old format with separate bubbleId keys
+        if (bubbles.length === 0) {
+          const rows = db.prepare(
+            `SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC`
+          ).all(`bubbleId:${composerId}:%`) as { value: string }[]
+          for (const row of rows) {
+            try { bubbles.push(JSON.parse(row.value)) } catch { /* skip */ }
+          }
+        }
         let count = 0
         let yielded = 0
-        for (const row of rows) {
+        for (const bubble of bubbles) {
           if (yielded >= limit) break
-          try {
-            const bubble = JSON.parse(row.value) as BubbleData
-            const role = bubble.type === 1 ? 'user' : bubble.type === 2 ? 'assistant' : null
-            if (!role) continue
-            const content = bubble.text || bubble.rawText || ''
-            if (!content.trim()) continue
-            if (count < offset) { count++; continue }
-            count++
-            const ts = bubble.timingInfo?.clientStartTime
-            yield {
-              role,
-              content,
-              timestamp: ts ? new Date(ts).toISOString() : undefined,
-            }
-            yielded++
-          } catch { /* skip malformed */ }
+          const role = bubble.type === 1 ? 'user' : bubble.type === 2 ? 'assistant' : null
+          if (!role) continue
+          const content = bubble.text || bubble.rawText || ''
+          if (!content.trim()) continue
+          if (count < offset) { count++; continue }
+          count++
+          const ts = bubble.timingInfo?.clientStartTime
+          yield {
+            role,
+            content,
+            timestamp: ts ? new Date(ts).toISOString() : undefined,
+          }
+          yielded++
         }
       } finally {
         db.close()
