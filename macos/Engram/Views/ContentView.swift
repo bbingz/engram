@@ -60,6 +60,7 @@ struct ContentView: View {
                     FavoritesView()
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
