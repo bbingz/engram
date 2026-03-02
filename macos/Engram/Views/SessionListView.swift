@@ -153,7 +153,7 @@ struct SessionListView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
             }
-            .frame(minWidth: 260, maxWidth: 380)
+            .frame(minWidth: 260, maxWidth: 500)
 
             if let session = selectedSession {
                 SessionDetailView(session: session)

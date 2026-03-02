@@ -7,6 +7,7 @@ class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private var window: NSWindow?
+    private var settingsWindow: NSWindow?
 
     // Stored so openWindow() can inject them into the standalone window
     private let db: DatabaseManager
@@ -44,6 +45,12 @@ class MenuBarController: NSObject, NSMenuDelegate {
                 self.statusItem.button?.title = total > 0 ? " \(total)" : ""
             }
         }
+
+        // Listen for settings open requests from ContentView gear button
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openSettings),
+            name: .openSettings, object: nil
+        )
     }
 
     // MARK: - Click handling
@@ -97,13 +104,29 @@ class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc func openSettings() {
         if popover.isShown { popover.performClose(nil) }
-        // macOS 14+: use the modern API to show Settings window
-        if #available(macOS 14.0, *) {
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        } else {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+
+        // Reuse existing settings window if still alive
+        if let win = settingsWindow {
+            win.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
         }
+
+        let hostingController = NSHostingController(
+            rootView: SettingsView()
+                .environmentObject(db)
+                .environmentObject(indexer)
+        )
+
+        let win = NSWindow(contentViewController: hostingController)
+        win.title = String(localized: "Settings")
+        win.setContentSize(NSSize(width: 520, height: 500))
+        win.styleMask = [.titled, .closable]
+        win.isReleasedWhenClosed = false
+        win.center()
+        win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        self.settingsWindow = win
     }
 
     // MARK: - Standalone window

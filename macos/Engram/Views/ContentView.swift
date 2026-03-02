@@ -1,6 +1,10 @@
 // macos/Engram/Views/ContentView.swift
 import SwiftUI
 
+extension Notification.Name {
+    static let openSettings = Notification.Name("com.engram.openSettings")
+}
+
 struct ContentView: View {
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
@@ -35,12 +39,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    if #available(macOS 14.0, *) {
-                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                    } else {
-                        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-                    }
-                    NSApp.activate(ignoringOtherApps: true)
+                    NotificationCenter.default.post(name: .openSettings, object: nil)
                 } label: {
                     Image(systemName: "gear")
                         .font(.caption)
