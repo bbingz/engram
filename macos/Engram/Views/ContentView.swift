@@ -5,31 +5,65 @@ extension Notification.Name {
     static let openSettings = Notification.Name("com.engram.openSettings")
 }
 
+enum AppTab: Int, CaseIterable {
+    case sessions, search, timeline, favorites
+
+    var label: LocalizedStringKey {
+        switch self {
+        case .sessions:  return "Sessions"
+        case .search:    return "Search"
+        case .timeline:  return "Timeline"
+        case .favorites: return "Favorites"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .sessions:  return "list.bullet.rectangle"
+        case .search:    return "magnifyingglass"
+        case .timeline:  return "timeline.selection"
+        case .favorites: return "star"
+        }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
-    @State private var selectedTab = 0
+    @State private var selectedTab: AppTab = .sessions
     @State private var deepLinkSession: Session?
 
     var body: some View {
         VStack(spacing: 0) {
-            // Small top inset so the tab bar doesn't press against the popover edge
-            Color.clear.frame(height: 6)
-            TabView(selection: $selectedTab) {
-                SessionListView(deepLinkSession: $deepLinkSession)
-                    .tabItem { Label("Sessions", systemImage: "list.bullet.rectangle") }
-                    .tag(0)
-                SearchView()
-                    .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                    .tag(1)
-                TimelineView(selectedTab: $selectedTab, deepLinkSession: $deepLinkSession)
-                    .tabItem { Label("Timeline", systemImage: "timeline.selection") }
-                    .tag(2)
-                FavoritesView()
-                    .tabItem { Label("Favorites", systemImage: "star") }
-                    .tag(3)
+            // Segmented tab picker
+            Picker("", selection: $selectedTab) {
+                ForEach(AppTab.allCases, id: \.self) { tab in
+                    Label(tab.label, systemImage: tab.icon).tag(tab)
+                }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            // Content
+            Group {
+                switch selectedTab {
+                case .sessions:
+                    SessionListView(deepLinkSession: $deepLinkSession)
+                case .search:
+                    SearchView()
+                case .timeline:
+                    TimelineView(selectedTab: $selectedTab, deepLinkSession: $deepLinkSession)
+                case .favorites:
+                    FavoritesView()
+                }
+            }
+
             Divider()
+
+            // Status bar
             HStack(spacing: 6) {
                 Circle()
                     .fill(statusColor)

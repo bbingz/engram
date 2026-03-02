@@ -8,7 +8,7 @@ struct TimelineView: View {
     @State private var expandedProjects: Set<String> = []
     @State private var projectSessions: [String: [Session]] = [:]
     @State private var agentFilter: Bool? = false   // default: hide agents
-    @Binding var selectedTab: Int
+    @Binding var selectedTab: AppTab
     @Binding var deepLinkSession: Session?
 
     var filtered: [TimelineEntry] {
@@ -72,7 +72,7 @@ struct TimelineView: View {
                                     TimelineSessionRow(session: session)
                                         .onTapGesture(count: 2) {
                                             deepLinkSession = session
-                                            selectedTab = 0
+                                            selectedTab = .sessions
                                         }
                                 }
                             }

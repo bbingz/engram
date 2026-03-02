@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-class MenuBarController: NSObject, NSMenuDelegate {
+class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private var window: NSWindow?
@@ -129,7 +129,7 @@ class MenuBarController: NSObject, NSMenuDelegate {
         self.settingsWindow = win
     }
 
-    // MARK: - Standalone window
+    // MARK: - Standalone window (hybrid activation)
 
     @objc func openWindow() {
         // Close popover if open
@@ -138,6 +138,7 @@ class MenuBarController: NSObject, NSMenuDelegate {
         // Reuse existing window if still alive
         if let win = window {
             win.makeKeyAndOrderFront(nil)
+            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -153,10 +154,64 @@ class MenuBarController: NSObject, NSMenuDelegate {
         win.setContentSize(NSSize(width: 900, height: 640))
         win.minSize = NSSize(width: 600, height: 400)
         win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        win.isReleasedWhenClosed = false   // keep object alive so we can reopen
+        win.isReleasedWhenClosed = false
+        win.delegate = self
         win.center()
+
+        // Switch to regular app: show Dock icon + main menu bar
+        NSApp.setActivationPolicy(.regular)
+        setupMainMenu()
+
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.window = win
+    }
+
+    // When standalone window closes, revert to accessory (menu-bar-only) mode
+    nonisolated func windowWillClose(_ notification: Notification) {
+        Task { @MainActor in
+            self.window = nil
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    // MARK: - Main menu bar (shown in regular/window mode)
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: String(localized: "About Engram"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let settingsItem = NSMenuItem(title: String(localized: "Settings..."), action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        appMenu.addItem(settingsItem)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: String(localized: "Quit Engram"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let appMenuItem = NSMenuItem()
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // Edit menu (for Copy/Paste/Select All in text fields)
+        let editMenu = NSMenu(title: String(localized: "Edit"))
+        editMenu.addItem(withTitle: String(localized: "Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: String(localized: "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: String(localized: "Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: String(localized: "Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let editMenuItem = NSMenuItem()
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        // Window menu
+        let windowMenu = NSMenu(title: String(localized: "Window"))
+        windowMenu.addItem(withTitle: String(localized: "Minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: String(localized: "Close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let windowMenuItem = NSMenuItem()
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+        NSApp.windowsMenu = windowMenu
+
+        NSApp.mainMenu = mainMenu
     }
 }
