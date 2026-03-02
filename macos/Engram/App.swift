@@ -8,6 +8,7 @@ struct EngramApp: App {
     var body: some Scene {
         Settings {
             SettingsView()
+                .environmentObject(appDelegate.db)
                 .environmentObject(appDelegate.indexer)
         }
     }
