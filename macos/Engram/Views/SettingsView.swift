@@ -378,7 +378,19 @@ struct SettingsView: View {
         isSyncing = true
         syncStatus = "Syncing..."
 
-        guard let url = URL(string: "http://localhost:3457/api/sync/trigger") else {
+        // Read web server port from settings (daemon defaults to 3457)
+        let webPort: Int = {
+            let configPath = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".engram/settings.json")
+            if let data = try? Data(contentsOf: configPath),
+               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let port = settings["httpPort"] as? Int {
+                return port
+            }
+            return 3457
+        }()
+
+        guard let url = URL(string: "http://localhost:\(webPort)/api/sync/trigger") else {
             syncStatus = "Failed"
             isSyncing = false
             return
