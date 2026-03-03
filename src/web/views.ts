@@ -1,7 +1,9 @@
 import type { SessionInfo } from '../adapters/types.js'
 
 const CDN_PICO = 'https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css'
+const CDN_PICO_SRI = 'sha384-L1dWfspMTHU/ApYnFiMz2QID/PlP1xCW9visvBdbEkOLkSSWsP6ZJWhPw6apiXxU'
 const CDN_HTMX = 'https://unpkg.com/htmx.org@2.0.4'
+const CDN_HTMX_SRI = 'sha384-M06VwgoUOHG3FN0UchwWKqh9jS4ejwpoL0yjF3EVljtsxFwFETEYMkyNL5lXbJ5/'
 
 export function layout(title: string, body: string): string {
   return `<!DOCTYPE html>
@@ -10,8 +12,8 @@ export function layout(title: string, body: string): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)} — Engram</title>
-  <link rel="stylesheet" href="${CDN_PICO}">
-  <script src="${CDN_HTMX}"></script>
+  <link rel="stylesheet" href="${CDN_PICO}" integrity="${CDN_PICO_SRI}" crossorigin="anonymous">
+  <script src="${CDN_HTMX}" integrity="${CDN_HTMX_SRI}" crossorigin="anonymous"></script>
   <style>
     :root { --pico-font-size: 16px; }
     .badge { display: inline-block; padding: 0.1em 0.5em; border-radius: 4px; font-size: 0.8em; background: var(--pico-secondary-background); }

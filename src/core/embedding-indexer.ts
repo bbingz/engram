@@ -24,24 +24,33 @@ export class EmbeddingIndexer {
       }
     }
 
-    const sessions = this.db.listSessions({ limit: 10000 })
+    const BATCH_SIZE = 100
     let count = 0
+    let offset = 0
 
-    for (const session of sessions) {
-      if (this.indexed.has(session.id)) continue
+    while (true) {
+      const sessions = this.db.listSessions({ limit: BATCH_SIZE, offset })
+      if (sessions.length === 0) break
 
-      const text = this.getSessionText(session.id)
-      if (!text) {
+      for (const session of sessions) {
+        if (this.indexed.has(session.id)) continue
+
+        const text = this.getSessionText(session.id)
+        if (!text) {
+          this.indexed.add(session.id)
+          continue
+        }
+
+        const embedding = await this.client.embed(text)
+        if (!embedding) continue
+
+        this.store.upsert(session.id, embedding, this.client.model)
         this.indexed.add(session.id)
-        continue
+        count++
       }
 
-      const embedding = await this.client.embed(text)
-      if (!embedding) continue
-
-      this.store.upsert(session.id, embedding, this.client.model)
-      this.indexed.add(session.id)
-      count++
+      offset += sessions.length
+      if (sessions.length < BATCH_SIZE) break
     }
 
     return count

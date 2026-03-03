@@ -219,6 +219,30 @@ export class Database {
     ).run(peerName, time)
   }
 
+  statsGroupBy(groupBy: string, since?: string, until?: string): { key: string; sessionCount: number; messageCount: number; userMessageCount: number }[] {
+    let groupExpr: string
+    if (groupBy === 'project') groupExpr = "COALESCE(project, '(unknown)')"
+    else if (groupBy === 'day') groupExpr = "date(start_time, 'localtime')"
+    else if (groupBy === 'week') groupExpr = "date(start_time, 'localtime', 'weekday 0', '-6 days')"
+    else groupExpr = 'source'
+
+    const conditions: string[] = ['hidden_at IS NULL']
+    const params: Record<string, unknown> = {}
+    if (since) { conditions.push('start_time >= @since'); params.since = since }
+    if (until) { conditions.push('start_time <= @until'); params.until = until }
+    const where = `WHERE ${conditions.join(' AND ')}`
+
+    return this.db.prepare(`
+      SELECT ${groupExpr} as key,
+        COUNT(*) as sessionCount,
+        SUM(message_count) as messageCount,
+        SUM(user_message_count) as userMessageCount
+      FROM sessions ${where}
+      GROUP BY ${groupExpr}
+      ORDER BY sessionCount DESC
+    `).all(params) as { key: string; sessionCount: number; messageCount: number; userMessageCount: number }[]
+  }
+
   close(): void {
     this.db.close()
   }

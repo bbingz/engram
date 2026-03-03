@@ -16,9 +16,11 @@ export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingCl
   const openaiClient = opts.openaiApiKey ? new OpenAI({ apiKey: opts.openaiApiKey }) : null
   let ollamaDown = false
 
+  let lastUsedModel = 'unknown'
+
   return {
     dimension: 768,
-    model: 'auto',
+    get model() { return lastUsedModel },
 
     async embed(text: string): Promise<Float32Array | null> {
       // Try Ollama first (skip if previously failed)
@@ -33,6 +35,7 @@ export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingCl
           if (res.ok) {
             const data = await res.json() as { embeddings: number[][] }
             if (data.embeddings?.[0]) {
+              lastUsedModel = 'nomic-embed-text'
               return new Float32Array(data.embeddings[0])
             }
           } else {
@@ -55,6 +58,7 @@ export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingCl
             dimensions: 768,
           })
           if (res.data[0]) {
+            lastUsedModel = 'text-embedding-3-small'
             return new Float32Array(res.data[0].embedding)
           }
         } catch { /* OpenAI not available */ }

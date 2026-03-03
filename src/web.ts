@@ -1,5 +1,4 @@
 import { Hono } from 'hono'
-import { serve } from '@hono/node-server'
 import { join } from 'path'
 import { Database } from './core/db.js'
 import { ensureDataDirs, getAdapter } from './core/bootstrap.js'
@@ -13,6 +12,17 @@ import type { VectorStore } from './core/vector-store.js'
 import type { EmbeddingClient } from './core/embeddings.js'
 import { SyncEngine, type SyncPeer } from './core/sync.js'
 
+function createRateLimiter(maxPerMinute: number) {
+  const timestamps: number[] = []
+  return (): boolean => {
+    const now = Date.now()
+    while (timestamps.length > 0 && timestamps[0] < now - 60_000) timestamps.shift()
+    if (timestamps.length >= maxPerMinute) return false
+    timestamps.push(now)
+    return true
+  }
+}
+
 export function createApp(db: Database, opts?: {
   vectorStore?: VectorStore
   embeddingClient?: EmbeddingClient
@@ -22,6 +32,7 @@ export function createApp(db: Database, opts?: {
 }) {
   const app = new Hono()
   const settings = opts?.settings ?? readFileSettings()
+  const semanticLimiter = createRateLimiter(30)
 
   app.get('/api/sync/status', (c) => {
     return c.json({
@@ -40,15 +51,20 @@ export function createApp(db: Database, opts?: {
     return c.json({ sessions })
   })
 
-  // Sync: manual trigger
+  // Sync: manual trigger (re-reads peers from config to pick up Swift UI changes)
   app.post('/api/sync/trigger', async (c) => {
-    if (!opts?.syncEngine || !opts?.syncPeers?.length) {
+    if (!opts?.syncEngine) {
       return c.json({ error: 'Sync not configured' }, 501)
+    }
+    const freshSettings = readFileSettings()
+    const freshPeers = freshSettings.syncPeers ?? opts.syncPeers ?? []
+    if (!freshPeers.length) {
+      return c.json({ error: 'No peers configured' }, 400)
     }
     const peerName = c.req.query('peer')
     const peers = peerName
-      ? opts.syncPeers.filter(p => p.name === peerName)
-      : opts.syncPeers
+      ? freshPeers.filter(p => p.name === peerName)
+      : freshPeers
 
     const results = await opts.syncEngine.syncAllPeers(peers)
     return c.json({ results })
@@ -94,6 +110,10 @@ export function createApp(db: Database, opts?: {
 
   // Semantic search (vector)
   app.get('/api/search/semantic', async (c) => {
+    if (!semanticLimiter()) {
+      return c.json({ error: 'Rate limit exceeded — max 30 requests/minute' }, 429)
+    }
+
     const query = c.req.query('q') ?? ''
     const topK = Math.min(parseInt(c.req.query('limit') ?? '10', 10), 50)
 
@@ -172,8 +192,11 @@ export function createApp(db: Database, opts?: {
 }
 
 // CLI entry point
-const isMain = process.argv[1]?.endsWith('web.js') || process.argv[1]?.endsWith('web.ts')
+const isMain = import.meta.url === `file://${process.argv[1]}`
+  || process.argv[1]?.endsWith('/web.js')
+  || process.argv[1]?.endsWith('/web.ts')
 if (isMain) {
+  const { serve } = await import('@hono/node-server')
   const DB_DIR = ensureDataDirs()
   const db = new Database(join(DB_DIR, 'index.sqlite'))
   const settings = readFileSettings()

@@ -55,4 +55,26 @@ describe('Web Views', () => {
     const res = await app.request('/session/nonexistent')
     expect(res.status).toBe(404)
   })
+
+  it('escapes XSS payloads in session summary and project', async () => {
+    db.upsertSession({
+      id: 'xss-1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
+      cwd: '/p', project: '<img onerror=alert(1)>', messageCount: 1, userMessageCount: 1,
+      summary: '</title><script>alert("xss")</script>', filePath: '/f1', sizeBytes: 100,
+    })
+
+    // Session list page
+    const listRes = await app.request('/')
+    const listHtml = await listRes.text()
+    expect(listHtml).not.toContain('<script>alert')
+    expect(listHtml).toContain('&lt;script&gt;')
+
+    // Session detail page
+    const detailRes = await app.request('/session/xss-1')
+    const detailHtml = await detailRes.text()
+    expect(detailHtml).not.toContain('<script>alert')
+    expect(detailHtml).toContain('&lt;script&gt;')
+    // Title should also be escaped
+    expect(detailHtml).toContain('<title>&lt;/title&gt;&lt;script&gt;')
+  })
 })
