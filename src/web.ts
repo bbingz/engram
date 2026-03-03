@@ -65,7 +65,7 @@ export function createApp(db: Database, opts?: {
     const offset = offsetParam ? parseInt(offsetParam, 10) : 0
 
     const sessions = db.listSessions({ source, project, since, until, limit, offset })
-    return c.json({ sessions })
+    return c.json({ sessions, offset, limit, hasMore: sessions.length === limit })
   })
 
   // Session detail
