@@ -16,6 +16,7 @@ export interface SessionInfo {
   filePath: string        // 原始文件路径（用于流式读取消息）
   sizeBytes: number
   agentRole?: string      // e.g. "worker" | "awaiter" for Codex; "subagent" for claude-code
+  origin?: string         // machine/device identifier for sync (default: 'local')
 }
 
 export interface ToolCall {

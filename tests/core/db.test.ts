@@ -86,6 +86,19 @@ describe('Database', () => {
     expect(db.isIndexed(mockSession.filePath, 99999)).toBe(false)
   })
 
+  it('preserves origin field on upsert', () => {
+    db.upsertSession({ ...mockSession, id: 'origin-test', origin: 'mac-mini' })
+    const result = db.getSession('origin-test')
+    expect(result).not.toBeNull()
+    expect(result!.origin).toBe('mac-mini')
+  })
+
+  it('defaults origin to local', () => {
+    db.upsertSession(mockSession)
+    const result = db.getSession('session-001')
+    expect(result!.origin).toBe('local')
+  })
+
   it('listSessionsSince returns sessions indexed after a given time', () => {
     db.upsertSession(mockSession)
     const yesterday = new Date(Date.now() - 86400000).toISOString()

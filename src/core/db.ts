@@ -35,6 +35,7 @@ export class Database {
       if (!colNames.has('agent_role')) this.db.exec("ALTER TABLE sessions ADD COLUMN agent_role TEXT")
       if (!colNames.has('hidden_at')) this.db.exec("ALTER TABLE sessions ADD COLUMN hidden_at TEXT")
       if (!colNames.has('custom_name')) this.db.exec("ALTER TABLE sessions ADD COLUMN custom_name TEXT")
+      if (!colNames.has('origin')) this.db.exec("ALTER TABLE sessions ADD COLUMN origin TEXT DEFAULT 'local'")
     }
 
     this.db.exec(`
@@ -54,7 +55,8 @@ export class Database {
         indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
         agent_role TEXT,
         hidden_at TEXT,
-        custom_name TEXT
+        custom_name TEXT,
+        origin TEXT DEFAULT 'local'
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -74,9 +76,9 @@ export class Database {
   upsertSession(session: SessionInfo): void {
     this.db.prepare(`
       INSERT INTO sessions (id, source, start_time, end_time, cwd, project, model,
-        message_count, user_message_count, summary, file_path, size_bytes, indexed_at, agent_role)
+        message_count, user_message_count, summary, file_path, size_bytes, indexed_at, agent_role, origin)
       VALUES (@id, @source, @startTime, @endTime, @cwd, @project, @model,
-        @messageCount, @userMessageCount, @summary, @filePath, @sizeBytes, datetime('now'), @agentRole)
+        @messageCount, @userMessageCount, @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin)
       ON CONFLICT(id) DO UPDATE SET
         end_time = excluded.end_time,
         message_count = excluded.message_count,
@@ -84,7 +86,8 @@ export class Database {
         summary = excluded.summary,
         size_bytes = excluded.size_bytes,
         indexed_at = excluded.indexed_at,
-        agent_role = excluded.agent_role
+        agent_role = excluded.agent_role,
+        origin = excluded.origin
     `).run({
       id: session.id,
       source: session.source,
@@ -99,6 +102,7 @@ export class Database {
       filePath: session.filePath,
       sizeBytes: session.sizeBytes,
       agentRole: session.agentRole ?? null,
+      origin: session.origin ?? 'local',
     })
   }
 
@@ -216,6 +220,7 @@ export class Database {
       filePath: row.file_path as string,
       sizeBytes: row.size_bytes as number,
       agentRole: row.agent_role as string | undefined,
+      origin: row.origin as string | undefined,
     }
   }
 }
