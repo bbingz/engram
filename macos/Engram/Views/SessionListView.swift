@@ -284,9 +284,22 @@ struct SessionListView: View {
                 projects: selectedProjects,
                 subAgent: agentFilter
             )) ?? []
-            // Clear cached sessions when filters change
-            groupSessions = [:]
-            expandedGroups = []
+
+            // Re-load sessions for all expanded groups with new sort order
+            var newGroupSessions: [String: [Session]] = [:]
+            for groupKey in expandedGroups {
+                if let sessions = try? db.listSessionsInGroup(
+                    by: groupingMode,
+                    key: groupKey,
+                    sources: selectedSources,
+                    projects: selectedProjects,
+                    subAgent: agentFilter,
+                    sort: currentSort
+                ) {
+                    newGroupSessions[groupKey] = sessions
+                }
+            }
+            groupSessions = newGroupSessions
         }
     }
 
