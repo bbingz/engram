@@ -12,10 +12,7 @@ import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
-import { ensureDataDirs, createAdapters } from './core/bootstrap.js'
-import { SqliteVecStore } from './core/vector-store.js'
-import { createEmbeddingClient } from './core/embeddings.js'
-import { EmbeddingIndexer } from './core/embedding-indexer.js'
+import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
 import type { GetContextDeps } from './tools/get_context.js'
 
@@ -35,23 +32,11 @@ const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 const indexer = new Indexer(db, adapters)
 
 // Vector store — may fail if sqlite-vec can't load
-let vectorDeps: GetContextDeps = {}
-let embeddingIndexer: EmbeddingIndexer | undefined
-try {
-  const vectorStore = new SqliteVecStore(db.getRawDb())
-  const fileSettings = readFileSettings()
-  const embeddingClient = createEmbeddingClient({
-    ollamaUrl: 'http://localhost:11434',
-    openaiApiKey: fileSettings.openaiApiKey,
-  })
-  vectorDeps = {
-    vectorStore,
-    embed: (text) => embeddingClient.embed(text),
-  }
-  embeddingIndexer = new EmbeddingIndexer(db, vectorStore, embeddingClient)
-} catch {
-  // sqlite-vec unavailable — get_context falls back to FTS5
-}
+const fileSettings = readFileSettings()
+const vecDeps = initVectorDeps(db, fileSettings.openaiApiKey)
+const vectorDeps: GetContextDeps = vecDeps
+  ? { vectorStore: vecDeps.vectorStore, embed: (text) => vecDeps.embeddingClient.embed(text) }
+  : {}
 
 const allTools = [
   listSessionsTool,
@@ -122,8 +107,8 @@ indexer.indexAll().then(async (count) => {
   if (count > 0) {
     process.stderr.write(`[engram] Indexed ${count} new sessions\n`)
   }
-  if (embeddingIndexer) {
-    await embeddingIndexer.indexAll().catch(() => {})
+  if (vecDeps) {
+    await vecDeps.embeddingIndexer.indexAll().catch(() => {})
   }
 }).catch(() => {})
 

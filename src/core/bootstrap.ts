@@ -17,6 +17,11 @@ import { VsCodeAdapter } from '../adapters/vscode.js'
 import { AntigravityAdapter } from '../adapters/antigravity.js'
 import { WindsurfAdapter } from '../adapters/windsurf.js'
 import type { SessionAdapter, SourceName } from '../adapters/types.js'
+import { SqliteVecStore } from './vector-store.js'
+import { createEmbeddingClient } from './embeddings.js'
+import { EmbeddingIndexer } from './embedding-indexer.js'
+import type { EmbeddingClient } from './embeddings.js'
+import type { Database } from './db.js'
 
 export const ENGRAM_DIR = join(homedir(), '.engram')
 
@@ -49,4 +54,24 @@ const adapterMap = new Map(adapters.map(a => [a.name, a]))
 
 export function getAdapter(name: string): SessionAdapter | undefined {
   return adapterMap.get(name as SourceName)
+}
+
+export interface VectorDeps {
+  vectorStore: SqliteVecStore
+  embeddingClient: EmbeddingClient
+  embeddingIndexer: EmbeddingIndexer
+}
+
+export function initVectorDeps(db: Database, openaiApiKey?: string): VectorDeps | null {
+  try {
+    const vectorStore = new SqliteVecStore(db.getRawDb())
+    const embeddingClient = createEmbeddingClient({
+      ollamaUrl: 'http://localhost:11434',
+      openaiApiKey,
+    })
+    const embeddingIndexer = new EmbeddingIndexer(db, vectorStore, embeddingClient)
+    return { vectorStore, embeddingClient, embeddingIndexer }
+  } catch {
+    return null
+  }
 }

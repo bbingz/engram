@@ -14,9 +14,20 @@ export interface VectorStore {
 }
 
 export class SqliteVecStore implements VectorStore {
+  private stmts!: {
+    deleteVec: BetterSqlite3.Statement
+    deleteEmb: BetterSqlite3.Statement
+    insertVec: BetterSqlite3.Statement
+    insertEmb: BetterSqlite3.Statement
+    search: BetterSqlite3.Statement
+    count: BetterSqlite3.Statement
+  }
+  private upsertTxn!: BetterSqlite3.Transaction<(sessionId: string, buf: Buffer, model: string) => void>
+
   constructor(private db: BetterSqlite3.Database) {
     sqliteVec.load(db)
     this.migrate()
+    this.prepareStatements()
   }
 
   private migrate(): void {
@@ -33,35 +44,46 @@ export class SqliteVecStore implements VectorStore {
     `)
   }
 
+  private prepareStatements(): void {
+    this.stmts = {
+      deleteVec: this.db.prepare('DELETE FROM vec_sessions WHERE session_id = ?'),
+      deleteEmb: this.db.prepare('DELETE FROM session_embeddings WHERE session_id = ?'),
+      insertVec: this.db.prepare('INSERT INTO vec_sessions (session_id, embedding) VALUES (?, ?)'),
+      insertEmb: this.db.prepare('INSERT INTO session_embeddings (session_id, model) VALUES (?, ?)'),
+      search: this.db.prepare(`
+        SELECT session_id, distance
+        FROM vec_sessions
+        WHERE embedding MATCH ? AND k = ?
+        ORDER BY distance
+      `),
+      count: this.db.prepare('SELECT COUNT(*) as n FROM session_embeddings'),
+    }
+    this.upsertTxn = this.db.transaction((sessionId: string, buf: Buffer, model: string) => {
+      this.stmts.deleteVec.run(sessionId)
+      this.stmts.deleteEmb.run(sessionId)
+      this.stmts.insertVec.run(sessionId, buf)
+      this.stmts.insertEmb.run(sessionId, model)
+    })
+  }
+
   upsert(sessionId: string, embedding: Float32Array, model = 'unknown'): void {
     const buf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
-    const transaction = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM vec_sessions WHERE session_id = ?').run(sessionId)
-      this.db.prepare('DELETE FROM session_embeddings WHERE session_id = ?').run(sessionId)
-      this.db.prepare('INSERT INTO vec_sessions (session_id, embedding) VALUES (?, ?)').run(sessionId, buf)
-      this.db.prepare('INSERT INTO session_embeddings (session_id, model) VALUES (?, ?)').run(sessionId, model)
-    })
-    transaction()
+    this.upsertTxn(sessionId, buf, model)
   }
 
   search(query: Float32Array, topK: number): VectorSearchResult[] {
     const buf = Buffer.from(query.buffer, query.byteOffset, query.byteLength)
-    const rows = this.db.prepare(`
-      SELECT session_id, distance
-      FROM vec_sessions
-      WHERE embedding MATCH ? AND k = ?
-      ORDER BY distance
-    `).all(buf, topK) as { session_id: string; distance: number }[]
+    const rows = this.stmts.search.all(buf, topK) as { session_id: string; distance: number }[]
     return rows.map(r => ({ sessionId: r.session_id, distance: r.distance }))
   }
 
   delete(sessionId: string): void {
-    this.db.prepare('DELETE FROM vec_sessions WHERE session_id = ?').run(sessionId)
-    this.db.prepare('DELETE FROM session_embeddings WHERE session_id = ?').run(sessionId)
+    this.stmts.deleteVec.run(sessionId)
+    this.stmts.deleteEmb.run(sessionId)
   }
 
   count(): number {
-    const row = this.db.prepare('SELECT COUNT(*) as n FROM session_embeddings').get() as { n: number }
+    const row = this.stmts.count.get() as { n: number }
     return row.n
   }
 }

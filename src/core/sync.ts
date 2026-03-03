@@ -67,10 +67,11 @@ export class SyncEngine {
   }
 
   async syncAllPeers(peers: SyncPeer[]): Promise<SyncResult[]> {
-    const results: SyncResult[] = []
-    for (const peer of peers) {
-      results.push(await this.pullFromPeer(peer))
-    }
-    return results
+    const settled = await Promise.allSettled(peers.map(p => this.pullFromPeer(p)))
+    return settled.map((s, i) =>
+      s.status === 'fulfilled'
+        ? s.value
+        : { peer: peers[i].name, pulled: 0, skipped: 0, error: String(s.reason) }
+    )
   }
 }

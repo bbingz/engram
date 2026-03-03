@@ -4,6 +4,7 @@ import { join } from 'path'
 import { Database } from './core/db.js'
 import { ensureDataDirs, getAdapter } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
+import type { FileSettings } from './core/config.js'
 import type { SourceName } from './adapters/types.js'
 import { handleSearch } from './tools/search.js'
 import { handleStats } from './tools/stats.js'
@@ -17,11 +18,12 @@ export function createApp(db: Database, opts?: {
   embeddingClient?: EmbeddingClient
   syncEngine?: SyncEngine
   syncPeers?: SyncPeer[]
+  settings?: FileSettings
 }) {
   const app = new Hono()
+  const settings = opts?.settings ?? readFileSettings()
 
   app.get('/api/sync/status', (c) => {
-    const settings = readFileSettings()
     return c.json({
       nodeName: settings.syncNodeName ?? 'unnamed',
       sessionCount: db.countSessions(),
@@ -143,7 +145,6 @@ export function createApp(db: Database, opts?: {
   })
 
   app.get('/settings', (c) => {
-    const settings = readFileSettings()
     return c.html(settingsPage({
       nodeName: settings.syncNodeName ?? 'unnamed',
       peers: settings.syncPeers ?? [],

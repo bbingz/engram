@@ -7,14 +7,10 @@ import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
-import { ensureDataDirs, createAdapters } from './core/bootstrap.js'
+import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
 import { createApp } from './web.js'
 import { serve } from '@hono/node-server'
 import { readFileSettings } from './core/config.js'
-import { SqliteVecStore } from './core/vector-store.js'
-import { createEmbeddingClient } from './core/embeddings.js'
-import { EmbeddingIndexer } from './core/embedding-indexer.js'
-import type { EmbeddingClient } from './core/embeddings.js'
 import { SyncEngine } from './core/sync.js'
 
 const DB_DIR = ensureDataDirs()
@@ -28,19 +24,9 @@ function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
 
-// Vector store — may fail if sqlite-vec can't load
-let vectorStore: SqliteVecStore | undefined
-let embeddingClient: EmbeddingClient | undefined
-let embeddingIndexer: EmbeddingIndexer | undefined
-try {
-  vectorStore = new SqliteVecStore(db.getRawDb())
-  embeddingClient = createEmbeddingClient({
-    ollamaUrl: 'http://localhost:11434',
-    openaiApiKey: settings.openaiApiKey,
-  })
-  embeddingIndexer = new EmbeddingIndexer(db, vectorStore, embeddingClient)
-} catch (err) {
-  emit({ event: 'warning', message: `Vector store unavailable: ${err}` })
+const vecDeps = initVectorDeps(db, settings.openaiApiKey)
+if (!vecDeps) {
+  emit({ event: 'warning', message: 'Vector store unavailable' })
 }
 
 // Initial full scan
@@ -48,9 +34,9 @@ indexer.indexAll().then(async (indexed) => {
   const total = db.countSessions()
   emit({ event: 'ready', indexed, total })
 
-  if (embeddingIndexer) {
+  if (vecDeps) {
     try {
-      const embedded = await embeddingIndexer.indexAll()
+      const embedded = await vecDeps.embeddingIndexer.indexAll()
       if (embedded > 0) {
         emit({ event: 'embeddings_ready', embedded })
       }
@@ -81,34 +67,35 @@ const syncEngine = new SyncEngine(db)
 const syncPeers = settings.syncPeers ?? []
 const syncIntervalMs = (settings.syncIntervalMinutes ?? 30) * 60 * 1000
 
+async function syncAndEmit(): Promise<void> {
+  const results = await syncEngine.syncAllPeers(syncPeers)
+  const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
+  if (totalPulled > 0) {
+    emit({ event: 'sync_complete', results, totalPulled })
+  }
+}
+
 // Start web server
 const port = settings.httpPort ?? 3457
-const app = createApp(db, { vectorStore, embeddingClient, syncEngine, syncPeers })
+const app = createApp(db, {
+  vectorStore: vecDeps?.vectorStore,
+  embeddingClient: vecDeps?.embeddingClient,
+  syncEngine,
+  syncPeers,
+  settings,
+})
 const webServer = serve({ fetch: app.fetch, port }, (info) => {
   emit({ event: 'web_ready', port: info.port })
 })
 
 // Initial sync on startup
 if (settings.syncEnabled && syncPeers.length > 0) {
-  syncEngine.syncAllPeers(syncPeers).then(results => {
-    const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
-    if (totalPulled > 0) {
-      emit({ event: 'sync_complete', results, totalPulled })
-    }
-  }).catch(() => {})
+  syncAndEmit().catch(() => {})
 }
 
 // Periodic sync timer
 const syncTimer = settings.syncEnabled && syncPeers.length > 0
-  ? setInterval(async () => {
-      try {
-        const results = await syncEngine.syncAllPeers(syncPeers)
-        const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
-        if (totalPulled > 0) {
-          emit({ event: 'sync_complete', results, totalPulled })
-        }
-      } catch { /* ignore */ }
-    }, syncIntervalMs)
+  ? setInterval(() => { syncAndEmit().catch(() => {}) }, syncIntervalMs)
   : null
 
 // Lifecycle: stdin/parent/signal layers, no idle timeout for daemon
