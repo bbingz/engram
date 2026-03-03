@@ -22,7 +22,7 @@ export class SqliteVecStore implements VectorStore {
   private migrate(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS session_embeddings (
-        session_id TEXT PRIMARY KEY,
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         model TEXT NOT NULL,
         created_at TEXT DEFAULT (datetime('now'))
       );
