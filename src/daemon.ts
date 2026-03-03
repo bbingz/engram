@@ -15,6 +15,7 @@ import { SqliteVecStore } from './core/vector-store.js'
 import { createEmbeddingClient } from './core/embeddings.js'
 import { EmbeddingIndexer } from './core/embedding-indexer.js'
 import type { EmbeddingClient } from './core/embeddings.js'
+import { SyncEngine } from './core/sync.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
@@ -82,11 +83,40 @@ const webServer = serve({ fetch: app.fetch, port }, (info) => {
   emit({ event: 'web_ready', port: info.port })
 })
 
+// Sync engine
+const syncEngine = new SyncEngine(db)
+const syncPeers = settings.syncPeers ?? []
+const syncIntervalMs = (settings.syncIntervalMinutes ?? 30) * 60 * 1000
+
+// Initial sync on startup
+if (settings.syncEnabled && syncPeers.length > 0) {
+  syncEngine.syncAllPeers(syncPeers).then(results => {
+    const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
+    if (totalPulled > 0) {
+      emit({ event: 'sync_complete', results, totalPulled })
+    }
+  }).catch(() => {})
+}
+
+// Periodic sync timer
+const syncTimer = settings.syncEnabled && syncPeers.length > 0
+  ? setInterval(async () => {
+      try {
+        const results = await syncEngine.syncAllPeers(syncPeers)
+        const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
+        if (totalPulled > 0) {
+          emit({ event: 'sync_complete', results, totalPulled })
+        }
+      } catch { /* ignore */ }
+    }, syncIntervalMs)
+  : null
+
 // Lifecycle: stdin/parent/signal layers, no idle timeout for daemon
 setupProcessLifecycle({
   idleTimeoutMs: 0,
   onExit: () => {
     clearInterval(rescanTimer)
+    if (syncTimer) clearInterval(syncTimer)
     watcher?.close()
     webServer.close()
   },
