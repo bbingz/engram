@@ -170,7 +170,10 @@ struct SettingsView: View {
                     TextField("30", value: $syncIntervalMinutes, format: .number)
                         .frame(width: 80)
                         .multilineTextAlignment(.trailing)
-                        .onChange(of: syncIntervalMinutes) { saveSyncSettings() }
+                        .onChange(of: syncIntervalMinutes) {
+                            if syncIntervalMinutes < 1 { syncIntervalMinutes = 1 }
+                            saveSyncSettings()
+                        }
                 }
 
                 // Peer list

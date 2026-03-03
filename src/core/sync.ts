@@ -31,34 +31,48 @@ export class SyncEngine {
         return result
       }
 
-      const since = this.db.getSyncTime(peer.name) ?? '1970-01-01T00:00:00Z'
-      const sessionsRes = await this.fetchFn(
-        `${peer.url}/api/sync/sessions?since=${encodeURIComponent(since)}`,
-        { signal: AbortSignal.timeout(30000) }
-      )
-      if (!sessionsRes.ok) {
-        result.error = `Failed to fetch sessions: ${sessionsRes.status}`
-        return result
-      }
+      let since = this.db.getSyncTime(peer.name) ?? '1970-01-01T00:00:00Z'
+      const PAGE_LIMIT = 100
 
-      const { sessions } = await sessionsRes.json() as { sessions: SessionInfo[] }
-
-      for (const session of sessions) {
-        const existing = this.db.getSession(session.id)
-        if (existing) {
-          result.skipped++
-          continue
+      // Paginate: keep pulling until we get fewer than PAGE_LIMIT sessions
+      while (true) {
+        const sessionsRes = await this.fetchFn(
+          `${peer.url}/api/sync/sessions?since=${encodeURIComponent(since)}&limit=${PAGE_LIMIT}`,
+          { signal: AbortSignal.timeout(30000) }
+        )
+        if (!sessionsRes.ok) {
+          result.error = `Failed to fetch sessions: ${sessionsRes.status}`
+          return result
         }
 
-        this.db.upsertSession({
-          ...session,
-          origin: peer.name,
-          filePath: `sync://${peer.name}/${session.filePath}`,
-        })
-        result.pulled++
-      }
+        const { sessions } = await sessionsRes.json() as { sessions: SessionInfo[] }
 
-      this.db.setSyncTime(peer.name, new Date().toISOString())
+        let maxIndexedAt = since
+        for (const session of sessions) {
+          const existing = this.db.getSession(session.id)
+          if (existing && existing.messageCount >= session.messageCount) {
+            result.skipped++
+          } else {
+            this.db.upsertSession({
+              ...session,
+              origin: peer.name,
+              filePath: existing ? existing.filePath : `sync://${peer.name}/${session.filePath}`,
+            })
+            result.pulled++
+          }
+          // Track the max indexed_at to use as the next cursor
+          if (session.startTime > maxIndexedAt) maxIndexedAt = session.startTime
+        }
+
+        // Advance cursor to the latest timestamp we saw (not local now())
+        if (sessions.length > 0) {
+          this.db.setSyncTime(peer.name, maxIndexedAt)
+          since = maxIndexedAt
+        }
+
+        // If we got fewer than the limit, we've fetched everything
+        if (sessions.length < PAGE_LIMIT) break
+      }
     } catch (err) {
       result.error = String(err)
     }

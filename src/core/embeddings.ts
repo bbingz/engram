@@ -35,6 +35,10 @@ export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingCl
             if (data.embeddings?.[0]) {
               return new Float32Array(data.embeddings[0])
             }
+          } else {
+            // Server error (503, 500, etc.) — mark as down
+            ollamaDown = true
+            setTimeout(() => { ollamaDown = false }, 60_000)
           }
         } catch {
           ollamaDown = true

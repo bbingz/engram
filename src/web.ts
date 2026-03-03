@@ -180,7 +180,7 @@ if (isMain) {
   const port = settings.httpPort ?? 3457
   const app = createApp(db)
 
-  serve({ fetch: app.fetch, port }, (info) => {
-    process.stderr.write(`[engram-web] Listening on http://0.0.0.0:${info.port}\n`)
+  serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
+    process.stderr.write(`[engram-web] Listening on http://127.0.0.1:${info.port}\n`)
   })
 }

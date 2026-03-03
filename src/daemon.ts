@@ -65,7 +65,7 @@ const rescanTimer = setInterval(async () => {
 // Sync engine
 const syncEngine = new SyncEngine(db)
 const syncPeers = settings.syncPeers ?? []
-const syncIntervalMs = (settings.syncIntervalMinutes ?? 30) * 60 * 1000
+const syncIntervalMs = Math.max(settings.syncIntervalMinutes ?? 30, 1) * 60 * 1000
 
 async function syncAndEmit(): Promise<void> {
   const results = await syncEngine.syncAllPeers(syncPeers)
@@ -84,7 +84,7 @@ const app = createApp(db, {
   syncPeers,
   settings,
 })
-const webServer = serve({ fetch: app.fetch, port }, (info) => {
+const webServer = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
   emit({ event: 'web_ready', port: info.port })
 })
 

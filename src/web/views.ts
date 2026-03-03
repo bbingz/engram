@@ -9,7 +9,7 @@ export function layout(title: string, body: string): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${title} — Engram</title>
+  <title>${escapeHtml(title)} — Engram</title>
   <link rel="stylesheet" href="${CDN_PICO}">
   <script src="${CDN_HTMX}"></script>
   <style>
@@ -85,7 +85,7 @@ export function searchPage(): string {
           const data = await res.json();
           if (data.warning) { el.innerHTML = '<p>' + esc(data.warning) + '</p>'; return; }
           el.innerHTML = (data.results || []).map(r =>
-            '<article><a href="/session/' + esc(r.sessionId) + '"><strong>' + esc(r.summary||r.sessionId) + '</strong></a>'
+            '<article><a href="/session/' + encodeURIComponent(r.session?.id||'') + '"><strong>' + esc(r.session?.summary||r.session?.id||'') + '</strong></a>'
             + '<p>' + esc(r.snippet||'') + '</p></article>'
           ).join('');
         }, 300);
