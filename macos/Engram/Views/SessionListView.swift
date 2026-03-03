@@ -21,12 +21,13 @@ struct SessionListView: View {
     @State private var renameText: String = ""
     @State private var showingTrash = false
     @State private var hiddenCount: Int = 0
+    @State private var sortVersion: Int = 0  // Used to force refresh
 
     let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "cline",
                       "vscode", "antigravity", "windsurf"]
 
-    var currentSort: SessionSort {
+    func getCurrentSort() -> SessionSort {
         switch (sortField, sortAsc) {
         case (.created, false): return .createdDesc
         case (.created, true):  return .createdAsc
@@ -216,8 +217,7 @@ struct SessionListView: View {
         .task(id: selectedProjects) { await reload() }
         .task(id: agentFilter)      { await reload() }
         .task(id: groupingMode)     { await reload() }
-        .task(id: sortField)        { await reload() }
-        .task(id: sortAsc)          { await reload() }
+        .task(id: sortVersion)      { await reload() }
         .task(id: showingTrash)     { await reload() }
         .onChange(of: deepLinkSession) { _, session in
             guard let session else { return }
@@ -285,35 +285,50 @@ struct SessionListView: View {
                 subAgent: agentFilter
             )) ?? []
 
+            // IMPORTANT: Clear cached sessions first to force SwiftUI to re-render
+            // This must happen BEFORE loading new data
+            let keysToReload = Array(expandedGroups)
+            groupSessions = [:]  // Clear all cached sessions
+
             // Re-load sessions for all expanded groups with new sort order
-            for groupKey in expandedGroups {
-                await loadSessions(for: groupKey, force: true)
+            for groupKey in keysToReload {
+                if let sessions = try? db.listSessionsInGroup(
+                    by: groupingMode,
+                    key: groupKey,
+                    sources: selectedSources,
+                    projects: selectedProjects,
+                    subAgent: agentFilter,
+                    sort: getCurrentSort()
+                ) {
+                    groupSessions[groupKey] = sessions
+                }
             }
         }
     }
 
-    func loadSessions(for groupKey: String, force: Bool = false) async {
-        if !force && groupSessions[groupKey] != nil { return }
-        let sessions = (try? db.listSessionsInGroup(
+    func loadSessions(for groupKey: String) async {
+        guard groupSessions[groupKey] == nil else { return }
+        groupSessions[groupKey] = (try? db.listSessionsInGroup(
             by: groupingMode,
             key: groupKey,
             sources: selectedSources,
             projects: selectedProjects,
             subAgent: agentFilter,
-            sort: currentSort
+            sort: getCurrentSort()
         )) ?? []
-        // Use main actor to ensure UI updates
-        await MainActor.run {
-            groupSessions[groupKey] = sessions
-        }
     }
 
     @ViewBuilder
     func sortButton(_ label: LocalizedStringKey, field: SortField) -> some View {
         let active = sortField == field
         Button {
-            if active { sortAsc.toggle() }
-            else { sortField = field; sortAsc = false }
+            if active {
+                sortAsc.toggle()
+            } else {
+                sortField = field
+                sortAsc = false
+            }
+            sortVersion += 1  // Trigger refresh
         } label: {
             HStack(spacing: 2) {
                 Text(label)
