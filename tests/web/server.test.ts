@@ -102,4 +102,18 @@ describe('Web Server', () => {
     expect(body.groups.length).toBeGreaterThan(0)
     expect(body.totalSessions).toBe(2)
   })
+
+  it('GET /api/sync/sessions returns sessions since timestamp', async () => {
+    db.upsertSession(mockSession)
+    const yesterday = new Date(Date.now() - 86400000).toISOString()
+    const res = await app.request(`/api/sync/sessions?since=${yesterday}`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.sessions).toHaveLength(1)
+  })
+
+  it('GET /api/sync/sessions requires since parameter', async () => {
+    const res = await app.request('/api/sync/sessions')
+    expect(res.status).toBe(400)
+  })
 })

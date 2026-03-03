@@ -20,6 +20,15 @@ export function createApp(db: Database) {
     })
   })
 
+  // Sync: sessions since timestamp
+  app.get('/api/sync/sessions', (c) => {
+    const since = c.req.query('since')
+    if (!since) return c.json({ error: 'since parameter required' }, 400)
+    const limit = parseInt(c.req.query('limit') ?? '100')
+    const sessions = db.listSessionsSince(since, limit)
+    return c.json({ sessions })
+  })
+
   // Session list
   app.get('/api/sessions', (c) => {
     const source = c.req.query('source') as SourceName | undefined

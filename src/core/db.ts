@@ -129,6 +129,16 @@ export class Database {
     return rows.map(r => this.rowToSession(r))
   }
 
+  listSessionsSince(since: string, limit = 100): SessionInfo[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM sessions
+      WHERE indexed_at > @since AND hidden_at IS NULL
+      ORDER BY indexed_at ASC
+      LIMIT @limit
+    `).all({ since, limit }) as Record<string, unknown>[]
+    return rows.map(r => this.rowToSession(r))
+  }
+
   indexSessionContent(sessionId: string, messages: { role: string; content: string }[]): void {
     const deleteStmt = this.db.prepare('DELETE FROM sessions_fts WHERE session_id = ?')
     const insertStmt = this.db.prepare('INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)')

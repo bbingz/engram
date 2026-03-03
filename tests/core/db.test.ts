@@ -85,4 +85,16 @@ describe('Database', () => {
     expect(db.isIndexed(mockSession.filePath, mockSession.sizeBytes)).toBe(true)
     expect(db.isIndexed(mockSession.filePath, 99999)).toBe(false)
   })
+
+  it('listSessionsSince returns sessions indexed after a given time', () => {
+    db.upsertSession(mockSession)
+    const yesterday = new Date(Date.now() - 86400000).toISOString()
+    const results = db.listSessionsSince(yesterday, 100)
+    expect(results).toHaveLength(1)
+    expect(results[0].id).toBe('session-001')
+
+    const tomorrow = new Date(Date.now() + 86400000).toISOString()
+    const resultsEmpty = db.listSessionsSince(tomorrow, 100)
+    expect(resultsEmpty).toHaveLength(0)
+  })
 })
