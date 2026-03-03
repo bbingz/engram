@@ -21,6 +21,7 @@ import { projectTimelineTool, handleProjectTimeline } from './tools/project_time
 import { statsTool, handleStats } from './tools/stats.js'
 import { getContextTool, handleGetContext } from './tools/get_context.js'
 import { exportTool, handleExport } from './tools/export.js'
+import { generateSummaryTool, handleGenerateSummary } from './tools/generate_summary.js'
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
@@ -36,6 +37,7 @@ const allTools = [
   statsTool,
   getContextTool,
   exportTool,
+  generateSummaryTool,
 ]
 
 const server = new Server(
@@ -79,6 +81,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const adapter = adapterMap[session.source]
       if (!adapter) return { content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true }
       result = await handleExport(db, adapter, a as { id: string; format?: string })
+    } else if (name === 'generate_summary') {
+      return await handleGenerateSummary(db, a as { sessionId: string })
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }

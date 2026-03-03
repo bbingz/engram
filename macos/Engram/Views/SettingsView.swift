@@ -27,6 +27,13 @@ struct SettingsView: View {
     @AppStorage("nodejsPath") var nodejsPath: String = "/usr/local/bin/node"
     @EnvironmentObject var indexer: IndexerProcess
 
+    // AI Summary settings (stored in Node.js config file)
+    @State private var aiProvider: String = "openai"
+    @State private var openaiApiKey: String = ""
+    @State private var openaiModel: String = "gpt-4o-mini"
+    @State private var anthropicApiKey: String = ""
+    @State private var anthropicModel: String = "claude-3-haiku-20240307"
+
     var body: some View {
         Form {
             Section("MCP Server") {
@@ -87,10 +94,104 @@ struct SettingsView: View {
             Section("MCP Client Setup") {
                 MCPSetupGuideView(nodejsPath: nodejsPath)
             }
+
+            Section("AI Summary") {
+                Picker("Provider", selection: $aiProvider) {
+                    Text("OpenAI").tag("openai")
+                    Text("Anthropic").tag("anthropic")
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: aiProvider) { saveAISettings() }
+
+                if aiProvider == "openai" {
+                    HStack {
+                        Text("API Key")
+                        Spacer()
+                        SecureField("sk-...", text: $openaiApiKey)
+                            .frame(width: 300)
+                            .onChange(of: openaiApiKey) { saveAISettings() }
+                    }
+                    Picker("Model", selection: $openaiModel) {
+                        Text("GPT-4o Mini").tag("gpt-4o-mini")
+                        Text("GPT-4o").tag("gpt-4o")
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: openaiModel) { saveAISettings() }
+                } else {
+                    HStack {
+                        Text("API Key")
+                        Spacer()
+                        SecureField("sk-ant-...", text: $anthropicApiKey)
+                            .frame(width: 300)
+                            .onChange(of: anthropicApiKey) { saveAISettings() }
+                    }
+                    Picker("Model", selection: $anthropicModel) {
+                        Text("Claude 3 Haiku").tag("claude-3-haiku-20240307")
+                        Text("Claude 3.5 Sonnet").tag("claude-3-5-sonnet-20241022")
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: anthropicModel) { saveAISettings() }
+                }
+
+                Text("API keys are stored locally in ~/.engram/settings.json")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 520)
         .padding()
+        .onAppear { loadAISettings() }
+    }
+
+    private func saveAISettings() {
+        let configPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".engram/settings.json")
+        var settings: [String: Any] = [:]
+
+        // Read existing settings
+        if let data = try? Data(contentsOf: configPath),
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            settings = existing
+        }
+
+        // Update AI settings
+        settings["aiProvider"] = aiProvider
+        settings["openaiApiKey"] = openaiApiKey
+        settings["openaiModel"] = openaiModel
+        settings["anthropicApiKey"] = anthropicApiKey
+        settings["anthropicModel"] = anthropicModel
+
+        // Save
+        if let data = try? JSONSerialization.data(withJSONObject: settings, options: .prettyPrinted) {
+            try? data.write(to: configPath)
+        }
+    }
+
+    private func loadAISettings() {
+        let configPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".engram/settings.json")
+
+        guard let data = try? Data(contentsOf: configPath),
+              let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+
+        if let provider = settings["aiProvider"] as? String {
+            aiProvider = provider
+        }
+        if let key = settings["openaiApiKey"] as? String {
+            openaiApiKey = key
+        }
+        if let model = settings["openaiModel"] as? String {
+            openaiModel = model
+        }
+        if let key = settings["anthropicApiKey"] as? String {
+            anthropicApiKey = key
+        }
+        if let model = settings["anthropicModel"] as? String {
+            anthropicModel = model
+        }
     }
 }
 

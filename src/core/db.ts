@@ -172,6 +172,10 @@ export class Database {
     return (this.db.prepare('SELECT COUNT(*) as n FROM sessions WHERE hidden_at IS NULL').get() as { n: number }).n
   }
 
+  updateSessionSummary(id: string, summary: string): void {
+    this.db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, id)
+  }
+
   close(): void {
     this.db.close()
   }

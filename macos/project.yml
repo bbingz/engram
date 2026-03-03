@@ -27,6 +27,8 @@ targets:
     sources:
       - path: Engram
       - path: Shared
+    resources:
+      - path: Engram/Resources/Assets.xcassets
     dependencies:
       - package: GRDB
         product: GRDB

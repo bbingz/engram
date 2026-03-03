@@ -16,7 +16,7 @@ import { CursorAdapter } from '../adapters/cursor.js'
 import { VsCodeAdapter } from '../adapters/vscode.js'
 import { AntigravityAdapter } from '../adapters/antigravity.js'
 import { WindsurfAdapter } from '../adapters/windsurf.js'
-import type { SessionAdapter } from '../adapters/types.js'
+import type { SessionAdapter, SourceName } from '../adapters/types.js'
 
 export const ENGRAM_DIR = join(homedir(), '.engram')
 
@@ -42,4 +42,11 @@ export function createAdapters(): SessionAdapter[] {
     new AntigravityAdapter(),
     new WindsurfAdapter(),
   ]
+}
+
+const adapters = createAdapters()
+const adapterMap = new Map(adapters.map(a => [a.name, a]))
+
+export function getAdapter(name: string): SessionAdapter | undefined {
+  return adapterMap.get(name as SourceName)
 }
