@@ -33,7 +33,7 @@ export function createApp(db: Database, opts?: {
   app.get('/api/sync/sessions', (c) => {
     const since = c.req.query('since')
     if (!since) return c.json({ error: 'since parameter required' }, 400)
-    const limit = parseInt(c.req.query('limit') ?? '100')
+    const limit = parseInt(c.req.query('limit') ?? '100', 10)
     const sessions = db.listSessionsSince(since, limit)
     return c.json({ sessions })
   })
@@ -93,7 +93,7 @@ export function createApp(db: Database, opts?: {
   // Semantic search (vector)
   app.get('/api/search/semantic', async (c) => {
     const query = c.req.query('q') ?? ''
-    const topK = parseInt(c.req.query('limit') ?? '10')
+    const topK = Math.min(parseInt(c.req.query('limit') ?? '10', 10), 50)
 
     if (!opts?.vectorStore || !opts?.embeddingClient) {
       return c.json({ error: 'Semantic search not available — no embedding provider configured' }, 501)

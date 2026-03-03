@@ -5,7 +5,7 @@ const CDN_HTMX = 'https://unpkg.com/htmx.org@2.0.4'
 
 export function layout(title: string, body: string): string {
   return `<!DOCTYPE html>
-<html lang="zh" data-theme="auto">
+<html lang="en" data-theme="auto">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -69,10 +69,27 @@ export function sessionDetailPage(session: SessionInfo, messages: { role: string
 export function searchPage(): string {
   return layout('Search', `
     <h2>Search</h2>
-    <input type="search" name="q" placeholder="Search sessions..."
-      hx-get="/partials/search-results" hx-trigger="keyup changed delay:300ms"
-      hx-target="#search-results">
-    <div id="search-results"></div>`)
+    <input type="search" name="q" id="search-input" placeholder="Search sessions...">
+    <div id="search-results"></div>
+    <script>
+      const input = document.getElementById('search-input');
+      let timer;
+      input.addEventListener('keyup', () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          const q = input.value.trim();
+          const el = document.getElementById('search-results');
+          if (q.length < 3) { el.innerHTML = ''; return; }
+          const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+          const data = await res.json();
+          if (data.warning) { el.innerHTML = '<p>' + data.warning + '</p>'; return; }
+          el.innerHTML = (data.results || []).map(r =>
+            '<article><a href="/session/' + r.sessionId + '"><strong>' + (r.summary||r.sessionId) + '</strong></a>'
+            + '<p>' + (r.snippet||'') + '</p></article>'
+          ).join('');
+        }, 300);
+      });
+    </script>`)
 }
 
 export function statsPage(groups: { key: string; sessionCount: number; messageCount: number }[], totalSessions: number): string {

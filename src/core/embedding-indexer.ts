@@ -12,6 +12,18 @@ export class EmbeddingIndexer {
   ) {}
 
   async indexAll(): Promise<number> {
+    // Pre-populate from DB on first call to avoid re-embedding after restart
+    if (this.indexed.size === 0) {
+      try {
+        const existing = this.db.getRawDb()
+          .prepare('SELECT session_id FROM session_embeddings')
+          .all() as { session_id: string }[]
+        for (const row of existing) this.indexed.add(row.session_id)
+      } catch {
+        // Table may not exist yet if vector store hasn't initialized
+      }
+    }
+
     const sessions = this.db.listSessions({ limit: 10000 })
     let count = 0
 

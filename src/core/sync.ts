@@ -54,6 +54,7 @@ export class SyncEngine {
 
         this.db.upsertSession({
           ...session,
+          origin: peer.name,
           filePath: `sync://${peer.name}/${session.filePath}`,
         })
         result.pulled++
