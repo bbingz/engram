@@ -72,6 +72,7 @@ export function searchPage(): string {
     <input type="search" name="q" id="search-input" placeholder="Search sessions...">
     <div id="search-results"></div>
     <script>
+      function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
       const input = document.getElementById('search-input');
       let timer;
       input.addEventListener('keyup', () => {
@@ -82,10 +83,10 @@ export function searchPage(): string {
           if (q.length < 3) { el.innerHTML = ''; return; }
           const res = await fetch('/api/search?q=' + encodeURIComponent(q));
           const data = await res.json();
-          if (data.warning) { el.innerHTML = '<p>' + data.warning + '</p>'; return; }
+          if (data.warning) { el.innerHTML = '<p>' + esc(data.warning) + '</p>'; return; }
           el.innerHTML = (data.results || []).map(r =>
-            '<article><a href="/session/' + r.sessionId + '"><strong>' + (r.summary||r.sessionId) + '</strong></a>'
-            + '<p>' + (r.snippet||'') + '</p></article>'
+            '<article><a href="/session/' + esc(r.sessionId) + '"><strong>' + esc(r.summary||r.sessionId) + '</strong></a>'
+            + '<p>' + esc(r.snippet||'') + '</p></article>'
           ).join('');
         }, 300);
       });
