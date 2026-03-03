@@ -13,6 +13,11 @@ import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
 import { ensureDataDirs, createAdapters } from './core/bootstrap.js'
+import { SqliteVecStore } from './core/vector-store.js'
+import { createEmbeddingClient } from './core/embeddings.js'
+import { EmbeddingIndexer } from './core/embedding-indexer.js'
+import { readFileSettings } from './core/config.js'
+import type { GetContextDeps } from './tools/get_context.js'
 
 import { listSessionsTool, handleListSessions } from './tools/list_sessions.js'
 import { getSessionTool, handleGetSession } from './tools/get_session.js'
@@ -28,6 +33,25 @@ const db = new Database(join(DB_DIR, 'index.sqlite'))
 const adapters = createAdapters()
 const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 const indexer = new Indexer(db, adapters)
+
+// Vector store — may fail if sqlite-vec can't load
+let vectorDeps: GetContextDeps = {}
+let embeddingIndexer: EmbeddingIndexer | undefined
+try {
+  const vectorStore = new SqliteVecStore(db.getRawDb())
+  const fileSettings = readFileSettings()
+  const embeddingClient = createEmbeddingClient({
+    ollamaUrl: 'http://localhost:11434',
+    openaiApiKey: fileSettings.openaiApiKey,
+  })
+  vectorDeps = {
+    vectorStore,
+    embed: (text) => embeddingClient.embed(text),
+  }
+  embeddingIndexer = new EmbeddingIndexer(db, vectorStore, embeddingClient)
+} catch {
+  // sqlite-vec unavailable — get_context falls back to FTS5
+}
 
 const allTools = [
   listSessionsTool,
@@ -74,7 +98,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (name === 'stats') {
       result = await handleStats(db, a)
     } else if (name === 'get_context') {
-      result = await handleGetContext(db, a as { cwd: string })
+      result = await handleGetContext(db, a as { cwd: string }, vectorDeps)
     } else if (name === 'export') {
       const session = db.getSession(a.id as string)
       if (!session) return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true }
@@ -94,9 +118,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 })
 
 // 启动时建立索引
-indexer.indexAll().then(count => {
+indexer.indexAll().then(async (count) => {
   if (count > 0) {
     process.stderr.write(`[engram] Indexed ${count} new sessions\n`)
+  }
+  if (embeddingIndexer) {
+    await embeddingIndexer.indexAll().catch(() => {})
   }
 }).catch(() => {})
 

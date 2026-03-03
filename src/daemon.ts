@@ -11,21 +11,50 @@ import { ensureDataDirs, createAdapters } from './core/bootstrap.js'
 import { createApp } from './web.js'
 import { serve } from '@hono/node-server'
 import { readFileSettings } from './core/config.js'
+import { SqliteVecStore } from './core/vector-store.js'
+import { createEmbeddingClient } from './core/embeddings.js'
+import { EmbeddingIndexer } from './core/embedding-indexer.js'
+import type { EmbeddingClient } from './core/embeddings.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
 const db = new Database(dbPath)
 const adapters = createAdapters()
 const indexer = new Indexer(db, adapters)
+const settings = readFileSettings()
 
 function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
 
+// Vector store — may fail if sqlite-vec can't load
+let vectorStore: SqliteVecStore | undefined
+let embeddingClient: EmbeddingClient | undefined
+let embeddingIndexer: EmbeddingIndexer | undefined
+try {
+  vectorStore = new SqliteVecStore(db.getRawDb())
+  embeddingClient = createEmbeddingClient({
+    ollamaUrl: 'http://localhost:11434',
+    openaiApiKey: settings.openaiApiKey,
+  })
+  embeddingIndexer = new EmbeddingIndexer(db, vectorStore, embeddingClient)
+} catch (err) {
+  emit({ event: 'warning', message: `Vector store unavailable: ${err}` })
+}
+
 // Initial full scan
-indexer.indexAll().then(indexed => {
+indexer.indexAll().then(async (indexed) => {
   const total = db.countSessions()
   emit({ event: 'ready', indexed, total })
+
+  if (embeddingIndexer) {
+    try {
+      const embedded = await embeddingIndexer.indexAll()
+      if (embedded > 0) {
+        emit({ event: 'embeddings_ready', embedded })
+      }
+    } catch { /* ignore */ }
+  }
 }).catch(err => {
   emit({ event: 'error', message: String(err) })
 })
@@ -47,9 +76,8 @@ const rescanTimer = setInterval(async () => {
 }, RESCAN_INTERVAL)
 
 // Start web server
-const settings = readFileSettings()
 const port = settings.httpPort ?? 3457
-const app = createApp(db)
+const app = createApp(db, { vectorStore, embeddingClient })
 const webServer = serve({ fetch: app.fetch, port }, (info) => {
   emit({ event: 'web_ready', port: info.port })
 })
