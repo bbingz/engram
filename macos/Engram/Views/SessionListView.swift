@@ -1,14 +1,15 @@
 // macos/Engram/Views/SessionListView.swift
 import SwiftUI
+import Combine
 
 enum SortField: String { case created, updated }
 
 struct SessionListView: View {
     @EnvironmentObject var db: DatabaseManager
     @State private var groupingMode: GroupingMode = .project
-    @State private var groups: [(key: String, count: Int, lastUpdated: String)] = []
+    @State private var groups: [GroupInfo] = []
     @State private var expandedGroups: Set<String> = []
-    @State private var groupSessions: [String: [Session]] = [:]
+    @State private var sessionsByGroup: [String: [Session]] = [:]
     @State private var selectedSession: Session?
     @State private var selectedSources: Set<String> = []
     @State private var selectedProjects: Set<String> = []
@@ -21,25 +22,21 @@ struct SessionListView: View {
     @State private var renameText: String = ""
     @State private var showingTrash = false
     @State private var hiddenCount: Int = 0
-    @State private var sortVersion: Int = 0  // Used to force refresh
 
     let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "cline",
                       "vscode", "antigravity", "windsurf"]
 
-    func getCurrentSort() -> SessionSort {
-        switch (sortField, sortAsc) {
-        case (.created, false): return .createdDesc
-        case (.created, true):  return .createdAsc
-        case (.updated, false): return .updatedDesc
-        case (.updated, true):  return .updatedAsc
-        }
+    struct GroupInfo: Identifiable {
+        let id: String
+        let count: Int
+        let lastUpdated: String
     }
 
     var body: some View {
         HSplitView {
             VStack(spacing: 0) {
-                // Row 1: Source picker | Project picker | Grouping mode toggle
+                // Filter bar
                 HStack(spacing: 6) {
                     MultiSelectPicker(
                         emptyLabel: "All sources",
@@ -54,7 +51,6 @@ struct SessionListView: View {
                         selected: $selectedProjects
                     )
                     Spacer()
-                    // Grouping mode toggle
                     Picker("", selection: $groupingMode) {
                         ForEach(GroupingMode.allCases, id: \.self) { mode in
                             Label(mode.rawValue, systemImage: mode == .project ? "folder" : "cpu")
@@ -63,12 +59,11 @@ struct SessionListView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 180)
-                    .help("Group by project or source")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
 
-                // Row 2: Agent filter + Sort buttons
+                // Filter chips + Sort buttons
                 HStack(spacing: 6) {
                     Chip(label: "All",         selected: agentFilter == nil,   color: .secondary) { agentFilter = nil }
                     Chip(label: "Agent only",  selected: agentFilter == true,  color: .purple)    { agentFilter = true }
@@ -82,122 +77,125 @@ struct SessionListView: View {
 
                 Divider()
 
-                // Grouped list
+                // List with explicit ID for forcing refresh
                 List {
-                    ForEach(groups, id: \.key) { group in
-                        let key = group.key
-                        DisclosureGroup(
-                            isExpanded: Binding(
-                                get: { expandedGroups.contains(key) },
-                                set: { open in
-                                    if open {
-                                        expandedGroups.insert(key)
-                                        Task { await loadSessions(for: key) }
-                                    } else {
-                                        expandedGroups.remove(key)
-                                    }
-                                }
-                            )
-                        ) {
-                            if let sessions = groupSessions[key] {
-                                if sessions.isEmpty {
-                                    Text("No sessions")
-                                        .font(.caption)
-                                        .foregroundStyle(.tertiary)
-                                        .padding(.vertical, 4)
-                                } else {
-                                    ForEach(sessions, id: \.id) { session in
-                                        SessionRow(session: session)
-                                            .tag(session)
-                                            .background(selectedSession?.id == session.id ? Color.accentColor.opacity(0.1) : Color.clear)
-                                            .onTapGesture {
-                                                selectedSession = session
-                                            }
-                                            .contextMenu {
-                                                if showingTrash {
-                                                    Button("Restore") {
-                                                        try? db.unhideSession(id: session.id)
-                                                        Task { await reload() }
-                                                    }
-                                                } else {
-                                                    Button("Rename...") {
-                                                        renameText = session.customName ?? session.summary ?? ""
-                                                        renameTarget = session
-                                                    }
-                                                    Divider()
-                                                    Button("Delete", role: .destructive) {
-                                                        try? db.hideSession(id: session.id)
-                                                        Task { await reload() }
-                                                    }
-                                                }
-                                            }
-                                    }
-                                }
-                            } else {
-                                ProgressView()
-                                    .frame(maxWidth: .infinity, alignment: .center)
-                                    .padding(.vertical, 4)
-                            }
-                        } label: {
-                            GroupHeader(
-                                title: group.key,
-                                count: group.count,
-                                icon: groupingMode == .project ? "folder" : "cpu",
-                                lastUpdated: String(group.lastUpdated.prefix(10))
-                            )
-                        }
+                    ForEach(groups) { group in
+                        GroupSection(
+                            group: group,
+                            groupingMode: groupingMode,
+                            sessions: sessionsByGroup[group.id] ?? [],
+                            isExpanded: expandedGroups.contains(group.id),
+                            selectedSession: $selectedSession,
+                            showingTrash: showingTrash,
+                            onToggle: { toggleGroup(group.id) },
+                            onDelete: { id in deleteSession(id) },
+                            onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" }
+                        )
                     }
                 }
                 .listStyle(.inset)
+                .id("\(groupingMode)_\(sortField)_\(sortAsc)_\(selectedSources.count)_\(selectedProjects.count)_\(agentFilter?.description ?? "nil")")
 
-                // Footer: count + clean empty + trash
-                HStack(spacing: 6) {
-                    let totalSessions = groups.reduce(0) { $0 + $1.count }
-                    Text("\(totalSessions) sessions")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    if !showingTrash {
-                        Button {
-                            if let n = try? db.hideEmptySessions(), n > 0 {
-                                Task { await reload() }
-                            }
-                        } label: {
-                            Text("Clean Empty")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.1))
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Hide all sessions with 0 messages")
-                    }
-                    Button {
-                        showingTrash.toggle()
-                    } label: {
-                        HStack(spacing: 2) {
-                            Image(systemName: showingTrash ? "trash.fill" : "trash")
-                            if hiddenCount > 0 {
-                                Text("\(hiddenCount)")
-                                    .monospacedDigit()
-                            }
-                        }
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(showingTrash ? Color.red.opacity(0.15) : Color.secondary.opacity(0.1))
-                        .foregroundStyle(showingTrash ? .red : .secondary)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
-                    .buttonStyle(.plain)
-                    .help(showingTrash ? "Back to sessions" : "Show hidden sessions")
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
+                // Footer
+                footerView
             }
             .frame(minWidth: 260, maxWidth: 500)
 
+            detailView
+        }
+        .task { await loadGroups() }
+        .onChange(of: groupingMode) { _, _ in
+            expandedGroups = []
+            sessionsByGroup = [:]
+            Task { await loadGroups() }
+        }
+        .onChange(of: selectedSources) { _, _ in
+            expandedGroups = []
+            sessionsByGroup = [:]
+            Task { await loadGroups() }
+        }
+        .onChange(of: selectedProjects) { _, _ in
+            expandedGroups = []
+            sessionsByGroup = [:]
+            Task { await loadGroups() }
+        }
+        .onChange(of: agentFilter) { _, _ in
+            expandedGroups = []
+            sessionsByGroup = [:]
+            Task { await loadGroups() }
+        }
+        .onChange(of: sortField) { _, _ in
+            sessionsByGroup = [:]
+            Task { await reloadExpandedGroups() }
+        }
+        .onChange(of: sortAsc) { _, _ in
+            sessionsByGroup = [:]
+            Task { await reloadExpandedGroups() }
+        }
+        .onChange(of: showingTrash) { _, _ in
+            Task { await loadGroups() }
+        }
+        .onChange(of: deepLinkSession) { _, session in
+            handleDeepLink(session)
+        }
+        .alert("Rename Session", isPresented: Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )) {
+            renameAlertContent
+        } message: {
+            Text("Displayed as: note | original title. Leave empty to clear.")
+        }
+    }
+
+    // MARK: - Views
+
+    private var footerView: some View {
+        HStack(spacing: 6) {
+            Text("\(groups.reduce(0) { $0 + $1.count }) sessions")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
+            if !showingTrash {
+                Button {
+                    if let n = try? db.hideEmptySessions(), n > 0 {
+                        Task { await loadGroups() }
+                    }
+                } label: {
+                    Text("Clean Empty")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+            }
+            Button {
+                showingTrash.toggle()
+            } label: {
+                HStack(spacing: 2) {
+                    Image(systemName: showingTrash ? "trash.fill" : "trash")
+                    if hiddenCount > 0 {
+                        Text("\(hiddenCount)")
+                            .monospacedDigit()
+                    }
+                }
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(showingTrash ? Color.red.opacity(0.15) : Color.secondary.opacity(0.1))
+                .foregroundStyle(showingTrash ? .red : .secondary)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+    }
+
+    private var detailView: some View {
+        Group {
             if let session = selectedSession {
                 SessionDetailView(session: session)
                     .frame(minWidth: 200)
@@ -210,116 +208,119 @@ struct SessionListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task {
-            await reload()
-        }
-        .task(id: selectedSources)  { await reload() }
-        .task(id: selectedProjects) { await reload() }
-        .task(id: agentFilter)      { await reload() }
-        .task(id: groupingMode)     { await reload() }
-        .task(id: sortVersion)      { await reload() }
-        .task(id: showingTrash)     { await reload() }
-        .onChange(of: deepLinkSession) { _, session in
-            guard let session else { return }
-            pendingSelection = session
-            selectedSources = []
-            selectedProjects = []
-            agentFilter = nil
-            deepLinkSession = nil
-        }
-        .onChange(of: pendingSelection?.id) { _, _ in
-            guard let pending = pendingSelection else { return }
-            // Find which group contains this session
-            Task {
-                // Reload to ensure we have the latest data
-                await reload()
-                // Try to find and expand the group
-                if let groupKey = findGroupKey(for: pending) {
-                    expandedGroups.insert(groupKey)
-                    await loadSessions(for: groupKey)
-                    selectedSession = pending
-                    pendingSelection = nil
-                }
-            }
-        }
-        .alert("Rename Session", isPresented: Binding(
-            get: { renameTarget != nil },
-            set: { if !$0 { renameTarget = nil } }
-        )) {
+    }
+
+    private var renameAlertContent: some View {
+        Group {
             TextField("Note", text: $renameText)
             Button("Save") {
                 guard let target = renameTarget else { return }
                 let name = renameText.trimmingCharacters(in: .whitespaces)
                 try? db.renameSession(id: target.id, name: name.isEmpty ? nil : name)
                 renameTarget = nil
-                Task { await reload() }
-            }
-            Button("Cancel", role: .cancel) { renameTarget = nil }
-        } message: {
-            Text("Displayed as: note | original title. Leave empty to clear.")
-        }
-    }
-
-    func findGroupKey(for session: Session) -> String? {
-        switch groupingMode {
-        case .project:
-            return session.project ?? "(unknown)"
-        case .source:
-            return session.source
-        }
-    }
-
-    func reload() async {
-        hiddenCount = (try? db.countHiddenSessions()) ?? 0
-        if showingTrash {
-            // Trash view doesn't use grouping
-            groups = []
-            expandedGroups = []
-            groupSessions = [:]
-            // Handle trash view separately if needed
-        } else {
-            groups = (try? db.listGroups(
-                by: groupingMode,
-                sources: selectedSources,
-                projects: selectedProjects,
-                subAgent: agentFilter
-            )) ?? []
-
-            // IMPORTANT: Clear cached sessions first to force SwiftUI to re-render
-            // This must happen BEFORE loading new data
-            let keysToReload = Array(expandedGroups)
-            groupSessions = [:]  // Clear all cached sessions
-
-            // Re-load sessions for all expanded groups with new sort order
-            for groupKey in keysToReload {
-                if let sessions = try? db.listSessionsInGroup(
-                    by: groupingMode,
-                    key: groupKey,
-                    sources: selectedSources,
-                    projects: selectedProjects,
-                    subAgent: agentFilter,
-                    sort: getCurrentSort()
-                ) {
-                    groupSessions[groupKey] = sessions
+                Task {
+                    await reloadExpandedGroups()
                 }
             }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
         }
     }
 
-    func loadSessions(for groupKey: String) async {
-        guard groupSessions[groupKey] == nil else { return }
-        groupSessions[groupKey] = (try? db.listSessionsInGroup(
+    // MARK: - Actions
+
+    private func toggleGroup(_ groupId: String) {
+        if expandedGroups.contains(groupId) {
+            expandedGroups.remove(groupId)
+            sessionsByGroup.removeValue(forKey: groupId)
+        } else {
+            expandedGroups.insert(groupId)
+            Task {
+                await loadSessions(for: groupId)
+            }
+        }
+    }
+
+    private func deleteSession(_ id: String) {
+        if showingTrash {
+            try? db.unhideSession(id: id)
+        } else {
+            try? db.hideSession(id: id)
+        }
+        Task { await loadGroups() }
+    }
+
+    private func handleDeepLink(_ session: Session?) {
+        guard let session else { return }
+        pendingSelection = session
+        selectedSources = []
+        selectedProjects = []
+        agentFilter = nil
+        deepLinkSession = nil
+
+        Task {
+            await loadGroups()
+            let groupKey = groupingMode == .project
+                ? (session.project ?? "(unknown)")
+                : session.source
+            expandedGroups.insert(groupKey)
+            await loadSessions(for: groupKey)
+            selectedSession = session
+            pendingSelection = nil
+        }
+    }
+
+    // MARK: - Data Loading
+
+    private func loadGroups() async {
+        hiddenCount = (try? db.countHiddenSessions()) ?? 0
+
+        if showingTrash {
+            groups = []
+            sessionsByGroup = [:]
+            return
+        }
+
+        let dbGroups = (try? db.listGroups(
             by: groupingMode,
-            key: groupKey,
+            sources: selectedSources,
+            projects: selectedProjects,
+            subAgent: agentFilter
+        )) ?? []
+
+        groups = dbGroups.map { GroupInfo(id: $0.key, count: $0.count, lastUpdated: $0.lastUpdated) }
+    }
+
+    private func loadSessions(for groupId: String) async {
+        let sort: SessionSort = switch (sortField, sortAsc) {
+        case (.created, false): .createdDesc
+        case (.created, true):  .createdAsc
+        case (.updated, false): .updatedDesc
+        case (.updated, true):  .updatedAsc
+        }
+
+        let sessions = (try? db.listSessionsInGroup(
+            by: groupingMode,
+            key: groupId,
             sources: selectedSources,
             projects: selectedProjects,
             subAgent: agentFilter,
-            sort: getCurrentSort()
+            sort: sort
         )) ?? []
+
+        sessionsByGroup[groupId] = sessions
     }
 
+    private func reloadExpandedGroups() async {
+        // Reload all expanded groups with new sort order
+        for groupId in expandedGroups {
+            await loadSessions(for: groupId)
+        }
+    }
+
+    // MARK: - Sort Button
+
     @ViewBuilder
-    func sortButton(_ label: LocalizedStringKey, field: SortField) -> some View {
+    private func sortButton(_ label: LocalizedStringKey, field: SortField) -> some View {
         let active = sortField == field
         Button {
             if active {
@@ -328,7 +329,6 @@ struct SessionListView: View {
                 sortField = field
                 sortAsc = false
             }
-            sortVersion += 1  // Trigger refresh
         } label: {
             HStack(spacing: 2) {
                 Text(label)
@@ -344,7 +344,61 @@ struct SessionListView: View {
     }
 }
 
-// MARK: - MultiSelectPicker
+// MARK: - Group Section
+
+struct GroupSection: View {
+    let group: SessionListView.GroupInfo
+    let groupingMode: GroupingMode
+    let sessions: [Session]
+    let isExpanded: Bool
+    @Binding var selectedSession: Session?
+    let showingTrash: Bool
+    let onToggle: () -> Void
+    let onDelete: (String) -> Void
+    let onRename: (Session) -> Void
+
+    var body: some View {
+        DisclosureGroup(
+            isExpanded: .constant(isExpanded)
+        ) {
+            if sessions.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(sessions) { session in
+                    SessionRow(session: session)
+                        .tag(session)
+                        .background(selectedSession?.id == session.id ? Color.accentColor.opacity(0.1) : Color.clear)
+                        .onTapGesture {
+                            selectedSession = session
+                        }
+                        .contextMenu {
+                            if showingTrash {
+                                Button("Restore") { onDelete(session.id) }
+                            } else {
+                                Button("Rename...") { onRename(session) }
+                                Divider()
+                                Button("Delete", role: .destructive) { onDelete(session.id) }
+                            }
+                        }
+                }
+            }
+        } label: {
+            GroupHeader(
+                title: group.id,
+                count: group.count,
+                icon: groupingMode == .project ? "folder" : "cpu",
+                lastUpdated: String(group.lastUpdated.prefix(10))
+            )
+        }
+        .onTapGesture {
+            onToggle()
+        }
+    }
+}
+
+// MARK: - Supporting Views
 
 struct MultiSelectPicker: View {
     let emptyLabel: LocalizedStringKey
@@ -354,15 +408,6 @@ struct MultiSelectPicker: View {
     @State private var showPopover = false
 
     var isFiltered: Bool { !selected.isEmpty }
-
-    @ViewBuilder
-    var buttonText: some View {
-        switch selected.count {
-        case 0:  Text(emptyLabel)
-        case 1:  Text(verbatim: selected.first!)
-        default: Text("\(selected.count) selected")
-        }
-    }
 
     var body: some View {
         Button { showPopover.toggle() } label: {
@@ -385,62 +430,73 @@ struct MultiSelectPicker: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 0) {
-                if isFiltered {
-                    Button("Clear") { selected = [] }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                    Divider()
-                }
-                if items.isEmpty {
-                    Text("No items")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(12)
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(items, id: \.self) { item in
-                                let on = selected.contains(item)
-                                Button {
-                                    if on { selected.remove(item) } else { selected.insert(item) }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Text(verbatim: item)
-                                            .font(.caption)
-                                            .foregroundStyle(on ? Color.accentColor : Color.primary)
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
-                                        Spacer()
-                                        if on {
-                                            Image(systemName: "checkmark")
-                                                .font(.caption2.bold())
-                                                .foregroundStyle(Color.accentColor)
-                                        }
-                                    }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 5)
-                                    .background(on ? Color.accentColor.opacity(0.08) : Color.clear)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                    .scrollIndicators(.hidden)
-                    .frame(maxHeight: 280)
-                }
-            }
-            .frame(minWidth: 180, maxWidth: 240)
+            pickerPopover
         }
     }
-}
 
-// MARK: - Chip
+    @ViewBuilder
+    private var buttonText: some View {
+        switch selected.count {
+        case 0:  Text(emptyLabel)
+        case 1:  Text(verbatim: selected.first!)
+        default: Text("\(selected.count) selected")
+        }
+    }
+
+    private var pickerPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if isFiltered {
+                Button("Clear") { selected = [] }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                Divider()
+            }
+            if items.isEmpty {
+                Text("No items")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(12)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(items, id: \.self) { item in
+                            let isSelected = selected.contains(item)
+                            Button {
+                                if isSelected { selected.remove(item) } else { selected.insert(item) }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text(verbatim: item)
+                                        .font(.caption)
+                                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                    Spacer()
+                                    if isSelected {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption2.bold())
+                                            .foregroundStyle(Color.accentColor)
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .scrollIndicators(.hidden)
+                .frame(maxHeight: 280)
+            }
+        }
+        .frame(minWidth: 180, maxWidth: 240)
+    }
+}
 
 struct Chip: View {
     let label: LocalizedStringKey
@@ -461,8 +517,6 @@ struct Chip: View {
         .buttonStyle(.plain)
     }
 }
-
-// MARK: - GroupHeader
 
 struct GroupHeader: View {
     let title: String
@@ -489,8 +543,6 @@ struct GroupHeader: View {
     }
 }
 
-// MARK: - SessionRow (unchanged from original)
-
 struct SessionRow: View {
     let session: Session
 
@@ -512,7 +564,6 @@ struct SessionRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // Line 1: title + size warning
             HStack(spacing: 0) {
                 Text(verbatim: session.displayTitle)
                     .font(.body)
@@ -533,7 +584,6 @@ struct SessionRow: View {
                 }
             }
 
-            // Line 2: source dot + source name + agent badge + date
             HStack(spacing: 5) {
                 Circle()
                     .fill(sourceColor)
@@ -552,7 +602,6 @@ struct SessionRow: View {
                     .foregroundStyle(.tertiary)
             }
 
-            // Line 3: message count + project
             HStack(spacing: 4) {
                 Text("\(session.messageCount) msgs")
                 if let proj = session.project {
