@@ -76,17 +76,17 @@ const rescanTimer = setInterval(async () => {
   } catch (_) { /* ignore */ }
 }, RESCAN_INTERVAL)
 
-// Start web server
-const port = settings.httpPort ?? 3457
-const app = createApp(db, { vectorStore, embeddingClient })
-const webServer = serve({ fetch: app.fetch, port }, (info) => {
-  emit({ event: 'web_ready', port: info.port })
-})
-
 // Sync engine
 const syncEngine = new SyncEngine(db)
 const syncPeers = settings.syncPeers ?? []
 const syncIntervalMs = (settings.syncIntervalMinutes ?? 30) * 60 * 1000
+
+// Start web server
+const port = settings.httpPort ?? 3457
+const app = createApp(db, { vectorStore, embeddingClient, syncEngine, syncPeers })
+const webServer = serve({ fetch: app.fetch, port }, (info) => {
+  emit({ event: 'web_ready', port: info.port })
+})
 
 // Initial sync on startup
 if (settings.syncEnabled && syncPeers.length > 0) {

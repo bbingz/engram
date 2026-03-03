@@ -10,8 +10,14 @@ import { handleStats } from './tools/stats.js'
 import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage } from './web/views.js'
 import type { VectorStore } from './core/vector-store.js'
 import type { EmbeddingClient } from './core/embeddings.js'
+import { SyncEngine, type SyncPeer } from './core/sync.js'
 
-export function createApp(db: Database, opts?: { vectorStore?: VectorStore; embeddingClient?: EmbeddingClient }) {
+export function createApp(db: Database, opts?: {
+  vectorStore?: VectorStore
+  embeddingClient?: EmbeddingClient
+  syncEngine?: SyncEngine
+  syncPeers?: SyncPeer[]
+}) {
   const app = new Hono()
 
   app.get('/api/sync/status', (c) => {
@@ -30,6 +36,20 @@ export function createApp(db: Database, opts?: { vectorStore?: VectorStore; embe
     const limit = parseInt(c.req.query('limit') ?? '100')
     const sessions = db.listSessionsSince(since, limit)
     return c.json({ sessions })
+  })
+
+  // Sync: manual trigger
+  app.post('/api/sync/trigger', async (c) => {
+    if (!opts?.syncEngine || !opts?.syncPeers?.length) {
+      return c.json({ error: 'Sync not configured' }, 501)
+    }
+    const peerName = c.req.query('peer')
+    const peers = peerName
+      ? opts.syncPeers.filter(p => p.name === peerName)
+      : opts.syncPeers
+
+    const results = await opts.syncEngine.syncAllPeers(peers)
+    return c.json({ results })
   })
 
   // Session list
