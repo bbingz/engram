@@ -3,111 +3,186 @@ import SwiftUI
 
 struct TimelineView: View {
     @EnvironmentObject var db: DatabaseManager
-    @State private var entries: [TimelineEntry] = []
-    @State private var filterText = ""
-    @State private var expandedProjects: Set<String> = []
-    @State private var projectSessions: [String: [Session]] = [:]
+    @State private var sessions: [Session] = []
+    @State private var timeGroups: [(date: String, sessions: [Session])] = []
     @State private var agentFilter: Bool? = false   // default: hide agents
+    @State private var selectedSources: Set<String> = []
+    @State private var selectedProjects: Set<String> = []
     @Binding var selectedTab: AppTab
     @Binding var deepLinkSession: Session?
+    @State private var totalCount: Int = 0
+    @State private var hasMore = true
+    private let pageSize = 50
 
-    var filtered: [TimelineEntry] {
-        guard !filterText.isEmpty else { return entries }
-        return entries.filter { ($0.project ?? "").localizedCaseInsensitiveContains(filterText) }
-    }
+    let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
+                      "opencode", "iflow", "qwen", "kimi", "cline",
+                      "vscode", "antigravity", "windsurf"]
 
     var body: some View {
         VStack(spacing: 0) {
             // Filter bar
             HStack(spacing: 6) {
-                TextField("Filter by project...", text: $filterText)
-                    .textFieldStyle(.roundedBorder)
+                MultiSelectPicker(
+                    emptyLabel: "All sources",
+                    icon: "cpu",
+                    items: allSources,
+                    selected: $selectedSources
+                )
+                MultiSelectPicker(
+                    emptyLabel: "All projects",
+                    icon: "folder",
+                    items: (try? db.listProjects()) ?? [],
+                    selected: $selectedProjects
+                )
+                Spacer()
+                // Agent filter chips
+                HStack(spacing: 6) {
+                    Chip(label: "All",         selected: agentFilter == nil,   color: .secondary) { agentFilter = nil }
+                    Chip(label: "Agent only",  selected: agentFilter == true,  color: .purple)    { agentFilter = true }
+                    Chip(label: "Hide agents", selected: agentFilter == false, color: .orange)    { agentFilter = false }
+                }
             }
             .padding(.horizontal, 10)
             .padding(.top, 10)
-            .padding(.bottom, 4)
-            // Agent filter
-            HStack(spacing: 6) {
-                Chip(label: "All",         selected: agentFilter == nil,   color: .secondary) {
-                    agentFilter = nil
-                    projectSessions = [:]   // flush cached sessions
-                }
-                Chip(label: "Agent only",  selected: agentFilter == true,  color: .purple) {
-                    agentFilter = true
-                    projectSessions = [:]
-                }
-                Chip(label: "Hide agents", selected: agentFilter == false, color: .orange) {
-                    agentFilter = false
-                    projectSessions = [:]
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 10)
             .padding(.bottom, 8)
+
             Divider()
-            List {
-                ForEach(filtered, id: \.project) { entry in
-                    let key = entry.project ?? ""
-                    DisclosureGroup(
-                        isExpanded: Binding(
-                            get: { expandedProjects.contains(key) },
-                            set: { open in
-                                if open {
-                                    expandedProjects.insert(key)
-                                    Task { await loadSessions(for: entry.project) }
-                                } else {
-                                    expandedProjects.remove(key)
-                                }
+
+            if timeGroups.isEmpty {
+                ContentUnavailableView {
+                    Label("No Sessions", systemImage: "clock.arrow.circlepath")
+                } description: {
+                    Text("No sessions match the current filters.")
+                }
+            } else {
+                List {
+                    ForEach(timeGroups, id: \.date) { group in
+                        Section(header: sectionHeader(group.date)) {
+                            ForEach(group.sessions) { session in
+                                TimelineSessionRow(session: session)
+                                    .onTapGesture(count: 2) {
+                                        deepLinkSession = session
+                                        selectedTab = .sessions
+                                    }
                             }
-                        )
-                    ) {
-                        if let sessions = projectSessions[key] {
-                            if sessions.isEmpty {
-                                Text("No sessions")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.vertical, 4)
-                            } else {
-                                ForEach(sessions, id: \.id) { session in
-                                    TimelineSessionRow(session: session)
-                                        .onTapGesture(count: 2) {
-                                            deepLinkSession = session
-                                            selectedTab = .sessions
-                                        }
-                                }
-                            }
-                        } else {
-                            ProgressView()
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.vertical, 4)
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder")
-                                .foregroundStyle(.secondary)
-                            Text(verbatim: entry.project ?? String(localized: "(unknown)"))
-                                .fontWeight(.medium)
-                            Spacer()
-                            Text("\(entry.sessionCount)")
-                                .font(.caption)
-                                .padding(.horizontal, 8).padding(.vertical, 3)
-                                .background(Color.accentColor.opacity(0.15))
-                                .clipShape(Capsule())
-                            Text(String(entry.lastUpdated.prefix(10)))
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
                         }
                     }
+                    if hasMore {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .onAppear {
+                                Task { await loadMore() }
+                            }
+                    }
                 }
+                .listStyle(.inset)
             }
         }
-        .task { entries = (try? db.projectTimeline()) ?? [] }
+        .task { await reload() }
+        .task(id: selectedSources)  { await reload() }
+        .task(id: selectedProjects) { await reload() }
+        .task(id: agentFilter)      { await reload() }
     }
 
-    func loadSessions(for project: String?) async {
-        let key = project ?? ""
-        guard projectSessions[key] == nil else { return }
-        projectSessions[key] = (try? db.listSessionsForProject(project, subAgent: agentFilter)) ?? []
+    @ViewBuilder
+    func sectionHeader(_ date: String) -> some View {
+        HStack {
+            Text(date)
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            Spacer()
+        }
+        .padding(.vertical, 4)
+        .background(.clear)
+    }
+
+    func reload() async {
+        sessions = (try? db.listSessionsChronologically(
+            sources: selectedSources,
+            projects: selectedProjects,
+            subAgent: agentFilter,
+            limit: pageSize
+        )) ?? []
+        totalCount = (try? db.countSessions(
+            sources: selectedSources,
+            projects: selectedProjects,
+            subAgent: agentFilter
+        )) ?? 0
+        hasMore = sessions.count < totalCount
+        groupSessionsByDate()
+    }
+
+    func loadMore() async {
+        guard hasMore else { return }
+        let next = (try? db.listSessionsChronologically(
+            sources: selectedSources,
+            projects: selectedProjects,
+            subAgent: agentFilter,
+            limit: pageSize,
+            offset: sessions.count
+        )) ?? []
+        sessions.append(contentsOf: next)
+        hasMore = sessions.count < totalCount
+        groupSessionsByDate()
+    }
+
+    func groupSessionsByDate() {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale.current
+
+        let displayFormatter = DateFormatter()
+        displayFormatter.dateStyle = .medium
+        displayFormatter.timeStyle = .none
+        displayFormatter.locale = Locale.current
+
+        var groups: [(date: String, sessions: [Session])] = []
+        var currentGroup: [Session] = []
+        var currentDate: String?
+
+        for session in sessions {
+            let sessionDate = String(session.startTime.prefix(10))
+            if sessionDate != currentDate {
+                if !currentGroup.isEmpty, let date = currentDate {
+                    groups.append((date: formatDateHeader(date), sessions: currentGroup))
+                }
+                currentDate = sessionDate
+                currentGroup = [session]
+            } else {
+                currentGroup.append(session)
+            }
+        }
+        if !currentGroup.isEmpty, let date = currentDate {
+            groups.append((date: formatDateHeader(date), sessions: currentGroup))
+        }
+
+        timeGroups = groups
+    }
+
+    func formatDateHeader(_ dateString: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale.current
+
+        let displayFormatter = DateFormatter()
+        displayFormatter.dateStyle = .long
+        displayFormatter.timeStyle = .none
+        displayFormatter.locale = Locale.current
+        displayFormatter.doesRelativeDateFormatting = true
+
+        if let date = formatter.date(from: dateString) {
+            // Check if today or yesterday
+            let calendar = Calendar.current
+            if calendar.isDateInToday(date) {
+                return String(localized: "Today")
+            } else if calendar.isDateInYesterday(date) {
+                return String(localized: "Yesterday")
+            }
+            return displayFormatter.string(from: date)
+        }
+        return dateString
     }
 }
 
@@ -147,11 +222,27 @@ struct TimelineSessionRow: View {
                 .font(.subheadline)
                 .lineLimit(1)
             Spacer()
-            Text(verbatim: session.displayDate)
+            Text(verbatim: timeString(from: session.startTime))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
         .help("Double-click to open in Sessions")
+    }
+
+    func timeString(from isoDate: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+
+        let displayFormatter = DateFormatter()
+        displayFormatter.timeStyle = .short
+        displayFormatter.dateStyle = .none
+        displayFormatter.locale = Locale.current
+
+        if let date = formatter.date(from: isoDate) {
+            return displayFormatter.string(from: date)
+        }
+        return String(isoDate.prefix(16))
     }
 }

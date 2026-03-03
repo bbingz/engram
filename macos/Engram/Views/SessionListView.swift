@@ -5,25 +5,22 @@ enum SortField: String { case created, updated }
 
 struct SessionListView: View {
     @EnvironmentObject var db: DatabaseManager
-    @State private var sessions: [Session] = []
+    @State private var groupingMode: GroupingMode = .project
+    @State private var groups: [(key: String, count: Int, lastUpdated: String)] = []
+    @State private var expandedGroups: Set<String> = []
+    @State private var groupSessions: [String: [Session]] = [:]
     @State private var selectedSession: Session?
     @State private var selectedSources: Set<String> = []
     @State private var selectedProjects: Set<String> = []
-    @State private var availableProjects: [String] = []
-    @State private var sourceCounts: [String: Int] = [:]
-    @State private var projectCounts: [String: Int] = [:]
     @State private var agentFilter: Bool? = false
     @State private var sortField: SortField = .created
     @State private var sortAsc = false
     @State private var pendingSelection: Session?
     @Binding var deepLinkSession: Session?
-    @State private var totalCount: Int = 0
-    @State private var hasMore = true
     @State private var renameTarget: Session?
     @State private var renameText: String = ""
     @State private var showingTrash = false
     @State private var hiddenCount: Int = 0
-    private let pageSize = 50
 
     let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "cline",
@@ -41,72 +38,121 @@ struct SessionListView: View {
     var body: some View {
         HSplitView {
             VStack(spacing: 0) {
-                // Row 1: Source picker | Project picker | Sort
+                // Row 1: Source picker | Project picker | Grouping mode toggle
                 HStack(spacing: 6) {
                     MultiSelectPicker(
                         emptyLabel: "All sources",
                         icon: "cpu",
                         items: allSources,
-                        counts: sourceCounts,
                         selected: $selectedSources
                     )
                     MultiSelectPicker(
                         emptyLabel: "All projects",
                         icon: "folder",
-                        items: availableProjects,
-                        counts: projectCounts,
+                        items: (try? db.listProjects()) ?? [],
                         selected: $selectedProjects
                     )
                     Spacer()
-                    sortButton("Created", field: .created)
-                    sortButton("Updated", field: .updated)
+                    // Grouping mode toggle
+                    Picker("", selection: $groupingMode) {
+                        ForEach(GroupingMode.allCases, id: \.self) { mode in
+                            Label(mode.rawValue, systemImage: mode == .project ? "folder" : "cpu")
+                                .tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 180)
+                    .help("Group by project or source")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
 
-                // Row 2: Agent filter
+                // Row 2: Agent filter + Sort buttons
                 HStack(spacing: 6) {
                     Chip(label: "All",         selected: agentFilter == nil,   color: .secondary) { agentFilter = nil }
                     Chip(label: "Agent only",  selected: agentFilter == true,  color: .purple)    { agentFilter = true }
                     Chip(label: "Hide agents", selected: agentFilter == false, color: .orange)    { agentFilter = false }
                     Spacer()
+                    sortButton("Created", field: .created)
+                    sortButton("Updated", field: .updated)
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
 
                 Divider()
 
-                List(sessions, selection: $selectedSession) { session in
-                    SessionRow(session: session)
-                        .tag(session)
-                        .contextMenu {
-                            if showingTrash {
-                                Button("Restore") {
-                                    try? db.unhideSession(id: session.id)
-                                    Task { await reload() }
+                // Grouped list
+                List {
+                    ForEach(groups, id: \.key) { group in
+                        let key = group.key
+                        DisclosureGroup(
+                            isExpanded: Binding(
+                                get: { expandedGroups.contains(key) },
+                                set: { open in
+                                    if open {
+                                        expandedGroups.insert(key)
+                                        Task { await loadSessions(for: key) }
+                                    } else {
+                                        expandedGroups.remove(key)
+                                    }
+                                }
+                            )
+                        ) {
+                            if let sessions = groupSessions[key] {
+                                if sessions.isEmpty {
+                                    Text("No sessions")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.vertical, 4)
+                                } else {
+                                    ForEach(sessions, id: \.id) { session in
+                                        SessionRow(session: session)
+                                            .tag(session)
+                                            .background(selectedSession?.id == session.id ? Color.accentColor.opacity(0.1) : Color.clear)
+                                            .onTapGesture {
+                                                selectedSession = session
+                                            }
+                                            .contextMenu {
+                                                if showingTrash {
+                                                    Button("Restore") {
+                                                        try? db.unhideSession(id: session.id)
+                                                        Task { await reload() }
+                                                    }
+                                                } else {
+                                                    Button("Rename...") {
+                                                        renameText = session.customName ?? session.summary ?? ""
+                                                        renameTarget = session
+                                                    }
+                                                    Divider()
+                                                    Button("Delete", role: .destructive) {
+                                                        try? db.hideSession(id: session.id)
+                                                        Task { await reload() }
+                                                    }
+                                                }
+                                            }
+                                    }
                                 }
                             } else {
-                                Button("Rename...") {
-                                    renameText = session.customName ?? session.summary ?? ""
-                                    renameTarget = session
-                                }
-                                Divider()
-                                Button("Delete", role: .destructive) {
-                                    try? db.hideSession(id: session.id)
-                                    Task { await reload() }
-                                }
+                                ProgressView()
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .padding(.vertical, 4)
                             }
+                        } label: {
+                            GroupHeader(
+                                title: group.key,
+                                count: group.count,
+                                icon: groupingMode == .project ? "folder" : "cpu",
+                                lastUpdated: String(group.lastUpdated.prefix(10))
+                            )
                         }
-                        .onAppear {
-                            if session == sessions.last && hasMore {
-                                Task { await loadMore() }
-                            }
-                        }
+                    }
                 }
+                .listStyle(.inset)
 
-                // Footer: count + clean empty + trash + loading
+                // Footer: count + clean empty + trash
                 HStack(spacing: 6) {
-                    Text("\(sessions.count) of \(totalCount)")
+                    let totalSessions = groups.reduce(0) { $0 + $1.count }
+                    Text("\(totalSessions) sessions")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Spacer()
@@ -145,10 +191,6 @@ struct SessionListView: View {
                     }
                     .buttonStyle(.plain)
                     .help(showingTrash ? "Back to sessions" : "Show hidden sessions")
-                    if hasMore {
-                        ProgressView()
-                            .controlSize(.mini)
-                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
@@ -168,14 +210,12 @@ struct SessionListView: View {
             }
         }
         .task {
-            availableProjects = (try? db.listProjects()) ?? []
-            sourceCounts  = (try? db.countsBySource())  ?? [:]
-            projectCounts = (try? db.countsByProject()) ?? [:]
             await reload()
         }
         .task(id: selectedSources)  { await reload() }
         .task(id: selectedProjects) { await reload() }
         .task(id: agentFilter)      { await reload() }
+        .task(id: groupingMode)     { await reload() }
         .task(id: sortField)        { await reload() }
         .task(id: sortAsc)          { await reload() }
         .task(id: showingTrash)     { await reload() }
@@ -187,11 +227,19 @@ struct SessionListView: View {
             agentFilter = nil
             deepLinkSession = nil
         }
-        .task(id: pendingSelection?.id) {
+        .onChange(of: pendingSelection?.id) { _, _ in
             guard let pending = pendingSelection else { return }
-            if sessions.contains(pending) {
-                selectedSession = pending
-                pendingSelection = nil
+            // Find which group contains this session
+            Task {
+                // Reload to ensure we have the latest data
+                await reload()
+                // Try to find and expand the group
+                if let groupKey = findGroupKey(for: pending) {
+                    expandedGroups.insert(groupKey)
+                    await loadSessions(for: groupKey)
+                    selectedSession = pending
+                    pendingSelection = nil
+                }
             }
         }
         .alert("Rename Session", isPresented: Binding(
@@ -212,51 +260,46 @@ struct SessionListView: View {
         }
     }
 
-    func reload() async {
-        hiddenCount = (try? db.countHiddenSessions()) ?? 0
-        if showingTrash {
-            totalCount = hiddenCount
-            sessions = (try? db.listHiddenSessions(limit: pageSize)) ?? []
-        } else {
-            totalCount = (try? db.countSessions(
-                sources: selectedSources,
-                projects: selectedProjects,
-                subAgent: agentFilter
-            )) ?? 0
-            sessions = (try? db.listSessions(
-                sources: selectedSources,
-                projects: selectedProjects,
-                subAgent: agentFilter,
-                sort: currentSort,
-                limit: pageSize
-            )) ?? []
-        }
-        hasMore = sessions.count < totalCount
-        if let pending = pendingSelection, sessions.contains(pending) {
-            selectedSession = pending
-            pendingSelection = nil
-        } else if selectedSession == nil || !sessions.contains(selectedSession!) {
-            selectedSession = sessions.first
+    func findGroupKey(for session: Session) -> String? {
+        switch groupingMode {
+        case .project:
+            return session.project ?? "(unknown)"
+        case .source:
+            return session.source
         }
     }
 
-    func loadMore() async {
-        guard hasMore else { return }
-        let next: [Session]
+    func reload() async {
+        hiddenCount = (try? db.countHiddenSessions()) ?? 0
         if showingTrash {
-            next = (try? db.listHiddenSessions(limit: pageSize, offset: sessions.count)) ?? []
+            // Trash view doesn't use grouping
+            groups = []
+            expandedGroups = []
+            groupSessions = [:]
+            // Handle trash view separately if needed
         } else {
-            next = (try? db.listSessions(
+            groups = (try? db.listGroups(
+                by: groupingMode,
                 sources: selectedSources,
                 projects: selectedProjects,
-                subAgent: agentFilter,
-                sort: currentSort,
-                limit: pageSize,
-                offset: sessions.count
+                subAgent: agentFilter
             )) ?? []
+            // Clear cached sessions when filters change
+            groupSessions = [:]
+            expandedGroups = []
         }
-        sessions.append(contentsOf: next)
-        hasMore = sessions.count < totalCount
+    }
+
+    func loadSessions(for groupKey: String) async {
+        guard groupSessions[groupKey] == nil else { return }
+        groupSessions[groupKey] = (try? db.listSessionsInGroup(
+            by: groupingMode,
+            key: groupKey,
+            sources: selectedSources,
+            projects: selectedProjects,
+            subAgent: agentFilter,
+            sort: currentSort
+        )) ?? []
     }
 
     @ViewBuilder
@@ -286,7 +329,6 @@ struct MultiSelectPicker: View {
     let emptyLabel: LocalizedStringKey
     let icon: String
     let items: [String]
-    var counts: [String: Int] = [:]
     @Binding var selected: Set<String>
     @State private var showPopover = false
 
@@ -352,12 +394,6 @@ struct MultiSelectPicker: View {
                                             .lineLimit(1)
                                             .truncationMode(.tail)
                                         Spacer()
-                                        if let n = counts[item] {
-                                            Text("\(n)")
-                                                .font(.caption2)
-                                                .foregroundStyle(.tertiary)
-                                                .monospacedDigit()
-                                        }
                                         if on {
                                             Image(systemName: "checkmark")
                                                 .font(.caption2.bold())
@@ -405,7 +441,34 @@ struct Chip: View {
     }
 }
 
-// MARK: - SessionRow
+// MARK: - GroupHeader
+
+struct GroupHeader: View {
+    let title: String
+    let count: Int
+    let icon: String
+    let lastUpdated: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+            Text(verbatim: title)
+                .fontWeight(.medium)
+            Spacer()
+            Text("\(count)")
+                .font(.caption)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Color.accentColor.opacity(0.15))
+                .clipShape(Capsule())
+            Text(lastUpdated)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+// MARK: - SessionRow (unchanged from original)
 
 struct SessionRow: View {
     let session: Session
@@ -449,7 +512,7 @@ struct SessionRow: View {
                 }
             }
 
-            // Line 2: source dot + source name + agent badge + date + msg count + project
+            // Line 2: source dot + source name + agent badge + date
             HStack(spacing: 5) {
                 Circle()
                     .fill(sourceColor)

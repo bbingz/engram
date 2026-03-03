@@ -13,6 +13,11 @@ enum SessionSort: String {
     case updatedAsc  = "COALESCE(end_time, start_time) ASC"
 }
 
+enum GroupingMode: String, CaseIterable {
+    case project = "Project"
+    case source = "Source"
+}
+
 @MainActor
 class DatabaseManager: ObservableObject {
     private let dbPath: String
@@ -352,6 +357,136 @@ class DatabaseManager: ObservableObject {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NOT NULL") ?? 0
+        }
+    }
+
+    // MARK: - Timeline (chronological list)
+
+    /// Pure chronological list of sessions for Timeline view
+    func listSessionsChronologically(
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        subAgent: Bool? = nil,
+        limit: Int = 50,
+        offset: Int = 0
+    ) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
+            var args: [DatabaseValueConvertible] = []
+            if !sources.isEmpty {
+                let ph = sources.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND source IN (\(ph))")
+                sources.forEach { args.append($0) }
+            }
+            if !projects.isEmpty {
+                let ph = projects.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND project IN (\(ph))")
+                projects.forEach { args.append($0) }
+            }
+            if let subAgent {
+                if subAgent { parts.append("AND agent_role IS NOT NULL") }
+                else        { parts.append("AND agent_role IS NULL") }
+            }
+            parts.append("ORDER BY start_time DESC LIMIT ? OFFSET ?")
+            args.append(limit); args.append(offset)
+            return try Session.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
+        }
+    }
+
+    // MARK: - Grouped Sessions view
+
+    /// Get all group keys with counts for grouped view (by project or source)
+    func listGroups(
+        by mode: GroupingMode,
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        subAgent: Bool? = nil
+    ) throws -> [(key: String, count: Int, lastUpdated: String)] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let groupColumn = mode == .project ? "project" : "source"
+            var parts = ["""
+                SELECT COALESCE(\(groupColumn), '(unknown)') as group_key,
+                       COUNT(*) as count,
+                       MAX(start_time) as last_updated
+                FROM sessions
+                WHERE hidden_at IS NULL
+                """]
+            var args: [DatabaseValueConvertible] = []
+
+            if !sources.isEmpty {
+                let ph = sources.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND source IN (\(ph))")
+                sources.forEach { args.append($0) }
+            }
+            if !projects.isEmpty {
+                let ph = projects.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND project IN (\(ph))")
+                projects.forEach { args.append($0) }
+            }
+            if let subAgent {
+                if subAgent { parts.append("AND agent_role IS NOT NULL") }
+                else        { parts.append("AND agent_role IS NULL") }
+            }
+            parts.append("GROUP BY group_key ORDER BY last_updated DESC")
+
+            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
+            return rows.map { (
+                key: $0["group_key"] as String? ?? "(unknown)",
+                count: $0["count"] as Int,
+                lastUpdated: $0["last_updated"] as String
+            ) }
+        }
+    }
+
+    /// Get sessions within a specific group
+    func listSessionsInGroup(
+        by mode: GroupingMode,
+        key: String,
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        subAgent: Bool? = nil,
+        sort: SessionSort = .createdDesc,
+        limit: Int = 100
+    ) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let groupColumn = mode == .project ? "project" : "source"
+            var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
+            var args: [DatabaseValueConvertible] = []
+
+            // Group filter
+            if key == "(unknown)" {
+                parts.append("AND \(groupColumn) IS NULL")
+            } else {
+                parts.append("AND \(groupColumn) = ?")
+                args.append(key)
+            }
+
+            // Additional filters
+            if !sources.isEmpty {
+                let ph = sources.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND source IN (\(ph))")
+                sources.forEach { args.append($0) }
+            }
+            if !projects.isEmpty {
+                let ph = projects.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND project IN (\(ph))")
+                projects.forEach { args.append($0) }
+            }
+            if let subAgent {
+                if subAgent { parts.append("AND agent_role IS NOT NULL") }
+                else        { parts.append("AND agent_role IS NULL") }
+            }
+
+            parts.append("ORDER BY \(sort.rawValue) LIMIT ?")
+            args.append(limit)
+
+            return try Session.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
         }
     }
 }

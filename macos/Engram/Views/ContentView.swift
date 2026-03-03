@@ -10,7 +10,7 @@ enum AppTab: Int, CaseIterable {
 
     var label: LocalizedStringKey {
         switch self {
-        case .sessions:  return "Sessions"
+        case .sessions:  return "Grouped"      // Changed from "Sessions"
         case .search:    return "Search"
         case .timeline:  return "Timeline"
         case .favorites: return "Favorites"
@@ -19,9 +19,9 @@ enum AppTab: Int, CaseIterable {
 
     var icon: String {
         switch self {
-        case .sessions:  return "list.bullet.rectangle"
+        case .sessions:  return "folder"       // Changed from list icon
         case .search:    return "magnifyingglass"
-        case .timeline:  return "timeline.selection"
+        case .timeline:  return "clock.arrow.circlepath"  // Changed from timeline.selection
         case .favorites: return "star"
         }
     }
