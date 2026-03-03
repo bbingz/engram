@@ -4,6 +4,7 @@ import { join } from 'path'
 import { Database } from './core/db.js'
 import { ensureDataDirs } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
+import type { SourceName } from './adapters/types.js'
 
 export function createApp(db: Database) {
   const app = new Hono()
@@ -15,6 +16,31 @@ export function createApp(db: Database) {
       sessionCount: db.countSessions(),
       timestamp: new Date().toISOString(),
     })
+  })
+
+  // Session list
+  app.get('/api/sessions', (c) => {
+    const source = c.req.query('source') as SourceName | undefined
+    const project = c.req.query('project')
+    const since = c.req.query('since')
+    const until = c.req.query('until')
+    const limitParam = c.req.query('limit')
+    const offsetParam = c.req.query('offset')
+
+    const limit = Math.min(limitParam ? parseInt(limitParam, 10) : 20, 100)
+    const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+
+    const sessions = db.listSessions({ source, project, since, until, limit, offset })
+    return c.json({ sessions })
+  })
+
+  // Session detail
+  app.get('/api/sessions/:id', (c) => {
+    const session = db.getSession(c.req.param('id'))
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+    return c.json(session)
   })
 
   return app
