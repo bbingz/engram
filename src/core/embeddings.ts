@@ -13,6 +13,7 @@ interface EmbeddingClientOptions {
 
 export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingClient {
   const ollamaUrl = opts.ollamaUrl ?? 'http://localhost:11434'
+  const openaiClient = opts.openaiApiKey ? new OpenAI({ apiKey: opts.openaiApiKey }) : null
 
   return {
     dimension: 768,
@@ -36,10 +37,9 @@ export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingCl
       } catch { /* Ollama not available */ }
 
       // Fallback to OpenAI
-      if (opts.openaiApiKey) {
+      if (openaiClient) {
         try {
-          const client = new OpenAI({ apiKey: opts.openaiApiKey })
-          const res = await client.embeddings.create({
+          const res = await openaiClient.embeddings.create({
             model: 'text-embedding-3-small',
             input: text,
             dimensions: 768,
