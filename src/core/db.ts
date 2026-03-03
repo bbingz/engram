@@ -186,6 +186,17 @@ export class Database {
     this.db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, id)
   }
 
+  getFtsContent(sessionId: string): string[] {
+    const rows = this.db.prepare(
+      'SELECT content FROM sessions_fts WHERE session_id = ?'
+    ).all(sessionId) as { content: string }[]
+    return rows.map(r => r.content)
+  }
+
+  getRawDb(): BetterSqlite3.Database {
+    return this.db
+  }
+
   close(): void {
     this.db.close()
   }
