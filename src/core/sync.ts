@@ -14,8 +14,6 @@ export interface SyncResult {
 }
 
 export class SyncEngine {
-  private lastSyncTimes = new Map<string, string>()
-
   constructor(
     private db: Database,
     private fetchFn: typeof fetch = fetch
@@ -33,7 +31,7 @@ export class SyncEngine {
         return result
       }
 
-      const since = this.lastSyncTimes.get(peer.name) ?? '1970-01-01T00:00:00Z'
+      const since = this.db.getSyncTime(peer.name) ?? '1970-01-01T00:00:00Z'
       const sessionsRes = await this.fetchFn(
         `${peer.url}/api/sync/sessions?since=${encodeURIComponent(since)}`,
         { signal: AbortSignal.timeout(30000) }
@@ -60,7 +58,7 @@ export class SyncEngine {
         result.pulled++
       }
 
-      this.lastSyncTimes.set(peer.name, new Date().toISOString())
+      this.db.setSyncTime(peer.name, new Date().toISOString())
     } catch (err) {
       result.error = String(err)
     }

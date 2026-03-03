@@ -70,6 +70,11 @@ export class Database {
         content,
         tokenize='trigram case_sensitive 0'
       );
+
+      CREATE TABLE IF NOT EXISTS sync_state (
+        peer_name TEXT PRIMARY KEY,
+        last_sync_time TEXT NOT NULL
+      );
     `)
   }
 
@@ -199,6 +204,19 @@ export class Database {
 
   getRawDb(): BetterSqlite3.Database {
     return this.db
+  }
+
+  getSyncTime(peerName: string): string | null {
+    const row = this.db.prepare(
+      'SELECT last_sync_time FROM sync_state WHERE peer_name = ?'
+    ).get(peerName) as { last_sync_time: string } | undefined
+    return row?.last_sync_time ?? null
+  }
+
+  setSyncTime(peerName: string, time: string): void {
+    this.db.prepare(
+      'INSERT INTO sync_state (peer_name, last_sync_time) VALUES (?, ?) ON CONFLICT(peer_name) DO UPDATE SET last_sync_time = excluded.last_sync_time'
+    ).run(peerName, time)
   }
 
   close(): void {
