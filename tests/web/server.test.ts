@@ -116,4 +116,11 @@ describe('Web Server', () => {
     const res = await app.request('/api/sync/sessions')
     expect(res.status).toBe(400)
   })
+
+  it('GET /api/search/semantic returns 501 when vector store not configured', async () => {
+    const res = await app.request('/api/search/semantic?q=test+query')
+    expect(res.status).toBe(501)
+    const body = await res.json()
+    expect(body.error).toContain('not available')
+  })
 })

@@ -8,8 +8,10 @@ import type { SourceName } from './adapters/types.js'
 import { handleSearch } from './tools/search.js'
 import { handleStats } from './tools/stats.js'
 import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage } from './web/views.js'
+import type { VectorStore } from './core/vector-store.js'
+import type { EmbeddingClient } from './core/embeddings.js'
 
-export function createApp(db: Database) {
+export function createApp(db: Database, opts?: { vectorStore?: VectorStore; embeddingClient?: EmbeddingClient }) {
   const app = new Hono()
 
   app.get('/api/sync/status', (c) => {
@@ -66,6 +68,33 @@ export function createApp(db: Database) {
 
     const result = await handleSearch(db, { query: q, source, project, since, limit })
     return c.json(result)
+  })
+
+  // Semantic search (vector)
+  app.get('/api/search/semantic', async (c) => {
+    const query = c.req.query('q') ?? ''
+    const topK = parseInt(c.req.query('limit') ?? '10')
+
+    if (!opts?.vectorStore || !opts?.embeddingClient) {
+      return c.json({ error: 'Semantic search not available — no embedding provider configured' }, 501)
+    }
+
+    if (query.length < 2) {
+      return c.json({ results: [], warning: 'Query too short' })
+    }
+
+    const embedding = await opts.embeddingClient.embed(query)
+    if (!embedding) {
+      return c.json({ error: 'Failed to generate embedding' }, 500)
+    }
+
+    const vecResults = opts.vectorStore.search(embedding, topK)
+    const results = vecResults.map(vr => {
+      const session = db.getSession(vr.sessionId)
+      return { session, distance: vr.distance }
+    }).filter(r => r.session !== null)
+
+    return c.json({ results, query })
   })
 
   // Stats
