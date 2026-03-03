@@ -2,11 +2,12 @@ import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { join } from 'path'
 import { Database } from './core/db.js'
-import { ensureDataDirs } from './core/bootstrap.js'
+import { ensureDataDirs, getAdapter } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
 import type { SourceName } from './adapters/types.js'
 import { handleSearch } from './tools/search.js'
 import { handleStats } from './tools/stats.js'
+import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage } from './web/views.js'
 
 export function createApp(db: Database) {
   const app = new Hono()
@@ -75,6 +76,46 @@ export function createApp(db: Database) {
 
     const result = await handleStats(db, { since, until, group_by })
     return c.json(result)
+  })
+
+  // HTML routes
+  app.get('/', (c) => {
+    const sessions = db.listSessions({ limit: 50 })
+    return c.html(sessionListPage(sessions))
+  })
+
+  app.get('/search', (c) => {
+    return c.html(searchPage())
+  })
+
+  app.get('/stats', async (c) => {
+    const result = await handleStats(db, {})
+    return c.html(statsPage(result.groups, result.totalSessions))
+  })
+
+  app.get('/settings', (c) => {
+    const settings = readFileSettings()
+    return c.html(settingsPage({
+      nodeName: settings.syncNodeName ?? 'unnamed',
+      peers: settings.syncPeers ?? [],
+    }))
+  })
+
+  app.get('/session/:id', async (c) => {
+    const session = db.getSession(c.req.param('id'))
+    if (!session) return c.html(layout('Not Found', '<h2>Session not found</h2>'), 404)
+    const adapter = getAdapter(session.source)
+    const messages: { role: string; content: string }[] = []
+    if (adapter) {
+      try {
+        for await (const msg of adapter.streamMessages(session.filePath)) {
+          messages.push({ role: msg.role, content: msg.content })
+        }
+      } catch {
+        // File may not exist (e.g. deleted or on another machine)
+      }
+    }
+    return c.html(sessionDetailPage(session, messages))
   })
 
   return app

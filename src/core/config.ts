@@ -12,6 +12,7 @@ export interface FileSettings {
   nodejsPath?: string;
   httpPort?: number;
   syncNodeName?: string;
+  syncPeers?: { name: string; url: string }[];
 }
 
 const CONFIG_DIR = join(homedir(), '.engram');
