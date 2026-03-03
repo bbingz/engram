@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { handleGetContext } from '../../src/tools/get_context.js'
 import { Database } from '../../src/core/db.js'
+import type { VectorStore, VectorSearchResult } from '../../src/core/vector-store.js'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -43,5 +44,23 @@ describe('get_context', () => {
   it('contextText is non-empty when matching sessions exist', async () => {
     const result = await handleGetContext(db, { cwd: '/Users/test/myapp' })
     expect(result.contextText.length).toBeGreaterThan(0)
+  })
+
+  it('uses vector search when deps provided and task is given', async () => {
+    db.upsertSession({ id: 's4', source: 'codex', startTime: '2026-01-22T10:00:00Z', cwd: '/Users/test/myapp', project: 'myapp', summary: 'Configured OAuth auth flow', messageCount: 10, userMessageCount: 5, filePath: '/f4', sizeBytes: 50 })
+
+    const mockVectorStore: VectorStore = {
+      upsert: () => {},
+      delete: () => {},
+      count: () => 2,
+      search: (): VectorSearchResult[] => [
+        { sessionId: 's4', distance: 0.1 },
+        { sessionId: 's1', distance: 0.3 },
+      ],
+    }
+    const mockEmbed = async () => new Float32Array(768).fill(0.1)
+
+    const result = await handleGetContext(db, { cwd: '/Users/test/myapp', task: 'Fix auth issue' }, { vectorStore: mockVectorStore, embed: mockEmbed })
+    expect(result.sessions.some(s => s.id === 's4')).toBe(true)
   })
 })

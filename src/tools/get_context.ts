@@ -1,6 +1,6 @@
-// src/tools/get_context.ts
 import { basename } from 'path'
 import type { Database } from '../core/db.js'
+import type { VectorStore } from '../core/vector-store.js'
 import { toLocalDate } from '../utils/time.js'
 
 export const getContextTool = {
@@ -11,7 +11,7 @@ export const getContextTool = {
     required: ['cwd'],
     properties: {
       cwd: { type: 'string', description: '当前工作目录（绝对路径）' },
-      task: { type: 'string', description: '当前任务描述（可选）' },
+      task: { type: 'string', description: '当前任务描述（可选，用于语义搜索）' },
       max_tokens: { type: 'number', description: 'token 预算，默认 4000（约 16000 字符）' },
     },
     additionalProperties: false,
@@ -20,18 +20,51 @@ export const getContextTool = {
 
 const CHARS_PER_TOKEN = 4
 
+export interface GetContextDeps {
+  vectorStore?: VectorStore
+  embed?: (text: string) => Promise<Float32Array | null>
+}
+
 export async function handleGetContext(
   db: Database,
-  params: { cwd: string; task?: string; max_tokens?: number }
+  params: { cwd: string; task?: string; max_tokens?: number },
+  deps: GetContextDeps = {}
 ) {
   const maxTokens = params.max_tokens ?? 4000
   const maxChars = maxTokens * CHARS_PER_TOKEN
 
-  // 先用目录名匹配项目名，找不到再用路径片段
   const projectName = basename(params.cwd.replace(/\/$/, ''))
   let sessions = db.listSessions({ project: projectName, limit: 50 })
   if (sessions.length === 0 && params.cwd) {
     sessions = db.listSessions({ project: params.cwd, limit: 50 })
+  }
+
+  // Semantic boost: if task + vector store available, merge vector results
+  if (params.task && deps.vectorStore && deps.embed) {
+    try {
+      const queryVec = await deps.embed(params.task)
+      if (queryVec) {
+        const vecResults = deps.vectorStore.search(queryVec, 10)
+        const vecSessionIds = new Set(vecResults.map(r => r.sessionId))
+        const existingIds = new Set(sessions.map(s => s.id))
+
+        for (const vr of vecResults) {
+          if (!existingIds.has(vr.sessionId)) {
+            const s = db.getSession(vr.sessionId)
+            if (s && s.project === projectName) {
+              sessions.push(s)
+            }
+          }
+        }
+
+        sessions.sort((a, b) => {
+          const aVec = vecSessionIds.has(a.id) ? 0 : 1
+          const bVec = vecSessionIds.has(b.id) ? 0 : 1
+          if (aVec !== bVec) return aVec - bVec
+          return b.startTime.localeCompare(a.startTime)
+        })
+      }
+    } catch { /* vector search failed, fall through */ }
   }
 
   const contextParts: string[] = []
