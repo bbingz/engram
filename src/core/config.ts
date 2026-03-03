@@ -11,6 +11,7 @@ export interface FileSettings {
   anthropicModel?: string;
   nodejsPath?: string;
   httpPort?: number;
+  syncNodeName?: string;
 }
 
 const CONFIG_DIR = join(homedir(), '.engram');
