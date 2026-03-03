@@ -286,26 +286,15 @@ struct SessionListView: View {
             )) ?? []
 
             // Re-load sessions for all expanded groups with new sort order
-            var newGroupSessions: [String: [Session]] = [:]
             for groupKey in expandedGroups {
-                if let sessions = try? db.listSessionsInGroup(
-                    by: groupingMode,
-                    key: groupKey,
-                    sources: selectedSources,
-                    projects: selectedProjects,
-                    subAgent: agentFilter,
-                    sort: currentSort
-                ) {
-                    newGroupSessions[groupKey] = sessions
-                }
+                await loadSessions(for: groupKey, force: true)
             }
-            groupSessions = newGroupSessions
         }
     }
 
-    func loadSessions(for groupKey: String) async {
-        guard groupSessions[groupKey] == nil else { return }
-        groupSessions[groupKey] = (try? db.listSessionsInGroup(
+    func loadSessions(for groupKey: String, force: Bool = false) async {
+        if !force && groupSessions[groupKey] != nil { return }
+        let sessions = (try? db.listSessionsInGroup(
             by: groupingMode,
             key: groupKey,
             sources: selectedSources,
@@ -313,6 +302,10 @@ struct SessionListView: View {
             subAgent: agentFilter,
             sort: currentSort
         )) ?? []
+        // Use main actor to ensure UI updates
+        await MainActor.run {
+            groupSessions[groupKey] = sessions
+        }
     }
 
     @ViewBuilder
