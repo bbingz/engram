@@ -360,6 +360,17 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    // MARK: - Update session summary
+    func updateSessionSummary(id: String, summary: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET summary = ? WHERE id = ?",
+                arguments: [summary, id]
+            )
+        }
+    }
+
     // MARK: - Timeline (chronological list)
 
     /// Pure chronological list of sessions for Timeline view

@@ -8,6 +8,9 @@ struct SessionDetailView: View {
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
     @State private var showRaw = false
+    @State private var isSummarizing = false
+    @State private var summaryError: String? = nil
+    @State private var currentSummary: String?
 
     var displayMessages: [ChatMessage] {
         showRaw ? messages : messages.filter { !$0.isSystem }
@@ -97,14 +100,33 @@ struct SessionDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: session.displayTitle)
+                    Text(verbatim: currentSummary ?? session.displayTitle)
                         .font(.headline)
-                        .lineLimit(2)
+                        .lineLimit(3)
                     Text(verbatim: "\(session.source) · \(session.displayDate) · \(session.messageCount) msgs")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+
+                // Summary button (if no summary yet)
+                if currentSummary == nil && session.summary == nil && !isLoadingMessages {
+                    Button {
+                        Task { await generateSummary() }
+                    } label: {
+                        if isSummarizing {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 20, height: 20)
+                        } else {
+                            Image(systemName: "sparkles")
+                                .foregroundStyle(.purple)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSummarizing)
+                    .help("Generate AI Summary")
+                }
 
                 // Raw / Clean toggle
                 Button {
@@ -179,6 +201,27 @@ struct SessionDetailView: View {
         default:
             return "No messages found."
         }
+    }
+
+    func generateSummary() async {
+        guard !messages.isEmpty else { return }
+        isSummarizing = true
+        summaryError = nil
+
+        do {
+            let summary = try await AIClient.shared.generateSummary(messages: messages)
+            currentSummary = summary
+            // Save to database
+            try? db.updateSessionSummary(id: session.id, summary: summary)
+        } catch AIClientError.noAPIKey {
+            summaryError = "API key not configured. Please set it in Settings."
+        } catch AIClientError.apiError(let message) {
+            summaryError = "API error: \(message)"
+        } catch {
+            summaryError = "Failed to generate summary: \(error.localizedDescription)"
+        }
+
+        isSummarizing = false
     }
 }
 
