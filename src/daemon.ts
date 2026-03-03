@@ -8,6 +8,9 @@ import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
 import { ensureDataDirs, createAdapters } from './core/bootstrap.js'
+import { createApp } from './web.js'
+import { serve } from '@hono/node-server'
+import { readFileSettings } from './core/config.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
@@ -43,8 +46,20 @@ const rescanTimer = setInterval(async () => {
   } catch (_) { /* ignore */ }
 }, RESCAN_INTERVAL)
 
+// Start web server
+const settings = readFileSettings()
+const port = settings.httpPort ?? 3457
+const app = createApp(db)
+const webServer = serve({ fetch: app.fetch, port }, (info) => {
+  emit({ event: 'web_ready', port: info.port })
+})
+
 // Lifecycle: stdin/parent/signal layers, no idle timeout for daemon
 setupProcessLifecycle({
   idleTimeoutMs: 0,
-  onExit: () => { clearInterval(rescanTimer); watcher?.close() },
+  onExit: () => {
+    clearInterval(rescanTimer)
+    watcher?.close()
+    webServer.close()
+  },
 })
