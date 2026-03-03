@@ -5,6 +5,8 @@ import { Database } from './core/db.js'
 import { ensureDataDirs } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
 import type { SourceName } from './adapters/types.js'
+import { handleSearch } from './tools/search.js'
+import { handleStats } from './tools/stats.js'
 
 export function createApp(db: Database) {
   const app = new Hono()
@@ -41,6 +43,29 @@ export function createApp(db: Database) {
       return c.json({ error: 'Session not found' }, 404)
     }
     return c.json(session)
+  })
+
+  // Full-text search
+  app.get('/api/search', async (c) => {
+    const q = c.req.query('q') ?? ''
+    const source = c.req.query('source') as SourceName | undefined
+    const project = c.req.query('project')
+    const since = c.req.query('since')
+    const limitParam = c.req.query('limit')
+    const limit = limitParam ? parseInt(limitParam, 10) : undefined
+
+    const result = await handleSearch(db, { query: q, source, project, since, limit })
+    return c.json(result)
+  })
+
+  // Stats
+  app.get('/api/stats', async (c) => {
+    const since = c.req.query('since')
+    const until = c.req.query('until')
+    const group_by = c.req.query('group_by')
+
+    const result = await handleStats(db, { since, until, group_by })
+    return c.json(result)
   })
 
   return app

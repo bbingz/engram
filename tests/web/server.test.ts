@@ -76,4 +76,30 @@ describe('Web Server', () => {
     expect(res.status).toBe(404)
   })
 
+  it('GET /api/search returns FTS5 results', async () => {
+    db.upsertSession(mockSession)
+    db.indexSessionContent('session-001', [
+      { role: 'user', content: 'Fix the SSL certificate error in nginx config' },
+    ])
+    const res = await app.request('/api/search?q=SSL')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results.length).toBeGreaterThan(0)
+  })
+
+  it('GET /api/search returns warning for short query', async () => {
+    const res = await app.request('/api/search?q=ab')
+    const body = await res.json()
+    expect(body.warning).toBeTruthy()
+  })
+
+  it('GET /api/stats returns grouped statistics', async () => {
+    db.upsertSession(mockSession)
+    db.upsertSession({ ...mockSession, id: 'session-002', source: 'claude-code' })
+    const res = await app.request('/api/stats')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.groups.length).toBeGreaterThan(0)
+    expect(body.totalSessions).toBe(2)
+  })
 })
