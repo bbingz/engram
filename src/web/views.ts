@@ -563,7 +563,7 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
       function matchBadge(type) {
         const c = { keyword: '#3498db', semantic: '#9b59b6', both: '#27ae60' };
         const l = { keyword: 'keyword', semantic: 'semantic', both: 'keyword + semantic' };
-        return '<span class="match-badge" style="background:' + (c[type]||'#888') + '33;color:' + (c[type]||'#888') + '">' + (l[type]||type) + '</span>';
+        return '<span class="match-badge" style="background:' + (c[type]||'#888') + '33;color:' + (c[type]||'#888') + '">' + esc(l[type]||type) + '</span>';
       }
       const input = document.getElementById('search-input');
       let timer, controller;
@@ -581,7 +581,7 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
           try {
             const res = await fetch('/api/search?q=' + encodeURIComponent(q), { signal: controller.signal });
             const data = await res.json();
-            modes.innerHTML = data.searchModes?.length ? 'Searched via: ' + data.searchModes.join(' + ') : '';
+            modes.textContent = data.searchModes?.length ? 'Searched via: ' + data.searchModes.join(' + ') : '';
             if (data.warning) { el.innerHTML = '<p style="color:var(--text-dim)">' + esc(data.warning) + '</p>'; return; }
             const results = data.results || [];
             if (results.length === 0) { el.innerHTML = '<div class="empty-state"><p>No results found.</p></div>'; return; }
@@ -833,7 +833,11 @@ function inlineMarkdown(text: string): string {
   s = s.replace(/\*(.+?)\*/g, '<em>$1</em>')
   s = s.replace(/_(.+?)_/g, '<em>$1</em>')
   s = s.replace(/~~(.+?)~~/g, '<del>$1</del>')
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text, url) => {
+    const decoded = url.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    if (!/^https?:\/\//i.test(decoded)) return text
+    return `<a href="${url}" target="_blank" rel="noopener">${text}</a>`
+  })
   return s
 }
 

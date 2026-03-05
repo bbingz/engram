@@ -61,7 +61,8 @@ export class SyncEngine {
             result.pulled++
           }
           // Track the max indexed_at to use as the next cursor
-          if (session.startTime > maxIndexedAt) maxIndexedAt = session.startTime
+          const ts = session.indexedAt ?? session.startTime
+          if (ts > maxIndexedAt) maxIndexedAt = ts
         }
 
         // Advance cursor to the latest timestamp we saw (not local now())

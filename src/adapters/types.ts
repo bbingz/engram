@@ -17,6 +17,7 @@ export interface SessionInfo {
   summary?: string        // 首条用户消息文本（截断到 200 字符）
   filePath: string        // 原始文件路径（用于流式读取消息）
   sizeBytes: number
+  indexedAt?: string      // ISO 8601 — when this session was last indexed (set by DB)
   agentRole?: string      // e.g. "worker" | "awaiter" for Codex; "subagent" for claude-code
   origin?: string         // machine/device identifier for sync (default: 'local')
 }

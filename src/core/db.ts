@@ -395,6 +395,7 @@ export class Database {
       summary: row.summary as string | undefined,
       filePath: row.file_path as string,
       sizeBytes: row.size_bytes as number,
+      indexedAt: row.indexed_at as string | undefined,
       agentRole: row.agent_role as string | undefined,
       origin: row.origin as string | undefined,
     }
