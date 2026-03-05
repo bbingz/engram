@@ -77,15 +77,15 @@ export class CursorAdapter implements SessionAdapter {
             try { bubbles.push(JSON.parse(br.value)) } catch { /* skip */ }
           }
         }
-        let messageCount = 0
         let userMessageCount = 0
+        let assistantMessageCount = 0
         for (const b of bubbles) {
           const role = b.type === 1 ? 'user' : b.type === 2 ? 'assistant' : null
           if (!role) continue
           const content = b.text || b.rawText || ''
           if (!content.trim()) continue
-          messageCount++
           if (role === 'user') userMessageCount++
+          else assistantMessageCount++
         }
 
         return {
@@ -96,8 +96,10 @@ export class CursorAdapter implements SessionAdapter {
             ? new Date(data.lastUpdatedAt).toISOString()
             : undefined,
           cwd: '',
-          messageCount,
+          messageCount: userMessageCount + assistantMessageCount,
           userMessageCount,
+          assistantMessageCount,
+          systemMessageCount: 0,
           summary: data.latestConversationSummary?.summary?.slice(0, 200),
           filePath,
           sizeBytes: fileStat.size,

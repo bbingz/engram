@@ -42,7 +42,7 @@ describe('EmbeddingIndexer', () => {
   it('indexes a session that has FTS content', async () => {
     db.upsertSession({
       id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
-      cwd: '/p', messageCount: 5, userMessageCount: 2,
+      cwd: '/p', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0,
       filePath: '/f1', sizeBytes: 100,
     })
     db.indexSessionContent('s1', [
@@ -58,7 +58,7 @@ describe('EmbeddingIndexer', () => {
   it('skips sessions without FTS content', async () => {
     db.upsertSession({
       id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
-      cwd: '/p', messageCount: 0, userMessageCount: 0,
+      cwd: '/p', messageCount: 0, userMessageCount: 0, assistantMessageCount: 0, systemMessageCount: 0,
       filePath: '/f1', sizeBytes: 100,
     })
     // No indexSessionContent call - no FTS data
@@ -71,7 +71,7 @@ describe('EmbeddingIndexer', () => {
   it('skips already-indexed sessions on second call', async () => {
     db.upsertSession({
       id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
-      cwd: '/p', messageCount: 5, userMessageCount: 2,
+      cwd: '/p', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0,
       filePath: '/f1', sizeBytes: 100,
     })
     db.indexSessionContent('s1', [
@@ -90,7 +90,7 @@ describe('EmbeddingIndexer', () => {
   it('indexOne indexes a single session', async () => {
     db.upsertSession({
       id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
-      cwd: '/p', messageCount: 5, userMessageCount: 2,
+      cwd: '/p', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0,
       filePath: '/f1', sizeBytes: 100,
     })
     db.indexSessionContent('s1', [

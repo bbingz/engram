@@ -39,6 +39,8 @@ export class Database {
       if (!colNames.has('hidden_at')) this.db.exec("ALTER TABLE sessions ADD COLUMN hidden_at TEXT")
       if (!colNames.has('custom_name')) this.db.exec("ALTER TABLE sessions ADD COLUMN custom_name TEXT")
       if (!colNames.has('origin')) this.db.exec("ALTER TABLE sessions ADD COLUMN origin TEXT DEFAULT 'local'")
+      if (!colNames.has('assistant_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN assistant_message_count INTEGER NOT NULL DEFAULT 0")
+      if (!colNames.has('system_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN system_message_count INTEGER NOT NULL DEFAULT 0")
     }
 
     this.db.exec(`
@@ -52,6 +54,8 @@ export class Database {
         model TEXT,
         message_count INTEGER NOT NULL DEFAULT 0,
         user_message_count INTEGER NOT NULL DEFAULT 0,
+        assistant_message_count INTEGER NOT NULL DEFAULT 0,
+        system_message_count INTEGER NOT NULL DEFAULT 0,
         summary TEXT,
         file_path TEXT NOT NULL,
         size_bytes INTEGER NOT NULL DEFAULT 0,
@@ -84,15 +88,19 @@ export class Database {
   upsertSession(session: SessionInfo): void {
     this.db.prepare(`
       INSERT INTO sessions (id, source, start_time, end_time, cwd, project, model,
-        message_count, user_message_count, summary, file_path, size_bytes, indexed_at, agent_role, origin)
+        message_count, user_message_count, assistant_message_count, system_message_count,
+        summary, file_path, size_bytes, indexed_at, agent_role, origin)
       VALUES (@id, @source, @startTime, @endTime, @cwd, @project, @model,
-        @messageCount, @userMessageCount, @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin)
+        @messageCount, @userMessageCount, @assistantMessageCount, @systemMessageCount,
+        @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin)
       ON CONFLICT(id) DO UPDATE SET
         source = excluded.source,
         model = excluded.model,
         end_time = excluded.end_time,
         message_count = excluded.message_count,
         user_message_count = excluded.user_message_count,
+        assistant_message_count = excluded.assistant_message_count,
+        system_message_count = excluded.system_message_count,
         summary = excluded.summary,
         size_bytes = excluded.size_bytes,
         indexed_at = excluded.indexed_at,
@@ -108,6 +116,8 @@ export class Database {
       model: session.model ?? null,
       messageCount: session.messageCount,
       userMessageCount: session.userMessageCount,
+      assistantMessageCount: session.assistantMessageCount,
+      systemMessageCount: session.systemMessageCount,
       summary: session.summary ?? null,
       filePath: session.filePath,
       sizeBytes: session.sizeBytes,
@@ -238,6 +248,13 @@ export class Database {
     ).run(peerName, time)
   }
 
+  needsCountBackfill(): string[] {
+    const rows = this.db.prepare(
+      "SELECT id FROM sessions WHERE assistant_message_count = 0 AND message_count > 0 AND hidden_at IS NULL"
+    ).all() as { id: string }[]
+    return rows.map(r => r.id)
+  }
+
   statsGroupBy(groupBy: string, since?: string, until?: string): { key: string; sessionCount: number; messageCount: number; userMessageCount: number }[] {
     let groupExpr: string
     if (groupBy === 'project') groupExpr = "COALESCE(project, '(unknown)')"
@@ -301,6 +318,8 @@ export class Database {
       model: row.model as string | undefined,
       messageCount: row.message_count as number,
       userMessageCount: row.user_message_count as number,
+      assistantMessageCount: (row.assistant_message_count as number) ?? 0,
+      systemMessageCount: (row.system_message_count as number) ?? 0,
       summary: row.summary as string | undefined,
       filePath: row.file_path as string,
       sizeBytes: row.size_bytes as number,

@@ -696,7 +696,7 @@ struct SessionRow: View {
             }
 
             HStack(spacing: 4) {
-                Text("\(session.messageCount) msgs")
+                Text(session.msgCountLabel)
                 if let proj = session.project {
                     Text(verbatim: "·")
                     Image(systemName: "folder")

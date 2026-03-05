@@ -66,7 +66,8 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       let startTime = ''
       let endTime = ''
       let userCount = 0
-      let totalCount = 0
+      let assistantCount = 0
+      let systemCount = 0
       let firstUserText = ''
       let detectedModel = ''
 
@@ -88,13 +89,15 @@ export class ClaudeCodeAdapter implements SessionAdapter {
           detectedModel = msg.model as string
         }
 
-        totalCount++
-
-        if (type === 'user') {
-          userCount++
-          if (!firstUserText) {
-            const text = this.extractContent(msg?.content)
-            if (!this.isSystemInjection(text)) {
+        if (type === 'assistant') {
+          assistantCount++
+        } else if (type === 'user') {
+          const text = this.extractContent(msg?.content)
+          if (this.isSystemInjection(text)) {
+            systemCount++
+          } else {
+            userCount++
+            if (!firstUserText) {
               firstUserText = text
             }
           }
@@ -115,8 +118,10 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         endTime: endTime !== startTime ? endTime : undefined,
         cwd,
         model: detectedModel || undefined,
-        messageCount: totalCount,
+        messageCount: userCount + assistantCount,
         userMessageCount: userCount,
+        assistantMessageCount: assistantCount,
+        systemMessageCount: systemCount,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,

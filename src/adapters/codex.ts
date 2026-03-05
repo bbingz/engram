@@ -40,7 +40,8 @@ export class CodexAdapter implements SessionAdapter {
       const fileStat = await stat(filePath)
       let meta: Record<string, unknown> | null = null
       let userCount = 0
-      let totalCount = 0
+      let assistantCount = 0
+      let systemCount = 0
       let firstUserText = ''
       let lastTimestamp = ''
 
@@ -55,16 +56,19 @@ export class CodexAdapter implements SessionAdapter {
         if (obj.type === 'response_item') {
           const payload = obj.payload as Record<string, unknown>
           if (payload.type === 'message') {
-            totalCount++
             const role = payload.role as string
             if (role === 'user') {
-              userCount++
-              if (!firstUserText) {
-                const text = this.extractText(payload.content as unknown[])
-                if (!this.isSystemInjection(text)) {
+              const text = this.extractText(payload.content as unknown[])
+              if (this.isSystemInjection(text)) {
+                systemCount++
+              } else {
+                userCount++
+                if (!firstUserText) {
                   firstUserText = text
                 }
               }
+            } else if (role === 'assistant') {
+              assistantCount++
             }
             if (obj.timestamp) {
               lastTimestamp = obj.timestamp as string
@@ -84,8 +88,10 @@ export class CodexAdapter implements SessionAdapter {
         endTime: lastTimestamp || undefined,
         cwd: (payload.cwd as string) || '',
         model: payload.model_provider as string | undefined,
-        messageCount: totalCount,
+        messageCount: userCount + assistantCount,
         userMessageCount: userCount,
+        assistantMessageCount: assistantCount,
+        systemMessageCount: systemCount,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,

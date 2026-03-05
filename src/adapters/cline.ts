@@ -49,11 +49,7 @@ export class ClineAdapter implements SessionAdapter {
       const cwd = this.extractCwd(msgs)
 
       const userMsgs = msgs.filter(m => m.say === 'task' || m.say === 'user_feedback')
-      const displayMsgs = msgs.filter(m =>
-        m.say === 'task' ||
-        m.say === 'user_feedback' ||
-        (m.say === 'text' && !m.partial)
-      )
+      const assistantMsgs = msgs.filter(m => m.say === 'text' && !m.partial)
 
       return {
         id: taskId,
@@ -61,8 +57,10 @@ export class ClineAdapter implements SessionAdapter {
         startTime: new Date(firstMsg.ts).toISOString(),
         endTime: lastMsg.ts !== firstMsg.ts ? new Date(lastMsg.ts).toISOString() : undefined,
         cwd,
-        messageCount: displayMsgs.length,
+        messageCount: userMsgs.length + assistantMsgs.length,
         userMessageCount: userMsgs.length,
+        assistantMessageCount: assistantMsgs.length,
+        systemMessageCount: 0,
         summary,
         filePath,
         sizeBytes: fileStat.size,

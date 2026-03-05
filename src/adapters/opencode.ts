@@ -108,10 +108,12 @@ export class OpenCodeAdapter implements SessionAdapter {
       }
 
       let userMessageCount = 0
+      let assistantMessageCount = 0
       for (const msgRow of messages) {
         try {
           const data = JSON.parse(msgRow.data) as MessageData
           if (data.role === 'user') userMessageCount++
+          else if (data.role === 'assistant') assistantMessageCount++
         } catch {
           // skip unparseable messages
         }
@@ -123,8 +125,10 @@ export class OpenCodeAdapter implements SessionAdapter {
         startTime,
         endTime,
         cwd: session.directory,
-        messageCount,
+        messageCount: userMessageCount + assistantMessageCount,
         userMessageCount,
+        assistantMessageCount,
+        systemMessageCount: 0,
         summary: session.title || undefined,
         filePath,
         sizeBytes: (() => { try { return statSync(dbPath).size } catch { return 0 } })(),

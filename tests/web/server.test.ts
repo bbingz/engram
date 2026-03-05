@@ -16,6 +16,8 @@ const mockSession: SessionInfo = {
   model: 'gpt-4o',
   messageCount: 20,
   userMessageCount: 10,
+  assistantMessageCount: 0,
+  systemMessageCount: 0,
   summary: 'Fix login bug',
   filePath: '/Users/test/.codex/sessions/rollout-123.jsonl',
   sizeBytes: 50000,

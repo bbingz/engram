@@ -160,7 +160,7 @@ struct SessionDetailView: View {
                     Text(verbatim: currentSummary ?? session.displayTitle)
                         .font(.headline)
                         .lineLimit(3)
-                    Text(verbatim: "\(session.source) · \(session.displayDate) · \(session.messageCount) msgs")
+                    Text(verbatim: "\(session.source) · \(session.displayDate) · \(session.msgCountLabel)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

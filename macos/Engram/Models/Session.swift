@@ -13,6 +13,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let model: String?
     let messageCount: Int
     let userMessageCount: Int
+    let assistantMessageCount: Int
+    let systemMessageCount: Int
     let summary: String?
     let filePath: String
     let sizeBytes: Int
@@ -25,8 +27,10 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case id, source, cwd, project, model, summary
         case startTime        = "start_time"
         case endTime          = "end_time"
-        case messageCount     = "message_count"
-        case userMessageCount = "user_message_count"
+        case messageCount          = "message_count"
+        case userMessageCount      = "user_message_count"
+        case assistantMessageCount = "assistant_message_count"
+        case systemMessageCount    = "system_message_count"
         case filePath         = "file_path"
         case sizeBytes        = "size_bytes"
         case indexedAt        = "indexed_at"
@@ -41,6 +45,11 @@ struct Session: FetchableRecord, Decodable, Identifiable {
             return cn
         }
         return summary ?? "Untitled"
+    }
+    var msgCountLabel: String {
+        var parts = ["\(userMessageCount) user", "\(assistantMessageCount) asst"]
+        if systemMessageCount > 0 { parts.append("\(systemMessageCount) sys") }
+        return parts.joined(separator: " · ")
     }
     var displayDate: String        { String(startTime.prefix(10)) }
     var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }

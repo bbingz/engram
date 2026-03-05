@@ -32,6 +32,14 @@ indexer.indexAll().then(async (indexed) => {
   const total = db.countSessions()
   emit({ event: 'ready', indexed, total })
 
+  // Backfill assistant/system counts for sessions indexed before this feature
+  try {
+    const backfilled = await indexer.backfillCounts()
+    if (backfilled > 0) {
+      emit({ event: 'backfill_counts', backfilled })
+    }
+  } catch { /* ignore */ }
+
   if (vecDeps) {
     try {
       const embedded = await vecDeps.embeddingIndexer.indexAll()

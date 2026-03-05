@@ -23,6 +23,12 @@ const SOURCE_COLORS: Record<string, string> = {
   opencode: '#5c6bc0', iflow: '#9b59b6', vscode: '#888',
 }
 
+function msgCounts(s: { userMessageCount: number; assistantMessageCount: number; systemMessageCount: number }): string {
+  const parts = [`${s.userMessageCount} user`, `${s.assistantMessageCount} asst`]
+  if (s.systemMessageCount > 0) parts.push(`${s.systemMessageCount} sys`)
+  return parts.join(' &middot; ')
+}
+
 function sourceLabel(source: string): string { return SOURCE_LABELS[source] ?? source }
 function sourceColor(source: string): string { return SOURCE_COLORS[source] ?? '#64748B' }
 function sourceBadge(source: string): string {
@@ -432,7 +438,7 @@ export function sessionListPage(sessions: SessionInfo[], opts: SessionListOpts):
         ${proj}
         <span title="${escapeHtml(fullDate)}">${escapeHtml(date)}</span>
         <span class="sep">&middot;</span>
-        <span>${s.messageCount} msgs</span>
+        <span>${msgCounts(s)}</span>
       </div>
     </a>`
   }).join('\n')
@@ -514,7 +520,7 @@ export function sessionDetailPage(session: SessionInfo, messages: { role: string
         ${session.project ? `<span>${escapeHtml(session.project)}</span><span class="sep">&middot;</span>` : ''}
         <span>${formatDate(session.startTime)}</span>
         <span class="sep">&middot;</span>
-        <span>${session.messageCount} msgs</span>
+        <span>${msgCounts(session)}</span>
         ${session.model ? `<span class="sep">&middot;</span><code>${escapeHtml(session.model)}</code>` : ''}
       </div>
     </div>
@@ -535,7 +541,7 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
         <span class="sep">&middot;</span>
         <span>${escapeHtml(relativeDate(s.startTime))}</span>
         <span class="sep">&middot;</span>
-        <span>${s.messageCount} msgs</span>
+        <span>${msgCounts(s)}</span>
       </div>
     </a>`).join('\n')
     recentHtml = `<div class="recent-label">Recent sessions</div>${cards}`
@@ -579,7 +585,7 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
 // Stats page
 // ---------------------------------------------------------------------------
 
-interface StatsGroup { key: string; sessionCount: number; messageCount: number }
+interface StatsGroup { key: string; sessionCount: number; messageCount: number; userMessageCount: number }
 
 export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy = 'source'): string {
   const maxSessions = Math.max(...groups.map(g => g.sessionCount), 1)
@@ -593,7 +599,8 @@ export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy =
       <div class="stat-bar-bg"><div class="stat-bar" style="width:${pct}%;background:${color}"></div></div>
       <div class="stat-values">
         <span>${g.sessionCount} sessions</span>
-        <span>${g.messageCount} messages</span>
+        <span>${g.userMessageCount} user</span>
+        <span>${g.messageCount - g.userMessageCount} asst</span>
       </div>
     </div>`
   }).join('\n')

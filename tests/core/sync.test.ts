@@ -21,7 +21,7 @@ describe('SyncEngine', () => {
 
   it('pulls new sessions from a peer', async () => {
     const mockSessions = [
-      { id: 'remote-1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', project: 'proj', messageCount: 5, userMessageCount: 2, summary: 'Remote session', filePath: '/remote/f1', sizeBytes: 100 },
+      { id: 'remote-1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', project: 'proj', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0, summary: 'Remote session', filePath: '/remote/f1', sizeBytes: 100 },
     ]
 
     const mockFetch = vi.fn()
@@ -38,12 +38,12 @@ describe('SyncEngine', () => {
   it('skips sessions that already exist with same or more messages', async () => {
     db.upsertSession({
       id: 'remote-1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
-      cwd: '/p', messageCount: 5, userMessageCount: 2,
+      cwd: '/p', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0,
       filePath: '/f1', sizeBytes: 100,
     })
 
     const mockSessions = [
-      { id: 'remote-1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', messageCount: 5, userMessageCount: 2, summary: 'Already here', filePath: '/f1', sizeBytes: 100 },
+      { id: 'remote-1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0, summary: 'Already here', filePath: '/f1', sizeBytes: 100 },
     ]
 
     const mockFetch = vi.fn()
@@ -60,12 +60,12 @@ describe('SyncEngine', () => {
   it('updates existing session when remote has more messages', async () => {
     db.upsertSession({
       id: 'remote-1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
-      cwd: '/p', messageCount: 5, userMessageCount: 2,
+      cwd: '/p', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0,
       filePath: 'sync://mac-mini//f1', sizeBytes: 100,
     })
 
     const mockSessions = [
-      { id: 'remote-1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', messageCount: 50, userMessageCount: 25, summary: 'Updated', filePath: '/f1', sizeBytes: 5000 },
+      { id: 'remote-1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', messageCount: 50, userMessageCount: 25, assistantMessageCount: 0, systemMessageCount: 0, summary: 'Updated', filePath: '/f1', sizeBytes: 5000 },
     ]
 
     const mockFetch = vi.fn()

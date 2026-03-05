@@ -87,7 +87,7 @@ export class GeminiCliAdapter implements SessionAdapter {
       const session = JSON.parse(raw) as GeminiSession
 
       const userMessages = session.messages.filter(m => m.type === 'user')
-      const conversationMessages = session.messages.filter(isConversation)
+      const assistantMessages = session.messages.filter(m => m.type === 'gemini' || m.type === 'model')
 
       // 从文件路径提取 projectName：.../tmp/<projectName>/chats/session-*.json
       const parts = filePath.split('/')
@@ -106,8 +106,10 @@ export class GeminiCliAdapter implements SessionAdapter {
         endTime: session.lastUpdated,
         cwd,
         project: projectName,
-        messageCount: conversationMessages.length,
+        messageCount: userMessages.length + assistantMessages.length,
         userMessageCount: userMessages.length,
+        assistantMessageCount: assistantMessages.length,
+        systemMessageCount: 0,
         summary: firstUserText?.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,

@@ -13,11 +13,11 @@ describe('search', () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'search-test-'))
     db = new Database(join(tmpDir, 'test.sqlite'))
-    db.upsertSession({ id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', messageCount: 5, userMessageCount: 2, filePath: '/f1', sizeBytes: 100 })
+    db.upsertSession({ id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0, filePath: '/f1', sizeBytes: 100 })
     db.indexSessionContent('s1', [
       { role: 'user', content: '帮我修复 SSL certificate error in nginx' },
     ])
-    db.upsertSession({ id: 's2', source: 'claude-code', startTime: '2026-01-02T10:00:00Z', cwd: '/p', messageCount: 3, userMessageCount: 1, filePath: '/f2', sizeBytes: 50 })
+    db.upsertSession({ id: 's2', source: 'claude-code', startTime: '2026-01-02T10:00:00Z', cwd: '/p', messageCount: 3, userMessageCount: 1, assistantMessageCount: 0, systemMessageCount: 0, filePath: '/f2', sizeBytes: 50 })
     db.indexSessionContent('s2', [
       { role: 'user', content: '添加用户注册功能' },
     ])
