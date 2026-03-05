@@ -1,28 +1,26 @@
 # Engram
 
-> MCP Server：聚合多个 AI 编程助手的历史会话，实现跨工具上下文共享。
+> MCP Server + Web UI：聚合 15 种 AI 编程助手的历史会话，实现跨工具上下文共享、混合搜索和多机同步。
 
 在 Codex 里做了半天，切到 Claude Code 继续时，AI 不需要你手动解释之前做了什么——它可以直接调用 `get_context` 查询你的历史。
 
 ```
-┌─────────────┐   ┌──────────────┐   ┌─────────────────┐
-│ Codex CLI   │   │ Claude Code  │   │   Gemini CLI    │
-│  sessions   │   │   projects   │   │      tmp        │
-└──────┬──────┘   └──────┬───────┘   └────────┬────────┘
-       │                 │                    │
-       └─────────────────┼────────────────────┘
+┌─────────┐ ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐
+│  Codex  │ │Claude Code│ │Gemini CLI│ │  Cursor  │ │ Cline …│
+│ sessions│ │ projects  │ │   tmp    │ │  vscdb   │ │  tasks  │
+└────┬────┘ └─────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬────┘
+     └────────────┴──────┬─────┴─────────────┴────────────┘
                          ▼
               ┌──────────────────────┐
-              │   engram      │
-              │   (MCP Server)       │
-              │  ~/.engram/   │
-              │   index.sqlite       │
+              │       engram         │
+              │    MCP + Web + Sync  │
+              │    ~/.engram/        │
+              │    index.sqlite      │
               └──────────┬───────────┘
-                         │  MCP
-           ┌─────────────┼─────────────┐
-           ▼             ▼             ▼
-       Codex        Claude Code    Gemini CLI
-   (下一个会话)    (下一个会话)   (下一个会话)
+                    ┌────┴────┐
+                    ▼         ▼
+                MCP Tools   Web UI
+              (AI 调用)   (浏览器)
 ```
 
 ## 目录
@@ -30,10 +28,14 @@
 - [支持的工具](#支持的工具)
 - [快速上手](#快速上手)
 - [注册为 MCP Server](#注册为-mcp-server)
+- [Web UI](#web-ui)
 - [MCP Tools 参考](#mcp-tools-参考)
+- [混合搜索](#混合搜索)
+- [多机同步](#多机同步)
 - [配置](#配置)
 - [添加新适配器](#添加新适配器)
 - [数据存储与隐私](#数据存储与隐私)
+- [开发](#开发)
 
 ## 支持的工具
 
@@ -42,11 +44,18 @@
 | [Codex CLI](https://github.com/openai/codex) | `~/.codex/sessions/` | ✅ 完整支持 |
 | [Claude Code](https://claude.ai/code) | `~/.claude/projects/` | ✅ 完整支持 |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `~/.gemini/tmp/` | ✅ 完整支持 |
+| [Antigravity](https://idx.google.com) | gRPC + `~/.gemini/antigravity/` | ✅ 完整支持 |
+| [Windsurf](https://codeium.com/windsurf) | gRPC + `~/.codeium/windsurf/` | ✅ 完整支持 |
+| [Cursor](https://cursor.sh) | `~/Library/Application Support/Cursor/…/state.vscdb` | ✅ 完整支持 |
+| [VS Code Copilot](https://code.visualstudio.com) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
+| [GitHub Copilot](https://github.com/features/copilot) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
 | [iflow](https://iflow.ai) | `~/.iflow/projects/` | ✅ 完整支持 |
 | [Qwen Code](https://qwen.ai) | `~/.qwen/projects/` | ✅ 完整支持 |
 | [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | ✅ 完整支持 |
 | [Kimi](https://kimi.moonshot.cn) | `~/.kimi/sessions/` | ✅ 完整支持 |
-| [Cline CLI](https://github.com/cline/cline) | `~/.cline/data/tasks/` | ✅ 完整支持 |
+| [MiniMax](https://minimax.chat) | `~/.minimax/sessions/` | ✅ 完整支持 |
+| [Lobster AI](https://lobster.ai) | `~/.lobsterai/sessions/` | ✅ 完整支持 |
+| [Cline](https://github.com/cline/cline) | `~/.cline/data/tasks/` | ✅ 完整支持 |
 
 ## 快速上手
 
@@ -108,11 +117,36 @@ args = ["/absolute/path/to/engram/dist/index.js"]
 }
 ```
 
+## Web UI
+
+Engram 内置 Web 界面，通过 daemon 进程自动启动，默认监听 `http://127.0.0.1:3457`。
+
+```bash
+# 启动 daemon（包含 Web UI + 索引器 + 文件监听）
+node dist/daemon.js
+```
+
+Web UI 功能：
+- **会话列表**：按来源、项目、时间筛选，支持多选过滤和分页
+- **会话详情**：完整对话内容，Markdown 渲染
+- **混合搜索**：FTS 关键词 + 语义向量搜索，实时高亮
+- **用量统计**：按来源 / 项目 / 天 / 周分组统计
+- **同步设置**：配置多机同步节点
+
+API 端点：
+- `GET /api/sessions` — 会话列表（支持 source、project、since、limit、offset）
+- `GET /api/sessions/:id` — 会话详情
+- `GET /api/search?q=...` — 混合搜索（支持 source、project、since、mode）
+- `GET /api/search/semantic?q=...` — 纯语义搜索
+- `GET /api/stats` — 用量统计
+- `GET /api/sync/status` — 同步状态
+- `POST /api/sync/trigger` — 手动触发同步
+
 ## MCP Tools 参考
 
 ### `get_context` — 核心工具
 
-为当前工作目录自动提取相关历史上下文。**在开始新任务时调用**，获取该项目的历史记录。
+为当前工作目录自动提取相关历史上下文。**在开始新任务时调用**，获取该项目的历史记录。支持语义搜索增强（需配置 embedding provider）。
 
 **参数：**
 
@@ -143,7 +177,7 @@ args = ["/absolute/path/to/engram/dist/index.js"]
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `source` | string | `codex` / `claude-code` / `gemini-cli` / `opencode` / `iflow` / `qwen` / `kimi` / `cline` |
+| `source` | string | `codex` / `claude-code` / `copilot` / `gemini-cli` / `antigravity` / `windsurf` / `cursor` / `vscode` / `opencode` / `iflow` / `qwen` / `kimi` / `minimax` / `lobsterai` / `cline` |
 | `project` | string | 项目名关键词（部分匹配） |
 | `since` | string | 开始时间（ISO 8601），如 `2026-01-01` |
 | `until` | string | 结束时间（ISO 8601） |
@@ -178,27 +212,28 @@ args = ["/absolute/path/to/engram/dist/index.js"]
 
 ---
 
-### `search` — 全文搜索
+### `search` — 混合搜索
 
-在所有会话内容中全文搜索，支持中英文，基于 SQLite FTS5 trigram 索引，毫秒级响应。
+在所有会话内容中搜索，支持三种模式：关键词（FTS5 trigram）、语义向量搜索、混合模式（RRF 融合排序）。
 
 **参数：**
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `query` | string | ✅ | 搜索关键词（至少 3 个字符） |
+| `query` | string | ✅ | 搜索关键词（关键词搜索至少 3 字符，语义搜索至少 2 字符） |
 | `source` | string | — | 限定工具来源 |
 | `project` | string | — | 限定项目 |
 | `since` | string | — | 限定时间范围 |
 | `limit` | number | — | 默认 10，最大 50 |
+| `mode` | string | — | `hybrid`（默认）/ `keyword` / `semantic` |
 
 **示例：**
 
 ```json
-{ "query": "JWT 认证", "source": "claude-code" }
+{ "query": "JWT 认证", "source": "claude-code", "mode": "hybrid" }
 ```
 
-**返回：** 每条结果包含会话元数据和匹配位置的文本片段（snippet）。
+**返回：** 每条结果包含会话元数据、高亮文本片段（`<mark>` 标签）、匹配类型（keyword / semantic / both）和融合分数。
 
 ---
 
@@ -263,37 +298,111 @@ args = ["/absolute/path/to/engram/dist/index.js"]
 
 ---
 
+### `generate_summary` — AI 摘要生成
+
+使用 AI 为指定会话生成摘要，并更新到数据库中。需要在 `~/.engram/settings.json` 中配置 OpenAI 或 Anthropic API Key。
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `sessionId` | string | ✅ | 会话 ID |
+
+**示例：**
+
+```json
+{ "sessionId": "019c9d89-e65c-7df0-9e7a-ca361961f6a5" }
+```
+
+**返回：** 生成的摘要文本。
+
+---
+
+## 混合搜索
+
+Engram 支持三种搜索模式，默认使用混合模式自动融合：
+
+| 模式 | 技术 | 适用场景 |
+|------|------|----------|
+| **keyword** | SQLite FTS5 trigram 索引 | 精确匹配关键词、代码片段、函数名 |
+| **semantic** | Embedding 向量 + sqlite-vec KNN | 语义相似，如「认证」匹配「登录鉴权」 |
+| **hybrid** | RRF 融合排序 (k=60) | 两者结合，覆盖面最广 |
+
+搜索覆盖范围：用户消息 + 助手回复 + 会话摘要。
+
+### 配置语义搜索
+
+语义搜索需要 embedding provider。在 `~/.engram/settings.json` 中配置：
+
+```json
+{
+  "openaiApiKey": "sk-..."
+}
+```
+
+支持的 embedding provider：
+- **Ollama**（本地，免费）：自动检测 `localhost:11434`，使用 `nomic-embed-text` 模型
+- **OpenAI**：使用 `text-embedding-3-small` (1536 维)
+
+未配置时自动降级为纯关键词搜索。
+
+## 多机同步
+
+Engram 支持多台机器之间同步会话索引（pull-based）。
+
+### 配置
+
+编辑 `~/.engram/settings.json`：
+
+```json
+{
+  "syncNodeName": "macbook-pro",
+  "syncEnabled": true,
+  "syncIntervalMinutes": 10,
+  "syncPeers": [
+    { "name": "desktop", "url": "http://192.168.1.100:3457" }
+  ]
+}
+```
+
+也可通过 Web UI 的 Settings 页面配置。
+
+### 工作原理
+
+- 每台机器运行 daemon 并暴露 `/api/sync/sessions` 端点
+- 定时从配置的 peer 拉取新增/更新的会话元数据
+- 使用 `indexed_at` 游标分页，增量同步
+- 同步的会话标记 `origin` 为来源机器名
+- 仅同步元数据（ID、摘要、时间等），不同步完整对话内容
+
 ## 配置
 
-配置文件为可选项，不存在时使用默认路径。将 `config.yaml` 放置在项目根目录即可自动读取。
+配置文件路径：`~/.engram/settings.json`
 
-```yaml
-# 数据源配置
-sources:
-  codex:
-    enabled: true
-    # paths:
-    #   - ~/.codex/sessions   # 可覆盖默认路径
-
-  claude-code:
-    enabled: true
-
-  gemini-cli:
-    enabled: true
-
-  opencode:
-    enabled: true
-
-# 索引数据库路径
-index:
-  db_path: ~/.engram/index.sqlite
-
-# 隐私：敏感信息脱敏（正则匹配，在索引时过滤）
-privacy:
-  redact_patterns:
-    - 'sk-[a-zA-Z0-9]{20,}'      # OpenAI API Key
-    - 'AKIA[A-Z0-9]{16}'          # AWS Access Key
+```json
+{
+  "httpPort": 3457,
+  "aiProvider": "openai",
+  "openaiApiKey": "sk-...",
+  "syncNodeName": "my-machine",
+  "syncEnabled": false,
+  "syncIntervalMinutes": 10,
+  "syncPeers": []
+}
 ```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `httpPort` | number | `3457` | Web UI 监听端口 |
+| `aiProvider` | string | `"openai"` | AI 摘要生成器：`openai` 或 `anthropic` |
+| `openaiApiKey` | string | — | OpenAI API Key（用于摘要生成和语义搜索） |
+| `openaiModel` | string | `"gpt-4o-mini"` | OpenAI 摘要模型 |
+| `anthropicApiKey` | string | — | Anthropic API Key |
+| `anthropicModel` | string | `"claude-3-haiku-20240307"` | Anthropic 摘要模型 |
+| `syncNodeName` | string | `"unnamed"` | 当前节点名称 |
+| `syncEnabled` | boolean | `false` | 是否启用同步 |
+| `syncIntervalMinutes` | number | `10` | 同步间隔（分钟） |
+| `syncPeers` | array | `[]` | 同步节点列表 `[{ name, url }]` |
 
 ## 添加新适配器
 
@@ -323,19 +432,27 @@ interface SessionAdapter {
 
 ## 数据存储与隐私
 
-- **索引库位置：** `~/.engram/index.sqlite`，仅存储元数据（会话 ID、时间、路径、摘要）和全文搜索索引，不存储完整对话内容。
-- **原始文件：** 完整消息内容始终从 AI 工具的原始日志文件流式读取，不做额外拷贝。
-- **隐私脱敏：** 可在 `config.yaml` 的 `privacy.redact_patterns` 中配置正则，匹配内容在建立搜索索引时会被替换为 `[REDACTED]`。
-- **数据不离本机：** MCP Server 本地运行，所有数据存储和检索均在本地完成，不向任何远程服务发送数据。
+- **索引库位置：** `~/.engram/index.sqlite`，存储元数据（会话 ID、时间、路径、摘要）、FTS 全文搜索索引和 embedding 向量
+- **原始文件：** 完整消息内容始终从 AI 工具的原始日志文件流式读取，不做额外拷贝
+- **隐私脱敏：** 可在配置中设置正则，匹配内容在建立索引时会被替换为 `[REDACTED]`
+- **数据不离本机：** MCP Server 和 Web UI 本地运行（`127.0.0.1`），不向任何远程服务发送数据（除非启用同步或使用 OpenAI embedding）
 
 ## 开发
 
 ```bash
-npm test              # 运行测试（59 tests）
+npm test              # 运行测试（109 tests）
 npm run test:watch    # 监听模式
 npm run test:coverage # 覆盖率报告
-npm run build         # 编译 TypeScript → dist/
+npm run build         # 编译 TypeScript -> dist/
 npm run dev           # 开发模式（tsx 直接运行，无需编译）
+```
+
+macOS 应用（Menu Bar）：
+
+```bash
+cd macos
+xcodegen generate     # 从 project.yml 生成 Xcode 项目
+open Engram.xcodeproj # 在 Xcode 中构建和运行
 ```
 
 ## License
