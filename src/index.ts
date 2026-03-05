@@ -12,11 +12,13 @@ import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
-import { ensureDataDirs, createAdapters } from './core/bootstrap.js'
+import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
+import { readFileSettings } from './core/config.js'
+import type { GetContextDeps } from './tools/get_context.js'
 
 import { listSessionsTool, handleListSessions } from './tools/list_sessions.js'
 import { getSessionTool, handleGetSession } from './tools/get_session.js'
-import { searchTool, handleSearch } from './tools/search.js'
+import { searchTool, handleSearch, type SearchDeps } from './tools/search.js'
 import { projectTimelineTool, handleProjectTimeline } from './tools/project_timeline.js'
 import { statsTool, handleStats } from './tools/stats.js'
 import { getContextTool, handleGetContext } from './tools/get_context.js'
@@ -28,6 +30,13 @@ const db = new Database(join(DB_DIR, 'index.sqlite'))
 const adapters = createAdapters()
 const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 const indexer = new Indexer(db, adapters)
+
+// Vector store — may fail if sqlite-vec can't load
+const fileSettings = readFileSettings()
+const vecDeps = initVectorDeps(db, fileSettings.openaiApiKey)
+const vectorDeps: GetContextDeps = vecDeps
+  ? { vectorStore: vecDeps.vectorStore, embed: (text) => vecDeps.embeddingClient.embed(text) }
+  : {}
 
 const allTools = [
   listSessionsTool,
@@ -68,13 +77,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!adapter) return { content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true }
       result = await handleGetSession(db, adapter, a as { id: string; page?: number; roles?: string[] })
     } else if (name === 'search') {
-      result = await handleSearch(db, a as { query: string })
+      const sDeps: SearchDeps = vecDeps
+        ? { vectorStore: vecDeps.vectorStore, embed: (text) => vecDeps.embeddingClient.embed(text) }
+        : {}
+      result = await handleSearch(db, a as { query: string; mode?: string }, sDeps)
     } else if (name === 'project_timeline') {
       result = await handleProjectTimeline(db, a as { project: string })
     } else if (name === 'stats') {
       result = await handleStats(db, a)
     } else if (name === 'get_context') {
-      result = await handleGetContext(db, a as { cwd: string })
+      result = await handleGetContext(db, a as { cwd: string }, vectorDeps)
     } else if (name === 'export') {
       const session = db.getSession(a.id as string)
       if (!session) return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true }
@@ -94,9 +106,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 })
 
 // 启动时建立索引
-indexer.indexAll().then(count => {
+indexer.indexAll().then(async (count) => {
   if (count > 0) {
     process.stderr.write(`[engram] Indexed ${count} new sessions\n`)
+  }
+  if (vecDeps) {
+    await vecDeps.embeddingIndexer.indexAll().catch(() => {})
   }
 }).catch(() => {})
 

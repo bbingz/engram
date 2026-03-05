@@ -26,13 +26,15 @@ describe('GeminiCliAdapter', () => {
     expect(info!.summary).toBe('帮我优化这段 SQL 查询')
   })
 
-  it('streamMessages yields only user and model messages (not info)', async () => {
+  it('streamMessages yields only user and gemini messages (not info)', async () => {
     const messages = []
     for await (const msg of adapter.streamMessages(SESSION_FIXTURE)) {
       messages.push(msg)
     }
-    expect(messages).toHaveLength(3) // 2 user + 1 model，info 被过滤
+    expect(messages).toHaveLength(3) // 2 user + 1 gemini，info 被过滤
     expect(messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
+    expect(messages[0].content).toBe('帮我优化这段 SQL 查询')
+    expect(messages[1].role).toBe('assistant')
   })
 
   it('resolveProject returns cwd for projectName', async () => {

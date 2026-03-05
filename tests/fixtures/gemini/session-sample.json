@@ -4,9 +4,9 @@
   "startTime": "2026-01-25T14:00:00.000Z",
   "lastUpdated": "2026-01-25T14:30:00.000Z",
   "messages": [
-    {"id": "m001", "timestamp": "2026-01-25T14:00:10.000Z", "type": "user", "content": "帮我优化这段 SQL 查询"},
-    {"id": "m002", "timestamp": "2026-01-25T14:00:20.000Z", "type": "model", "content": "我来分析这段查询..."},
+    {"id": "m001", "timestamp": "2026-01-25T14:00:10.000Z", "type": "user", "content": [{"text": "帮我优化这段 SQL 查询"}]},
+    {"id": "m002", "timestamp": "2026-01-25T14:00:20.000Z", "type": "gemini", "content": "我来分析这段查询..."},
     {"id": "m003", "timestamp": "2026-01-25T14:01:00.000Z", "type": "info", "content": "Tool call: read_file"},
-    {"id": "m004", "timestamp": "2026-01-25T14:02:00.000Z", "type": "user", "content": "谢谢，还有别的优化建议吗？"}
+    {"id": "m004", "timestamp": "2026-01-25T14:02:00.000Z", "type": "user", "content": [{"text": "谢谢，还有别的优化建议吗？"}]}
   ]
 }

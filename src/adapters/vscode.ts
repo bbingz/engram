@@ -55,6 +55,8 @@ export class VsCodeAdapter implements SessionAdapter {
       const userMessages = session.requests.map(r => this.extractUserText(r)).filter(Boolean)
       const lastReq = session.requests[session.requests.length - 1]
 
+      const assistantMessageCount = session.requests.length  // 1:1 mapping with user
+
       return {
         id: session.sessionId || basename(filePath, '.jsonl'),
         source: 'vscode',
@@ -63,8 +65,10 @@ export class VsCodeAdapter implements SessionAdapter {
           ? new Date(lastReq.timestamp).toISOString()
           : undefined,
         cwd: '',
-        messageCount: session.requests.length * 2,  // each request has user + assistant
+        messageCount: session.requests.length + assistantMessageCount,
         userMessageCount: session.requests.length,
+        assistantMessageCount,
+        systemMessageCount: 0,
         summary: userMessages[0]?.slice(0, 200),
         filePath,
         sizeBytes: fileStat.size,

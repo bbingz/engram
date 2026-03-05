@@ -22,6 +22,7 @@
 		5020CE74853C590CFEE9F0CA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3ED5F4A67BA499CAD0CB87E2 /* Assets.xcassets */; };
 		55A1E938C15DB4BE1A88AE36 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B088996486F740E1114B97 /* App.swift */; };
 		7CA8E6B2A95200C50CDB2C94 /* MCPTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F9271351B80A54B709C23E /* MCPTools.swift */; };
+		80AF087E8134222249F118EF /* ContentSegmentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A706DBB6CFE741BD410AFB3E /* ContentSegmentParser.swift */; };
 		90240AE049D4FA4C3FC0CDD7 /* LaunchAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC72889AD73299ACF4534DE /* LaunchAgent.swift */; };
 		906CA3DF2FA7CBE42CDD3DFC /* AIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F48C4E1F0A7553B2A8A330 /* AIClient.swift */; };
 		909ACCF030DD1E1D3F8296B9 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EF78E4EF7AA7613D39D1160 /* main.swift */; };
@@ -29,6 +30,7 @@
 		9A43B6AA859F78C1C91E9C1C /* FavoritesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E010C5C04313BC0A60AB0AD /* FavoritesView.swift */; };
 		A7F69DDCDB1E31AF945C51BB /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50B58B775947B6CDBE2E1126 /* Database.swift */; };
 		B98CD1E9E0AB7AF22957403D /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DB2E95CFC54D554A2CDFB3D /* SearchView.swift */; };
+		BF4DE6B96114F35313E96132 /* ContentSegmentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75DB3A0F8CB94DAFEB010D70 /* ContentSegmentViews.swift */; };
 		C787E8E6A80171E8B582531C /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = C62F48F2296F24C91C48040D /* Session.swift */; };
 		CE445FCDA568A3C6DA8A854C /* TimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF745FD5FE65915F36FB931 /* TimelineView.swift */; };
 		F1B35422C4966E3F7B1C2A45 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BE0F3D0EF2B41203834B93F /* ContentView.swift */; };
@@ -46,12 +48,14 @@
 		50B58B775947B6CDBE2E1126 /* Database.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Database.swift; sourceTree = "<group>"; };
 		61F48C4E1F0A7553B2A8A330 /* AIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIClient.swift; sourceTree = "<group>"; };
 		6A0E4988B449A25982524EB7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		75DB3A0F8CB94DAFEB010D70 /* ContentSegmentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSegmentViews.swift; sourceTree = "<group>"; };
 		7747AB6507C03EE64F5C74D0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		8FCACDAEB35E5381E270B529 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
 		956B54D22C1F37270245E275 /* EngramCLI */ = {isa = PBXFileReference; includeInIndex = 0; path = EngramCLI; sourceTree = BUILT_PRODUCTS_DIR; };
 		97B088996486F740E1114B97 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		9A0551A8DFF54710CD9C3423 /* Engram.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Engram.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A3987C6F66BC73D1A3C26070 /* MessageParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageParser.swift; sourceTree = "<group>"; };
+		A706DBB6CFE741BD410AFB3E /* ContentSegmentParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSegmentParser.swift; sourceTree = "<group>"; };
 		AF92828025409F1D7A16097F /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
 		BBC72889AD73299ACF4534DE /* LaunchAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAgent.swift; sourceTree = "<group>"; };
 		C62F48F2296F24C91C48040D /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
@@ -101,6 +105,7 @@
 		4A97495EEFCD079F9A234097 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				75DB3A0F8CB94DAFEB010D70 /* ContentSegmentViews.swift */,
 				0BE0F3D0EF2B41203834B93F /* ContentView.swift */,
 				4E010C5C04313BC0A60AB0AD /* FavoritesView.swift */,
 				2DB2E95CFC54D554A2CDFB3D /* SearchView.swift */,
@@ -116,6 +121,7 @@
 			isa = PBXGroup;
 			children = (
 				61F48C4E1F0A7553B2A8A330 /* AIClient.swift */,
+				A706DBB6CFE741BD410AFB3E /* ContentSegmentParser.swift */,
 				50B58B775947B6CDBE2E1126 /* Database.swift */,
 				E2586EC2059389E5D4E9CD66 /* IndexerProcess.swift */,
 				BBC72889AD73299ACF4534DE /* LaunchAgent.swift */,
@@ -306,6 +312,8 @@
 			files = (
 				906CA3DF2FA7CBE42CDD3DFC /* AIClient.swift in Sources */,
 				55A1E938C15DB4BE1A88AE36 /* App.swift in Sources */,
+				80AF087E8134222249F118EF /* ContentSegmentParser.swift in Sources */,
+				BF4DE6B96114F35313E96132 /* ContentSegmentViews.swift in Sources */,
 				F1B35422C4966E3F7B1C2A45 /* ContentView.swift in Sources */,
 				A7F69DDCDB1E31AF945C51BB /* Database.swift in Sources */,
 				9A43B6AA859F78C1C91E9C1C /* FavoritesView.swift in Sources */,

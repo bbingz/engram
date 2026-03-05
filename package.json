@@ -18,11 +18,14 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
+    "@hono/node-server": "^1.19.10",
     "@modelcontextprotocol/sdk": "^1.10.2",
     "better-sqlite3": "^11.9.1",
     "chokidar": "^4.0.3",
+    "hono": "^4.12.4",
     "js-yaml": "^4.1.0",
-    "openai": "^6.25.0"
+    "openai": "^6.25.0",
+    "sqlite-vec": "0.1.7-alpha.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

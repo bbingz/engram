@@ -66,8 +66,10 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       let startTime = ''
       let endTime = ''
       let userCount = 0
-      let totalCount = 0
+      let assistantCount = 0
+      let systemCount = 0
       let firstUserText = ''
+      let detectedModel = ''
 
       for await (const line of this.readLines(filePath)) {
         const obj = this.parseLine(line)
@@ -82,14 +84,20 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         if (!startTime && obj.timestamp) startTime = obj.timestamp as string
         if (obj.timestamp) endTime = obj.timestamp as string
 
-        totalCount++
+        const msg = obj.message as Record<string, unknown> | undefined
+        if (!detectedModel && msg?.model) {
+          detectedModel = msg.model as string
+        }
 
-        if (type === 'user') {
-          userCount++
-          if (!firstUserText) {
-            const msg = obj.message as Record<string, unknown>
-            const text = this.extractContent(msg?.content)
-            if (!this.isSystemInjection(text)) {
+        if (type === 'assistant') {
+          assistantCount++
+        } else if (type === 'user') {
+          const text = this.extractContent(msg?.content)
+          if (this.isSystemInjection(text)) {
+            systemCount++
+          } else {
+            userCount++
+            if (!firstUserText) {
               firstUserText = text
             }
           }
@@ -101,15 +109,19 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       const isSubagent = filePath.includes('/subagents/')
       // Subagent files share sessionId with the parent — use agentId as the unique DB key
       const id = isSubagent && agentId ? agentId : sessionId
+      const source = ClaudeCodeAdapter.detectSource(detectedModel, filePath)
 
       return {
         id,
-        source: 'claude-code',
+        source,
         startTime,
         endTime: endTime !== startTime ? endTime : undefined,
         cwd,
-        messageCount: totalCount,
+        model: detectedModel || undefined,
+        messageCount: userCount + assistantCount,
         userMessageCount: userCount,
+        assistantMessageCount: assistantCount,
+        systemMessageCount: systemCount,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
@@ -118,6 +130,20 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     } catch {
       return null
     }
+  }
+
+  /** Map model string + file path to source name. Non-Claude models get their own source. */
+  static detectSource(model: string, filePath?: string): SessionInfo['source'] {
+    // Lobster AI writes to ~/.claude/projects/ with its own project dirs
+    if (filePath && filePath.includes('lobsterai')) return 'lobsterai'
+    if (!model || model.startsWith('claude') || model.startsWith('<')) return 'claude-code'
+    const m = model.toLowerCase()
+    if (m.includes('qwen')) return 'qwen'
+    if (m.includes('kimi')) return 'kimi'
+    if (m.includes('gemini')) return 'gemini-cli'
+    if (m.includes('minimax')) return 'minimax'
+    // Unknown non-Claude model — still file is in ~/.claude, keep as claude-code
+    return 'claude-code'
   }
 
   async *streamMessages(filePath: string, opts: StreamMessagesOptions = {}): AsyncGenerator<Message> {
@@ -185,10 +211,20 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   private extractContent(content: unknown): string {
     if (typeof content === 'string') return content
     if (Array.isArray(content)) {
+      // Collect all text blocks (some models emit multiple)
+      const texts: string[] = []
+      let thinkingFallback = ''
       for (const item of content) {
         const c = item as Record<string, unknown>
-        if (c.type === 'text' && c.text) return c.text as string
+        if (c.type === 'text' && c.text) {
+          texts.push(c.text as string)
+        } else if (c.type === 'thinking' && c.thinking && !thinkingFallback) {
+          thinkingFallback = c.thinking as string
+        }
       }
+      if (texts.length > 0) return texts.join('\n')
+      // Fall back to thinking content if no text blocks exist
+      if (thinkingFallback) return thinkingFallback
     }
     return ''
   }

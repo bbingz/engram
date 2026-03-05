@@ -2,18 +2,26 @@
 import Foundation
 import GRDB
 
+enum SystemCategory: String {
+    case none
+    case systemPrompt   // CLAUDE.md, AGENTS.md, environment_context, system-reminder, etc.
+    case agentComm      // command-name, command-message, skill invocations, local-command-*
+}
+
 struct ChatMessage: Identifiable {
     let id = UUID()
     let role: String    // "user" or "assistant"
     let content: String
-    let isSystem: Bool  // system injection — hidden in clean view
+    let systemCategory: SystemCategory
+
+    var isSystem: Bool { systemCategory != .none }
 }
 
 struct MessageParser {
 
     static func parse(filePath: String, source: String) -> [ChatMessage] {
         switch source {
-        case "claude-code", "qwen", "iflow":
+        case "claude-code", "qwen", "iflow", "lobsterai", "minimax":
             return parseTypeMessageFormat(filePath: filePath, source: source)
         case "kimi":
             return parseRoleDirectFormat(filePath: filePath, skipFirst: false, source: source)
@@ -21,6 +29,8 @@ struct MessageParser {
             return parseRoleDirectFormat(filePath: filePath, skipFirst: true, source: source)
         case "codex":
             return parseCodexFormat(filePath: filePath)
+        case "copilot":
+            return parseCopilotFormat(filePath: filePath)
         case "gemini-cli":
             return parseGeminiFormat(filePath: filePath)
         case "cline":
@@ -49,8 +59,8 @@ struct MessageParser {
             // Qwen uses message.parts[].text instead of message.content
             if content.isEmpty { content = extractPartsContent(msg["parts"]) }
             guard !content.isEmpty else { return nil }
-            let sys = type_ == "user" && isSystemInjection(content: content, source: source)
-            return ChatMessage(role: type_, content: content, isSystem: sys)
+            let cat = type_ == "user" ? classifySystem(content: content, source: source) : .none
+            return ChatMessage(role: type_, content: content, systemCategory: cat)
         }
     }
 
@@ -65,8 +75,31 @@ struct MessageParser {
                   role == "user" || role == "assistant",
                   let content = obj["content"] as? String,
                   !content.isEmpty else { return nil }
-            let sys = role == "user" && isSystemInjection(content: content, source: source)
-            return ChatMessage(role: role, content: content, isSystem: sys)
+            let cat = role == "user" ? classifySystem(content: content, source: source) : .none
+            return ChatMessage(role: role, content: content, systemCategory: cat)
+        }
+    }
+
+    // MARK: - copilot
+    // {"type":"user.message","data":{"content":"..."}}
+    // {"type":"assistant.message","data":{"content":"...","toolRequests":[...]}}
+    private static func parseCopilotFormat(filePath: String) -> [ChatMessage] {
+        guard let lines = readLines(filePath) else { return [] }
+        return lines.compactMap { line in
+            guard let obj = parseJSON(line),
+                  let type_ = obj["type"] as? String,
+                  let data = obj["data"] as? [String: Any] else { return nil }
+            let role: String
+            if type_ == "user.message" {
+                role = "user"
+            } else if type_ == "assistant.message" {
+                role = "assistant"
+            } else {
+                return nil
+            }
+            let content = (data["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            return ChatMessage(role: role, content: content, systemCategory: .none)
         }
     }
 
@@ -83,24 +116,32 @@ struct MessageParser {
                   role == "user" || role == "assistant" else { return nil }
             let content = extractTextArray(payload["content"])
             guard !content.isEmpty else { return nil }
-            let sys = role == "user" && isSystemInjection(content: content, source: "codex")
-            return ChatMessage(role: role, content: content, isSystem: sys)
+            let cat = role == "user" ? classifySystem(content: content, source: "codex") : .none
+            return ChatMessage(role: role, content: content, systemCategory: cat)
         }
     }
 
     // MARK: - gemini-cli
-    // Whole file: {"messages":[{"type":"user"/"model","content":"..."}]}
+    // Whole file: {"messages":[{"type":"user"/"gemini"/"model","content": string | [{"text":"..."}]}]}
     private static func parseGeminiFormat(filePath: String) -> [ChatMessage] {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let messages = obj["messages"] as? [[String: Any]] else { return [] }
         return messages.compactMap { msg in
             guard let type_ = msg["type"] as? String,
-                  type_ == "user" || type_ == "model",
-                  let content = msg["content"] as? String,
-                  !content.isEmpty else { return nil }
-            let role = type_ == "model" ? "assistant" : "user"
-            return ChatMessage(role: role, content: content, isSystem: false)
+                  type_ == "user" || type_ == "gemini" || type_ == "model" else { return nil }
+            // content can be a string or an array of {text: "..."}
+            let content: String
+            if let str = msg["content"] as? String {
+                content = str
+            } else if let arr = msg["content"] as? [[String: Any]] {
+                content = arr.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            } else {
+                return nil
+            }
+            guard !content.isEmpty else { return nil }
+            let role = type_ == "user" ? "user" : "assistant"
+            return ChatMessage(role: role, content: content, systemCategory: .none)
         }
     }
 
@@ -113,10 +154,10 @@ struct MessageParser {
             guard let say = msg["say"] as? String else { return nil }
             if say == "task" || say == "user_feedback" {
                 let content = msg["text"] as? String ?? ""
-                return content.isEmpty ? nil : ChatMessage(role: "user", content: content, isSystem: false)
+                return content.isEmpty ? nil : ChatMessage(role: "user", content: content, systemCategory: .none)
             } else if say == "text", !(msg["partial"] as? Bool ?? false) {
                 let content = msg["text"] as? String ?? ""
-                return content.isEmpty ? nil : ChatMessage(role: "assistant", content: content, isSystem: false)
+                return content.isEmpty ? nil : ChatMessage(role: "assistant", content: content, systemCategory: .none)
             }
             return nil
         }
@@ -174,7 +215,7 @@ struct MessageParser {
             }
             let content = (obj["text"] as? String) ?? (obj["rawText"] as? String) ?? ""
             guard !content.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-            return ChatMessage(role: role, content: content, isSystem: false)
+            return ChatMessage(role: role, content: content, systemCategory: .none)
         }
     }
 
@@ -211,29 +252,33 @@ struct MessageParser {
                 else { return nil }
                 let content = (pobj["text"] as? String) ?? (pobj["value"] as? String) ?? ""
                 guard !content.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-                return ChatMessage(role: role, content: content, isSystem: false)
+                return ChatMessage(role: role, content: content, systemCategory: .none)
             }
         }) ?? []
     }
 
     // MARK: - System injection detection
 
-    static func isSystemInjection(content: String, source: String) -> Bool {
-        if content.hasPrefix("# AGENTS.md instructions for ")  { return true }
-        if content.contains("<INSTRUCTIONS>")                  { return true }
-        if content.hasPrefix("<local-command-caveat>")         { return true }
-        if content.hasPrefix("<local-command-stdout>")         { return true }
-        if content.contains("<command-name>")                  { return true }
-        if content.contains("<command-message>")               { return true }
-        if content.hasPrefix("Unknown skill: ")                { return true }
-        if content.hasPrefix("Invoke the superpowers:")        { return true }
-        if content.hasPrefix("Base directory for this skill:") { return true }
-        if content.hasPrefix("<system-reminder>")              { return true }
-        if content.hasPrefix("<environment_context>")          { return true }
-        if content.hasPrefix("<EXTREMELY_IMPORTANT>")          { return true }
-        if content.hasPrefix("\nYou are Qwen Code")            { return true }
-        if content.hasPrefix("You are Qwen Code")             { return true }
-        return false
+    static func classifySystem(content: String, source: String) -> SystemCategory {
+        // System prompts — injected context, instructions, environment
+        if content.hasPrefix("# AGENTS.md instructions for ")  { return .systemPrompt }
+        if content.contains("<INSTRUCTIONS>")                  { return .systemPrompt }
+        if content.hasPrefix("<system-reminder>")              { return .systemPrompt }
+        if content.hasPrefix("<environment_context>")          { return .systemPrompt }
+        if content.hasPrefix("<EXTREMELY_IMPORTANT>")          { return .systemPrompt }
+        if content.hasPrefix("\nYou are Qwen Code")            { return .systemPrompt }
+        if content.hasPrefix("You are Qwen Code")             { return .systemPrompt }
+
+        // Agent communication — tool/skill/command interactions
+        if content.hasPrefix("<local-command-caveat>")         { return .agentComm }
+        if content.hasPrefix("<local-command-stdout>")         { return .agentComm }
+        if content.contains("<command-name>")                  { return .agentComm }
+        if content.contains("<command-message>")               { return .agentComm }
+        if content.hasPrefix("Unknown skill: ")                { return .agentComm }
+        if content.hasPrefix("Invoke the superpowers:")        { return .agentComm }
+        if content.hasPrefix("Base directory for this skill:") { return .agentComm }
+
+        return .none
     }
 
     // MARK: - Helpers
@@ -252,9 +297,20 @@ struct MessageParser {
     private static func extractMessageContent(_ content: Any?) -> String {
         if let str = content as? String { return str }
         if let arr = content as? [[String: Any]] {
+            // Collect all text blocks; fall back to thinking content
+            var texts: [String] = []
+            var thinkingFallback: String?
             for item in arr {
-                if item["type"] as? String == "text", let text = item["text"] as? String { return text }
+                if item["type"] as? String == "text", let text = item["text"] as? String {
+                    texts.append(text)
+                } else if item["type"] as? String == "thinking",
+                          let thinking = item["thinking"] as? String,
+                          thinkingFallback == nil {
+                    thinkingFallback = thinking
+                }
             }
+            if !texts.isEmpty { return texts.joined(separator: "\n") }
+            if let fallback = thinkingFallback { return fallback }
         }
         return ""
     }

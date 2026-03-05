@@ -52,7 +52,8 @@ export class IflowAdapter implements SessionAdapter {
       let startTime = ''
       let endTime = ''
       let userCount = 0
-      let totalCount = 0
+      let assistantCount = 0
+      let systemCount = 0
       let firstUserText = ''
 
       for await (const line of this.readLines(filePath)) {
@@ -67,14 +68,16 @@ export class IflowAdapter implements SessionAdapter {
         if (!startTime && obj.timestamp) startTime = obj.timestamp as string
         if (obj.timestamp) endTime = obj.timestamp as string
 
-        totalCount++
-
-        if (type === 'user') {
-          userCount++
-          if (!firstUserText) {
-            const msg = obj.message as Record<string, unknown>
-            const text = this.extractContent(msg?.content)
-            if (!this.isSystemInjection(text)) {
+        if (type === 'assistant') {
+          assistantCount++
+        } else if (type === 'user') {
+          const msg = obj.message as Record<string, unknown>
+          const text = this.extractContent(msg?.content)
+          if (this.isSystemInjection(text)) {
+            systemCount++
+          } else {
+            userCount++
+            if (!firstUserText) {
               firstUserText = text
             }
           }
@@ -89,8 +92,10 @@ export class IflowAdapter implements SessionAdapter {
         startTime,
         endTime: endTime !== startTime ? endTime : undefined,
         cwd,
-        messageCount: totalCount,
+        messageCount: userCount + assistantCount,
         userMessageCount: userCount,
+        assistantMessageCount: assistantCount,
+        systemMessageCount: systemCount,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,

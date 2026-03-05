@@ -186,7 +186,7 @@ export class AntigravityAdapter implements SessionAdapter {
 
       // Count messages (skip first meta line)
       let userCount = 0
-      let totalCount = 0
+      let assistantCount = 0
       let firstUserText = ''
       let isFirst = true
 
@@ -194,10 +194,11 @@ export class AntigravityAdapter implements SessionAdapter {
         if (isFirst) { isFirst = false; continue }  // skip meta line
         try {
           const msg = JSON.parse(line) as { role: string; content: string }
-          totalCount++
           if (msg.role === 'user') {
             userCount++
             if (!firstUserText) firstUserText = msg.content
+          } else if (msg.role === 'assistant') {
+            assistantCount++
           }
         } catch { /* skip */ }
       }
@@ -208,8 +209,10 @@ export class AntigravityAdapter implements SessionAdapter {
         startTime: meta.createdAt,
         endTime: meta.updatedAt !== meta.createdAt ? meta.updatedAt : undefined,
         cwd: meta.cwd || '',
-        messageCount: totalCount,
+        messageCount: userCount + assistantCount,
         userMessageCount: userCount,
+        assistantMessageCount: assistantCount,
+        systemMessageCount: 0,
         summary: (meta.title || meta.summary || firstUserText).slice(0, 200) || undefined,
         filePath,
         sizeBytes,

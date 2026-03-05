@@ -70,7 +70,7 @@ export class KimiAdapter implements SessionAdapter {
       const { startTime, endTime } = await this.readTimestamps(filePath)
 
       let userCount = 0
-      let totalCount = 0
+      let assistantCount = 0
       let firstUserText = ''
 
       for await (const line of this.readLines(filePath)) {
@@ -81,13 +81,13 @@ export class KimiAdapter implements SessionAdapter {
         if (role === '_checkpoint') continue
         if (role !== 'user' && role !== 'assistant') continue
 
-        totalCount++
-
         if (role === 'user') {
           userCount++
           if (!firstUserText && typeof obj.content === 'string') {
             firstUserText = obj.content
           }
+        } else {
+          assistantCount++
         }
       }
 
@@ -97,8 +97,10 @@ export class KimiAdapter implements SessionAdapter {
         startTime: startTime || new Date(fileStat.mtimeMs - 60000).toISOString(),
         endTime: endTime !== startTime ? endTime : undefined,
         cwd,
-        messageCount: totalCount,
+        messageCount: userCount + assistantCount,
         userMessageCount: userCount,
+        assistantMessageCount: assistantCount,
+        systemMessageCount: 0,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,

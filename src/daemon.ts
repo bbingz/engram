@@ -6,23 +6,48 @@ import { join } from 'path'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
-import { setupProcessLifecycle } from './core/lifecycle.js'
-import { ensureDataDirs, createAdapters } from './core/bootstrap.js'
+import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
+import { createApp } from './web.js'
+import { readFileSettings } from './core/config.js'
+import { SyncEngine } from './core/sync.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
 const db = new Database(dbPath)
 const adapters = createAdapters()
 const indexer = new Indexer(db, adapters)
+const settings = readFileSettings()
 
 function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
 
+const vecDeps = initVectorDeps(db, settings.openaiApiKey)
+if (!vecDeps) {
+  emit({ event: 'warning', message: 'Vector store unavailable' })
+}
+
 // Initial full scan
-indexer.indexAll().then(indexed => {
+indexer.indexAll().then(async (indexed) => {
   const total = db.countSessions()
   emit({ event: 'ready', indexed, total })
+
+  // Backfill assistant/system counts for sessions indexed before this feature
+  try {
+    const backfilled = await indexer.backfillCounts()
+    if (backfilled > 0) {
+      emit({ event: 'backfill_counts', backfilled })
+    }
+  } catch { /* ignore */ }
+
+  if (vecDeps) {
+    try {
+      const embedded = await vecDeps.embeddingIndexer.indexAll()
+      if (embedded > 0) {
+        emit({ event: 'embeddings_ready', embedded })
+      }
+    } catch { /* ignore */ }
+  }
 }).catch(err => {
   emit({ event: 'error', message: String(err) })
 })
@@ -43,8 +68,51 @@ const rescanTimer = setInterval(async () => {
   } catch (_) { /* ignore */ }
 }, RESCAN_INTERVAL)
 
-// Lifecycle: stdin/parent/signal layers, no idle timeout for daemon
-setupProcessLifecycle({
-  idleTimeoutMs: 0,
-  onExit: () => { clearInterval(rescanTimer); watcher?.close() },
+// Sync engine
+const syncEngine = new SyncEngine(db)
+const syncPeers = settings.syncPeers ?? []
+const syncIntervalMs = Math.max(settings.syncIntervalMinutes ?? 30, 1) * 60 * 1000
+
+async function syncAndEmit(): Promise<void> {
+  const results = await syncEngine.syncAllPeers(syncPeers)
+  const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
+  if (totalPulled > 0) {
+    emit({ event: 'sync_complete', results, totalPulled })
+  }
+}
+
+// Start web server
+const port = settings.httpPort ?? 3457
+const app = createApp(db, {
+  vectorStore: vecDeps?.vectorStore,
+  embeddingClient: vecDeps?.embeddingClient,
+  syncEngine,
+  syncPeers,
+  settings,
 })
+const { serve } = await import('@hono/node-server')
+const webServer = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
+  emit({ event: 'web_ready', port: info.port })
+})
+
+// Initial sync on startup
+if (settings.syncEnabled && syncPeers.length > 0) {
+  syncAndEmit().catch(() => {})
+}
+
+// Periodic sync timer
+const syncTimer = settings.syncEnabled && syncPeers.length > 0
+  ? setInterval(() => { syncAndEmit().catch(() => {}) }, syncIntervalMs)
+  : null
+
+// Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
+function shutdown() {
+  clearInterval(rescanTimer)
+  if (syncTimer) clearInterval(syncTimer)
+  watcher?.close()
+  webServer.close()
+  db.close()
+  process.exit(0)
+}
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)

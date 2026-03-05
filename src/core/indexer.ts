@@ -43,15 +43,15 @@ export class Indexer {
 
           this.db.upsertSession(info)
 
-          // 索引用户消息内容用于全文搜索
+          // 索引消息内容用于全文搜索（user + assistant）
           const messages: { role: string; content: string }[] = []
           for await (const msg of adapter.streamMessages(filePath)) {
-            if (msg.role === 'user' && msg.content.trim()) {
+            if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
               messages.push({ role: msg.role, content: msg.content })
             }
           }
           if (messages.length > 0) {
-            this.db.indexSessionContent(info.id, messages)
+            this.db.indexSessionContent(info.id, messages, info.summary)
           }
 
           newCount++
@@ -62,6 +62,28 @@ export class Indexer {
     }
 
     return newCount
+  }
+
+  // 回填缺少 assistant/system 计数的旧会话
+  async backfillCounts(): Promise<number> {
+    const ids = this.db.needsCountBackfill()
+    if (ids.length === 0) return 0
+
+    let count = 0
+    for (const id of ids) {
+      const session = this.db.getSession(id)
+      if (!session) continue
+      const adapter = this.adapters.find(a => a.name === session.source)
+      if (!adapter) continue
+      try {
+        const info = await adapter.parseSessionInfo(session.filePath)
+        if (info) {
+          this.db.upsertSession({ ...info, project: session.project ?? info.project })
+          count++
+        }
+      } catch { /* skip */ }
+    }
+    return count
   }
 
   // 索引单个文件（文件变化时增量更新用）
@@ -81,12 +103,12 @@ export class Indexer {
 
       const messages: { role: string; content: string }[] = []
       for await (const msg of adapter.streamMessages(filePath)) {
-        if (msg.role === 'user' && msg.content.trim()) {
+        if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
           messages.push({ role: msg.role, content: msg.content })
         }
       }
       if (messages.length > 0) {
-        this.db.indexSessionContent(info.id, messages)
+        this.db.indexSessionContent(info.id, messages, info.summary)
       }
 
       return true

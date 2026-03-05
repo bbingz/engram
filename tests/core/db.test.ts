@@ -30,6 +30,8 @@ describe('Database', () => {
     model: 'gpt-4o',
     messageCount: 20,
     userMessageCount: 10,
+    assistantMessageCount: 0,
+    systemMessageCount: 0,
     summary: '帮我修复登录 bug',
     filePath: '/Users/test/.codex/sessions/2026/01/01/rollout-123.jsonl',
     sizeBytes: 50000,
@@ -84,5 +86,30 @@ describe('Database', () => {
     db.upsertSession(mockSession)
     expect(db.isIndexed(mockSession.filePath, mockSession.sizeBytes)).toBe(true)
     expect(db.isIndexed(mockSession.filePath, 99999)).toBe(false)
+  })
+
+  it('preserves origin field on upsert', () => {
+    db.upsertSession({ ...mockSession, id: 'origin-test', origin: 'mac-mini' })
+    const result = db.getSession('origin-test')
+    expect(result).not.toBeNull()
+    expect(result!.origin).toBe('mac-mini')
+  })
+
+  it('defaults origin to local', () => {
+    db.upsertSession(mockSession)
+    const result = db.getSession('session-001')
+    expect(result!.origin).toBe('local')
+  })
+
+  it('listSessionsSince returns sessions indexed after a given time', () => {
+    db.upsertSession(mockSession)
+    const yesterday = new Date(Date.now() - 86400000).toISOString()
+    const results = db.listSessionsSince(yesterday, 100)
+    expect(results).toHaveLength(1)
+    expect(results[0].id).toBe('session-001')
+
+    const tomorrow = new Date(Date.now() + 86400000).toISOString()
+    const resultsEmpty = db.listSessionsSince(tomorrow, 100)
+    expect(resultsEmpty).toHaveLength(0)
   })
 })

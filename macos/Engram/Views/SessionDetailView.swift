@@ -1,6 +1,49 @@
 // macos/Engram/Views/SessionDetailView.swift
 import SwiftUI
 
+// MARK: - Shared source display info
+
+enum SourceDisplay {
+    static func label(for source: String) -> String {
+        switch source {
+        case "claude-code":  return "Claude"
+        case "codex":        return "Codex"
+        case "copilot":      return "Copilot"
+        case "gemini-cli":   return "Gemini"
+        case "kimi":         return "Kimi"
+        case "qwen":         return "Qwen"
+        case "minimax":      return "MiniMax"
+        case "lobsterai":    return "Lobster AI"
+        case "cline":        return "Cline"
+        case "cursor":       return "Cursor"
+        case "windsurf":     return "Windsurf"
+        case "antigravity":  return "Antigravity"
+        case "opencode":     return "OpenCode"
+        case "iflow":        return "iFlow"
+        default:             return source
+        }
+    }
+
+    static func color(for source: String) -> Color {
+        switch source {
+        case "claude-code":            return .orange
+        case "codex":                  return .green
+        case "cursor":                 return .blue
+        case "gemini-cli", "antigravity": return .cyan
+        case "copilot":                return .gray
+        case "opencode":               return .indigo
+        case "iflow":                  return .purple
+        case "qwen":                   return .teal
+        case "kimi":                   return .pink
+        case "cline":                  return .mint
+        case "minimax":                return .red
+        case "lobsterai":              return .yellow
+        case "windsurf":               return .brown
+        default:                       return .gray
+        }
+    }
+}
+
 struct SessionDetailView: View {
     let session: Session
     @EnvironmentObject var db: DatabaseManager
@@ -12,8 +55,18 @@ struct SessionDetailView: View {
     @State private var summaryError: String? = nil
     @State private var currentSummary: String?
 
+    @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
+    @AppStorage("showAgentComm") var showAgentComm: Bool = false
+
     var displayMessages: [ChatMessage] {
-        showRaw ? messages : messages.filter { !$0.isSystem }
+        if showRaw { return messages }
+        return messages.filter { msg in
+            switch msg.systemCategory {
+            case .none:         return true
+            case .systemPrompt: return showSystemPrompts
+            case .agentComm:    return showAgentComm
+            }
+        }
     }
 
     var body: some View {
@@ -63,11 +116,15 @@ struct SessionDetailView: View {
                         }
                     } else {
                         ForEach(Array(displayMessages.enumerated()), id: \.element.id) { idx, msg in
-                            CleanMessageBubble(message: msg, source: session.source)
+                            if msg.isSystem {
+                                CollapsibleSystemBubble(message: msg)
+                            } else {
+                                CleanMessageBubble(message: msg, source: session.source)
+                            }
                             // Subtle separator between assistant→user transitions
                             if idx < displayMessages.count - 1 {
                                 let next = displayMessages[idx + 1]
-                                if msg.role == "assistant" && next.role == "user" {
+                                if msg.role == "assistant" && next.role == "user" && !next.isSystem {
                                     Divider()
                                         .padding(.horizontal, 20)
                                         .opacity(0.25)
@@ -103,7 +160,7 @@ struct SessionDetailView: View {
                     Text(verbatim: currentSummary ?? session.displayTitle)
                         .font(.headline)
                         .lineLimit(3)
-                    Text(verbatim: "\(session.source) · \(session.displayDate) · \(session.messageCount) msgs")
+                    Text(verbatim: "\(session.source) · \(session.displayDate) · \(session.msgCountLabel)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -141,6 +198,7 @@ struct SessionDetailView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 5))
                 }
                 .buttonStyle(.plain)
+                .help(showRaw ? "Show clean view" : "Show raw messages")
 
                 // Favorite
                 Button {
@@ -155,6 +213,7 @@ struct SessionDetailView: View {
                         .foregroundStyle(isFavorite ? .yellow : .secondary)
                 }
                 .buttonStyle(.plain)
+                .help(isFavorite ? "Remove from favorites" : "Add to favorites")
             }
 
             HStack(spacing: 12) {
@@ -230,25 +289,9 @@ struct SessionDetailView: View {
 struct CleanMessageBubble: View {
     let message: ChatMessage
     let source: String
+    @AppStorage("contentFontSize") var fontSize: Double = 14
 
     var isUser: Bool { message.role == "user" }
-
-    var assistantLabel: String {
-        switch source {
-        case "claude-code":  return "Claude"
-        case "codex":        return "Codex"
-        case "gemini-cli":   return "Gemini"
-        case "kimi":         return "Kimi"
-        case "qwen":         return "Qwen"
-        case "cline":        return "Cline"
-        case "cursor":       return "Cursor"
-        case "windsurf":     return "Windsurf"
-        case "antigravity":  return "Antigravity"
-        case "opencode":     return "OpenCode"
-        case "iflow":        return "iFlow"
-        default:             return source
-        }
-    }
 
     var body: some View {
         if isUser {
@@ -260,7 +303,7 @@ struct CleanMessageBubble: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Text(verbatim: message.content)
-                        .font(.body)
+                        .font(.system(size: fontSize))
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
@@ -271,19 +314,19 @@ struct CleanMessageBubble: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
         } else {
-            // Assistant: full-width, subtle background
+            // Assistant: full-width with segmented content
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: assistantLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(verbatim: message.content)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                Text(verbatim: SourceDisplay.label(for: source))
+                    .font(.caption2.bold())
+                    .foregroundStyle(SourceDisplay.color(for: source))
+                VStack(alignment: .leading, spacing: 0) {
+                    SegmentedMessageView(content: message.content)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                }
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)

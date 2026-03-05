@@ -98,7 +98,7 @@ export class WindsurfAdapter implements SessionAdapter {
       if (!meta.id) return null
 
       let userCount = 0
-      let totalCount = 0
+      let assistantCount = 0
       let firstUserText = ''
       let isFirst = true
 
@@ -106,10 +106,11 @@ export class WindsurfAdapter implements SessionAdapter {
         if (isFirst) { isFirst = false; continue }
         try {
           const msg = JSON.parse(line) as { role: string; content: string }
-          totalCount++
           if (msg.role === 'user') {
             userCount++
             if (!firstUserText) firstUserText = msg.content
+          } else if (msg.role === 'assistant') {
+            assistantCount++
           }
         } catch { /* skip */ }
       }
@@ -120,8 +121,10 @@ export class WindsurfAdapter implements SessionAdapter {
         startTime: meta.createdAt,
         endTime: meta.updatedAt !== meta.createdAt ? meta.updatedAt : undefined,
         cwd: '',
-        messageCount: totalCount,
+        messageCount: userCount + assistantCount,
         userMessageCount: userCount,
+        assistantMessageCount: assistantCount,
+        systemMessageCount: 0,
         summary: (meta.title || firstUserText).slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
