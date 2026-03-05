@@ -5,24 +5,24 @@
 在 Codex 里做了半天，切到 Claude Code 继续时，AI 不需要你手动解释之前做了什么——它可以直接调用 `get_context` 查询你的历史。
 
 ```
-┌─────────────┐   ┌──────────────┐   ┌─────────────────┐
-│ Codex CLI   │   │ Claude Code  │   │   Gemini CLI    │
-│  sessions   │   │   projects   │   │      tmp        │
-└──────┬──────┘   └──────┬───────┘   └────────┬────────┘
-       │                 │                    │
-       └─────────────────┼────────────────────┘
-                         ▼
-              ┌──────────────────────┐
-              │   engram      │
-              │   (MCP Server)       │
-              │  ~/.engram/   │
-              │   index.sqlite       │
-              └──────────┬───────────┘
-                         │  MCP
-           ┌─────────────┼─────────────┐
-           ▼             ▼             ▼
-       Codex        Claude Code    Gemini CLI
-   (下一个会话)    (下一个会话)   (下一个会话)
+┌───────────┐ ┌────────────┐ ┌───────────┐ ┌────────────┐ ┌───────────┐
+│ Codex CLI │ │ Claude Code│ │ Gemini CLI│ │Antigravity │ │ Cursor …  │
+│  sessions │ │  projects  │ │    tmp    │ │   gRPC     │ │  vscdb    │
+└─────┬─────┘ └─────┬──────┘ └─────┬─────┘ └─────┬──────┘ └─────┬─────┘
+      │              │              │              │              │
+      └──────────────┴──────┬───────┴──────────────┴──────────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │       engram         │
+                 │    (MCP Server)      │
+                 │    ~/.engram/        │
+                 │    index.sqlite      │
+                 └──────────┬───────────┘
+                            │  MCP
+              ┌─────────────┼─────────────┐
+              ▼             ▼             ▼
+          Codex        Claude Code    Gemini CLI …
+      (下一个会话)    (下一个会话)   (下一个会话)
 ```
 
 ## 目录
@@ -42,6 +42,10 @@
 | [Codex CLI](https://github.com/openai/codex) | `~/.codex/sessions/` | ✅ 完整支持 |
 | [Claude Code](https://claude.ai/code) | `~/.claude/projects/` | ✅ 完整支持 |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `~/.gemini/tmp/` | ✅ 完整支持 |
+| [Antigravity](https://idx.google.com) | gRPC + `~/.gemini/antigravity/` | ✅ 完整支持 |
+| [Windsurf](https://codeium.com/windsurf) | gRPC + `~/.codeium/windsurf/` | ✅ 完整支持 |
+| [Cursor](https://cursor.sh) | `~/Library/Application Support/Cursor/…/state.vscdb` | ✅ 完整支持 |
+| [VS Code Copilot](https://code.visualstudio.com) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
 | [iflow](https://iflow.ai) | `~/.iflow/projects/` | ✅ 完整支持 |
 | [Qwen Code](https://qwen.ai) | `~/.qwen/projects/` | ✅ 完整支持 |
 | [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | ✅ 完整支持 |
@@ -143,7 +147,7 @@ args = ["/absolute/path/to/engram/dist/index.js"]
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `source` | string | `codex` / `claude-code` / `gemini-cli` / `opencode` / `iflow` / `qwen` / `kimi` / `cline` |
+| `source` | string | `codex` / `claude-code` / `gemini-cli` / `antigravity` / `windsurf` / `cursor` / `vscode` / `opencode` / `iflow` / `qwen` / `kimi` / `cline` |
 | `project` | string | 项目名关键词（部分匹配） |
 | `since` | string | 开始时间（ISO 8601），如 `2026-01-01` |
 | `until` | string | 结束时间（ISO 8601） |
@@ -263,6 +267,26 @@ args = ["/absolute/path/to/engram/dist/index.js"]
 
 ---
 
+### `generate_summary` — AI 摘要生成
+
+使用 AI 为指定会话生成摘要，并更新到数据库中。需要配置 OpenAI 或 Anthropic API Key。
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `sessionId` | string | ✅ | 会话 ID |
+
+**示例：**
+
+```json
+{ "sessionId": "019c9d89-e65c-7df0-9e7a-ca361961f6a5" }
+```
+
+**返回：** 生成的摘要文本。
+
+---
+
 ## 配置
 
 配置文件为可选项，不存在时使用默认路径。将 `config.yaml` 放置在项目根目录即可自动读取。
@@ -279,6 +303,18 @@ sources:
     enabled: true
 
   gemini-cli:
+    enabled: true
+
+  antigravity:
+    enabled: true
+
+  windsurf:
+    enabled: true
+
+  cursor:
+    enabled: true
+
+  vscode:
     enabled: true
 
   opencode:
@@ -331,7 +367,7 @@ interface SessionAdapter {
 ## 开发
 
 ```bash
-npm test              # 运行测试（59 tests）
+npm test              # 运行测试（75 tests）
 npm run test:watch    # 监听模式
 npm run test:coverage # 覆盖率报告
 npm run build         # 编译 TypeScript → dist/
