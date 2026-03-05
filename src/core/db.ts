@@ -4,11 +4,14 @@ import type { SessionInfo, SourceName } from '../adapters/types.js'
 
 export interface ListSessionsOptions {
   source?: SourceName
+  sources?: string[]
   project?: string
+  projects?: string[]
   since?: string
   until?: string
   limit?: number
   offset?: number
+  agents?: 'hide' | 'only'  // hide = exclude agents, only = agents only
 }
 
 export interface FtsMatch {
@@ -85,6 +88,8 @@ export class Database {
       VALUES (@id, @source, @startTime, @endTime, @cwd, @project, @model,
         @messageCount, @userMessageCount, @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin)
       ON CONFLICT(id) DO UPDATE SET
+        source = excluded.source,
+        model = excluded.model,
         end_time = excluded.end_time,
         message_count = excluded.message_count,
         user_message_count = excluded.user_message_count,
@@ -120,10 +125,7 @@ export class Database {
     const conditions: string[] = ['hidden_at IS NULL']
     const params: Record<string, unknown> = {}
 
-    if (opts.source) { conditions.push('source = @source'); params.source = opts.source }
-    if (opts.project) { conditions.push('project LIKE @project'); params.project = `%${opts.project}%` }
-    if (opts.since) { conditions.push('start_time >= @since'); params.since = opts.since }
-    if (opts.until) { conditions.push('start_time <= @until'); params.until = opts.until }
+    this.applyFilters(conditions, params, opts)
 
     const where = `WHERE ${conditions.join(' AND ')}`
     const limit = opts.limit ?? 20
@@ -187,8 +189,25 @@ export class Database {
     return row !== undefined
   }
 
-  countSessions(): number {
-    return (this.db.prepare('SELECT COUNT(*) as n FROM sessions WHERE hidden_at IS NULL').get() as { n: number }).n
+  countSessions(opts: Pick<ListSessionsOptions, 'source' | 'sources' | 'project' | 'projects' | 'agents'> = {}): number {
+    const conditions: string[] = ['hidden_at IS NULL']
+    const params: Record<string, unknown> = {}
+    this.applyFilters(conditions, params, opts)
+    return (this.db.prepare(`SELECT COUNT(*) as n FROM sessions WHERE ${conditions.join(' AND ')}`).get(params) as { n: number }).n
+  }
+
+  listSources(): string[] {
+    const rows = this.db.prepare(
+      'SELECT DISTINCT source FROM sessions WHERE hidden_at IS NULL ORDER BY source'
+    ).all() as { source: string }[]
+    return rows.map(r => r.source)
+  }
+
+  listProjects(): string[] {
+    const rows = this.db.prepare(
+      'SELECT DISTINCT project FROM sessions WHERE hidden_at IS NULL AND project IS NOT NULL ORDER BY project'
+    ).all() as { project: string }[]
+    return rows.map(r => r.project)
   }
 
   updateSessionSummary(id: string, summary: string): void {
@@ -245,6 +264,30 @@ export class Database {
 
   close(): void {
     this.db.close()
+  }
+
+  private applyFilters(conditions: string[], params: Record<string, unknown>, opts: Pick<ListSessionsOptions, 'source' | 'sources' | 'project' | 'projects' | 'since' | 'until' | 'agents'>): void {
+    const effectiveSources = opts.sources?.length ? opts.sources : opts.source ? [opts.source] : []
+    if (effectiveSources.length === 1) {
+      conditions.push('source = @source'); params.source = effectiveSources[0]
+    } else if (effectiveSources.length > 1) {
+      const placeholders = effectiveSources.map((s, i) => { params[`s${i}`] = s; return `@s${i}` })
+      conditions.push(`source IN (${placeholders.join(',')})`)
+    }
+    const effectiveProjects = opts.projects?.length ? opts.projects : opts.project ? [opts.project] : []
+    if (effectiveProjects.length === 1) {
+      conditions.push('project = @project'); params.project = effectiveProjects[0]
+    } else if (effectiveProjects.length > 1) {
+      const placeholders = effectiveProjects.map((p, i) => { params[`p${i}`] = p; return `@p${i}` })
+      conditions.push(`project IN (${placeholders.join(',')})`)
+    }
+    if ('since' in opts && opts.since) { conditions.push('start_time >= @since'); params.since = opts.since }
+    if ('until' in opts && opts.until) { conditions.push('start_time <= @until'); params.until = opts.until }
+    if (opts.agents === 'hide') {
+      conditions.push("agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'")
+    } else if (opts.agents === 'only') {
+      conditions.push("(agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+    }
   }
 
   private rowToSession(row: Record<string, unknown>): SessionInfo {

@@ -10,7 +10,7 @@ enum AppTab: Int, CaseIterable {
 
     var label: LocalizedStringKey {
         switch self {
-        case .sessions:  return "Grouped"      // Changed from "Sessions"
+        case .sessions:  return "Browse"
         case .search:    return "Search"
         case .timeline:  return "Timeline"
         case .favorites: return "Favorites"

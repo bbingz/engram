@@ -6,26 +6,48 @@ enum SortField: String { case created, updated }
 
 struct SessionListView: View {
     @EnvironmentObject var db: DatabaseManager
-    @State private var groupingMode: GroupingMode = .project
+    @AppStorage("groupingMode") private var groupingMode: GroupingMode = .project
     @State private var groups: [GroupInfo] = []
     @State private var expandedGroups: Set<String> = []
-    @State private var sessionsByGroup: [String: [Session]] = [:]
     @State private var selectedSession: Session?
-    @State private var selectedSources: Set<String> = []
-    @State private var selectedProjects: Set<String> = []
-    @State private var agentFilter: Bool? = false
-    @State private var sortField: SortField = .created
-    @State private var sortAsc = false
+    @AppStorage("selectedSourcesStr") private var selectedSourcesStr: String = ""
+    @AppStorage("selectedProjectsStr") private var selectedProjectsStr: String = ""
+    @AppStorage("agentFilterMode") private var agentFilterMode: Int = 2  // 0=all, 1=agents, 2=hide
+    @AppStorage("sortField") private var sortField: SortField = .created
+    @AppStorage("sortAsc") private var sortAsc = false
+
+    private var selectedSources: Set<String> {
+        selectedSourcesStr.isEmpty ? [] : Set(selectedSourcesStr.components(separatedBy: "\t"))
+    }
+    private var selectedSourcesBinding: Binding<Set<String>> {
+        Binding(
+            get: { selectedSources },
+            set: { selectedSourcesStr = $0.sorted().joined(separator: "\t") }
+        )
+    }
+    private var selectedProjects: Set<String> {
+        selectedProjectsStr.isEmpty ? [] : Set(selectedProjectsStr.components(separatedBy: "\t"))
+    }
+    private var selectedProjectsBinding: Binding<Set<String>> {
+        Binding(
+            get: { selectedProjects },
+            set: { selectedProjectsStr = $0.sorted().joined(separator: "\t") }
+        )
+    }
+    private var agentFilter: Bool? {
+        agentFilterMode == 0 ? nil : agentFilterMode == 1 ? true : false
+    }
     @State private var pendingSelection: Session?
     @Binding var deepLinkSession: Session?
     @State private var renameTarget: Session?
     @State private var renameText: String = ""
     @State private var showingTrash = false
     @State private var hiddenCount: Int = 0
+    @State private var refreshTrigger = UUID()
 
-    let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
-                      "opencode", "iflow", "qwen", "kimi", "cline",
-                      "vscode", "antigravity", "windsurf"]
+    let allSources = ["claude-code", "codex", "copilot", "cursor", "gemini-cli",
+                      "opencode", "iflow", "qwen", "kimi", "minimax",
+                      "lobsterai", "cline", "vscode", "antigravity", "windsurf"]
 
     struct GroupInfo: Identifiable {
         let id: String
@@ -36,20 +58,35 @@ struct SessionListView: View {
     var body: some View {
         HSplitView {
             VStack(spacing: 0) {
-                // Filter bar
+                // Filter bar — row 1: filters
                 HStack(spacing: 6) {
                     MultiSelectPicker(
                         emptyLabel: "All sources",
                         icon: "cpu",
                         items: allSources,
-                        selected: $selectedSources
+                        selected: selectedSourcesBinding,
+                        colorForItem: { SourceDisplay.color(for: $0) },
+                        labelForItem: { SourceDisplay.label(for: $0) }
                     )
                     MultiSelectPicker(
                         emptyLabel: "All projects",
                         icon: "folder",
                         items: (try? db.listProjects()) ?? [],
-                        selected: $selectedProjects
+                        selected: selectedProjectsBinding
                     )
+                    Spacer()
+                    HStack(spacing: 4) {
+                        Chip(label: "All",     selected: agentFilterMode == 0, color: .secondary) { agentFilterMode = 0 }
+                        Chip(label: "Agents",  selected: agentFilterMode == 1, color: .purple)    { agentFilterMode = 1 }
+                        Chip(label: "Hide",    selected: agentFilterMode == 2, color: .orange)    { agentFilterMode = 2 }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+                // Filter bar — row 2: sort & grouping
+                HStack(spacing: 6) {
+                    sortButton("Created", field: .created)
+                    sortButton("Updated", field: .updated)
                     Spacer()
                     Picker("", selection: $groupingMode) {
                         ForEach(GroupingMode.allCases, id: \.self) { mode in
@@ -58,35 +95,29 @@ struct SessionListView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 180)
+                    .controlSize(.small)
+                    .frame(width: 150)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-
-                // Filter chips + Sort buttons
-                HStack(spacing: 6) {
-                    Chip(label: "All",         selected: agentFilter == nil,   color: .secondary) { agentFilter = nil }
-                    Chip(label: "Agent only",  selected: agentFilter == true,  color: .purple)    { agentFilter = true }
-                    Chip(label: "Hide agents", selected: agentFilter == false, color: .orange)    { agentFilter = false }
-                    Spacer()
-                    sortButton("Created", field: .created)
-                    sortButton("Updated", field: .updated)
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
 
                 Divider()
 
-                // List with explicit ID for forcing refresh
+                // List - each GroupSection manages its own data loading
                 List {
                     ForEach(groups) { group in
                         GroupSection(
                             group: group,
                             groupingMode: groupingMode,
-                            sessions: sessionsByGroup[group.id] ?? [],
                             isExpanded: expandedGroups.contains(group.id),
                             selectedSession: $selectedSession,
                             showingTrash: showingTrash,
+                            sortField: $sortField,
+                            sortAsc: $sortAsc,
+                            selectedSources: selectedSources,
+                            selectedProjects: selectedProjects,
+                            agentFilter: agentFilter,
+                            refreshTrigger: refreshTrigger,
                             onToggle: { toggleGroup(group.id) },
                             onDelete: { id in deleteSession(id) },
                             onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" }
@@ -94,7 +125,6 @@ struct SessionListView: View {
                     }
                 }
                 .listStyle(.inset)
-                .id("\(groupingMode)_\(sortField)_\(sortAsc)_\(selectedSources.count)_\(selectedProjects.count)_\(agentFilter?.description ?? "nil")")
 
                 // Footer
                 footerView
@@ -103,34 +133,34 @@ struct SessionListView: View {
 
             detailView
         }
-        .task { await loadGroups() }
+        .task {
+            await loadGroups()
+            // Handle deep link set before this view appeared (e.g. from Timeline tab)
+            if let session = deepLinkSession {
+                handleDeepLink(session)
+            }
+        }
         .onChange(of: groupingMode) { _, _ in
             expandedGroups = []
-            sessionsByGroup = [:]
             Task { await loadGroups() }
         }
-        .onChange(of: selectedSources) { _, _ in
+        .onChange(of: selectedSourcesStr) { _, _ in
             expandedGroups = []
-            sessionsByGroup = [:]
             Task { await loadGroups() }
         }
-        .onChange(of: selectedProjects) { _, _ in
+        .onChange(of: selectedProjectsStr) { _, _ in
             expandedGroups = []
-            sessionsByGroup = [:]
             Task { await loadGroups() }
         }
-        .onChange(of: agentFilter) { _, _ in
+        .onChange(of: agentFilterMode) { _, _ in
             expandedGroups = []
-            sessionsByGroup = [:]
             Task { await loadGroups() }
         }
         .onChange(of: sortField) { _, _ in
-            sessionsByGroup = [:]
-            Task { await reloadExpandedGroups() }
+            Task { await loadGroups() }
         }
         .onChange(of: sortAsc) { _, _ in
-            sessionsByGroup = [:]
-            Task { await reloadExpandedGroups() }
+            Task { await loadGroups() }
         }
         .onChange(of: showingTrash) { _, _ in
             Task { await loadGroups() }
@@ -218,9 +248,7 @@ struct SessionListView: View {
                 let name = renameText.trimmingCharacters(in: .whitespaces)
                 try? db.renameSession(id: target.id, name: name.isEmpty ? nil : name)
                 renameTarget = nil
-                Task {
-                    await reloadExpandedGroups()
-                }
+                refreshTrigger = UUID()
             }
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
@@ -231,12 +259,8 @@ struct SessionListView: View {
     private func toggleGroup(_ groupId: String) {
         if expandedGroups.contains(groupId) {
             expandedGroups.remove(groupId)
-            sessionsByGroup.removeValue(forKey: groupId)
         } else {
             expandedGroups.insert(groupId)
-            Task {
-                await loadSessions(for: groupId)
-            }
         }
     }
 
@@ -246,15 +270,16 @@ struct SessionListView: View {
         } else {
             try? db.hideSession(id: id)
         }
+        refreshTrigger = UUID()
         Task { await loadGroups() }
     }
 
     private func handleDeepLink(_ session: Session?) {
         guard let session else { return }
         pendingSelection = session
-        selectedSources = []
-        selectedProjects = []
-        agentFilter = nil
+        selectedSourcesStr = ""
+        selectedProjectsStr = ""
+        agentFilterMode = 0
         deepLinkSession = nil
 
         Task {
@@ -263,7 +288,6 @@ struct SessionListView: View {
                 ? (session.project ?? "(unknown)")
                 : session.source
             expandedGroups.insert(groupKey)
-            await loadSessions(for: groupKey)
             selectedSession = session
             pendingSelection = nil
         }
@@ -276,21 +300,9 @@ struct SessionListView: View {
 
         if showingTrash {
             groups = []
-            sessionsByGroup = [:]
             return
         }
 
-        let dbGroups = (try? db.listGroups(
-            by: groupingMode,
-            sources: selectedSources,
-            projects: selectedProjects,
-            subAgent: agentFilter
-        )) ?? []
-
-        groups = dbGroups.map { GroupInfo(id: $0.key, count: $0.count, lastUpdated: $0.lastUpdated) }
-    }
-
-    private func loadSessions(for groupId: String) async {
         let sort: SessionSort = switch (sortField, sortAsc) {
         case (.created, false): .createdDesc
         case (.created, true):  .createdAsc
@@ -298,22 +310,18 @@ struct SessionListView: View {
         case (.updated, true):  .updatedAsc
         }
 
-        let sessions = (try? db.listSessionsInGroup(
-            by: groupingMode,
-            key: groupId,
-            sources: selectedSources,
-            projects: selectedProjects,
-            subAgent: agentFilter,
-            sort: sort
-        )) ?? []
-
-        sessionsByGroup[groupId] = sessions
-    }
-
-    private func reloadExpandedGroups() async {
-        // Reload all expanded groups with new sort order
-        for groupId in expandedGroups {
-            await loadSessions(for: groupId)
+        do {
+            let dbGroups = try db.listGroups(
+                by: groupingMode,
+                sources: selectedSources,
+                projects: selectedProjects,
+                subAgent: agentFilter,
+                sort: sort
+            )
+            groups = dbGroups.map { GroupInfo(id: $0.key, count: $0.count, lastUpdated: $0.lastUpdated) }
+        } catch {
+            print("[SessionListView] error loading groups:", error)
+            groups = []
         }
     }
 
@@ -349,26 +357,45 @@ struct SessionListView: View {
 struct GroupSection: View {
     let group: SessionListView.GroupInfo
     let groupingMode: GroupingMode
-    let sessions: [Session]
     let isExpanded: Bool
     @Binding var selectedSession: Session?
     let showingTrash: Bool
+    @Binding var sortField: SortField
+    @Binding var sortAsc: Bool
+    let selectedSources: Set<String>
+    let selectedProjects: Set<String>
+    let agentFilter: Bool?
+    let refreshTrigger: UUID
     let onToggle: () -> Void
     let onDelete: (String) -> Void
     let onRename: (Session) -> Void
 
+    @EnvironmentObject var db: DatabaseManager
+    @State private var sessions: [Session] = []
+    @State private var isLoading = false
+
     var body: some View {
         DisclosureGroup(
-            isExpanded: .constant(isExpanded)
+            isExpanded: Binding(
+                get: { isExpanded },
+                set: { _ in onToggle() }
+            )
         ) {
-            if sessions.isEmpty {
+            if isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 4)
+            } else if sessions.isEmpty {
+                Text("No sessions")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 ForEach(sessions) { session in
                     SessionRow(session: session)
                         .tag(session)
+                        .contentShape(Rectangle())
                         .background(selectedSession?.id == session.id ? Color.accentColor.opacity(0.1) : Color.clear)
                         .onTapGesture {
                             selectedSession = session
@@ -392,8 +419,71 @@ struct GroupSection: View {
                 lastUpdated: String(group.lastUpdated.prefix(10))
             )
         }
-        .onTapGesture {
-            onToggle()
+        .onChange(of: isExpanded) { _, expanded in
+            if expanded && sessions.isEmpty && !isLoading {
+                loadSessions()
+            }
+        }
+        .onChange(of: sortField) { _, _ in
+            if isExpanded {
+                loadSessions()
+            }
+        }
+        .onChange(of: sortAsc) { _, _ in
+            if isExpanded {
+                loadSessions()
+            }
+        }
+        .onChange(of: selectedSources) { _, _ in
+            if isExpanded {
+                loadSessions()
+            }
+        }
+        .onChange(of: selectedProjects) { _, _ in
+            if isExpanded {
+                loadSessions()
+            }
+        }
+        .onChange(of: agentFilter) { _, _ in
+            if isExpanded {
+                loadSessions()
+            }
+        }
+        .onChange(of: refreshTrigger) { _, _ in
+            if isExpanded {
+                loadSessions()
+            }
+        }
+        .onAppear {
+            if isExpanded && sessions.isEmpty && !isLoading {
+                loadSessions()
+            }
+        }
+    }
+
+    private func loadSessions() {
+        isLoading = true
+        Task {
+            let sort: SessionSort = switch (sortField, sortAsc) {
+            case (.created, false): .createdDesc
+            case (.created, true):  .createdAsc
+            case (.updated, false): .updatedDesc
+            case (.updated, true):  .updatedAsc
+            }
+
+            let loadedSessions = (try? db.listSessionsInGroup(
+                by: groupingMode,
+                key: group.id,
+                sources: selectedSources,
+                projects: selectedProjects,
+                subAgent: agentFilter,
+                sort: sort
+            )) ?? []
+
+            await MainActor.run {
+                self.sessions = loadedSessions
+                self.isLoading = false
+            }
         }
     }
 }
@@ -405,6 +495,8 @@ struct MultiSelectPicker: View {
     let icon: String
     let items: [String]
     @Binding var selected: Set<String>
+    var colorForItem: ((String) -> Color)? = nil
+    var labelForItem: ((String) -> String)? = nil
     @State private var showPopover = false
 
     var isFiltered: Bool { !selected.isEmpty }
@@ -438,7 +530,9 @@ struct MultiSelectPicker: View {
     private var buttonText: some View {
         switch selected.count {
         case 0:  Text(emptyLabel)
-        case 1:  Text(verbatim: selected.first!)
+        case 1:
+            let item = selected.first!
+            Text(verbatim: labelForItem?(item) ?? item)
         default: Text("\(selected.count) selected")
         }
     }
@@ -446,12 +540,19 @@ struct MultiSelectPicker: View {
     private var pickerPopover: some View {
         VStack(alignment: .leading, spacing: 0) {
             if isFiltered {
-                Button("Clear") { selected = [] }
-                    .buttonStyle(.plain)
+                Button {
+                    selected = []
+                } label: {
+                    HStack {
+                        Image(systemName: "xmark.circle.fill")
+                        Text("Clear Filter")
+                    }
                     .font(.caption)
                     .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 Divider()
             }
             if items.isEmpty {
@@ -461,18 +562,22 @@ struct MultiSelectPicker: View {
                     .padding(12)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 1) {
                         ForEach(items, id: \.self) { item in
                             let isSelected = selected.contains(item)
                             Button {
                                 if isSelected { selected.remove(item) } else { selected.insert(item) }
                             } label: {
                                 HStack(spacing: 8) {
-                                    Text(verbatim: item)
-                                        .font(.caption)
-                                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                                    if let colorFn = colorForItem {
+                                        Circle()
+                                            .fill(colorFn(item))
+                                            .frame(width: 8, height: 8)
+                                    }
+                                    Text(verbatim: labelForItem?(item) ?? item)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.primary)
                                         .lineLimit(1)
-                                        .truncationMode(.tail)
                                     Spacer()
                                     if isSelected {
                                         Image(systemName: "checkmark")
@@ -481,8 +586,10 @@ struct MultiSelectPicker: View {
                                     }
                                 }
                                 .padding(.horizontal, 12)
-                                .padding(.vertical, 5)
-                                .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+                                .padding(.vertical, 6)
+                                .background(isSelected
+                                    ? Color.accentColor.opacity(0.1)
+                                    : Color.clear)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -491,10 +598,10 @@ struct MultiSelectPicker: View {
                     .padding(.vertical, 4)
                 }
                 .scrollIndicators(.hidden)
-                .frame(maxHeight: 280)
+                .frame(maxHeight: 260)
             }
         }
-        .frame(minWidth: 180, maxWidth: 240)
+        .frame(width: 200)
     }
 }
 
@@ -546,21 +653,7 @@ struct GroupHeader: View {
 struct SessionRow: View {
     let session: Session
 
-    private var sourceColor: Color {
-        switch session.source {
-        case "claude-code":  return .orange
-        case "codex":        return .green
-        case "cursor":       return .blue
-        case "gemini-cli", "antigravity": return .cyan
-        case "opencode":     return .indigo
-        case "iflow":        return .purple
-        case "qwen":        return .teal
-        case "kimi":        return .pink
-        case "cline":       return .mint
-        case "windsurf":    return .brown
-        default:            return .gray
-        }
-    }
+    private var sourceColor: Color { SourceDisplay.color(for: session.source) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

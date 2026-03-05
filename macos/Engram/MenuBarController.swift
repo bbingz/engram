@@ -12,12 +12,13 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     // Stored so openWindow() can inject them into the standalone window
     private let db: DatabaseManager
     private let indexer: IndexerProcess
+    private var clickTimer: Timer?
 
     init(db: DatabaseManager, indexer: IndexerProcess) {
         self.db = db
         self.indexer = indexer
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover    = NSPopover()
         popover.contentSize = NSSize(width: 760, height: 640)
         popover.behavior    = .transient
@@ -56,10 +57,26 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     // MARK: - Click handling
 
     @objc private func handleClick() {
-        if NSApp.currentEvent?.type == .rightMouseUp {
+        guard let event = NSApp.currentEvent else { return }
+        if event.type == .rightMouseUp {
             showContextMenu()
+            return
+        }
+
+        if event.clickCount >= 2 {
+            // Double-click: open standalone window
+            clickTimer?.invalidate()
+            clickTimer = nil
+            if popover.isShown { popover.performClose(nil) }
+            openWindow()
         } else {
-            togglePopover()
+            // Delay single-click to allow double-click detection
+            clickTimer?.invalidate()
+            clickTimer = Timer.scheduledTimer(withTimeInterval: NSEvent.doubleClickInterval, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    self?.togglePopover()
+                }
+            }
         }
     }
 
@@ -107,8 +124,12 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         // Reuse existing settings window if still alive
         if let win = settingsWindow {
+            NSApp.setActivationPolicy(.regular)
+            setupMainMenu()
             win.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+            }
             return
         }
 
@@ -123,9 +144,15 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         win.setContentSize(NSSize(width: 520, height: 500))
         win.styleMask = [.titled, .closable]
         win.isReleasedWhenClosed = false
+        win.delegate = self
         win.center()
+
+        NSApp.setActivationPolicy(.regular)
+        setupMainMenu()
         win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         self.settingsWindow = win
     }
 
@@ -137,9 +164,14 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         // Reuse existing window if still alive
         if let win = window {
-            win.makeKeyAndOrderFront(nil)
+            // Must set policy BEFORE showing window, then activate after a run-loop tick
             NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
+            setupMainMenu()
+            win.makeKeyAndOrderFront(nil)
+            // Delay activation to let macOS process the policy change
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+            }
             return
         }
 
@@ -159,19 +191,32 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         win.center()
 
         // Switch to regular app: show Dock icon + main menu bar
+        // Must set policy before showing window
         NSApp.setActivationPolicy(.regular)
         setupMainMenu()
 
         win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Delay activation to let macOS process the policy change
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         self.window = win
     }
 
-    // When standalone window closes, revert to accessory (menu-bar-only) mode
+    // When a window closes, check if any windows remain; if not, revert to accessory mode
     nonisolated func windowWillClose(_ notification: Notification) {
         Task { @MainActor in
-            self.window = nil
-            NSApp.setActivationPolicy(.accessory)
+            let closingWindow = notification.object as? NSWindow
+            if closingWindow === self.window {
+                self.window = nil
+            }
+            if closingWindow === self.settingsWindow {
+                self.settingsWindow = nil
+            }
+            // Only revert to accessory if no windows are open
+            if self.window == nil && self.settingsWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
         }
     }
 

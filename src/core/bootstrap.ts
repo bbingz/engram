@@ -15,6 +15,7 @@ import { ClineAdapter } from '../adapters/cline.js'
 import { CursorAdapter } from '../adapters/cursor.js'
 import { VsCodeAdapter } from '../adapters/vscode.js'
 import { AntigravityAdapter } from '../adapters/antigravity.js'
+import { CopilotAdapter } from '../adapters/copilot.js'
 import { WindsurfAdapter } from '../adapters/windsurf.js'
 import type { SessionAdapter, SourceName } from '../adapters/types.js'
 import { SqliteVecStore } from './vector-store.js'
@@ -41,6 +42,7 @@ export function createAdapters(): SessionAdapter[] {
     new IflowAdapter(),
     new QwenAdapter(),
     new KimiAdapter(),
+    new CopilotAdapter(),
     new ClineAdapter(),
     new CursorAdapter(),
     new VsCodeAdapter(),

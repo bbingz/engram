@@ -14,9 +14,9 @@ struct TimelineView: View {
     @State private var hasMore = true
     private let pageSize = 50
 
-    let allSources = ["claude-code", "codex", "cursor", "gemini-cli",
-                      "opencode", "iflow", "qwen", "kimi", "cline",
-                      "vscode", "antigravity", "windsurf"]
+    let allSources = ["claude-code", "codex", "copilot", "cursor", "gemini-cli",
+                      "opencode", "iflow", "qwen", "kimi", "minimax",
+                      "lobsterai", "cline", "vscode", "antigravity", "windsurf"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -189,21 +189,7 @@ struct TimelineView: View {
 struct TimelineSessionRow: View {
     let session: Session
 
-    private var sourceColor: Color {
-        switch session.source {
-        case "claude-code":  return .orange
-        case "codex":        return .green
-        case "cursor":       return .blue
-        case "gemini-cli", "antigravity": return .cyan
-        case "opencode":     return .indigo
-        case "iflow":        return .purple
-        case "qwen":        return .teal
-        case "kimi":        return .pink
-        case "cline":       return .mint
-        case "windsurf":    return .brown
-        default:            return .gray
-        }
-    }
+    private var sourceColor: Color { SourceDisplay.color(for: session.source) }
 
     var body: some View {
         HStack(spacing: 6) {

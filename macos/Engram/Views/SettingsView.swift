@@ -10,6 +10,7 @@ struct DataSourceDef {
 private let dataSources: [DataSourceDef] = [
     .init(name: "Claude Code",  key: "path.claude-code",  defaultPath: "~/.claude/projects"),
     .init(name: "Codex",        key: "path.codex",        defaultPath: "~/.codex/sessions"),
+    .init(name: "Copilot CLI",  key: "path.copilot",      defaultPath: "~/.copilot/session-state"),
     .init(name: "Gemini CLI",   key: "path.gemini-cli",   defaultPath: "~/.gemini/tmp"),
     .init(name: "OpenCode",     key: "path.opencode",     defaultPath: "~/.local/share/opencode/opencode.db"),
     .init(name: "iFlow",        key: "path.iflow",        defaultPath: "~/.iflow/projects"),
@@ -47,8 +48,41 @@ struct SettingsView: View {
     @State private var newPeerName: String = ""
     @State private var newPeerURL: String = ""
 
+    // Display settings
+    @AppStorage("contentFontSize") var contentFontSize: Double = 14
+    @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
+    @AppStorage("showAgentComm") var showAgentComm: Bool = false
+
     var body: some View {
         Form {
+            Section("Display") {
+                HStack {
+                    Text("Content Font Size")
+                    Spacer()
+                    Slider(value: $contentFontSize, in: 10...22, step: 1) {
+                        EmptyView()
+                    }
+                    .frame(width: 160)
+                    Text(verbatim: "\(Int(contentFontSize)) pt")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+                Text("Preview: The quick brown fox jumps over the lazy dog")
+                    .font(.system(size: contentFontSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Toggle("Show System Prompts", isOn: $showSystemPrompts)
+                Text("CLAUDE.md, AGENTS.md, environment context, and other injected instructions")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Toggle("Show Agent Communication", isOn: $showAgentComm)
+                Text("Tool calls, skill invocations, and command outputs")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
             Section("MCP Server") {
                 HStack {
                     Text("HTTP Port")

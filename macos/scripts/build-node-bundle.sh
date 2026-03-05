@@ -11,7 +11,8 @@ cd "$REPO_ROOT"
 npm run build
 
 mkdir -p "$DEST"
-cp dist/daemon.js "$DEST/daemon.js"
+# Copy the full dist/ tree (daemon.js needs all its sibling modules)
+rsync -a --delete dist/ "$DEST/" 2>/dev/null || cp -r dist/* "$DEST/"
 
 # Copy node_modules needed by daemon
 # Note: for large node_modules, consider using esbundle or pkg in the future

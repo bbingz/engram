@@ -62,8 +62,32 @@ export class CursorAdapter implements SessionAdapter {
           `SELECT value FROM cursorDiskKV WHERE key = ?`
         ).get(`composerData:${composerId}`) as { value: string } | undefined
         if (!row) return null
-        const data = JSON.parse(row.value) as ComposerData
+        const data = JSON.parse(row.value) as ComposerData & { conversation?: BubbleData[] }
         const fileStat = await stat(dbPath)
+
+        // Count messages from conversation array (or fallback to bubbleId keys)
+        let bubbles: BubbleData[] = []
+        if (Array.isArray(data.conversation) && data.conversation.length > 0) {
+          bubbles = data.conversation
+        } else {
+          const bubbleRows = db.prepare(
+            `SELECT value FROM cursorDiskKV WHERE key LIKE ?`
+          ).all(`bubbleId:${composerId}:%`) as { value: string }[]
+          for (const br of bubbleRows) {
+            try { bubbles.push(JSON.parse(br.value)) } catch { /* skip */ }
+          }
+        }
+        let messageCount = 0
+        let userMessageCount = 0
+        for (const b of bubbles) {
+          const role = b.type === 1 ? 'user' : b.type === 2 ? 'assistant' : null
+          if (!role) continue
+          const content = b.text || b.rawText || ''
+          if (!content.trim()) continue
+          messageCount++
+          if (role === 'user') userMessageCount++
+        }
+
         return {
           id: data.composerId,
           source: 'cursor',
@@ -72,8 +96,8 @@ export class CursorAdapter implements SessionAdapter {
             ? new Date(data.lastUpdatedAt).toISOString()
             : undefined,
           cwd: '',
-          messageCount: 0,
-          userMessageCount: 0,
+          messageCount,
+          userMessageCount,
           summary: data.latestConversationSummary?.summary?.slice(0, 200),
           filePath,
           sizeBytes: fileStat.size,

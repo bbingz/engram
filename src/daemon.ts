@@ -6,10 +6,8 @@ import { join } from 'path'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
-import { setupProcessLifecycle } from './core/lifecycle.js'
 import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
 import { createApp } from './web.js'
-import { serve } from '@hono/node-server'
 import { readFileSettings } from './core/config.js'
 import { SyncEngine } from './core/sync.js'
 
@@ -84,6 +82,7 @@ const app = createApp(db, {
   syncPeers,
   settings,
 })
+const { serve } = await import('@hono/node-server')
 const webServer = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
   emit({ event: 'web_ready', port: info.port })
 })
@@ -98,13 +97,14 @@ const syncTimer = settings.syncEnabled && syncPeers.length > 0
   ? setInterval(() => { syncAndEmit().catch(() => {}) }, syncIntervalMs)
   : null
 
-// Lifecycle: stdin/parent/signal layers, no idle timeout for daemon
-setupProcessLifecycle({
-  idleTimeoutMs: 0,
-  onExit: () => {
-    clearInterval(rescanTimer)
-    if (syncTimer) clearInterval(syncTimer)
-    watcher?.close()
-    webServer.close()
-  },
-})
+// Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
+function shutdown() {
+  clearInterval(rescanTimer)
+  if (syncTimer) clearInterval(syncTimer)
+  watcher?.close()
+  webServer.close()
+  db.close()
+  process.exit(0)
+}
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)

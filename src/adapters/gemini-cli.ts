@@ -12,11 +12,31 @@ interface GeminiSession {
   messages: GeminiMessage[]
 }
 
+interface GeminiContentPart {
+  text?: string
+}
+
 interface GeminiMessage {
   id: string
   timestamp: string
-  type: 'user' | 'model' | 'info' | string
-  content: string
+  type: 'user' | 'gemini' | 'model' | 'info' | string
+  content: string | GeminiContentPart[]
+  toolCalls?: unknown[]
+}
+
+function isConversation(m: GeminiMessage): boolean {
+  return m.type === 'user' || m.type === 'gemini' || m.type === 'model'
+}
+
+function extractText(content: string | GeminiContentPart[]): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map(p => p.text ?? '')
+      .filter(Boolean)
+      .join('\n')
+  }
+  return ''
 }
 
 export class GeminiCliAdapter implements SessionAdapter {
@@ -67,8 +87,7 @@ export class GeminiCliAdapter implements SessionAdapter {
       const session = JSON.parse(raw) as GeminiSession
 
       const userMessages = session.messages.filter(m => m.type === 'user')
-      const modelMessages = session.messages.filter(m => m.type === 'model')
-      const totalCount = userMessages.length + modelMessages.length
+      const conversationMessages = session.messages.filter(isConversation)
 
       // 从文件路径提取 projectName：.../tmp/<projectName>/chats/session-*.json
       const parts = filePath.split('/')
@@ -78,6 +97,8 @@ export class GeminiCliAdapter implements SessionAdapter {
       // 通过 projects.json 解析真实 cwd
       const cwd = await this.resolveProject(projectName) ?? projectName
 
+      const firstUserText = userMessages[0] ? extractText(userMessages[0].content) : undefined
+
       return {
         id: session.sessionId,
         source: 'gemini-cli',
@@ -85,9 +106,9 @@ export class GeminiCliAdapter implements SessionAdapter {
         endTime: session.lastUpdated,
         cwd,
         project: projectName,
-        messageCount: totalCount,
+        messageCount: conversationMessages.length,
         userMessageCount: userMessages.length,
-        summary: userMessages[0]?.content.slice(0, 200) || undefined,
+        summary: firstUserText?.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
       }
@@ -103,13 +124,15 @@ export class GeminiCliAdapter implements SessionAdapter {
     const raw = await readFile(filePath, 'utf8')
     const session = JSON.parse(raw) as GeminiSession
 
-    const relevant = session.messages.filter(m => m.type === 'user' || m.type === 'model')
+    const relevant = session.messages.filter(isConversation)
     const sliced = relevant.slice(offset, limit === Infinity ? undefined : offset + (limit as number))
 
     for (const msg of sliced) {
+      const text = extractText(msg.content)
+      if (!text) continue
       yield {
-        role: msg.type === 'model' ? 'assistant' : 'user',
-        content: msg.content,
+        role: msg.type === 'user' ? 'user' : 'assistant',
+        content: text,
         timestamp: msg.timestamp,
       }
     }

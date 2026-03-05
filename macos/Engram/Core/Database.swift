@@ -30,13 +30,10 @@ class DatabaseManager: ObservableObject {
     }
 
     func open() throws {
-        // Read-only pool for Node.js-managed tables
-        var readConfig = Configuration()
-        readConfig.readonly = true
-        pool = try DatabasePool(path: dbPath, configuration: readConfig)
-
-        // Separate writable connection only for Swift-managed extension tables
-        writerPool = try DatabasePool(path: dbPath)
+        // Single pool for both reads and writes
+        // (read-only DatabasePool can't reliably access WAL-mode DBs written by daemon)
+        pool = try DatabasePool(path: dbPath)
+        writerPool = pool
         try writerPool!.write { db in
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS favorites (
@@ -413,15 +410,25 @@ class DatabaseManager: ObservableObject {
         by mode: GroupingMode,
         sources: Set<String> = [],
         projects: Set<String> = [],
-        subAgent: Bool? = nil
+        subAgent: Bool? = nil,
+        sort: SessionSort = .createdDesc
     ) throws -> [(key: String, count: Int, lastUpdated: String)] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
             let groupColumn = mode == .project ? "project" : "source"
+
+            // Pick aggregate expression + order matching the sort
+            let (aggExpr, orderDir): (String, String) = switch sort {
+            case .createdDesc: ("MAX(start_time)", "DESC")
+            case .createdAsc:  ("MIN(start_time)", "ASC")
+            case .updatedDesc: ("MAX(COALESCE(end_time, start_time))", "DESC")
+            case .updatedAsc:  ("MIN(COALESCE(end_time, start_time))", "ASC")
+            }
+
             var parts = ["""
                 SELECT COALESCE(\(groupColumn), '(unknown)') as group_key,
                        COUNT(*) as count,
-                       MAX(start_time) as last_updated
+                       \(aggExpr) as sort_value
                 FROM sessions
                 WHERE hidden_at IS NULL
                 """]
@@ -441,14 +448,14 @@ class DatabaseManager: ObservableObject {
                 if subAgent { parts.append("AND agent_role IS NOT NULL") }
                 else        { parts.append("AND agent_role IS NULL") }
             }
-            parts.append("GROUP BY group_key ORDER BY last_updated DESC")
+            parts.append("GROUP BY group_key ORDER BY sort_value \(orderDir)")
 
             let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "),
                                         arguments: StatementArguments(args))
             return rows.map { (
                 key: $0["group_key"] as String? ?? "(unknown)",
                 count: $0["count"] as Int,
-                lastUpdated: $0["last_updated"] as String
+                lastUpdated: $0["sort_value"] as String
             ) }
         }
     }

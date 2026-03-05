@@ -21,14 +21,13 @@ describe('Web Views', () => {
     rmSync(tmpDir, { recursive: true })
   })
 
-  it('GET / returns HTML with HTMX and Pico', async () => {
+  it('GET / returns HTML with Engram layout', async () => {
     const res = await app.request('/')
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('text/html')
     const html = await res.text()
-    expect(html).toContain('htmx')
-    expect(html).toContain('pico')
     expect(html).toContain('Engram')
+    expect(html).toContain('IBM Plex Sans')
   })
 
   it('GET /search returns HTML search page', async () => {
@@ -48,7 +47,7 @@ describe('Web Views', () => {
     expect(res.status).toBe(200)
     const html = await res.text()
     expect(html).toContain('Test session')
-    expect(html).toContain('codex')
+    expect(html).toContain('Codex')
   })
 
   it('GET /session/:id returns 404 for missing session', async () => {

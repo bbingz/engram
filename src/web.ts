@@ -149,25 +149,57 @@ export function createApp(db: Database, opts?: {
     return c.json(result)
   })
 
+  // UUID lookup redirect
+  app.get('/goto', (c) => {
+    const id = (c.req.query('id') ?? '').trim()
+    if (id && db.getSession(id)) {
+      return c.redirect(`/session/${encodeURIComponent(id)}`)
+    }
+    return c.redirect('/')
+  })
+
   // HTML routes
   app.get('/', (c) => {
-    const sessions = db.listSessions({ limit: 50 })
-    return c.html(sessionListPage(sessions))
+    const sourceParam = c.req.query('source') || ''
+    const projectParam = c.req.query('project') || ''
+    const selectedSources = sourceParam ? sourceParam.split(',').filter(Boolean) : []
+    const selectedProjects = projectParam ? projectParam.split(',').filter(Boolean) : []
+    const limitParam = c.req.query('limit')
+    const offsetParam = c.req.query('offset')
+    const agentsParam = c.req.query('agents') as 'hide' | 'only' | 'all' | undefined
+    const agents = agentsParam === 'all' ? undefined : agentsParam === 'only' ? 'only' : 'hide'  // default: hide agents
+    const limit = Math.min(limitParam ? parseInt(limitParam, 10) : 50, 100)
+    const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+
+    const sessions = db.listSessions({ sources: selectedSources, projects: selectedProjects, limit, offset, agents })
+    const total = db.countSessions({ sources: selectedSources, projects: selectedProjects, agents })
+    const sources = db.listSources()
+    const projects = db.listProjects()
+
+    return c.html(sessionListPage(sessions, {
+      offset, limit, hasMore: sessions.length === limit,
+      total, selectedSources, sources, agents, selectedProjects, projects,
+    }))
   })
 
   app.get('/search', (c) => {
-    return c.html(searchPage())
+    const recent = db.listSessions({ limit: 5 })
+    return c.html(searchPage(recent))
   })
 
   app.get('/stats', async (c) => {
-    const result = await handleStats(db, {})
-    return c.html(statsPage(result.groups, result.totalSessions))
+    const groupBy = c.req.query('group_by') ?? 'source'
+    const result = await handleStats(db, { group_by: groupBy })
+    return c.html(statsPage(result.groups, result.totalSessions, groupBy))
   })
 
   app.get('/settings', (c) => {
     return c.html(settingsPage({
       nodeName: settings.syncNodeName ?? 'unnamed',
       peers: settings.syncPeers ?? [],
+      totalSessions: db.countSessions(),
+      sources: db.listSources(),
+      port: settings.httpPort ?? 3457,
     }))
   })
 
