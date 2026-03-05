@@ -43,15 +43,15 @@ export class Indexer {
 
           this.db.upsertSession(info)
 
-          // 索引用户消息内容用于全文搜索
+          // 索引消息内容用于全文搜索（user + assistant）
           const messages: { role: string; content: string }[] = []
           for await (const msg of adapter.streamMessages(filePath)) {
-            if (msg.role === 'user' && msg.content.trim()) {
+            if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
               messages.push({ role: msg.role, content: msg.content })
             }
           }
           if (messages.length > 0) {
-            this.db.indexSessionContent(info.id, messages)
+            this.db.indexSessionContent(info.id, messages, info.summary)
           }
 
           newCount++
@@ -103,12 +103,12 @@ export class Indexer {
 
       const messages: { role: string; content: string }[] = []
       for await (const msg of adapter.streamMessages(filePath)) {
-        if (msg.role === 'user' && msg.content.trim()) {
+        if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
           messages.push({ role: msg.role, content: msg.content })
         }
       }
       if (messages.length > 0) {
-        this.db.indexSessionContent(info.id, messages)
+        this.db.indexSessionContent(info.id, messages, info.summary)
       }
 
       return true

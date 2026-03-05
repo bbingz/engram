@@ -5,7 +5,7 @@ import { ensureDataDirs, getAdapter } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
 import type { FileSettings } from './core/config.js'
 import type { SourceName } from './adapters/types.js'
-import { handleSearch } from './tools/search.js'
+import { handleSearch, type SearchDeps } from './tools/search.js'
 import { handleStats } from './tools/stats.js'
 import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage } from './web/views.js'
 import type { VectorStore } from './core/vector-store.js'
@@ -95,7 +95,11 @@ export function createApp(db: Database, opts?: {
     return c.json(session)
   })
 
-  // Full-text search
+  // Hybrid search (FTS + semantic)
+  const searchDeps: SearchDeps = (opts?.vectorStore && opts?.embeddingClient)
+    ? { vectorStore: opts.vectorStore, embed: (text) => opts!.embeddingClient!.embed(text) }
+    : {}
+
   app.get('/api/search', async (c) => {
     const q = c.req.query('q') ?? ''
     const source = c.req.query('source') as SourceName | undefined
@@ -103,40 +107,33 @@ export function createApp(db: Database, opts?: {
     const since = c.req.query('since')
     const limitParam = c.req.query('limit')
     const limit = limitParam ? parseInt(limitParam, 10) : undefined
+    const mode = c.req.query('mode') as string | undefined
 
-    const result = await handleSearch(db, { query: q, source, project, since, limit })
-    return c.json(result)
+    try {
+      const result = await handleSearch(db, { query: q, source, project, since, limit, mode }, searchDeps)
+      return c.json(result)
+    } catch (err) {
+      return c.json({ results: [], query: q, searchModes: [], warning: 'Search failed: ' + String(err) })
+    }
   })
 
-  // Semantic search (vector)
+  // Semantic search (backward compat — delegates to hybrid with mode=semantic)
   app.get('/api/search/semantic', async (c) => {
     if (!semanticLimiter()) {
       return c.json({ error: 'Rate limit exceeded — max 30 requests/minute' }, 429)
     }
-
-    const query = c.req.query('q') ?? ''
-    const topK = Math.min(parseInt(c.req.query('limit') ?? '10', 10), 50)
-
     if (!opts?.vectorStore || !opts?.embeddingClient) {
       return c.json({ error: 'Semantic search not available — no embedding provider configured' }, 501)
     }
-
-    if (query.length < 2) {
-      return c.json({ results: [], warning: 'Query too short' })
+    const q = c.req.query('q') ?? ''
+    const limitParam = c.req.query('limit')
+    const limit = limitParam ? parseInt(limitParam, 10) : 10
+    try {
+      const result = await handleSearch(db, { query: q, limit, mode: 'semantic' }, searchDeps)
+      return c.json(result)
+    } catch (err) {
+      return c.json({ results: [], query: q, searchModes: [], warning: 'Search failed: ' + String(err) })
     }
-
-    const embedding = await opts.embeddingClient.embed(query)
-    if (!embedding) {
-      return c.json({ error: 'Failed to generate embedding' }, 500)
-    }
-
-    const vecResults = opts.vectorStore.search(embedding, topK)
-    const results = vecResults.map(vr => {
-      const session = db.getSession(vr.sessionId)
-      return { session, distance: vr.distance }
-    }).filter(r => r.session !== null)
-
-    return c.json({ results, query })
   })
 
   // Stats

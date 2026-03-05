@@ -1,7 +1,7 @@
 import type { SessionInfo } from '../adapters/types.js'
 
 const CDN_HTMX = 'https://unpkg.com/htmx.org@2.0.4'
-const CDN_HTMX_SRI = 'sha384-M06VwgoUOHG3FN0UchwWKqh9jS4ejwpoL0yjF3EVljtsxFwFETEYMkyNL5lXbJ5/'
+const CDN_HTMX_SRI = 'sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+'
 
 // ---------------------------------------------------------------------------
 // Source display info — keep in sync with macos/Engram/Views/SessionDetailView.swift SourceDisplay
@@ -221,6 +221,9 @@ export function layout(title: string, body: string, currentPath = '/'): string {
     .search-hint { font-size: 0.82em; color: var(--text-dim); margin-top: 0.5em; }
     .search-input { width: 100%; font-size: 1rem; padding: 0.6em 1em; }
     .recent-label { font-size: 0.82em; color: var(--text-dim); margin: 1.5em 0 0.5em; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+    .search-modes { font-size: 0.78em; color: var(--text-dim); margin: 0.4em 0; }
+    .match-badge { display: inline-block; font-size: 0.7em; padding: 1px 6px; border-radius: 3px; font-weight: 500; margin-right: 6px; vertical-align: middle; }
+    mark { background: #6c5ce7; color: #fff; padding: 0 2px; border-radius: 2px; }
 
     /* === Page Headers === */
     .page-header { margin: 1.5em 0 1em; }
@@ -550,32 +553,47 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
   return layout('Search', `
     <div class="page-header"><h2>Search</h2></div>
     <input type="search" name="q" id="search-input" class="search-input" placeholder="Search sessions…" autofocus>
-    <p class="search-hint">Type at least 3 characters to search across all session content.</p>
+    <p class="search-hint">Type at least 2 characters to search across all session content (keyword + semantic).</p>
+    <div id="search-modes" class="search-modes"></div>
     <div id="search-results"></div>
     <div id="recent-section">${recentHtml}</div>
     <script>
       function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+      function sanitizeSnippet(s) { return s.replace(/<(?!\\/?mark>)[^>]+>/g, ''); }
+      function matchBadge(type) {
+        const c = { keyword: '#3498db', semantic: '#9b59b6', both: '#27ae60' };
+        const l = { keyword: 'keyword', semantic: 'semantic', both: 'keyword + semantic' };
+        return '<span class="match-badge" style="background:' + (c[type]||'#888') + '33;color:' + (c[type]||'#888') + '">' + (l[type]||type) + '</span>';
+      }
       const input = document.getElementById('search-input');
-      let timer;
-      input.addEventListener('keyup', () => {
+      let timer, controller;
+      input.addEventListener('input', () => {
         clearTimeout(timer);
+        if (controller) controller.abort();
         timer = setTimeout(async () => {
           const q = input.value.trim();
           const el = document.getElementById('search-results');
           const recent = document.getElementById('recent-section');
-          if (q.length < 3) { el.innerHTML = ''; recent.style.display = ''; return; }
+          const modes = document.getElementById('search-modes');
+          if (q.length < 2) { el.innerHTML = ''; recent.style.display = ''; modes.innerHTML = ''; return; }
           recent.style.display = 'none';
-          const res = await fetch('/api/search?q=' + encodeURIComponent(q));
-          const data = await res.json();
-          if (data.warning) { el.innerHTML = '<p style="color:var(--text-dim)">' + esc(data.warning) + '</p>'; return; }
-          const results = data.results || [];
-          if (results.length === 0) { el.innerHTML = '<div class="empty-state"><p>No results found.</p></div>'; return; }
-          el.innerHTML = results.map(r =>
-            '<a href="/session/' + encodeURIComponent(r.session?.id||'') + '" class="session-card">'
-            + '<div class="title">' + esc(r.session?.summary||r.session?.id||'') + '</div>'
-            + '<div class="meta"><span style="color:var(--text-dim)">' + esc(r.snippet||'') + '</span></div>'
-            + '</a>'
-          ).join('');
+          controller = new AbortController();
+          try {
+            const res = await fetch('/api/search?q=' + encodeURIComponent(q), { signal: controller.signal });
+            const data = await res.json();
+            modes.innerHTML = data.searchModes?.length ? 'Searched via: ' + data.searchModes.join(' + ') : '';
+            if (data.warning) { el.innerHTML = '<p style="color:var(--text-dim)">' + esc(data.warning) + '</p>'; return; }
+            const results = data.results || [];
+            if (results.length === 0) { el.innerHTML = '<div class="empty-state"><p>No results found.</p></div>'; return; }
+            el.innerHTML = results.map(r =>
+              '<a href="/session/' + encodeURIComponent(r.session?.id||'') + '" class="session-card">'
+              + '<div class="title">' + esc(r.session?.summary||r.session?.id||'') + '</div>'
+              + '<div class="meta">'
+              + matchBadge(r.matchType||'keyword')
+              + '<span style="color:var(--text-dim)">' + sanitizeSnippet(r.snippet||'') + '</span>'
+              + '</div></a>'
+            ).join('');
+          } catch (e) { if (e.name !== 'AbortError') throw e; }
         }, 300);
       });
     </script>`, '/search')

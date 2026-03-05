@@ -20,6 +20,18 @@ export interface FtsMatch {
   rank: number
 }
 
+export interface FtsSearchResult {
+  sessionId: string
+  snippet: string
+  rank: number
+}
+
+export interface SearchFilters {
+  source?: string
+  project?: string
+  since?: string
+}
+
 export class Database {
   private db: BetterSqlite3.Database
 
@@ -82,7 +94,24 @@ export class Database {
         peer_name TEXT PRIMARY KEY,
         last_sync_time TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `)
+
+    // Migration: FTS v2 indexes user + assistant messages (v1 was user-only)
+    // Reset size_bytes to force indexAll() to re-process all sessions for new FTS content
+    const FTS_VERSION = '3'
+    const ftsVersion = this.getMetadata('fts_version')
+    if (ftsVersion !== FTS_VERSION) {
+      this.db.exec('DELETE FROM sessions_fts')
+      this.db.exec('UPDATE sessions SET size_bytes = 0')
+      try { this.db.exec('DELETE FROM session_embeddings') } catch { /* table may not exist yet */ }
+      try { this.db.exec('DELETE FROM vec_sessions') } catch { /* table may not exist yet */ }
+      this.setMetadata('fts_version', FTS_VERSION)
+    }
   }
 
   upsertSession(session: SessionInfo): void {
@@ -160,30 +189,62 @@ export class Database {
     return rows.map(r => this.rowToSession(r))
   }
 
-  indexSessionContent(sessionId: string, messages: { role: string; content: string }[]): void {
+  indexSessionContent(sessionId: string, messages: { role: string; content: string }[], summary?: string): void {
     const deleteStmt = this.db.prepare('DELETE FROM sessions_fts WHERE session_id = ?')
     const insertStmt = this.db.prepare('INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)')
 
     const transaction = this.db.transaction(() => {
       deleteStmt.run(sessionId)
       for (const msg of messages) {
-        if (msg.role === 'user' && msg.content.trim()) {
+        if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
           insertStmt.run(sessionId, msg.content)
         }
+      }
+      if (summary?.trim()) {
+        insertStmt.run(sessionId, summary)
       }
     })
     transaction()
   }
 
-  searchSessions(query: string, limit = 20): FtsMatch[] {
-    return this.db.prepare(`
-      SELECT f.session_id as sessionId, f.content, f.rank
-      FROM sessions_fts f
-      JOIN sessions s ON s.id = f.session_id
-      WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
-      ORDER BY f.rank
-      LIMIT ?
-    `).all(query, limit) as FtsMatch[]
+  searchSessions(query: string, limit = 20, filters?: SearchFilters): FtsSearchResult[] {
+    const doSearch = (q: string): FtsSearchResult[] => {
+      const conditions: string[] = ['sessions_fts MATCH @query', 's.hidden_at IS NULL']
+      const params: Record<string, unknown> = { query: q, limit }
+
+      if (filters?.source) {
+        conditions.push('s.source = @source')
+        params.source = filters.source
+      }
+      if (filters?.project) {
+        conditions.push('s.project LIKE @project')
+        params.project = `%${filters.project}%`
+      }
+      if (filters?.since) {
+        conditions.push('s.start_time >= @since')
+        params.since = filters.since
+      }
+
+      const where = conditions.join(' AND ')
+      return this.db.prepare(`
+        SELECT
+          f.session_id AS sessionId,
+          snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32) AS snippet,
+          f.rank
+        FROM sessions_fts f
+        JOIN sessions s ON s.id = f.session_id
+        WHERE ${where}
+        ORDER BY f.rank
+        LIMIT @limit
+      `).all(params) as FtsSearchResult[]
+    }
+
+    try {
+      return doSearch(query)
+    } catch {
+      const escaped = '"' + query.replace(/"/g, '""') + '"'
+      return doSearch(escaped)
+    }
   }
 
   deleteSession(id: string): void {
@@ -281,6 +342,17 @@ export class Database {
 
   close(): void {
     this.db.close()
+  }
+
+  getMetadata(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM metadata WHERE key = ?').get(key) as { value: string } | undefined
+    return row?.value ?? null
+  }
+
+  setMetadata(key: string, value: string): void {
+    this.db.prepare(
+      'INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    ).run(key, value)
   }
 
   private applyFilters(conditions: string[], params: Record<string, unknown>, opts: Pick<ListSessionsOptions, 'source' | 'sources' | 'project' | 'projects' | 'since' | 'until' | 'agents'>): void {

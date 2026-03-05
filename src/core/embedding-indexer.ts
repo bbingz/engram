@@ -71,7 +71,7 @@ export class EmbeddingIndexer {
   private getSessionText(sessionId: string): string | null {
     const rows = this.db.getFtsContent(sessionId)
     if (!rows || rows.length === 0) return null
-    const text = rows.join('\n').slice(0, 2000)
+    const text = rows.join('\n').slice(0, 8000)
     return text.length > 0 ? text : null
   }
 }

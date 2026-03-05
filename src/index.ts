@@ -18,7 +18,7 @@ import type { GetContextDeps } from './tools/get_context.js'
 
 import { listSessionsTool, handleListSessions } from './tools/list_sessions.js'
 import { getSessionTool, handleGetSession } from './tools/get_session.js'
-import { searchTool, handleSearch } from './tools/search.js'
+import { searchTool, handleSearch, type SearchDeps } from './tools/search.js'
 import { projectTimelineTool, handleProjectTimeline } from './tools/project_timeline.js'
 import { statsTool, handleStats } from './tools/stats.js'
 import { getContextTool, handleGetContext } from './tools/get_context.js'
@@ -77,7 +77,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!adapter) return { content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true }
       result = await handleGetSession(db, adapter, a as { id: string; page?: number; roles?: string[] })
     } else if (name === 'search') {
-      result = await handleSearch(db, a as { query: string })
+      const sDeps: SearchDeps = vecDeps
+        ? { vectorStore: vecDeps.vectorStore, embed: (text) => vecDeps.embeddingClient.embed(text) }
+        : {}
+      result = await handleSearch(db, a as { query: string; mode?: string }, sDeps)
     } else if (name === 'project_timeline') {
       result = await handleProjectTimeline(db, a as { project: string })
     } else if (name === 'stats') {
