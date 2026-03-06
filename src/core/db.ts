@@ -35,6 +35,20 @@ export interface StatsGroup {
   toolMessageCount: number
 }
 
+// Shared noise filter conditions — used by applyFilters, statsGroupBy, and search
+const NOISE_FILTER_SQL = [
+  "agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'",
+  'message_count > 1',
+  "(summary IS NULL OR summary NOT LIKE '%/usage%')",
+]
+
+export function isNoiseSession(session: { agentRole?: string; filePath: string; messageCount: number; summary?: string }): boolean {
+  if (session.agentRole || session.filePath.includes('/subagents/')) return true
+  if (session.messageCount <= 1) return true
+  if (session.summary?.includes('/usage')) return true
+  return false
+}
+
 export interface SearchFilters {
   source?: string
   project?: string
@@ -354,9 +368,7 @@ export class Database {
     if (since) { conditions.push('start_time >= @since'); params.since = since }
     if (until) { conditions.push('start_time <= @until'); params.until = until }
     if (opts?.excludeNoise) {
-      conditions.push("agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'")
-      conditions.push('message_count > 1')
-      conditions.push("(summary IS NULL OR summary NOT LIKE '%/usage%')")
+      conditions.push(...NOISE_FILTER_SQL)
     }
     const where = `WHERE ${conditions.join(' AND ')}`
 
@@ -439,9 +451,7 @@ export class Database {
     if ('since' in opts && opts.since) { conditions.push('start_time >= @since'); params.since = opts.since }
     if ('until' in opts && opts.until) { conditions.push('start_time <= @until'); params.until = opts.until }
     if (opts.agents === 'hide') {
-      conditions.push("agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'")
-      conditions.push("message_count > 1")
-      conditions.push("(summary IS NULL OR summary NOT LIKE '%/usage%')")
+      conditions.push(...NOISE_FILTER_SQL)
     } else if (opts.agents === 'only') {
       conditions.push("(agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
     }

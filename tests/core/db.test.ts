@@ -1,6 +1,6 @@
 // tests/core/db.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from '../../src/core/db.js'
+import { Database, isNoiseSession } from '../../src/core/db.js'
 import type { SessionInfo } from '../../src/adapters/types.js'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -112,5 +112,61 @@ describe('Database', () => {
     const tomorrow = new Date(Date.now() + 86400000).toISOString()
     const resultsEmpty = db.listSessionsSince(tomorrow, 100)
     expect(resultsEmpty).toHaveLength(0)
+  })
+
+  // --- isNoiseSession ---
+
+  it('isNoiseSession identifies agent sessions', () => {
+    expect(isNoiseSession({ agentRole: 'subagent', filePath: '/f', messageCount: 10 })).toBe(true)
+    expect(isNoiseSession({ filePath: '/subagents/agent-1.jsonl', messageCount: 10 })).toBe(true)
+  })
+
+  it('isNoiseSession identifies empty and /usage sessions', () => {
+    expect(isNoiseSession({ filePath: '/f', messageCount: 0 })).toBe(true)
+    expect(isNoiseSession({ filePath: '/f', messageCount: 1 })).toBe(true)
+    expect(isNoiseSession({ filePath: '/f', messageCount: 5, summary: '\n/usage\n' })).toBe(true)
+  })
+
+  it('isNoiseSession returns false for normal sessions', () => {
+    expect(isNoiseSession({ filePath: '/f', messageCount: 10, summary: 'Fix login bug' })).toBe(false)
+    expect(isNoiseSession({ filePath: '/f', messageCount: 2 })).toBe(false)
+  })
+
+  // --- Project aliases ---
+
+  it('resolveProjectAliases returns input when no aliases exist', () => {
+    expect(db.resolveProjectAliases(['myapp'])).toEqual(['myapp'])
+  })
+
+  it('resolveProjectAliases expands aliases bidirectionally', () => {
+    db.addProjectAlias('wechat-decrypt', 'wechat-decrypt-bing')
+    const fromOld = db.resolveProjectAliases(['wechat-decrypt'])
+    expect(fromOld).toContain('wechat-decrypt')
+    expect(fromOld).toContain('wechat-decrypt-bing')
+
+    const fromNew = db.resolveProjectAliases(['wechat-decrypt-bing'])
+    expect(fromNew).toContain('wechat-decrypt')
+    expect(fromNew).toContain('wechat-decrypt-bing')
+  })
+
+  it('resolveProjectAliases deduplicates', () => {
+    db.addProjectAlias('a', 'b')
+    const result = db.resolveProjectAliases(['a', 'b'])
+    expect(result).toHaveLength(2)
+    expect(new Set(result).size).toBe(2)
+  })
+
+  it('addProjectAlias is idempotent', () => {
+    db.addProjectAlias('x', 'y')
+    db.addProjectAlias('x', 'y') // duplicate — should not throw
+    expect(db.listProjectAliases()).toHaveLength(1)
+  })
+
+  it('removeProjectAlias deletes alias', () => {
+    db.addProjectAlias('a', 'b')
+    expect(db.listProjectAliases()).toHaveLength(1)
+    db.removeProjectAlias('a', 'b')
+    expect(db.listProjectAliases()).toHaveLength(0)
+    expect(db.resolveProjectAliases(['a'])).toEqual(['a'])
   })
 })

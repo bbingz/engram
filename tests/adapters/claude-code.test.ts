@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURE = join(__dirname, '../fixtures/claude-code/sample.jsonl')
+const TOOL_FIXTURE = join(__dirname, '../fixtures/claude-code/with-tools.jsonl')
 
 describe('ClaudeCodeAdapter', () => {
   const adapter = new ClaudeCodeAdapter()
@@ -32,6 +33,15 @@ describe('ClaudeCodeAdapter', () => {
     expect(messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
     expect(messages[0].role).toBe('user')
     expect(messages[0].content).toBe('请帮我添加用户注册功能')
+  })
+
+  it('counts tool_result messages separately from user messages', async () => {
+    const info = await adapter.parseSessionInfo(TOOL_FIXTURE)
+    expect(info).not.toBeNull()
+    expect(info!.userMessageCount).toBe(2)       // "帮我查看" + "好的，谢谢"
+    expect(info!.toolMessageCount).toBe(1)        // tool_result
+    expect(info!.assistantMessageCount).toBe(2)   // tool_use response + text response
+    expect(info!.messageCount).toBe(5)            // 2 user + 2 asst + 1 tool
   })
 
   it('decodeCwd converts encoded path to real path', () => {

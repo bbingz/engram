@@ -51,6 +51,7 @@ export class SqliteVecStore implements VectorStore {
     }
 
     this.db.exec(`
+      -- metadata table is owned by Database.migrate(); this is a fallback for standalone usage (tests)
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
       CREATE TABLE IF NOT EXISTS session_embeddings (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,

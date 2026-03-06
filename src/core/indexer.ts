@@ -73,17 +73,20 @@ export class Indexer {
     for (const id of ids) {
       const session = this.db.getSession(id)
       if (!session) continue
-      let adapter = this.adapters.find(a => a.name === session.source)
-      // Derived sources (lobsterai, qwen, kimi, minimax) use claude-code adapter
-      if (!adapter) adapter = this.adapters.find(a => a.name === 'claude-code')
-      if (!adapter) continue
-      try {
-        const info = await adapter.parseSessionInfo(session.filePath)
-        if (info) {
-          this.db.upsertSession({ ...info, project: session.project ?? info.project })
-          count++
-        }
-      } catch { /* skip */ }
+      const adapter = this.adapters.find(a => a.name === session.source)
+      // Build candidate list: exact match first, then all others as fallback
+      // (derived sources like lobsterai/qwen/kimi share format with claude-code)
+      const candidates = adapter ? [adapter] : this.adapters
+      for (const a of candidates) {
+        try {
+          const info = await a.parseSessionInfo(session.filePath)
+          if (info) {
+            this.db.upsertSession({ ...info, project: session.project ?? info.project })
+            count++
+            break
+          }
+        } catch { /* try next */ }
+      }
     }
     return count
   }

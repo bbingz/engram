@@ -1,5 +1,5 @@
 // src/tools/search.ts
-import type { Database, SearchFilters } from '../core/db.js'
+import { isNoiseSession, type Database, type SearchFilters } from '../core/db.js'
 import type { SessionInfo, SourceName } from '../adapters/types.js'
 import type { VectorStore } from '../core/vector-store.js'
 
@@ -118,12 +118,7 @@ export async function handleSearch(
     if (results.length >= limit) break
     const session = db.getSession(m.sessionId)
     if (!session) continue
-    // Agent/tools filters
-    if (params.agents === 'hide') {
-      if (session.agentRole || session.filePath.includes('/subagents/')) continue
-      if (session.messageCount <= 1) continue
-      if (session.summary?.includes('/usage')) continue
-    }
+    if (params.agents === 'hide' && isNoiseSession(session)) continue
     if (params.tools === 'hide' && session.toolMessageCount > 0 && session.userMessageCount === 0) continue
     // Semantic-only results need JS-level filtering (sqlite-vec can't JOIN)
     if (m.matchType === 'semantic') {

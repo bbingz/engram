@@ -570,7 +570,7 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
       <button class="mode-btn" data-mode="semantic">semantic</button>
       <span style="border-left:1px solid var(--border);margin:0 8px"></span>
       <button class="mode-btn active" data-filter="agents" title="Include/exclude agent & subagent sessions">agents</button>
-      <button class="mode-btn active" data-filter="tools" title="Include/exclude tool result content">tools</button>
+      <button class="mode-btn active" data-filter="tools" title="Include/exclude sessions with only tool calls and no human messages">tool-only</button>
     </div>
     <div id="search-modes" class="search-modes"></div>
     <div id="search-results"></div>
