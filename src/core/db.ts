@@ -415,6 +415,8 @@ export class Database {
     if ('until' in opts && opts.until) { conditions.push('start_time <= @until'); params.until = opts.until }
     if (opts.agents === 'hide') {
       conditions.push("agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'")
+      conditions.push("message_count > 1")
+      conditions.push("(summary IS NULL OR summary NOT LIKE '%/usage%')")
     } else if (opts.agents === 'only') {
       conditions.push("(agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
     }
