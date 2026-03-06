@@ -92,13 +92,17 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         if (type === 'assistant') {
           assistantCount++
         } else if (type === 'user') {
-          const text = this.extractContent(msg?.content)
-          if (this.isSystemInjection(text)) {
-            systemCount++
+          if (this.isToolResult(msg?.content)) {
+            assistantCount++ // tool results are machine-generated, count with assistant
           } else {
-            userCount++
-            if (!firstUserText) {
-              firstUserText = text
+            const text = this.extractContent(msg?.content)
+            if (this.isSystemInjection(text)) {
+              systemCount++
+            } else {
+              userCount++
+              if (!firstUserText) {
+                firstUserText = text
+              }
             }
           }
         }
@@ -206,6 +210,11 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     } catch {
       return null
     }
+  }
+
+  private isToolResult(content: unknown): boolean {
+    if (!Array.isArray(content)) return false
+    return content.some((c: Record<string, unknown>) => c.type === 'tool_result')
   }
 
   private extractContent(content: unknown): string {

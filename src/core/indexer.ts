@@ -73,7 +73,9 @@ export class Indexer {
     for (const id of ids) {
       const session = this.db.getSession(id)
       if (!session) continue
-      const adapter = this.adapters.find(a => a.name === session.source)
+      let adapter = this.adapters.find(a => a.name === session.source)
+      // Derived sources (lobsterai, qwen, kimi, minimax) use claude-code adapter
+      if (!adapter) adapter = this.adapters.find(a => a.name === 'claude-code')
       if (!adapter) continue
       try {
         const info = await adapter.parseSessionInfo(session.filePath)
