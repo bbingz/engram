@@ -24,14 +24,27 @@ export class SqliteVecStore implements VectorStore {
   }
   private upsertTxn!: BetterSqlite3.Transaction<(sessionId: string, buf: Buffer, model: string) => void>
 
-  constructor(private db: BetterSqlite3.Database) {
+  constructor(private db: BetterSqlite3.Database, private dimension = 768) {
     sqliteVec.load(db)
     this.migrate()
     this.prepareStatements()
   }
 
   private migrate(): void {
+    // Check if vec table exists with a different dimension — rebuild if so
+    const exists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_sessions'").get()
+    if (exists) {
+      const hasMeta = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='metadata'").get()
+      if (hasMeta) {
+        const storedDim = this.db.prepare("SELECT value FROM metadata WHERE key = 'vec_dimension'").pluck().get() as string | undefined
+        if (storedDim && Number(storedDim) !== this.dimension) {
+          this.db.exec('DROP TABLE IF EXISTS vec_sessions; DELETE FROM session_embeddings;')
+        }
+      }
+    }
+
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
       CREATE TABLE IF NOT EXISTS session_embeddings (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         model TEXT NOT NULL,
@@ -39,8 +52,9 @@ export class SqliteVecStore implements VectorStore {
       );
       CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
         session_id TEXT PRIMARY KEY,
-        embedding float[768]
+        embedding float[${this.dimension}]
       );
+      INSERT OR REPLACE INTO metadata (key, value) VALUES ('vec_dimension', '${this.dimension}');
     `)
   }
 

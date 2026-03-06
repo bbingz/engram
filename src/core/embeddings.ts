@@ -6,20 +6,24 @@ export interface EmbeddingClient {
   model: string
 }
 
-interface EmbeddingClientOptions {
+export interface EmbeddingClientOptions {
   ollamaUrl?: string
+  ollamaModel?: string
   openaiApiKey?: string
+  dimension?: number
 }
 
 export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingClient {
-  const ollamaUrl = opts.ollamaUrl ?? 'http://localhost:11434'
+  const ollamaUrl = (opts.ollamaUrl ?? 'http://localhost:11434').replace(/\/+$/, '')
+  const ollamaModel = opts.ollamaModel ?? 'nomic-embed-text'
+  const dimension = opts.dimension ?? 768
   const openaiClient = opts.openaiApiKey ? new OpenAI({ apiKey: opts.openaiApiKey }) : null
   let ollamaDown = false
 
   let lastUsedModel = 'unknown'
 
   return {
-    dimension: 768,
+    dimension,
     get model() { return lastUsedModel },
 
     async embed(text: string): Promise<Float32Array | null> {
@@ -29,17 +33,18 @@ export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingCl
           const res = await fetch(`${ollamaUrl}/api/embed`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'nomic-embed-text', input: text }),
-            signal: AbortSignal.timeout(10000),
+            body: JSON.stringify({ model: ollamaModel, input: text }),
+            signal: AbortSignal.timeout(30000),
           })
           if (res.ok) {
             const data = await res.json() as { embeddings: number[][] }
             if (data.embeddings?.[0]) {
-              lastUsedModel = 'nomic-embed-text'
-              return new Float32Array(data.embeddings[0])
+              lastUsedModel = ollamaModel
+              const raw = data.embeddings[0]
+              // Truncate or use as-is to match configured dimension
+              return new Float32Array(raw.length > dimension ? raw.slice(0, dimension) : raw)
             }
           } else {
-            // Server error (503, 500, etc.) — mark as down
             ollamaDown = true
             setTimeout(() => { ollamaDown = false }, 60_000)
           }
@@ -55,7 +60,7 @@ export function createEmbeddingClient(opts: EmbeddingClientOptions): EmbeddingCl
           const res = await openaiClient.embeddings.create({
             model: 'text-embedding-3-small',
             input: text,
-            dimensions: 768,
+            dimensions: dimension,
           })
           if (res.data[0]) {
             lastUsedModel = 'text-embedding-3-small'

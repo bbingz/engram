@@ -95,6 +95,20 @@ export function createApp(db: Database, opts?: {
     return c.json(session)
   })
 
+  // Embedding status endpoint
+  app.get('/api/search/status', (c) => {
+    const totalSessions = db.countSessions()
+    const embeddedCount = opts?.vectorStore?.count() ?? 0
+    const available = !!(opts?.vectorStore && opts?.embeddingClient)
+    return c.json({
+      available,
+      model: available ? opts!.embeddingClient!.model : null,
+      embeddedCount,
+      totalSessions,
+      progress: totalSessions > 0 ? Math.round((embeddedCount / totalSessions) * 100) : 0,
+    })
+  })
+
   // Hybrid search (FTS + semantic)
   const searchDeps: SearchDeps = (opts?.vectorStore && opts?.embeddingClient)
     ? { vectorStore: opts.vectorStore, embed: (text) => opts!.embeddingClient!.embed(text) }
@@ -144,6 +158,25 @@ export function createApp(db: Database, opts?: {
 
     const result = await handleStats(db, { since, until, group_by })
     return c.json(result)
+  })
+
+  // Project aliases
+  app.get('/api/project-aliases', (c) => {
+    return c.json(db.listProjectAliases())
+  })
+
+  app.post('/api/project-aliases', async (c) => {
+    const body = await c.req.json() as { alias?: string; canonical?: string }
+    if (!body.alias || !body.canonical) return c.json({ error: 'alias and canonical required' }, 400)
+    db.addProjectAlias(body.alias, body.canonical)
+    return c.json({ added: { alias: body.alias, canonical: body.canonical } })
+  })
+
+  app.delete('/api/project-aliases', async (c) => {
+    const body = await c.req.json() as { alias?: string; canonical?: string }
+    if (!body.alias || !body.canonical) return c.json({ error: 'alias and canonical required' }, 400)
+    db.removeProjectAlias(body.alias, body.canonical)
+    return c.json({ removed: { alias: body.alias, canonical: body.canonical } })
   })
 
   // UUID lookup redirect
@@ -197,6 +230,7 @@ export function createApp(db: Database, opts?: {
       totalSessions: db.countSessions(),
       sources: db.listSources(),
       port: settings.httpPort ?? 3457,
+      aliases: db.listProjectAliases(),
     }))
   })
 

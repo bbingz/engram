@@ -224,6 +224,16 @@ export function layout(title: string, body: string, currentPath = '/'): string {
     .search-modes { font-size: 0.78em; color: var(--text-dim); margin: 0.4em 0; }
     .match-badge { display: inline-block; font-size: 0.7em; padding: 1px 6px; border-radius: 3px; font-weight: 500; margin-right: 6px; vertical-align: middle; }
     mark { background: #6c5ce7; color: #fff; padding: 0 2px; border-radius: 2px; }
+    .mode-toggle { display: flex; gap: 4px; margin: 0.6em 0; }
+    .mode-btn { background: var(--bg-card); border: 1px solid var(--border); padding: 4px 12px; border-radius: 4px; font-size: 0.82em; cursor: pointer; color: var(--text-dim); transition: all 0.15s; }
+    .mode-btn:hover { border-color: var(--text-dim); }
+    .mode-btn.active { background: #6c5ce7; color: #fff; border-color: #6c5ce7; }
+    .embedding-status { font-size: 0.78em; color: var(--text-dim); margin-bottom: 0.6em; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+    .status-dot.available { background: #27ae60; }
+    .status-dot.unavailable { background: #e74c3c; }
+    .progress-bar { width: 120px; height: 4px; background: var(--border); border-radius: 2px; margin-left: 6px; overflow: hidden; }
+    .progress-fill { height: 100%; background: #6c5ce7; border-radius: 2px; transition: width 0.3s; }
 
     /* === Page Headers === */
     .page-header { margin: 1.5em 0 1em; }
@@ -552,8 +562,13 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
 
   return layout('Search', `
     <div class="page-header"><h2>Search</h2></div>
+    <div id="embedding-status" class="embedding-status"></div>
     <input type="search" name="q" id="search-input" class="search-input" placeholder="Search sessions…" autofocus>
-    <p class="search-hint">Type at least 2 characters to search across all session content (keyword + semantic).</p>
+    <div class="mode-toggle">
+      <button class="mode-btn active" data-mode="hybrid">hybrid</button>
+      <button class="mode-btn" data-mode="keyword">keyword</button>
+      <button class="mode-btn" data-mode="semantic">semantic</button>
+    </div>
     <div id="search-modes" class="search-modes"></div>
     <div id="search-results"></div>
     <div id="recent-section">${recentHtml}</div>
@@ -565,22 +580,49 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
         const l = { keyword: 'keyword', semantic: 'semantic', both: 'keyword + semantic' };
         return '<span class="match-badge" style="background:' + (c[type]||'#888') + '33;color:' + (c[type]||'#888') + '">' + esc(l[type]||type) + '</span>';
       }
+
+      // Mode toggle
+      let currentMode = 'hybrid';
+      document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          currentMode = btn.dataset.mode;
+          const q = document.getElementById('search-input').value.trim();
+          if (q.length >= 2) doSearch(q);
+        });
+      });
+
+      // Embedding status
+      fetch('/api/search/status').then(r=>r.json()).then(s => {
+        const el = document.getElementById('embedding-status');
+        if (s.available) {
+          const pct = s.progress;
+          const bar = pct < 100
+            ? '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>'
+            : '';
+          el.innerHTML = '<span class="status-dot available"></span>'
+            + esc(s.model || 'embedding') + ' &middot; '
+            + esc(s.embeddedCount + '/' + s.totalSessions) + ' sessions'
+            + (pct < 100 ? ' (' + pct + '%)' : '')
+            + bar;
+        } else {
+          el.innerHTML = '<span class="status-dot unavailable"></span>Semantic search unavailable — no embedding provider';
+        }
+      }).catch(() => {});
+
       const input = document.getElementById('search-input');
       let timer, controller;
-      input.addEventListener('input', () => {
-        clearTimeout(timer);
+      function doSearch(q) {
         if (controller) controller.abort();
-        timer = setTimeout(async () => {
-          const q = input.value.trim();
-          const el = document.getElementById('search-results');
-          const recent = document.getElementById('recent-section');
-          const modes = document.getElementById('search-modes');
-          if (q.length < 2) { el.innerHTML = ''; recent.style.display = ''; modes.innerHTML = ''; return; }
-          recent.style.display = 'none';
-          controller = new AbortController();
-          try {
-            const res = await fetch('/api/search?q=' + encodeURIComponent(q), { signal: controller.signal });
-            const data = await res.json();
+        controller = new AbortController();
+        const el = document.getElementById('search-results');
+        const recent = document.getElementById('recent-section');
+        const modes = document.getElementById('search-modes');
+        recent.style.display = 'none';
+        fetch('/api/search?q=' + encodeURIComponent(q) + '&mode=' + currentMode, { signal: controller.signal })
+          .then(r => r.json())
+          .then(data => {
             modes.textContent = data.searchModes?.length ? 'Searched via: ' + data.searchModes.join(' + ') : '';
             if (data.warning) { el.innerHTML = '<p style="color:var(--text-dim)">' + esc(data.warning) + '</p>'; return; }
             const results = data.results || [];
@@ -593,7 +635,18 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
               + '<span style="color:var(--text-dim)">' + sanitizeSnippet(r.snippet||'') + '</span>'
               + '</div></a>'
             ).join('');
-          } catch (e) { if (e.name !== 'AbortError') throw e; }
+          })
+          .catch(e => { if (e.name !== 'AbortError') throw e; });
+      }
+      input.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          const q = input.value.trim();
+          const el = document.getElementById('search-results');
+          const recent = document.getElementById('recent-section');
+          const modes = document.getElementById('search-modes');
+          if (q.length < 2) { el.innerHTML = ''; recent.style.display = ''; modes.textContent = ''; return; }
+          doSearch(q);
         }, 300);
       });
     </script>`, '/search')
@@ -645,6 +698,7 @@ interface SettingsData {
   totalSessions?: number
   sources?: string[]
   port?: number
+  aliases?: { alias: string; canonical: string }[]
 }
 
 export function settingsPage(config: SettingsData): string {
@@ -683,6 +737,51 @@ export function settingsPage(config: SettingsData): string {
       <h3>Sync</h3>
       <div class="settings-row"><span class="label">Node name</span><span class="value">${escapeHtml(config.nodeName)}</span></div>
       <div style="margin-top:0.75em">${peerRows}</div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Project Aliases</h3>
+      <p style="font-size:0.82em;color:var(--text-dim);margin-bottom:0.75em">Link project names so sessions from moved/renamed directories appear together.</p>
+      <div id="alias-list">${
+        config.aliases && config.aliases.length > 0
+          ? `<table><thead><tr><th>Old Project</th><th>New Project</th><th></th></tr></thead><tbody>${
+              config.aliases.map(a => `<tr>
+                <td>${escapeHtml(a.alias)}</td>
+                <td>${escapeHtml(a.canonical)}</td>
+                <td><button class="alias-del" data-alias="${escapeHtml(a.alias)}" data-canonical="${escapeHtml(a.canonical)}" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:1em">✕</button></td>
+              </tr>`).join('')
+            }</tbody></table>`
+          : '<p style="color:var(--text-dim);font-size:0.88em">No aliases configured</p>'
+      }</div>
+      <div style="display:flex;gap:8px;margin-top:0.75em;align-items:center">
+        <input type="text" id="alias-old" placeholder="Old project name" style="flex:1;padding:4px 8px;font-size:0.88em">
+        <span style="color:var(--text-dim)">→</span>
+        <input type="text" id="alias-new" placeholder="New project name" style="flex:1;padding:4px 8px;font-size:0.88em">
+        <button id="alias-add-btn" style="padding:4px 12px;font-size:0.88em">Add</button>
+      </div>
+      <script>
+        document.getElementById('alias-add-btn').addEventListener('click', async () => {
+          const alias = document.getElementById('alias-old').value.trim();
+          const canonical = document.getElementById('alias-new').value.trim();
+          if (!alias || !canonical) return;
+          await fetch('/api/project-aliases', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ alias, canonical })
+          });
+          location.reload();
+        });
+        document.querySelectorAll('.alias-del').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            await fetch('/api/project-aliases', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ alias: btn.dataset.alias, canonical: btn.dataset.canonical })
+            });
+            location.reload();
+          });
+        });
+      </script>
     </div>`, '/settings')
 }
 

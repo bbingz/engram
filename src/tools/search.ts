@@ -48,6 +48,16 @@ export async function handleSearch(
   const mode = params.mode ?? 'hybrid'
   const searchModes: string[] = []
 
+  // --- UUID direct lookup ---
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  if (uuidPattern.test(params.query.trim())) {
+    const session = db.getSession(params.query.trim())
+    if (session) {
+      return { results: [{ session, snippet: '', matchType: 'keyword', score: 1 }], query: params.query, searchModes: ['id'] }
+    }
+    return { results: [], query: params.query, searchModes: ['id'], warning: 'No session found with this ID' }
+  }
+
   const filters: SearchFilters = {
     source: params.source,
     project: params.project,
@@ -111,7 +121,10 @@ export async function handleSearch(
     // Semantic-only results need JS-level filtering (sqlite-vec can't JOIN)
     if (m.matchType === 'semantic') {
       if (filters.source && session.source !== filters.source) continue
-      if (filters.project && !session.project?.includes(filters.project)) continue
+      if (filters.project) {
+        const expanded = db.resolveProjectAliases([filters.project])
+        if (!expanded.some(p => session.project?.includes(p))) continue
+      }
       if (filters.since && session.startTime < filters.since) continue
     }
     results.push({

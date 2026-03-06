@@ -34,7 +34,8 @@ export async function handleGetContext(
   const maxChars = maxTokens * CHARS_PER_TOKEN
 
   const projectName = basename(params.cwd.replace(/\/$/, ''))
-  let sessions = db.listSessions({ project: projectName, limit: 50 })
+  const projectNames = db.resolveProjectAliases([projectName])
+  let sessions = db.listSessions({ projects: projectNames, limit: 50 })
   if (sessions.length === 0 && params.cwd) {
     sessions = db.listSessions({ project: params.cwd, limit: 50 })
   }
@@ -51,7 +52,7 @@ export async function handleGetContext(
         for (const vr of vecResults) {
           if (!existingIds.has(vr.sessionId)) {
             const s = db.getSession(vr.sessionId)
-            if (s && s.project === projectName) {
+            if (s && projectNames.includes(s.project ?? '')) {
               sessions.push(s)
             }
           }

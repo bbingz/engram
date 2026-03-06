@@ -99,6 +99,13 @@ export class Database {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS project_aliases (
+        alias TEXT NOT NULL,
+        canonical TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (alias, canonical)
+      );
     `)
 
     // Migration: FTS v2 indexes user + assistant messages (v1 was user-only)
@@ -217,8 +224,14 @@ export class Database {
         params.source = filters.source
       }
       if (filters?.project) {
-        conditions.push('s.project LIKE @project')
-        params.project = `%${filters.project}%`
+        const expanded = this.resolveProjectAliases([filters.project])
+        if (expanded.length === 1) {
+          conditions.push('s.project LIKE @project')
+          params.project = `%${expanded[0]}%`
+        } else {
+          const clauses = expanded.map((p, i) => { params[`proj${i}`] = `%${p}%`; return `s.project LIKE @proj${i}` })
+          conditions.push(`(${clauses.join(' OR ')})`)
+        }
       }
       if (filters?.since) {
         conditions.push('s.start_time >= @since')
@@ -355,6 +368,33 @@ export class Database {
     ).run(key, value)
   }
 
+  // --- Project aliases ---
+
+  resolveProjectAliases(projects: string[]): string[] {
+    if (projects.length === 0) return projects
+    const placeholders = projects.map((_, i) => `?`).join(',')
+    const rows = this.db.prepare(`
+      SELECT DISTINCT alias AS name FROM project_aliases WHERE canonical IN (${placeholders})
+      UNION
+      SELECT DISTINCT canonical AS name FROM project_aliases WHERE alias IN (${placeholders})
+    `).all(...projects, ...projects) as { name: string }[]
+    const all = new Set(projects)
+    for (const r of rows) all.add(r.name)
+    return [...all]
+  }
+
+  addProjectAlias(alias: string, canonical: string): void {
+    this.db.prepare('INSERT OR IGNORE INTO project_aliases (alias, canonical) VALUES (?, ?)').run(alias, canonical)
+  }
+
+  removeProjectAlias(alias: string, canonical: string): void {
+    this.db.prepare('DELETE FROM project_aliases WHERE alias = ? AND canonical = ?').run(alias, canonical)
+  }
+
+  listProjectAliases(): { alias: string; canonical: string }[] {
+    return this.db.prepare('SELECT alias, canonical FROM project_aliases ORDER BY canonical, alias').all() as { alias: string; canonical: string }[]
+  }
+
   private applyFilters(conditions: string[], params: Record<string, unknown>, opts: Pick<ListSessionsOptions, 'source' | 'sources' | 'project' | 'projects' | 'since' | 'until' | 'agents'>): void {
     const effectiveSources = opts.sources?.length ? opts.sources : opts.source ? [opts.source] : []
     if (effectiveSources.length === 1) {
@@ -363,7 +403,8 @@ export class Database {
       const placeholders = effectiveSources.map((s, i) => { params[`s${i}`] = s; return `@s${i}` })
       conditions.push(`source IN (${placeholders.join(',')})`)
     }
-    const effectiveProjects = opts.projects?.length ? opts.projects : opts.project ? [opts.project] : []
+    const rawProjects = opts.projects?.length ? opts.projects : opts.project ? [opts.project] : []
+    const effectiveProjects = rawProjects.length > 0 ? this.resolveProjectAliases(rawProjects) : rawProjects
     if (effectiveProjects.length === 1) {
       conditions.push('project = @project'); params.project = effectiveProjects[0]
     } else if (effectiveProjects.length > 1) {

@@ -22,7 +22,12 @@ function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
 
-const vecDeps = initVectorDeps(db, settings.openaiApiKey)
+const vecDeps = initVectorDeps(db, {
+  openaiApiKey: settings.openaiApiKey,
+  ollamaUrl: settings.ollamaUrl,
+  ollamaModel: settings.ollamaModel,
+  embeddingDimension: settings.embeddingDimension,
+})
 if (!vecDeps) {
   emit({ event: 'warning', message: 'Vector store unavailable' })
 }

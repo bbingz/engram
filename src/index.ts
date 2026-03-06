@@ -33,10 +33,30 @@ const indexer = new Indexer(db, adapters)
 
 // Vector store — may fail if sqlite-vec can't load
 const fileSettings = readFileSettings()
-const vecDeps = initVectorDeps(db, fileSettings.openaiApiKey)
+const vecDeps = initVectorDeps(db, {
+  openaiApiKey: fileSettings.openaiApiKey,
+  ollamaUrl: fileSettings.ollamaUrl,
+  ollamaModel: fileSettings.ollamaModel,
+  embeddingDimension: fileSettings.embeddingDimension,
+})
 const vectorDeps: GetContextDeps = vecDeps
   ? { vectorStore: vecDeps.vectorStore, embed: (text) => vecDeps.embeddingClient.embed(text) }
   : {}
+
+const manageProjectAliasTool = {
+  name: 'manage_project_alias',
+  description: 'Link two project names so sessions from one appear in queries for the other. Use when a project directory has been moved or renamed.',
+  inputSchema: {
+    type: 'object' as const,
+    required: ['action'],
+    properties: {
+      action: { type: 'string', enum: ['add', 'remove', 'list'], description: 'Action to perform' },
+      old_project: { type: 'string', description: 'Old project name (for add/remove)' },
+      new_project: { type: 'string', description: 'New project name (for add/remove)' },
+    },
+    additionalProperties: false,
+  },
+}
 
 const allTools = [
   listSessionsTool,
@@ -47,6 +67,7 @@ const allTools = [
   getContextTool,
   exportTool,
   generateSummaryTool,
+  manageProjectAliasTool,
 ]
 
 const server = new Server(
@@ -95,6 +116,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await handleExport(db, adapter, a as { id: string; format?: string })
     } else if (name === 'generate_summary') {
       return await handleGenerateSummary(db, a as { sessionId: string })
+    } else if (name === 'manage_project_alias') {
+      const action = a.action as string
+      if (action === 'list') {
+        result = db.listProjectAliases()
+      } else if (action === 'add') {
+        if (!a.old_project || !a.new_project) return { content: [{ type: 'text', text: 'old_project and new_project required' }], isError: true }
+        db.addProjectAlias(a.old_project as string, a.new_project as string)
+        result = { added: { alias: a.old_project, canonical: a.new_project } }
+      } else if (action === 'remove') {
+        if (!a.old_project || !a.new_project) return { content: [{ type: 'text', text: 'old_project and new_project required' }], isError: true }
+        db.removeProjectAlias(a.old_project as string, a.new_project as string)
+        result = { removed: { alias: a.old_project, canonical: a.new_project } }
+      } else {
+        return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true }
+      }
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }

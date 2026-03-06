@@ -64,12 +64,22 @@ export interface VectorDeps {
   embeddingIndexer: EmbeddingIndexer
 }
 
-export function initVectorDeps(db: Database, openaiApiKey?: string): VectorDeps | null {
+export interface VectorDepsOptions {
+  openaiApiKey?: string
+  ollamaUrl?: string
+  ollamaModel?: string
+  embeddingDimension?: number
+}
+
+export function initVectorDeps(db: Database, opts: VectorDepsOptions = {}): VectorDeps | null {
   try {
-    const vectorStore = new SqliteVecStore(db.getRawDb())
+    const dimension = opts.embeddingDimension ?? 768
+    const vectorStore = new SqliteVecStore(db.getRawDb(), dimension)
     const embeddingClient = createEmbeddingClient({
-      ollamaUrl: 'http://localhost:11434',
-      openaiApiKey,
+      ollamaUrl: opts.ollamaUrl,
+      ollamaModel: opts.ollamaModel,
+      openaiApiKey: opts.openaiApiKey,
+      dimension,
     })
     const embeddingIndexer = new EmbeddingIndexer(db, vectorStore, embeddingClient)
     return { vectorStore, embeddingClient, embeddingIndexer }

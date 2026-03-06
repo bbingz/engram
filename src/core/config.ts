@@ -10,6 +10,9 @@ export interface FileSettings {
   openaiModel?: string;
   anthropicApiKey?: string;
   anthropicModel?: string;
+  ollamaUrl?: string;
+  ollamaModel?: string;
+  embeddingDimension?: number;
   nodejsPath?: string;
   httpPort?: number;
   syncNodeName?: string;
