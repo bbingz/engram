@@ -212,6 +212,7 @@ export class AntigravityAdapter implements SessionAdapter {
         messageCount: userCount + assistantCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
+        toolMessageCount: 0,
         systemMessageCount: 0,
         summary: (meta.title || meta.summary || firstUserText).slice(0, 200) || undefined,
         filePath,

@@ -67,6 +67,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       let endTime = ''
       let userCount = 0
       let assistantCount = 0
+      let toolCount = 0
       let systemCount = 0
       let firstUserText = ''
       let detectedModel = ''
@@ -93,7 +94,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
           assistantCount++
         } else if (type === 'user') {
           if (this.isToolResult(msg?.content)) {
-            assistantCount++ // tool results are machine-generated, count with assistant
+            toolCount++
           } else {
             const text = this.extractContent(msg?.content)
             if (this.isSystemInjection(text)) {
@@ -122,9 +123,10 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         endTime: endTime !== startTime ? endTime : undefined,
         cwd,
         model: detectedModel || undefined,
-        messageCount: userCount + assistantCount,
+        messageCount: userCount + assistantCount + toolCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
+        toolMessageCount: toolCount,
         systemMessageCount: systemCount,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,

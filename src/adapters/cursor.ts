@@ -99,6 +99,7 @@ export class CursorAdapter implements SessionAdapter {
           messageCount: userMessageCount + assistantMessageCount,
           userMessageCount,
           assistantMessageCount,
+          toolMessageCount: 0,
           systemMessageCount: 0,
           summary: data.latestConversationSummary?.summary?.slice(0, 200),
           filePath,

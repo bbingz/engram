@@ -26,6 +26,15 @@ export interface FtsSearchResult {
   rank: number
 }
 
+export interface StatsGroup {
+  key: string
+  sessionCount: number
+  messageCount: number
+  userMessageCount: number
+  assistantMessageCount: number
+  toolMessageCount: number
+}
+
 export interface SearchFilters {
   source?: string
   project?: string
@@ -53,6 +62,7 @@ export class Database {
       if (!colNames.has('origin')) this.db.exec("ALTER TABLE sessions ADD COLUMN origin TEXT DEFAULT 'local'")
       if (!colNames.has('assistant_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN assistant_message_count INTEGER NOT NULL DEFAULT 0")
       if (!colNames.has('system_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN system_message_count INTEGER NOT NULL DEFAULT 0")
+      if (!colNames.has('tool_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN tool_message_count INTEGER NOT NULL DEFAULT 0")
     }
 
     this.db.exec(`
@@ -67,6 +77,7 @@ export class Database {
         message_count INTEGER NOT NULL DEFAULT 0,
         user_message_count INTEGER NOT NULL DEFAULT 0,
         assistant_message_count INTEGER NOT NULL DEFAULT 0,
+        tool_message_count INTEGER NOT NULL DEFAULT 0,
         system_message_count INTEGER NOT NULL DEFAULT 0,
         summary TEXT,
         file_path TEXT NOT NULL,
@@ -124,10 +135,10 @@ export class Database {
   upsertSession(session: SessionInfo): void {
     this.db.prepare(`
       INSERT INTO sessions (id, source, start_time, end_time, cwd, project, model,
-        message_count, user_message_count, assistant_message_count, system_message_count,
+        message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
         summary, file_path, size_bytes, indexed_at, agent_role, origin)
       VALUES (@id, @source, @startTime, @endTime, @cwd, @project, @model,
-        @messageCount, @userMessageCount, @assistantMessageCount, @systemMessageCount,
+        @messageCount, @userMessageCount, @assistantMessageCount, @toolMessageCount, @systemMessageCount,
         @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin)
       ON CONFLICT(id) DO UPDATE SET
         source = excluded.source,
@@ -136,6 +147,7 @@ export class Database {
         message_count = excluded.message_count,
         user_message_count = excluded.user_message_count,
         assistant_message_count = excluded.assistant_message_count,
+        tool_message_count = excluded.tool_message_count,
         system_message_count = excluded.system_message_count,
         summary = excluded.summary,
         size_bytes = excluded.size_bytes,
@@ -153,6 +165,7 @@ export class Database {
       messageCount: session.messageCount,
       userMessageCount: session.userMessageCount,
       assistantMessageCount: session.assistantMessageCount,
+      toolMessageCount: session.toolMessageCount,
       systemMessageCount: session.systemMessageCount,
       summary: session.summary ?? null,
       filePath: session.filePath,
@@ -329,7 +342,7 @@ export class Database {
     return rows.map(r => r.id)
   }
 
-  statsGroupBy(groupBy: string, since?: string, until?: string, opts?: { excludeNoise?: boolean }): { key: string; sessionCount: number; messageCount: number; userMessageCount: number }[] {
+  statsGroupBy(groupBy: string, since?: string, until?: string, opts?: { excludeNoise?: boolean }): StatsGroup[] {
     let groupExpr: string
     if (groupBy === 'project') groupExpr = "COALESCE(project, '(unknown)')"
     else if (groupBy === 'day') groupExpr = "date(start_time, 'localtime')"
@@ -356,11 +369,13 @@ export class Database {
       SELECT ${groupExpr} as key,
         COUNT(*) as sessionCount,
         SUM(message_count) as messageCount,
-        ${userMsgExpr} as userMessageCount
+        ${userMsgExpr} as userMessageCount,
+        SUM(assistant_message_count) as assistantMessageCount,
+        SUM(tool_message_count) as toolMessageCount
       FROM sessions ${where}
       GROUP BY ${groupExpr}
       ORDER BY sessionCount DESC
-    `).all(params) as { key: string; sessionCount: number; messageCount: number; userMessageCount: number }[]
+    `).all(params) as StatsGroup[]
   }
 
   close(): void {
@@ -444,6 +459,7 @@ export class Database {
       messageCount: row.message_count as number,
       userMessageCount: row.user_message_count as number,
       assistantMessageCount: (row.assistant_message_count as number) ?? 0,
+      toolMessageCount: (row.tool_message_count as number) ?? 0,
       systemMessageCount: (row.system_message_count as number) ?? 0,
       summary: row.summary as string | undefined,
       filePath: row.file_path as string,

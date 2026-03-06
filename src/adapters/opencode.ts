@@ -128,6 +128,7 @@ export class OpenCodeAdapter implements SessionAdapter {
         messageCount: userMessageCount + assistantMessageCount,
         userMessageCount,
         assistantMessageCount,
+        toolMessageCount: 0,
         systemMessageCount: 0,
         summary: session.title || undefined,
         filePath,

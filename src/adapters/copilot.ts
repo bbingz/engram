@@ -107,6 +107,7 @@ export class CopilotAdapter implements SessionAdapter {
         messageCount: userCount + assistantCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
+        toolMessageCount: 0,
         systemMessageCount: 0,
         summary: workspace['summary'] || firstUserText || undefined,
         filePath,

@@ -109,6 +109,7 @@ export class GeminiCliAdapter implements SessionAdapter {
         messageCount: userMessages.length + assistantMessages.length,
         userMessageCount: userMessages.length,
         assistantMessageCount: assistantMessages.length,
+        toolMessageCount: 0,
         systemMessageCount: 0,
         summary: firstUserText?.slice(0, 200) || undefined,
         filePath,

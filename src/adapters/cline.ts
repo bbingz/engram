@@ -60,6 +60,7 @@ export class ClineAdapter implements SessionAdapter {
         messageCount: userMsgs.length + assistantMsgs.length,
         userMessageCount: userMsgs.length,
         assistantMessageCount: assistantMsgs.length,
+        toolMessageCount: 0,
         systemMessageCount: 0,
         summary,
         filePath,

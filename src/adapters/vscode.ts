@@ -68,6 +68,7 @@ export class VsCodeAdapter implements SessionAdapter {
         messageCount: session.requests.length + assistantMessageCount,
         userMessageCount: session.requests.length,
         assistantMessageCount,
+        toolMessageCount: 0,
         systemMessageCount: 0,
         summary: userMessages[0]?.slice(0, 200),
         filePath,

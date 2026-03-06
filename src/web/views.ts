@@ -568,6 +568,9 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
       <button class="mode-btn active" data-mode="hybrid">hybrid</button>
       <button class="mode-btn" data-mode="keyword">keyword</button>
       <button class="mode-btn" data-mode="semantic">semantic</button>
+      <span style="border-left:1px solid var(--border);margin:0 8px"></span>
+      <button class="mode-btn active" data-filter="agents" title="Include/exclude agent & subagent sessions">agents</button>
+      <button class="mode-btn active" data-filter="tools" title="Include/exclude tool result content">tools</button>
     </div>
     <div id="search-modes" class="search-modes"></div>
     <div id="search-results"></div>
@@ -583,11 +586,22 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
 
       // Mode toggle
       let currentMode = 'hybrid';
-      document.querySelectorAll('.mode-btn').forEach(btn => {
+      let includeAgents = true;
+      let includeTools = true;
+      document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
         btn.addEventListener('click', () => {
-          document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+          document.querySelectorAll('.mode-btn[data-mode]').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
           currentMode = btn.dataset.mode;
+          const q = document.getElementById('search-input').value.trim();
+          if (q.length >= 2) doSearch(q);
+        });
+      });
+      document.querySelectorAll('.mode-btn[data-filter]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          btn.classList.toggle('active');
+          if (btn.dataset.filter === 'agents') includeAgents = btn.classList.contains('active');
+          if (btn.dataset.filter === 'tools') includeTools = btn.classList.contains('active');
           const q = document.getElementById('search-input').value.trim();
           if (q.length >= 2) doSearch(q);
         });
@@ -620,7 +634,8 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
         const recent = document.getElementById('recent-section');
         const modes = document.getElementById('search-modes');
         recent.style.display = 'none';
-        fetch('/api/search?q=' + encodeURIComponent(q) + '&mode=' + currentMode, { signal: controller.signal })
+        const filterParams = (!includeAgents ? '&agents=hide' : '') + (!includeTools ? '&tools=hide' : '');
+        fetch('/api/search?q=' + encodeURIComponent(q) + '&mode=' + currentMode + filterParams, { signal: controller.signal })
           .then(r => r.json())
           .then(data => {
             modes.textContent = data.searchModes?.length ? 'Searched via: ' + data.searchModes.join(' + ') : '';
@@ -656,7 +671,7 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
 // Stats page
 // ---------------------------------------------------------------------------
 
-interface StatsGroup { key: string; sessionCount: number; messageCount: number; userMessageCount: number }
+interface StatsGroup { key: string; sessionCount: number; messageCount: number; userMessageCount: number; assistantMessageCount: number; toolMessageCount: number }
 
 export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy = 'source', excludeNoise = true): string {
   const maxSessions = Math.max(...groups.map(g => g.sessionCount), 1)
@@ -671,7 +686,8 @@ export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy =
       <div class="stat-values">
         <span>${g.sessionCount} sessions</span>
         <span>${g.userMessageCount} user</span>
-        <span>${g.messageCount - g.userMessageCount} asst</span>
+        <span>${g.assistantMessageCount} asst</span>
+        ${g.toolMessageCount > 0 ? `<span>${g.toolMessageCount} tools</span>` : ''}
       </div>
     </div>`
   }).join('\n')

@@ -98,6 +98,7 @@ export class QwenAdapter implements SessionAdapter {
         messageCount: userCount + assistantCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
+        toolMessageCount: 0,
         systemMessageCount: systemCount,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,

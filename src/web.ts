@@ -122,9 +122,11 @@ export function createApp(db: Database, opts?: {
     const limitParam = c.req.query('limit')
     const limit = limitParam ? parseInt(limitParam, 10) : undefined
     const mode = c.req.query('mode') as string | undefined
+    const agents = c.req.query('agents') as 'hide' | undefined
+    const tools = c.req.query('tools') as 'hide' | undefined
 
     try {
-      const result = await handleSearch(db, { query: q, source, project, since, limit, mode }, searchDeps)
+      const result = await handleSearch(db, { query: q, source, project, since, limit, mode, agents, tools }, searchDeps)
       return c.json(result)
     } catch (err) {
       return c.json({ results: [], query: q, searchModes: [], warning: 'Search failed: ' + String(err) })
