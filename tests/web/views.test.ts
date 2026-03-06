@@ -40,7 +40,7 @@ describe('Web Views', () => {
   it('GET /session/:id returns HTML detail', async () => {
     db.upsertSession({
       id: 'sess-1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
-      cwd: '/p', project: 'proj', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0,
+      cwd: '/p', project: 'proj', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0,
       summary: 'Test session', filePath: '/f1', sizeBytes: 100,
     })
     const res = await app.request('/session/sess-1')
@@ -58,7 +58,7 @@ describe('Web Views', () => {
   it('escapes XSS payloads in session summary and project', async () => {
     db.upsertSession({
       id: 'xss-1', source: 'codex', startTime: '2026-01-01T10:00:00Z',
-      cwd: '/p', project: '<img onerror=alert(1)>', messageCount: 1, userMessageCount: 1, assistantMessageCount: 0, systemMessageCount: 0,
+      cwd: '/p', project: '<img onerror=alert(1)>', messageCount: 5, userMessageCount: 3, assistantMessageCount: 2, toolMessageCount: 0, systemMessageCount: 0,
       summary: '</title><script>alert("xss")</script>', filePath: '/f1', sizeBytes: 100,
     })
 

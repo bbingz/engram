@@ -13,9 +13,9 @@ describe('list_sessions tool', () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'tools-test-'))
     db = new Database(join(tmpDir, 'test.sqlite'))
-    db.upsertSession({ id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/pa', project: 'project-a', messageCount: 10, userMessageCount: 5, assistantMessageCount: 0, systemMessageCount: 0, filePath: '/f1', sizeBytes: 100 })
-    db.upsertSession({ id: 's2', source: 'claude-code', startTime: '2026-01-02T10:00:00Z', cwd: '/pb', project: 'project-b', messageCount: 8, userMessageCount: 4, assistantMessageCount: 0, systemMessageCount: 0, filePath: '/f2', sizeBytes: 200 })
-    db.upsertSession({ id: 's3', source: 'codex', startTime: '2025-12-01T10:00:00Z', cwd: '/pa', project: 'project-a', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, systemMessageCount: 0, filePath: '/f3', sizeBytes: 50 })
+    db.upsertSession({ id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/pa', project: 'project-a', messageCount: 10, userMessageCount: 5, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f1', sizeBytes: 100 })
+    db.upsertSession({ id: 's2', source: 'claude-code', startTime: '2026-01-02T10:00:00Z', cwd: '/pb', project: 'project-b', messageCount: 8, userMessageCount: 4, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f2', sizeBytes: 200 })
+    db.upsertSession({ id: 's3', source: 'codex', startTime: '2025-12-01T10:00:00Z', cwd: '/pa', project: 'project-a', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f3', sizeBytes: 50 })
   })
 
   afterEach(() => {

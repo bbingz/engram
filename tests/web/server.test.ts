@@ -17,6 +17,7 @@ const mockSession: SessionInfo = {
   messageCount: 20,
   userMessageCount: 10,
   assistantMessageCount: 0,
+  toolMessageCount: 0,
   systemMessageCount: 0,
   summary: 'Fix login bug',
   filePath: '/Users/test/.codex/sessions/rollout-123.jsonl',

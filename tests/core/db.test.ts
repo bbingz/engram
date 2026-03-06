@@ -31,6 +31,7 @@ describe('Database', () => {
     messageCount: 20,
     userMessageCount: 10,
     assistantMessageCount: 0,
+    toolMessageCount: 0,
     systemMessageCount: 0,
     summary: '帮我修复登录 bug',
     filePath: '/Users/test/.codex/sessions/2026/01/01/rollout-123.jsonl',
