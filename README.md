@@ -31,6 +31,7 @@
 - [Web UI](#web-ui)
 - [MCP Tools 参考](#mcp-tools-参考)
 - [混合搜索](#混合搜索)
+- [项目别名](#项目别名)
 - [多机同步](#多机同步)
 - [配置](#配置)
 - [添加新适配器](#添加新适配器)
@@ -136,9 +137,13 @@ Web UI 功能：
 API 端点：
 - `GET /api/sessions` — 会话列表（支持 source、project、since、limit、offset）
 - `GET /api/sessions/:id` — 会话详情
-- `GET /api/search?q=...` — 混合搜索（支持 source、project、since、mode）
+- `GET /api/search?q=...` — 混合搜索（支持 source、project、since、mode、UUID 直查）
 - `GET /api/search/semantic?q=...` — 纯语义搜索
+- `GET /api/search/status` — embedding 状态（可用性、模型、进度）
 - `GET /api/stats` — 用量统计
+- `GET /api/project-aliases` — 列出项目别名
+- `POST /api/project-aliases` — 添加别名
+- `DELETE /api/project-aliases` — 删除别名
 - `GET /api/sync/status` — 同步状态
 - `POST /api/sync/trigger` — 手动触发同步
 
@@ -318,6 +323,26 @@ API 端点：
 
 ---
 
+### `manage_project_alias` — 项目别名管理
+
+声明两个项目名是同一个项目，所有按项目过滤的查询自动展开别名。详见[项目别名](#项目别名)。
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `action` | string | ✅ | `add` / `remove` / `list` |
+| `old_project` | string | add/remove | 旧项目名 |
+| `new_project` | string | add/remove | 新项目名 |
+
+**示例：**
+
+```json
+{ "action": "add", "old_project": "wechat-decrypt", "new_project": "wechat-decrypt-bing" }
+```
+
+---
+
 ## 混合搜索
 
 Engram 支持三种搜索模式，默认使用混合模式自动融合：
@@ -330,9 +355,23 @@ Engram 支持三种搜索模式，默认使用混合模式自动融合：
 
 搜索覆盖范围：用户消息 + 助手回复 + 会话摘要。
 
+搜索还支持**直接粘贴会话 UUID** 进行精确查找，无需关键词或语义匹配。
+
 ### 配置语义搜索
 
 语义搜索需要 embedding provider。在 `~/.engram/settings.json` 中配置：
+
+**Ollama（推荐，本地/远程均可）：**
+
+```json
+{
+  "ollamaUrl": "http://10.0.8.107:11434",
+  "ollamaModel": "qwen3-embedding:4b",
+  "embeddingDimension": 2560
+}
+```
+
+**OpenAI：**
 
 ```json
 {
@@ -341,10 +380,48 @@ Engram 支持三种搜索模式，默认使用混合模式自动融合：
 ```
 
 支持的 embedding provider：
-- **Ollama**（本地，免费）：自动检测 `localhost:11434`，使用 `nomic-embed-text` 模型
+- **Ollama**：默认 `localhost:11434` + `nomic-embed-text` (768 维)，可配置远程地址、模型和维度
 - **OpenAI**：使用 `text-embedding-3-small` (1536 维)
 
+向量维度变化时（如从 768 切换到 2560），向量表会自动重建并重新索引。
+
 未配置时自动降级为纯关键词搜索。
+
+## 项目别名
+
+当你移动了项目目录（例如从 `~/Code/wechat-decrypt` 移到 `~/Code/wechat-decrypt-bing`），AI 助手会找不到旧路径下的历史会话。通过项目别名，可以声明两个项目名是同一个项目，所有查询自动展开。
+
+### 添加别名
+
+**通过 MCP 工具（在 AI 对话中）：**
+
+```json
+{ "name": "manage_project_alias", "arguments": { "action": "add", "old_project": "wechat-decrypt", "new_project": "wechat-decrypt-bing" } }
+```
+
+**通过 Web API：**
+
+```bash
+curl -X POST http://127.0.0.1:3457/api/project-aliases \
+  -H 'Content-Type: application/json' \
+  -d '{"alias": "wechat-decrypt", "canonical": "wechat-decrypt-bing"}'
+```
+
+**通过 Web UI：** Settings 页面 → Project Aliases 区域，输入两个项目名并点击添加。
+
+添加后，在任意路径下调用 `get_context`、`search`、`list_sessions` 等工具，两个项目名的会话都会出现。别名是双向的——查哪个名字都能找到另一个。
+
+### 管理别名
+
+```json
+// 列出所有别名
+{ "action": "list" }
+
+// 删除别名
+{ "action": "remove", "old_project": "wechat-decrypt", "new_project": "wechat-decrypt-bing" }
+```
+
+> **注意：** 项目别名解决的是 Engram 层面的查询问题。各 AI 工具自身的 `/resume` 等功能仍然依赖原始路径，这不在 Engram 的控制范围内。
 
 ## 多机同步
 
@@ -399,6 +476,9 @@ Engram 支持多台机器之间同步会话索引（pull-based）。
 | `openaiModel` | string | `"gpt-4o-mini"` | OpenAI 摘要模型 |
 | `anthropicApiKey` | string | — | Anthropic API Key |
 | `anthropicModel` | string | `"claude-3-haiku-20240307"` | Anthropic 摘要模型 |
+| `ollamaUrl` | string | `"http://localhost:11434"` | Ollama 服务地址（支持远程） |
+| `ollamaModel` | string | `"nomic-embed-text"` | Ollama embedding 模型 |
+| `embeddingDimension` | number | `768` | 向量维度（需与模型输出维度匹配） |
 | `syncNodeName` | string | `"unnamed"` | 当前节点名称 |
 | `syncEnabled` | boolean | `false` | 是否启用同步 |
 | `syncIntervalMinutes` | number | `10` | 同步间隔（分钟） |

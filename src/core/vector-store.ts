@@ -34,12 +34,19 @@ export class SqliteVecStore implements VectorStore {
     // Check if vec table exists with a different dimension — rebuild if so
     const exists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_sessions'").get()
     if (exists) {
+      let needsRebuild = false
       const hasMeta = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='metadata'").get()
       if (hasMeta) {
         const storedDim = this.db.prepare("SELECT value FROM metadata WHERE key = 'vec_dimension'").pluck().get() as string | undefined
-        if (storedDim && Number(storedDim) !== this.dimension) {
-          this.db.exec('DROP TABLE IF EXISTS vec_sessions; DELETE FROM session_embeddings;')
+        if (!storedDim || Number(storedDim) !== this.dimension) {
+          needsRebuild = true
         }
+      } else {
+        // No metadata table means vec table was created before dimension tracking — rebuild
+        needsRebuild = true
+      }
+      if (needsRebuild) {
+        this.db.exec('DROP TABLE IF EXISTS vec_sessions; DELETE FROM session_embeddings;')
       }
     }
 
