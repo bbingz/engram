@@ -336,7 +336,12 @@ export class Database {
     else if (groupBy === 'week') groupExpr = "date(start_time, 'localtime', 'weekday 0', '-6 days')"
     else groupExpr = 'source'
 
-    const conditions: string[] = ['hidden_at IS NULL']
+    const conditions: string[] = [
+      'hidden_at IS NULL',
+      "agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'",
+      'message_count > 1',
+      "(summary IS NULL OR summary NOT LIKE '%/usage%')",
+    ]
     const params: Record<string, unknown> = {}
     if (since) { conditions.push('start_time >= @since'); params.since = since }
     if (until) { conditions.push('start_time <= @until'); params.until = until }
