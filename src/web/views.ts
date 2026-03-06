@@ -658,7 +658,7 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
 
 interface StatsGroup { key: string; sessionCount: number; messageCount: number; userMessageCount: number }
 
-export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy = 'source'): string {
+export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy = 'source', excludeNoise = true): string {
   const maxSessions = Math.max(...groups.map(g => g.sessionCount), 1)
 
   const cards = groups.map(g => {
@@ -679,12 +679,14 @@ export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy =
   const tabs = ['source', 'project', 'day'].map(g => {
     const active = g === groupBy ? ' active' : ''
     const label = g === 'source' ? 'By Source' : g === 'project' ? 'By Project' : 'By Day'
-    return `<a href="/stats?group_by=${g}" class="stat-tabs-item${active}">${label}</a>`
+    return `<a href="/stats?group_by=${g}&exclude_noise=${excludeNoise ? '1' : '0'}" class="stat-tabs-item${active}">${label}</a>`
   }).join('')
+
+  const noiseToggle = `<a href="/stats?group_by=${groupBy}&exclude_noise=${excludeNoise ? '0' : '1'}" class="mode-btn${excludeNoise ? ' active' : ''}" style="margin-left:auto;font-size:0.85em">${excludeNoise ? '✓ Hide noise' : 'Show all'}</a>`
 
   return layout('Stats', `
     <div class="page-header"><h2>Stats</h2><p>${totalSessions} total sessions</p></div>
-    <div class="stat-tabs">${tabs}</div>
+    <div class="stat-tabs">${tabs}${noiseToggle}</div>
     ${cards || '<div class="empty-state"><p>No data available.</p></div>'}`, '/stats')
 }
 

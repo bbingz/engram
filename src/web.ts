@@ -155,8 +155,9 @@ export function createApp(db: Database, opts?: {
     const since = c.req.query('since')
     const until = c.req.query('until')
     const group_by = c.req.query('group_by')
+    const exclude_noise = c.req.query('exclude_noise') !== '0'  // default: true
 
-    const result = await handleStats(db, { since, until, group_by })
+    const result = await handleStats(db, { since, until, group_by, exclude_noise })
     return c.json(result)
   })
 
@@ -219,8 +220,9 @@ export function createApp(db: Database, opts?: {
 
   app.get('/stats', async (c) => {
     const groupBy = c.req.query('group_by') ?? 'source'
-    const result = await handleStats(db, { group_by: groupBy })
-    return c.html(statsPage(result.groups, result.totalSessions, groupBy))
+    const excludeNoise = c.req.query('exclude_noise') !== '0'  // default: true
+    const result = await handleStats(db, { group_by: groupBy, exclude_noise: excludeNoise })
+    return c.html(statsPage(result.groups, result.totalSessions, groupBy, excludeNoise))
   })
 
   app.get('/settings', (c) => {

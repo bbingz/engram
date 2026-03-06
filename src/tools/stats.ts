@@ -21,10 +21,10 @@ export const statsTool = {
 
 export async function handleStats(
   db: Database,
-  params: { since?: string; until?: string; group_by?: string }
+  params: { since?: string; until?: string; group_by?: string; exclude_noise?: boolean }
 ) {
   const groupBy = params.group_by ?? 'source'
-  const groups = db.statsGroupBy(groupBy, params.since, params.until)
+  const groups = db.statsGroupBy(groupBy, params.since, params.until, { excludeNoise: params.exclude_noise })
   const totalSessions = groups.reduce((sum, g) => sum + g.sessionCount, 0)
 
   return { groupBy, groups, totalSessions }

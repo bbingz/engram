@@ -329,29 +329,34 @@ export class Database {
     return rows.map(r => r.id)
   }
 
-  statsGroupBy(groupBy: string, since?: string, until?: string): { key: string; sessionCount: number; messageCount: number; userMessageCount: number }[] {
+  statsGroupBy(groupBy: string, since?: string, until?: string, opts?: { excludeNoise?: boolean }): { key: string; sessionCount: number; messageCount: number; userMessageCount: number }[] {
     let groupExpr: string
     if (groupBy === 'project') groupExpr = "COALESCE(project, '(unknown)')"
     else if (groupBy === 'day') groupExpr = "date(start_time, 'localtime')"
     else if (groupBy === 'week') groupExpr = "date(start_time, 'localtime', 'weekday 0', '-6 days')"
     else groupExpr = 'source'
 
-    const conditions: string[] = [
-      'hidden_at IS NULL',
-      "agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'",
-      'message_count > 1',
-      "(summary IS NULL OR summary NOT LIKE '%/usage%')",
-    ]
+    const conditions: string[] = ['hidden_at IS NULL']
     const params: Record<string, unknown> = {}
     if (since) { conditions.push('start_time >= @since'); params.since = since }
     if (until) { conditions.push('start_time <= @until'); params.until = until }
+    if (opts?.excludeNoise) {
+      conditions.push("agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'")
+      conditions.push('message_count > 1')
+      conditions.push("(summary IS NULL OR summary NOT LIKE '%/usage%')")
+    }
     const where = `WHERE ${conditions.join(' AND ')}`
+
+    // Exclude /usage sessions from user message count even when showing all sessions
+    const userMsgExpr = opts?.excludeNoise
+      ? 'SUM(user_message_count)'
+      : "SUM(CASE WHEN summary LIKE '%/usage%' OR message_count <= 1 THEN 0 ELSE user_message_count END)"
 
     return this.db.prepare(`
       SELECT ${groupExpr} as key,
         COUNT(*) as sessionCount,
         SUM(message_count) as messageCount,
-        SUM(user_message_count) as userMessageCount
+        ${userMsgExpr} as userMessageCount
       FROM sessions ${where}
       GROUP BY ${groupExpr}
       ORDER BY sessionCount DESC
