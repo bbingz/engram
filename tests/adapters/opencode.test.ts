@@ -27,6 +27,11 @@ beforeAll(() => {
       time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
       data TEXT NOT NULL
     );
+    CREATE TABLE part (
+      id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+      time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+      data TEXT NOT NULL
+    );
     INSERT INTO session VALUES (
       'ses_test001', 'proj_001', NULL, 'test-session', '/Users/test/my-project',
       '实现用户登录功能', '0.0.1', NULL, 3, 10, 2, NULL, NULL, NULL,
@@ -36,9 +41,17 @@ beforeAll(() => {
       'msg_001', 'ses_test001', 1770000001000, 1770000001000,
       '{"role":"user","time":{"created":1770000001000}}'
     );
+    INSERT INTO part VALUES (
+      'part_001', 'msg_001', 1770000001000, 1770000001000,
+      '{"type":"text","text":"帮我实现登录功能"}'
+    );
     INSERT INTO message VALUES (
       'msg_002', 'ses_test001', 1770000010000, 1770000010000,
-      '{"role":"assistant","time":{"created":1770000010000,"completed":1770000015000},"content":[{"type":"text","value":"好的，我来实现登录功能。"}]}'
+      '{"role":"assistant","time":{"created":1770000010000,"completed":1770000015000}}'
+    );
+    INSERT INTO part VALUES (
+      'part_002', 'msg_002', 1770000010000, 1770000010000,
+      '{"type":"text","text":"好的，我来实现登录功能。"}'
     );
   `)
   db.close()
