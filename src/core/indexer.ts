@@ -92,13 +92,13 @@ export class Indexer {
   }
 
   // 索引单个文件（文件变化时增量更新用）
-  async indexFile(adapter: SessionAdapter, filePath: string): Promise<boolean> {
+  async indexFile(adapter: SessionAdapter, filePath: string): Promise<{ indexed: boolean; sessionId?: string; messageCount?: number }> {
     try {
       let fileSize = 0
       try { fileSize = (await stat(filePath)).size } catch { /* virtual path */ }
 
       const info = await adapter.parseSessionInfo(filePath)
-      if (!info) return false
+      if (!info) return { indexed: false }
 
       if (info.cwd && !info.project) {
         info.project = await resolveProjectName(info.cwd)
@@ -116,9 +116,9 @@ export class Indexer {
         this.db.indexSessionContent(info.id, messages, info.summary)
       }
 
-      return true
+      return { indexed: true, sessionId: info.id, messageCount: info.messageCount ?? messages.length }
     } catch {
-      return false
+      return { indexed: false }
     }
   }
 }

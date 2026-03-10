@@ -10,6 +10,8 @@ import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap
 import { createApp } from './web.js'
 import { readFileSettings } from './core/config.js'
 import { SyncEngine } from './core/sync.js'
+import { AutoSummaryManager } from './core/auto-summary.js'
+import { summarizeConversation } from './core/ai-client.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
@@ -57,11 +59,51 @@ indexer.indexAll().then(async (indexed) => {
   emit({ event: 'error', message: String(err) })
 })
 
+// Auto-summary manager (only active when configured)
+let autoSummary: AutoSummaryManager | undefined
+if (settings.autoSummary && settings.aiApiKey) {
+  autoSummary = new AutoSummaryManager({
+    cooldownMs: (settings.autoSummaryCooldown ?? 5) * 60 * 1000,
+    minMessages: settings.autoSummaryMinMessages ?? 4,
+    hasSummary: (id) => {
+      const s = db.getSession(id)
+      if (!s?.summary) return false
+      if (!settings.autoSummaryRefresh) return true
+      // Refresh mode: check if message count grew enough
+      const threshold = settings.autoSummaryRefreshThreshold ?? 20
+      const lastCount = (s as unknown as Record<string, unknown>).summaryMessageCount as number | undefined
+      return lastCount !== undefined && s.messageCount - lastCount < threshold
+    },
+    onTrigger: async (sessionId) => {
+      const session = db.getSession(sessionId)
+      if (!session) return
+      const adapter = adapters.find(a => a.name === session.source)
+      if (!adapter) return
+
+      const messages: Array<{ role: string; content: string }> = []
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        messages.push({ role: msg.role, content: msg.content })
+      }
+      if (messages.length === 0) return
+
+      try {
+        const currentSettings = readFileSettings()
+        const summary = await summarizeConversation(messages, currentSettings)
+        if (summary) {
+          db.updateSessionSummary(sessionId, summary, messages.length)
+          emit({ event: 'summary_generated', sessionId, summary, total: db.countSessions() })
+        }
+      } catch { /* silently skip */ }
+    },
+  })
+}
+
 // File watcher (persistent — keeps process alive)
 const watcher = startWatcher(adapters, indexer, {
-  onIndexed: () => {
+  onIndexed: (sessionId, messageCount) => {
     const total = db.countSessions()
     emit({ event: 'watcher_indexed', total })
+    autoSummary?.onSessionIndexed(sessionId, messageCount)
   },
 })
 
@@ -121,6 +163,7 @@ const syncTimer = settings.syncEnabled && syncPeers.length > 0
 function shutdown() {
   clearInterval(rescanTimer)
   if (syncTimer) clearInterval(syncTimer)
+  autoSummary?.cleanup()
   watcher?.close()
   webServer.close()
   db.close()

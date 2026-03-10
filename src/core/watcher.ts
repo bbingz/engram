@@ -5,7 +5,11 @@ import { join } from 'path'
 import type { SessionAdapter, SourceName } from '../adapters/types.js'
 import type { Indexer } from './indexer.js'
 
-export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): FSWatcher | null {
+export interface WatcherOptions {
+  onIndexed?: (sessionId: string, messageCount: number) => void
+}
+
+export function startWatcher(adapters: SessionAdapter[], indexer: Indexer, opts?: WatcherOptions): FSWatcher | null {
   const home = homedir()
   const adaptersByName = new Map(adapters.map(a => [a.name, a]))
   const watchEntries: Array<[string, SourceName]> = [
@@ -36,7 +40,10 @@ export function startWatcher(adapters: SessionAdapter[], indexer: Indexer): FSWa
   const handleChange = async (filePath: string) => {
     for (const [watchPath, adapter] of Object.entries(watchMap)) {
       if (filePath.startsWith(watchPath)) {
-        await indexer.indexFile(adapter, filePath)
+        const result = await indexer.indexFile(adapter, filePath)
+        if (result.indexed && result.sessionId) {
+          opts?.onIndexed?.(result.sessionId, result.messageCount ?? 0)
+        }
         break
       }
     }
