@@ -127,3 +127,102 @@ describe('Web Server', () => {
     expect(body.error).toContain('not available')
   })
 })
+
+describe('POST /api/summary', () => {
+  let db: Database
+  let tmpDir: string
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'engram-summary-test-'))
+    db = new Database(join(tmpDir, 'test.sqlite'))
+    app = createApp(db)
+  })
+
+  afterEach(() => {
+    db.close()
+    rmSync(tmpDir, { recursive: true })
+  })
+
+  it('returns 400 when sessionId is missing', async () => {
+    const res = await app.request('/api/summary', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      headers: { 'Content-Type': 'application/json' },
+    })
+    expect(res.status).toBe(400)
+    const json = await res.json() as { error: string }
+    expect(json.error).toContain('sessionId')
+  })
+
+  it('returns 404 when session not found', async () => {
+    const res = await app.request('/api/summary', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId: 'nonexistent-id' }),
+      headers: { 'Content-Type': 'application/json' },
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 500 when no API key configured', async () => {
+    db.upsertSession(mockSession)
+    const res = await app.request('/api/summary', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId: 'session-001' }),
+      headers: { 'Content-Type': 'application/json' },
+    })
+    expect(res.status).toBe(500)
+    const json = await res.json() as { error: string }
+    expect(json.error).toContain('API key')
+  })
+})
+
+// --- CIDR utilities ---
+import { ipToUint32, parseCIDR, ipMatchesCIDR } from '../../src/web.js'
+
+describe('CIDR utilities', () => {
+  it('ipToUint32 converts correctly', () => {
+    expect(ipToUint32('0.0.0.0')).toBe(0)
+    expect(ipToUint32('255.255.255.255')).toBe(0xFFFFFFFF)
+    expect(ipToUint32('10.0.0.1')).toBe((10 << 24 | 1) >>> 0)
+    expect(ipToUint32('192.168.1.100')).toBe((192 << 24 | 168 << 16 | 1 << 8 | 100) >>> 0)
+  })
+
+  it('parseCIDR parses network and mask', () => {
+    const c = parseCIDR('10.0.0.0/8')
+    expect(c.network).toBe(ipToUint32('10.0.0.0'))
+    expect(c.mask).toBe(0xFF000000)
+
+    const c2 = parseCIDR('192.168.1.0/24')
+    expect(c2.network).toBe(ipToUint32('192.168.1.0'))
+    expect(c2.mask).toBe(0xFFFFFF00)
+  })
+
+  it('ipMatchesCIDR matches IPs within range', () => {
+    const cidrs = [parseCIDR('10.0.0.0/8')]
+    expect(ipMatchesCIDR('10.1.2.3', cidrs)).toBe(true)
+    expect(ipMatchesCIDR('10.255.255.255', cidrs)).toBe(true)
+    expect(ipMatchesCIDR('11.0.0.1', cidrs)).toBe(false)
+    expect(ipMatchesCIDR('192.168.1.1', cidrs)).toBe(false)
+  })
+
+  it('ipMatchesCIDR always allows loopback', () => {
+    const cidrs = [parseCIDR('10.0.0.0/8')]
+    expect(ipMatchesCIDR('127.0.0.1', cidrs)).toBe(true)
+    expect(ipMatchesCIDR('::1', cidrs)).toBe(true)
+    expect(ipMatchesCIDR('::ffff:127.0.0.1', cidrs)).toBe(true)
+  })
+
+  it('ipMatchesCIDR handles IPv4-mapped IPv6', () => {
+    const cidrs = [parseCIDR('10.0.0.0/8')]
+    expect(ipMatchesCIDR('::ffff:10.0.0.5', cidrs)).toBe(true)
+    expect(ipMatchesCIDR('::ffff:192.168.1.1', cidrs)).toBe(false)
+  })
+
+  it('ipMatchesCIDR supports multiple CIDRs', () => {
+    const cidrs = [parseCIDR('10.0.0.0/8'), parseCIDR('192.168.0.0/16')]
+    expect(ipMatchesCIDR('10.1.1.1', cidrs)).toBe(true)
+    expect(ipMatchesCIDR('192.168.5.5', cidrs)).toBe(true)
+    expect(ipMatchesCIDR('172.16.0.1', cidrs)).toBe(false)
+  })
+})

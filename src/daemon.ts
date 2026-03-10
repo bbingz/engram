@@ -58,7 +58,12 @@ indexer.indexAll().then(async (indexed) => {
 })
 
 // File watcher (persistent — keeps process alive)
-const watcher = startWatcher(adapters, indexer)
+const watcher = startWatcher(adapters, indexer, {
+  onIndexed: () => {
+    const total = db.countSessions()
+    emit({ event: 'watcher_indexed', total })
+  },
+})
 
 // Periodic re-scan every 10 minutes to catch files the watcher might miss
 // (e.g. rsync'd files, SQLite-based sources like Cursor/OpenCode/VS Code)
@@ -82,22 +87,24 @@ async function syncAndEmit(): Promise<void> {
   const results = await syncEngine.syncAllPeers(syncPeers)
   const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
   if (totalPulled > 0) {
-    emit({ event: 'sync_complete', results, totalPulled })
+    emit({ event: 'sync_complete', results, totalPulled, total: db.countSessions() })
   }
 }
 
 // Start web server
 const port = settings.httpPort ?? 3457
+const host = settings.httpHost ?? '127.0.0.1'
 const app = createApp(db, {
   vectorStore: vecDeps?.vectorStore,
   embeddingClient: vecDeps?.embeddingClient,
   syncEngine,
   syncPeers,
   settings,
+  adapters,
 })
 const { serve } = await import('@hono/node-server')
-const webServer = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
-  emit({ event: 'web_ready', port: info.port })
+const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
+  emit({ event: 'web_ready', port: info.port, host })
 })
 
 // Initial sync on startup

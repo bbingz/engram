@@ -4,7 +4,8 @@ import { Database } from './core/db.js'
 import { ensureDataDirs, getAdapter } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
 import type { FileSettings } from './core/config.js'
-import type { SourceName } from './adapters/types.js'
+import type { SessionAdapter, SourceName } from './adapters/types.js'
+import { summarizeConversation } from './core/ai-client.js'
 import { handleSearch, type SearchDeps } from './tools/search.js'
 import { handleStats } from './tools/stats.js'
 import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage } from './web/views.js'
@@ -23,16 +24,60 @@ function createRateLimiter(maxPerMinute: number) {
   }
 }
 
+// --- CIDR access control ---
+
+export function ipToUint32(ip: string): number {
+  const parts = ip.split('.').map(Number)
+  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
+}
+
+export function parseCIDR(cidr: string): { network: number; mask: number } {
+  const [ip, prefixStr] = cidr.split('/')
+  const prefix = Number(prefixStr ?? 32)
+  const mask = prefix === 0 ? 0 : (~0 << (32 - prefix)) >>> 0
+  return { network: (ipToUint32(ip) & mask) >>> 0, mask }
+}
+
+export function ipMatchesCIDR(ip: string, cidrs: Array<{ network: number; mask: number }>): boolean {
+  // Always allow loopback
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return true
+  // Normalize IPv4-mapped IPv6
+  const v4 = ip.startsWith('::ffff:') ? ip.slice(7) : ip
+  if (v4.includes(':')) return false // IPv6 not supported for CIDR matching
+  const addr = ipToUint32(v4)
+  return cidrs.some(c => ((addr & c.mask) >>> 0) === c.network)
+}
+
 export function createApp(db: Database, opts?: {
   vectorStore?: VectorStore
   embeddingClient?: EmbeddingClient
   syncEngine?: SyncEngine
   syncPeers?: SyncPeer[]
   settings?: FileSettings
+  adapters?: SessionAdapter[]
 }) {
   const app = new Hono()
   const settings = opts?.settings ?? readFileSettings()
   const semanticLimiter = createRateLimiter(30)
+
+  // CIDR access control — only active when listening beyond localhost
+  const host = settings.httpHost ?? '127.0.0.1'
+  if (host !== '127.0.0.1' && settings.httpAllowCIDR?.length) {
+    const allowedCIDRs = settings.httpAllowCIDR.map(parseCIDR)
+    type ConnInfoFn = (c: unknown) => { remote: { address?: string } }
+    let _getConnInfo: ConnInfoFn | null = null
+    app.use('*', async (c, next) => {
+      if (!_getConnInfo) {
+        const mod = await import('@hono/node-server/conninfo')
+        _getConnInfo = mod.getConnInfo as unknown as ConnInfoFn
+      }
+      const clientIP = _getConnInfo(c)?.remote?.address ?? '127.0.0.1'
+      if (!ipMatchesCIDR(clientIP, allowedCIDRs)) {
+        return c.text('Forbidden', 403)
+      }
+      await next()
+    })
+  }
 
   app.get('/api/sync/status', (c) => {
     return c.json({
@@ -182,6 +227,55 @@ export function createApp(db: Database, opts?: {
     return c.json({ removed: { alias: body.alias, canonical: body.canonical } })
   })
 
+  // --- Summary API ---
+  app.post('/api/summary', async (c) => {
+    const body = await c.req.json().catch(() => ({}))
+    const sessionId = (body as Record<string, unknown>).sessionId as string | undefined
+    if (!sessionId) {
+      return c.json({ error: 'Missing required field: sessionId' }, 400)
+    }
+
+    const session = db.getSession(sessionId)
+    if (!session) {
+      return c.json({ error: `Session not found: ${sessionId}` }, 404)
+    }
+
+    const currentSettings = readFileSettings()
+    if (!currentSettings.aiApiKey) {
+      return c.json({ error: 'API key not configured. Please set it in Settings.' }, 500)
+    }
+
+    const adapter = opts?.adapters?.find(a => a.name === session.source)
+    if (!adapter) {
+      return c.json({ error: `No adapter for source: ${session.source}` }, 500)
+    }
+
+    const messages: Array<{ role: string; content: string }> = []
+    try {
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        messages.push({ role: msg.role, content: msg.content })
+      }
+    } catch (err) {
+      return c.json({ error: `Failed to read session: ${err}` }, 500)
+    }
+
+    if (messages.length === 0) {
+      return c.json({ error: 'No messages in session' }, 400)
+    }
+
+    try {
+      const summary = await summarizeConversation(messages, currentSettings)
+      if (!summary) {
+        return c.json({ error: 'Empty response from AI' }, 500)
+      }
+      db.updateSessionSummary(sessionId, summary)
+      return c.json({ summary })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return c.json({ error: msg }, 500)
+    }
+  })
+
   // UUID lookup redirect
   app.get('/goto', (c) => {
     const id = (c.req.query('id') ?? '').trim()
@@ -268,9 +362,10 @@ if (isMain) {
   const db = new Database(join(DB_DIR, 'index.sqlite'))
   const settings = readFileSettings()
   const port = settings.httpPort ?? 3457
-  const app = createApp(db)
+  const host = settings.httpHost ?? '127.0.0.1'
+  const app = createApp(db, { settings })
 
-  serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
-    process.stderr.write(`[engram-web] Listening on http://127.0.0.1:${info.port}\n`)
+  serve({ fetch: app.fetch, port, hostname: host }, (info) => {
+    process.stderr.write(`[engram-web] Listening on http://${host}:${info.port}\n`)
   })
 }
