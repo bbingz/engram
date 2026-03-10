@@ -47,6 +47,7 @@ enum SourceDisplay {
 struct SessionDetailView: View {
     let session: Session
     @EnvironmentObject var db: DatabaseManager
+    @EnvironmentObject var indexer: IndexerProcess
     @State private var isFavorite = false
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
@@ -267,17 +268,39 @@ struct SessionDetailView: View {
         isSummarizing = true
         summaryError = nil
 
+        let daemonPort = indexer.port ?? 3457
+        guard let url = URL(string: "http://127.0.0.1:\(daemonPort)/api/summary") else {
+            summaryError = "Invalid daemon URL"
+            isSummarizing = false
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+
+        let payload: [String: String] = ["sessionId": session.id]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
         do {
-            let summary = try await AIClient.shared.generateSummary(messages: messages)
-            currentSummary = summary
-            // Save to database
-            try? db.updateSessionSummary(id: session.id, summary: summary)
-        } catch AIClientError.noAPIKey {
-            summaryError = "API key not configured. Please set it in Settings."
-        } catch AIClientError.apiError(let message) {
-            summaryError = "API error: \(message)"
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let httpResponse = response as? HTTPURLResponse
+
+            if let httpResponse, httpResponse.statusCode == 200 {
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let summary = json["summary"] as? String, !summary.isEmpty {
+                    currentSummary = summary
+                } else {
+                    summaryError = "Empty response from AI"
+                }
+            } else {
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let errorMsg = json?["error"] as? String ?? "Unknown error (HTTP \(httpResponse?.statusCode ?? 0))"
+                summaryError = errorMsg
+            }
         } catch {
-            summaryError = "Failed to generate summary: \(error.localizedDescription)"
+            summaryError = "Network error: \(error.localizedDescription)"
         }
 
         isSummarizing = false

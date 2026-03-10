@@ -29,11 +29,34 @@ struct SettingsView: View {
     @EnvironmentObject var indexer: IndexerProcess
 
     // AI Summary settings (stored in Node.js config file)
-    @State private var aiProvider: String = "openai"
-    @State private var openaiApiKey: String = ""
-    @State private var openaiModel: String = "gpt-4o-mini"
-    @State private var anthropicApiKey: String = ""
-    @State private var anthropicModel: String = "claude-3-haiku-20240307"
+    @State private var aiProtocol: String = "openai"
+    @State private var aiBaseURL: String = ""
+    @State private var aiApiKey: String = ""
+    @State private var aiModel: String = "gpt-4o-mini"
+
+    // Prompt template
+    @State private var summaryLanguage: String = "中文"
+    @State private var summaryMaxSentences: Int = 3
+    @State private var summaryStyle: String = ""
+    @State private var summaryPrompt: String = ""
+    @State private var showCustomPrompt: Bool = false
+
+    // Generation config
+    @State private var summaryPreset: String = "standard"
+    @State private var summaryMaxTokens: Int = 200
+    @State private var summaryTemperature: Double = 0.3
+    @State private var showCustomGeneration: Bool = false
+    @State private var summarySampleFirst: Int = 20
+    @State private var summarySampleLast: Int = 30
+    @State private var summaryTruncateChars: Int = 500
+    @State private var showAdvancedGeneration: Bool = false
+
+    // Auto-summary
+    @State private var autoSummary: Bool = false
+    @State private var autoSummaryCooldown: Int = 5
+    @State private var autoSummaryMinMessages: Int = 4
+    @State private var autoSummaryRefresh: Bool = false
+    @State private var autoSummaryRefreshThreshold: Int = 20
 
     // Sync settings (stored in Node.js config file)
     @State private var syncEnabled: Bool = false
@@ -52,6 +75,7 @@ struct SettingsView: View {
     @AppStorage("contentFontSize") var contentFontSize: Double = 14
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
+    @AppStorage("showDockIcon") var showDockIcon: Bool = false
 
     var body: some View {
         Form {
@@ -127,6 +151,10 @@ struct SettingsView: View {
                     Text("Login item requires macOS 13+")
                         .foregroundStyle(.secondary)
                 }
+                Toggle("Show Dock Icon", isOn: $showDockIcon)
+                Text("Keep the app icon visible in the Dock at all times")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
             Section("About") {
                 HStack {
@@ -143,46 +171,160 @@ struct SettingsView: View {
             }
 
             Section("AI Summary") {
-                Picker("Provider", selection: $aiProvider) {
+                Picker("Protocol", selection: $aiProtocol) {
                     Text("OpenAI").tag("openai")
                     Text("Anthropic").tag("anthropic")
+                    Text("Gemini").tag("gemini")
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: aiProvider) { saveAISettings() }
+                .onChange(of: aiProtocol) { saveAISettings() }
 
-                if aiProvider == "openai" {
-                    HStack {
-                        Text("API Key")
-                        Spacer()
-                        SecureField("sk-...", text: $openaiApiKey)
-                            .frame(width: 300)
-                            .onChange(of: openaiApiKey) { saveAISettings() }
-                    }
-                    Picker("Model", selection: $openaiModel) {
-                        Text("GPT-4o Mini").tag("gpt-4o-mini")
-                        Text("GPT-4o").tag("gpt-4o")
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: openaiModel) { saveAISettings() }
-                } else {
-                    HStack {
-                        Text("API Key")
-                        Spacer()
-                        SecureField("sk-ant-...", text: $anthropicApiKey)
-                            .frame(width: 300)
-                            .onChange(of: anthropicApiKey) { saveAISettings() }
-                    }
-                    Picker("Model", selection: $anthropicModel) {
-                        Text("Claude 3 Haiku").tag("claude-3-haiku-20240307")
-                        Text("Claude 3.5 Sonnet").tag("claude-3-5-sonnet-20241022")
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: anthropicModel) { saveAISettings() }
+                HStack {
+                    Text("Base URL")
+                    Spacer()
+                    TextField("Default", text: $aiBaseURL)
+                        .frame(width: 260)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: aiBaseURL) { saveAISettings() }
+                }
+                Text(defaultBaseURL(for: aiProtocol))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                HStack {
+                    Text("API Key")
+                    Spacer()
+                    SecureField("Required", text: $aiApiKey)
+                        .frame(width: 260)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: aiApiKey) { saveAISettings() }
+                }
+
+                HStack {
+                    Text("Model")
+                    Spacer()
+                    TextField("gpt-4o-mini", text: $aiModel)
+                        .frame(width: 260)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: aiModel) { saveAISettings() }
                 }
 
                 Text("API keys are stored locally in ~/.engram/settings.json")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+            }
+
+            Section("Summary Prompt") {
+                Picker("Language", selection: $summaryLanguage) {
+                    Text("中文").tag("中文")
+                    Text("English").tag("English")
+                    Text("日本語").tag("日本語")
+                }
+                .onChange(of: summaryLanguage) { saveAISettings() }
+
+                Stepper("Max Sentences: \(summaryMaxSentences)", value: $summaryMaxSentences, in: 1...10)
+                    .onChange(of: summaryMaxSentences) { saveAISettings() }
+
+                HStack {
+                    Text("Style")
+                    Spacer()
+                    TextField("Optional, e.g. 技术向", text: $summaryStyle)
+                        .frame(width: 260)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: summaryStyle) { saveAISettings() }
+                }
+
+                DisclosureGroup("Custom Prompt", isExpanded: $showCustomPrompt) {
+                    TextEditor(text: $summaryPrompt)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(height: 80)
+                        .onChange(of: summaryPrompt) { saveAISettings() }
+                    Text("Variables: {{language}}, {{maxSentences}}, {{style}}")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Section("Generation") {
+                Picker("Preset", selection: $summaryPreset) {
+                    Text("Concise").tag("concise")
+                    Text("Standard").tag("standard")
+                    Text("Detailed").tag("detailed")
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: summaryPreset) { saveAISettings() }
+
+                DisclosureGroup("Custom", isExpanded: $showCustomGeneration) {
+                    HStack {
+                        Text("Max Tokens")
+                        Spacer()
+                        TextField("200", value: $summaryMaxTokens, format: .number)
+                            .frame(width: 80)
+                            .multilineTextAlignment(.trailing)
+                            .onChange(of: summaryMaxTokens) { saveAISettings() }
+                    }
+                    HStack {
+                        Text("Temperature")
+                        Spacer()
+                        Slider(value: $summaryTemperature, in: 0...1, step: 0.1)
+                            .frame(width: 160)
+                            .onChange(of: summaryTemperature) { saveAISettings() }
+                        Text(String(format: "%.1f", summaryTemperature))
+                            .font(.caption)
+                            .frame(width: 30)
+                    }
+                }
+
+                DisclosureGroup("Advanced", isExpanded: $showAdvancedGeneration) {
+                    HStack {
+                        Text("Sample First")
+                        Spacer()
+                        TextField("20", value: $summarySampleFirst, format: .number)
+                            .frame(width: 60)
+                            .multilineTextAlignment(.trailing)
+                            .onChange(of: summarySampleFirst) { saveAISettings() }
+                        Text("messages")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Sample Last")
+                        Spacer()
+                        TextField("30", value: $summarySampleLast, format: .number)
+                            .frame(width: 60)
+                            .multilineTextAlignment(.trailing)
+                            .onChange(of: summarySampleLast) { saveAISettings() }
+                        Text("messages")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Truncate")
+                        Spacer()
+                        TextField("500", value: $summaryTruncateChars, format: .number)
+                            .frame(width: 60)
+                            .multilineTextAlignment(.trailing)
+                            .onChange(of: summaryTruncateChars) { saveAISettings() }
+                        Text("chars/msg")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("Auto Summary") {
+                Toggle("Auto-generate summaries", isOn: $autoSummary)
+                    .onChange(of: autoSummary) { saveAISettings() }
+                if autoSummary {
+                    Stepper("Cooldown: \(autoSummaryCooldown) min", value: $autoSummaryCooldown, in: 1...30)
+                        .onChange(of: autoSummaryCooldown) { saveAISettings() }
+                    Stepper("Min messages: \(autoSummaryMinMessages)", value: $autoSummaryMinMessages, in: 1...50)
+                        .onChange(of: autoSummaryMinMessages) { saveAISettings() }
+                    Toggle("Periodically refresh", isOn: $autoSummaryRefresh)
+                        .onChange(of: autoSummaryRefresh) { saveAISettings() }
+                    if autoSummaryRefresh {
+                        Stepper("Refresh after \(autoSummaryRefreshThreshold) new messages",
+                                value: $autoSummaryRefreshThreshold, in: 5...100, step: 5)
+                            .onChange(of: autoSummaryRefreshThreshold) { saveAISettings() }
+                    }
+                }
             }
 
             Section("Sync") {
@@ -326,15 +468,35 @@ struct SettingsView: View {
             settings = existing
         }
 
-        // Update AI settings
-        settings["aiProvider"] = aiProvider
-        settings["openaiApiKey"] = openaiApiKey
-        settings["openaiModel"] = openaiModel
-        settings["anthropicApiKey"] = anthropicApiKey
-        settings["anthropicModel"] = anthropicModel
+        // Provider
+        settings["aiProtocol"] = aiProtocol
+        if !aiBaseURL.isEmpty { settings["aiBaseURL"] = aiBaseURL } else { settings.removeValue(forKey: "aiBaseURL") }
+        settings["aiApiKey"] = aiApiKey
+        settings["aiModel"] = aiModel
+
+        // Prompt
+        settings["summaryLanguage"] = summaryLanguage
+        settings["summaryMaxSentences"] = summaryMaxSentences
+        if !summaryStyle.isEmpty { settings["summaryStyle"] = summaryStyle } else { settings.removeValue(forKey: "summaryStyle") }
+        if !summaryPrompt.isEmpty { settings["summaryPrompt"] = summaryPrompt } else { settings.removeValue(forKey: "summaryPrompt") }
+
+        // Generation
+        settings["summaryPreset"] = summaryPreset
+        settings["summaryMaxTokens"] = summaryMaxTokens
+        settings["summaryTemperature"] = summaryTemperature
+        settings["summarySampleFirst"] = summarySampleFirst
+        settings["summarySampleLast"] = summarySampleLast
+        settings["summaryTruncateChars"] = summaryTruncateChars
+
+        // Auto-summary
+        settings["autoSummary"] = autoSummary
+        settings["autoSummaryCooldown"] = autoSummaryCooldown
+        settings["autoSummaryMinMessages"] = autoSummaryMinMessages
+        settings["autoSummaryRefresh"] = autoSummaryRefresh
+        settings["autoSummaryRefreshThreshold"] = autoSummaryRefreshThreshold
 
         // Save
-        if let data = try? JSONSerialization.data(withJSONObject: settings, options: .prettyPrinted) {
+        if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: configPath)
         }
     }
@@ -348,20 +510,39 @@ struct SettingsView: View {
             return
         }
 
-        if let provider = settings["aiProvider"] as? String {
-            aiProvider = provider
-        }
-        if let key = settings["openaiApiKey"] as? String {
-            openaiApiKey = key
-        }
-        if let model = settings["openaiModel"] as? String {
-            openaiModel = model
-        }
-        if let key = settings["anthropicApiKey"] as? String {
-            anthropicApiKey = key
-        }
-        if let model = settings["anthropicModel"] as? String {
-            anthropicModel = model
+        // Provider
+        if let v = settings["aiProtocol"] as? String { aiProtocol = v }
+        if let v = settings["aiBaseURL"] as? String { aiBaseURL = v }
+        if let v = settings["aiApiKey"] as? String { aiApiKey = v }
+        if let v = settings["aiModel"] as? String { aiModel = v }
+
+        // Prompt
+        if let v = settings["summaryLanguage"] as? String { summaryLanguage = v }
+        if let v = settings["summaryMaxSentences"] as? Int { summaryMaxSentences = v }
+        if let v = settings["summaryStyle"] as? String { summaryStyle = v }
+        if let v = settings["summaryPrompt"] as? String { summaryPrompt = v }
+
+        // Generation
+        if let v = settings["summaryPreset"] as? String { summaryPreset = v }
+        if let v = settings["summaryMaxTokens"] as? Int { summaryMaxTokens = v }
+        if let v = settings["summaryTemperature"] as? Double { summaryTemperature = v }
+        if let v = settings["summarySampleFirst"] as? Int { summarySampleFirst = v }
+        if let v = settings["summarySampleLast"] as? Int { summarySampleLast = v }
+        if let v = settings["summaryTruncateChars"] as? Int { summaryTruncateChars = v }
+
+        // Auto-summary
+        if let v = settings["autoSummary"] as? Bool { autoSummary = v }
+        if let v = settings["autoSummaryCooldown"] as? Int { autoSummaryCooldown = v }
+        if let v = settings["autoSummaryMinMessages"] as? Int { autoSummaryMinMessages = v }
+        if let v = settings["autoSummaryRefresh"] as? Bool { autoSummaryRefresh = v }
+        if let v = settings["autoSummaryRefreshThreshold"] as? Int { autoSummaryRefreshThreshold = v }
+    }
+
+    private func defaultBaseURL(for proto: String) -> String {
+        switch proto {
+        case "anthropic": return "Default: https://api.anthropic.com"
+        case "gemini": return "Default: https://generativelanguage.googleapis.com"
+        default: return "Default: https://api.openai.com"
         }
     }
 

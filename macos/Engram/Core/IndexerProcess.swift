@@ -3,10 +3,14 @@ import Foundation
 import Combine
 
 struct DaemonEvent: Decodable {
-    let event: String        // "ready" | "indexed" | "error"
+    let event: String        // "ready" | "indexed" | "error" | "web_ready" | "summary_generated"
     let indexed: Int?
     let total: Int?
     let message: String?
+    let sessionId: String?
+    let summary: String?
+    let port: Int?
+    let host: String?
 }
 
 @MainActor
@@ -34,6 +38,8 @@ class IndexerProcess: ObservableObject {
 
     @Published var status: Status = .stopped
     @Published var totalSessions: Int = 0
+    @Published var lastSummarySessionId: String?
+    @Published var port: Int?
 
     private var process: Process?
     private var stdoutPipe: Pipe?
@@ -100,14 +106,19 @@ class IndexerProcess: ObservableObject {
 
     private func handleEvent(_ event: DaemonEvent) {
         switch event.event {
-        case "ready":
-            let n = event.total ?? 0
-            totalSessions = n
-            status = .running(total: n)
-        case "indexed":
-            let n = event.total ?? totalSessions
-            totalSessions = n
-            status = .running(total: n)
+        case "ready", "indexed", "rescan", "sync_complete", "watcher_indexed":
+            if let n = event.total {
+                totalSessions = n
+                status = .running(total: n)
+            }
+        case "web_ready":
+            port = event.port
+        case "summary_generated":
+            if let n = event.total {
+                totalSessions = n
+                status = .running(total: n)
+            }
+            lastSummarySessionId = event.sessionId
         case "error":
             status = .error(event.message ?? "Unknown error")
         default:
