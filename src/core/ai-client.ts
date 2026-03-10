@@ -1,84 +1,204 @@
 // src/core/ai-client.ts
-import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
+import type { AiProtocol, FileSettings } from './config.js';
+import { resolveSummaryConfig, getBaseURL } from './config.js';
 
-export interface SummarizeOptions {
-  provider: 'openai' | 'anthropic';
-  apiKey: string;
-  model: string;
-  maxTokens?: number;
-}
+// ── Types ────────────────────────────────────────────────────────────
 
 export interface ConversationMessage {
   role: string;
   content: string;
 }
 
-const SUMMARY_PROMPT = `请用 2-3 句话总结以下 AI 编程对话的核心内容。总结应包括：
-1) 主要讨论的问题或任务
-2) 达成的结论、解决方案或关键成果
+// ── Default prompt template ──────────────────────────────────────────
 
-保持简洁，使用中文回复。`;
+const DEFAULT_PROMPT_TEMPLATE = `请用不超过 {{maxSentences}} 句话，以 {{language}} 总结以下 AI 编程对话的核心内容。
+总结应包括：1) 主要讨论的问题或任务 2) 达成的结论、解决方案或关键成果
+{{style}}
+保持简洁。`;
+
+// ── renderPromptTemplate ─────────────────────────────────────────────
+
+export function renderPromptTemplate(settings: FileSettings): string {
+  const template = settings.summaryPrompt || DEFAULT_PROMPT_TEMPLATE;
+  const language = settings.summaryLanguage || '中文';
+  const maxSentences = String(settings.summaryMaxSentences ?? 3);
+  const styleRaw = settings.summaryStyle || '';
+  const style = styleRaw ? `风格要求：${styleRaw}` : '';
+
+  const rendered = template
+    .replace(/\{\{language\}\}/g, language)
+    .replace(/\{\{maxSentences\}\}/g, maxSentences)
+    .replace(/\{\{style\}\}/g, style);
+
+  // Remove lines that are blank after substitution
+  return rendered
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .join('\n');
+}
+
+// ── sampleMessages ───────────────────────────────────────────────────
+
+export function sampleMessages(
+  messages: ConversationMessage[],
+  sampleFirst: number,
+  sampleLast: number,
+  truncateChars: number,
+): ConversationMessage[] {
+  const total = sampleFirst + sampleLast;
+  const selected = messages.length <= total
+    ? messages
+    : [...messages.slice(0, sampleFirst), ...messages.slice(-sampleLast)];
+
+  return selected.map(m => ({
+    role: m.role,
+    content: m.content.length > truncateChars
+      ? m.content.slice(0, truncateChars) + '...'
+      : m.content,
+  }));
+}
+
+// ── buildRequestBody ─────────────────────────────────────────────────
+
+export function buildRequestBody(
+  protocol: AiProtocol,
+  systemPrompt: string,
+  conversationText: string,
+  opts: { model: string; maxTokens: number; temperature: number },
+): object {
+  const userContent = `请总结以下对话：\n\n${conversationText}`;
+
+  switch (protocol) {
+    case 'openai':
+    case 'ollama':
+      return {
+        model: opts.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        max_tokens: opts.maxTokens,
+        temperature: opts.temperature,
+      };
+    case 'anthropic':
+      return {
+        model: opts.model,
+        system: systemPrompt,
+        messages: [
+          { role: 'user', content: userContent },
+        ],
+        max_tokens: opts.maxTokens,
+        temperature: opts.temperature,
+      };
+    case 'gemini':
+      return {
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [
+          { role: 'user', parts: [{ text: userContent }] },
+        ],
+        generationConfig: {
+          maxOutputTokens: opts.maxTokens,
+          temperature: opts.temperature,
+        },
+      };
+    default:
+      throw new Error(`Unsupported protocol: ${protocol as string}`);
+  }
+}
+
+// ── summarizeConversation ────────────────────────────────────────────
 
 export async function summarizeConversation(
   messages: ConversationMessage[],
-  options: SummarizeOptions
+  settings: FileSettings,
 ): Promise<string> {
-  // Limit messages to control token usage
-  // Take first 20 and last 30 messages to capture beginning and end
-  const limitedMessages = messages.length <= 50
-    ? messages
-    : [...messages.slice(0, 20), ...messages.slice(-30)];
+  const protocol = settings.aiProtocol || 'openai';
+  const apiKey = settings.aiApiKey || '';
+  const model = settings.aiModel || 'gpt-4o-mini';
 
-  const conversationText = limitedMessages
-    .map(m => `[${m.role}] ${m.content.slice(0, 500)}${m.content.length > 500 ? '...' : ''}`)
+  const baseURL = getBaseURL(settings);
+  if (!baseURL) {
+    throw new Error(`No base URL configured for protocol: ${protocol}`);
+  }
+
+  const summaryConfig = resolveSummaryConfig(settings);
+  const systemPrompt = renderPromptTemplate(settings);
+
+  // Sample and format messages
+  const sampled = sampleMessages(
+    messages,
+    summaryConfig.sampleFirst,
+    summaryConfig.sampleLast,
+    summaryConfig.truncateChars,
+  );
+  const conversationText = sampled
+    .map(m => `[${m.role}] ${m.content}`)
     .join('\n\n');
 
-  if (options.provider === 'openai') {
-    return summarizeWithOpenAI(conversationText, options);
-  } else {
-    return summarizeWithAnthropic(conversationText, options);
+  // Build URL
+  let url: string;
+  switch (protocol) {
+    case 'openai':
+    case 'ollama':
+      url = `${baseURL}/v1/chat/completions`;
+      break;
+    case 'anthropic':
+      url = `${baseURL}/v1/messages`;
+      break;
+    case 'gemini':
+      url = `${baseURL}/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      break;
+    default:
+      throw new Error(`Unsupported protocol: ${protocol as string}`);
   }
-}
 
-async function summarizeWithOpenAI(
-  conversationText: string,
-  options: SummarizeOptions
-): Promise<string> {
-  const client = new OpenAI({ apiKey: options.apiKey });
+  // Build headers
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  switch (protocol) {
+    case 'openai':
+    case 'ollama':
+      headers['Authorization'] = `Bearer ${apiKey}`;
+      break;
+    case 'anthropic':
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+      break;
+    // gemini: key is in URL, no auth header
+  }
 
-  const response = await client.chat.completions.create({
-    model: options.model || 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: SUMMARY_PROMPT },
-      { role: 'user', content: `请总结以下对话：\n\n${conversationText}` }
-    ],
-    max_tokens: options.maxTokens || 200,
-    temperature: 0.3,
+  // Build body
+  const body = buildRequestBody(protocol, systemPrompt, conversationText, {
+    model,
+    maxTokens: summaryConfig.maxTokens,
+    temperature: summaryConfig.temperature,
   });
 
-  return response.choices[0]?.message?.content?.trim() || '';
-}
-
-async function summarizeWithAnthropic(
-  conversationText: string,
-  options: SummarizeOptions
-): Promise<string> {
-  const client = new Anthropic({ apiKey: options.apiKey });
-
-  const response = await client.messages.create({
-    model: options.model || 'claude-3-haiku-20240307',
-    max_tokens: options.maxTokens || 200,
-    temperature: 0.3,
-    system: SUMMARY_PROMPT,
-    messages: [
-      { role: 'user', content: `请总结以下对话：\n\n${conversationText}` }
-    ],
+  // Make request
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
   });
 
-  const content = response.content[0];
-  if (content.type === 'text') {
-    return content.text.trim();
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`AI request failed (${response.status}): ${text}`);
   }
-  return '';
+
+  const data = await response.json();
+
+  // Extract response text
+  switch (protocol) {
+    case 'openai':
+    case 'ollama':
+      return (data.choices?.[0]?.message?.content ?? '').trim();
+    case 'anthropic':
+      return (data.content?.[0]?.text ?? '').trim();
+    case 'gemini':
+      return (data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
+    default:
+      throw new Error(`Unsupported protocol: ${protocol as string}`);
+  }
 }

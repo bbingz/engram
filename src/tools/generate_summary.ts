@@ -1,7 +1,7 @@
 // src/tools/generate_summary.ts
 import type { Database } from '../core/db.js';
 import { getAdapter } from '../core/bootstrap.js';
-import { summarizeConversation, type SummarizeOptions } from '../core/ai-client.js';
+import { summarizeConversation } from '../core/ai-client.js';
 import { readFileSettings } from '../core/config.js';
 
 export const generateSummaryTool = {
@@ -39,13 +39,10 @@ export async function handleGenerateSummary(
 
   // Get settings for AI configuration
   const settings = readFileSettings();
-  const provider = settings.aiProvider || 'openai';
-  const apiKey = provider === 'openai' ? settings.openaiApiKey : settings.anthropicApiKey;
-  const model = provider === 'openai' ? settings.openaiModel : settings.anthropicModel;
 
-  if (!apiKey) {
+  if (!settings.aiApiKey) {
     return {
-      content: [{ type: 'text' as const, text: `API key not configured for ${provider}. Please set it in Settings.` }],
+      content: [{ type: 'text' as const, text: 'API key not configured. Please set aiApiKey in Settings.' }],
       isError: true,
     };
   }
@@ -84,14 +81,7 @@ export async function handleGenerateSummary(
 
   // Generate summary
   try {
-    const options: SummarizeOptions = {
-      provider: provider as 'openai' | 'anthropic',
-      apiKey,
-      model: model || (provider === 'openai' ? 'gpt-4o-mini' : 'claude-3-haiku-20240307'),
-      maxTokens: 200,
-    };
-
-    const summary = await summarizeConversation(messages, options);
+    const summary = await summarizeConversation(messages, settings);
 
     if (!summary) {
       return {
@@ -108,7 +98,7 @@ export async function handleGenerateSummary(
       metadata: {
         sessionId,
         messageCount: messages.length,
-        provider,
+        protocol: settings.aiProtocol || 'openai',
       },
     };
   } catch (error) {
