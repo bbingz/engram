@@ -54,6 +54,11 @@ GET  /api/sessions/:id          → JSON session detail + messages
 GET  /api/search?q=xxx          → FTS5 text search
 GET  /api/search/semantic?q=xxx → Vector similarity search (RAG)
 GET  /api/stats                 → Usage stats JSON
+GET  /api/project-aliases       → List project aliases
+POST /api/project-aliases       → Add alias { alias, canonical }
+DELETE /api/project-aliases     → Remove alias { alias, canonical }
+POST /api/summary               → Generate AI summary { sessionId }
+POST /api/link-sessions         → Create symlinks { targetDir }
 ```
 
 ### Sync endpoints

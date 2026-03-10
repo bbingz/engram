@@ -24,6 +24,7 @@ import { statsTool, handleStats } from './tools/stats.js'
 import { getContextTool, handleGetContext } from './tools/get_context.js'
 import { exportTool, handleExport } from './tools/export.js'
 import { generateSummaryTool, handleGenerateSummary } from './tools/generate_summary.js'
+import { linkSessionsTool, handleLinkSessions } from './tools/link_sessions.js'
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
@@ -68,6 +69,7 @@ const allTools = [
   exportTool,
   generateSummaryTool,
   manageProjectAliasTool,
+  linkSessionsTool,
 ]
 
 const server = new Server(
@@ -131,6 +133,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } else {
         return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true }
       }
+    } else if (name === 'link_sessions') {
+      result = await handleLinkSessions(db, a as { targetDir: string })
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }

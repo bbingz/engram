@@ -178,6 +178,30 @@ CREATE VIRTUAL TABLE sessions_fts USING fts5(
 - **输入：** `id`、`format`（'markdown' | 'json'）、`outputPath?`
 - **输出：** 文件内容或保存路径
 
+### `generate_summary`
+
+生成 AI 摘要。
+
+- **输入：** `sessionId`
+- **输出：** 生成的摘要文本
+- **逻辑：** 读取会话消息 → 调用 AI API（支持 OpenAI/Anthropic/Gemini 协议）→ 写入 DB
+
+### `manage_project_alias`
+
+管理项目别名（解决目录移动/重命名后会话丢失问题）。
+
+- **输入：** `action`（'add' | 'remove' | 'list'）、`old_project?`、`new_project?`
+- **输出：** 操作结果
+
+### `link_sessions`
+
+在项目目录下创建软链接，指向该项目所有 AI 会话的原始 log 文件。
+
+- **输入：** `targetDir`（项目目录绝对路径）
+- **输出：** `{ created, skipped, errors, targetDir, projectNames }`
+- **逻辑：** `basename(targetDir)` → `resolveProjectAliases()` → 查匹配 session → 按 source 分组 → 在 `<targetDir>/conversation_log/<source>/<原始文件名>` 创建 symlink
+- **幂等：** 已存在且指向相同目标的链接会跳过
+
 ---
 
 ## 第四部分：适配器实现

@@ -12,6 +12,7 @@ import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDe
 import type { VectorStore } from './core/vector-store.js'
 import type { EmbeddingClient } from './core/embeddings.js'
 import { SyncEngine, type SyncPeer } from './core/sync.js'
+import { handleLinkSessions } from './tools/link_sessions.js'
 
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = []
@@ -270,6 +271,22 @@ export function createApp(db: Database, opts?: {
       }
       db.updateSessionSummary(sessionId, summary, messages.length)
       return c.json({ summary })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return c.json({ error: msg }, 500)
+    }
+  })
+
+  // --- Link sessions API ---
+  app.post('/api/link-sessions', async (c) => {
+    const body = await c.req.json().catch(() => ({}))
+    const targetDir = (body as Record<string, unknown>).targetDir as string | undefined
+    if (!targetDir) {
+      return c.json({ error: 'Missing required field: targetDir' }, 400)
+    }
+    try {
+      const result = await handleLinkSessions(db, { targetDir })
+      return c.json(result)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return c.json({ error: msg }, 500)
