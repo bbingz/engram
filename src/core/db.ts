@@ -77,6 +77,7 @@ export class Database {
       if (!colNames.has('assistant_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN assistant_message_count INTEGER NOT NULL DEFAULT 0")
       if (!colNames.has('system_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN system_message_count INTEGER NOT NULL DEFAULT 0")
       if (!colNames.has('tool_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN tool_message_count INTEGER NOT NULL DEFAULT 0")
+      if (!colNames.has('summary_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN summary_message_count INTEGER")
     }
 
     this.db.exec(`
@@ -321,8 +322,12 @@ export class Database {
     return rows.map(r => r.project)
   }
 
-  updateSessionSummary(id: string, summary: string): void {
-    this.db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, id)
+  updateSessionSummary(id: string, summary: string, messageCount?: number): void {
+    if (messageCount !== undefined) {
+      this.db.prepare('UPDATE sessions SET summary = ?, summary_message_count = ? WHERE id = ?').run(summary, messageCount, id)
+    } else {
+      this.db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, id)
+    }
   }
 
   getFtsContent(sessionId: string): string[] {
