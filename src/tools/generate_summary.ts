@@ -91,7 +91,7 @@ export async function handleGenerateSummary(
     }
 
     // Update database with summary
-    db.updateSessionSummary(sessionId, summary);
+    db.updateSessionSummary(sessionId, summary, messages.length);
 
     return {
       content: [{ type: 'text' as const, text: summary }],

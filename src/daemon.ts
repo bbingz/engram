@@ -8,7 +8,7 @@ import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
 import { createApp } from './web.js'
-import { readFileSettings } from './core/config.js'
+import { readFileSettings, type FileSettings } from './core/config.js'
 import { SyncEngine } from './core/sync.js'
 import { AutoSummaryManager } from './core/auto-summary.js'
 import { summarizeConversation } from './core/ai-client.js'
@@ -61,9 +61,21 @@ indexer.indexAll().then(async (indexed) => {
 
 // Auto-summary manager — lazily created when settings enable it
 let autoSummary: AutoSummaryManager | undefined
+let cachedAutoSummarySettings: FileSettings | undefined
+let settingsCacheTime = 0
+const SETTINGS_CACHE_TTL = 30_000 // re-read settings at most every 30s
+
+function getCachedSettings(): FileSettings {
+  const now = Date.now()
+  if (!cachedAutoSummarySettings || now - settingsCacheTime > SETTINGS_CACHE_TTL) {
+    cachedAutoSummarySettings = readFileSettings()
+    settingsCacheTime = now
+  }
+  return cachedAutoSummarySettings
+}
 
 function getAutoSummary(): AutoSummaryManager | undefined {
-  const current = readFileSettings()
+  const current = getCachedSettings()
   if (!current.autoSummary || !current.aiApiKey) {
     if (autoSummary) { autoSummary.cleanup(); autoSummary = undefined }
     return undefined
@@ -75,9 +87,9 @@ function getAutoSummary(): AutoSummaryManager | undefined {
       hasSummary: (id) => {
         const s = db.getSession(id)
         if (!s?.summary) return false
-        const freshSettings = readFileSettings()
-        if (!freshSettings.autoSummaryRefresh) return true
-        const threshold = freshSettings.autoSummaryRefreshThreshold ?? 20
+        const fresh = getCachedSettings()
+        if (!fresh.autoSummaryRefresh) return true
+        const threshold = fresh.autoSummaryRefreshThreshold ?? 20
         const lastCount = s.summaryMessageCount
         return lastCount !== undefined && s.messageCount - lastCount < threshold
       },
@@ -94,6 +106,7 @@ function getAutoSummary(): AutoSummaryManager | undefined {
         if (messages.length === 0) return
 
         try {
+          // Fresh read for AI call (need latest API key/model)
           const currentSettings = readFileSettings()
           const summary = await summarizeConversation(messages, currentSettings)
           if (summary) {
@@ -112,8 +125,7 @@ function getAutoSummary(): AutoSummaryManager | undefined {
 // File watcher (persistent — keeps process alive)
 const watcher = startWatcher(adapters, indexer, {
   onIndexed: (sessionId, messageCount) => {
-    const total = db.countSessions()
-    emit({ event: 'watcher_indexed', total })
+    emit({ event: 'watcher_indexed', total: db.countSessions() })
     getAutoSummary()?.onSessionIndexed(sessionId, messageCount)
   },
 })

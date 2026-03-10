@@ -27,6 +27,7 @@ export class AutoSummaryManager {
 
   private async tryGenerate(sessionId: string): Promise<void> {
     const count = this.messageCounts.get(sessionId) ?? 0
+    this.messageCounts.delete(sessionId)
     if (count < this.opts.minMessages) return
     if (this.opts.hasSummary(sessionId)) return
     await this.opts.onTrigger(sessionId)

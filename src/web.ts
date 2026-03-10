@@ -268,7 +268,7 @@ export function createApp(db: Database, opts?: {
       if (!summary) {
         return c.json({ error: 'Empty response from AI' }, 500)
       }
-      db.updateSessionSummary(sessionId, summary)
+      db.updateSessionSummary(sessionId, summary, messages.length)
       return c.json({ summary })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

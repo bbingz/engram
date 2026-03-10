@@ -457,69 +457,73 @@ struct SettingsView: View {
         }
     }
 
-    private func saveAISettings() {
-        let configPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".engram/settings.json")
-        var settings: [String: Any] = [:]
+    private static let settingsPath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".engram/settings.json")
 
-        // Read existing settings
-        if let data = try? Data(contentsOf: configPath),
+    private func mutateSettings(_ transform: (inout [String: Any]) -> Void) {
+        var settings: [String: Any] = [:]
+        if let data = try? Data(contentsOf: Self.settingsPath),
            let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             settings = existing
         }
-
-        // Provider
-        settings["aiProtocol"] = aiProtocol
-        if !aiBaseURL.isEmpty { settings["aiBaseURL"] = aiBaseURL } else { settings.removeValue(forKey: "aiBaseURL") }
-        settings["aiApiKey"] = aiApiKey
-        settings["aiModel"] = aiModel
-
-        // Prompt
-        settings["summaryLanguage"] = summaryLanguage
-        settings["summaryMaxSentences"] = summaryMaxSentences
-        if !summaryStyle.isEmpty { settings["summaryStyle"] = summaryStyle } else { settings.removeValue(forKey: "summaryStyle") }
-        if !summaryPrompt.isEmpty { settings["summaryPrompt"] = summaryPrompt } else { settings.removeValue(forKey: "summaryPrompt") }
-
-        // Generation — only write custom fields when user has opened the section
-        settings["summaryPreset"] = summaryPreset
-        if showCustomGeneration {
-            settings["summaryMaxTokens"] = summaryMaxTokens
-            settings["summaryTemperature"] = summaryTemperature
-        } else {
-            settings.removeValue(forKey: "summaryMaxTokens")
-            settings.removeValue(forKey: "summaryTemperature")
-        }
-        if showAdvancedGeneration {
-            settings["summarySampleFirst"] = summarySampleFirst
-            settings["summarySampleLast"] = summarySampleLast
-            settings["summaryTruncateChars"] = summaryTruncateChars
-        } else {
-            settings.removeValue(forKey: "summarySampleFirst")
-            settings.removeValue(forKey: "summarySampleLast")
-            settings.removeValue(forKey: "summaryTruncateChars")
-        }
-
-        // Auto-summary
-        settings["autoSummary"] = autoSummary
-        settings["autoSummaryCooldown"] = autoSummaryCooldown
-        settings["autoSummaryMinMessages"] = autoSummaryMinMessages
-        settings["autoSummaryRefresh"] = autoSummaryRefresh
-        settings["autoSummaryRefreshThreshold"] = autoSummaryRefreshThreshold
-
-        // Save
+        transform(&settings)
         if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: configPath)
+            try? data.write(to: Self.settingsPath)
+        }
+    }
+
+    private func readSettings() -> [String: Any]? {
+        guard let data = try? Data(contentsOf: Self.settingsPath),
+              let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return settings
+    }
+
+    private func saveAISettings() {
+        mutateSettings { settings in
+            // Provider
+            settings["aiProtocol"] = aiProtocol
+            if !aiBaseURL.isEmpty { settings["aiBaseURL"] = aiBaseURL } else { settings.removeValue(forKey: "aiBaseURL") }
+            settings["aiApiKey"] = aiApiKey
+            settings["aiModel"] = aiModel
+
+            // Prompt
+            settings["summaryLanguage"] = summaryLanguage
+            settings["summaryMaxSentences"] = summaryMaxSentences
+            if !summaryStyle.isEmpty { settings["summaryStyle"] = summaryStyle } else { settings.removeValue(forKey: "summaryStyle") }
+            if !summaryPrompt.isEmpty { settings["summaryPrompt"] = summaryPrompt } else { settings.removeValue(forKey: "summaryPrompt") }
+
+            // Generation — only write custom fields when user has opened the section
+            settings["summaryPreset"] = summaryPreset
+            if showCustomGeneration {
+                settings["summaryMaxTokens"] = summaryMaxTokens
+                settings["summaryTemperature"] = summaryTemperature
+            } else {
+                settings.removeValue(forKey: "summaryMaxTokens")
+                settings.removeValue(forKey: "summaryTemperature")
+            }
+            if showAdvancedGeneration {
+                settings["summarySampleFirst"] = summarySampleFirst
+                settings["summarySampleLast"] = summarySampleLast
+                settings["summaryTruncateChars"] = summaryTruncateChars
+            } else {
+                settings.removeValue(forKey: "summarySampleFirst")
+                settings.removeValue(forKey: "summarySampleLast")
+                settings.removeValue(forKey: "summaryTruncateChars")
+            }
+
+            // Auto-summary
+            settings["autoSummary"] = autoSummary
+            settings["autoSummaryCooldown"] = autoSummaryCooldown
+            settings["autoSummaryMinMessages"] = autoSummaryMinMessages
+            settings["autoSummaryRefresh"] = autoSummaryRefresh
+            settings["autoSummaryRefreshThreshold"] = autoSummaryRefreshThreshold
         }
     }
 
     private func loadAISettings() {
-        let configPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".engram/settings.json")
-
-        guard let data = try? Data(contentsOf: configPath),
-              let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return
-        }
+        guard let settings = readSettings() else { return }
 
         // Provider
         if let v = settings["aiProtocol"] as? String { aiProtocol = v }
@@ -558,36 +562,16 @@ struct SettingsView: View {
     }
 
     private func saveSyncSettings() {
-        let configPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".engram/settings.json")
-        var settings: [String: Any] = [:]
-
-        // Read existing settings
-        if let data = try? Data(contentsOf: configPath),
-           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            settings = existing
-        }
-
-        // Update sync settings
-        settings["syncEnabled"] = syncEnabled
-        settings["syncNodeName"] = syncNodeName
-        settings["syncIntervalMinutes"] = syncIntervalMinutes
-        settings["syncPeers"] = syncPeers
-
-        // Save
-        if let data = try? JSONSerialization.data(withJSONObject: settings, options: .prettyPrinted) {
-            try? data.write(to: configPath)
+        mutateSettings { settings in
+            settings["syncEnabled"] = syncEnabled
+            settings["syncNodeName"] = syncNodeName
+            settings["syncIntervalMinutes"] = syncIntervalMinutes
+            settings["syncPeers"] = syncPeers
         }
     }
 
     private func loadSyncSettings() {
-        let configPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".engram/settings.json")
-
-        guard let data = try? Data(contentsOf: configPath),
-              let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return
-        }
+        guard let settings = readSettings() else { return }
 
         if let enabled = settings["syncEnabled"] as? Bool {
             syncEnabled = enabled
@@ -608,16 +592,7 @@ struct SettingsView: View {
         syncStatus = "Syncing..."
 
         // Read web server port from settings (daemon defaults to 3457)
-        let webPort: Int = {
-            let configPath = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".engram/settings.json")
-            if let data = try? Data(contentsOf: configPath),
-               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let port = settings["httpPort"] as? Int {
-                return port
-            }
-            return 3457
-        }()
+        let webPort: Int = (readSettings()?["httpPort"] as? Int) ?? 3457
 
         guard let url = URL(string: "http://localhost:\(webPort)/api/sync/trigger") else {
             syncStatus = "Failed"
