@@ -70,7 +70,6 @@ export function buildRequestBody(
 
   switch (protocol) {
     case 'openai':
-    case 'ollama':
       return {
         model: opts.model,
         messages: [
@@ -139,7 +138,6 @@ export async function summarizeConversation(
   let url: string;
   switch (protocol) {
     case 'openai':
-    case 'ollama':
       url = `${baseURL}/v1/chat/completions`;
       break;
     case 'anthropic':
@@ -158,7 +156,6 @@ export async function summarizeConversation(
   };
   switch (protocol) {
     case 'openai':
-    case 'ollama':
       headers['Authorization'] = `Bearer ${apiKey}`;
       break;
     case 'anthropic':
@@ -192,7 +189,6 @@ export async function summarizeConversation(
   // Extract response text
   switch (protocol) {
     case 'openai':
-    case 'ollama':
       return (data.choices?.[0]?.message?.content ?? '').trim();
     case 'anthropic':
       return (data.content?.[0]?.text ?? '').trim();

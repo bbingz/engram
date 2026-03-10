@@ -6,11 +6,9 @@ import type { SyncPeer } from './sync.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export type AiProtocol = 'openai' | 'anthropic' | 'ollama' | 'gemini';
+export type AiProtocol = 'openai' | 'anthropic' | 'gemini';
 
 export type SummaryPreset = 'concise' | 'standard' | 'detailed';
-
-export type SummaryStyle = 'bullets' | 'prose' | 'structured';
 
 export interface SummaryConfig {
   maxTokens: number;
@@ -31,7 +29,7 @@ export interface FileSettings {
   summaryPrompt?: string;
   summaryLanguage?: string;
   summaryMaxSentences?: number;
-  summaryStyle?: SummaryStyle;
+  summaryStyle?: string;
 
   // ── Summary generation config ─────────────────────────────────────
   summaryPreset?: SummaryPreset;
@@ -164,7 +162,15 @@ export function readFileSettings(): FileSettings {
   try {
     const content = readFileSync(CONFIG_FILE, 'utf-8');
     const parsed = JSON.parse(content) as FileSettings;
-    return migrateSettings(parsed);
+    const migrated = migrateSettings(parsed);
+    // Persist migration if settings changed (one-time write-back)
+    if (migrated !== parsed) {
+      try {
+        mkdirSync(CONFIG_DIR, { recursive: true });
+        writeFileSync(CONFIG_FILE, JSON.stringify(migrated, null, 2), 'utf-8');
+      } catch { /* best-effort */ }
+    }
+    return migrated;
   } catch {
     return {};
   }

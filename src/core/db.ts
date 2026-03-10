@@ -482,6 +482,7 @@ export class Database {
       indexedAt: row.indexed_at as string | undefined,
       agentRole: row.agent_role as string | undefined,
       origin: row.origin as string | undefined,
+      summaryMessageCount: row.summary_message_count as number | undefined,
     }
   }
 }

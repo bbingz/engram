@@ -59,43 +59,54 @@ indexer.indexAll().then(async (indexed) => {
   emit({ event: 'error', message: String(err) })
 })
 
-// Auto-summary manager (only active when configured)
+// Auto-summary manager — lazily created when settings enable it
 let autoSummary: AutoSummaryManager | undefined
-if (settings.autoSummary && settings.aiApiKey) {
-  autoSummary = new AutoSummaryManager({
-    cooldownMs: (settings.autoSummaryCooldown ?? 5) * 60 * 1000,
-    minMessages: settings.autoSummaryMinMessages ?? 4,
-    hasSummary: (id) => {
-      const s = db.getSession(id)
-      if (!s?.summary) return false
-      if (!settings.autoSummaryRefresh) return true
-      // Refresh mode: check if message count grew enough
-      const threshold = settings.autoSummaryRefreshThreshold ?? 20
-      const lastCount = (s as unknown as Record<string, unknown>).summaryMessageCount as number | undefined
-      return lastCount !== undefined && s.messageCount - lastCount < threshold
-    },
-    onTrigger: async (sessionId) => {
-      const session = db.getSession(sessionId)
-      if (!session) return
-      const adapter = adapters.find(a => a.name === session.source)
-      if (!adapter) return
 
-      const messages: Array<{ role: string; content: string }> = []
-      for await (const msg of adapter.streamMessages(session.filePath)) {
-        messages.push({ role: msg.role, content: msg.content })
-      }
-      if (messages.length === 0) return
+function getAutoSummary(): AutoSummaryManager | undefined {
+  const current = readFileSettings()
+  if (!current.autoSummary || !current.aiApiKey) {
+    if (autoSummary) { autoSummary.cleanup(); autoSummary = undefined }
+    return undefined
+  }
+  if (!autoSummary) {
+    autoSummary = new AutoSummaryManager({
+      cooldownMs: (current.autoSummaryCooldown ?? 5) * 60 * 1000,
+      minMessages: current.autoSummaryMinMessages ?? 4,
+      hasSummary: (id) => {
+        const s = db.getSession(id)
+        if (!s?.summary) return false
+        const freshSettings = readFileSettings()
+        if (!freshSettings.autoSummaryRefresh) return true
+        const threshold = freshSettings.autoSummaryRefreshThreshold ?? 20
+        const lastCount = s.summaryMessageCount
+        return lastCount !== undefined && s.messageCount - lastCount < threshold
+      },
+      onTrigger: async (sessionId) => {
+        const session = db.getSession(sessionId)
+        if (!session) return
+        const adapter = adapters.find(a => a.name === session.source)
+        if (!adapter) return
 
-      try {
-        const currentSettings = readFileSettings()
-        const summary = await summarizeConversation(messages, currentSettings)
-        if (summary) {
-          db.updateSessionSummary(sessionId, summary, messages.length)
-          emit({ event: 'summary_generated', sessionId, summary, total: db.countSessions() })
+        const messages: Array<{ role: string; content: string }> = []
+        for await (const msg of adapter.streamMessages(session.filePath)) {
+          messages.push({ role: msg.role, content: msg.content })
         }
-      } catch { /* silently skip */ }
-    },
-  })
+        if (messages.length === 0) return
+
+        try {
+          const currentSettings = readFileSettings()
+          const summary = await summarizeConversation(messages, currentSettings)
+          if (summary) {
+            db.updateSessionSummary(sessionId, summary, messages.length)
+            emit({ event: 'summary_generated', sessionId, summary, total: db.countSessions() })
+          }
+        } catch (err) {
+          emit({ event: 'summary_error', sessionId, message: String(err) })
+        }
+      },
+    })
+  }
+  return autoSummary
 }
 
 // File watcher (persistent — keeps process alive)
@@ -103,7 +114,7 @@ const watcher = startWatcher(adapters, indexer, {
   onIndexed: (sessionId, messageCount) => {
     const total = db.countSessions()
     emit({ event: 'watcher_indexed', total })
-    autoSummary?.onSessionIndexed(sessionId, messageCount)
+    getAutoSummary()?.onSessionIndexed(sessionId, messageCount)
   },
 })
 

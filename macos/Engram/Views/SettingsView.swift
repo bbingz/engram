@@ -480,13 +480,24 @@ struct SettingsView: View {
         if !summaryStyle.isEmpty { settings["summaryStyle"] = summaryStyle } else { settings.removeValue(forKey: "summaryStyle") }
         if !summaryPrompt.isEmpty { settings["summaryPrompt"] = summaryPrompt } else { settings.removeValue(forKey: "summaryPrompt") }
 
-        // Generation
+        // Generation — only write custom fields when user has opened the section
         settings["summaryPreset"] = summaryPreset
-        settings["summaryMaxTokens"] = summaryMaxTokens
-        settings["summaryTemperature"] = summaryTemperature
-        settings["summarySampleFirst"] = summarySampleFirst
-        settings["summarySampleLast"] = summarySampleLast
-        settings["summaryTruncateChars"] = summaryTruncateChars
+        if showCustomGeneration {
+            settings["summaryMaxTokens"] = summaryMaxTokens
+            settings["summaryTemperature"] = summaryTemperature
+        } else {
+            settings.removeValue(forKey: "summaryMaxTokens")
+            settings.removeValue(forKey: "summaryTemperature")
+        }
+        if showAdvancedGeneration {
+            settings["summarySampleFirst"] = summarySampleFirst
+            settings["summarySampleLast"] = summarySampleLast
+            settings["summaryTruncateChars"] = summaryTruncateChars
+        } else {
+            settings.removeValue(forKey: "summarySampleFirst")
+            settings.removeValue(forKey: "summarySampleLast")
+            settings.removeValue(forKey: "summaryTruncateChars")
+        }
 
         // Auto-summary
         settings["autoSummary"] = autoSummary
@@ -524,11 +535,11 @@ struct SettingsView: View {
 
         // Generation
         if let v = settings["summaryPreset"] as? String { summaryPreset = v }
-        if let v = settings["summaryMaxTokens"] as? Int { summaryMaxTokens = v }
-        if let v = settings["summaryTemperature"] as? Double { summaryTemperature = v }
-        if let v = settings["summarySampleFirst"] as? Int { summarySampleFirst = v }
-        if let v = settings["summarySampleLast"] as? Int { summarySampleLast = v }
-        if let v = settings["summaryTruncateChars"] as? Int { summaryTruncateChars = v }
+        if let v = settings["summaryMaxTokens"] as? Int { summaryMaxTokens = v; showCustomGeneration = true }
+        if let v = settings["summaryTemperature"] as? Double { summaryTemperature = v; showCustomGeneration = true }
+        if let v = settings["summarySampleFirst"] as? Int { summarySampleFirst = v; showAdvancedGeneration = true }
+        if let v = settings["summarySampleLast"] as? Int { summarySampleLast = v; showAdvancedGeneration = true }
+        if let v = settings["summaryTruncateChars"] as? Int { summaryTruncateChars = v; showAdvancedGeneration = true }
 
         // Auto-summary
         if let v = settings["autoSummary"] as? Bool { autoSummary = v }

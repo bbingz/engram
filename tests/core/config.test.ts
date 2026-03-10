@@ -163,7 +163,7 @@ describe('getBaseURL', () => {
     expect(getBaseURL({})).toBeUndefined();
   });
 
-  it('returns undefined for ollama (no default URL mapping)', () => {
-    expect(getBaseURL({ aiProtocol: 'ollama' })).toBeUndefined();
+  it('custom base URL overrides protocol default (e.g. Ollama via OpenAI)', () => {
+    expect(getBaseURL({ aiProtocol: 'openai', aiBaseURL: 'http://localhost:11434' })).toBe('http://localhost:11434');
   });
 });

@@ -21,6 +21,7 @@ export interface SessionInfo {
   indexedAt?: string      // ISO 8601 — when this session was last indexed (set by DB)
   agentRole?: string      // e.g. "worker" | "awaiter" for Codex; "subagent" for claude-code
   origin?: string         // machine/device identifier for sync (default: 'local')
+  summaryMessageCount?: number  // message count at last summary generation (for auto-refresh)
 }
 
 export interface ToolCall {
