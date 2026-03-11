@@ -116,6 +116,23 @@ export function createApp(db: Database, opts?: {
     return c.json({ results })
   })
 
+  // General status
+  app.get('/api/status', (c) => {
+    const totalSessions = db.countSessions()
+    const sources = db.listSources()
+    const projects = db.listProjects()
+    const embeddedCount = opts?.vectorStore?.count() ?? 0
+    const embeddingAvailable = !!(opts?.vectorStore && opts?.embeddingClient)
+    return c.json({
+      totalSessions,
+      sourceCount: sources.length,
+      projectCount: projects.length,
+      sources,
+      embeddingAvailable,
+      embeddedCount,
+    })
+  })
+
   // Session list
   app.get('/api/sessions', (c) => {
     const source = c.req.query('source') as SourceName | undefined
