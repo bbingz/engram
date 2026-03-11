@@ -44,6 +44,9 @@ struct SessionListView: View {
     @State private var showingTrash = false
     @State private var hiddenCount: Int = 0
     @State private var refreshTrigger = UUID()
+    @State private var sidebarCollapsed = false
+    @AppStorage("sidebarWidth") private var sidebarWidth: Double = 320
+    @State private var dragBaseWidth: Double = 0
 
     let allSources = ["claude-code", "codex", "copilot", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "minimax",
@@ -56,82 +59,12 @@ struct SessionListView: View {
     }
 
     var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                // Filter bar — row 1: filters
-                HStack(spacing: 6) {
-                    MultiSelectPicker(
-                        emptyLabel: "All sources",
-                        icon: "cpu",
-                        items: allSources,
-                        selected: selectedSourcesBinding,
-                        colorForItem: { SourceDisplay.color(for: $0) },
-                        labelForItem: { SourceDisplay.label(for: $0) }
-                    )
-                    MultiSelectPicker(
-                        emptyLabel: "All projects",
-                        icon: "folder",
-                        items: (try? db.listProjects()) ?? [],
-                        selected: selectedProjectsBinding
-                    )
-                    Spacer()
-                    HStack(spacing: 4) {
-                        Chip(label: "All",     selected: agentFilterMode == 0, color: .secondary) { agentFilterMode = 0 }
-                        Chip(label: "Agents",  selected: agentFilterMode == 1, color: .purple)    { agentFilterMode = 1 }
-                        Chip(label: "Hide",    selected: agentFilterMode == 2, color: .orange)    { agentFilterMode = 2 }
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.top, 6)
-                // Filter bar — row 2: sort & grouping
-                HStack(spacing: 6) {
-                    sortButton("Created", field: .created)
-                    sortButton("Updated", field: .updated)
-                    Spacer()
-                    Picker("", selection: $groupingMode) {
-                        ForEach(GroupingMode.allCases, id: \.self) { mode in
-                            Label(mode.rawValue, systemImage: mode == .project ? "folder" : "cpu")
-                                .tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .frame(width: 150)
-                }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-
-                Divider()
-
-                // List - each GroupSection manages its own data loading
-                List {
-                    ForEach(groups) { group in
-                        GroupSection(
-                            group: group,
-                            groupingMode: groupingMode,
-                            isExpanded: expandedGroups.contains(group.id),
-                            selectedSession: $selectedSession,
-                            showingTrash: showingTrash,
-                            sortField: $sortField,
-                            sortAsc: $sortAsc,
-                            selectedSources: selectedSources,
-                            selectedProjects: selectedProjects,
-                            agentFilter: agentFilter,
-                            refreshTrigger: refreshTrigger,
-                            onToggle: { toggleGroup(group.id) },
-                            onDelete: { id in deleteSession(id) },
-                            onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" }
-                        )
-                    }
-                }
-                .listStyle(.inset)
-
-                // Footer
-                footerView
+        HStack(spacing: 0) {
+            if !sidebarCollapsed {
+                sidebarPanel
+                sidebarDivider
             }
-            .frame(minWidth: 260, maxWidth: 500)
-
-            detailView
+            detailPanel
         }
         .task {
             await loadGroups()
@@ -179,6 +112,124 @@ struct SessionListView: View {
     }
 
     // MARK: - Views
+
+    private var sidebarPanel: some View {
+        VStack(spacing: 0) {
+            // Filter bar — row 1: filters
+            HStack(spacing: 6) {
+                MultiSelectPicker(
+                    emptyLabel: "All sources",
+                    icon: "cpu",
+                    items: allSources,
+                    selected: selectedSourcesBinding,
+                    colorForItem: { SourceDisplay.color(for: $0) },
+                    labelForItem: { SourceDisplay.label(for: $0) }
+                )
+                MultiSelectPicker(
+                    emptyLabel: "All projects",
+                    icon: "folder",
+                    items: (try? db.listProjects()) ?? [],
+                    selected: selectedProjectsBinding
+                )
+                Spacer()
+                HStack(spacing: 4) {
+                    Chip(label: "All",     selected: agentFilterMode == 0, color: .secondary) { agentFilterMode = 0 }
+                    Chip(label: "Agents",  selected: agentFilterMode == 1, color: .purple)    { agentFilterMode = 1 }
+                    Chip(label: "Hide",    selected: agentFilterMode == 2, color: .orange)    { agentFilterMode = 2 }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            // Filter bar — row 2: sort & grouping
+            HStack(spacing: 6) {
+                sortButton("Created", field: .created)
+                sortButton("Updated", field: .updated)
+                Spacer()
+                Picker("", selection: $groupingMode) {
+                    ForEach(GroupingMode.allCases, id: \.self) { mode in
+                        Label(mode.rawValue, systemImage: mode == .project ? "folder" : "cpu")
+                            .tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .frame(width: 150)
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+
+            Divider()
+
+            // List - each GroupSection manages its own data loading
+            List {
+                ForEach(groups) { group in
+                    GroupSection(
+                        group: group,
+                        groupingMode: groupingMode,
+                        isExpanded: expandedGroups.contains(group.id),
+                        selectedSession: $selectedSession,
+                        showingTrash: showingTrash,
+                        sortField: $sortField,
+                        sortAsc: $sortAsc,
+                        selectedSources: selectedSources,
+                        selectedProjects: selectedProjects,
+                        agentFilter: agentFilter,
+                        refreshTrigger: refreshTrigger,
+                        onToggle: { toggleGroup(group.id) },
+                        onDelete: { id in deleteSession(id) },
+                        onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" }
+                    )
+                }
+            }
+            .listStyle(.inset)
+
+            // Footer
+            footerView
+        }
+        .frame(width: sidebarWidth)
+    }
+
+    private var sidebarDivider: some View {
+        Color(.separatorColor)
+            .frame(width: 1)
+            .padding(.horizontal, 3)
+            .frame(width: 7)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() }
+                else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        if dragBaseWidth == 0 { dragBaseWidth = sidebarWidth }
+                        let newWidth = dragBaseWidth + value.translation.width
+                        sidebarWidth = min(max(newWidth, 260), 500)
+                    }
+                    .onEnded { _ in dragBaseWidth = 0 }
+            )
+    }
+
+    private var detailPanel: some View {
+        ZStack(alignment: .topLeading) {
+            detailView
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    sidebarCollapsed.toggle()
+                }
+            } label: {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(.bar)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .help(sidebarCollapsed ? "Show sidebar" : "Hide sidebar")
+            .padding(8)
+        }
+    }
 
     private var footerView: some View {
         HStack(spacing: 6) {
