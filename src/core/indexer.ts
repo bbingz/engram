@@ -11,10 +11,12 @@ export class Indexer {
   ) {}
 
   // 全量扫描所有适配器，返回新增索引数量
-  async indexAll(): Promise<number> {
+  // sources: optional set of source names to scan (defaults to all)
+  async indexAll(opts?: { sources?: Set<string> }): Promise<number> {
     let newCount = 0
 
     for (const adapter of this.adapters) {
+      if (opts?.sources && !opts.sources.has(adapter.name)) continue
       if (!await adapter.detect()) continue
 
       for await (const filePath of adapter.listSessionFiles()) {

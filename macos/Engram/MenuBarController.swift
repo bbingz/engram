@@ -14,6 +14,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let indexer: IndexerProcess
     private var clickTimer: Timer?
     private var dockIconObserver: NSObjectProtocol?
+    private var lastShowDockIcon: Bool?
 
     init(db: DatabaseManager, indexer: IndexerProcess) {
         self.db = db
@@ -269,6 +270,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     private func applyDockIconPreference() {
         let show = UserDefaults.standard.bool(forKey: "showDockIcon")
+        guard show != lastShowDockIcon else { return }
+        lastShowDockIcon = show
         if show {
             NSApp.setActivationPolicy(.regular)
             applyDockIcon()

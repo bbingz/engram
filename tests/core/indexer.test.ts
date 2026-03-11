@@ -67,4 +67,18 @@ describe('Indexer', () => {
     const results = db.searchSessions('SSL')
     expect(results.length).toBeGreaterThan(0)
   })
+
+  it('indexAll with sources filter skips unmatched adapters', async () => {
+    makeSessionFile(sessionsDir, 'test-004', '/Users/test', 'filtered test')
+    const codexAdapter = new CodexAdapter(join(tmpDir, 'sessions'))
+    const indexer = new Indexer(db, [codexAdapter])
+
+    // Filter for a source that doesn't match — should skip codex
+    const count = await indexer.indexAll({ sources: new Set(['claude-code']) })
+    expect(count).toBe(0)
+
+    // Now with matching source
+    const count2 = await indexer.indexAll({ sources: new Set(['codex']) })
+    expect(count2).toBe(1)
+  })
 })

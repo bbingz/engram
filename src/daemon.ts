@@ -5,7 +5,7 @@
 import { join } from 'path'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
-import { startWatcher } from './core/watcher.js'
+import { startWatcher, WATCHED_SOURCES } from './core/watcher.js'
 import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
 import { createApp } from './web.js'
 import { readFileSettings, type FileSettings } from './core/config.js'
@@ -45,6 +45,15 @@ indexer.indexAll().then(async (indexed) => {
     if (backfilled > 0) {
       emit({ event: 'backfill_counts', backfilled })
     }
+  } catch { /* ignore */ }
+
+  // DB maintenance: dedup, optimize FTS, VACUUM if fragmented
+  try {
+    const deduped = db.deduplicateFilePaths()
+    if (deduped > 0) emit({ event: 'db_maintenance', action: 'dedup', removed: deduped })
+    db.optimizeFts()
+    const vacuumed = db.vacuumIfNeeded(15) // VACUUM if >15% fragmentation
+    if (vacuumed) emit({ event: 'db_maintenance', action: 'vacuum' })
   } catch { /* ignore */ }
 
   if (vecDeps) {
@@ -130,12 +139,17 @@ const watcher = startWatcher(adapters, indexer, {
   },
 })
 
-// Periodic re-scan every 10 minutes to catch files the watcher might miss
-// (e.g. rsync'd files, SQLite-based sources like Cursor/OpenCode/VS Code)
+// Periodic re-scan every 10 minutes — only for non-watchable sources
+// (SQLite-based: Cursor, OpenCode, VS Code, Windsurf, Copilot)
 const RESCAN_INTERVAL = 10 * 60 * 1000
+const allSourceNames = new Set(adapters.map(a => a.name))
+const nonWatchable = new Set([...allSourceNames].filter(s => !WATCHED_SOURCES.has(s)))
+
 const rescanTimer = setInterval(async () => {
   try {
-    const indexed = await indexer.indexAll()
+    const indexed = nonWatchable.size > 0
+      ? await indexer.indexAll({ sources: nonWatchable })
+      : 0
     if (indexed > 0) {
       const total = db.countSessions()
       emit({ event: 'rescan', indexed, total })

@@ -9,6 +9,13 @@ export interface WatcherOptions {
   onIndexed?: (sessionId: string, messageCount: number) => void
 }
 
+/** Source names that have file watchers (jsonl-based, filesystem events work) */
+export const WATCHED_SOURCES = new Set([
+  'codex', 'claude-code', 'gemini-cli', 'antigravity', 'iflow', 'qwen', 'kimi', 'cline',
+  // Derived sources that share claude-code's directory
+  'lobsterai', 'minimax',
+])
+
 export function startWatcher(adapters: SessionAdapter[], indexer: Indexer, opts?: WatcherOptions): FSWatcher | null {
   const home = homedir()
   const adaptersByName = new Map(adapters.map(a => [a.name, a]))

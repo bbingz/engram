@@ -169,4 +169,27 @@ describe('Database', () => {
     expect(db.listProjectAliases()).toHaveLength(0)
     expect(db.resolveProjectAliases(['a'])).toEqual(['a'])
   })
+
+  // DB maintenance methods
+
+  it('optimizeFts runs without error', () => {
+    db.upsertSession(mockSession)
+    db.indexSessionContent('session-001', [{ role: 'user', content: 'hello world' }])
+    expect(() => db.optimizeFts()).not.toThrow()
+  })
+
+  it('vacuumIfNeeded returns false on clean db', () => {
+    // Fresh DB has no fragmentation
+    expect(db.vacuumIfNeeded(15)).toBe(false)
+  })
+
+  it('deduplicateFilePaths removes duplicates', () => {
+    db.upsertSession(mockSession)
+    // Insert a second row with same file_path but different id
+    db.upsertSession({ ...mockSession, id: 'session-002' })
+    expect(db.countSessions()).toBe(2)
+    const removed = db.deduplicateFilePaths()
+    expect(removed).toBe(1)
+    expect(db.countSessions()).toBe(1)
+  })
 })

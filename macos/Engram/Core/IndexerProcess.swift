@@ -1,9 +1,10 @@
 // macos/Engram/Core/IndexerProcess.swift
 import Foundation
 import Combine
+import os.log
 
 struct DaemonEvent: Decodable {
-    let event: String        // "ready" | "indexed" | "error" | "web_ready" | "summary_generated"
+    let event: String        // "ready" | "indexed" | "error" | "web_ready" | "summary_generated" | "db_maintenance"
     let indexed: Int?
     let total: Int?
     let message: String?
@@ -11,6 +12,8 @@ struct DaemonEvent: Decodable {
     let summary: String?
     let port: Int?
     let host: String?
+    let action: String?      // db_maintenance: "vacuum" | "dedup"
+    let removed: Int?         // db_maintenance dedup: count of removed duplicates
 }
 
 @MainActor
@@ -35,6 +38,8 @@ class IndexerProcess: ObservableObject {
             return false
         }
     }
+
+    private nonisolated static let logger = Logger(subsystem: "com.engram.app", category: "daemon")
 
     @Published var status: Status = .stopped
     @Published var totalSessions: Int = 0
@@ -64,8 +69,17 @@ class IndexerProcess: ObservableObject {
         proc.arguments = args
 
         let outPipe = Pipe()
+        let errPipe = Pipe()
         proc.standardOutput = outPipe
-        proc.standardError  = Pipe()   // discard stderr
+        proc.standardError  = errPipe
+
+        // Forward daemon stderr to os_log for diagnostics
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else { return }
+            Self.logger.error("\(text, privacy: .public)")
+        }
 
         proc.terminationHandler = { [weak self] _ in
             Task { @MainActor [weak self] in

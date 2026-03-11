@@ -462,6 +462,34 @@ export class Database {
     }
   }
 
+  // FTS optimization — merges internal b-tree segments for faster queries
+  optimizeFts(): void {
+    this.db.exec("INSERT INTO sessions_fts(sessions_fts) VALUES('optimize')")
+  }
+
+  // VACUUM if fragmentation exceeds threshold (percentage of freelist pages)
+  vacuumIfNeeded(thresholdPct: number): boolean {
+    const pageCount = (this.db.pragma('page_count') as { page_count: number }[])[0]?.page_count ?? 0
+    const freeCount = (this.db.pragma('freelist_count') as { freelist_count: number }[])[0]?.freelist_count ?? 0
+    if (pageCount === 0) return false
+    const fragPct = (freeCount / pageCount) * 100
+    if (fragPct > thresholdPct) {
+      this.db.exec('VACUUM')
+      return true
+    }
+    return false
+  }
+
+  // Remove duplicate file_path entries, keeping the most recently indexed one
+  deduplicateFilePaths(): number {
+    const result = this.db.prepare(`
+      DELETE FROM sessions WHERE rowid NOT IN (
+        SELECT MAX(rowid) FROM sessions GROUP BY file_path
+      )
+    `).run()
+    return result.changes
+  }
+
   private rowToSession(row: Record<string, unknown>): SessionInfo {
     return {
       id: row.id as string,
