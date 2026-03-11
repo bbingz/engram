@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURE = join(__dirname, '../fixtures/claude-code/sample.jsonl')
 const TOOL_FIXTURE = join(__dirname, '../fixtures/claude-code/with-tools.jsonl')
+const FMT_FIXTURE = join(__dirname, '../fixtures/claude-code/tool-formatting.jsonl')
 
 describe('ClaudeCodeAdapter', () => {
   const adapter = new ClaudeCodeAdapter()
@@ -42,6 +43,38 @@ describe('ClaudeCodeAdapter', () => {
     expect(info!.toolMessageCount).toBe(1)        // tool_result
     expect(info!.assistantMessageCount).toBe(2)   // tool_use response + text response
     expect(info!.messageCount).toBe(5)            // 2 user + 2 asst + 1 tool
+  })
+
+  describe('tool formatting in streamMessages', () => {
+    it('formats Read and Bash tools with summaries, filters noise tools', async () => {
+      const messages = []
+      for await (const msg of adapter.streamMessages(FMT_FIXTURE)) {
+        messages.push(msg)
+      }
+      // msg-001: user text, msg-002: assistant with tools, msg-003: tool results, msg-004: assistant text
+      expect(messages.length).toBe(4)
+
+      // Assistant message with tool_use (msg-002) should format tools
+      const assistantWithTools = messages[1]
+      expect(assistantWithTools.role).toBe('assistant')
+      // Should contain text + Read summary + Bash summary, but NOT TodoWrite (noise)
+      expect(assistantWithTools.content).toContain('好的，让我查看一下。')
+      expect(assistantWithTools.content).toContain('`Read`: /Users/test/proj/src/main.ts')
+      expect(assistantWithTools.content).toContain('`Bash`: ls -la /Users/test/proj/src')
+      expect(assistantWithTools.content).not.toContain('TodoWrite')
+    })
+
+    it('filters tool_reference items from tool results', async () => {
+      const messages = []
+      for await (const msg of adapter.streamMessages(FMT_FIXTURE)) {
+        messages.push(msg)
+      }
+      // msg-003 is tool_result — should produce empty content (no "User has answered" prefix)
+      const toolResultMsg = messages[2]
+      expect(toolResultMsg.role).toBe('user')
+      // tool_result content without "User has answered" is filtered out
+      expect(toolResultMsg.content).toBe('')
+    })
   })
 
   it('decodeCwd converts encoded path to real path', () => {

@@ -128,6 +128,7 @@ export function createApp(db: Database, opts?: {
       sourceCount: sources.length,
       projectCount: projects.length,
       sources,
+      projects,
       embeddingAvailable,
       embeddedCount,
     })

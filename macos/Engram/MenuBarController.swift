@@ -58,9 +58,9 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             name: .openSettings, object: nil
         )
 
-        // Listen for "Open Window" requests from PopoverView footer
+        // Listen for "Open Window" requests from PopoverView footer/timeline
         NotificationCenter.default.addObserver(
-            self, selector: #selector(openWindow),
+            self, selector: #selector(handleOpenWindow(_:)),
             name: .openWindow, object: nil
         )
 
@@ -180,6 +180,16 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
 
     // MARK: - Standalone window (hybrid activation)
+
+    @objc private func handleOpenWindow(_ notification: Notification) {
+        openWindow()
+        // If a SessionBox was passed, forward it after the window is ready
+        if let box = notification.object as? SessionBox {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .openSession, object: box)
+            }
+        }
+    }
 
     @objc func openWindow() {
         // Close popover if open

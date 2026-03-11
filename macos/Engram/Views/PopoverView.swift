@@ -131,10 +131,7 @@ struct PopoverView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
-            NotificationCenter.default.post(name: .openWindow, object: nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                NotificationCenter.default.post(name: .openSession, object: session)
-            }
+            NotificationCenter.default.post(name: .openWindow, object: SessionBox(session))
         }
     }
 
@@ -197,6 +194,18 @@ struct PopoverView: View {
         }
     }
 
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let dateOnlyFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
     private struct DateGroup: Identifiable {
         let key: String
         let sessions: [Session]
@@ -205,13 +214,14 @@ struct PopoverView: View {
 
     private func groupedByDate(_ sessions: [Session]) -> [DateGroup] {
         let cal = Calendar.current
+        let iso = Self.isoFormatter
         var groups: [(String, [Session])] = []
         var currentKey = ""
         var currentGroup: [Session] = []
         for s in sessions {
             let dateStr = String(s.startTime.prefix(10))
             let key: String
-            if let date = ISO8601DateFormatter().date(from: s.startTime) ?? dateFromPrefix(dateStr) {
+            if let date = iso.date(from: s.startTime) ?? Self.dateOnlyFormatter.date(from: dateStr) {
                 if cal.isDateInToday(date) { key = "TODAY" }
                 else if cal.isDateInYesterday(date) { key = "YESTERDAY" }
                 else { key = dateStr }
@@ -225,12 +235,8 @@ struct PopoverView: View {
         return groups.map { DateGroup(key: $0.0, sessions: $0.1) }
     }
 
-    private func dateFromPrefix(_ s: String) -> Date? {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.date(from: s)
-    }
-
     private func relativeTime(_ ts: String) -> String {
-        guard let d = ISO8601DateFormatter().date(from: ts) else { return "" }
+        guard let d = Self.isoFormatter.date(from: ts) else { return "" }
         let secs = -d.timeIntervalSinceNow
         if secs < 60 { return "now" }
         if secs < 3600 { return "\(Int(secs / 60))m" }

@@ -7,6 +7,12 @@ extension Notification.Name {
     static let openSession = Notification.Name("com.engram.openSession")
 }
 
+/// Box wrapper to safely pass Swift structs through NSNotification.object
+class SessionBox {
+    let session: Session
+    init(_ session: Session) { self.session = session }
+}
+
 enum AppTab: Int, CaseIterable {
     case sessions, search, timeline, favorites
 
@@ -64,8 +70,8 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onReceive(NotificationCenter.default.publisher(for: .openSession)) { notif in
-                if let session = notif.object as? Session {
-                    deepLinkSession = session
+                if let box = notif.object as? SessionBox {
+                    deepLinkSession = box.session
                     selectedTab = .sessions
                 }
             }

@@ -301,11 +301,11 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
   private summarizeToolInput(name: string, input: Record<string, unknown>): string {
     // Show meaningful context for common tools
-    if (name === 'Read' || name === 'Write' || name === 'Edit') return String(input.file_path ?? '')
-    if (name === 'Bash') return String(input.command ?? '').substring(0, 120)
-    if (name === 'Glob') return String(input.pattern ?? '')
-    if (name === 'Grep') return String(input.pattern ?? '')
-    if (name === 'Agent') return String(input.description ?? '')
+    if (name === 'Read' || name === 'Write' || name === 'Edit') return (input.file_path as string) || ''
+    if (name === 'Bash') return ((input.command as string) || '').slice(0, 120)
+    if (name === 'Glob') return (input.pattern as string) || ''
+    if (name === 'Grep') return (input.pattern as string) || ''
+    if (name === 'Agent') return (input.description as string) || ''
     return ''
   }
 }
