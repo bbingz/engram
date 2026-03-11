@@ -1,544 +1,983 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Sessions" : {
+    "(unknown)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "会话" }
-        }
-      }
-    },
-    "Search" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "搜索" }
-        }
-      }
-    },
-    "Timeline" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "时间线" }
-        }
-      }
-    },
-    "Favorites" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "收藏" }
-        }
-      }
-    },
-    "All sources" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "所有来源" }
-        }
-      }
-    },
-    "All projects" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "所有项目" }
-        }
-      }
-    },
-    "Created" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "创建时间" }
-        }
-      }
-    },
-    "Updated" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "更新时间" }
-        }
-      }
-    },
-    "All" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "全部" }
-        }
-      }
-    },
-    "Agent only" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "仅代理" }
-        }
-      }
-    },
-    "Hide agents" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "隐藏代理" }
-        }
-      }
-    },
-    "Restore" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "恢复" }
-        }
-      }
-    },
-    "Rename..." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "重命名..." }
-        }
-      }
-    },
-    "Delete" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "删除" }
-        }
-      }
-    },
-    "Clean Empty" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "清理空会话" }
-        }
-      }
-    },
-    "Hide all sessions with 0 messages" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "隐藏所有 0 消息的会话" }
-        }
-      }
-    },
-    "Back to sessions" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "返回会话列表" }
-        }
-      }
-    },
-    "Show hidden sessions" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "显示隐藏的会话" }
-        }
-      }
-    },
-    "Select a session" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "选择一个会话" }
-        }
-      }
-    },
-    "Rename Session" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "重命名会话" }
-        }
-      }
-    },
-    "Note" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "备注" }
-        }
-      }
-    },
-    "Save" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "保存" }
-        }
-      }
-    },
-    "Cancel" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "取消" }
-        }
-      }
-    },
-    "Displayed as: note | original title. Leave empty to clear." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "显示为：备注 | 原标题。留空以清除。" }
-        }
-      }
-    },
-    "Clear" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "清除" }
-        }
-      }
-    },
-    "No items" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "无项目" }
-        }
-      }
-    },
-    "%lld selected" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "已选 %lld 个" }
-        }
-      }
-    },
-    "agent" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "代理" }
-        }
-      }
-    },
-    "%lld msgs" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "%lld 条消息" }
-        }
-      }
-    },
-    "%lld of %lld" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "%lld / %lld" }
-        }
-      }
-    },
-    "You" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "你" }
-        }
-      }
-    },
-    "Raw" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "原始" }
-        }
-      }
-    },
-    "Clean" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "精简" }
-        }
-      }
-    },
-    "Copy session ID" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "复制会话 ID" }
-        }
-      }
-    },
-    "No user-visible messages. Tap \"Raw\" to see raw content." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "没有用户可见的消息。点击「原始」查看原始内容。" }
-        }
-      }
-    },
-    "No messages found." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "未找到消息。" }
-        }
-      }
-    },
-    "This session is %@ — loading may take a moment" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "此会话 %@ — 加载可能需要一些时间" }
-        }
-      }
-    },
-    "This source (%@) uses a SQLite database — conversation preview is not yet supported." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "此数据源（%@）使用 SQLite 数据库 — 暂不支持对话预览。" }
-        }
-      }
-    },
-    "[system]" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "[系统]" }
-        }
-      }
-    },
-    "[user]" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "[用户]" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "（未知）"
+          }
         }
       }
     },
     "[assistant]" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "[助手]" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "[助手]"
+          }
         }
       }
     },
-    "Search sessions (min 3 chars)..." : {
+    "[system]" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "搜索会话（至少 3 个字符）..." }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "[系统]"
+          }
         }
       }
     },
-    "No results for \"%@\"" : {
+    "[user]" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "未找到「%@」的结果" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "[用户]"
+          }
         }
       }
     },
-    "Filter by project..." : {
+    "%@" : {
+
+    },
+    "%@ selected" : {
+
+    },
+    "%@ sessions" : {
+
+    },
+    "%@/%@ sessions" : {
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "按项目筛选..." }
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@/%2$@ sessions"
+          }
         }
       }
     },
-    "No sessions" : {
+    "%@%%" : {
+
+    },
+    "%lld msgs" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "无会话" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 条消息"
+          }
         }
       }
     },
-    "(unknown)" : {
+    "%lld of %lld" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "（未知）" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld / %lld"
+          }
         }
       }
     },
-    "Double-click to open in Sessions" : {
+    "%lld selected" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "双击在会话中打开" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已选 %lld 个"
+          }
         }
       }
     },
-    "No favorites yet" : {
+    "%lld sessions indexed" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "暂无收藏" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已索引 %lld 个会话"
+          }
         }
       }
     },
-    "Star sessions in the Sessions tab." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "在「会话」页中收藏会话。" }
-        }
-      }
-    },
-    "MCP Server" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "MCP 服务器" }
-        }
-      }
-    },
-    "HTTP Port" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "HTTP 端口" }
-        }
-      }
-    },
-    "Node.js Indexer" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "Node.js 索引器" }
-        }
-      }
-    },
-    "Node.js Path" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "Node.js 路径" }
-        }
-      }
-    },
-    "Status" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "状态" }
-        }
-      }
-    },
-    "Data Sources" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "数据源" }
-        }
-      }
-    },
-    "Database" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "数据库" }
-        }
-      }
-    },
-    "Path" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "路径" }
-        }
-      }
-    },
-    "Size" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "大小" }
-        }
-      }
-    },
-    "Launch" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "启动" }
-        }
-      }
-    },
-    "Launch at Login" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "登录时启动" }
-        }
-      }
-    },
-    "Login item requires macOS 13+" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "登录启动需要 macOS 13+" }
-        }
-      }
+    "•" : {
+
     },
     "About" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "关于" }
-        }
-      }
-    },
-    "MCP HTTP endpoint" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "MCP HTTP 端点" }
-        }
-      }
-    },
-    "MCP Client Setup" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "MCP 客户端配置" }
-        }
-      }
-    },
-    "MCP Script" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "MCP 脚本" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关于"
+          }
         }
       }
     },
     "Add engram to your MCP clients using the configurations below." : {
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "使用以下配置将 engram 添加到 MCP 客户端。" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用以下配置将 engram 添加到 MCP 客户端。"
+          }
+        }
+      }
+    },
+    "agent" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "代理"
+          }
+        }
+      }
+    },
+    "Agent only" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅代理"
+          }
+        }
+      }
+    },
+    "All" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全部"
+          }
+        }
+      }
+    },
+    "All messages are system injections. Tap \"Raw\" to see raw content." : {
+
+    },
+    "All projects" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有项目"
+          }
+        }
+      }
+    },
+    "All sources" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有来源"
+          }
+        }
+      }
+    },
+    "Anthropic" : {
+
+    },
+    "API Key" : {
+
+    },
+    "API keys are stored locally in ~/.engram/settings.json" : {
+
+    },
+    "Back to sessions" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回会话列表"
+          }
+        }
+      }
+    },
+    "Base URL" : {
+
+    },
+    "Cancel" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消"
+          }
+        }
+      }
+    },
+    "chars/msg" : {
+
+    },
+    "CLAUDE.md, AGENTS.md, environment context, and other injected instructions" : {
+
+    },
+    "Clean" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "精简"
+          }
+        }
+      }
+    },
+    "Clean Empty" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清理空会话"
+          }
+        }
+      }
+    },
+    "Clear" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除"
+          }
+        }
+      }
+    },
+    "Clear Filter" : {
+
+    },
+    "Concise" : {
+
+    },
+    "Content Font Size" : {
+
+    },
+    "Copied!" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已复制！"
+          }
         }
       }
     },
     "Copy" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "复制" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制"
+          }
         }
       }
     },
-    "Copied!" : {
+    "Copy session ID" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "已复制！" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制会话 ID"
+          }
         }
       }
     },
-    "Path exists" : {
+    "Created" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "路径存在" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建时间"
+          }
         }
       }
     },
-    "Path not found" : {
+    "Data Sources" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "路径未找到" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "数据源"
+          }
+        }
+      }
+    },
+    "Database" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "数据库"
+          }
+        }
+      }
+    },
+    "Delete" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除"
+          }
+        }
+      }
+    },
+    "Detailed" : {
+
+    },
+    "Displayed as: note | original title. Leave empty to clear." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示为：备注 | 原标题。留空以清除。"
+          }
+        }
+      }
+    },
+    "Double-click to open in Sessions" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "双击在会话中打开"
+          }
+        }
+      }
+    },
+    "English" : {
+
+    },
+    "Engram" : {
+
+    },
+    "Error: %@" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "错误：%@"
+          }
+        }
+      }
+    },
+    "Favorites" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收藏"
+          }
+        }
+      }
+    },
+    "Filter by project..." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按项目筛选..."
+          }
+        }
+      }
+    },
+    "Gemini" : {
+
+    },
+    "Hide agents" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏代理"
+          }
+        }
+      }
+    },
+    "Hide all sessions with 0 messages" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏所有 0 消息的会话"
+          }
+        }
+      }
+    },
+    "HTTP Port" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HTTP 端口"
+          }
+        }
+      }
+    },
+    "Interval (minutes)" : {
+
+    },
+    "Keep the app icon visible in the Dock at all times" : {
+
+    },
+    "Launch" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动"
+          }
+        }
+      }
+    },
+    "Launch at Login" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录时启动"
+          }
+        }
+      }
+    },
+    "Login item requires macOS 13+" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录启动需要 macOS 13+"
+          }
+        }
+      }
+    },
+    "Max Tokens" : {
+
+    },
+    "MCP Client Setup" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MCP 客户端配置"
+          }
+        }
+      }
+    },
+    "MCP HTTP endpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MCP HTTP 端点"
+          }
+        }
+      }
+    },
+    "MCP Script" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MCP 脚本"
+          }
+        }
+      }
+    },
+    "MCP Server" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MCP 服务器"
+          }
+        }
+      }
+    },
+    "messages" : {
+
+    },
+    "Model" : {
+
+    },
+    "Name" : {
+
+    },
+    "No favorites yet" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无收藏"
+          }
+        }
+      }
+    },
+    "No items" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无项目"
+          }
+        }
+      }
+    },
+    "No messages found." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未找到消息。"
+          }
+        }
+      }
+    },
+    "No results for \"%@\"" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未找到「%@」的结果"
+          }
+        }
+      }
+    },
+    "No sessions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无会话"
+          }
+        }
+      }
+    },
+    "No sessions match the current filters." : {
+
+    },
+    "No user-visible messages. Tap \"Raw\" to see raw content." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有用户可见的消息。点击「原始」查看原始内容。"
+          }
+        }
+      }
+    },
+    "Node Name" : {
+
+    },
+    "Node.js Indexer" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Node.js 索引器"
+          }
+        }
+      }
+    },
+    "Node.js Path" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Node.js 路径"
+          }
+        }
+      }
+    },
+    "Note" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "备注"
+          }
         }
       }
     },
     "Open Window" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "打开窗口" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开窗口"
+          }
+        }
+      }
+    },
+    "Open Window %@" : {
+
+    },
+    "OpenAI" : {
+
+    },
+    "Path" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "路径"
+          }
+        }
+      }
+    },
+    "Path exists" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "路径存在"
+          }
+        }
+      }
+    },
+    "Path not found" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "路径未找到"
+          }
+        }
+      }
+    },
+    "Preview: The quick brown fox jumps over the lazy dog" : {
+
+    },
+    "Quit Engram" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "退出 Engram"
+          }
+        }
+      }
+    },
+    "Raw" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原始"
+          }
+        }
+      }
+    },
+    "Rename Session" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重命名会话"
+          }
+        }
+      }
+    },
+    "Rename..." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重命名..."
+          }
+        }
+      }
+    },
+    "Restore" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复"
+          }
+        }
+      }
+    },
+    "Sample First" : {
+
+    },
+    "Sample Last" : {
+
+    },
+    "Save" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存"
+          }
+        }
+      }
+    },
+    "Search" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索"
+          }
+        }
+      }
+    },
+    "Search sessions (min 3 chars)..." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索会话（至少 3 个字符）..."
+          }
+        }
+      }
+    },
+    "Select a session" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择一个会话"
+          }
+        }
+      }
+    },
+    "Select a session to view its conversation." : {
+
+    },
+    "Semantic search unavailable" : {
+
+    },
+    "Sessions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话"
+          }
         }
       }
     },
     "Settings..." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "设置..." }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置..."
+          }
         }
       }
     },
-    "Quit Engram" : {
+    "Show hidden sessions" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "退出 Engram" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示隐藏的会话"
+          }
         }
       }
     },
-    "Stopped" : {
+    "Size" : {
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "已停止" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大小"
+          }
+        }
+      }
+    },
+    "Standard" : {
+
+    },
+    "Star sessions in the Sessions tab to see them here." : {
+
+    },
+    "Star sessions in the Sessions tab." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在「会话」页中收藏会话。"
+          }
         }
       }
     },
     "Starting..." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "启动中..." }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动中..."
+          }
         }
       }
     },
-    "%lld sessions indexed" : {
+    "Status" : {
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "已索引 %lld 个会话" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "状态"
+          }
         }
       }
     },
-    "Error: %@" : {
+    "Stopped" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
-          "stringUnit" : { "state" : "translated", "value" : "错误：%@" }
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已停止"
+          }
         }
       }
+    },
+    "Style" : {
+
+    },
+    "Sync Now" : {
+
+    },
+    "Sync settings are stored in ~/.engram/settings.json" : {
+
+    },
+    "Temperature" : {
+
+    },
+    "This session is %@ — loading may take a moment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话 %@ — 加载可能需要一些时间"
+          }
+        }
+      }
+    },
+    "This source (%@) uses a SQLite database — conversation preview is not yet supported." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此数据源（%@）使用 SQLite 数据库 — 暂不支持对话预览。"
+          }
+        }
+      }
+    },
+    "Timeline" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "时间线"
+          }
+        }
+      }
+    },
+    "Tool calls, skill invocations, and command outputs" : {
+
+    },
+    "Truncate" : {
+
+    },
+    "Updated" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新时间"
+          }
+        }
+      }
+    },
+    "URL" : {
+
+    },
+    "Variables: {{language}}, {{maxSentences}}, {{style}}" : {
+
+    },
+    "You" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你"
+          }
+        }
+      }
+    },
+    "中文" : {
+
+    },
+    "日本語" : {
+
     }
   },
   "version" : "1.0"
