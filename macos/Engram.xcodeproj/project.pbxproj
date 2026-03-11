@@ -21,6 +21,7 @@
 		4BA0BF2E4F3AD4EFF4FE139A /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23A82F503272DE55BE442D0D /* MCPServer.swift */; };
 		5020CE74853C590CFEE9F0CA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3ED5F4A67BA499CAD0CB87E2 /* Assets.xcassets */; };
 		55A1E938C15DB4BE1A88AE36 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B088996486F740E1114B97 /* App.swift */; };
+		5FC7F55BFF4B35D133BBBB19 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 926B3C0260A07A71774FB824 /* PopoverView.swift */; };
 		7CA8E6B2A95200C50CDB2C94 /* MCPTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24F9271351B80A54B709C23E /* MCPTools.swift */; };
 		80AF087E8134222249F118EF /* ContentSegmentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A706DBB6CFE741BD410AFB3E /* ContentSegmentParser.swift */; };
 		8EB6ECA0CB17D59E3DD5C428 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 8D04D1866BFCBEBF44A8B026 /* AppIcon.icns */; };
@@ -51,6 +52,7 @@
 		7747AB6507C03EE64F5C74D0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		8D04D1866BFCBEBF44A8B026 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		8FCACDAEB35E5381E270B529 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
+		926B3C0260A07A71774FB824 /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
 		956B54D22C1F37270245E275 /* EngramCLI */ = {isa = PBXFileReference; includeInIndex = 0; path = EngramCLI; sourceTree = BUILT_PRODUCTS_DIR; };
 		97B088996486F740E1114B97 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		9A0551A8DFF54710CD9C3423 /* Engram.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Engram.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -108,6 +110,7 @@
 				75DB3A0F8CB94DAFEB010D70 /* ContentSegmentViews.swift */,
 				0BE0F3D0EF2B41203834B93F /* ContentView.swift */,
 				4E010C5C04313BC0A60AB0AD /* FavoritesView.swift */,
+				926B3C0260A07A71774FB824 /* PopoverView.swift */,
 				2DB2E95CFC54D554A2CDFB3D /* SearchView.swift */,
 				C8A3C77DEC219D262D210C77 /* SessionDetailView.swift */,
 				AF92828025409F1D7A16097F /* SessionListView.swift */,
@@ -346,6 +349,7 @@
 				7CA8E6B2A95200C50CDB2C94 /* MCPTools.swift in Sources */,
 				055F0887490543D1FEF6FC89 /* MenuBarController.swift in Sources */,
 				2528C449BE5F663146DA2214 /* MessageParser.swift in Sources */,
+				5FC7F55BFF4B35D133BBBB19 /* PopoverView.swift in Sources */,
 				B98CD1E9E0AB7AF22957403D /* SearchView.swift in Sources */,
 				C787E8E6A80171E8B582531C /* Session.swift in Sources */,
 				4B4F32051CEAEBFF123FA47E /* SessionDetailView.swift in Sources */,

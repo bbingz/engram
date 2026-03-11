@@ -13,6 +13,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let db: DatabaseManager
     private let indexer: IndexerProcess
     private var clickTimer: Timer?
+    private var dockIconObserver: NSObjectProtocol?
 
     init(db: DatabaseManager, indexer: IndexerProcess) {
         self.db = db
@@ -20,11 +21,11 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover    = NSPopover()
-        popover.contentSize = NSSize(width: 760, height: 640)
+        popover.contentSize = NSSize(width: 400, height: 420)
         popover.behavior    = .transient
 
         popover.contentViewController = NSHostingController(
-            rootView: ContentView()
+            rootView: PopoverView()
                 .environmentObject(db)
                 .environmentObject(indexer)
         )
@@ -32,8 +33,12 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         super.init()
 
         if let btn = statusItem.button {
-            btn.image = NSImage(systemSymbolName: "brain.head.profile",
-                                accessibilityDescription: "Engram")
+            let img = NSImage(named: "MenuBarIcon")
+                ?? NSImage(systemSymbolName: "brain.head.profile",
+                           accessibilityDescription: "Engram")
+            img?.size = NSSize(width: 19, height: 15)
+            img?.isTemplate = true
+            btn.image = img
             // Receive both left and right mouse-up so we can distinguish them
             btn.sendAction(on: [.leftMouseUp, .rightMouseUp])
             btn.action = #selector(handleClick)
@@ -47,11 +52,27 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             }
         }
 
-        // Listen for settings open requests from ContentView gear button
+        // Listen for settings open requests from PopoverView/ContentView gear button
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings),
             name: .openSettings, object: nil
         )
+
+        // Listen for "Open Window" requests from PopoverView footer
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openWindow),
+            name: .openWindow, object: nil
+        )
+
+        // Apply persistent Dock icon preference
+        applyDockIconPreference()
+        dockIconObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.applyDockIconPreference()
+            }
+        }
     }
 
     // MARK: - Click handling
@@ -125,6 +146,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // Reuse existing settings window if still alive
         if let win = settingsWindow {
             NSApp.setActivationPolicy(.regular)
+            applyDockIcon()
             setupMainMenu()
             win.makeKeyAndOrderFront(nil)
             DispatchQueue.main.async {
@@ -148,6 +170,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         win.center()
 
         NSApp.setActivationPolicy(.regular)
+        applyDockIcon()
         setupMainMenu()
         win.makeKeyAndOrderFront(nil)
         DispatchQueue.main.async {
@@ -166,6 +189,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         if let win = window {
             // Must set policy BEFORE showing window, then activate after a run-loop tick
             NSApp.setActivationPolicy(.regular)
+            applyDockIcon()
             setupMainMenu()
             win.makeKeyAndOrderFront(nil)
             // Delay activation to let macOS process the policy change
@@ -193,6 +217,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // Switch to regular app: show Dock icon + main menu bar
         // Must set policy before showing window
         NSApp.setActivationPolicy(.regular)
+        applyDockIcon()
         setupMainMenu()
 
         win.makeKeyAndOrderFront(nil)
@@ -213,10 +238,33 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             if closingWindow === self.settingsWindow {
                 self.settingsWindow = nil
             }
-            // Only revert to accessory if no windows are open
+            // Only revert to accessory if no windows are open and user doesn't want persistent Dock icon
             if self.window == nil && self.settingsWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
+                let keepDock = UserDefaults.standard.bool(forKey: "showDockIcon")
+                if !keepDock {
+                    NSApp.setActivationPolicy(.accessory)
+                }
             }
+        }
+    }
+
+    // MARK: - Dock icon
+
+    private func applyDockIcon() {
+        // Programmatically set the Dock icon from the asset catalog
+        if let icon = NSImage(named: "AppIcon") {
+            NSApp.applicationIconImage = icon
+        }
+    }
+
+    private func applyDockIconPreference() {
+        let show = UserDefaults.standard.bool(forKey: "showDockIcon")
+        if show {
+            NSApp.setActivationPolicy(.regular)
+            applyDockIcon()
+            setupMainMenu()
+        } else if window == nil && settingsWindow == nil {
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 

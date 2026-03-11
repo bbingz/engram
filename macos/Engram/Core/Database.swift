@@ -48,8 +48,13 @@ class DatabaseManager: ObservableObject {
                 );
             """)
             // Idempotent column additions for hide/rename
-            for col in ["hidden_at TEXT", "custom_name TEXT"] {
-                try? db.execute(sql: "ALTER TABLE sessions ADD COLUMN \(col)")
+            let existing = try Set(Row.fetchAll(db, sql: "PRAGMA table_info(sessions)").map {
+                $0["name"] as String
+            })
+            for (name, def) in [("hidden_at", "TEXT"), ("custom_name", "TEXT")] {
+                if !existing.contains(name) {
+                    try db.execute(sql: "ALTER TABLE sessions ADD COLUMN \(name) \(def)")
+                }
             }
         }
     }
@@ -241,6 +246,10 @@ class DatabaseManager: ObservableObject {
             return StatsResult(totalSessions: total, totalMessages: messages,
                                bySource: Dictionary(uniqueKeysWithValues: counts.map { ($0.source, $0.count) }))
         }
+    }
+
+    func dbSizeBytes() -> Int64 {
+        (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size] as? Int64) ?? 0
     }
 
     // MARK: - get_context

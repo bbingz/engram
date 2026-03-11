@@ -3,6 +3,8 @@ import SwiftUI
 
 extension Notification.Name {
     static let openSettings = Notification.Name("com.engram.openSettings")
+    static let openWindow = Notification.Name("com.engram.openWindow")
+    static let openSession = Notification.Name("com.engram.openSession")
 }
 
 enum AppTab: Int, CaseIterable {
@@ -61,6 +63,12 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onReceive(NotificationCenter.default.publisher(for: .openSession)) { notif in
+                if let session = notif.object as? Session {
+                    deepLinkSession = session
+                    selectedTab = .sessions
+                }
+            }
 
             Divider()
 

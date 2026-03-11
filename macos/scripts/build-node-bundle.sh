@@ -3,6 +3,9 @@
 # Copies compiled daemon.js into the app bundle Resources/node/
 set -e
 
+# Xcode strips PATH — ensure node/npm are reachable
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/node"
 
