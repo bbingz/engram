@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { handleLinkSessions } from '../../src/tools/link_sessions.js'
 import { Database } from '../../src/core/db.js'
-import { mkdtempSync, rmSync, writeFileSync, readlinkSync, lstatSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readlinkSync, lstatSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -17,8 +17,6 @@ describe('link_sessions', () => {
     sourceDir = join(tmpDir, 'sources')
     targetDir = join(tmpDir, 'myapp')
 
-    // Create source files that sessions point to
-    const mkdirSync = require('fs').mkdirSync
     mkdirSync(join(sourceDir, 'claude-code'), { recursive: true })
     mkdirSync(join(sourceDir, 'codex'), { recursive: true })
     mkdirSync(targetDir, { recursive: true })
@@ -65,7 +63,6 @@ describe('link_sessions', () => {
     expect(result.skipped).toBe(0)
     expect(result.errors).toEqual([])
 
-    // Verify symlinks exist and point to correct targets
     const link1 = join(targetDir, 'conversation_log', 'claude-code', 'session1.jsonl')
     const link2 = join(targetDir, 'conversation_log', 'claude-code', 'session2.jsonl')
     const link3 = join(targetDir, 'conversation_log', 'codex', 'session3.jsonl')
@@ -78,10 +75,8 @@ describe('link_sessions', () => {
   })
 
   it('skips existing symlinks pointing to same target', async () => {
-    // First run
     await handleLinkSessions(db, { targetDir })
 
-    // Second run — should skip all
     const result = await handleLinkSessions(db, { targetDir })
     expect(result.created).toBe(0)
     expect(result.skipped).toBe(3)
@@ -89,30 +84,60 @@ describe('link_sessions', () => {
 
   it('does not include sessions from other projects', async () => {
     const result = await handleLinkSessions(db, { targetDir })
-    expect(result.created).toBe(3) // only myapp sessions, not 'other'
+    expect(result.created).toBe(3)
   })
 
   it('resolves project aliases', async () => {
+    // Use a unique filename for the aliased session to avoid collision
+    writeFileSync(join(sourceDir, 'codex', 'session5.jsonl'), '{}')
     db.addProjectAlias('myapp', 'myapp-renamed')
     db.upsertSession({
       id: 's5', source: 'codex', startTime: '2026-01-24T10:00:00Z',
       cwd: '/Users/test/myapp-renamed', project: 'myapp-renamed', messageCount: 3,
       userMessageCount: 1, assistantMessageCount: 1, toolMessageCount: 0, systemMessageCount: 0,
-      filePath: join(sourceDir, 'codex', 'session3.jsonl'), sizeBytes: 30,
+      filePath: join(sourceDir, 'codex', 'session5.jsonl'), sizeBytes: 30,
     })
 
     const result = await handleLinkSessions(db, { targetDir })
-    // Should include both myapp and myapp-renamed sessions
-    expect(result.created).toBeGreaterThanOrEqual(3)
+    expect(result.created).toBe(4)
+    expect(result.errors).toEqual([])
     expect(result.projectNames).toContain('myapp')
     expect(result.projectNames).toContain('myapp-renamed')
   })
 
   it('returns empty result for unknown project', async () => {
     const unknownDir = join(tmpDir, 'unknown-project')
-    require('fs').mkdirSync(unknownDir, { recursive: true })
+    mkdirSync(unknownDir, { recursive: true })
     const result = await handleLinkSessions(db, { targetDir: unknownDir })
     expect(result.created).toBe(0)
     expect(result.skipped).toBe(0)
+  })
+
+  it('rejects relative path', async () => {
+    const result = await handleLinkSessions(db, { targetDir: 'myapp' })
+    expect(result.created).toBe(0)
+    expect(result.errors).toEqual(['targetDir must be an absolute path'])
+  })
+
+  it('replaces symlink when same filename points to different target', async () => {
+    // Two sessions with same source + filename but different file paths (via aliases)
+    const altDir = join(sourceDir, 'codex-alt')
+    mkdirSync(altDir, { recursive: true })
+    writeFileSync(join(altDir, 'session3.jsonl'), '{"alt": true}')
+
+    db.addProjectAlias('myapp', 'myapp-v2')
+    db.upsertSession({
+      id: 's6', source: 'codex', startTime: '2026-01-25T10:00:00Z',
+      cwd: '/Users/test/myapp-v2', project: 'myapp-v2', messageCount: 4,
+      userMessageCount: 2, assistantMessageCount: 1, toolMessageCount: 0, systemMessageCount: 0,
+      filePath: join(altDir, 'session3.jsonl'), sizeBytes: 40,
+    })
+
+    const result = await handleLinkSessions(db, { targetDir })
+    // One of the two session3.jsonl will be created, the other replaces it — no errors
+    expect(result.errors).toEqual([])
+    // The link should point to one of the two targets
+    const linkPath = join(targetDir, 'conversation_log', 'codex', 'session3.jsonl')
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true)
   })
 })

@@ -58,6 +58,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController(db: db, indexer: indexer)
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            menuBarController?.openWindow()
+        }
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         indexer.stop()
         mcpServer?.stop()

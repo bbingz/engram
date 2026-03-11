@@ -222,21 +222,90 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   private extractContent(content: unknown): string {
     if (typeof content === 'string') return content
     if (Array.isArray(content)) {
-      // Collect all text blocks (some models emit multiple)
-      const texts: string[] = []
+      const parts: string[] = []
       let thinkingFallback = ''
       for (const item of content) {
         const c = item as Record<string, unknown>
         if (c.type === 'text' && c.text) {
-          texts.push(c.text as string)
+          const text = (c.text as string).trim()
+          if (text && text !== 'Tool loaded.') parts.push(c.text as string)
         } else if (c.type === 'thinking' && c.thinking && !thinkingFallback) {
           thinkingFallback = c.thinking as string
+        } else if (c.type === 'tool_use') {
+          parts.push(this.formatToolUse(c))
+        } else if (c.type === 'tool_result') {
+          const formatted = this.formatToolResult(c)
+          if (formatted) parts.push(formatted)
         }
       }
-      if (texts.length > 0) return texts.join('\n')
-      // Fall back to thinking content if no text blocks exist
+      const nonEmpty = parts.filter(p => p)
+      if (nonEmpty.length > 0) return nonEmpty.join('\n\n')
       if (thinkingFallback) return thinkingFallback
     }
+    return ''
+  }
+
+  // Internal tools that add no conversational value
+  private static NOISE_TOOLS = new Set([
+    'ToolSearch', 'ExitPlanMode', 'EnterPlanMode', 'Skill',
+    'TodoWrite', 'TodoRead', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
+  ])
+
+  private formatToolUse(c: Record<string, unknown>): string {
+    const name = c.name as string
+    if (ClaudeCodeAdapter.NOISE_TOOLS.has(name)) return ''
+    const input = c.input as Record<string, unknown> | undefined
+    if (name === 'AskUserQuestion' && input?.questions) {
+      return this.formatAskUserQuestion(input.questions as Record<string, unknown>[])
+    }
+    // For other tools, show a brief summary
+    if (!input) return `\`${name}\``
+    const summary = typeof input === 'object' ? this.summarizeToolInput(name, input) : ''
+    return summary ? `\`${name}\`: ${summary}` : `\`${name}\``
+  }
+
+  private formatAskUserQuestion(questions: Record<string, unknown>[]): string {
+    return questions.map(q => {
+      const header = q.header ? `**${q.header}**\n` : ''
+      const question = q.question as string
+      const options = q.options as Record<string, unknown>[] | undefined
+      let text = `${header}${question}`
+      if (options?.length) {
+        text += '\n' + options.map((o, i) => {
+          const desc = o.description ? ` — ${o.description}` : ''
+          return `  ${i + 1}. ${o.label}${desc}`
+        }).join('\n')
+      }
+      return text
+    }).join('\n\n')
+  }
+
+  private formatToolResult(c: Record<string, unknown>): string {
+    const content = c.content
+    if (typeof content === 'string') {
+      if (content.startsWith('User has answered')) return content
+      return ''
+    }
+    if (Array.isArray(content)) {
+      // Skip tool_reference items ("Tool loaded" responses)
+      const texts = content
+        .filter((item: Record<string, unknown>) => item.type === 'text' && item.text)
+        .map((item: Record<string, unknown>) => item.text as string)
+      if (texts.length > 0) {
+        const joined = texts.join('\n')
+        if (joined.startsWith('User has answered')) return joined
+      }
+    }
+    return ''
+  }
+
+  private summarizeToolInput(name: string, input: Record<string, unknown>): string {
+    // Show meaningful context for common tools
+    if (name === 'Read' || name === 'Write' || name === 'Edit') return String(input.file_path ?? '')
+    if (name === 'Bash') return String(input.command ?? '').substring(0, 120)
+    if (name === 'Glob') return String(input.pattern ?? '')
+    if (name === 'Grep') return String(input.pattern ?? '')
+    if (name === 'Agent') return String(input.description ?? '')
     return ''
   }
 }

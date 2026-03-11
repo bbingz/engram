@@ -87,11 +87,12 @@ export async function handleGetContext(
     selectedSessions.push(session)
   }
 
+  const footer = `\n— ${selectedSessions.length} sessions, ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`
+  contextParts.push(footer)
+
   return {
-    cwd: params.cwd,
-    sessions: selectedSessions,
     contextText: contextParts.join(''),
     sessionCount: selectedSessions.length,
-    estimatedTokens: Math.ceil(totalChars / CHARS_PER_TOKEN),
+    sessionIds: selectedSessions.map(s => s.id),
   }
 }

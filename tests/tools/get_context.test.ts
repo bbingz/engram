@@ -26,24 +26,35 @@ describe('get_context', () => {
 
   it('returns context for matching project', async () => {
     const result = await handleGetContext(db, { cwd: '/Users/test/myapp' })
-    expect(result.sessions.length).toBeGreaterThan(0)
-    expect(result.sessions.every(s => s.project === 'myapp')).toBe(true)
+    expect(result.sessionCount).toBeGreaterThan(0)
+    expect(result.sessionIds).toContain('s1')
+    expect(result.sessionIds).toContain('s2')
+    expect(result.sessionIds).not.toContain('s3')
   })
 
-  it('does not include unrelated project', async () => {
+  it('does not include unrelated project in contextText', async () => {
     const result = await handleGetContext(db, { cwd: '/Users/test/myapp' })
-    expect(result.sessions.every(s => s.project !== 'other')).toBe(true)
+    expect(result.contextText).not.toContain('完全不相关的项目')
   })
 
   it('respects max_tokens budget', async () => {
     const result = await handleGetContext(db, { cwd: '/Users/test/myapp', max_tokens: 10 })
-    // 10 tokens = 40 chars 预算极小，contextText 应该很短
+    // 10 tokens = 40 chars — very small budget, contextText should be short
     expect(result.contextText.length).toBeLessThan(300)
   })
 
   it('contextText is non-empty when matching sessions exist', async () => {
     const result = await handleGetContext(db, { cwd: '/Users/test/myapp' })
     expect(result.contextText.length).toBeGreaterThan(0)
+    expect(result.contextText).toContain('修复了认证 bug')
+  })
+
+  it('returns only sessionIds, not full session objects', async () => {
+    const result = await handleGetContext(db, { cwd: '/Users/test/myapp' })
+    // Should not have full session objects — just ids
+    expect(result).not.toHaveProperty('sessions')
+    expect(result.sessionIds).toBeInstanceOf(Array)
+    expect(result.sessionIds.every((id: string) => typeof id === 'string')).toBe(true)
   })
 
   it('uses vector search when deps provided and task is given', async () => {
@@ -61,6 +72,6 @@ describe('get_context', () => {
     const mockEmbed = async () => new Float32Array(768).fill(0.1)
 
     const result = await handleGetContext(db, { cwd: '/Users/test/myapp', task: 'Fix auth issue' }, { vectorStore: mockVectorStore, embed: mockEmbed })
-    expect(result.sessions.some(s => s.id === 's4')).toBe(true)
+    expect(result.sessionIds).toContain('s4')
   })
 })

@@ -490,7 +490,7 @@ export function sessionListPage(sessions: SessionInfo[], opts: SessionListOpts):
 // ---------------------------------------------------------------------------
 
 export function sessionDetailPage(session: SessionInfo, messages: { role: string; content: string }[]): string {
-  const msgHtml = messages.map(m => {
+  const msgHtml = messages.filter(m => m.content.trim()).map(m => {
     const isUser = m.role === 'user'
     const category = isUser ? classifySystem(m.content) : 'none'
 
@@ -513,7 +513,7 @@ export function sessionDetailPage(session: SessionInfo, messages: { role: string
 
     const label = isUser ? 'You' : sourceLabel(session.source)
     const color = isUser ? 'var(--text-dim)' : sourceColor(session.source)
-    const rendered = isUser ? `<p>${escapeHtml(m.content)}</p>` : renderMarkdown(m.content)
+    const rendered = renderMarkdown(m.content)
     return `
     <div class="msg ${isUser ? 'user' : 'assistant'}">
       <div class="role" style="color:${color}">${escapeHtml(label)}</div>

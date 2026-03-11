@@ -109,7 +109,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (name === 'stats') {
       result = await handleStats(db, a)
     } else if (name === 'get_context') {
-      result = await handleGetContext(db, a as { cwd: string }, vectorDeps)
+      const ctx = await handleGetContext(db, a as { cwd: string }, vectorDeps)
+      return { content: [{ type: 'text', text: ctx.contextText }] }
     } else if (name === 'export') {
       const session = db.getSession(a.id as string)
       if (!session) return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true }
