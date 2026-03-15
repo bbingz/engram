@@ -20,9 +20,19 @@ enum GroupingMode: String, CaseIterable {
 
 @MainActor
 class DatabaseManager: ObservableObject {
-    private let dbPath: String
-    private var pool: DatabasePool?
+    nonisolated(unsafe) private let dbPath: String
+    nonisolated(unsafe) private var pool: DatabasePool?
     private var writerPool: DatabasePool?
+
+    /// File path to the SQLite database (nonisolated for background FileManager access)
+    nonisolated var path: String { dbPath }
+
+    // Thread-safe read accessor — GRDB DatabasePool.read is internally thread-safe.
+    // pool is set once in open() and never mutated again, so nonisolated access is safe.
+    nonisolated func readInBackground<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        guard let pool = pool else { throw DatabaseError.notOpen }
+        return try pool.read(block)
+    }
 
     init(path: String? = nil) {
         self.dbPath = path ?? FileManager.default.homeDirectoryForCurrentUser
