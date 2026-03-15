@@ -8,11 +8,22 @@ struct MarkdownText: View {
     let text: String
     let fontSize: Double
 
-    var body: some View {
-        if let attributed = try? AttributedString(
+    // Cache AttributedString results to avoid re-parsing markdown every render
+    private static let attrCache = NSCache<NSString, CachedAttributedString>()
+
+    private var attributed: AttributedString? {
+        let key = NSString(string: String(text.hashValue))
+        if let cached = Self.attrCache.object(forKey: key) { return cached.value }
+        let result = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
+        )
+        Self.attrCache.setObject(CachedAttributedString(value: result), forKey: key)
+        return result
+    }
+
+    var body: some View {
+        if let attributed {
             Text(attributed)
                 .font(.system(size: fontSize))
                 .textSelection(.enabled)
@@ -24,14 +35,40 @@ struct MarkdownText: View {
     }
 }
 
+private class CachedAttributedString {
+    let value: AttributedString?
+    init(value: AttributedString?) { self.value = value }
+}
+
+// MARK: - Segment Cache Entry (reference type for NSCache)
+
+private class SegmentCacheEntry {
+    let segments: [ContentSegment]
+    init(segments: [ContentSegment]) { self.segments = segments }
+}
+
 // MARK: - Segmented Message View
 
 struct SegmentedMessageView: View {
     let content: String
     @AppStorage("contentFontSize") var fontSize: Double = 14
 
+    // Cache parsed segments keyed by content hash — avoids re-parsing on every render
+    private static let segmentCache = NSCache<NSString, SegmentCacheEntry>()
+
+    private var segments: [ContentSegment] {
+        let key = NSString(string: String(content.hashValue))
+        if let cached = Self.segmentCache.object(forKey: key) {
+            return cached.segments
+        }
+        let parsed = ContentSegmentParser.parse(content)
+        let entry = SegmentCacheEntry(segments: parsed)
+        Self.segmentCache.object(forKey: key)  // check again (race)
+        Self.segmentCache.setObject(entry, forKey: key)
+        return parsed
+    }
+
     var body: some View {
-        let segments = ContentSegmentParser.parse(content)
         VStack(alignment: .leading, spacing: 6) {
             ForEach(segments) { segment in
                 switch segment {
