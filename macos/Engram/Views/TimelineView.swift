@@ -14,6 +14,23 @@ struct TimelineView: View {
     @State private var hasMore = true
     private let pageSize = 50
 
+    @State private var availableProjects: [String] = []
+
+    private static let dateParser: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale.current
+        return f
+    }()
+    private static let headerDisplayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .long
+        f.timeStyle = .none
+        f.locale = Locale.current
+        f.doesRelativeDateFormatting = true
+        return f
+    }()
+
     let allSources = ["claude-code", "codex", "copilot", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "minimax",
                       "lobsterai", "cline", "vscode", "antigravity", "windsurf"]
@@ -31,7 +48,7 @@ struct TimelineView: View {
                 MultiSelectPicker(
                     emptyLabel: "All projects",
                     icon: "folder",
-                    items: (try? db.listProjects()) ?? [],
+                    items: availableProjects,
                     selected: $selectedProjects
                 )
                 Spacer()
@@ -79,7 +96,15 @@ struct TimelineView: View {
                 .listStyle(.inset)
             }
         }
-        .task { await reload() }
+        .task {
+            let db = self.db
+            availableProjects = (try? await Task.detached {
+                try db.readInBackground { d in
+                    try String.fetchAll(d, sql: "SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL ORDER BY project")
+                }
+            }.value) ?? []
+            await reload()
+        }
         .task(id: selectedSources)  { await reload() }
         .task(id: selectedProjects) { await reload() }
         .task(id: agentFilter)      { await reload() }
@@ -129,15 +154,6 @@ struct TimelineView: View {
     }
 
     func groupSessionsByDate() {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.locale = Locale.current
-
-        let displayFormatter = DateFormatter()
-        displayFormatter.dateStyle = .medium
-        displayFormatter.timeStyle = .none
-        displayFormatter.locale = Locale.current
-
         var groups: [(date: String, sessions: [Session])] = []
         var currentGroup: [Session] = []
         var currentDate: String?
@@ -162,25 +178,14 @@ struct TimelineView: View {
     }
 
     func formatDateHeader(_ dateString: String) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.locale = Locale.current
-
-        let displayFormatter = DateFormatter()
-        displayFormatter.dateStyle = .long
-        displayFormatter.timeStyle = .none
-        displayFormatter.locale = Locale.current
-        displayFormatter.doesRelativeDateFormatting = true
-
-        if let date = formatter.date(from: dateString) {
-            // Check if today or yesterday
+        if let date = Self.dateParser.date(from: dateString) {
             let calendar = Calendar.current
             if calendar.isDateInToday(date) {
                 return String(localized: "Today")
             } else if calendar.isDateInYesterday(date) {
                 return String(localized: "Yesterday")
             }
-            return displayFormatter.string(from: date)
+            return Self.headerDisplayFormatter.string(from: date)
         }
         return dateString
     }
@@ -188,6 +193,20 @@ struct TimelineView: View {
 
 struct TimelineSessionRow: View {
     let session: Session
+
+    private static let isoParser: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+    private static let timeDisplay: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        f.dateStyle = .none
+        f.locale = Locale.current
+        return f
+    }()
 
     private var sourceColor: Color { SourceDisplay.color(for: session.source) }
 
@@ -217,17 +236,8 @@ struct TimelineSessionRow: View {
     }
 
     func timeString(from isoDate: String) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-
-        let displayFormatter = DateFormatter()
-        displayFormatter.timeStyle = .short
-        displayFormatter.dateStyle = .none
-        displayFormatter.locale = Locale.current
-
-        if let date = formatter.date(from: isoDate) {
-            return displayFormatter.string(from: date)
+        if let date = Self.isoParser.date(from: isoDate) {
+            return Self.timeDisplay.string(from: date)
         }
         return String(isoDate.prefix(16))
     }
