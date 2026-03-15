@@ -22,7 +22,7 @@ struct PopoverView: View {
         }
         .padding(16)
         .frame(width: 400)
-        .onAppear { loadData() }
+        .task { await loadData() }
     }
 
     // MARK: - Header
@@ -154,20 +154,39 @@ struct PopoverView: View {
 
     // MARK: - Data Loading
 
-    private func loadData() {
-        sourceCount = (try? db.countsBySource())?.count ?? 0
-        projectCount = (try? db.listProjects())?.count ?? 0
-        dbSize = db.dbSizeBytes()
-        let all = (try? db.listSessionsChronologically(subAgent: false, limit: 30)) ?? []
-        recentSessions = Array(all.filter { $0.messageCount > 0 }.prefix(15))
-        Task { await fetchEmbeddingStatus() }
+    private func loadData() async {
+        let db = self.db
+        let result: (Int, Int, [Session], Int64) = await Task.detached {
+            let counts = (try? db.readInBackground { d in
+                try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT source) FROM sessions WHERE hidden_at IS NULL")
+            }) ?? 0
+            let projectCount = (try? db.readInBackground { d in
+                try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT project) FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL")
+            }) ?? 0
+            let sessions = (try? db.readInBackground { d in
+                try Session.fetchAll(d, sql: """
+                    SELECT * FROM sessions
+                    WHERE hidden_at IS NULL AND agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'
+                    ORDER BY start_time DESC LIMIT 30
+                """)
+            }) ?? []
+            let size = Int64((try? FileManager.default.attributesOfItem(atPath: db.path)[.size] as? Int) ?? 0)
+            return (counts, projectCount, sessions, size)
+        }.value
+        sourceCount = result.0
+        projectCount = result.1
+        dbSize = result.3
+        recentSessions = Array(result.2.filter { $0.messageCount > 0 }.prefix(15))
+        await fetchEmbeddingStatus()
     }
 
     private func fetchEmbeddingStatus() async {
         let port = indexer.port ?? 3457
         guard let url = URL(string: "http://127.0.0.1:\(port)/api/search/status") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 5
+            let (data, _) = try await URLSession.shared.data(for: request)
             let status = try JSONDecoder().decode(EmbeddingStatusResponse.self, from: data)
             embeddingAvailable = status.available
             if status.available, let p = status.progress, p < 100 {
