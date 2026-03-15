@@ -431,6 +431,11 @@ struct GroupSection: View {
     @EnvironmentObject var db: DatabaseManager
     @State private var sessions: [Session] = []
     @State private var isLoading = false
+    @State private var groupFilterTask: Task<Void, Never>?
+
+    private var groupFilterFingerprint: String {
+        "\(sortField)-\(sortAsc)-\(selectedSources)-\(selectedProjects)-\(String(describing: agentFilter))-\(refreshTrigger)"
+    }
 
     var body: some View {
         DisclosureGroup(
@@ -482,33 +487,12 @@ struct GroupSection: View {
                 loadSessions()
             }
         }
-        .onChange(of: sortField) { _, _ in
-            if isExpanded {
-                loadSessions()
-            }
-        }
-        .onChange(of: sortAsc) { _, _ in
-            if isExpanded {
-                loadSessions()
-            }
-        }
-        .onChange(of: selectedSources) { _, _ in
-            if isExpanded {
-                loadSessions()
-            }
-        }
-        .onChange(of: selectedProjects) { _, _ in
-            if isExpanded {
-                loadSessions()
-            }
-        }
-        .onChange(of: agentFilter) { _, _ in
-            if isExpanded {
-                loadSessions()
-            }
-        }
-        .onChange(of: refreshTrigger) { _, _ in
-            if isExpanded {
+        .onChange(of: groupFilterFingerprint) { _, _ in
+            guard isExpanded else { return }
+            groupFilterTask?.cancel()
+            groupFilterTask = Task {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
                 loadSessions()
             }
         }
