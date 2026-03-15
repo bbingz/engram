@@ -58,14 +58,18 @@ struct SessionDetailView: View {
 
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
+    @State private var displayMessages: [ChatMessage] = []
 
-    var displayMessages: [ChatMessage] {
-        if showRaw { return messages }
-        return messages.filter { msg in
-            switch msg.systemCategory {
-            case .none:         return true
-            case .systemPrompt: return showSystemPrompts
-            case .agentComm:    return showAgentComm
+    private func updateDisplayMessages() {
+        if showRaw {
+            displayMessages = messages
+        } else {
+            displayMessages = messages.filter { msg in
+                switch msg.systemCategory {
+                case .none:         return true
+                case .systemPrompt: return showSystemPrompts
+                case .agentComm:    return showAgentComm
+                }
             }
         }
     }
@@ -143,13 +147,18 @@ struct SessionDetailView: View {
         .task(id: session.id) {
             isLoadingMessages = true
             messages = []
+            displayMessages = []
             let path = session.filePath
             let source = session.source
             messages = await Task.detached(priority: .userInitiated) {
                 MessageParser.parse(filePath: path, source: source)
             }.value
+            updateDisplayMessages()
             isLoadingMessages = false
         }
+        .onChange(of: showRaw) { _, _ in updateDisplayMessages() }
+        .onChange(of: showSystemPrompts) { _, _ in updateDisplayMessages() }
+        .onChange(of: showAgentComm) { _, _ in updateDisplayMessages() }
     }
 
     // MARK: - Header (pinned)
