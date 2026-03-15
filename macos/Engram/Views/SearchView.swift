@@ -32,16 +32,7 @@ struct SearchView: View {
     @State private var selectedMode: SearchMode = .hybrid
     @State private var embeddingStatus: EmbeddingStatus?
 
-    private var webPort: Int {
-        let configPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".engram/settings.json")
-        if let data = try? Data(contentsOf: configPath),
-           let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let port = settings["httpPort"] as? Int {
-            return port
-        }
-        return 3457
-    }
+    @State private var webPort: Int = 3457
 
     var body: some View {
         VStack(spacing: 0) {
@@ -172,6 +163,15 @@ struct SearchView: View {
             }
         }
         .onAppear { loadEmbeddingStatus() }
+        .task {
+            let configPath = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".engram/settings.json")
+            if let data = try? Data(contentsOf: configPath),
+               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let port = settings["httpPort"] as? Int {
+                webPort = port
+            }
+        }
     }
 
     // MARK: - Embedding status bar
@@ -214,7 +214,9 @@ struct SearchView: View {
         Task {
             guard let url = URL(string: "http://127.0.0.1:\(port)/api/search/status") else { return }
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 5
+                let (data, _) = try await URLSession.shared.data(for: request)
                 let resp = try JSONDecoder().decode(EmbeddingStatusResponse.self, from: data)
                 await MainActor.run {
                     embeddingStatus = EmbeddingStatus(
@@ -247,7 +249,9 @@ struct SearchView: View {
                   let url = URL(string: "http://127.0.0.1:\(port)/api/search?q=\(encoded)&mode=\(mode)&limit=20") else { return }
 
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 15
+                let (data, _) = try await URLSession.shared.data(for: request)
                 let response = try JSONDecoder().decode(SearchAPIResponse.self, from: data)
 
                 await MainActor.run {
@@ -285,11 +289,21 @@ struct SearchView: View {
                     }
                 }
             } catch {
-                // Fallback to local FTS
+                // Fallback to local FTS — run query off main thread
+                let db = self.db
+                let sessions: [Session] = (try? await Task.detached {
+                    try db.readInBackground { d in
+                        try Session.fetchAll(d, sql: """
+                            SELECT s.* FROM sessions_fts f
+                            JOIN sessions s ON s.id = f.session_id
+                            WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+                            LIMIT 20
+                        """, arguments: [q])
+                    }
+                }.value) ?? []
                 await MainActor.run {
                     searchModes = ["keyword (offline)"]
                     warning = nil
-                    let sessions = (try? db.search(query: q)) ?? []
                     results = sessions.map { s in
                         SearchResult(id: s.id, session: s, snippet: "", matchType: "keyword", score: 0)
                     }
