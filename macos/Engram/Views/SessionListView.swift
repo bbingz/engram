@@ -47,6 +47,7 @@ struct SessionListView: View {
     @State private var sidebarCollapsed = false
     @AppStorage("sidebarWidth") private var sidebarWidth: Double = 320
     @State private var dragBaseWidth: Double = 0
+    @State private var availableProjects: [String] = []
 
     let allSources = ["claude-code", "codex", "copilot", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "minimax",
@@ -67,6 +68,12 @@ struct SessionListView: View {
             detailPanel
         }
         .task {
+            let db = self.db
+            availableProjects = (try? await Task.detached {
+                try db.readInBackground { d in
+                    try String.fetchAll(d, sql: "SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL ORDER BY project")
+                }
+            }.value) ?? []
             await loadGroups()
             // Handle deep link set before this view appeared (e.g. from Timeline tab)
             if let session = deepLinkSession {
@@ -128,7 +135,7 @@ struct SessionListView: View {
                 MultiSelectPicker(
                     emptyLabel: "All projects",
                     icon: "folder",
-                    items: (try? db.listProjects()) ?? [],
+                    items: availableProjects,
                     selected: selectedProjectsBinding
                 )
                 Spacer()
