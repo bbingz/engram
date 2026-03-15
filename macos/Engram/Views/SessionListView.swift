@@ -48,6 +48,12 @@ struct SessionListView: View {
     @AppStorage("sidebarWidth") private var sidebarWidth: Double = 320
     @State private var dragBaseWidth: Double = 0
     @State private var availableProjects: [String] = []
+    @State private var filterTask: Task<Void, Never>?
+    @State private var lastGroupingMode: GroupingMode = .project
+
+    private var filterFingerprint: String {
+        "\(groupingMode)-\(selectedSourcesStr)-\(selectedProjectsStr)-\(agentFilterMode)-\(sortField)-\(sortAsc)-\(showingTrash)"
+    }
 
     let allSources = ["claude-code", "codex", "copilot", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "minimax",
@@ -74,36 +80,28 @@ struct SessionListView: View {
                     try String.fetchAll(d, sql: "SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL ORDER BY project")
                 }
             }.value) ?? []
+            lastGroupingMode = groupingMode
             await loadGroups()
             // Handle deep link set before this view appeared (e.g. from Timeline tab)
             if let session = deepLinkSession {
                 handleDeepLink(session)
             }
         }
-        .onChange(of: groupingMode) { _, _ in
-            expandedGroups = []
-            Task { await loadGroups() }
-        }
-        .onChange(of: selectedSourcesStr) { _, _ in
-            expandedGroups = []
-            Task { await loadGroups() }
-        }
-        .onChange(of: selectedProjectsStr) { _, _ in
-            expandedGroups = []
-            Task { await loadGroups() }
-        }
-        .onChange(of: agentFilterMode) { _, _ in
-            expandedGroups = []
-            Task { await loadGroups() }
-        }
-        .onChange(of: sortField) { _, _ in
-            Task { await loadGroups() }
-        }
-        .onChange(of: sortAsc) { _, _ in
-            Task { await loadGroups() }
-        }
-        .onChange(of: showingTrash) { _, _ in
-            Task { await loadGroups() }
+        .onChange(of: filterFingerprint) { _, _ in
+            filterTask?.cancel()
+            filterTask = Task {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                await loadGroups()
+                // Preserve expanded groups selectively
+                if groupingMode != lastGroupingMode {
+                    expandedGroups = []
+                    lastGroupingMode = groupingMode
+                } else {
+                    let validKeys = Set(groups.map(\.id))
+                    expandedGroups = expandedGroups.filter { validKeys.contains($0) }
+                }
+            }
         }
         .onChange(of: deepLinkSession) { _, session in
             handleDeepLink(session)
@@ -246,8 +244,10 @@ struct SessionListView: View {
             Spacer()
             if !showingTrash {
                 Button {
-                    if let n = try? db.hideEmptySessions(), n > 0 {
-                        Task { await loadGroups() }
+                    Task {
+                        if let n = try? db.hideEmptySessions(), n > 0 {
+                            await loadGroups()
+                        }
                     }
                 } label: {
                     Text("Clean Empty")
