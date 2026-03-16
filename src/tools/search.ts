@@ -2,10 +2,12 @@
 import { isNoiseSession, type Database, type SearchFilters } from '../core/db.js'
 import type { SessionInfo, SourceName } from '../adapters/types.js'
 import type { VectorStore } from '../core/vector-store.js'
+import { sessionIdFromVikingUri, type VikingBridge } from '../core/viking-bridge.js'
 
 export interface SearchDeps {
   vectorStore?: VectorStore
   embed?: (text: string) => Promise<Float32Array | null>
+  viking?: VikingBridge | null
 }
 
 export interface SearchResult {
@@ -98,16 +100,42 @@ export async function handleSearch(
     } catch { /* vector search unavailable */ }
   }
 
+  // --- Viking semantic + keyword search ---
+  const VIKING_RRF_BOOST = 0.002
+  const vikingScores = new Map<string, { score: number; snippet: string }>()
+
+  if (deps.viking && params.query.length >= 2) {
+    try {
+      const [findResults, grepResults] = await Promise.all([
+        deps.viking.find(params.query),
+        params.query.length >= 3 ? deps.viking.grep(params.query) : Promise.resolve([]),
+      ])
+      const allViking = [...findResults, ...grepResults]
+      if (findResults.length > 0) searchModes.push('viking-semantic')
+      if (grepResults.length > 0) searchModes.push('viking-keyword')
+      const seen = new Set<string>()
+      let rank = 1
+      for (const vr of allViking) {
+        const sessionId = sessionIdFromVikingUri(vr.uri)
+        if (!sessionId || seen.has(sessionId)) continue
+        seen.add(sessionId)
+        vikingScores.set(sessionId, { score: rrfScore(rank) + VIKING_RRF_BOOST, snippet: vr.snippet })
+        rank++
+      }
+    } catch { /* Viking search failed, continue with FTS */ }
+  }
+
   // --- RRF merge ---
-  const allSessionIds = new Set([...ftsScores.keys(), ...vecScores.keys()])
+  const allSessionIds = new Set([...ftsScores.keys(), ...vecScores.keys(), ...vikingScores.keys()])
   const merged: { sessionId: string; score: number; snippet: string; matchType: 'keyword' | 'semantic' | 'both' }[] = []
 
   for (const sessionId of allSessionIds) {
     const fts = ftsScores.get(sessionId)
     const vec = vecScores.get(sessionId)
-    const score = (fts?.score ?? 0) + (vec?.score ?? 0)
-    const matchType = fts && vec ? 'both' : fts ? 'keyword' : 'semantic'
-    merged.push({ sessionId, score, snippet: fts?.snippet ?? '', matchType })
+    const viking = vikingScores.get(sessionId)
+    const score = (fts?.score ?? 0) + (vec?.score ?? 0) + (viking?.score ?? 0)
+    const matchType = fts && vec ? 'both' : fts ? 'keyword' : viking ? 'semantic' : 'semantic'
+    merged.push({ sessionId, score, snippet: viking?.snippet ?? fts?.snippet ?? '', matchType })
   }
 
   merged.sort((a, b) => b.score - a.score)
