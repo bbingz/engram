@@ -1,4 +1,5 @@
 // src/core/viking-bridge.ts
+// HTTP client for OpenViking API — all paths match the real server routes.
 
 export interface VikingSearchResult {
   uri: string;
@@ -70,11 +71,12 @@ export class VikingBridge {
     return ok;
   }
 
-  async addResource(uri: string, content: string, metadata?: Record<string, string>): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/resources`, {
+  // POST /resources — add content to OpenViking for indexing
+  async addResource(path: string, content: string, metadata?: Record<string, string>): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/resources`, {
       method: 'POST',
       headers: this.headers,
-      body: JSON.stringify({ uri, content, metadata }),
+      body: JSON.stringify({ path, reason: content, instruction: JSON.stringify(metadata ?? {}) }),
       signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) {
@@ -82,90 +84,110 @@ export class VikingBridge {
     }
   }
 
-  private async searchEndpoint(endpoint: string, query: string, targetUri?: string): Promise<VikingSearchResult[]> {
+  // POST /find — semantic search
+  async find(query: string, targetUri?: string): Promise<VikingSearchResult[]> {
     try {
-      const params = new URLSearchParams({ q: query });
-      if (targetUri) params.set('target', targetUri);
-      const res = await fetch(`${this.baseUrl}${endpoint}?${params}`, {
-        method: 'GET',
+      const body: Record<string, unknown> = { query, limit: 20 };
+      if (targetUri) body.target_uri = targetUri;
+      const res = await fetch(`${this.baseUrl}/find`, {
+        method: 'POST',
         headers: this.headers,
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) return [];
       const data = await res.json();
-      return Array.isArray(data?.results) ? data.results : [];
+      // Normalize response — OpenViking returns {status, result: [...]}
+      const results = data?.result ?? data?.results ?? [];
+      return Array.isArray(results) ? results : [];
     } catch {
       return [];
     }
   }
 
-  async find(query: string, targetUri?: string): Promise<VikingSearchResult[]> {
-    return this.searchEndpoint('/api/find', query, targetUri);
-  }
-
+  // POST /grep — pattern search
   async grep(pattern: string, targetUri?: string): Promise<VikingSearchResult[]> {
-    return this.searchEndpoint('/api/grep', pattern, targetUri);
+    try {
+      const body: Record<string, unknown> = { pattern, uri: targetUri ?? 'viking://' };
+      const res = await fetch(`${this.baseUrl}/grep`, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const results = data?.result ?? data?.results ?? [];
+      return Array.isArray(results) ? results : [];
+    } catch {
+      return [];
+    }
   }
 
-  private async readLevel(uri: string, level: 'abstract' | 'overview' | 'read'): Promise<string> {
+  // GET /abstract?uri= — L0 (~100 tokens)
+  async abstract(uri: string): Promise<string> {
+    return this.getContent(`${this.baseUrl}/abstract?uri=${encodeURIComponent(uri)}`);
+  }
+
+  // GET /overview?uri= — L1 (~2K tokens)
+  async overview(uri: string): Promise<string> {
+    return this.getContent(`${this.baseUrl}/overview?uri=${encodeURIComponent(uri)}`);
+  }
+
+  // GET /read?uri= — L2 (full content)
+  async read(uri: string): Promise<string> {
+    return this.getContent(`${this.baseUrl}/read?uri=${encodeURIComponent(uri)}`);
+  }
+
+  private async getContent(url: string): Promise<string> {
     try {
-      const params = new URLSearchParams({ uri, level });
-      const res = await fetch(`${this.baseUrl}/api/read?${params}`, {
+      const res = await fetch(url, {
         method: 'GET',
         headers: this.headers,
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) return '';
       const data = await res.json();
-      return typeof data?.content === 'string' ? data.content : '';
+      // OpenViking returns {status, result: "content"} or {content: "..."}
+      const content = data?.result ?? data?.content ?? '';
+      return typeof content === 'string' ? content : '';
     } catch {
       return '';
     }
   }
 
-  async abstract(uri: string): Promise<string> { return this.readLevel(uri, 'abstract'); }
-  async overview(uri: string): Promise<string> { return this.readLevel(uri, 'overview'); }
-  async read(uri: string): Promise<string> { return this.readLevel(uri, 'read'); }
-
+  // GET /ls?uri= — list entries
   async ls(uri: string): Promise<VikingEntry[]> {
     try {
-      const params = new URLSearchParams({ uri });
-      const res = await fetch(`${this.baseUrl}/api/ls?${params}`, {
+      const res = await fetch(`${this.baseUrl}/ls?uri=${encodeURIComponent(uri)}`, {
         method: 'GET',
         headers: this.headers,
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) return [];
       const data = await res.json();
-      return Array.isArray(data?.entries) ? data.entries : [];
+      const entries = data?.result ?? data?.entries ?? [];
+      return Array.isArray(entries) ? entries : [];
     } catch {
       return [];
     }
   }
 
+  // Memory operations — these use the same find/grep but with memory-specific URIs
   async extractMemory(sessionContent: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/memory/extract`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ content: sessionContent }),
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!res.ok) {
-      throw new Error(`Viking extractMemory failed (${res.status})`);
-    }
+    // Push content as a resource, OpenViking auto-extracts memories
+    await this.addResource('viking://memory/extract', sessionContent);
   }
 
   async findMemories(query: string): Promise<VikingMemory[]> {
     try {
-      const params = new URLSearchParams({ q: query });
-      const res = await fetch(`${this.baseUrl}/api/memory/search?${params}`, {
-        method: 'GET',
-        headers: this.headers,
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return [];
-      const data = await res.json();
-      return Array.isArray(data?.memories) ? data.memories : [];
+      const results = await this.find(query, 'viking://memory/');
+      return results.map(r => ({
+        content: r.snippet,
+        source: r.uri,
+        confidence: r.score,
+        createdAt: r.metadata?.createdAt ?? '',
+      }));
     } catch {
       return [];
     }

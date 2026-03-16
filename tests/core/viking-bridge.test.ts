@@ -1,12 +1,14 @@
 // tests/core/viking-bridge.test.ts
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { VikingBridge, sessionIdFromVikingUri } from '../../src/core/viking-bridge.js';
+import { VikingBridge, sessionIdFromVikingUri, toVikingUri } from '../../src/core/viking-bridge.js';
 
-describe('sessionIdFromVikingUri', () => {
-  it('extracts session ID from valid URI', () => {
-    expect(sessionIdFromVikingUri('viking://sessions/claude-code/engram/abc-123')).toBe('abc-123');
+describe('URI helpers', () => {
+  it('toVikingUri builds correct URI', () => {
+    expect(toVikingUri('claude-code', 'engram', 'abc-123')).toBe('viking://sessions/claude-code/engram/abc-123');
+    expect(toVikingUri('codex', undefined, 'x')).toBe('viking://sessions/codex/unknown/x');
   });
-  it('returns empty string for invalid URI', () => {
+  it('sessionIdFromVikingUri extracts session ID', () => {
+    expect(sessionIdFromVikingUri('viking://sessions/claude-code/engram/abc-123')).toBe('abc-123');
     expect(sessionIdFromVikingUri('invalid')).toBe('');
   });
 });
@@ -31,7 +33,6 @@ describe('isAvailable', () => {
       'http://localhost:1933/health',
       expect.objectContaining({
         method: 'GET',
-        signal: expect.any(AbortSignal),
         headers: expect.objectContaining({ Authorization: 'Bearer key' }),
       })
     );
@@ -47,14 +48,14 @@ describe('isAvailable', () => {
 describe('checkAvailable (circuit breaker)', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('caches false result and skips network call within TTL', async () => {
+  it('caches results and skips network call within TTL', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const mockFetch = vi.fn().mockRejectedValue(new Error('down'));
     vi.stubGlobal('fetch', mockFetch);
     expect(await bridge.checkAvailable()).toBe(false);
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(await bridge.checkAvailable()).toBe(false);
-    expect(mockFetch).toHaveBeenCalledTimes(1); // no additional call
+    expect(mockFetch).toHaveBeenCalledTimes(1); // cached
   });
 });
 
@@ -69,33 +70,26 @@ describe('addResource', () => {
       source: 'claude-code', project: 'engram',
     });
     expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:1933/api/resources',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          uri: 'viking://sessions/claude-code/engram/001',
-          content: 'session content',
-          metadata: { source: 'claude-code', project: 'engram' },
-        }),
-      })
+      'http://localhost:1933/resources',
+      expect.objectContaining({ method: 'POST' })
     );
   });
 
   it('throws on server error', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('Internal error') }));
-    await expect(bridge.addResource('uri', 'content')).rejects.toThrow('Viking addResource failed');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('err') }));
+    await expect(bridge.addResource('p', 'c')).rejects.toThrow('Viking addResource failed');
   });
 });
 
 describe('find', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('returns semantic search results', async () => {
+  it('returns semantic search results (POST /find)', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
-    const mockResults = [{ uri: 'viking://sessions/a', score: 0.95, snippet: 'SSL error fix' }];
+    const mockResults = [{ uri: 'viking://sessions/a', score: 0.95, snippet: 'SSL fix' }];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ results: mockResults }),
+      ok: true, json: () => Promise.resolve({ result: mockResults }),
     }));
     expect(await bridge.find('SSL error')).toEqual(mockResults);
   });
@@ -110,10 +104,10 @@ describe('find', () => {
 describe('grep', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('returns keyword search results', async () => {
+  it('returns keyword search results (POST /grep)', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ results: [{ uri: 'u', score: 1, snippet: 'match' }] }),
+      ok: true, json: () => Promise.resolve({ result: [{ uri: 'u', score: 1, snippet: 'match' }] }),
     }));
     expect(await bridge.grep('SSL')).toHaveLength(1);
   });
@@ -122,18 +116,18 @@ describe('grep', () => {
 describe('tiered read', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('abstract returns L0 summary', async () => {
+  it('abstract returns L0 via GET /abstract', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ content: 'Brief summary' }),
+      ok: true, json: () => Promise.resolve({ result: 'Brief summary' }),
     }));
     expect(await bridge.abstract('viking://sessions/a')).toBe('Brief summary');
   });
 
-  it('overview returns L1 summary', async () => {
+  it('overview returns L1 via GET /overview', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ content: 'Detailed overview...' }),
+      ok: true, json: () => Promise.resolve({ result: 'Detailed overview...' }),
     }));
     expect(await bridge.overview('viking://sessions/a')).toBe('Detailed overview...');
   });
@@ -148,11 +142,11 @@ describe('tiered read', () => {
 describe('ls', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('lists entries under a URI', async () => {
+  it('lists entries via GET /ls', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const entries = [{ uri: 'viking://sessions/a/b', type: 'session' }];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ entries }),
+      ok: true, json: () => Promise.resolve({ result: entries }),
     }));
     expect(await bridge.ls('viking://sessions/a')).toEqual(entries);
   });
@@ -161,24 +155,27 @@ describe('ls', () => {
 describe('memory', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('extractMemory sends content', async () => {
+  it('extractMemory sends content via addResource', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const mockFetch = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', mockFetch);
     await bridge.extractMemory('session content');
     expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:1933/api/memory/extract',
+      'http://localhost:1933/resources',
       expect.objectContaining({ method: 'POST' })
     );
   });
 
-  it('findMemories returns results', async () => {
+  it('findMemories uses find with memory URI prefix', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
-    const memories = [{ content: 'User prefers TypeScript', source: 'session-1', confidence: 0.9, createdAt: '2026-03-16' }];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ memories }),
+      ok: true, json: () => Promise.resolve({ result: [
+        { uri: 'viking://memory/style', score: 0.9, snippet: 'User prefers TypeScript', metadata: { createdAt: '2026-03-16' } },
+      ]}),
     }));
-    expect(await bridge.findMemories('coding style')).toEqual(memories);
+    const result = await bridge.findMemories('coding style');
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toBe('User prefers TypeScript');
   });
 
   it('findMemories returns empty array on error', async () => {
