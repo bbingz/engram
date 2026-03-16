@@ -49,7 +49,7 @@ export class VikingBridge {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/health`, {
+      const res = await fetch(`${this.baseUrl}/health`, {
         method: 'GET',
         headers: this.headers,
         signal: AbortSignal.timeout(3000),

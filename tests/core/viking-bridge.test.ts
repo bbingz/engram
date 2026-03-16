@@ -28,7 +28,7 @@ describe('isAvailable', () => {
     const result = await bridge.isAvailable();
     expect(result).toBe(true);
     expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:1933/api/health',
+      'http://localhost:1933/health',
       expect.objectContaining({
         method: 'GET',
         signal: expect.any(AbortSignal),
