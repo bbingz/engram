@@ -318,6 +318,52 @@ export function createApp(db: Database, opts?: {
     }
   })
 
+  // --- Viking backfill: push existing sessions to OpenViking ---
+  app.post('/api/viking/backfill', async (c) => {
+    if (!opts?.viking || !opts?.adapters) {
+      return c.json({ error: 'Viking not configured or no adapters' }, 501)
+    }
+    const viking = opts.viking
+    const available = await viking.checkAvailable()
+    if (!available) {
+      return c.json({ error: 'Viking server unreachable' }, 503)
+    }
+
+    const limit = parseInt(c.req.query('limit') ?? '100', 10)
+    const offset = parseInt(c.req.query('offset') ?? '0', 10)
+    const source = c.req.query('source')
+    const sessions = db.listSessions({ source: source as any, limit, offset, agents: 'hide' })
+
+    let pushed = 0
+    let errors = 0
+    for (const session of sessions) {
+      try {
+        const adapter = opts.adapters.find(a => a.name === session.source)
+        if (!adapter) continue
+
+        const messages: { role: string; content: string }[] = []
+        for await (const msg of adapter.streamMessages(session.filePath)) {
+          if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
+            messages.push({ role: msg.role, content: msg.content })
+          }
+        }
+        if (messages.length === 0) continue
+
+        const content = messages.map(m => `[${m.role}] ${m.content}`).join('\n\n')
+        await viking.addResource(`engram-${session.source}-${session.id}`, content, {
+          source: session.source,
+          project: session.project ?? '',
+          startTime: session.startTime,
+        })
+        pushed++
+      } catch {
+        errors++
+      }
+    }
+
+    return c.json({ pushed, errors, total: sessions.length, offset, limit })
+  })
+
   // UUID lookup redirect
   app.get('/goto', (c) => {
     const id = (c.req.query('id') ?? '').trim()
