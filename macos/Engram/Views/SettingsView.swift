@@ -66,6 +66,13 @@ struct SettingsView: View {
     @State private var syncStatus: String = ""
     @State private var isSyncing: Bool = false
 
+    // Viking (OpenViking) settings
+    @State private var vikingEnabled: Bool = false
+    @State private var vikingURL: String = ""
+    @State private var vikingApiKey: String = ""
+    @State private var vikingStatus: String = ""
+    @State private var isCheckingViking: Bool = false
+
     // Add peer form
     @State private var showAddPeer: Bool = false
     @State private var newPeerName: String = ""
@@ -327,6 +334,51 @@ struct SettingsView: View {
                 }
             }
 
+            Section("OpenViking") {
+                Toggle("Enable", isOn: $vikingEnabled)
+                    .onChange(of: vikingEnabled) { saveVikingSettings() }
+
+                HStack {
+                    Text("Server URL")
+                    Spacer()
+                    TextField("http://localhost:1933", text: $vikingURL)
+                        .frame(width: 260)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: vikingURL) { saveVikingSettings() }
+                }
+
+                HStack {
+                    Text("API Key")
+                    Spacer()
+                    SecureField("Required", text: $vikingApiKey)
+                        .frame(width: 260)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: vikingApiKey) { saveVikingSettings() }
+                }
+
+                HStack {
+                    Button {
+                        checkVikingStatus()
+                    } label: {
+                        Text("Test Connection")
+                    }
+                    .disabled(isCheckingViking || !vikingEnabled || vikingURL.isEmpty)
+
+                    if !vikingStatus.isEmpty {
+                        Circle()
+                            .fill(vikingStatus == "Connected" ? Color.green : Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(verbatim: vikingStatus)
+                            .font(.caption)
+                            .foregroundStyle(vikingStatus == "Connected" ? .green : .red)
+                    }
+                }
+
+                Text("OpenViking enhances search with semantic understanding and tiered summaries")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
             Section("Sync") {
                 Toggle("Enable Sync", isOn: $syncEnabled)
                     .onChange(of: syncEnabled) { saveSyncSettings() }
@@ -454,6 +506,7 @@ struct SettingsView: View {
         .onAppear {
             loadAISettings()
             loadSyncSettings()
+            loadVikingSettings()
         }
     }
 
@@ -585,6 +638,57 @@ struct SettingsView: View {
         if let peers = settings["syncPeers"] as? [[String: String]] {
             syncPeers = peers
         }
+    }
+
+    private func saveVikingSettings() {
+        mutateSettings { settings in
+            var viking: [String: Any] = [:]
+            viking["enabled"] = vikingEnabled
+            if !vikingURL.isEmpty { viking["url"] = vikingURL }
+            if !vikingApiKey.isEmpty { viking["apiKey"] = vikingApiKey }
+            settings["viking"] = viking
+        }
+    }
+
+    private func loadVikingSettings() {
+        guard let settings = readSettings(),
+              let viking = settings["viking"] as? [String: Any] else { return }
+        if let enabled = viking["enabled"] as? Bool { vikingEnabled = enabled }
+        if let url = viking["url"] as? String { vikingURL = url }
+        if let key = viking["apiKey"] as? String { vikingApiKey = key }
+    }
+
+    private func checkVikingStatus() {
+        isCheckingViking = true
+        vikingStatus = ""
+
+        guard let url = URL(string: "\(vikingURL)/api/health") else {
+            vikingStatus = "Invalid URL"
+            isCheckingViking = false
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(vikingApiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 5
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            DispatchQueue.main.async {
+                isCheckingViking = false
+                if let error = error {
+                    vikingStatus = "Error: \(error.localizedDescription)"
+                } else if let httpResponse = response as? HTTPURLResponse,
+                          (200...299).contains(httpResponse.statusCode) {
+                    vikingStatus = "Connected"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                        if vikingStatus == "Connected" { vikingStatus = "" }
+                    }
+                } else {
+                    vikingStatus = "Unreachable"
+                }
+            }
+        }.resume()
     }
 
     private func triggerSync() {
