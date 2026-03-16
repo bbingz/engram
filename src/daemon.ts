@@ -12,16 +12,31 @@ import { readFileSettings, type FileSettings } from './core/config.js'
 import { SyncEngine } from './core/sync.js'
 import { AutoSummaryManager } from './core/auto-summary.js'
 import { summarizeConversation } from './core/ai-client.js'
+import { VikingBridge } from './core/viking-bridge.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
 const db = new Database(dbPath)
 const adapters = createAdapters()
-const indexer = new Indexer(db, adapters)
 const settings = readFileSettings()
+
+// Viking bridge — optional external context engine
+const vikingBridge = settings.viking?.enabled
+  ? new VikingBridge(settings.viking.url!, settings.viking.apiKey!)
+  : null
+
+const indexer = new Indexer(db, adapters, { viking: vikingBridge })
 
 function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')
+}
+
+if (vikingBridge) {
+  vikingBridge.isAvailable().then(available => {
+    emit({ event: 'viking_status', available })
+  }).catch(() => {
+    emit({ event: 'viking_status', available: false })
+  })
 }
 
 const vecDeps = initVectorDeps(db, {
@@ -180,6 +195,7 @@ const app = createApp(db, {
   syncPeers,
   settings,
   adapters,
+  viking: vikingBridge,
 })
 const { serve } = await import('@hono/node-server')
 const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {

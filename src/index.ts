@@ -25,15 +25,23 @@ import { getContextTool, handleGetContext } from './tools/get_context.js'
 import { exportTool, handleExport } from './tools/export.js'
 import { generateSummaryTool, handleGenerateSummary } from './tools/generate_summary.js'
 import { linkSessionsTool, handleLinkSessions } from './tools/link_sessions.js'
+import { getMemoryTool, handleGetMemory } from './tools/get_memory.js'
+import { VikingBridge } from './core/viking-bridge.js'
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
 const adapters = createAdapters()
 const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
-const indexer = new Indexer(db, adapters)
+
+// Settings + Viking bridge — must come before indexer so it can dual-write
+const fileSettings = readFileSettings()
+const vikingBridge = fileSettings.viking?.enabled
+  ? new VikingBridge(fileSettings.viking.url!, fileSettings.viking.apiKey!)
+  : null
+
+const indexer = new Indexer(db, adapters, { viking: vikingBridge })
 
 // Vector store — may fail if sqlite-vec can't load
-const fileSettings = readFileSettings()
 const vecDeps = initVectorDeps(db, {
   openaiApiKey: fileSettings.openaiApiKey,
   ollamaUrl: fileSettings.ollamaUrl,
@@ -70,6 +78,7 @@ const allTools = [
   generateSummaryTool,
   manageProjectAliasTool,
   linkSessionsTool,
+  getMemoryTool,
 ]
 
 const server = new Server(
@@ -100,16 +109,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!adapter) return { content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true }
       result = await handleGetSession(db, adapter, a as { id: string; page?: number; roles?: string[] })
     } else if (name === 'search') {
-      const sDeps: SearchDeps = vecDeps
-        ? { vectorStore: vecDeps.vectorStore, embed: (text) => vecDeps.embeddingClient.embed(text) }
-        : {}
+      const sDeps: SearchDeps = {
+        ...(vecDeps ? { vectorStore: vecDeps.vectorStore, embed: (text: string) => vecDeps.embeddingClient.embed(text) } : {}),
+        viking: vikingBridge,
+      }
       result = await handleSearch(db, a as { query: string; mode?: string }, sDeps)
     } else if (name === 'project_timeline') {
       result = await handleProjectTimeline(db, a as { project: string })
     } else if (name === 'stats') {
       result = await handleStats(db, a)
     } else if (name === 'get_context') {
-      const ctx = await handleGetContext(db, a as { cwd: string }, vectorDeps)
+      const ctxDeps: GetContextDeps = { ...vectorDeps, viking: vikingBridge }
+      const ctx = await handleGetContext(db, a as { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full' }, ctxDeps)
       return { content: [{ type: 'text', text: ctx.contextText }] }
     } else if (name === 'export') {
       const session = db.getSession(a.id as string)
@@ -136,6 +147,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     } else if (name === 'link_sessions') {
       result = await handleLinkSessions(db, a as { targetDir: string })
+    } else if (name === 'get_memory') {
+      result = await handleGetMemory(a as { query: string }, { viking: vikingBridge })
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }
