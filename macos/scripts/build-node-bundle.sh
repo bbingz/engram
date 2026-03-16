@@ -17,6 +17,9 @@ mkdir -p "$DEST"
 # Copy the full dist/ tree (daemon.js needs all its sibling modules)
 rsync -a --delete dist/ "$DEST/" 2>/dev/null || cp -r dist/* "$DEST/"
 
+# Ensure bundle has type:module to avoid Node.js MODULE_TYPELESS_PACKAGE_JSON warning
+echo '{"type":"module"}' > "$DEST/package.json"
+
 # Copy node_modules needed by daemon
 # Note: for large node_modules, consider using esbundle or pkg in the future
 if [ -d node_modules ]; then
