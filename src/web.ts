@@ -13,6 +13,7 @@ import type { VectorStore } from './core/vector-store.js'
 import type { EmbeddingClient } from './core/embeddings.js'
 import { SyncEngine, type SyncPeer } from './core/sync.js'
 import { handleLinkSessions } from './tools/link_sessions.js'
+import type { VikingBridge } from './core/viking-bridge.js'
 
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = []
@@ -56,6 +57,7 @@ export function createApp(db: Database, opts?: {
   syncPeers?: SyncPeer[]
   settings?: FileSettings
   adapters?: SessionAdapter[]
+  viking?: VikingBridge | null
 }) {
   const app = new Hono()
   const settings = opts?.settings ?? readFileSettings()
@@ -78,6 +80,20 @@ export function createApp(db: Database, opts?: {
       }
       await next()
     })
+  }
+
+  // Viking health: cache result with 60s TTL to avoid blocking /api/status
+  let vikingAvailableCache = false
+  let vikingCacheTime = 0
+  const VIKING_CACHE_TTL = 60_000
+
+  async function isVikingAvailable(): Promise<boolean> {
+    if (!opts?.viking) return false
+    const now = Date.now()
+    if (now - vikingCacheTime < VIKING_CACHE_TTL) return vikingAvailableCache
+    vikingAvailableCache = await opts.viking.isAvailable()
+    vikingCacheTime = now
+    return vikingAvailableCache
   }
 
   app.get('/api/sync/status', (c) => {
@@ -117,12 +133,13 @@ export function createApp(db: Database, opts?: {
   })
 
   // General status
-  app.get('/api/status', (c) => {
+  app.get('/api/status', async (c) => {
     const totalSessions = db.countSessions()
     const sources = db.listSources()
     const projects = db.listProjects()
     const embeddedCount = opts?.vectorStore?.count() ?? 0
     const embeddingAvailable = !!(opts?.vectorStore && opts?.embeddingClient)
+    const vikingAvailable = await isVikingAvailable()
     return c.json({
       totalSessions,
       sourceCount: sources.length,
@@ -131,6 +148,7 @@ export function createApp(db: Database, opts?: {
       projects,
       embeddingAvailable,
       embeddedCount,
+      vikingAvailable,
     })
   })
 
@@ -173,10 +191,13 @@ export function createApp(db: Database, opts?: {
     })
   })
 
-  // Hybrid search (FTS + semantic)
-  const searchDeps: SearchDeps = (opts?.vectorStore && opts?.embeddingClient)
-    ? { vectorStore: opts.vectorStore, embed: (text) => opts!.embeddingClient!.embed(text) }
-    : {}
+  // Hybrid search (FTS + semantic + Viking)
+  const searchDeps: SearchDeps = {
+    ...(opts?.vectorStore && opts?.embeddingClient
+      ? { vectorStore: opts.vectorStore, embed: (text: string) => opts!.embeddingClient!.embed(text) }
+      : {}),
+    viking: opts?.viking ?? null,
+  }
 
   app.get('/api/search', async (c) => {
     const q = c.req.query('q') ?? ''

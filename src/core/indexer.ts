@@ -1,14 +1,31 @@
 // src/core/indexer.ts
 import { stat } from 'fs/promises'
-import type { SessionAdapter } from '../adapters/types.js'
+import type { SessionAdapter, SessionInfo } from '../adapters/types.js'
 import type { Database } from './db.js'
 import { resolveProjectName } from './project.js'
+import type { VikingBridge } from './viking-bridge.js'
 
 export class Indexer {
   constructor(
     private db: Database,
-    private adapters: SessionAdapter[]
+    private adapters: SessionAdapter[],
+    private opts?: { viking?: VikingBridge | null }
   ) {}
+
+  private pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): void {
+    if (!this.opts?.viking) return
+    this.opts.viking.checkAvailable().then(ok => {
+      if (!ok) return
+      const uri = `viking://sessions/${info.source}/${info.project ?? 'unknown'}/${info.id}`
+      const content = messages.map(m => `[${m.role}] ${m.content}`).join('\n\n')
+      this.opts!.viking!.addResource(uri, content, {
+        source: info.source,
+        project: info.project ?? '',
+        startTime: info.startTime,
+        model: info.model ?? '',
+      }).catch(() => {})
+    }).catch(() => {})
+  }
 
   // 全量扫描所有适配器，返回新增索引数量
   // sources: optional set of source names to scan (defaults to all)
@@ -55,6 +72,8 @@ export class Indexer {
           if (messages.length > 0) {
             this.db.indexSessionContent(info.id, messages, info.summary)
           }
+
+          this.pushToViking(info, messages)
 
           newCount++
         } catch {
@@ -117,6 +136,8 @@ export class Indexer {
       if (messages.length > 0) {
         this.db.indexSessionContent(info.id, messages, info.summary)
       }
+
+      this.pushToViking(info, messages)
 
       return { indexed: true, sessionId: info.id, messageCount: info.messageCount ?? messages.length }
     } catch {
