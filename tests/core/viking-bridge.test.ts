@@ -87,11 +87,16 @@ describe('find', () => {
 
   it('returns semantic search results (POST /find)', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
-    const mockResults = [{ uri: 'viking://session/a', score: 0.95, snippet: 'SSL fix' }];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ result: mockResults }),
+      ok: true, json: () => Promise.resolve({ result: {
+        resources: [{ uri: 'viking://session/a', score: 0.95, abstract: 'SSL fix' }],
+        memories: [],
+      }}),
     }));
-    expect(await bridge.find('SSL error')).toEqual(mockResults);
+    const results = await bridge.find('SSL error');
+    expect(results).toHaveLength(1);
+    expect(results[0].uri).toBe('viking://session/a');
+    expect(results[0].score).toBe(0.95);
   });
 
   it('returns empty array on error', async () => {
@@ -169,9 +174,10 @@ describe('memory', () => {
   it('findMemories uses find with memory URI prefix', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ result: [
-        { uri: 'viking://memory/style', score: 0.9, snippet: 'User prefers TypeScript', metadata: { createdAt: '2026-03-16' } },
-      ]}),
+      ok: true, json: () => Promise.resolve({ result: {
+        memories: [{ uri: 'viking://memory/style', score: 0.9, abstract: 'User prefers TypeScript', metadata: { createdAt: '2026-03-16' } }],
+        resources: [],
+      }}),
     }));
     const result = await bridge.findMemories('coding style');
     expect(result).toHaveLength(1);

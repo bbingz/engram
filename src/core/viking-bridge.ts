@@ -121,9 +121,14 @@ export class VikingBridge {
       });
       if (!res.ok) return [];
       const data = await res.json();
-      // Normalize response — OpenViking returns {status, result: [...]}
-      const results = data?.result ?? data?.results ?? [];
-      return Array.isArray(results) ? results : [];
+      // OpenViking returns {status, result: { memories: [...], resources: [...] }}
+      const r = data?.result ?? {};
+      const items = [
+        ...(Array.isArray(r) ? r : []),
+        ...(Array.isArray(r.resources) ? r.resources : []),
+        ...(Array.isArray(r.memories) ? r.memories : []),
+      ];
+      return items.map(i => ({ uri: i.uri ?? '', score: i.score ?? 0, snippet: i.abstract ?? '', metadata: i.metadata }));
     } catch {
       return [];
     }
