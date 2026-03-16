@@ -1,0 +1,166 @@
+<h2>Light / Dark Mode 自适应</h2>
+<p class="subtitle">SwiftUI 语义色自动跟随系统主题</p>
+
+<div class="split">
+
+  <div class="mockup">
+    <div class="mockup-header">Light Mode</div>
+    <div class="mockup-body" style="padding:0;">
+      <div style="background:#f5f5f7;color:#1d1d1f;font-family:system-ui;padding:16px;font-size:12px;width:100%;box-sizing:border-box;">
+        <!-- Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <span style="font-weight:600;font-size:14px;color:#1d1d1f;">Engram</span>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <span style="color:#34c759;font-size:9px;">● Web :3457</span>
+            <span style="color:#34c759;font-size:9px;">● MCP</span>
+            <span style="cursor:pointer;font-size:13px;">⚙️</span>
+          </div>
+        </div>
+        <!-- Stats -->
+        <div style="background:#e8e8ed;border-radius:6px;padding:10px;margin-bottom:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:10px;">
+            <div style="display:flex;justify-content:space-between;color:#86868b;">
+              <span>Sessions</span><span style="color:#1d1d1f;">1,247</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#86868b;">
+              <span>Sources</span><span style="color:#1d1d1f;">6</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#86868b;">
+              <span>Projects</span><span style="color:#1d1d1f;">23</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#86868b;">
+              <span>DB Size</span><span style="color:#1d1d1f;">42.3 MB</span>
+            </div>
+          </div>
+        </div>
+        <!-- Timeline -->
+        <div style="font-size:10px;color:#86868b;margin-bottom:4px;font-weight:600;">TODAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#34c759;flex-shrink:0;"></div>
+            <span style="color:#34c759;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#1d1d1f;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">修复认证 bug，重构 AuthManager</span>
+            <span style="color:#86868b;font-size:9px;flex-shrink:0;margin-left:6px;">2m</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#ff9500;flex-shrink:0;"></div>
+            <span style="color:#ff9500;font-size:9px;width:58px;flex-shrink:0;">codex</span>
+            <span style="color:#1d1d1f;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">添加注册功能，邮箱验证</span>
+            <span style="color:#86868b;font-size:9px;flex-shrink:0;margin-left:6px;">1h</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#007aff;flex-shrink:0;"></div>
+            <span style="color:#007aff;font-size:9px;width:58px;flex-shrink:0;">gemini</span>
+            <span style="color:#1d1d1f;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">重构数据库层，GRDB 迁移</span>
+            <span style="color:#86868b;font-size:9px;flex-shrink:0;margin-left:6px;">3h</span>
+          </div>
+        </div>
+        <div style="font-size:10px;color:#86868b;margin-bottom:4px;margin-top:8px;font-weight:600;">YESTERDAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#34c759;flex-shrink:0;"></div>
+            <span style="color:#34c759;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#1d1d1f;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">实现 link_sessions 工具</span>
+            <span style="color:#86868b;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#af52de;flex-shrink:0;"></div>
+            <span style="color:#af52de;font-size:9px;width:58px;flex-shrink:0;">cursor</span>
+            <span style="color:#1d1d1f;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">单元测试覆盖率提升</span>
+            <span style="color:#86868b;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+        </div>
+        <div style="margin-top:12px;text-align:center;">
+          <span style="color:#007aff;font-size:10px;cursor:pointer;">Open Window →</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">Dark Mode</div>
+    <div class="mockup-body" style="padding:0;">
+      <div style="background:#1c1c1e;color:#e0e0e0;font-family:system-ui;padding:16px;font-size:12px;width:100%;box-sizing:border-box;">
+        <!-- Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <span style="font-weight:600;font-size:14px;color:#f5f5f7;">Engram</span>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <span style="color:#30d158;font-size:9px;">● Web :3457</span>
+            <span style="color:#30d158;font-size:9px;">● MCP</span>
+            <span style="cursor:pointer;font-size:13px;">⚙️</span>
+          </div>
+        </div>
+        <!-- Stats -->
+        <div style="background:#2c2c2e;border-radius:6px;padding:10px;margin-bottom:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:10px;">
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Sessions</span><span style="color:#f5f5f7;">1,247</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Sources</span><span style="color:#f5f5f7;">6</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Projects</span><span style="color:#f5f5f7;">23</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>DB Size</span><span style="color:#f5f5f7;">42.3 MB</span>
+            </div>
+          </div>
+        </div>
+        <!-- Timeline -->
+        <div style="font-size:10px;color:#8e8e93;margin-bottom:4px;font-weight:600;">TODAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#30d158;flex-shrink:0;"></div>
+            <span style="color:#30d158;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">修复认证 bug，重构 AuthManager</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">2m</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#ff9f0a;flex-shrink:0;"></div>
+            <span style="color:#ff9f0a;font-size:9px;width:58px;flex-shrink:0;">codex</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">添加注册功能，邮箱验证</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">1h</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#0a84ff;flex-shrink:0;"></div>
+            <span style="color:#0a84ff;font-size:9px;width:58px;flex-shrink:0;">gemini</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">重构数据库层，GRDB 迁移</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">3h</span>
+          </div>
+        </div>
+        <div style="font-size:10px;color:#8e8e93;margin-bottom:4px;margin-top:8px;font-weight:600;">YESTERDAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#30d158;flex-shrink:0;"></div>
+            <span style="color:#30d158;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">实现 link_sessions 工具</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#bf5af2;flex-shrink:0;"></div>
+            <span style="color:#bf5af2;font-size:9px;width:58px;flex-shrink:0;">cursor</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">单元测试覆盖率提升</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+        </div>
+        <div style="margin-top:12px;text-align:center;">
+          <span style="color:#0a84ff;font-size:10px;cursor:pointer;">Open Window →</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>SwiftUI 实现方式</h3>
+  <p>用语义色自动适配，无需手写 if/else：</p>
+  <div style="background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-family:monospace;font-size:11px;line-height:1.5;">
+    <span style="color:#569cd6;">Color</span>(.systemBackground) &nbsp;&nbsp;<span style="color:#6a9955;">// 白 ↔ #1c1c1e</span><br>
+    <span style="color:#569cd6;">Color</span>(.secondarySystemBackground) &nbsp;&nbsp;<span style="color:#6a9955;">// #e8e8ed ↔ #2c2c2e</span><br>
+    <span style="color:#569cd6;">Color</span>.primary &nbsp;&nbsp;<span style="color:#6a9955;">// 黑 ↔ 白</span><br>
+    <span style="color:#569cd6;">Color</span>.secondary &nbsp;&nbsp;<span style="color:#6a9955;">// #86868b ↔ #8e8e93</span><br>
+    <span style="color:#569cd6;">Color</span>.green / .orange / .blue &nbsp;&nbsp;<span style="color:#6a9955;">// 系统会自动调亮度</span>
+  </div>
+</div>

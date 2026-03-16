@@ -82,20 +82,6 @@ export function createApp(db: Database, opts?: {
     })
   }
 
-  // Viking health: cache result with 60s TTL to avoid blocking /api/status
-  let vikingAvailableCache = false
-  let vikingCacheTime = 0
-  const VIKING_CACHE_TTL = 60_000
-
-  async function isVikingAvailable(): Promise<boolean> {
-    if (!opts?.viking) return false
-    const now = Date.now()
-    if (now - vikingCacheTime < VIKING_CACHE_TTL) return vikingAvailableCache
-    vikingAvailableCache = await opts.viking.isAvailable()
-    vikingCacheTime = now
-    return vikingAvailableCache
-  }
-
   app.get('/api/sync/status', (c) => {
     return c.json({
       nodeName: settings.syncNodeName ?? 'unnamed',
@@ -139,7 +125,7 @@ export function createApp(db: Database, opts?: {
     const projects = db.listProjects()
     const embeddedCount = opts?.vectorStore?.count() ?? 0
     const embeddingAvailable = !!(opts?.vectorStore && opts?.embeddingClient)
-    const vikingAvailable = await isVikingAvailable()
+    const vikingAvailable = opts?.viking ? await opts.viking.checkAvailable() : false
     return c.json({
       totalSessions,
       sourceCount: sources.length,

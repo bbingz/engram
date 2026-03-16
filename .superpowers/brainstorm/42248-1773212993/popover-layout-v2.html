@@ -1,0 +1,141 @@
+<h2>方案 B 优化 — Sources 显示方式</h2>
+<p class="subtitle">Sources 行太长了，几种缩短方案</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;color:#e0e0e0;font-family:system-ui;padding:16px;border-radius:8px;font-size:12px;">
+        <!-- Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <span style="font-weight:600;font-size:14px;">Engram</span>
+          <span style="cursor:pointer;">⚙️</span>
+        </div>
+        <!-- Status cards -->
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <div style="flex:1;background:#252545;border-radius:6px;padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:9px;color:#888;">Web Server</span>
+              <span style="color:#4ade80;font-size:9px;">● Running</span>
+            </div>
+            <div style="font-size:10px;color:#aaa;margin-top:4px;">:3457</div>
+          </div>
+          <div style="flex:1;background:#252545;border-radius:6px;padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:9px;color:#888;">MCP Server</span>
+              <span style="color:#4ade80;font-size:9px;">● Active</span>
+            </div>
+            <div style="font-size:10px;color:#aaa;margin-top:4px;">engram</div>
+          </div>
+        </div>
+        <!-- Stats — sources as colored dots -->
+        <div style="background:#252545;border-radius:6px;padding:10px;margin-bottom:14px;">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:6px;">
+            <span>Sessions</span><span style="color:#ccc;">1,247</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#888;margin-bottom:6px;">
+            <span>Sources</span>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <span style="width:6px;height:6px;border-radius:50%;background:#4ade80;display:inline-block;" title="claude-code"></span>
+              <span style="width:6px;height:6px;border-radius:50%;background:#f59e0b;display:inline-block;" title="codex"></span>
+              <span style="width:6px;height:6px;border-radius:50%;background:#60a5fa;display:inline-block;" title="gemini"></span>
+              <span style="width:6px;height:6px;border-radius:50%;background:#f472b6;display:inline-block;" title="copilot"></span>
+              <span style="width:6px;height:6px;border-radius:50%;background:#a78bfa;display:inline-block;" title="cursor"></span>
+              <span style="width:6px;height:6px;border-radius:50%;background:#fb923c;display:inline-block;" title="iflow"></span>
+              <span style="color:#ccc;margin-left:2px;">6</span>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:6px;">
+            <span>Projects</span><span style="color:#ccc;">23</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;">
+            <span>DB Size</span><span style="color:#ccc;">42.3 MB</span>
+          </div>
+        </div>
+        <!-- Timeline preview -->
+        <div style="font-size:10px;color:#888;margin-bottom:4px;font-weight:600;">TODAY</div>
+        <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+          <div style="width:3px;height:3px;border-radius:50%;background:#4ade80;"></div>
+          <span style="color:#4ade80;font-size:9px;width:55px;">claude-code</span>
+          <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">修复认证 bug</span>
+          <span style="color:#666;font-size:9px;">2m</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+          <div style="width:3px;height:3px;border-radius:50%;background:#f59e0b;"></div>
+          <span style="color:#f59e0b;font-size:9px;width:55px;">codex</span>
+          <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">添加注册功能</span>
+          <span style="color:#666;font-size:9px;">1h</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A: 彩色圆点 + 数量</h3>
+      <p>6 个 source 用颜色点表示（与 timeline 中的颜色一致），hover 显示名称，旁边写数量。最紧凑。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;color:#e0e0e0;font-family:system-ui;padding:16px;border-radius:8px;font-size:12px;">
+        <!-- Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <span style="font-weight:600;font-size:14px;">Engram</span>
+          <span style="cursor:pointer;">⚙️</span>
+        </div>
+        <!-- Status cards -->
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <div style="flex:1;background:#252545;border-radius:6px;padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:9px;color:#888;">Web Server</span>
+              <span style="color:#4ade80;font-size:9px;">● Running</span>
+            </div>
+            <div style="font-size:10px;color:#aaa;margin-top:4px;">:3457</div>
+          </div>
+          <div style="flex:1;background:#252545;border-radius:6px;padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:9px;color:#888;">MCP Server</span>
+              <span style="color:#4ade80;font-size:9px;">● Active</span>
+            </div>
+            <div style="font-size:10px;color:#aaa;margin-top:4px;">engram</div>
+          </div>
+        </div>
+        <!-- Stats — sources as count only -->
+        <div style="background:#252545;border-radius:6px;padding:10px;margin-bottom:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:10px;">
+            <div style="display:flex;justify-content:space-between;color:#888;">
+              <span>Sessions</span><span style="color:#ccc;">1,247</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#888;">
+              <span>Sources</span><span style="color:#ccc;">6</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#888;">
+              <span>Projects</span><span style="color:#ccc;">23</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#888;">
+              <span>DB Size</span><span style="color:#ccc;">42.3 MB</span>
+            </div>
+          </div>
+        </div>
+        <!-- Timeline preview -->
+        <div style="font-size:10px;color:#888;margin-bottom:4px;font-weight:600;">TODAY</div>
+        <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+          <div style="width:3px;height:3px;border-radius:50%;background:#4ade80;"></div>
+          <span style="color:#4ade80;font-size:9px;width:55px;">claude-code</span>
+          <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">修复认证 bug</span>
+          <span style="color:#666;font-size:9px;">2m</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+          <div style="width:3px;height:3px;border-radius:50%;background:#f59e0b;"></div>
+          <span style="color:#f59e0b;font-size:9px;width:55px;">codex</span>
+          <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">添加注册功能</span>
+          <span style="color:#666;font-size:9px;">1h</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B: 纯数量 + 2x2 网格</h3>
+      <p>Sources 只显示数量，四个统计用 2x2 网格排列，更紧凑。Source 颜色已经在 timeline 里体现了。</p>
+    </div>
+  </div>
+
+</div>

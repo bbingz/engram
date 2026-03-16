@@ -1,7 +1,7 @@
 import { basename } from 'path'
 import type { Database } from '../core/db.js'
 import type { VectorStore } from '../core/vector-store.js'
-import { sessionIdFromVikingUri, type VikingBridge } from '../core/viking-bridge.js'
+import { sessionIdFromVikingUri, toVikingUri, type VikingBridge } from '../core/viking-bridge.js'
 import { toLocalDate } from '../utils/time.js'
 
 export const getContextTool = {
@@ -90,7 +90,7 @@ export async function handleGetContext(
     }
 
     // Pre-fetch all in parallel, then apply token budget
-    const uris = targetSessions.map(s => `viking://sessions/${s.source}/${s.project ?? 'unknown'}/${s.id}`)
+    const uris = targetSessions.map(s => toVikingUri(s.source, s.project, s.id))
     const fetched = await Promise.allSettled(uris.map(u => readFn(u)))
 
     const parts: string[] = []

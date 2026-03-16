@@ -20,6 +20,11 @@ export interface VikingMemory {
   createdAt: string;
 }
 
+/** Build a viking URI from session components */
+export function toVikingUri(source: string, project: string | undefined, id: string): string {
+  return `viking://sessions/${source}/${project ?? 'unknown'}/${id}`;
+}
+
 /** Extract session ID from viking URI: viking://sessions/{source}/{project}/{session_id} */
 export function sessionIdFromVikingUri(uri: string): string {
   const match = uri.match(/viking:\/\/sessions\/[^/]+\/[^/]+\/(.+)$/);
@@ -55,10 +60,10 @@ export class VikingBridge {
     }
   }
 
-  /** Cached health check — returns false without network call if circuit is open and TTL not expired */
+  /** Cached health check — caches both positive and negative results for CIRCUIT_BREAKER_TTL */
   async checkAvailable(): Promise<boolean> {
     const now = Date.now();
-    if (this.circuitOpen && now - this.lastHealthCheck < CIRCUIT_BREAKER_TTL) return false;
+    if (now - this.lastHealthCheck < CIRCUIT_BREAKER_TTL) return !this.circuitOpen;
     const ok = await this.isAvailable();
     this.circuitOpen = !ok;
     this.lastHealthCheck = now;

@@ -1,0 +1,176 @@
+<h2>Menu Bar Popover 布局方案</h2>
+<p class="subtitle">从完整 app 瘦身为轻量 dashboard，保留关键信息</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;color:#e0e0e0;font-family:system-ui;padding:16px;border-radius:8px;font-size:12px;min-height:320px;">
+        <!-- Status bar -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <span style="font-weight:600;font-size:14px;">Engram</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span style="color:#4ade80;font-size:10px;">● Web</span>
+            <span style="color:#4ade80;font-size:10px;">● MCP</span>
+            <span style="cursor:pointer;">⚙️</span>
+          </div>
+        </div>
+        <!-- Stats row -->
+        <div style="display:flex;gap:12px;margin-bottom:14px;">
+          <div style="flex:1;background:#252545;border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:20px;font-weight:700;color:#818cf8;">1,247</div>
+            <div style="font-size:9px;color:#888;">Sessions</div>
+          </div>
+          <div style="flex:1;background:#252545;border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:20px;font-weight:700;color:#818cf8;">6</div>
+            <div style="font-size:9px;color:#888;">Sources</div>
+          </div>
+          <div style="flex:1;background:#252545;border-radius:6px;padding:8px;text-align:center;">
+            <div style="font-size:20px;font-weight:700;color:#818cf8;">23</div>
+            <div style="font-size:9px;color:#888;">Projects</div>
+          </div>
+        </div>
+        <!-- Recent timeline -->
+        <div style="font-size:10px;color:#888;margin-bottom:6px;font-weight:600;">RECENT SESSIONS</div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="background:#252545;border-radius:4px;padding:6px 8px;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <span style="color:#4ade80;font-size:9px;margin-right:4px;">claude-code</span>
+              <span style="color:#ccc;">修复认证 bug</span>
+            </div>
+            <span style="color:#666;font-size:9px;">2min ago</span>
+          </div>
+          <div style="background:#252545;border-radius:4px;padding:6px 8px;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <span style="color:#f59e0b;font-size:9px;margin-right:4px;">codex</span>
+              <span style="color:#ccc;">添加注册功能</span>
+            </div>
+            <span style="color:#666;font-size:9px;">1h ago</span>
+          </div>
+          <div style="background:#252545;border-radius:4px;padding:6px 8px;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <span style="color:#60a5fa;font-size:9px;margin-right:4px;">gemini</span>
+              <span style="color:#ccc;">重构数据库层</span>
+            </div>
+            <span style="color:#666;font-size:9px;">3h ago</span>
+          </div>
+          <div style="background:#252545;border-radius:4px;padding:6px 8px;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <span style="color:#4ade80;font-size:9px;margin-right:4px;">claude-code</span>
+              <span style="color:#ccc;">优化菜单栏 UI</span>
+            </div>
+            <span style="color:#666;font-size:9px;">5h ago</span>
+          </div>
+          <div style="background:#252545;border-radius:4px;padding:6px 8px;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <span style="color:#f59e0b;font-size:9px;margin-right:4px;">codex</span>
+              <span style="color:#ccc;">API 端点测试</span>
+            </div>
+            <span style="color:#666;font-size:9px;">8h ago</span>
+          </div>
+        </div>
+        <!-- Footer -->
+        <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="color:#666;font-size:9px;">Today: 12 sessions · 3 projects</span>
+          <span style="color:#818cf8;font-size:10px;cursor:pointer;">Open Window →</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A: 紧凑 Dashboard</h3>
+      <p>状态栏 + 统计卡片 + 最近会话列表。~360px 高，信息密度高，一目了然。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;color:#e0e0e0;font-family:system-ui;padding:16px;border-radius:8px;font-size:12px;min-height:320px;">
+        <!-- Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <span style="font-weight:600;font-size:14px;">Engram</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span style="cursor:pointer;">⚙️</span>
+          </div>
+        </div>
+        <!-- Status cards -->
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <div style="flex:1;background:#252545;border-radius:6px;padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:9px;color:#888;">Web Server</span>
+              <span style="color:#4ade80;font-size:9px;">● Running</span>
+            </div>
+            <div style="font-size:10px;color:#aaa;margin-top:4px;">:3457</div>
+          </div>
+          <div style="flex:1;background:#252545;border-radius:6px;padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:9px;color:#888;">MCP Server</span>
+              <span style="color:#4ade80;font-size:9px;">● Active</span>
+            </div>
+            <div style="font-size:10px;color:#aaa;margin-top:4px;">engram</div>
+          </div>
+        </div>
+        <!-- Stats -->
+        <div style="background:#252545;border-radius:6px;padding:10px;margin-bottom:14px;">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:6px;">
+            <span>Sessions</span><span style="color:#ccc;">1,247</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:6px;">
+            <span>Sources</span><span style="color:#ccc;">claude-code · codex · gemini · copilot · cursor · iflow</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:6px;">
+            <span>Projects</span><span style="color:#ccc;">23</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;">
+            <span>DB Size</span><span style="color:#ccc;">42.3 MB</span>
+          </div>
+        </div>
+        <!-- Timeline -->
+        <div style="font-size:10px;color:#888;margin-bottom:6px;font-weight:600;">TODAY</div>
+        <div style="display:flex;flex-direction:column;gap:3px;margin-bottom:10px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#4ade80;"></div>
+            <span style="color:#4ade80;font-size:9px;width:60px;">claude-code</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">修复认证 bug</span>
+            <span style="color:#666;font-size:9px;">2m</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#f59e0b;"></div>
+            <span style="color:#f59e0b;font-size:9px;width:60px;">codex</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">添加注册功能</span>
+            <span style="color:#666;font-size:9px;">1h</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#60a5fa;"></div>
+            <span style="color:#60a5fa;font-size:9px;width:60px;">gemini</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">重构数据库层</span>
+            <span style="color:#666;font-size:9px;">3h</span>
+          </div>
+        </div>
+        <div style="font-size:10px;color:#888;margin-bottom:6px;font-weight:600;">YESTERDAY</div>
+        <div style="display:flex;flex-direction:column;gap:3px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#4ade80;"></div>
+            <span style="color:#4ade80;font-size:9px;width:60px;">claude-code</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">优化菜单栏弹窗</span>
+            <span style="color:#666;font-size:9px;">1d</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#f59e0b;"></div>
+            <span style="color:#f59e0b;font-size:9px;width:60px;">codex</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">API 端点测试</span>
+            <span style="color:#666;font-size:9px;">1d</span>
+          </div>
+        </div>
+        <!-- Footer -->
+        <div style="margin-top:10px;text-align:center;">
+          <span style="color:#818cf8;font-size:10px;cursor:pointer;">Open Window →</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B: 状态面板 + Timeline</h3>
+      <p>服务状态卡片 + 数据统计 + 按日期分组的 timeline。~420px 高，更强调运维视角。</p>
+    </div>
+  </div>
+
+</div>

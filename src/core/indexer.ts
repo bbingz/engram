@@ -3,7 +3,7 @@ import { stat } from 'fs/promises'
 import type { SessionAdapter, SessionInfo } from '../adapters/types.js'
 import type { Database } from './db.js'
 import { resolveProjectName } from './project.js'
-import type { VikingBridge } from './viking-bridge.js'
+import { toVikingUri, type VikingBridge } from './viking-bridge.js'
 
 export class Indexer {
   constructor(
@@ -13,10 +13,10 @@ export class Indexer {
   ) {}
 
   private pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): void {
-    if (!this.opts?.viking) return
+    if (!this.opts?.viking || messages.length === 0) return
     this.opts.viking.checkAvailable().then(ok => {
       if (!ok) return
-      const uri = `viking://sessions/${info.source}/${info.project ?? 'unknown'}/${info.id}`
+      const uri = toVikingUri(info.source, info.project, info.id)
       const content = messages.map(m => `[${m.role}] ${m.content}`).join('\n\n')
       this.opts!.viking!.addResource(uri, content, {
         source: info.source,

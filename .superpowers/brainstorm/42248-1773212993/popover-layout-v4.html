@@ -1,0 +1,96 @@
+<h2>加宽版 — 400px</h2>
+<p class="subtitle">更宽的 popover 让 timeline 行有足够空间</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;color:#e0e0e0;font-family:system-ui;padding:16px;border-radius:8px;font-size:12px;width:400px;margin:0 auto;">
+        <!-- Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <span style="font-weight:600;font-size:14px;">Engram</span>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <span style="color:#4ade80;font-size:9px;">● Web :3457</span>
+            <span style="color:#4ade80;font-size:9px;">● MCP</span>
+            <span style="cursor:pointer;">⚙️</span>
+          </div>
+        </div>
+        <!-- Stats 2x2 -->
+        <div style="background:#252545;border-radius:6px;padding:10px;margin-bottom:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:10px;">
+            <div style="display:flex;justify-content:space-between;color:#888;">
+              <span>Sessions</span><span style="color:#ccc;">1,247</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#888;">
+              <span>Sources</span><span style="color:#ccc;">6</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#888;">
+              <span>Projects</span><span style="color:#ccc;">23</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#888;">
+              <span>DB Size</span><span style="color:#ccc;">42.3 MB</span>
+            </div>
+          </div>
+        </div>
+        <!-- Timeline -->
+        <div style="font-size:10px;color:#888;margin-bottom:4px;font-weight:600;">TODAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#4ade80;flex-shrink:0;"></div>
+            <span style="color:#4ade80;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">修复认证 bug，重构 AuthManager 和 TokenStore</span>
+            <span style="color:#666;font-size:9px;flex-shrink:0;margin-left:6px;">2m</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#f59e0b;flex-shrink:0;"></div>
+            <span style="color:#f59e0b;font-size:9px;width:58px;flex-shrink:0;">codex</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">添加注册功能，包含邮箱验证和密码强度检查</span>
+            <span style="color:#666;font-size:9px;flex-shrink:0;margin-left:6px;">1h</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#60a5fa;flex-shrink:0;"></div>
+            <span style="color:#60a5fa;font-size:9px;width:58px;flex-shrink:0;">gemini</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">重构数据库层，迁移到 GRDB 框架</span>
+            <span style="color:#666;font-size:9px;flex-shrink:0;margin-left:6px;">3h</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#a78bfa;flex-shrink:0;"></div>
+            <span style="color:#a78bfa;font-size:9px;width:58px;flex-shrink:0;">cursor</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">优化 SwiftUI 列表性能，LazyVStack 替换</span>
+            <span style="color:#666;font-size:9px;flex-shrink:0;margin-left:6px;">5h</span>
+          </div>
+        </div>
+        <div style="font-size:10px;color:#888;margin-bottom:4px;margin-top:8px;font-weight:600;">YESTERDAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#4ade80;flex-shrink:0;"></div>
+            <span style="color:#4ade80;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">实现 link_sessions MCP 工具和 Web API</span>
+            <span style="color:#666;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#f59e0b;flex-shrink:0;"></div>
+            <span style="color:#f59e0b;font-size:9px;width:58px;flex-shrink:0;">codex</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">API 端点测试和错误处理改进</span>
+            <span style="color:#666;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#f472b6;flex-shrink:0;"></div>
+            <span style="color:#f472b6;font-size:9px;width:58px;flex-shrink:0;">copilot</span>
+            <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">单元测试覆盖率提升到 85%</span>
+            <span style="color:#666;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+        </div>
+        <!-- Footer -->
+        <div style="margin-top:12px;text-align:center;">
+          <span style="color:#818cf8;font-size:10px;cursor:pointer;">Open Window →</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>400px 宽</h3>
+      <p>标题能显示更多内容，长标题用 ellipsis 截断。适合大多数屏幕。</p>
+    </div>
+  </div>
+
+</div>

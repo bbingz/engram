@@ -101,6 +101,7 @@ export async function handleSearch(
   }
 
   // --- Viking semantic + keyword search ---
+  // ~12% of rank-1 RRF score (1/61 ≈ 0.016) — slight tiebreaker favoring Viking's hierarchical context
   const VIKING_RRF_BOOST = 0.002
   const vikingScores = new Map<string, { score: number; snippet: string }>()
 

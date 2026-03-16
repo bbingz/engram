@@ -6,13 +6,12 @@ import { join } from 'path'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher, WATCHED_SOURCES } from './core/watcher.js'
-import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
+import { ensureDataDirs, createAdapters, initVectorDeps, initViking } from './core/bootstrap.js'
 import { createApp } from './web.js'
 import { readFileSettings, type FileSettings } from './core/config.js'
 import { SyncEngine } from './core/sync.js'
 import { AutoSummaryManager } from './core/auto-summary.js'
 import { summarizeConversation } from './core/ai-client.js'
-import { VikingBridge } from './core/viking-bridge.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
@@ -21,9 +20,7 @@ const adapters = createAdapters()
 const settings = readFileSettings()
 
 // Viking bridge — optional external context engine
-const vikingBridge = settings.viking?.enabled && settings.viking.url && settings.viking.apiKey
-  ? new VikingBridge(settings.viking.url, settings.viking.apiKey)
-  : null
+const vikingBridge = initViking(settings)
 
 const indexer = new Indexer(db, adapters, { viking: vikingBridge })
 

@@ -1,0 +1,153 @@
+<h2>加入 Embedding 状态</h2>
+<p class="subtitle">头部状态栏增加 Embedding 指示</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1c1c1e;color:#e0e0e0;font-family:system-ui;padding:16px;border-radius:8px;font-size:12px;width:400px;margin:0 auto;">
+        <!-- Header row 1: title + settings -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <span style="font-weight:600;font-size:14px;color:#f5f5f7;">Engram</span>
+          <span style="cursor:pointer;font-size:13px;">⚙️</span>
+        </div>
+        <!-- Header row 2: status indicators -->
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;font-size:9px;">
+          <span style="color:#30d158;">● Web :3457</span>
+          <span style="color:#30d158;">● MCP</span>
+          <span style="color:#ff9f0a;">● Embedding 82%</span>
+        </div>
+        <!-- Stats -->
+        <div style="background:#2c2c2e;border-radius:6px;padding:10px;margin-bottom:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:10px;">
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Sessions</span><span style="color:#f5f5f7;">1,247</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Sources</span><span style="color:#f5f5f7;">6</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Projects</span><span style="color:#f5f5f7;">23</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>DB Size</span><span style="color:#f5f5f7;">42.3 MB</span>
+            </div>
+          </div>
+        </div>
+        <!-- Timeline -->
+        <div style="font-size:10px;color:#8e8e93;margin-bottom:4px;font-weight:600;">TODAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#30d158;flex-shrink:0;"></div>
+            <span style="color:#30d158;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">修复认证 bug，重构 AuthManager</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">2m</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#ff9f0a;flex-shrink:0;"></div>
+            <span style="color:#ff9f0a;font-size:9px;width:58px;flex-shrink:0;">codex</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">添加注册功能，邮箱验证</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">1h</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#0a84ff;flex-shrink:0;"></div>
+            <span style="color:#0a84ff;font-size:9px;width:58px;flex-shrink:0;">gemini</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">重构数据库层，GRDB 迁移</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">3h</span>
+          </div>
+        </div>
+        <div style="font-size:10px;color:#8e8e93;margin-bottom:4px;margin-top:8px;font-weight:600;">YESTERDAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#30d158;flex-shrink:0;"></div>
+            <span style="color:#30d158;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">实现 link_sessions 工具</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#bf5af2;flex-shrink:0;"></div>
+            <span style="color:#bf5af2;font-size:9px;width:58px;flex-shrink:0;">cursor</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">单元测试覆盖率提升</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">1d</span>
+          </div>
+        </div>
+        <div style="margin-top:12px;text-align:center;">
+          <span style="color:#0a84ff;font-size:10px;cursor:pointer;">Open Window →</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A: 进行中 — 黄点 + 百分比</h3>
+      <p>Embedding 正在索引时显示 <span style="color:#ff9f0a;">● Embedding 82%</span>，完成后变成 <span style="color:#30d158;">● Embedding</span></p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1c1c1e;color:#e0e0e0;font-family:system-ui;padding:16px;border-radius:8px;font-size:12px;width:400px;margin:0 auto;">
+        <!-- Header row 1: title + settings -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <span style="font-weight:600;font-size:14px;color:#f5f5f7;">Engram</span>
+          <span style="cursor:pointer;font-size:13px;">⚙️</span>
+        </div>
+        <!-- Header row 2: status indicators -->
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;font-size:9px;">
+          <span style="color:#30d158;">● Web :3457</span>
+          <span style="color:#30d158;">● MCP</span>
+          <span style="color:#8e8e93;">○ Embedding</span>
+        </div>
+        <!-- Stats -->
+        <div style="background:#2c2c2e;border-radius:6px;padding:10px;margin-bottom:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:10px;">
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Sessions</span><span style="color:#f5f5f7;">1,247</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Sources</span><span style="color:#f5f5f7;">6</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>Projects</span><span style="color:#f5f5f7;">23</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:#8e8e93;">
+              <span>DB Size</span><span style="color:#f5f5f7;">42.3 MB</span>
+            </div>
+          </div>
+        </div>
+        <!-- Timeline (abbreviated) -->
+        <div style="font-size:10px;color:#8e8e93;margin-bottom:4px;font-weight:600;">TODAY</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#30d158;flex-shrink:0;"></div>
+            <span style="color:#30d158;font-size:9px;width:58px;flex-shrink:0;">claude-code</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">修复认证 bug，重构 AuthManager</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">2m</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+            <div style="width:3px;height:3px;border-radius:50%;background:#ff9f0a;flex-shrink:0;"></div>
+            <span style="color:#ff9f0a;font-size:9px;width:58px;flex-shrink:0;">codex</span>
+            <span style="color:#f5f5f7;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">添加注册功能，邮箱验证</span>
+            <span style="color:#8e8e93;font-size:9px;flex-shrink:0;margin-left:6px;">1h</span>
+          </div>
+        </div>
+        <div style="margin-top:12px;text-align:center;">
+          <span style="color:#0a84ff;font-size:10px;cursor:pointer;">Open Window →</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B: 未配置 — 空心灰点</h3>
+      <p>Embedding 未配置或不可用时显示 <span style="color:#8e8e93;">○ Embedding</span>，不占多余空间。</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top:20px;">
+  <h3>状态映射</h3>
+  <table style="width:100%;font-size:12px;border-collapse:collapse;">
+    <tr style="border-bottom:1px solid #333;"><td style="padding:6px;color:#30d158;">● Embedding</td><td style="padding:6px;">索引完成，全部就绪</td></tr>
+    <tr style="border-bottom:1px solid #333;"><td style="padding:6px;color:#ff9f0a;">● Embedding 82%</td><td style="padding:6px;">正在索引中（显示进度）</td></tr>
+    <tr style="border-bottom:1px solid #333;"><td style="padding:6px;color:#ff453a;">● Embedding</td><td style="padding:6px;">出错（连不上 Ollama / API key 无效）</td></tr>
+    <tr><td style="padding:6px;color:#8e8e93;">○ Embedding</td><td style="padding:6px;">未配置 / 不可用</td></tr>
+  </table>
+</div>

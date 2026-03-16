@@ -12,7 +12,7 @@ import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
-import { ensureDataDirs, createAdapters, initVectorDeps } from './core/bootstrap.js'
+import { ensureDataDirs, createAdapters, initVectorDeps, initViking } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
 import type { GetContextDeps } from './tools/get_context.js'
 
@@ -26,7 +26,6 @@ import { exportTool, handleExport } from './tools/export.js'
 import { generateSummaryTool, handleGenerateSummary } from './tools/generate_summary.js'
 import { linkSessionsTool, handleLinkSessions } from './tools/link_sessions.js'
 import { getMemoryTool, handleGetMemory } from './tools/get_memory.js'
-import { VikingBridge } from './core/viking-bridge.js'
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
@@ -35,9 +34,7 @@ const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 
 // Settings + Viking bridge — must come before indexer so it can dual-write
 const fileSettings = readFileSettings()
-const vikingBridge = fileSettings.viking?.enabled && fileSettings.viking.url && fileSettings.viking.apiKey
-  ? new VikingBridge(fileSettings.viking.url, fileSettings.viking.apiKey)
-  : null
+const vikingBridge = initViking(fileSettings)
 
 const indexer = new Indexer(db, adapters, { viking: vikingBridge })
 

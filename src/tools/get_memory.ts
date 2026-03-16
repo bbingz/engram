@@ -21,7 +21,7 @@ export async function handleGetMemory(
   params: { query: string },
   deps: GetMemoryDeps = {}
 ): Promise<{ memories: VikingMemory[]; message?: string }> {
-  if (!deps.viking) {
+  if (!deps.viking || !await deps.viking.checkAvailable()) {
     return {
       memories: [],
       message: 'Memory features require OpenViking. See docs for setup: configure viking.url and viking.apiKey in ~/.engram/settings.json',

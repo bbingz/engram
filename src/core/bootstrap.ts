@@ -23,6 +23,8 @@ import { createEmbeddingClient } from './embeddings.js'
 import { EmbeddingIndexer } from './embedding-indexer.js'
 import type { EmbeddingClient } from './embeddings.js'
 import type { Database } from './db.js'
+import type { FileSettings } from './config.js'
+import { VikingBridge } from './viking-bridge.js'
 
 export const ENGRAM_DIR = join(homedir(), '.engram')
 
@@ -56,6 +58,15 @@ const adapterMap = new Map(adapters.map(a => [a.name, a]))
 
 export function getAdapter(name: string): SessionAdapter | undefined {
   return adapterMap.get(name as SourceName)
+}
+
+// --- Viking bridge factory ---
+
+export function initViking(settings: FileSettings): VikingBridge | null {
+  if (settings.viking?.enabled && settings.viking.url && settings.viking.apiKey) {
+    return new VikingBridge(settings.viking.url, settings.viking.apiKey)
+  }
+  return null
 }
 
 export interface VectorDeps {

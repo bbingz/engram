@@ -5,6 +5,7 @@ import type { VikingBridge } from '../../src/core/viking-bridge.js'
 describe('handleGetMemory', () => {
   it('returns memories from Viking', async () => {
     const mockViking = {
+      checkAvailable: vi.fn().mockResolvedValue(true),
       findMemories: vi.fn().mockResolvedValue([
         { content: 'User prefers TypeScript', source: 'session-1', confidence: 0.9, createdAt: '2026-03-16' },
       ]),
