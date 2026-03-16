@@ -74,38 +74,50 @@ export class VikingBridge {
     return ok;
   }
 
-  // Push a session to OpenViking: create session → add messages → commit
+  // Push content to OpenViking via resources path (triggers embedding pipeline)
+  // Flow: temp_upload .md file → import as resource (async, triggers L0/L1 + embedding)
   async addResource(uri: string, content: string, metadata?: Record<string, string>): Promise<void> {
-    // Step 1: create session
-    const createRes = await fetch(`${this.api}/sessions`, {
-      method: 'POST',
-      headers: this.headers,
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!createRes.ok) {
-      throw new Error(`Viking create session failed (${createRes.status}): ${await createRes.text()}`);
-    }
-    const createData = await createRes.json();
-    const sessionId = createData?.result?.session_id;
-    if (!sessionId) throw new Error('Viking create session returned no session_id');
+    // Step 1: upload content as a temp .md file
+    const boundary = `----engram${Date.now()}`;
+    const slug = uri.replace(/[^a-zA-Z0-9-]/g, '_');
+    const header = metadata
+      ? Object.entries(metadata).map(([k, v]) => `${k}: ${v}`).join(' | ') + '\n\n'
+      : '';
+    const body = [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="file"; filename="${slug}.md"`,
+      'Content-Type: text/markdown',
+      '',
+      header + content,
+      `--${boundary}--`,
+    ].join('\r\n');
 
-    // Step 2: add content as a single assistant message (carries full session text)
-    const msgRes = await fetch(`${this.api}/sessions/${sessionId}/messages`, {
+    const uploadRes = await fetch(`${this.api}/resources/temp_upload`, {
       method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ role: 'assistant', content }),
+      headers: {
+        ...this.headers,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
       signal: AbortSignal.timeout(30000),
     });
-    if (!msgRes.ok) {
-      throw new Error(`Viking add message failed (${msgRes.status}): ${await msgRes.text()}`);
+    if (!uploadRes.ok) {
+      throw new Error(`Viking temp_upload failed (${uploadRes.status}): ${await uploadRes.text()}`);
     }
+    const uploadData = await uploadRes.json();
+    const tempPath = uploadData?.result?.temp_path;
+    if (!tempPath) throw new Error('Viking temp_upload returned no temp_path');
 
-    // Step 3: commit (generates L0/L1/L2 + extracts memories, async)
-    fetch(`${this.api}/sessions/${sessionId}/commit?wait=false`, {
+    // Step 2: import as resource (async — triggers L0/L1 generation + embedding)
+    const importRes = await fetch(`${this.api}/resources`, {
       method: 'POST',
       headers: this.headers,
+      body: JSON.stringify({ temp_path: tempPath, wait: false }),
       signal: AbortSignal.timeout(10000),
-    }).catch(() => {}); // fire-and-forget
+    });
+    if (!importRes.ok) {
+      throw new Error(`Viking addResource failed (${importRes.status}): ${await importRes.text()}`);
+    }
   }
 
   // POST /find — semantic search

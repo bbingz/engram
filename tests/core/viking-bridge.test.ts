@@ -62,23 +62,22 @@ describe('checkAvailable (circuit breaker)', () => {
 describe('addResource', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('creates session, adds message, and commits', async () => {
+  it('uploads temp file then imports as resource', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const mockFetch = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ result: { session_id: 'vs-001' } }) }) // create
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok' }) }) // message
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok' }) }); // commit
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ result: { temp_path: '/tmp/upload_abc.md' } }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok' }) });
     vi.stubGlobal('fetch', mockFetch);
     await bridge.addResource('viking://session/claude-code/engram/001', 'session content', {});
-    expect(mockFetch).toHaveBeenCalledTimes(3);
-    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/sessions');
-    expect(mockFetch.mock.calls[1][0]).toBe('http://localhost:1933/api/v1/sessions/vs-001/messages');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/resources/temp_upload');
+    expect(mockFetch.mock.calls[1][0]).toBe('http://localhost:1933/api/v1/resources');
   });
 
-  it('throws on create session error', async () => {
+  it('throws on temp_upload error', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('err') }));
-    await expect(bridge.addResource('p', 'c')).rejects.toThrow('Viking create session failed');
+    await expect(bridge.addResource('p', 'c')).rejects.toThrow('Viking temp_upload failed');
   });
 });
 
@@ -160,15 +159,14 @@ describe('ls', () => {
 describe('memory', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('extractMemory sends content via addResource (session flow)', async () => {
+  it('extractMemory sends content via addResource (resources flow)', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const mockFetch = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ result: { session_id: 'vs-mem' } }) })
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok' }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ result: { temp_path: '/tmp/m.md' } }) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok' }) });
     vi.stubGlobal('fetch', mockFetch);
     await bridge.extractMemory('session content');
-    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/sessions');
+    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/resources/temp_upload');
   });
 
   it('findMemories uses find with memory URI prefix', async () => {
