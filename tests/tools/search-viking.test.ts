@@ -28,6 +28,7 @@ describe('handleSearch with Viking', () => {
       { uri: 'viking://sessions/claude-code/engram/session-1', score: 0.95, snippet: 'SSL fix found' },
     ]
     const mockViking = {
+      checkAvailable: vi.fn().mockResolvedValue(true),
       find: vi.fn().mockResolvedValue(vikingResults),
       grep: vi.fn().mockResolvedValue([]),
     } as unknown as VikingBridge
@@ -52,6 +53,7 @@ describe('handleSearch with Viking', () => {
     db.upsertSession(makeSession({ id: 'session-3', filePath: '/tmp/s3' }))
     db.indexSessionContent('session-3', [{ role: 'user', content: 'SSL cert renewal' }])
     const mockViking = {
+      checkAvailable: vi.fn().mockResolvedValue(true),
       find: vi.fn().mockRejectedValue(new Error('timeout')),
       grep: vi.fn().mockRejectedValue(new Error('timeout')),
     } as unknown as VikingBridge

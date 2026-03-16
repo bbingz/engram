@@ -25,6 +25,7 @@ describe('handleGetContext with Viking', () => {
     db = new Database(join(tmpDir, 'test.sqlite'))
     db.upsertSession(makeSession({ id: 'session-1', filePath: '/tmp/s1', project: 'myproject', summary: 'Fixed auth bug' }))
     const mockViking = {
+      checkAvailable: vi.fn().mockResolvedValue(true),
       find: vi.fn().mockResolvedValue([
         { uri: 'viking://sessions/claude-code/myproject/session-1', score: 0.9, snippet: '' },
       ]),

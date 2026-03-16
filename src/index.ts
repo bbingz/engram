@@ -35,8 +35,8 @@ const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 
 // Settings + Viking bridge — must come before indexer so it can dual-write
 const fileSettings = readFileSettings()
-const vikingBridge = fileSettings.viking?.enabled
-  ? new VikingBridge(fileSettings.viking.url!, fileSettings.viking.apiKey!)
+const vikingBridge = fileSettings.viking?.enabled && fileSettings.viking.url && fileSettings.viking.apiKey
+  ? new VikingBridge(fileSettings.viking.url, fileSettings.viking.apiKey)
   : null
 
 const indexer = new Indexer(db, adapters, { viking: vikingBridge })

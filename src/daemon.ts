@@ -21,8 +21,8 @@ const adapters = createAdapters()
 const settings = readFileSettings()
 
 // Viking bridge — optional external context engine
-const vikingBridge = settings.viking?.enabled
-  ? new VikingBridge(settings.viking.url!, settings.viking.apiKey!)
+const vikingBridge = settings.viking?.enabled && settings.viking.url && settings.viking.apiKey
+  ? new VikingBridge(settings.viking.url, settings.viking.apiKey)
   : null
 
 const indexer = new Indexer(db, adapters, { viking: vikingBridge })

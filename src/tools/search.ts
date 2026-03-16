@@ -104,7 +104,7 @@ export async function handleSearch(
   const VIKING_RRF_BOOST = 0.002
   const vikingScores = new Map<string, { score: number; snippet: string }>()
 
-  if (deps.viking && params.query.length >= 2) {
+  if (deps.viking && params.query.length >= 2 && await deps.viking.checkAvailable()) {
     try {
       const [findResults, grepResults] = await Promise.all([
         deps.viking.find(params.query),

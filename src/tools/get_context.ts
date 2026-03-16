@@ -72,7 +72,7 @@ export async function handleGetContext(
   }
 
   // Viking-enhanced: use tiered content when available
-  if (deps.viking && params.detail) {
+  if (deps.viking && params.detail && await deps.viking.checkAvailable()) {
     const readFn = params.detail === 'abstract' ? deps.viking.abstract.bind(deps.viking)
       : params.detail === 'full' ? deps.viking.read.bind(deps.viking)
       : deps.viking.overview.bind(deps.viking)
