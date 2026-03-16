@@ -18,6 +18,12 @@ export interface SummaryConfig {
   truncateChars: number;
 }
 
+export interface VikingSettings {
+  url?: string;
+  apiKey?: string;
+  enabled?: boolean;
+}
+
 export interface FileSettings {
   // ── Unified AI provider ───────────────────────────────────────────
   aiProtocol?: AiProtocol;
@@ -66,6 +72,9 @@ export interface FileSettings {
   syncPeers?: SyncPeer[];
   syncIntervalMinutes?: number;
   syncEnabled?: boolean;
+
+  // ── OpenViking ──────────────────────────────────────────────────
+  viking?: VikingSettings;
 }
 
 // ── Preset defaults ──────────────────────────────────────────────────
