@@ -27,7 +27,7 @@ describe('handleGetContext with Viking', () => {
     const mockViking = {
       checkAvailable: vi.fn().mockResolvedValue(true),
       find: vi.fn().mockResolvedValue([
-        { uri: 'viking://sessions/claude-code/myproject/session-1', score: 0.9, snippet: '' },
+        { uri: 'viking://session/claude-code/myproject/session-1', score: 0.9, snippet: '' },
       ]),
       overview: vi.fn().mockResolvedValue('Detailed L1 overview of auth bug fix session...'),
     } as unknown as VikingBridge

@@ -46,7 +46,7 @@ describe('Indexer with Viking', () => {
     // Wait for fire-and-forget promises
     await new Promise(r => setTimeout(r, 50))
     expect(mockViking.addResource).toHaveBeenCalledWith(
-      expect.stringContaining('viking://sessions/codex/'),
+      expect.stringContaining('viking://session/codex/'),
       expect.stringContaining('[user] Hello'),
       expect.objectContaining({ source: 'codex' })
     )

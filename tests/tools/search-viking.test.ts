@@ -25,7 +25,7 @@ describe('handleSearch with Viking', () => {
     db = new Database(join(tmpDir, 'test.sqlite'))
     db.upsertSession(makeSession({ id: 'session-1', filePath: '/tmp/s1' }))
     const vikingResults: VikingSearchResult[] = [
-      { uri: 'viking://sessions/claude-code/engram/session-1', score: 0.95, snippet: 'SSL fix found' },
+      { uri: 'viking://session/claude-code/engram/session-1', score: 0.95, snippet: 'SSL fix found' },
     ]
     const mockViking = {
       checkAvailable: vi.fn().mockResolvedValue(true),

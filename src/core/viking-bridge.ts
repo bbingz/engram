@@ -23,12 +23,12 @@ export interface VikingMemory {
 
 /** Build a viking URI from session components */
 export function toVikingUri(source: string, project: string | undefined, id: string): string {
-  return `viking://sessions/${source}/${project ?? 'unknown'}/${id}`;
+  return `viking://session/${source}/${project ?? 'unknown'}/${id}`;
 }
 
 /** Extract session ID from viking URI: viking://sessions/{source}/{project}/{session_id} */
 export function sessionIdFromVikingUri(uri: string): string {
-  const match = uri.match(/viking:\/\/sessions\/[^/]+\/[^/]+\/(.+)$/);
+  const match = uri.match(/viking:\/\/session\/[^/]+\/[^/]+\/(.+)$/);
   return match?.[1] ?? '';
 }
 
@@ -40,8 +40,11 @@ export class VikingBridge {
   private circuitOpen = false;
   private lastHealthCheck = 0;
 
+  private api: string; // baseUrl + /api/v1
+
   constructor(url: string, apiKey: string) {
     this.baseUrl = url.replace(/\/$/, '');
+    this.api = `${this.baseUrl}/api/v1`;
     this.headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
@@ -50,7 +53,7 @@ export class VikingBridge {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/health`, {
+      const res = await fetch(`${this.api}/debug/health`, {
         method: 'GET',
         headers: this.headers,
         signal: AbortSignal.timeout(3000),
@@ -71,17 +74,38 @@ export class VikingBridge {
     return ok;
   }
 
-  // POST /resources — add content to OpenViking for indexing
-  async addResource(path: string, content: string, metadata?: Record<string, string>): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/resources`, {
+  // Push a session to OpenViking: create session → add messages → commit
+  async addResource(uri: string, content: string, metadata?: Record<string, string>): Promise<void> {
+    // Step 1: create session
+    const createRes = await fetch(`${this.api}/sessions`, {
       method: 'POST',
       headers: this.headers,
-      body: JSON.stringify({ path, reason: content, instruction: JSON.stringify(metadata ?? {}) }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!createRes.ok) {
+      throw new Error(`Viking create session failed (${createRes.status}): ${await createRes.text()}`);
+    }
+    const createData = await createRes.json();
+    const sessionId = createData?.result?.session_id;
+    if (!sessionId) throw new Error('Viking create session returned no session_id');
+
+    // Step 2: add content as a single assistant message (carries full session text)
+    const msgRes = await fetch(`${this.api}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({ role: 'assistant', content }),
       signal: AbortSignal.timeout(30000),
     });
-    if (!res.ok) {
-      throw new Error(`Viking addResource failed (${res.status}): ${await res.text()}`);
+    if (!msgRes.ok) {
+      throw new Error(`Viking add message failed (${msgRes.status}): ${await msgRes.text()}`);
     }
+
+    // Step 3: commit (generates L0/L1/L2 + extracts memories, async)
+    fetch(`${this.api}/sessions/${sessionId}/commit?wait=false`, {
+      method: 'POST',
+      headers: this.headers,
+      signal: AbortSignal.timeout(10000),
+    }).catch(() => {}); // fire-and-forget
   }
 
   // POST /find — semantic search
@@ -89,7 +113,7 @@ export class VikingBridge {
     try {
       const body: Record<string, unknown> = { query, limit: 20 };
       if (targetUri) body.target_uri = targetUri;
-      const res = await fetch(`${this.baseUrl}/find`, {
+      const res = await fetch(`${this.api}/search/find`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify(body),
@@ -109,7 +133,7 @@ export class VikingBridge {
   async grep(pattern: string, targetUri?: string): Promise<VikingSearchResult[]> {
     try {
       const body: Record<string, unknown> = { pattern, uri: targetUri ?? 'viking://' };
-      const res = await fetch(`${this.baseUrl}/grep`, {
+      const res = await fetch(`${this.api}/search/grep`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify(body),
@@ -126,17 +150,17 @@ export class VikingBridge {
 
   // GET /abstract?uri= — L0 (~100 tokens)
   async abstract(uri: string): Promise<string> {
-    return this.getContent(`${this.baseUrl}/abstract?uri=${encodeURIComponent(uri)}`);
+    return this.getContent(`${this.api}/content/abstract?uri=${encodeURIComponent(uri)}`);
   }
 
   // GET /overview?uri= — L1 (~2K tokens)
   async overview(uri: string): Promise<string> {
-    return this.getContent(`${this.baseUrl}/overview?uri=${encodeURIComponent(uri)}`);
+    return this.getContent(`${this.api}/content/overview?uri=${encodeURIComponent(uri)}`);
   }
 
   // GET /read?uri= — L2 (full content)
   async read(uri: string): Promise<string> {
-    return this.getContent(`${this.baseUrl}/read?uri=${encodeURIComponent(uri)}`);
+    return this.getContent(`${this.api}/content/read?uri=${encodeURIComponent(uri)}`);
   }
 
   private async getContent(url: string): Promise<string> {
@@ -159,7 +183,7 @@ export class VikingBridge {
   // GET /ls?uri= — list entries
   async ls(uri: string): Promise<VikingEntry[]> {
     try {
-      const res = await fetch(`${this.baseUrl}/ls?uri=${encodeURIComponent(uri)}`, {
+      const res = await fetch(`${this.api}/fs/ls?uri=${encodeURIComponent(uri)}`, {
         method: 'GET',
         headers: this.headers,
         signal: AbortSignal.timeout(10000),

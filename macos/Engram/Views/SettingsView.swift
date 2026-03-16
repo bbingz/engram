@@ -662,7 +662,7 @@ struct SettingsView: View {
         isCheckingViking = true
         vikingStatus = ""
 
-        guard let url = URL(string: "\(vikingURL)/health") else {
+        guard let url = URL(string: "\(vikingURL)/api/v1/debug/health") else {
             vikingStatus = "Invalid URL"
             isCheckingViking = false
             return
