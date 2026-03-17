@@ -73,6 +73,11 @@ export interface FileSettings {
   syncIntervalMinutes?: number;
   syncEnabled?: boolean;
 
+  // ── Noise filtering ──────────────────────────────────────────────
+  hideUsageSessions?: boolean;    // hide /usage check sessions (default: true)
+  hideEmptySessions?: boolean;    // hide summary < 10 chars && <= 3 messages (default: true)
+  hideAutoSummary?: boolean;      // hide auto-summary prompt leaks (default: true)
+
   // ── OpenViking ──────────────────────────────────────────────────
   viking?: VikingSettings;
 }

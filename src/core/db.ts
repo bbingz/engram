@@ -35,17 +35,41 @@ export interface StatsGroup {
   toolMessageCount: number
 }
 
-// Shared noise filter conditions — used by applyFilters, statsGroupBy, and search
-const NOISE_FILTER_SQL = [
+// Base noise filters (always applied when agents='hide')
+const NOISE_FILTER_BASE = [
   "agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'",
   'message_count > 1',
-  "(summary IS NULL OR summary NOT LIKE '%/usage%')",
 ]
 
-export function isNoiseSession(session: { agentRole?: string; filePath: string; messageCount: number; summary?: string }): boolean {
+// Optional noise filters — controlled by settings, default on
+const NOISE_FILTER_USAGE = "(summary IS NULL OR summary NOT LIKE '%/usage%')"
+const NOISE_FILTER_EMPTY = "(summary IS NULL OR length(trim(summary)) >= 10 OR message_count > 3)"
+const NOISE_FILTER_AUTO_SUMMARY = "(summary IS NULL OR summary NOT LIKE '%Generate a short, clear title%')"
+
+export interface NoiseFilterSettings {
+  hideUsageSessions?: boolean   // default: true
+  hideEmptySessions?: boolean   // default: true
+  hideAutoSummary?: boolean     // default: true
+}
+
+/** Build noise filter SQL conditions based on settings */
+export function buildNoiseFilters(settings: NoiseFilterSettings = {}): string[] {
+  const filters = [...NOISE_FILTER_BASE]
+  if (settings.hideUsageSessions !== false) filters.push(NOISE_FILTER_USAGE)
+  if (settings.hideEmptySessions !== false) filters.push(NOISE_FILTER_EMPTY)
+  if (settings.hideAutoSummary !== false) filters.push(NOISE_FILTER_AUTO_SUMMARY)
+  return filters
+}
+
+// Default for backward compat — uses all filters
+const NOISE_FILTER_SQL = buildNoiseFilters()
+
+export function isNoiseSession(session: { agentRole?: string; filePath: string; messageCount: number; summary?: string }, settings: NoiseFilterSettings = {}): boolean {
   if (session.agentRole || session.filePath.includes('/subagents/')) return true
   if (session.messageCount <= 1) return true
-  if (session.summary?.includes('/usage')) return true
+  if (settings.hideUsageSessions !== false && session.summary?.includes('/usage')) return true
+  if (settings.hideEmptySessions !== false && session.summary != null && session.summary.trim().length < 10 && session.messageCount <= 3) return true
+  if (settings.hideAutoSummary !== false && session.summary?.includes('Generate a short, clear title')) return true
   return false
 }
 

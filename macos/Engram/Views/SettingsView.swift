@@ -84,6 +84,11 @@ struct SettingsView: View {
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
     @AppStorage("showDockIcon") var showDockIcon: Bool = false
 
+    // Noise filtering
+    @State private var hideUsageSessions: Bool = true
+    @State private var hideEmptySessions: Bool = true
+    @State private var hideAutoSummary: Bool = true
+
     var body: some View {
         Form {
             Section("Display") {
@@ -110,6 +115,26 @@ struct SettingsView: View {
                     .foregroundStyle(.tertiary)
                 Toggle("Show Agent Communication", isOn: $showAgentComm)
                 Text("Tool calls, skill invocations, and command outputs")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section("Noise Filtering") {
+                Toggle("Hide /usage sessions", isOn: $hideUsageSessions)
+                    .onChange(of: hideUsageSessions) { saveNoiseSettings() }
+                Text("Sessions where the only action was checking token usage")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                Toggle("Hide empty sessions", isOn: $hideEmptySessions)
+                    .onChange(of: hideEmptySessions) { saveNoiseSettings() }
+                Text("Sessions with very short or empty summaries (< 10 chars, ≤ 3 messages)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                Toggle("Hide auto-summary prompts", isOn: $hideAutoSummary)
+                    .onChange(of: hideAutoSummary) { saveNoiseSettings() }
+                Text("Sessions that are just the title generation prompt")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -507,6 +532,7 @@ struct SettingsView: View {
             loadAISettings()
             loadSyncSettings()
             loadVikingSettings()
+            loadNoiseSettings()
         }
     }
 
@@ -656,6 +682,21 @@ struct SettingsView: View {
         if let enabled = viking["enabled"] as? Bool { vikingEnabled = enabled }
         if let url = viking["url"] as? String { vikingURL = url }
         if let key = viking["apiKey"] as? String { vikingApiKey = key }
+    }
+
+    private func saveNoiseSettings() {
+        mutateSettings { settings in
+            settings["hideUsageSessions"] = hideUsageSessions
+            settings["hideEmptySessions"] = hideEmptySessions
+            settings["hideAutoSummary"] = hideAutoSummary
+        }
+    }
+
+    private func loadNoiseSettings() {
+        guard let settings = readSettings() else { return }
+        if let v = settings["hideUsageSessions"] as? Bool { hideUsageSessions = v }
+        if let v = settings["hideEmptySessions"] as? Bool { hideEmptySessions = v }
+        if let v = settings["hideAutoSummary"] as? Bool { hideAutoSummary = v }
     }
 
     private func checkVikingStatus() {
