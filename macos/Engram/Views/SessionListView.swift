@@ -436,6 +436,8 @@ struct GroupSection: View {
     @State private var groupFilterTask: Task<Void, Never>?
     @State private var showRenameGroup = false
     @State private var renameGroupText = ""
+    @State private var moveTarget: Session?
+    @State private var moveProjectText = ""
 
     private var groupFilterFingerprint: String {
         "\(sortField)-\(sortAsc)-\(selectedSources)-\(selectedProjects)-\(String(describing: agentFilter))-\(refreshTrigger)"
@@ -472,6 +474,10 @@ struct GroupSection: View {
                                 Button("Restore") { onDelete(session.id) }
                             } else {
                                 Button("Rename...") { onRename(session) }
+                                Button("Move to Project...") {
+                                    moveTarget = session
+                                    moveProjectText = session.project ?? ""
+                                }
                                 Divider()
                                 Button("Delete", role: .destructive) { onDelete(session.id) }
                             }
@@ -505,6 +511,23 @@ struct GroupSection: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Rename all sessions in \"\(group.id)\" to a new project name.")
+        }
+        .alert("Move to Project", isPresented: Binding(
+            get: { moveTarget != nil },
+            set: { if !$0 { moveTarget = nil } }
+        )) {
+            TextField("Project name", text: $moveProjectText)
+            Button("Move") {
+                guard let session = moveTarget else { return }
+                let newProject = moveProjectText.trimmingCharacters(in: .whitespaces)
+                guard !newProject.isEmpty else { return }
+                try? db.moveSessionToProject(id: session.id, project: newProject)
+                moveTarget = nil
+                onGroupRenamed?()
+            }
+            Button("Cancel", role: .cancel) { moveTarget = nil }
+        } message: {
+            Text("Move this session to a different project.")
         }
         .onChange(of: isExpanded) { _, expanded in
             if expanded && sessions.isEmpty && !isLoading {

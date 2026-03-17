@@ -371,6 +371,15 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    func moveSessionToProject(id: String, project: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET project = ? WHERE id = ?",
+                arguments: [project, id])
+        }
+    }
+
     func renameProject(from oldName: String, to newName: String) throws {
         guard let writer = writerPool else { throw DatabaseError.notOpen }
         try writer.write { db in
