@@ -983,6 +983,27 @@ function renderTable(lines: string[], start: number): string {
 // Health dashboard
 // ---------------------------------------------------------------------------
 
+/** Convert ASCII table (with +---+ borders and | cols |) to HTML table */
+function formatAsciiTable(ascii: string): string {
+  if (!ascii || !ascii.includes('|')) return ascii ? `<pre style="font-size:12px;">${escapeHtml(ascii)}</pre>` : ''
+  const lines = ascii.split('\n').filter(l => l.trim())
+  const dataLines = lines.filter(l => l.includes('|') && !l.match(/^[+\-|]+$/))
+  if (dataLines.length === 0) return ''
+
+  const parseRow = (line: string) => line.split('|').slice(1, -1).map(c => c.trim())
+  const headers = parseRow(dataLines[0])
+  const bodyRows = dataLines.slice(1)
+
+  const ths = headers.map(h => `<th style="padding:6px 12px;text-align:left;border-bottom:1px solid #333;">${escapeHtml(h)}</th>`).join('')
+  const trs = bodyRows.map(line => {
+    const cells = parseRow(line)
+    const tds = cells.map(c => `<td style="padding:4px 12px;font-size:12px;">${escapeHtml(c)}</td>`).join('')
+    return `<tr>${tds}</tr>`
+  }).join('\n')
+
+  return `<table style="width:100%;border-collapse:collapse;margin:10px 0;"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`
+}
+
 export function healthPage(data: any): string {
   const { sources, viking, summary } = data
 
@@ -1010,7 +1031,7 @@ export function healthPage(data: any): string {
       <td>${s.sessionCount}</td>
       <td>${ago}</td>
       <td><div style="display:flex;align-items:end;gap:2px;height:20px;">${sparkline}</div></td>
-      <td>${status} ${statusLabel}</td>
+      <td style="white-space:nowrap;">${status} ${statusLabel}</td>
       <td style="font-size:11px;color:#888;">${escapeHtml(s.path || '\u2014')} ${pathCheck}</td>
       <td style="font-size:11px;color:#888;">${escapeHtml(s.watcherType)}</td>
     </tr>`
@@ -1019,8 +1040,8 @@ export function healthPage(data: any): string {
   const vikingSection = viking ? `
     <h3>OpenViking</h3>
     <p>${viking.available ? '&#x1F7E2; Connected' : '&#x1F534; Unreachable'}</p>
-    ${viking.queue ? `<pre style="font-size:12px;overflow-x:auto;">${escapeHtml(typeof viking.queue === 'string' ? viking.queue : JSON.stringify(viking.queue, null, 2))}</pre>` : ''}
-    ${viking.vlm ? `<pre style="font-size:12px;overflow-x:auto;">${escapeHtml(typeof viking.vlm === 'string' ? viking.vlm : JSON.stringify(viking.vlm, null, 2))}</pre>` : ''}
+    ${viking.queue ? formatAsciiTable(typeof viking.queue === 'string' ? viking.queue : '') : ''}
+    ${viking.vlm ? formatAsciiTable(typeof viking.vlm === 'string' ? viking.vlm : '') : ''}
   ` : '<h3>OpenViking</h3><p>&#x26AA; Not configured</p>'
 
   const lastIndexedStr = summary.lastIndexed
