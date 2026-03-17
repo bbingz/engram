@@ -127,6 +127,29 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    struct SourceStat {
+        let source: String
+        let count: Int
+        let latestIndexed: String
+    }
+
+    nonisolated func sourceStats() throws -> [SourceStat] {
+        try readInBackground { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT source, COUNT(*) as count, MAX(indexed_at) as latest_indexed
+                FROM sessions WHERE hidden_at IS NULL
+                GROUP BY source
+            """)
+            return rows.map { row in
+                SourceStat(
+                    source: row["source"],
+                    count: row["count"],
+                    latestIndexed: (row["latest_indexed"] as String?) ?? ""
+                )
+            }
+        }
+    }
+
     func countsByProject() throws -> [String: Int] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
