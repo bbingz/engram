@@ -182,7 +182,8 @@ struct SessionListView: View {
                         refreshTrigger: refreshTrigger,
                         onToggle: { toggleGroup(group.id) },
                         onDelete: { id in deleteSession(id) },
-                        onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" }
+                        onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" },
+                        onGroupRenamed: { refreshTrigger = UUID() }
                     )
                 }
             }
@@ -427,11 +428,14 @@ struct GroupSection: View {
     let onToggle: () -> Void
     let onDelete: (String) -> Void
     let onRename: (Session) -> Void
+    var onGroupRenamed: (() -> Void)?
 
     @EnvironmentObject var db: DatabaseManager
     @State private var sessions: [Session] = []
     @State private var isLoading = false
     @State private var groupFilterTask: Task<Void, Never>?
+    @State private var showRenameGroup = false
+    @State private var renameGroupText = ""
 
     private var groupFilterFingerprint: String {
         "\(sortField)-\(sortAsc)-\(selectedSources)-\(selectedProjects)-\(String(describing: agentFilter))-\(refreshTrigger)"
@@ -481,6 +485,26 @@ struct GroupSection: View {
                 icon: groupingMode == .project ? "folder" : "cpu",
                 lastUpdated: String(group.lastUpdated.prefix(10))
             )
+            .contextMenu {
+                if groupingMode == .project && group.id != "(unknown)" {
+                    Button("Rename Project...") {
+                        renameGroupText = group.id
+                        showRenameGroup = true
+                    }
+                }
+            }
+        }
+        .alert("Rename Project", isPresented: $showRenameGroup) {
+            TextField("Project name", text: $renameGroupText)
+            Button("Save") {
+                let newName = renameGroupText.trimmingCharacters(in: .whitespaces)
+                guard !newName.isEmpty, newName != group.id else { return }
+                try? db.renameProject(from: group.id, to: newName)
+                onGroupRenamed?()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Rename all sessions in \"\(group.id)\" to a new project name.")
         }
         .onChange(of: isExpanded) { _, expanded in
             if expanded && sessions.isEmpty && !isLoading {

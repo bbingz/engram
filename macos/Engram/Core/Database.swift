@@ -371,6 +371,15 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    func renameProject(from oldName: String, to newName: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET project = ? WHERE project = ?",
+                arguments: [newName, oldName])
+        }
+    }
+
     /// Hide truly empty sessions (0 messages AND < 1 KB). Returns count hidden.
     func hideEmptySessions() throws -> Int {
         guard let writer = writerPool else { throw DatabaseError.notOpen }
