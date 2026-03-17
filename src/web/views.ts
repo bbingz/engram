@@ -983,6 +983,20 @@ function renderTable(lines: string[], start: number): string {
 // Health dashboard
 // ---------------------------------------------------------------------------
 
+/** Format ISO timestamp to local readable string: "2026-03-17 10:23" */
+function formatLocalTime(iso: string): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** Add thousand separators to numbers in a string: "1234567" → "1,234,567" */
+function formatNumbersInString(s: string): string {
+  return s.replace(/\b(\d{4,})\b/g, (_, n) => Number(n).toLocaleString('en-US'))
+}
+
 /** Convert ASCII table (with +---+ borders and | cols |) to HTML table */
 function formatAsciiTable(ascii: string): string {
   if (!ascii || !ascii.includes('|')) return ascii ? `<pre style="font-size:12px;">${escapeHtml(ascii)}</pre>` : ''
@@ -997,7 +1011,11 @@ function formatAsciiTable(ascii: string): string {
   const ths = headers.map(h => `<th style="padding:6px 12px;text-align:left;border-bottom:1px solid #333;">${escapeHtml(h)}</th>`).join('')
   const trs = bodyRows.map(line => {
     const cells = parseRow(line)
-    const tds = cells.map(c => `<td style="padding:4px 12px;font-size:12px;">${escapeHtml(c)}</td>`).join('')
+    const tds = cells.map(c => {
+      // Convert ISO timestamps to local time
+      const formatted = /^\d{4}-\d{2}-\d{2}T/.test(c.trim()) ? formatLocalTime(c.trim()) : formatNumbersInString(c)
+      return `<td style="padding:4px 12px;font-size:12px;">${escapeHtml(formatted)}</td>`
+    }).join('')
     return `<tr>${tds}</tr>`
   }).join('\n')
 
@@ -1045,7 +1063,7 @@ export function healthPage(data: any): string {
   ` : '<h3>OpenViking</h3><p>&#x26AA; Not configured</p>'
 
   const lastIndexedStr = summary.lastIndexed
-    ? new Date(summary.lastIndexed).toLocaleString()
+    ? formatLocalTime(summary.lastIndexed)
     : 'never'
 
   return layout('Index Health', `
