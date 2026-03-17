@@ -36,6 +36,13 @@ const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 const fileSettings = readFileSettings()
 const vikingBridge = initViking(fileSettings)
 
+// Apply noise filter settings
+db.noiseSettings = {
+  hideUsageSessions: fileSettings.hideUsageSessions,
+  hideEmptySessions: fileSettings.hideEmptySessions,
+  hideAutoSummary: fileSettings.hideAutoSummary,
+}
+
 const indexer = new Indexer(db, adapters, { viking: vikingBridge })
 
 // Vector store — may fail if sqlite-vec can't load

@@ -81,6 +81,7 @@ export interface SearchFilters {
 
 export class Database {
   private db: BetterSqlite3.Database
+  noiseSettings: NoiseFilterSettings = {}
 
   constructor(dbPath: string) {
     this.db = new BetterSqlite3(dbPath)
@@ -433,7 +434,7 @@ export class Database {
     if (since) { conditions.push('start_time >= @since'); params.since = since }
     if (until) { conditions.push('start_time <= @until'); params.until = until }
     if (opts?.excludeNoise) {
-      conditions.push(...NOISE_FILTER_SQL)
+      conditions.push(...buildNoiseFilters(this.noiseSettings))
     }
     const where = `WHERE ${conditions.join(' AND ')}`
 
@@ -516,7 +517,7 @@ export class Database {
     if ('since' in opts && opts.since) { conditions.push('start_time >= @since'); params.since = opts.since }
     if ('until' in opts && opts.until) { conditions.push('start_time <= @until'); params.until = opts.until }
     if (opts.agents === 'hide') {
-      conditions.push(...NOISE_FILTER_SQL)
+      conditions.push(...buildNoiseFilters(this.noiseSettings))
     } else if (opts.agents === 'only') {
       conditions.push("(agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
     }

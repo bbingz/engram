@@ -147,7 +147,7 @@ export async function handleSearch(
     if (results.length >= limit) break
     const session = db.getSession(m.sessionId)
     if (!session) continue
-    if (params.agents === 'hide' && isNoiseSession(session)) continue
+    if (params.agents === 'hide' && isNoiseSession(session, db.noiseSettings)) continue
     if (params.tools === 'hide' && session.toolMessageCount > 0 && session.userMessageCount === 0) continue
     // Semantic-only results need JS-level filtering (sqlite-vec can't JOIN)
     if (m.matchType === 'semantic') {

@@ -196,10 +196,29 @@ struct PopoverView: View {
             let projectCount = (try? db.readInBackground { d in
                 try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT project) FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL")
             }) ?? 0
+            // Build noise filter SQL from settings
+            var noiseConditions = [
+                "hidden_at IS NULL",
+                "agent_role IS NULL",
+                "file_path NOT LIKE '%/subagents/%'",
+                "message_count > 1",
+            ]
+            let noiseSettings = PopoverView.readNoiseSettings()
+            if noiseSettings.hideUsage {
+                noiseConditions.append("(summary IS NULL OR summary NOT LIKE '%/usage%')")
+            }
+            if noiseSettings.hideEmpty {
+                noiseConditions.append("(summary IS NULL OR length(trim(summary)) >= 10 OR message_count > 3)")
+            }
+            if noiseSettings.hideAutoSummary {
+                noiseConditions.append("(summary IS NULL OR summary NOT LIKE '%Generate a short, clear title%')")
+            }
+            let whereClause = noiseConditions.joined(separator: " AND ")
+
             let sessions = (try? db.readInBackground { d in
                 try Session.fetchAll(d, sql: """
                     SELECT * FROM sessions
-                    WHERE hidden_at IS NULL AND agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'
+                    WHERE \(whereClause)
                     ORDER BY start_time DESC LIMIT 30
                 """)
             }) ?? []
@@ -209,7 +228,7 @@ struct PopoverView: View {
         sourceCount = result.0
         projectCount = result.1
         dbSize = result.3
-        recentSessions = Array(result.2.filter { $0.messageCount > 0 }.prefix(15))
+        recentSessions = Array(result.2.prefix(15))
         await fetchEmbeddingStatus()
 
         // Health summary
@@ -309,6 +328,20 @@ struct PopoverView: View {
         }
         if !currentGroup.isEmpty { groups.append((currentKey, currentGroup)) }
         return groups.map { DateGroup(key: $0.0, sessions: $0.1) }
+    }
+
+    // Read noise filter settings from ~/.engram/settings.json
+    private static func readNoiseSettings() -> (hideUsage: Bool, hideEmpty: Bool, hideAutoSummary: Bool) {
+        let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".engram/settings.json")
+        guard let data = try? Data(contentsOf: path),
+              let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (true, true, true) // defaults: all on
+        }
+        return (
+            hideUsage: (settings["hideUsageSessions"] as? Bool) ?? true,
+            hideEmpty: (settings["hideEmptySessions"] as? Bool) ?? true,
+            hideAutoSummary: (settings["hideAutoSummary"] as? Bool) ?? true
+        )
     }
 
     private func relativeTime(_ ts: String) -> String {
