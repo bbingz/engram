@@ -723,15 +723,19 @@ struct SessionRow: View {
                 Circle()
                     .fill(sourceColor)
                     .frame(width: 7, height: 7)
-                Text(verbatim: session.source)
+                Text(verbatim: session.project ?? "—")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 if session.isSubAgent {
                     Text("agent")
                         .font(.caption2)
                         .foregroundStyle(.purple)
                 }
                 Spacer(minLength: 4)
+                Text(verbatim: SourceDisplay.label(for: session.source))
+                    .font(.caption)
+                    .foregroundStyle(sourceColor)
                 Text(verbatim: session.displayDate)
                     .font(.subheadline)
                     .foregroundStyle(.tertiary)
@@ -739,12 +743,6 @@ struct SessionRow: View {
 
             HStack(spacing: 4) {
                 Text(session.msgCountLabel)
-                if let proj = session.project {
-                    Text(verbatim: "·")
-                    Image(systemName: "folder")
-                        .imageScale(.small)
-                    Text(verbatim: proj).lineLimit(1)
-                }
             }
             .font(.caption)
             .foregroundStyle(.tertiary)
