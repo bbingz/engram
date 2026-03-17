@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
+import { existsSync } from 'fs'
 import { join } from 'path'
+import { homedir } from 'os'
 import { Database } from './core/db.js'
 import { ensureDataDirs, getAdapter } from './core/bootstrap.js'
 import { readFileSettings } from './core/config.js'
@@ -8,12 +10,13 @@ import type { SessionAdapter, SourceName } from './adapters/types.js'
 import { summarizeConversation } from './core/ai-client.js'
 import { handleSearch, type SearchDeps } from './tools/search.js'
 import { handleStats } from './tools/stats.js'
-import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage } from './web/views.js'
+import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage, healthPage } from './web/views.js'
 import type { VectorStore } from './core/vector-store.js'
 import type { EmbeddingClient } from './core/embeddings.js'
 import { SyncEngine, type SyncPeer } from './core/sync.js'
 import { handleLinkSessions } from './tools/link_sessions.js'
 import type { VikingBridge } from './core/viking-bridge.js'
+import { WATCHED_SOURCES } from './core/watcher.js'
 
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = []
@@ -362,6 +365,98 @@ export function createApp(db: Database, opts?: {
     }
 
     return c.json({ pushed, errors, total: sessions.length, offset, limit })
+  })
+
+  // --- Health dashboard ---
+  const HOME = homedir()
+  const SOURCE_PATHS: Record<string, string> = {
+    'claude-code': join(HOME, '.claude/projects'),
+    'codex': join(HOME, '.codex/sessions'),
+    'gemini-cli': join(HOME, '.gemini/tmp'),
+    'opencode': join(HOME, '.local/share/opencode/opencode.db'),
+    'iflow': join(HOME, '.iflow/projects'),
+    'qwen': join(HOME, '.qwen/projects'),
+    'kimi': join(HOME, '.kimi/sessions'),
+    'cline': join(HOME, '.cline/data/tasks'),
+    'cursor': join(HOME, 'Library/Application Support/Cursor/User/globalStorage/state.vscdb'),
+    'vscode': join(HOME, 'Library/Application Support/Code/User/workspaceStorage'),
+    'antigravity': join(HOME, '.gemini/antigravity/daemon'),
+    'windsurf': join(HOME, '.codeium/windsurf/daemon'),
+    'copilot': join(HOME, '.copilot/session-state'),
+  }
+  const DERIVED_SOURCES: Record<string, string> = {
+    'lobsterai': 'claude-code',
+    'minimax': 'claude-code',
+  }
+
+  async function getHealthData() {
+    const sourceStats = db.getSourceStats()
+
+    const sources = sourceStats.map(s => {
+      const derivedFrom = DERIVED_SOURCES[s.source]
+      const path = SOURCE_PATHS[derivedFrom ?? s.source] ?? ''
+      return {
+        name: s.source,
+        sessionCount: s.sessionCount,
+        latestIndexed: s.latestIndexed,
+        path: path.replace(HOME, '~'),
+        pathExists: path ? existsSync(path) : false,
+        watcherType: WATCHED_SOURCES.has(s.source) ? 'watching' : 'polling',
+        derived: !!derivedFrom,
+        derivedFrom: derivedFrom ?? null,
+        dailyCounts: s.dailyCounts,
+      }
+    })
+
+    // Viking status (if configured)
+    let viking: Record<string, unknown> | null = null
+    if (opts?.viking) {
+      try {
+        const available = await opts.viking.checkAvailable()
+        if (available) {
+          const vikingUrl = opts.viking.url
+          const vikingHeaders = opts.viking.apiHeaders
+          const queueRes = await fetch(`${vikingUrl}/api/v1/observer/queue`, {
+            headers: vikingHeaders,
+            signal: AbortSignal.timeout(5000),
+          }).then(r => r.json()).catch(() => null)
+          const vlmRes = await fetch(`${vikingUrl}/api/v1/observer/vlm`, {
+            headers: vikingHeaders,
+            signal: AbortSignal.timeout(5000),
+          }).then(r => r.json()).catch(() => null)
+          viking = { available: true, queue: queueRes?.result?.status ?? null, vlm: vlmRes?.result?.status ?? null }
+        } else {
+          viking = { available: false }
+        }
+      } catch { viking = { available: false } }
+    }
+
+    const now = Date.now()
+    const oneDayMs = 24 * 60 * 60 * 1000
+    const activeSources = sourceStats.filter(s => {
+      const latest = new Date(s.latestIndexed).getTime()
+      return now - latest < oneDayMs
+    }).length
+
+    return {
+      sources,
+      viking,
+      summary: {
+        totalSources: sourceStats.length,
+        activeSources,
+        lastIndexed: sourceStats.length > 0
+          ? sourceStats.reduce((a, b) => a.latestIndexed > b.latestIndexed ? a : b).latestIndexed
+          : null,
+      },
+    }
+  }
+
+  app.get('/api/health/sources', async (c) => {
+    return c.json(await getHealthData())
+  })
+
+  app.get('/health', async (c) => {
+    return c.html(healthPage(await getHealthData()))
   })
 
   // UUID lookup redirect

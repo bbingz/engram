@@ -45,6 +45,7 @@ export function layout(title: string, body: string, currentPath = '/'): string {
     { href: '/', label: 'Sessions' },
     { href: '/search', label: 'Search' },
     { href: '/stats', label: 'Stats' },
+    { href: '/health', label: 'Health' },
     { href: '/settings', label: 'Settings' },
   ]
   const navHtml = navItems.map(item => {
@@ -976,6 +977,71 @@ function renderTable(lines: string[], start: number): string {
   ).join('')
 
   return `<table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`
+}
+
+// ---------------------------------------------------------------------------
+// Health dashboard
+// ---------------------------------------------------------------------------
+
+export function healthPage(data: any): string {
+  const { sources, viking, summary } = data
+
+  const rows = sources.map((s: any) => {
+    const latestDate = new Date(s.latestIndexed)
+    const ageMs = Date.now() - latestDate.getTime()
+    const ageHours = ageMs / 3600000
+    const status = ageHours < 24 ? '&#x1F7E2;' : ageHours < 168 ? '&#x1F7E1;' : '&#x26AA;'
+    const statusLabel = ageHours < 24 ? 'Active' : ageHours < 168 ? 'Stale' : 'Inactive'
+    const ago = ageHours < 1 ? `${Math.round(ageMs / 60000)}m ago`
+      : ageHours < 24 ? `${Math.round(ageHours)}h ago`
+      : `${Math.round(ageHours / 24)}d ago`
+
+    const maxDaily = Math.max(...s.dailyCounts, 1)
+    const sparkline = s.dailyCounts.map((c: number) => {
+      const h = Math.round((c / maxDaily) * 20)
+      return `<div style="width:8px;height:${h}px;background:var(--accent);border-radius:1px;"></div>`
+    }).join('')
+
+    const derived = s.derived ? `<span style="color:#888;font-size:11px;">(via ${escapeHtml(s.derivedFrom)})</span>` : ''
+    const pathCheck = s.path ? (s.pathExists ? '&#x2705;' : '&#x274C;') : ''
+
+    return `<tr>
+      <td><strong>${escapeHtml(s.name)}</strong> ${derived}</td>
+      <td>${s.sessionCount}</td>
+      <td>${ago}</td>
+      <td><div style="display:flex;align-items:end;gap:2px;height:20px;">${sparkline}</div></td>
+      <td>${status} ${statusLabel}</td>
+      <td style="font-size:11px;color:#888;">${escapeHtml(s.path || '\u2014')} ${pathCheck}</td>
+      <td style="font-size:11px;color:#888;">${escapeHtml(s.watcherType)}</td>
+    </tr>`
+  }).join('\n')
+
+  const vikingSection = viking ? `
+    <h3>OpenViking</h3>
+    <p>${viking.available ? '&#x1F7E2; Connected' : '&#x1F534; Unreachable'}</p>
+    ${viking.queue ? `<pre style="font-size:12px;overflow-x:auto;">${escapeHtml(typeof viking.queue === 'string' ? viking.queue : JSON.stringify(viking.queue, null, 2))}</pre>` : ''}
+    ${viking.vlm ? `<pre style="font-size:12px;overflow-x:auto;">${escapeHtml(typeof viking.vlm === 'string' ? viking.vlm : JSON.stringify(viking.vlm, null, 2))}</pre>` : ''}
+  ` : '<h3>OpenViking</h3><p>&#x26AA; Not configured</p>'
+
+  const lastIndexedStr = summary.lastIndexed
+    ? new Date(summary.lastIndexed).toLocaleString()
+    : 'never'
+
+  return layout('Index Health', `
+    <h2>Index Health Dashboard</h2>
+    <p style="color:#888;">${summary.activeSources}/${summary.totalSources} sources active &middot; last indexed ${escapeHtml(lastIndexedStr)}</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:20px 0;">
+      <thead>
+        <tr style="text-align:left;border-bottom:1px solid #333;">
+          <th>Source</th><th>Sessions</th><th>Last Indexed</th><th>7-Day</th><th>Status</th><th>Path</th><th>Watcher</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    ${vikingSection}
+  `, '/health')
 }
 
 // ---------------------------------------------------------------------------

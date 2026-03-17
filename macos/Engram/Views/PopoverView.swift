@@ -11,11 +11,15 @@ struct PopoverView: View {
     @State private var recentSessions: [Session] = []
     @State private var embeddingAvailable = false
     @State private var embeddingProgress: Int?
+    @State private var activeSourceCount: Int = 0
+    @State private var totalSourceCount: Int = 0
+    @State private var lastIndexedAgo: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             headerSection
             statsSection
+            healthSummary
             Divider()
             timelineSection
             footerSection
@@ -92,6 +96,30 @@ struct PopoverView: View {
         }
     }
 
+    // MARK: - Health Summary
+
+    @AppStorage("httpPort") private var httpPort: Int = 3456
+
+    private var healthSummary: some View {
+        HStack(spacing: 4) {
+            Text("\(activeSourceCount)/\(totalSourceCount) sources active")
+                .font(.caption2)
+                .foregroundStyle(activeSourceCount == totalSourceCount && totalSourceCount > 0 ? .green : .secondary)
+            Text("·")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("last \(lastIndexedAgo)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .onTapGesture {
+            if let url = URL(string: "http://localhost:\(httpPort)/health") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
     // MARK: - Timeline
 
     private var timelineSection: some View {
@@ -116,15 +144,20 @@ struct PopoverView: View {
             Circle()
                 .fill(SourceDisplay.color(for: session.source))
                 .frame(width: 4, height: 4)
-            Text(SourceDisplay.label(for: session.source))
+            Text(session.project ?? "—")
                 .font(.caption2)
-                .foregroundStyle(SourceDisplay.color(for: session.source))
-                .frame(width: 58, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Text(session.displayTitle)
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer()
+            Text(SourceDisplay.label(for: session.source))
+                .font(.caption2)
+                .foregroundStyle(SourceDisplay.color(for: session.source))
             Text(relativeTime(session.startTime))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -178,6 +211,30 @@ struct PopoverView: View {
         dbSize = result.3
         recentSessions = Array(result.2.filter { $0.messageCount > 0 }.prefix(15))
         await fetchEmbeddingStatus()
+
+        // Health summary
+        let stats = (try? db.sourceStats()) ?? []
+        let now = Date()
+        let oneDaySec: TimeInterval = 86400
+        let fmt = ISO8601DateFormatter()
+        let active = stats.filter { s in
+            guard !s.latestIndexed.isEmpty, let d = fmt.date(from: s.latestIndexed) else { return false }
+            return now.timeIntervalSince(d) < oneDaySec
+        }.count
+        let latest = stats.compactMap { s -> Date? in
+            s.latestIndexed.isEmpty ? nil : fmt.date(from: s.latestIndexed)
+        }.max()
+        activeSourceCount = active
+        totalSourceCount = stats.count
+        if let latest {
+            let interval = now.timeIntervalSince(latest)
+            if interval < 60 { lastIndexedAgo = "now" }
+            else if interval < 3600 { lastIndexedAgo = "\(Int(interval / 60))m" }
+            else if interval < 86400 { lastIndexedAgo = "\(Int(interval / 3600))h" }
+            else { lastIndexedAgo = "\(Int(interval / 86400))d" }
+        } else {
+            lastIndexedAgo = "—"
+        }
     }
 
     private func fetchEmbeddingStatus() async {
