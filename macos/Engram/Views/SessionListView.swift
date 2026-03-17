@@ -438,6 +438,7 @@ struct GroupSection: View {
     @State private var renameGroupText = ""
     @State private var moveTarget: Session?
     @State private var moveProjectText = ""
+    @State private var availableProjects: [String] = []
 
     private var groupFilterFingerprint: String {
         "\(sortField)-\(sortAsc)-\(selectedSources)-\(selectedProjects)-\(String(describing: agentFilter))-\(refreshTrigger)"
@@ -474,9 +475,18 @@ struct GroupSection: View {
                                 Button("Restore") { onDelete(session.id) }
                             } else {
                                 Button("Rename...") { onRename(session) }
-                                Button("Move to Project...") {
-                                    moveTarget = session
-                                    moveProjectText = session.project ?? ""
+                                Menu("Move to Project") {
+                                    ForEach(availableProjects.filter { $0 != session.project }, id: \.self) { proj in
+                                        Button(proj) {
+                                            try? db.moveSessionToProject(id: session.id, project: proj)
+                                            onGroupRenamed?()
+                                        }
+                                    }
+                                    Divider()
+                                    Button("Other...") {
+                                        moveTarget = session
+                                        moveProjectText = session.project ?? ""
+                                    }
                                 }
                                 Divider()
                                 Button("Delete", role: .destructive) { onDelete(session.id) }
@@ -532,6 +542,9 @@ struct GroupSection: View {
         .onChange(of: isExpanded) { _, expanded in
             if expanded && sessions.isEmpty && !isLoading {
                 loadSessions()
+            }
+            if expanded && availableProjects.isEmpty {
+                availableProjects = ((try? db.countsByProject())?.keys.sorted()) ?? []
             }
         }
         .onChange(of: groupFilterFingerprint) { _, _ in
