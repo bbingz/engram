@@ -51,6 +51,10 @@ export class VikingBridge {
     };
   }
 
+  /** Base URL for direct API access (used by health dashboard) */
+  get url(): string { return this.baseUrl; }
+  get apiHeaders(): Record<string, string> { return this.headers; }
+
   async isAvailable(): Promise<boolean> {
     try {
       const res = await fetch(`${this.api}/debug/health`, {
