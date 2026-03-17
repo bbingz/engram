@@ -203,12 +203,29 @@ export class AntigravityAdapter implements SessionAdapter {
         } catch { /* skip */ }
       }
 
+      // If no cwd from gRPC, try to infer from file paths mentioned in messages
+      let cwd = meta.cwd || ''
+      if (!cwd) {
+        const content = (await readFile(filePath, 'utf8')).slice(0, 50000) // scan first 50KB
+        const pathMatches = content.match(/\/Users\/[^/]+\/-Code-\/([^\/\s"'`\)]+)/g) || []
+        if (pathMatches.length > 0) {
+          // Count occurrences of each project name, pick the most frequent
+          const counts = new Map<string, number>()
+          for (const p of pathMatches) {
+            const m = p.match(/\/-Code-\/([^\/\s"'`\)]+)/)
+            if (m) counts.set(m[1], (counts.get(m[1]) || 0) + 1)
+          }
+          const topProject = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+          if (topProject) cwd = `/Users/${homedir().split('/').pop()}/-Code-/${topProject[0]}`
+        }
+      }
+
       return {
         id: meta.id,
         source: 'antigravity',
         startTime: meta.createdAt,
         endTime: meta.updatedAt !== meta.createdAt ? meta.updatedAt : undefined,
-        cwd: meta.cwd || '',
+        cwd,
         messageCount: userCount + assistantCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
