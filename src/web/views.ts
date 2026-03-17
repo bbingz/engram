@@ -983,11 +983,14 @@ function renderTable(lines: string[], start: number): string {
 // Health dashboard
 // ---------------------------------------------------------------------------
 
-/** Format ISO timestamp to local readable string: "2026-03-17 10:23" */
-function formatLocalTime(iso: string): string {
-  if (!iso) return '—'
+/** Format timestamp to local readable string: "2026-03-17 10:23"
+ *  Handles both ISO (with Z/+offset) and SQLite UTC (without timezone suffix). */
+function formatLocalTime(ts: string): string {
+  if (!ts) return '—'
+  // SQLite datetime('now') produces "YYYY-MM-DD HH:MM:SS" in UTC without Z — append Z so JS parses as UTC
+  const iso = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(ts) && !ts.includes('Z') && !ts.includes('+') ? ts.replace(' ', 'T') + 'Z' : ts
   const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
+  if (isNaN(d.getTime())) return ts
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
