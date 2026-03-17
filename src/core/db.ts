@@ -315,6 +315,42 @@ export class Database {
     return rows.map(r => r.source)
   }
 
+  getSourceStats(): { source: string; sessionCount: number; latestIndexed: string; dailyCounts: number[] }[] {
+    const sourceRows = this.db.prepare(`
+      SELECT source, COUNT(*) as count, MAX(indexed_at) as latest_indexed
+      FROM sessions WHERE hidden_at IS NULL
+      GROUP BY source ORDER BY count DESC
+    `).all() as { source: string; count: number; latest_indexed: string }[]
+
+    if (sourceRows.length === 0) return []
+
+    const dailyRows = this.db.prepare(`
+      SELECT source, date(start_time) as day, COUNT(*) as count
+      FROM sessions
+      WHERE hidden_at IS NULL AND start_time >= date('now', '-7 days')
+      GROUP BY source, date(start_time)
+    `).all() as { source: string; day: string; count: number }[]
+
+    const days: string[] = []
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000)
+      days.push(d.toISOString().slice(0, 10))
+    }
+
+    const dailyMap = new Map<string, Map<string, number>>()
+    for (const row of dailyRows) {
+      if (!dailyMap.has(row.source)) dailyMap.set(row.source, new Map())
+      dailyMap.get(row.source)!.set(row.day, row.count)
+    }
+
+    return sourceRows.map(row => ({
+      source: row.source,
+      sessionCount: row.count,
+      latestIndexed: row.latest_indexed ?? '',
+      dailyCounts: days.map(d => dailyMap.get(row.source)?.get(d) ?? 0),
+    }))
+  }
+
   listProjects(): string[] {
     const rows = this.db.prepare(
       'SELECT DISTINCT project FROM sessions WHERE hidden_at IS NULL AND project IS NOT NULL ORDER BY project'
