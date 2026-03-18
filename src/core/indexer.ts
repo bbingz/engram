@@ -42,7 +42,6 @@ export class Indexer {
   ): AuthoritativeSessionSnapshot {
     const authoritativeNode = this.opts?.authoritativeNode ?? 'local'
     const syncPayload = {
-      source: info.source,
       cwd: info.cwd,
       project: info.project,
       model: info.model,

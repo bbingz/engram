@@ -24,8 +24,9 @@ export class SyncEngine {
 
   private normalizeRemoteSnapshot(peerName: string, raw: SessionInfo | AuthoritativeSessionSnapshot): AuthoritativeSessionSnapshot {
     const existing = this.db.getSession(raw.id)
+    const rawFilePath = 'filePath' in raw ? raw.filePath : undefined
     const sourceLocator = existing?.filePath
-      ?? ('sourceLocator' in raw && raw.sourceLocator ? raw.sourceLocator : raw.filePath)
+      ?? ('sourceLocator' in raw && raw.sourceLocator ? raw.sourceLocator : rawFilePath)
     const indexedAt = 'indexedAt' in raw && raw.indexedAt ? raw.indexedAt : raw.startTime
     const authoritativeNode = 'authoritativeNode' in raw && raw.authoritativeNode ? raw.authoritativeNode : peerName
     const syncVersion = 'syncVersion' in raw && typeof raw.syncVersion === 'number' ? raw.syncVersion : raw.messageCount
@@ -38,7 +39,7 @@ export class SyncEngine {
       syncVersion,
       snapshotHash,
       indexedAt,
-      sourceLocator: sourceLocator ?? `sync://${peerName}/${raw.filePath ?? raw.id}`,
+      sourceLocator: sourceLocator ?? `sync://${peerName}/${rawFilePath ?? raw.id}`,
       startTime: raw.startTime,
       endTime: raw.endTime,
       cwd: raw.cwd,

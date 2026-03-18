@@ -5,6 +5,7 @@
 import { join } from 'path'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
+import { IndexJobRunner } from './core/index-job-runner.js'
 import { startWatcher, WATCHED_SOURCES } from './core/watcher.js'
 import { ensureDataDirs, createAdapters, initVectorDeps, initViking } from './core/bootstrap.js'
 import { createApp } from './web.js'
@@ -53,6 +54,7 @@ const vecDeps = initVectorDeps(db, {
 if (!vecDeps) {
   emit({ event: 'warning', message: 'Vector store unavailable' })
 }
+const indexJobRunner = new IndexJobRunner(db, vecDeps?.vectorStore, vecDeps?.embeddingClient)
 
 // Initial full scan
 indexer.indexAll().then(async (indexed) => {
@@ -76,14 +78,12 @@ indexer.indexAll().then(async (indexed) => {
     if (vacuumed) emit({ event: 'db_maintenance', action: 'vacuum' })
   } catch { /* ignore */ }
 
-  if (vecDeps) {
-    try {
-      const embedded = await vecDeps.embeddingIndexer.indexAll()
-      if (embedded > 0) {
-        emit({ event: 'embeddings_ready', embedded })
-      }
-    } catch { /* ignore */ }
-  }
+  try {
+    const jobSummary = await indexJobRunner.runRecoverableJobs()
+    if (jobSummary.completed > 0 || jobSummary.notApplicable > 0) {
+      emit({ event: 'index_jobs_recovered', ...jobSummary })
+    }
+  } catch { /* ignore */ }
 }).catch(err => {
   emit({ event: 'error', message: String(err) })
 })
@@ -156,6 +156,7 @@ const watcher = startWatcher(adapters, indexer, {
   onIndexed: (sessionId, messageCount) => {
     emit({ event: 'watcher_indexed', total: db.countSessions() })
     getAutoSummary()?.onSessionIndexed(sessionId, messageCount)
+    indexJobRunner.runRecoverableJobs().catch(() => {})
   },
 })
 
@@ -173,6 +174,7 @@ const rescanTimer = setInterval(async () => {
     if (indexed > 0) {
       const total = db.countSessions()
       emit({ event: 'rescan', indexed, total })
+      indexJobRunner.runRecoverableJobs().catch(() => {})
     }
   } catch (_) { /* ignore */ }
 }, RESCAN_INTERVAL)
@@ -187,6 +189,7 @@ async function syncAndEmit(): Promise<void> {
   const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
   if (totalPulled > 0) {
     emit({ event: 'sync_complete', results, totalPulled, total: db.countSessions() })
+    indexJobRunner.runRecoverableJobs().catch(() => {})
   }
 }
 

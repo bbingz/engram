@@ -10,6 +10,7 @@ import { join } from 'path'
 
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
+import { IndexJobRunner } from './core/index-job-runner.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
 import { ensureDataDirs, createAdapters, initVectorDeps, initViking } from './core/bootstrap.js'
@@ -56,6 +57,7 @@ const vecDeps = initVectorDeps(db, {
 const vectorDeps: GetContextDeps = vecDeps
   ? { vectorStore: vecDeps.vectorStore, embed: (text) => vecDeps.embeddingClient.embed(text) }
   : {}
+const indexJobRunner = new IndexJobRunner(db, vecDeps?.vectorStore, vecDeps?.embeddingClient)
 
 const manageProjectAliasTool = {
   name: 'manage_project_alias',
@@ -169,13 +171,15 @@ indexer.indexAll().then(async (count) => {
   if (count > 0) {
     process.stderr.write(`[engram] Indexed ${count} new sessions\n`)
   }
-  if (vecDeps) {
-    await vecDeps.embeddingIndexer.indexAll().catch(() => {})
-  }
+  await indexJobRunner.runRecoverableJobs().catch(() => {})
 }).catch(() => {})
 
 // 启动文件监听
-const watcher = startWatcher(adapters, indexer)
+const watcher = startWatcher(adapters, indexer, {
+  onIndexed: () => {
+    indexJobRunner.runRecoverableJobs().catch(() => {})
+  },
+})
 
 const transport = new StdioServerTransport()
 await server.connect(transport)

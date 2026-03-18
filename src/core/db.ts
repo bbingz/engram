@@ -671,6 +671,37 @@ export class Database {
     tx(jobKinds)
   }
 
+  takeRecoverableIndexJobs(limit: number): PersistedIndexJob[] {
+    const rows = this.db.prepare(`
+      SELECT id, session_id, job_kind, target_sync_version, status, retry_count, last_error, created_at, updated_at
+      FROM session_index_jobs
+      WHERE status IN ('pending', 'failed_retryable')
+      ORDER BY CASE job_kind WHEN 'fts' THEN 0 ELSE 1 END, created_at, id
+      LIMIT @limit
+    `).all({ limit }) as Array<{
+      id: string
+      session_id: string
+      job_kind: IndexJobKind
+      target_sync_version: number
+      status: IndexJobStatus
+      retry_count: number
+      last_error: string | null
+      created_at: string
+      updated_at: string
+    }>
+    return rows.map(row => ({
+      id: row.id,
+      sessionId: row.session_id,
+      jobKind: row.job_kind,
+      targetSyncVersion: row.target_sync_version,
+      status: row.status,
+      retryCount: row.retry_count,
+      lastError: row.last_error ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }))
+  }
+
   listIndexJobs(sessionId: string): PersistedIndexJob[] {
     const rows = this.db.prepare(`
       SELECT id, session_id, job_kind, target_sync_version, status, retry_count, last_error, created_at, updated_at
@@ -699,6 +730,45 @@ export class Database {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }))
+  }
+
+  markIndexJobCompleted(id: string): void {
+    this.db.prepare(`
+      UPDATE session_index_jobs
+      SET status = 'completed', last_error = NULL, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(id)
+  }
+
+  markIndexJobNotApplicable(id: string): void {
+    this.db.prepare(`
+      UPDATE session_index_jobs
+      SET status = 'not_applicable', last_error = NULL, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(id)
+  }
+
+  markIndexJobRetryableFailure(id: string, error: string): void {
+    this.db.prepare(`
+      UPDATE session_index_jobs
+      SET status = 'failed_retryable',
+          retry_count = retry_count + 1,
+          last_error = ?,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(error, id)
+  }
+
+  replaceFtsContent(sessionId: string, contents: string[]): void {
+    const deleteStmt = this.db.prepare('DELETE FROM sessions_fts WHERE session_id = ?')
+    const insertStmt = this.db.prepare('INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)')
+    const tx = this.db.transaction(() => {
+      deleteStmt.run(sessionId)
+      for (const content of contents) {
+        if (content.trim()) insertStmt.run(sessionId, content)
+      }
+    })
+    tx()
   }
 
   needsCountBackfill(): string[] {
