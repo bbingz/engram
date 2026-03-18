@@ -497,21 +497,26 @@ export class Database {
   }
 
   runPostMigrationBackfill(): void {
-    this.db.exec(`
+    // Incremental: only backfill sessions not yet in session_local_state
+    // and sessions missing authoritative_node. Safe to run every startup.
+    const inserted = this.db.prepare(`
       INSERT INTO session_local_state (session_id, hidden_at, custom_name, local_readable_path)
       SELECT id, hidden_at, custom_name, file_path
       FROM sessions
       WHERE id NOT IN (SELECT session_id FROM session_local_state)
-    `)
+    `).run()
 
-    this.db.exec(`
+    const updated = this.db.prepare(`
       UPDATE sessions
       SET
         authoritative_node = COALESCE(authoritative_node, origin, 'local'),
         source_locator = COALESCE(source_locator, file_path),
         sync_version = COALESCE(sync_version, 0),
         snapshot_hash = COALESCE(snapshot_hash, '')
-    `)
+      WHERE authoritative_node IS NULL
+    `).run()
+
+    // Only does work when there are unmigrated rows — effectively O(0) on subsequent starts
   }
 
   getSyncTime(peerName: string): string | null {
@@ -897,12 +902,13 @@ export class Database {
     return false
   }
 
-  // Remove duplicate file_path entries, keeping the most recently indexed one
+  // Remove duplicate file_path entries, keeping the most recently indexed one.
+  // Skip empty/null file_path values — authoritative snapshots may have empty legacy paths.
   deduplicateFilePaths(): number {
     const result = this.db.prepare(`
       DELETE FROM sessions WHERE rowid NOT IN (
         SELECT MAX(rowid) FROM sessions GROUP BY file_path
-      )
+      ) AND file_path IS NOT NULL AND file_path != ''
     `).run()
     return result.changes
   }

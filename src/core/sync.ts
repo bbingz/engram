@@ -23,10 +23,11 @@ export class SyncEngine {
   ) {}
 
   private normalizeRemoteSnapshot(peerName: string, raw: SessionInfo | AuthoritativeSessionSnapshot): AuthoritativeSessionSnapshot {
-    const existing = this.db.getSession(raw.id)
     const rawFilePath = 'filePath' in raw ? raw.filePath : undefined
-    const sourceLocator = existing?.filePath
-      ?? ('sourceLocator' in raw && raw.sourceLocator ? raw.sourceLocator : rawFilePath)
+    // Prefer remote's sourceLocator, then raw filePath from sync payload.
+    // Do NOT fall back to local existing.filePath — that's a local path and would pollute ownership.
+    const sourceLocator = ('sourceLocator' in raw && raw.sourceLocator ? raw.sourceLocator : rawFilePath)
+      ?? ''
     const indexedAt = 'indexedAt' in raw && raw.indexedAt ? raw.indexedAt : raw.startTime
     const authoritativeNode = 'authoritativeNode' in raw && raw.authoritativeNode ? raw.authoritativeNode : peerName
     const syncVersion = 'syncVersion' in raw && typeof raw.syncVersion === 'number' ? raw.syncVersion : raw.messageCount

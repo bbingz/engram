@@ -42,9 +42,20 @@ export class IndexJobRunner {
       return
     }
 
+    // Preserve existing FTS content (full user/assistant messages indexed by Indexer).
+    // Only rebuild if no existing content — avoid regressing from full messages to summary-only.
+    const existing = this.db.getFtsContent(job.sessionId)
+    if (existing.length > 0) {
+      this.db.markIndexJobCompleted(job.id)
+      return
+    }
+
+    // Fallback: no existing FTS content, index metadata fields
     const searchableText = [snapshot.summary ?? '', snapshot.project ?? '', snapshot.model ?? '']
       .filter(Boolean)
-    this.db.replaceFtsContent(job.sessionId, searchableText)
+    if (searchableText.length > 0) {
+      this.db.replaceFtsContent(job.sessionId, searchableText)
+    }
     this.db.markIndexJobCompleted(job.id)
   }
 
@@ -62,7 +73,8 @@ export class IndexJobRunner {
     }
 
     if (!this.store || !this.client) {
-      this.db.markIndexJobNotApplicable(job.id)
+      // No embedding provider configured — leave job as pending for future retry
+      // when provider becomes available, instead of permanently closing it.
       return
     }
 
