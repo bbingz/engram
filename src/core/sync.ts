@@ -1,5 +1,7 @@
 import type { Database } from './db.js'
 import type { SessionInfo } from '../adapters/types.js'
+import type { AuthoritativeSessionSnapshot, SyncCursor } from './session-snapshot.js'
+import { SessionSnapshotWriter } from './session-writer.js'
 
 export interface SyncPeer {
   name: string
@@ -16,8 +18,47 @@ export interface SyncResult {
 export class SyncEngine {
   constructor(
     private db: Database,
-    private fetchFn: typeof fetch = fetch
+    private fetchFn: typeof fetch = fetch,
+    private writer: Pick<SessionSnapshotWriter, 'writeAuthoritativeSnapshot'> = new SessionSnapshotWriter(db),
   ) {}
+
+  private normalizeRemoteSnapshot(peerName: string, raw: SessionInfo | AuthoritativeSessionSnapshot): AuthoritativeSessionSnapshot {
+    const existing = this.db.getSession(raw.id)
+    const sourceLocator = existing?.filePath
+      ?? ('sourceLocator' in raw && raw.sourceLocator ? raw.sourceLocator : raw.filePath)
+    const indexedAt = 'indexedAt' in raw && raw.indexedAt ? raw.indexedAt : raw.startTime
+    const authoritativeNode = 'authoritativeNode' in raw && raw.authoritativeNode ? raw.authoritativeNode : peerName
+    const syncVersion = 'syncVersion' in raw && typeof raw.syncVersion === 'number' ? raw.syncVersion : raw.messageCount
+    const snapshotHash = 'snapshotHash' in raw && raw.snapshotHash ? raw.snapshotHash : `${raw.id}:${raw.messageCount}:${raw.summary ?? ''}`
+
+    return {
+      id: raw.id,
+      source: raw.source,
+      authoritativeNode,
+      syncVersion,
+      snapshotHash,
+      indexedAt,
+      sourceLocator: sourceLocator ?? `sync://${peerName}/${raw.filePath ?? raw.id}`,
+      startTime: raw.startTime,
+      endTime: raw.endTime,
+      cwd: raw.cwd,
+      project: raw.project,
+      model: raw.model,
+      messageCount: raw.messageCount,
+      userMessageCount: raw.userMessageCount,
+      assistantMessageCount: raw.assistantMessageCount,
+      toolMessageCount: raw.toolMessageCount,
+      systemMessageCount: raw.systemMessageCount,
+      summary: raw.summary,
+      summaryMessageCount: 'summaryMessageCount' in raw ? raw.summaryMessageCount : undefined,
+      origin: peerName,
+    }
+  }
+
+  private buildSyncUrl(peer: SyncPeer, cursor: SyncCursor | null, limit: number): string {
+    if (!cursor) return `${peer.url}/api/sync/sessions?limit=${limit}`
+    return `${peer.url}/api/sync/sessions?cursor_indexed_at=${encodeURIComponent(cursor.indexedAt)}&cursor_id=${encodeURIComponent(cursor.sessionId)}&limit=${limit}`
+  }
 
   async pullFromPeer(peer: SyncPeer): Promise<SyncResult> {
     const result: SyncResult = { peer: peer.name, pulled: 0, skipped: 0 }
@@ -31,13 +72,13 @@ export class SyncEngine {
         return result
       }
 
-      let since = this.db.getSyncTime(peer.name) ?? '1970-01-01T00:00:00Z'
+      let cursor = this.db.getSyncCursor(peer.name)
       const PAGE_LIMIT = 100
 
       // Paginate: keep pulling until we get fewer than PAGE_LIMIT sessions
       while (true) {
         const sessionsRes = await this.fetchFn(
-          `${peer.url}/api/sync/sessions?since=${encodeURIComponent(since)}&limit=${PAGE_LIMIT}`,
+          this.buildSyncUrl(peer, cursor, PAGE_LIMIT),
           { signal: AbortSignal.timeout(30000) }
         )
         if (!sessionsRes.ok) {
@@ -45,30 +86,30 @@ export class SyncEngine {
           return result
         }
 
-        const { sessions } = await sessionsRes.json() as { sessions: SessionInfo[] }
+        const { sessions } = await sessionsRes.json() as { sessions: Array<SessionInfo | AuthoritativeSessionSnapshot> }
 
-        let maxIndexedAt = since
+        let pagePulled = 0
+        let pageSkipped = 0
+        let lastCursor: SyncCursor | null = cursor
         for (const session of sessions) {
-          const existing = this.db.getSession(session.id)
-          if (existing && existing.messageCount >= session.messageCount) {
-            result.skipped++
+          const snapshot = this.normalizeRemoteSnapshot(peer.name, session)
+          const writeResult = this.writer.writeAuthoritativeSnapshot(snapshot)
+          if (writeResult.action === 'noop') {
+            pageSkipped++
           } else {
-            this.db.upsertSession({
-              ...session,
-              origin: peer.name,
-              filePath: existing ? existing.filePath : `sync://${peer.name}/${session.filePath}`,
-            })
-            result.pulled++
+            pagePulled++
           }
-          // Track the max indexed_at to use as the next cursor
-          const ts = session.indexedAt ?? session.startTime
-          if (ts > maxIndexedAt) maxIndexedAt = ts
+          lastCursor = {
+            indexedAt: snapshot.indexedAt,
+            sessionId: snapshot.id,
+          }
         }
 
-        // Advance cursor to the latest timestamp we saw (not local now())
-        if (sessions.length > 0) {
-          this.db.setSyncTime(peer.name, maxIndexedAt)
-          since = maxIndexedAt
+        if (sessions.length > 0 && lastCursor) {
+          this.db.setSyncCursor(peer.name, lastCursor)
+          cursor = lastCursor
+          result.pulled += pagePulled
+          result.skipped += pageSkipped
         }
 
         // If we got fewer than the limit, we've fetched everything

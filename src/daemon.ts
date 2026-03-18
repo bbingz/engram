@@ -18,6 +18,7 @@ const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
 const db = new Database(dbPath)
 const adapters = createAdapters()
 const settings = readFileSettings()
+const authoritativeNode = settings.syncNodeName ?? 'local'
 
 // Apply noise filter settings
 db.noiseSettings = {
@@ -29,7 +30,7 @@ db.noiseSettings = {
 // Viking bridge — optional external context engine
 const vikingBridge = initViking(settings)
 
-const indexer = new Indexer(db, adapters, { viking: vikingBridge })
+const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode })
 
 function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')

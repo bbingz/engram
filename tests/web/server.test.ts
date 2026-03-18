@@ -120,6 +120,62 @@ describe('Web Server', () => {
     expect(res.status).toBe(400)
   })
 
+  it('GET /api/sync/sessions serves sessions with composite cursor semantics', async () => {
+    db.upsertAuthoritativeSnapshot({
+      id: 'sess-001',
+      source: 'codex',
+      authoritativeNode: 'node-a',
+      syncVersion: 1,
+      snapshotHash: 'hash-1',
+      indexedAt: '2026-03-18T12:00:00Z',
+      sourceLocator: '/remote/sess-001.jsonl',
+      startTime: '2026-03-18T12:00:00Z',
+      cwd: '/repo',
+      messageCount: 2,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+    } as any)
+    db.upsertAuthoritativeSnapshot({
+      id: 'sess-002',
+      source: 'codex',
+      authoritativeNode: 'node-a',
+      syncVersion: 1,
+      snapshotHash: 'hash-2',
+      indexedAt: '2026-03-18T12:00:00Z',
+      sourceLocator: '/remote/sess-002.jsonl',
+      startTime: '2026-03-18T12:00:00Z',
+      cwd: '/repo',
+      messageCount: 2,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+    } as any)
+    db.upsertAuthoritativeSnapshot({
+      id: 'sess-003',
+      source: 'codex',
+      authoritativeNode: 'node-a',
+      syncVersion: 1,
+      snapshotHash: 'hash-3',
+      indexedAt: '2026-03-18T12:01:00Z',
+      sourceLocator: '/remote/sess-003.jsonl',
+      startTime: '2026-03-18T12:01:00Z',
+      cwd: '/repo',
+      messageCount: 2,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+    } as any)
+
+    const res = await app.request('/api/sync/sessions?cursor_indexed_at=2026-03-18T12:00:00Z&cursor_id=sess-001&limit=10')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.sessions.map((s: { id: string }) => s.id)).toEqual(['sess-002', 'sess-003'])
+  })
+
   it('GET /api/search/semantic returns 501 when vector store not configured', async () => {
     const res = await app.request('/api/search/semantic?q=test+query')
     expect(res.status).toBe(501)

@@ -95,10 +95,19 @@ export function createApp(db: Database, opts?: {
 
   // Sync: sessions since timestamp
   app.get('/api/sync/sessions', (c) => {
-    const since = c.req.query('since')
-    if (!since) return c.json({ error: 'since parameter required' }, 400)
     const limit = parseInt(c.req.query('limit') ?? '100', 10)
-    const sessions = db.listSessionsSince(since, limit)
+    const cursorIndexedAt = c.req.query('cursor_indexed_at')
+    const cursorId = c.req.query('cursor_id')
+
+    let sessions
+    if (cursorIndexedAt && cursorId) {
+      sessions = db.listSessionsAfterCursor({ indexedAt: cursorIndexedAt, sessionId: cursorId }, limit)
+    } else {
+      const since = c.req.query('since')
+      if (!since) return c.json({ error: 'since parameter required' }, 400)
+      sessions = db.listSessionsSince(since, limit)
+    }
+
     return c.json({ sessions })
   })
 

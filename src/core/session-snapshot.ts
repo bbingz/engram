@@ -8,6 +8,7 @@ export interface AuthoritativeSessionSnapshot {
   snapshotHash: string
   indexedAt: string
   sourceLocator: string
+  sizeBytes?: number
   startTime: string
   endTime?: string
   cwd: string

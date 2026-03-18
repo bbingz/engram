@@ -60,4 +60,23 @@ describe('mergeSessionSnapshot', () => {
     expect(result.action).toBe('noop')
     expect(result.changeSet.flags.size).toBe(0)
   })
+
+  it('preserves populated optional fields when newer snapshot omits them', () => {
+    const result = mergeSessionSnapshot(
+      makeSnapshot({ syncVersion: 1, snapshotHash: 'hash-1', project: 'engram', model: 'gpt-4o', summary: 'old summary' }),
+      makeSnapshot({ syncVersion: 2, snapshotHash: 'hash-2', project: undefined, model: undefined, summary: undefined }),
+    )
+
+    expect(result.action).toBe('merge')
+    expect(result.merged.project).toBe('engram')
+    expect(result.merged.model).toBe('gpt-4o')
+    expect(result.merged.summary).toBe('old summary')
+  })
+
+  it('rejects equal syncVersion with different snapshot hash', () => {
+    expect(() => mergeSessionSnapshot(
+      makeSnapshot({ syncVersion: 2, snapshotHash: 'hash-a' }),
+      makeSnapshot({ syncVersion: 2, snapshotHash: 'hash-b' }),
+    )).toThrow(/snapshot hash/i)
+  })
 })

@@ -35,6 +35,7 @@ const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 // Settings + Viking bridge — must come before indexer so it can dual-write
 const fileSettings = readFileSettings()
 const vikingBridge = initViking(fileSettings)
+const authoritativeNode = fileSettings.syncNodeName ?? 'local'
 
 // Apply noise filter settings
 db.noiseSettings = {
@@ -43,7 +44,7 @@ db.noiseSettings = {
   hideAutoSummary: fileSettings.hideAutoSummary,
 }
 
-const indexer = new Indexer(db, adapters, { viking: vikingBridge })
+const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode })
 
 // Vector store — may fail if sqlite-vec can't load
 const vecDeps = initVectorDeps(db, {

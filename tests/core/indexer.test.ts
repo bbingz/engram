@@ -46,6 +46,17 @@ describe('Indexer', () => {
     expect(sessions[0].id).toBe('test-001')
   })
 
+  it('routes local session indexing through durable jobs', async () => {
+    makeSessionFile(sessionsDir, 'test-001b', '/Users/test', '修复登录 bug')
+    const codexAdapter = new CodexAdapter(join(tmpDir, 'sessions'))
+    const indexer = new Indexer(db, [codexAdapter], { authoritativeNode: 'local' })
+
+    const count = await indexer.indexAll()
+
+    expect(count).toBe(1)
+    expect(db.listIndexJobs('test-001b').map(j => j.jobKind).sort()).toEqual(['embedding', 'fts'])
+  })
+
   it('skips already-indexed files with same size', async () => {
     makeSessionFile(sessionsDir, 'test-002', '/Users/test', 'hello')
     const codexAdapter = new CodexAdapter(join(tmpDir, 'sessions'))
@@ -58,14 +69,13 @@ describe('Indexer', () => {
     expect(secondRun).toBe(0) // 第二次跳过
   })
 
-  it('indexes content for full-text search', async () => {
+  it('enqueues durable jobs for searchable content', async () => {
     makeSessionFile(sessionsDir, 'test-003', '/Users/test', '帮我修复 SSL 证书错误')
     const codexAdapter = new CodexAdapter(join(tmpDir, 'sessions'))
-    const indexer = new Indexer(db, [codexAdapter])
+    const indexer = new Indexer(db, [codexAdapter], { authoritativeNode: 'local' })
     await indexer.indexAll()
 
-    const results = db.searchSessions('SSL')
-    expect(results.length).toBeGreaterThan(0)
+    expect(db.listIndexJobs('test-003').map(j => j.jobKind).sort()).toEqual(['embedding', 'fts'])
   })
 
   it('indexAll with sources filter skips unmatched adapters', async () => {

@@ -319,6 +319,30 @@ export class Database {
     return rows.map(r => this.rowToSession(r))
   }
 
+  listSessionsAfterCursor(cursor: SyncCursor | null, limit = 100): AuthoritativeSessionSnapshot[] {
+    const rows = cursor
+      ? this.db.prepare(`
+          SELECT *
+          FROM sessions
+          WHERE hidden_at IS NULL
+            AND (
+              indexed_at > @indexedAt
+              OR (indexed_at = @indexedAt AND id > @sessionId)
+            )
+          ORDER BY indexed_at ASC, id ASC
+          LIMIT @limit
+        `).all({ indexedAt: cursor.indexedAt, sessionId: cursor.sessionId, limit }) as Record<string, unknown>[]
+      : this.db.prepare(`
+          SELECT *
+          FROM sessions
+          WHERE hidden_at IS NULL
+          ORDER BY indexed_at ASC, id ASC
+          LIMIT @limit
+        `).all({ limit }) as Record<string, unknown>[]
+
+    return rows.map(r => this.rowToAuthoritativeSnapshot(r))
+  }
+
   indexSessionContent(sessionId: string, messages: { role: string; content: string }[], summary?: string): void {
     const deleteStmt = this.db.prepare('DELETE FROM sessions_fts WHERE session_id = ?')
     const insertStmt = this.db.prepare('INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)')
@@ -391,8 +415,8 @@ export class Database {
   isIndexed(filePath: string, sizeBytes: number): boolean {
     // Also returns true for hidden sessions with unchanged size (keeps them hidden)
     const row = this.db.prepare(
-      'SELECT id FROM sessions WHERE file_path = ? AND size_bytes = ?'
-    ).get(filePath, sizeBytes)
+      'SELECT id FROM sessions WHERE (file_path = ? OR source_locator = ?) AND size_bytes = ?'
+    ).get(filePath, filePath, sizeBytes)
     return row !== undefined
   }
 
@@ -544,7 +568,7 @@ export class Database {
       ) VALUES (
         @id, @source, @startTime, @endTime, @cwd, @project, @model,
         @messageCount, @userMessageCount, @assistantMessageCount, @toolMessageCount, @systemMessageCount,
-        @summary, @summaryMessageCount, @legacyFilePath, 0, @indexedAt, @origin,
+        @summary, @summaryMessageCount, @legacyFilePath, @sizeBytes, @indexedAt, @origin,
         @authoritativeNode, @sourceLocator, @syncVersion, @snapshotHash
       )
       ON CONFLICT(id) DO UPDATE SET
@@ -552,15 +576,16 @@ export class Database {
         start_time = excluded.start_time,
         end_time = excluded.end_time,
         cwd = excluded.cwd,
-        project = excluded.project,
-        model = excluded.model,
+        project = COALESCE(excluded.project, sessions.project),
+        model = COALESCE(excluded.model, sessions.model),
         message_count = excluded.message_count,
         user_message_count = excluded.user_message_count,
         assistant_message_count = excluded.assistant_message_count,
         tool_message_count = excluded.tool_message_count,
         system_message_count = excluded.system_message_count,
-        summary = excluded.summary,
-        summary_message_count = excluded.summary_message_count,
+        summary = COALESCE(excluded.summary, sessions.summary),
+        summary_message_count = COALESCE(excluded.summary_message_count, sessions.summary_message_count),
+        size_bytes = excluded.size_bytes,
         indexed_at = excluded.indexed_at,
         origin = excluded.origin,
         authoritative_node = excluded.authoritative_node,
@@ -583,6 +608,7 @@ export class Database {
       summary: snapshot.summary ?? null,
       summaryMessageCount: snapshot.summaryMessageCount ?? null,
       legacyFilePath: localReadablePath,
+      sizeBytes: snapshot.sizeBytes ?? 0,
       indexedAt: snapshot.indexedAt,
       origin: snapshot.origin ?? snapshot.authoritativeNode,
       authoritativeNode: snapshot.authoritativeNode,
@@ -846,6 +872,7 @@ export class Database {
       snapshotHash: (row.snapshot_hash as string | null) ?? '',
       indexedAt: row.indexed_at as string,
       sourceLocator: ((row.source_locator as string | null) ?? (row.file_path as string | null) ?? '') as string,
+      sizeBytes: (row.size_bytes as number | null) ?? 0,
       startTime: row.start_time as string,
       endTime: (row.end_time as string | null) ?? undefined,
       cwd: (row.cwd as string | null) ?? '',

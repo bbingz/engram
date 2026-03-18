@@ -12,6 +12,21 @@ function buildEmbeddingText(snapshot: AuthoritativeSessionSnapshot): string {
   return [snapshot.summary ?? '', String(snapshot.messageCount)].join('\n')
 }
 
+function coalesceSnapshot(
+  current: AuthoritativeSessionSnapshot,
+  incoming: AuthoritativeSessionSnapshot,
+): AuthoritativeSessionSnapshot {
+  return {
+    ...incoming,
+    endTime: incoming.endTime ?? current.endTime,
+    project: incoming.project ?? current.project,
+    model: incoming.model ?? current.model,
+    summary: incoming.summary ?? current.summary,
+    summaryMessageCount: incoming.summaryMessageCount ?? current.summaryMessageCount,
+    origin: incoming.origin ?? current.origin,
+  }
+}
+
 export function mergeSessionSnapshot(
   current: AuthoritativeSessionSnapshot | null,
   incoming: AuthoritativeSessionSnapshot,
@@ -38,19 +53,25 @@ export function mergeSessionSnapshot(
     return { action: 'noop', merged: current, changeSet: { flags: new Set() } }
   }
 
+  if (incoming.syncVersion === current.syncVersion && incoming.snapshotHash !== current.snapshotHash) {
+    throw new Error(`Conflicting snapshot hash for session ${incoming.id} at syncVersion ${incoming.syncVersion}`)
+  }
+
+  const merged = coalesceSnapshot(current, incoming)
+
   const flags = new Set<ChangeFlag>(['sync_payload_changed'])
 
-  if (buildSearchText(current) !== buildSearchText(incoming)) {
+  if (buildSearchText(current) !== buildSearchText(merged)) {
     flags.add('search_text_changed')
   }
 
-  if (buildEmbeddingText(current) !== buildEmbeddingText(incoming)) {
+  if (buildEmbeddingText(current) !== buildEmbeddingText(merged)) {
     flags.add('embedding_text_changed')
   }
 
   return {
     action: 'merge',
-    merged: incoming,
+    merged,
     changeSet: { flags },
   }
 }

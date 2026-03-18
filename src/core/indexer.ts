@@ -1,16 +1,23 @@
 // src/core/indexer.ts
+import { createHash } from 'crypto'
 import { stat } from 'fs/promises'
 import type { SessionAdapter, SessionInfo } from '../adapters/types.js'
 import type { Database } from './db.js'
 import { resolveProjectName } from './project.js'
+import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
+import { SessionSnapshotWriter } from './session-writer.js'
 import { toVikingUri, type VikingBridge } from './viking-bridge.js'
 
 export class Indexer {
+  private writer: SessionSnapshotWriter
+
   constructor(
     private db: Database,
     private adapters: SessionAdapter[],
-    private opts?: { viking?: VikingBridge | null }
-  ) {}
+    private opts?: { viking?: VikingBridge | null; authoritativeNode?: string; writer?: SessionSnapshotWriter }
+  ) {
+    this.writer = opts?.writer ?? new SessionSnapshotWriter(db)
+  }
 
   private pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): void {
     if (!this.opts?.viking || messages.length === 0) return
@@ -25,6 +32,44 @@ export class Indexer {
         model: info.model ?? '',
       }).catch(() => {})
     }).catch(() => {})
+  }
+
+  private buildLocalAuthoritativeSnapshot(
+    current: AuthoritativeSessionSnapshot | null,
+    info: SessionInfo,
+    filePath: string,
+    messages: Array<{ role: string; content: string }>,
+  ): AuthoritativeSessionSnapshot {
+    const authoritativeNode = this.opts?.authoritativeNode ?? 'local'
+    const syncPayload = {
+      source: info.source,
+      cwd: info.cwd,
+      project: info.project,
+      model: info.model,
+      messageCount: info.messageCount,
+      userMessageCount: info.userMessageCount,
+      assistantMessageCount: info.assistantMessageCount,
+      toolMessageCount: info.toolMessageCount,
+      systemMessageCount: info.systemMessageCount,
+      summary: info.summary,
+      summaryMessageCount: messages.length,
+    }
+    const snapshotHash = createHash('sha256').update(JSON.stringify(syncPayload)).digest('hex')
+
+    return {
+      id: info.id,
+      source: info.source,
+      authoritativeNode,
+      syncVersion: current ? current.syncVersion + 1 : 1,
+      snapshotHash,
+      indexedAt: new Date().toISOString(),
+      sourceLocator: filePath,
+      sizeBytes: info.sizeBytes,
+      startTime: info.startTime,
+      endTime: info.endTime,
+      origin: authoritativeNode,
+      ...syncPayload,
+    }
   }
 
   // 全量扫描所有适配器，返回新增索引数量
@@ -60,18 +105,16 @@ export class Indexer {
             info.project = await resolveProjectName(info.cwd)
           }
 
-          this.db.upsertSession(info)
-
-          // 索引消息内容用于全文搜索（user + assistant）
           const messages: { role: string; content: string }[] = []
           for await (const msg of adapter.streamMessages(filePath)) {
             if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
               messages.push({ role: msg.role, content: msg.content })
             }
           }
-          if (messages.length > 0) {
-            this.db.indexSessionContent(info.id, messages, info.summary)
-          }
+
+          const current = this.db.getAuthoritativeSnapshot(info.id)
+          const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
+          this.writer.writeAuthoritativeSnapshot(snapshot)
 
           this.pushToViking(info, messages)
 
@@ -125,17 +168,16 @@ export class Indexer {
         info.project = await resolveProjectName(info.cwd)
       }
 
-      this.db.upsertSession({ ...info, sizeBytes: info.sizeBytes || fileSize })
-
       const messages: { role: string; content: string }[] = []
       for await (const msg of adapter.streamMessages(filePath)) {
         if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
           messages.push({ role: msg.role, content: msg.content })
         }
       }
-      if (messages.length > 0) {
-        this.db.indexSessionContent(info.id, messages, info.summary)
-      }
+
+      const current = this.db.getAuthoritativeSnapshot(info.id)
+      const snapshot = this.buildLocalAuthoritativeSnapshot(current, { ...info, sizeBytes: info.sizeBytes || fileSize }, filePath, messages)
+      this.writer.writeAuthoritativeSnapshot(snapshot)
 
       this.pushToViking(info, messages)
 
