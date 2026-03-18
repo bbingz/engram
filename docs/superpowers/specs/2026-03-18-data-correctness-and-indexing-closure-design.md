@@ -73,11 +73,13 @@ The current single-table session model is not sufficient for strict correctness 
 This table remains the primary session snapshot table, but it is narrowed conceptually to sync-managed fields:
 
 - session identity: `id`, `source`
+- authoritative owner: `authoritative_node`
 - source metadata: `cwd`, `project`, `model`
 - counts: `message_count`, `user_message_count`, `assistant_message_count`, `tool_message_count`, `system_message_count`
 - sync-visible summary: `summary`, `summary_message_count`
-- origin/source path metadata: `file_path`, `origin`
-- revision/order fields: new sync ordering and merge fields
+- peer-scoped source locator: `source_locator`
+- origin metadata: `origin`
+- revision/order fields: `sync_version`, `snapshot_hash`, composite sync ordering fields
 
 ### 2b. `session_local_state`
 
@@ -85,6 +87,7 @@ New table for local-only state that must never be overwritten by sync:
 
 - hidden flags
 - custom display name
+- `local_readable_path`
 - future UI-only annotations
 - any machine-local overrides
 
@@ -155,6 +158,16 @@ Only then may the peer cursor advance.
 
 If the process dies before that point, the whole page is replayed. Replays are safe because merge is idempotent.
 
+### 3d. Sync v2 protocol summary
+
+| Concern | Rule |
+|---------|------|
+| export order | `(indexed_at ASC, id ASC)` |
+| cursor shape | `(cursor_indexed_at, cursor_id)` |
+| page inclusion | `indexed_at > cursor_indexed_at OR (indexed_at = cursor_indexed_at AND id > cursor_id)` |
+| page commit | advance cursor only after full page merge + durable job persistence |
+| replay behavior | re-read from last committed cursor; merge handles duplicates idempotently |
+
 ---
 
 ## 4. Merge Semantics
@@ -168,16 +181,20 @@ Fields are split into two groups:
 - **sync-managed fields**: source metadata, counts, summary, origin, sync ordering markers
 - **local-only fields**: UI and machine-local state
 
-Remote updates may only affect sync-managed fields.
+Remote updates may only affect sync-managed fields. For every session, exactly one node is the authoritative producer of sync-managed state: the node identified by `authoritative_node`. Replica nodes may store and enrich local-only state, but they do not invent or overwrite authoritative sync-managed fields.
 
 ### 4b. Revision model
 
 Each sync-managed snapshot must include a monotonic remote revision signal. This does not need to be globally meaningful across all nodes; it only needs to let one peer say “this snapshot supersedes the prior snapshot I sent.”
 
-The simplest acceptable design is:
+The required design is:
 
-- peer-local revision based on the same composite ordering tuple used by sync export
-- optional payload hash for change detection
+- the authoritative node stores a per-session integer `sync_version`
+- `sync_version` increments whenever the authoritative node changes any sync-managed field payload
+- the authoritative node also stores `snapshot_hash`, computed from the exported sync-managed payload
+- sync export includes: `authoritative_node`, `sync_version`, `snapshot_hash`, `indexed_at`, `id`
+
+This defines the advancement event precisely: **a sync-managed payload change at the authoritative node**. Metadata-only corrections such as project rename, summary refresh, model correction, or count correction must increment `sync_version` if they change exported sync-managed payload.
 
 ### 4c. Merge behavior
 
@@ -189,9 +206,10 @@ Incoming snapshot merge must be:
 
 Rules:
 
-1. If the incoming remote revision is older than the stored revision from that peer, ignore it.
-2. If the incoming remote revision is equal and payload hash is equal, no-op.
-3. If the incoming remote revision is newer, overwrite sync-managed fields.
+1. If the incoming `authoritative_node` differs from the stored authoritative owner for the same session, reject the merge as invalid.
+2. If the incoming `sync_version` is older than the stored authoritative revision, ignore it.
+3. If the incoming `sync_version` is equal and `snapshot_hash` is equal, no-op.
+4. If the incoming `sync_version` is newer, overwrite sync-managed fields.
 4. Local-only fields remain untouched.
 5. Empty or missing values do not erase populated values unless deletion semantics are explicitly defined.
 
@@ -216,9 +234,15 @@ The system must stop treating embeddings as a best-effort side effect that is on
 
 After merge:
 
-- if transcript-derived searchable content changed, enqueue `fts`
-- if semantic-searchable content changed, enqueue `embedding`
+- if locally available searchable text changed, enqueue `fts`
+- if locally available embedding-eligible text changed, enqueue `embedding`
 - if only local-only state changed, enqueue nothing
+
+“Locally available” is intentional. This subproject does not introduce remote transcript retrieval. Therefore:
+
+- authoritative/local sessions with readable transcript content may enqueue both `fts` and `embedding`
+- metadata-only replicas may enqueue `fts` from summary and other sync-managed textual fields
+- metadata-only replicas must mark `embedding` as `not_applicable`, not `pending`
 
 ### 5b. Worker rules
 
@@ -240,6 +264,17 @@ On startup:
 - do not rely on full-table reindex to regain correctness
 
 Full reindex remains an administrative repair tool, not the normal correctness mechanism.
+
+### 5d. Persisted state meanings
+
+| State | Meaning |
+|-------|---------|
+| `merged` | latest authoritative snapshot has been merged locally |
+| `pending_index` | merged, but at least one applicable index job is unfinished |
+| `fully_indexed` | merged, and all applicable index jobs are completed |
+| `failed_retryable` | merged, but at least one applicable index job failed and is awaiting retry |
+
+`not_applicable` is a job-level outcome, not a session-level state.
 
 ---
 
@@ -292,7 +327,8 @@ One-time migration is acceptable and preferred.
 3. Create `session_index_jobs`.
 4. Upgrade sync cursor storage to composite cursor.
 5. Backfill local-state rows from current local-only columns.
-6. Seed indexing jobs for any sessions whose current index state cannot be proven complete.
+6. Split existing machine-sensitive `file_path` into `source_locator` and `local_readable_path`.
+7. Seed indexing jobs for any sessions whose current index state cannot be proven complete.
 
 ### Protocol upgrade
 
@@ -309,9 +345,10 @@ This subproject is only complete if behavior is provably improved, not merely if
 1. Sync more than one page of sessions sharing the same `indexed_at` and verify nothing is lost.
 2. Interrupt sync mid-page and verify replay does not skip or duplicate.
 3. Update summary/project/model without increasing message count and verify the newer snapshot wins.
-4. Ingest a new session via watcher/rescan/sync and verify both FTS and embedding eventually reflect it.
-5. Crash after merge but before embedding completion; restart and verify the pending job is recovered.
-6. Verify local-only fields survive remote merge untouched.
+4. Ingest a new authoritative/local session via watcher/rescan and verify both FTS and embedding eventually reflect it.
+5. Ingest a metadata-only sync replica and verify it reaches a valid closed state without a fake pending embedding job.
+6. Crash after merge but before embedding completion; restart and verify the pending job is recovered.
+7. Verify local-only fields survive remote merge untouched.
 
 ### Test layers
 
