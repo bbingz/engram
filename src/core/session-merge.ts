@@ -1,14 +1,8 @@
-import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
-
-export type ChangeFlag =
-  | 'sync_payload_changed'
-  | 'search_text_changed'
-  | 'embedding_text_changed'
-  | 'local_state_changed'
-
-export interface SessionChangeSet {
-  flags: Set<ChangeFlag>
-}
+import type {
+  AuthoritativeSessionSnapshot,
+  ChangeFlag,
+  SessionChangeSet,
+} from './session-snapshot.js'
 
 function buildSearchText(snapshot: AuthoritativeSessionSnapshot): string {
   return [snapshot.summary ?? '', snapshot.project ?? '', snapshot.model ?? ''].join('\n')

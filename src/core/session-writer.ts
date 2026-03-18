@@ -1,12 +1,10 @@
-import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
+import type {
+  AuthoritativeSessionSnapshot,
+  IndexJobKind,
+  SessionWriteResult,
+} from './session-snapshot.js'
 import type { Database } from './db.js'
-import type { IndexJobKind } from './session-snapshot.js'
 import { mergeSessionSnapshot } from './session-merge.js'
-
-export interface SessionWriteResult {
-  action: 'merge' | 'noop'
-  changeSet: ReturnType<typeof mergeSessionSnapshot>['changeSet']
-}
 
 export class SessionSnapshotWriter {
   constructor(private db: Database) {}

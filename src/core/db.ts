@@ -228,12 +228,14 @@ export class Database {
     this.db.prepare(`
       INSERT INTO sessions (id, source, start_time, end_time, cwd, project, model,
         message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
-        summary, file_path, size_bytes, indexed_at, agent_role, origin)
+        summary, file_path, size_bytes, indexed_at, agent_role, origin, authoritative_node, source_locator, sync_version, snapshot_hash)
       VALUES (@id, @source, @startTime, @endTime, @cwd, @project, @model,
         @messageCount, @userMessageCount, @assistantMessageCount, @toolMessageCount, @systemMessageCount,
-        @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin)
+        @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin, @authoritativeNode, @sourceLocator, 0, '')
       ON CONFLICT(id) DO UPDATE SET
         source = excluded.source,
+        cwd = excluded.cwd,
+        project = excluded.project,
         model = excluded.model,
         end_time = excluded.end_time,
         message_count = excluded.message_count,
@@ -245,7 +247,9 @@ export class Database {
         size_bytes = excluded.size_bytes,
         indexed_at = excluded.indexed_at,
         agent_role = excluded.agent_role,
-        origin = excluded.origin
+        origin = excluded.origin,
+        authoritative_node = COALESCE(sessions.authoritative_node, excluded.authoritative_node),
+        source_locator = COALESCE(excluded.source_locator, sessions.source_locator)
     `).run({
       id: session.id,
       source: session.source,
@@ -264,11 +268,18 @@ export class Database {
       sizeBytes: session.sizeBytes,
       agentRole: session.agentRole ?? null,
       origin: session.origin ?? 'local',
+      authoritativeNode: session.origin ?? 'local',
+      sourceLocator: session.filePath,
     })
   }
 
   getSession(id: string): SessionInfo | null {
-    const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    const row = this.db.prepare(`
+      SELECT s.*, ls.local_readable_path
+      FROM sessions s
+      LEFT JOIN session_local_state ls ON ls.session_id = s.id
+      WHERE s.id = ?
+    `).get(id) as Record<string, unknown> | undefined
     return row ? this.rowToSession(row) : null
   }
 
@@ -283,9 +294,14 @@ export class Database {
     const offset = opts.offset ?? 0
 
     const rows = this.db.prepare(`
-      SELECT * FROM sessions ${where}
-      ORDER BY start_time DESC
-      LIMIT @limit OFFSET @offset
+      SELECT base.*, ls.local_readable_path
+      FROM (
+        SELECT * FROM sessions ${where}
+        ORDER BY start_time DESC
+        LIMIT @limit OFFSET @offset
+      ) base
+      LEFT JOIN session_local_state ls ON ls.session_id = base.id
+      ORDER BY base.start_time DESC
     `).all({ ...params, limit, offset }) as Record<string, unknown>[]
 
     return rows.map(r => this.rowToSession(r))
@@ -293,9 +309,11 @@ export class Database {
 
   listSessionsSince(since: string, limit = 100): SessionInfo[] {
     const rows = this.db.prepare(`
-      SELECT * FROM sessions
-      WHERE indexed_at > @since AND hidden_at IS NULL
-      ORDER BY indexed_at ASC
+      SELECT s.*, ls.local_readable_path
+      FROM sessions s
+      LEFT JOIN session_local_state ls ON ls.session_id = s.id
+      WHERE s.indexed_at > @since AND s.hidden_at IS NULL
+      ORDER BY s.indexed_at ASC
       LIMIT @limit
     `).all({ since, limit }) as Record<string, unknown>[]
     return rows.map(r => this.rowToSession(r))
@@ -516,6 +534,7 @@ export class Database {
   }
 
   upsertAuthoritativeSnapshot(snapshot: AuthoritativeSessionSnapshot): void {
+    const localReadablePath = this.getLocalState(snapshot.id)?.localReadablePath ?? ''
     this.db.prepare(`
       INSERT INTO sessions (
         id, source, start_time, end_time, cwd, project, model,
@@ -563,7 +582,7 @@ export class Database {
       systemMessageCount: snapshot.systemMessageCount,
       summary: snapshot.summary ?? null,
       summaryMessageCount: snapshot.summaryMessageCount ?? null,
-      legacyFilePath: snapshot.sourceLocator,
+      legacyFilePath: localReadablePath,
       indexedAt: snapshot.indexedAt,
       origin: snapshot.origin ?? snapshot.authoritativeNode,
       authoritativeNode: snapshot.authoritativeNode,
@@ -807,7 +826,9 @@ export class Database {
       toolMessageCount: (row.tool_message_count as number) ?? 0,
       systemMessageCount: (row.system_message_count as number) ?? 0,
       summary: row.summary as string | undefined,
-      filePath: row.file_path as string,
+      filePath: (row.local_readable_path as string | undefined)
+        ?? (row.source_locator as string | undefined)
+        ?? (row.file_path as string),
       sizeBytes: row.size_bytes as number,
       indexedAt: row.indexed_at as string | undefined,
       agentRole: row.agent_role as string | undefined,

@@ -30,6 +30,21 @@ export interface SessionLocalState {
   localReadablePath?: string
 }
 
+export type ChangeFlag =
+  | 'sync_payload_changed'
+  | 'search_text_changed'
+  | 'embedding_text_changed'
+  | 'local_state_changed'
+
+export interface SessionChangeSet {
+  flags: Set<ChangeFlag>
+}
+
+export interface SessionWriteResult {
+  action: 'merge' | 'noop'
+  changeSet: SessionChangeSet
+}
+
 export type IndexJobKind = 'fts' | 'embedding'
 export type IndexJobStatus = 'pending' | 'running' | 'failed_retryable' | 'completed' | 'not_applicable'
 
