@@ -114,6 +114,95 @@ describe('Database', () => {
     expect(resultsEmpty).toHaveLength(0)
   })
 
+  it('creates session_local_state and session_index_jobs tables', () => {
+    const tables = db.getRawDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all() as { name: string }[]
+    const names = new Set(tables.map(t => t.name))
+    expect(names.has('session_local_state')).toBe(true)
+    expect(names.has('session_index_jobs')).toBe(true)
+  })
+
+  it('adds authoritative snapshot columns to sessions', () => {
+    const columns = db.getRawDb()
+      .prepare("PRAGMA table_info(sessions)")
+      .all() as { name: string }[]
+    const names = new Set(columns.map(c => c.name))
+    expect(names.has('authoritative_node')).toBe(true)
+    expect(names.has('source_locator')).toBe(true)
+    expect(names.has('sync_version')).toBe(true)
+    expect(names.has('snapshot_hash')).toBe(true)
+  })
+
+  it('backfills local_readable_path from legacy file_path without losing machine-local readability', () => {
+    db.getRawDb().exec(`
+      INSERT INTO sessions (
+        id, source, start_time, cwd, message_count, user_message_count,
+        assistant_message_count, tool_message_count, system_message_count,
+        file_path, size_bytes
+      ) VALUES (
+        'legacy-1', 'codex', '2026-03-18T12:00:00Z', '/repo', 2, 1, 1, 0, 0,
+        '/Users/test/.codex/sessions/legacy.jsonl', 100
+      )
+    `)
+
+    db.runPostMigrationBackfill()
+
+    expect(db.getLocalState('legacy-1')?.localReadablePath).toBe('/Users/test/.codex/sessions/legacy.jsonl')
+    expect(db.getAuthoritativeSnapshot('legacy-1')?.sourceLocator).toBe('/Users/test/.codex/sessions/legacy.jsonl')
+  })
+
+  it('stores sync cursor as indexed_at + session_id tuple', () => {
+    db.setSyncCursor('peer-a', { indexedAt: '2026-03-18T12:00:00Z', sessionId: 'sess-123' })
+    expect(db.getSyncCursor('peer-a')).toEqual({
+      indexedAt: '2026-03-18T12:00:00Z',
+      sessionId: 'sess-123',
+    })
+  })
+
+  it('upserts and reads authoritative snapshots with revision metadata', () => {
+    db.upsertAuthoritativeSnapshot({
+      id: 'sess-1',
+      source: 'codex',
+      authoritativeNode: 'node-a',
+      syncVersion: 2,
+      snapshotHash: 'hash-2',
+      indexedAt: '2026-03-18T12:00:00Z',
+      sourceLocator: '/remote/sess-1.jsonl',
+      startTime: '2026-03-18T11:00:00Z',
+      cwd: '/repo',
+      messageCount: 4,
+      userMessageCount: 2,
+      assistantMessageCount: 2,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+    } as any)
+
+    expect(db.getAuthoritativeSnapshot('sess-1')?.syncVersion).toBe(2)
+  })
+
+  it('creates durable jobs from a change set', () => {
+    db.upsertAuthoritativeSnapshot({
+      id: 'sess-1',
+      source: 'codex',
+      authoritativeNode: 'node-a',
+      syncVersion: 2,
+      snapshotHash: 'hash-2',
+      indexedAt: '2026-03-18T12:00:00Z',
+      sourceLocator: '/remote/sess-1.jsonl',
+      startTime: '2026-03-18T11:00:00Z',
+      cwd: '/repo',
+      messageCount: 4,
+      userMessageCount: 2,
+      assistantMessageCount: 2,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+    } as any)
+
+    db.insertIndexJobs('sess-1', 2, ['fts', 'embedding'])
+    expect(db.listIndexJobs('sess-1').map(j => j.jobKind).sort()).toEqual(['embedding', 'fts'])
+  })
+
   // --- isNoiseSession ---
 
   it('isNoiseSession identifies agent sessions', () => {

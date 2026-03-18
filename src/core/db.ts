@@ -1,6 +1,14 @@
 // src/core/db.ts
 import BetterSqlite3 from 'better-sqlite3'
 import type { SessionInfo, SourceName } from '../adapters/types.js'
+import type {
+  AuthoritativeSessionSnapshot,
+  IndexJobKind,
+  IndexJobStatus,
+  PersistedIndexJob,
+  SessionLocalState,
+  SyncCursor,
+} from './session-snapshot.js'
 
 export interface ListSessionsOptions {
   source?: SourceName
@@ -79,6 +87,10 @@ export interface SearchFilters {
   since?: string
 }
 
+function buildIndexJobId(sessionId: string, targetSyncVersion: number, jobKind: IndexJobKind): string {
+  return `${sessionId}:${targetSyncVersion}:${jobKind}`
+}
+
 export class Database {
   private db: BetterSqlite3.Database
   noiseSettings: NoiseFilterSettings = {}
@@ -103,6 +115,10 @@ export class Database {
       if (!colNames.has('system_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN system_message_count INTEGER NOT NULL DEFAULT 0")
       if (!colNames.has('tool_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN tool_message_count INTEGER NOT NULL DEFAULT 0")
       if (!colNames.has('summary_message_count')) this.db.exec("ALTER TABLE sessions ADD COLUMN summary_message_count INTEGER")
+      if (!colNames.has('authoritative_node')) this.db.exec("ALTER TABLE sessions ADD COLUMN authoritative_node TEXT")
+      if (!colNames.has('source_locator')) this.db.exec("ALTER TABLE sessions ADD COLUMN source_locator TEXT")
+      if (!colNames.has('sync_version')) this.db.exec("ALTER TABLE sessions ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 0")
+      if (!colNames.has('snapshot_hash')) this.db.exec("ALTER TABLE sessions ADD COLUMN snapshot_hash TEXT")
     }
 
     this.db.exec(`
@@ -120,13 +136,18 @@ export class Database {
         tool_message_count INTEGER NOT NULL DEFAULT 0,
         system_message_count INTEGER NOT NULL DEFAULT 0,
         summary TEXT,
+        summary_message_count INTEGER,
         file_path TEXT NOT NULL,
         size_bytes INTEGER NOT NULL DEFAULT 0,
         indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
         agent_role TEXT,
         hidden_at TEXT,
         custom_name TEXT,
-        origin TEXT DEFAULT 'local'
+        origin TEXT DEFAULT 'local',
+        authoritative_node TEXT,
+        source_locator TEXT,
+        sync_version INTEGER NOT NULL DEFAULT 0,
+        snapshot_hash TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -143,7 +164,8 @@ export class Database {
 
       CREATE TABLE IF NOT EXISTS sync_state (
         peer_name TEXT PRIMARY KEY,
-        last_sync_time TEXT NOT NULL
+        last_sync_time TEXT NOT NULL,
+        last_sync_session_id TEXT
       );
 
       CREATE TABLE IF NOT EXISTS metadata (
@@ -157,7 +179,35 @@ export class Database {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (alias, canonical)
       );
+
+      CREATE TABLE IF NOT EXISTS session_local_state (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        hidden_at TEXT,
+        custom_name TEXT,
+        local_readable_path TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS session_index_jobs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        job_kind TEXT NOT NULL,
+        target_sync_version INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_index_jobs_status ON session_index_jobs(status);
+      CREATE INDEX IF NOT EXISTS idx_session_index_jobs_session_id ON session_index_jobs(session_id);
     `)
+
+    const syncCols = this.db.prepare("PRAGMA table_info(sync_state)").all() as { name: string }[]
+    const syncColNames = new Set(syncCols.map(c => c.name))
+    if (syncCols.length > 0 && !syncColNames.has('last_sync_session_id')) {
+      this.db.exec("ALTER TABLE sync_state ADD COLUMN last_sync_session_id TEXT")
+    }
 
     // Migration: FTS v2 indexes user + assistant messages (v1 was user-only)
     // Reset size_bytes to force indexAll() to re-process all sessions for new FTS content
@@ -170,6 +220,8 @@ export class Database {
       try { this.db.exec('DELETE FROM vec_sessions') } catch { /* table may not exist yet */ }
       this.setMetadata('fts_version', FTS_VERSION)
     }
+
+    this.runPostMigrationBackfill()
   }
 
   upsertSession(session: SessionInfo): void {
@@ -402,6 +454,24 @@ export class Database {
     return this.db
   }
 
+  runPostMigrationBackfill(): void {
+    this.db.exec(`
+      INSERT INTO session_local_state (session_id, hidden_at, custom_name, local_readable_path)
+      SELECT id, hidden_at, custom_name, file_path
+      FROM sessions
+      WHERE id NOT IN (SELECT session_id FROM session_local_state)
+    `)
+
+    this.db.exec(`
+      UPDATE sessions
+      SET
+        authoritative_node = COALESCE(authoritative_node, origin, 'local'),
+        source_locator = COALESCE(source_locator, file_path),
+        sync_version = COALESCE(sync_version, 0),
+        snapshot_hash = COALESCE(snapshot_hash, '')
+    `)
+  }
+
   getSyncTime(peerName: string): string | null {
     const row = this.db.prepare(
       'SELECT last_sync_time FROM sync_state WHERE peer_name = ?'
@@ -411,8 +481,179 @@ export class Database {
 
   setSyncTime(peerName: string, time: string): void {
     this.db.prepare(
-      'INSERT INTO sync_state (peer_name, last_sync_time) VALUES (?, ?) ON CONFLICT(peer_name) DO UPDATE SET last_sync_time = excluded.last_sync_time'
-    ).run(peerName, time)
+      'INSERT INTO sync_state (peer_name, last_sync_time, last_sync_session_id) VALUES (?, ?, ?) ON CONFLICT(peer_name) DO UPDATE SET last_sync_time = excluded.last_sync_time'
+    ).run(peerName, time, null)
+  }
+
+  getSyncCursor(peerName: string): SyncCursor | null {
+    const row = this.db.prepare(
+      'SELECT last_sync_time, last_sync_session_id FROM sync_state WHERE peer_name = ?'
+    ).get(peerName) as { last_sync_time: string; last_sync_session_id: string | null } | undefined
+    if (!row?.last_sync_time || !row.last_sync_session_id) return null
+    return {
+      indexedAt: row.last_sync_time,
+      sessionId: row.last_sync_session_id,
+    }
+  }
+
+  setSyncCursor(peerName: string, cursor: SyncCursor): void {
+    this.db.prepare(`
+      INSERT INTO sync_state (peer_name, last_sync_time, last_sync_session_id)
+      VALUES (@peerName, @indexedAt, @sessionId)
+      ON CONFLICT(peer_name) DO UPDATE SET
+        last_sync_time = excluded.last_sync_time,
+        last_sync_session_id = excluded.last_sync_session_id
+    `).run({
+      peerName,
+      indexedAt: cursor.indexedAt,
+      sessionId: cursor.sessionId,
+    })
+  }
+
+  getAuthoritativeSnapshot(id: string): AuthoritativeSessionSnapshot | null {
+    const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    return row ? this.rowToAuthoritativeSnapshot(row) : null
+  }
+
+  upsertAuthoritativeSnapshot(snapshot: AuthoritativeSessionSnapshot): void {
+    this.db.prepare(`
+      INSERT INTO sessions (
+        id, source, start_time, end_time, cwd, project, model,
+        message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
+        summary, summary_message_count, file_path, size_bytes, indexed_at, origin,
+        authoritative_node, source_locator, sync_version, snapshot_hash
+      ) VALUES (
+        @id, @source, @startTime, @endTime, @cwd, @project, @model,
+        @messageCount, @userMessageCount, @assistantMessageCount, @toolMessageCount, @systemMessageCount,
+        @summary, @summaryMessageCount, @legacyFilePath, 0, @indexedAt, @origin,
+        @authoritativeNode, @sourceLocator, @syncVersion, @snapshotHash
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        source = excluded.source,
+        start_time = excluded.start_time,
+        end_time = excluded.end_time,
+        cwd = excluded.cwd,
+        project = excluded.project,
+        model = excluded.model,
+        message_count = excluded.message_count,
+        user_message_count = excluded.user_message_count,
+        assistant_message_count = excluded.assistant_message_count,
+        tool_message_count = excluded.tool_message_count,
+        system_message_count = excluded.system_message_count,
+        summary = excluded.summary,
+        summary_message_count = excluded.summary_message_count,
+        indexed_at = excluded.indexed_at,
+        origin = excluded.origin,
+        authoritative_node = excluded.authoritative_node,
+        source_locator = excluded.source_locator,
+        sync_version = excluded.sync_version,
+        snapshot_hash = excluded.snapshot_hash
+    `).run({
+      id: snapshot.id,
+      source: snapshot.source,
+      startTime: snapshot.startTime,
+      endTime: snapshot.endTime ?? null,
+      cwd: snapshot.cwd,
+      project: snapshot.project ?? null,
+      model: snapshot.model ?? null,
+      messageCount: snapshot.messageCount,
+      userMessageCount: snapshot.userMessageCount,
+      assistantMessageCount: snapshot.assistantMessageCount,
+      toolMessageCount: snapshot.toolMessageCount,
+      systemMessageCount: snapshot.systemMessageCount,
+      summary: snapshot.summary ?? null,
+      summaryMessageCount: snapshot.summaryMessageCount ?? null,
+      legacyFilePath: snapshot.sourceLocator,
+      indexedAt: snapshot.indexedAt,
+      origin: snapshot.origin ?? snapshot.authoritativeNode,
+      authoritativeNode: snapshot.authoritativeNode,
+      sourceLocator: snapshot.sourceLocator,
+      syncVersion: snapshot.syncVersion,
+      snapshotHash: snapshot.snapshotHash,
+    })
+  }
+
+  getLocalState(sessionId: string): SessionLocalState | null {
+    const row = this.db.prepare(`
+      SELECT session_id, hidden_at, custom_name, local_readable_path
+      FROM session_local_state
+      WHERE session_id = ?
+    `).get(sessionId) as {
+      session_id: string
+      hidden_at: string | null
+      custom_name: string | null
+      local_readable_path: string | null
+    } | undefined
+    if (!row) return null
+    return {
+      sessionId: row.session_id,
+      hiddenAt: row.hidden_at ?? undefined,
+      customName: row.custom_name ?? undefined,
+      localReadablePath: row.local_readable_path ?? undefined,
+    }
+  }
+
+  setLocalReadablePath(sessionId: string, localReadablePath: string | null): void {
+    this.db.prepare(`
+      INSERT INTO session_local_state (session_id, local_readable_path)
+      VALUES (?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET local_readable_path = excluded.local_readable_path
+    `).run(sessionId, localReadablePath)
+  }
+
+  insertIndexJobs(sessionId: string, targetSyncVersion: number, jobKinds: IndexJobKind[]): void {
+    const insert = this.db.prepare(`
+      INSERT INTO session_index_jobs (
+        id, session_id, job_kind, target_sync_version, status, retry_count, last_error, created_at, updated_at
+      ) VALUES (
+        @id, @sessionId, @jobKind, @targetSyncVersion, 'pending', 0, NULL, datetime('now'), datetime('now')
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        status = 'pending',
+        last_error = NULL,
+        updated_at = datetime('now')
+    `)
+    const tx = this.db.transaction((kinds: IndexJobKind[]) => {
+      for (const jobKind of kinds) {
+        insert.run({
+          id: buildIndexJobId(sessionId, targetSyncVersion, jobKind),
+          sessionId,
+          jobKind,
+          targetSyncVersion,
+        })
+      }
+    })
+    tx(jobKinds)
+  }
+
+  listIndexJobs(sessionId: string): PersistedIndexJob[] {
+    const rows = this.db.prepare(`
+      SELECT id, session_id, job_kind, target_sync_version, status, retry_count, last_error, created_at, updated_at
+      FROM session_index_jobs
+      WHERE session_id = ?
+      ORDER BY created_at, id
+    `).all(sessionId) as Array<{
+      id: string
+      session_id: string
+      job_kind: IndexJobKind
+      target_sync_version: number
+      status: IndexJobStatus
+      retry_count: number
+      last_error: string | null
+      created_at: string
+      updated_at: string
+    }>
+    return rows.map(row => ({
+      id: row.id,
+      sessionId: row.session_id,
+      jobKind: row.job_kind,
+      targetSyncVersion: row.target_sync_version,
+      status: row.status,
+      retryCount: row.retry_count,
+      lastError: row.last_error ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }))
   }
 
   needsCountBackfill(): string[] {
@@ -572,6 +813,31 @@ export class Database {
       agentRole: row.agent_role as string | undefined,
       origin: row.origin as string | undefined,
       summaryMessageCount: row.summary_message_count as number | undefined,
+    }
+  }
+
+  private rowToAuthoritativeSnapshot(row: Record<string, unknown>): AuthoritativeSessionSnapshot {
+    return {
+      id: row.id as string,
+      source: row.source as SourceName,
+      authoritativeNode: (row.authoritative_node as string | null) ?? (row.origin as string | null) ?? 'local',
+      syncVersion: (row.sync_version as number | null) ?? 0,
+      snapshotHash: (row.snapshot_hash as string | null) ?? '',
+      indexedAt: row.indexed_at as string,
+      sourceLocator: ((row.source_locator as string | null) ?? (row.file_path as string | null) ?? '') as string,
+      startTime: row.start_time as string,
+      endTime: (row.end_time as string | null) ?? undefined,
+      cwd: (row.cwd as string | null) ?? '',
+      project: (row.project as string | null) ?? undefined,
+      model: (row.model as string | null) ?? undefined,
+      messageCount: (row.message_count as number | null) ?? 0,
+      userMessageCount: (row.user_message_count as number | null) ?? 0,
+      assistantMessageCount: (row.assistant_message_count as number | null) ?? 0,
+      toolMessageCount: (row.tool_message_count as number | null) ?? 0,
+      systemMessageCount: (row.system_message_count as number | null) ?? 0,
+      summary: (row.summary as string | null) ?? undefined,
+      summaryMessageCount: (row.summary_message_count as number | null) ?? undefined,
+      origin: (row.origin as string | null) ?? undefined,
     }
   }
 }
