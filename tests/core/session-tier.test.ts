@@ -37,6 +37,14 @@ describe('computeTier()', () => {
       expect(computeTier(makeInput({ messageCount: 1 }))).toBe('skip')
     })
 
+    it('downgrades preamble-only to skip', () => {
+      expect(computeTier(makeInput({ messageCount: 5, isPreamble: true }))).toBe('skip')
+    })
+
+    it('downgrades probe sessions to skip', () => {
+      expect(computeTier(makeInput({ messageCount: 2, filePath: '/Users/x/.engram/probes/claude/session.jsonl' }))).toBe('skip')
+    })
+
     it('skip takes priority over premium (agent with 50 messages)', () => {
       expect(computeTier(makeInput({ agentRole: 'subagent', messageCount: 50 }))).toBe('skip')
     })
@@ -71,6 +79,10 @@ describe('computeTier()', () => {
   })
 
   describe('lite tier', () => {
+    it('downgrades no-reply to lite', () => {
+      expect(computeTier(makeInput({ messageCount: 3, assistantCount: 0, toolCount: 0 }))).toBe('lite')
+    })
+
     it('returns lite for /usage noise pattern in summary', () => {
       expect(computeTier(makeInput({ summary: 'Check /usage limits' }))).toBe('lite')
     })
