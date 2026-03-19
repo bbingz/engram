@@ -36,7 +36,7 @@
 | `src/daemon.ts` | Start git probe after indexer ready |
 | `macos/Engram/Views/SidebarView.swift` | Add WORKSPACE section (Repos, Work Graph) |
 | `macos/Engram/Views/MainWindowView.swift` | Add routing for .repos, .workGraph screens |
-| `macos/Engram/Core/DatabaseManager.swift` | Add git_repos queries |
+| `macos/Engram/Core/Database.swift` | Add git_repos queries to DatabaseManager class |
 
 ---
 
@@ -83,7 +83,7 @@ struct GitRepo: FetchableRecord, Decodable, Identifiable {
 }
 ```
 
-- [ ] **Step 4: Add DatabaseManager.listGitRepos()**
+- [ ] **Step 4: Add listGitRepos() to DatabaseManager in Database.swift**
 - [ ] **Step 5: Commit**
 
 `git commit -m "feat(workspace): add git_repos table, API, and Swift model"`
@@ -111,13 +111,13 @@ Key functions:
 
 ## Task 3: Sidebar + Routing
 
-- [ ] **Step 1: Add WORKSPACE section to SidebarView**
+- [ ] **Step 1: Add Repos and Work Graph to existing WORKSPACE sidebar section**
 
-New section between SESSIONS and CONFIG groups: "WORKSPACE" with Repos and Work Graph items.
+The WORKSPACE section already exists in `Screen.Section` (in `Models/Screen.swift`) with `.projects` and `.sourcePulse`. Add `.repos` and `.workGraph` cases to the `Screen` enum and place them in the existing WORKSPACE section. Keep `.projects` (it serves a different purpose — session grouping by project, while Repos shows git status). Reorder to: Repos, Projects, Work Graph, Sources.
 
 - [ ] **Step 2: Add Screen cases and routing in MainWindowView**
 
-Add `.repos` and `.workGraph` to Screen enum, route to ReposView and WorkGraphView.
+Add `.repos` and `.workGraph` to Screen enum in `Models/Screen.swift`, route to ReposView and WorkGraphView in MainWindowView.
 
 - [ ] **Step 3: Commit**
 
