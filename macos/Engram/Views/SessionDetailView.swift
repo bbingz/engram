@@ -5,23 +5,7 @@ import SwiftUI
 
 enum SourceDisplay {
     static func label(for source: String) -> String {
-        switch source {
-        case "claude-code":  return "Claude"
-        case "codex":        return "Codex"
-        case "copilot":      return "Copilot"
-        case "gemini-cli":   return "Gemini"
-        case "kimi":         return "Kimi"
-        case "qwen":         return "Qwen"
-        case "minimax":      return "MiniMax"
-        case "lobsterai":    return "Lobster AI"
-        case "cline":        return "Cline"
-        case "cursor":       return "Cursor"
-        case "windsurf":     return "Windsurf"
-        case "antigravity":  return "Antigravity"
-        case "opencode":     return "OpenCode"
-        case "iflow":        return "iFlow"
-        default:             return source
-        }
+        SourceColors.label(for: source)
     }
 
     static func color(for source: String) -> Color {
