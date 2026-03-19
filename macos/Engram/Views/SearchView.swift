@@ -279,7 +279,8 @@ struct SearchView: View {
                             hiddenAt: nil,
                             customName: nil,
                             tier: nil,
-                            toolMessageCount: 0
+                            toolMessageCount: 0,
+                            generatedTitle: nil
                         )
                         return SearchResult(
                             id: sess.id,

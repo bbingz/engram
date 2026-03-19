@@ -32,6 +32,15 @@ struct AISettingsSection: View {
     @State private var autoSummaryRefresh: Bool = false
     @State private var autoSummaryRefreshThreshold: Int = 20
 
+    // Title generation
+    @State private var titleProvider: String = "ollama"
+    @State private var titleBaseURL: String = ""
+    @State private var titleModel: String = "qwen2.5:3b"
+    @State private var titleApiKey: String = ""
+    @State private var titleAutoGenerate: Bool = false
+    @State private var titleTestStatus: String = ""
+    @State private var titleRegenerateStatus: String = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(icon: "brain", title: "AI Summary")
@@ -208,6 +217,107 @@ struct AISettingsSection: View {
                 }
                 .padding(.vertical, 4)
             }
+            // Title Generation
+            GroupBox("Title Generation") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Provider", selection: $titleProvider) {
+                        Text("Ollama").tag("ollama")
+                        Text("OpenAI").tag("openai")
+                        Text("Dashscope").tag("dashscope")
+                        Text("Custom").tag("custom")
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: titleProvider) { saveTitleSettings() }
+
+                    HStack {
+                        Text("URL")
+                        Spacer()
+                        TextField(titleProvider == "ollama" ? "http://localhost:11434" : "Base URL", text: $titleBaseURL)
+                            .frame(width: 260)
+                            .multilineTextAlignment(.trailing)
+                            .onChange(of: titleBaseURL) { saveTitleSettings() }
+                    }
+
+                    HStack {
+                        Text("Model")
+                        Spacer()
+                        TextField("qwen2.5:3b", text: $titleModel)
+                            .frame(width: 260)
+                            .multilineTextAlignment(.trailing)
+                            .onChange(of: titleModel) { saveTitleSettings() }
+                    }
+
+                    if titleProvider != "ollama" {
+                        HStack {
+                            Text("API Key")
+                            Spacer()
+                            SecureField("Required", text: $titleApiKey)
+                                .frame(width: 260)
+                                .multilineTextAlignment(.trailing)
+                                .onChange(of: titleApiKey) { saveTitleSettings() }
+                        }
+                    }
+
+                    Toggle("Auto-generate titles", isOn: $titleAutoGenerate)
+                        .onChange(of: titleAutoGenerate) { saveTitleSettings() }
+
+                    HStack(spacing: 8) {
+                        Button("Test Connection") {
+                            titleTestStatus = "Testing…"
+                            let url = titleBaseURL.isEmpty ? "http://localhost:11434" : titleBaseURL
+                            let testURL = titleProvider == "ollama"
+                                ? "\(url)/api/tags"
+                                : "\(url)/v1/models"
+                            Task {
+                                do {
+                                    var req = URLRequest(url: URL(string: testURL)!)
+                                    if !titleApiKey.isEmpty {
+                                        req.setValue("Bearer \(titleApiKey)", forHTTPHeaderField: "Authorization")
+                                    }
+                                    let (_, resp) = try await URLSession.shared.data(for: req)
+                                    let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                                    titleTestStatus = code == 200 ? "Connected" : "HTTP \(code)"
+                                } catch {
+                                    titleTestStatus = "Failed: \(error.localizedDescription)"
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+
+                        if !titleTestStatus.isEmpty {
+                            Text(titleTestStatus)
+                                .font(.caption)
+                                .foregroundStyle(titleTestStatus == "Connected" ? .green : .red)
+                        }
+
+                        Spacer()
+
+                        Button("Regenerate All") {
+                            titleRegenerateStatus = "Queued…"
+                            let port = readEngramSettings()?["httpPort"] as? Int ?? 3457
+                            Task {
+                                do {
+                                    var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/titles/regenerate-all")!)
+                                    req.httpMethod = "POST"
+                                    let (data, _) = try await URLSession.shared.data(for: req)
+                                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                                    titleRegenerateStatus = (json?["status"] as? String) ?? "Started"
+                                } catch {
+                                    titleRegenerateStatus = "Error"
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+
+                        if !titleRegenerateStatus.isEmpty {
+                            Text(titleRegenerateStatus)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
         }
         .onAppear { loadAISettings() }
     }
@@ -260,6 +370,20 @@ struct AISettingsSection: View {
         }
     }
 
+    private func saveTitleSettings() {
+        mutateEngramSettings { settings in
+            settings["titleProvider"] = titleProvider
+            if !titleBaseURL.isEmpty { settings["titleBaseURL"] = titleBaseURL } else { settings.removeValue(forKey: "titleBaseURL") }
+            settings["titleModel"] = titleModel
+            if titleProvider != "ollama" && !titleApiKey.isEmpty {
+                settings["titleApiKey"] = titleApiKey
+            } else {
+                settings.removeValue(forKey: "titleApiKey")
+            }
+            settings["titleAutoGenerate"] = titleAutoGenerate
+        }
+    }
+
     private func loadAISettings() {
         guard let settings = readEngramSettings() else { return }
 
@@ -285,5 +409,11 @@ struct AISettingsSection: View {
         if let v = settings["autoSummaryMinMessages"] as? Int { autoSummaryMinMessages = v }
         if let v = settings["autoSummaryRefresh"] as? Bool { autoSummaryRefresh = v }
         if let v = settings["autoSummaryRefreshThreshold"] as? Int { autoSummaryRefreshThreshold = v }
+
+        if let v = settings["titleProvider"] as? String { titleProvider = v }
+        if let v = settings["titleBaseURL"] as? String { titleBaseURL = v }
+        if let v = settings["titleModel"] as? String { titleModel = v }
+        if let v = settings["titleApiKey"] as? String { titleApiKey = v }
+        if let v = settings["titleAutoGenerate"] as? Bool { titleAutoGenerate = v }
     }
 }

@@ -24,6 +24,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let customName: String?
     let tier: String?
     let toolMessageCount: Int
+    let generatedTitle: String?
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -41,14 +42,14 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case customName       = "custom_name"
         case tier
         case toolMessageCount = "tool_message_count"
+        case generatedTitle   = "generated_title"
     }
 
     var displayTitle: String {
-        if let cn = customName {
-            if let s = summary { return "\(cn) | \(s)" }
-            return cn
-        }
-        return summary ?? "Untitled"
+        if let cn = customName, !cn.isEmpty { return cn }
+        if let gt = generatedTitle, !gt.isEmpty { return gt }
+        if let s = summary, !s.isEmpty { return s }
+        return "Untitled"
     }
     var msgCountLabel: String {
         var parts = ["\(userMessageCount) user", "\(assistantMessageCount) asst"]
