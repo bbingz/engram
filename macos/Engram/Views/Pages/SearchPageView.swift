@@ -7,6 +7,7 @@ struct SearchPageView: View {
     @State private var timeFilter = "All Time"
     @State private var results: [Session] = []
     @State private var isSearching = false
+    @State private var searchTask: Task<Void, Never>? = nil
 
     private let timeOptions = ["Today", "This Week", "This Month", "All Time"]
 
@@ -48,8 +49,10 @@ struct SearchPageView: View {
             .padding(24)
         }
         .onChange(of: query) { _ in
-            Task {
+            searchTask?.cancel()
+            searchTask = Task {
                 try? await Task.sleep(nanoseconds: 300_000_000)
+                guard !Task.isCancelled else { return }
                 await performSearch()
             }
         }

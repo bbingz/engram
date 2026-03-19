@@ -577,6 +577,17 @@ class DatabaseManager: ObservableObject {
         let projects: Int
     }
 
+    func countSessionsSince(_ since: String) throws -> Int {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let row = try Row.fetchOne(db, sql: """
+                SELECT COUNT(*) as n FROM sessions
+                WHERE hidden_at IS NULL AND start_time >= ?
+            """, arguments: [since])!
+            return row["n"] as Int
+        }
+    }
+
     func kpiStats() throws -> KPIStats {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in

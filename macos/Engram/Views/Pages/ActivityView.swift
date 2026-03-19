@@ -48,8 +48,8 @@ struct ActivityView: View {
             sourceDist = try db.sourceDistribution()
             let today = ISO8601DateFormatter().string(from: Calendar.current.startOfDay(for: Date()))
             let weekAgo = ISO8601DateFormatter().string(from: Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date())
-            todayCount = try db.listSessions(since: today, limit: 1000).count
-            weekCount = try db.listSessions(since: weekAgo, limit: 10000).count
+            todayCount = try db.countSessionsSince(today)
+            weekCount = try db.countSessionsSince(weekAgo)
         } catch { print("ActivityView error:", error) }
     }
 }

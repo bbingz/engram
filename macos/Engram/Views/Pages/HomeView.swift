@@ -11,12 +11,16 @@ struct HomeView: View {
     @State private var tiers: (premium: Int, normal: Int, lite: Int, skip: Int) = (0, 0, 0, 0)
     @State private var recentSessions: [Session] = []
     @State private var isLoading = true
+    @State private var alertMessage: String? = nil
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 greetingSection
                 kpiSection
+                if let alertMessage {
+                    AlertBanner(message: alertMessage)
+                }
                 chartsSection
                 distributionSection
                 recentSessionsSection
@@ -157,6 +161,7 @@ struct HomeView: View {
             sourceDist = try db.sourceDistribution()
             tiers = try db.tierDistribution()
             recentSessions = try db.recentSessions(limit: 8)
+            alertMessage = nil  // Alerts populated when health issues detected
         } catch {
             print("HomeView load error:", error)
         }

@@ -77,15 +77,3 @@ struct MainWindowView: View {
     }
 }
 
-/// Placeholder for pages not yet implemented
-struct StubPageView: View {
-    let screen: Screen
-
-    var body: some View {
-        EmptyState(
-            icon: screen.icon,
-            title: screen.title,
-            message: "Coming soon"
-        )
-    }
-}
