@@ -272,6 +272,26 @@ describe('Database', () => {
     expect(db.vacuumIfNeeded(15)).toBe(false)
   })
 
+  describe('tier migration', () => {
+    it('backfills tier column for existing sessions', () => {
+      db.upsertSession({ id: 'agent-1', source: 'claude-code', startTime: '2026-01-01T00:00:00Z', cwd: '/tmp', messageCount: 10, userMessageCount: 5, assistantMessageCount: 5, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f', sizeBytes: 100, agentRole: 'subagent' })
+      db.upsertSession({ id: 'skip-1', source: 'claude-code', startTime: '2026-01-01T00:00:00Z', cwd: '/tmp', messageCount: 1, userMessageCount: 1, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f2', sizeBytes: 100 })
+      db.upsertSession({ id: 'premium-1', source: 'claude-code', startTime: '2026-01-01T00:00:00Z', cwd: '/tmp', messageCount: 25, userMessageCount: 15, assistantMessageCount: 10, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f3', sizeBytes: 100, project: 'engram' })
+      db.upsertSession({ id: 'lite-1', source: 'claude-code', startTime: '2026-01-01T00:00:00Z', cwd: '/tmp', messageCount: 5, userMessageCount: 3, assistantMessageCount: 2, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f4', sizeBytes: 100, summary: '/usage check' })
+      db.upsertSession({ id: 'normal-1', source: 'claude-code', startTime: '2026-01-01T00:00:00Z', cwd: '/tmp', messageCount: 8, userMessageCount: 4, assistantMessageCount: 4, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f5', sizeBytes: 100, project: 'test', summary: 'Fix bug' })
+
+      // backfillTiers already ran in constructor, but these were inserted after
+      db.backfillTiers()
+
+      const raw = db.getRawDb()
+      expect(raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('agent-1')).toHaveProperty('tier', 'skip')
+      expect(raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('skip-1')).toHaveProperty('tier', 'skip')
+      expect(raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('premium-1')).toHaveProperty('tier', 'premium')
+      expect(raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('lite-1')).toHaveProperty('tier', 'lite')
+      expect(raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('normal-1')).toHaveProperty('tier', 'normal')
+    })
+  })
+
   it('deduplicateFilePaths removes duplicates', () => {
     db.upsertSession(mockSession)
     // Insert a second row with same file_path but different id

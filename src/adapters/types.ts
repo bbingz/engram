@@ -22,6 +22,7 @@ export interface SessionInfo {
   agentRole?: string      // e.g. "worker" | "awaiter" for Codex; "subagent" for claude-code
   origin?: string         // machine/device identifier for sync (default: 'local')
   summaryMessageCount?: number  // message count at last summary generation (for auto-refresh)
+  tier?: string           // session tier: 'skip' | 'lite' | 'normal' | 'premium'
 }
 
 export interface ToolCall {

@@ -119,6 +119,10 @@ export class Database {
       if (!colNames.has('source_locator')) this.db.exec("ALTER TABLE sessions ADD COLUMN source_locator TEXT")
       if (!colNames.has('sync_version')) this.db.exec("ALTER TABLE sessions ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 0")
       if (!colNames.has('snapshot_hash')) this.db.exec("ALTER TABLE sessions ADD COLUMN snapshot_hash TEXT")
+      if (!colNames.has('tier')) {
+        this.db.exec('ALTER TABLE sessions ADD COLUMN tier TEXT')
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier)')
+      }
     }
 
     this.db.exec(`
@@ -147,7 +151,8 @@ export class Database {
         authoritative_node TEXT,
         source_locator TEXT,
         sync_version INTEGER NOT NULL DEFAULT 0,
-        snapshot_hash TEXT
+        snapshot_hash TEXT,
+        tier TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -155,6 +160,7 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
       CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
       CREATE INDEX IF NOT EXISTS idx_sessions_agent_role ON sessions(agent_role);
+      CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
         session_id UNINDEXED,
@@ -222,6 +228,7 @@ export class Database {
     }
 
     this.runPostMigrationBackfill()
+    this.backfillTiers()
   }
 
   upsertSession(session: SessionInfo): void {
@@ -519,6 +526,23 @@ export class Database {
     // Only does work when there are unmigrated rows — effectively O(0) on subsequent starts
   }
 
+  backfillTiers(): void {
+    this.db.exec(`
+      UPDATE sessions SET tier = CASE
+        WHEN agent_role IS NOT NULL THEN 'skip'
+        WHEN file_path LIKE '%/subagents/%' THEN 'skip'
+        WHEN message_count <= 1 THEN 'skip'
+        WHEN message_count >= 20 THEN 'premium'
+        WHEN message_count >= 10 AND project IS NOT NULL THEN 'premium'
+        WHEN (julianday(end_time) - julianday(start_time)) * 1440 > 30 THEN 'premium'
+        WHEN summary LIKE '%/usage%' THEN 'lite'
+        WHEN summary LIKE '%Generate a short, clear title%' THEN 'lite'
+        ELSE 'normal'
+      END
+      WHERE tier IS NULL
+    `)
+  }
+
   getSyncTime(peerName: string): string | null {
     const row = this.db.prepare(
       'SELECT last_sync_time FROM sync_state WHERE peer_name = ?'
@@ -569,12 +593,14 @@ export class Database {
         id, source, start_time, end_time, cwd, project, model,
         message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
         summary, summary_message_count, file_path, size_bytes, indexed_at, origin,
-        authoritative_node, source_locator, sync_version, snapshot_hash
+        authoritative_node, source_locator, sync_version, snapshot_hash,
+        tier, agent_role
       ) VALUES (
         @id, @source, @startTime, @endTime, @cwd, @project, @model,
         @messageCount, @userMessageCount, @assistantMessageCount, @toolMessageCount, @systemMessageCount,
         @summary, @summaryMessageCount, @legacyFilePath, @sizeBytes, @indexedAt, @origin,
-        @authoritativeNode, @sourceLocator, @syncVersion, @snapshotHash
+        @authoritativeNode, @sourceLocator, @syncVersion, @snapshotHash,
+        @tier, @agentRole
       )
       ON CONFLICT(id) DO UPDATE SET
         source = excluded.source,
@@ -596,7 +622,9 @@ export class Database {
         authoritative_node = excluded.authoritative_node,
         source_locator = excluded.source_locator,
         sync_version = excluded.sync_version,
-        snapshot_hash = excluded.snapshot_hash
+        snapshot_hash = excluded.snapshot_hash,
+        tier = excluded.tier,
+        agent_role = excluded.agent_role
     `).run({
       id: snapshot.id,
       source: snapshot.source,
@@ -620,6 +648,8 @@ export class Database {
       sourceLocator: snapshot.sourceLocator,
       syncVersion: snapshot.syncVersion,
       snapshotHash: snapshot.snapshotHash,
+      tier: snapshot.tier ?? 'normal',
+      agentRole: snapshot.agentRole ?? null,
     })
   }
 
@@ -936,6 +966,7 @@ export class Database {
       agentRole: row.agent_role as string | undefined,
       origin: row.origin as string | undefined,
       summaryMessageCount: row.summary_message_count as number | undefined,
+      tier: row.tier as string | undefined,
     }
   }
 
@@ -962,6 +993,8 @@ export class Database {
       summary: (row.summary as string | null) ?? undefined,
       summaryMessageCount: (row.summary_message_count as number | null) ?? undefined,
       origin: (row.origin as string | null) ?? undefined,
+      tier: (row.tier as string | null) as AuthoritativeSessionSnapshot['tier'],
+      agentRole: (row.agent_role as string | null) ?? undefined,
     }
   }
 }

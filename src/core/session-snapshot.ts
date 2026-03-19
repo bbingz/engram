@@ -1,4 +1,5 @@
 import type { SourceName } from '../adapters/types.js'
+import type { SessionTier } from './session-tier.js'
 
 export interface AuthoritativeSessionSnapshot {
   id: string
@@ -22,6 +23,8 @@ export interface AuthoritativeSessionSnapshot {
   summary?: string
   summaryMessageCount?: number
   origin?: string
+  tier?: SessionTier
+  agentRole?: string | null
 }
 
 export interface SessionLocalState {
