@@ -22,6 +22,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let agentRole: String?
     let hiddenAt: String?
     let customName: String?
+    let tier: String?
+    let toolMessageCount: Int
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -37,6 +39,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case agentRole        = "agent_role"
         case hiddenAt         = "hidden_at"
         case customName       = "custom_name"
+        case tier
+        case toolMessageCount = "tool_message_count"
     }
 
     var displayTitle: String {

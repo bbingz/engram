@@ -277,7 +277,9 @@ struct SearchView: View {
                             indexedAt: sess.indexedAt ?? "",
                             agentRole: sess.agentRole,
                             hiddenAt: nil,
-                            customName: nil
+                            customName: nil,
+                            tier: nil,
+                            toolMessageCount: 0
                         )
                         return SearchResult(
                             id: sess.id,
