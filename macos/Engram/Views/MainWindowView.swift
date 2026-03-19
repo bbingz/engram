@@ -54,7 +54,7 @@ struct MainWindowView: View {
         case .search:
             StubPageView(screen: .search)
         case .sessions:
-            StubPageView(screen: .sessions)
+            SessionsPageView()
         case .timeline:
             StubPageView(screen: .timeline)
         case .activity:
