@@ -5,6 +5,7 @@ struct MainWindowView: View {
     @State private var selectedScreen: Screen = .home
     @State private var selectedSession: Session? = nil
     @State private var showSearch: Bool = false
+    @State private var showResume: Bool = false
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
     @EnvironmentObject var daemonClient: DaemonClient
@@ -68,6 +69,12 @@ struct MainWindowView: View {
                 .keyboardShortcut("k", modifiers: .command)
                 .hidden()
         )
+        .sheet(isPresented: $showResume) {
+            if let session = selectedSession {
+                ResumeDialog(session: session)
+                    .environmentObject(indexer)
+            }
+        }
     }
 
     @ViewBuilder
@@ -115,18 +122,7 @@ struct MainWindowView: View {
     }
 
     private func resumeSelectedSession() {
-        guard let session = selectedSession else { return }
-        // Open Terminal and run claude resume for the session's working directory
-        let cwd = session.cwd ?? "~"
-        let script = """
-        tell application "Terminal"
-            activate
-            do script "cd \(cwd) && claude"
-        end tell
-        """
-        if let appleScript = NSAppleScript(source: script) {
-            var errorDict: NSDictionary?
-            appleScript.executeAndReturnError(&errorDict)
-        }
+        guard selectedSession != nil else { return }
+        showResume = true
     }
 }
