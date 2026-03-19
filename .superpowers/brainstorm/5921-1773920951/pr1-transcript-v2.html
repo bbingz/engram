@@ -1,0 +1,150 @@
+<h2>PR1: Transcript 增强 — 修订设计 v2</h2>
+<p class="subtitle">参考 AgentSessions 的紧凑工具栏，适配 Engram</p>
+
+<div class="section">
+  <h3>参考: AgentSessions 工具栏布局</h3>
+  <div class="mockup">
+    <div class="mockup-header">AgentSessions 原设计 (截图还原)</div>
+    <div class="mockup-body" style="background:#fff; color:#333; padding:0;">
+      <!-- Row 1: Mode + ID + Actions -->
+      <div style="display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid #e5e7eb;">
+        <div style="display:flex; border:1px solid #d1d5db; border-radius:6px; overflow:hidden; font-size:12px;">
+          <span style="background:#3b82f6; color:white; padding:3px 10px; font-weight:600;">Session</span>
+          <span style="padding:3px 10px; border-left:1px solid #d1d5db;">Text</span>
+          <span style="padding:3px 10px; border-left:1px solid #d1d5db;">JSON</span>
+        </div>
+        <span style="color:#999; font-size:12px;">📋 ID 62e1</span>
+        <span style="flex:1;"></span>
+        <span style="color:#666; font-size:13px; letter-spacing:1px;">A−</span>
+        <span style="color:#666; font-size:15px; letter-spacing:1px;">A+</span>
+        <span style="color:#666; font-size:12px; padding:3px 8px; border:1px solid #d1d5db; border-radius:4px;">Copy</span>
+        <span style="color:#666; font-size:12px;">🔍 Find ⌘F</span>
+      </div>
+      <!-- Row 2: Filter chips -->
+      <div style="display:flex; align-items:center; gap:10px; padding:6px 12px; border-bottom:1px solid #e5e7eb; font-size:12px;">
+        <span style="border:1px solid #d1d5db; padding:2px 8px; border-radius:4px;">All</span>
+        <span>● <span style="color:#3b82f6;">User</span> 0/6 ∧ ∨</span>
+        <span>● <span style="color:#8b5cf6;">Claude</span> 0/17 ∧ ∨</span>
+        <span>● <span style="color:#f97316;">Tools</span> 0/0 ∧ ∨</span>
+        <span>● <span style="color:#9ca3af;">Code</span> 0/0</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Engram 适配设计</h3>
+  <div class="mockup">
+    <div class="mockup-header">Engram Transcript 工具栏</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:0;">
+      <!-- Row 1: Favorite + Mode + ID + Actions -->
+      <div style="display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid #38383a;">
+        <!-- Favorite star -->
+        <span style="color:#f5a623; font-size:15px; cursor:pointer;" title="收藏">★</span>
+        <span style="color:#48484a; font-size:11px;">|</span>
+        <!-- Mode segmented control -->
+        <div style="display:flex; border:1px solid #48484a; border-radius:6px; overflow:hidden; font-size:11px;">
+          <span style="background:#3b82f6; color:white; padding:3px 10px; font-weight:600;">Session</span>
+          <span style="padding:3px 10px; color:#aaa; border-left:1px solid #48484a;">Text</span>
+          <span style="padding:3px 10px; color:#aaa; border-left:1px solid #48484a;">JSON</span>
+        </div>
+        <!-- Session ID -->
+        <span style="color:#636366; font-size:11px; cursor:pointer;" title="复制 Session ID">ID 62e1</span>
+        <span style="flex:1;"></span>
+        <!-- Font size -->
+        <span style="color:#8e8e93; font-size:12px; cursor:pointer;">A−</span>
+        <span style="color:#8e8e93; font-size:14px; cursor:pointer;">A+</span>
+        <span style="color:#48484a; font-size:11px;">|</span>
+        <!-- Copy -->
+        <span style="color:#8e8e93; font-size:11px; padding:2px 8px; border:1px solid #48484a; border-radius:4px; cursor:pointer;">Copy</span>
+        <span style="color:#48484a; font-size:11px;">|</span>
+        <!-- Find -->
+        <span style="color:#8e8e93; font-size:11px; cursor:pointer;">Find ⌘F</span>
+      </div>
+      <!-- Row 2: Filter/navigation chips -->
+      <div style="display:flex; align-items:center; gap:10px; padding:5px 12px; border-bottom:1px solid #38383a; font-size:11px;">
+        <span style="border:1px solid #48484a; padding:2px 8px; border-radius:4px; color:#e5e5ea; cursor:pointer;">All</span>
+        <span style="cursor:pointer;"><span style="color:#3b82f6;">●</span> User <span style="color:#636366;">0/6</span> <span style="color:#636366;">∧ ∨</span></span>
+        <span style="cursor:pointer;"><span style="color:#8b5cf6;">●</span> Assistant <span style="color:#636366;">0/17</span> <span style="color:#636366;">∧ ∨</span></span>
+        <span style="cursor:pointer;"><span style="color:#10b981;">●</span> Tools <span style="color:#636366;">0/12</span> <span style="color:#636366;">∧ ∨</span></span>
+        <span style="cursor:pointer;"><span style="color:#ef4444;">●</span> Error <span style="color:#636366;">0/1</span> <span style="color:#636366;">∧ ∨</span></span>
+        <span style="cursor:pointer;"><span style="color:#6366f1;">●</span> Code <span style="color:#636366;">0/3</span> <span style="color:#636366;">∧ ∨</span></span>
+      </div>
+      <!-- Sample content with color bars -->
+      <div style="padding:8px 12px;">
+        <div style="border-left:3px solid #3b82f6; padding:6px 10px; margin:4px 0; background:#3b82f610; border-radius:0 6px 6px 0;">
+          <span style="font-size:10px; color:#3b82f6; font-weight:600;">USER #1</span><br>
+          <span style="font-size:13px;">请帮我重构这个组件</span>
+        </div>
+        <div style="border-left:3px solid #8b5cf6; padding:6px 10px; margin:4px 0; background:#8b5cf610; border-radius:0 6px 6px 0;">
+          <span style="font-size:10px; color:#8b5cf6; font-weight:600;">ASSISTANT #1</span><br>
+          <span style="font-size:13px;">好的，我来看一下代码结构。首先让我读取文件...</span>
+        </div>
+        <div style="border-left:3px solid #10b981; padding:6px 10px; margin:4px 0; background:#10b98110; border-radius:0 6px 6px 0;">
+          <span style="font-size:10px; color:#10b981; font-weight:600;">TOOL: Read</span><br>
+          <span style="font-size:12px; color:#8e8e93;">src/components/Button.swift → 42 lines</span>
+        </div>
+        <div style="border-left:3px solid #ef4444; padding:6px 10px; margin:4px 0; background:#ef444410; border-radius:0 6px 6px 0;">
+          <span style="font-size:10px; color:#ef4444; font-weight:600;">ERROR</span><br>
+          <span style="font-size:12px; color:#ef4444cc;">File not found: utils.ts</span>
+        </div>
+        <div style="border-left:3px solid #6366f1; padding:6px 10px; margin:4px 0; background:#6366f110; border-radius:0 6px 6px 0;">
+          <span style="font-size:10px; color:#6366f1; font-weight:600;">CODE: swift</span><br>
+          <span style="font-size:12px; font-family:monospace; color:#a5b4fc;">func refactored() { ... }</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>设计对比: AgentSessions vs Engram 适配</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">元素</th>
+        <th style="text-align:left; padding:8px;">AgentSessions</th>
+        <th style="text-align:left; padding:8px;">Engram 适配</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">最左侧</td>
+        <td style="padding:8px;">直接是 Session/Text/JSON</td>
+        <td style="padding:8px;"><strong>★ 收藏按钮</strong> + 分隔线 + Session/Text/JSON</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">模式切换</td>
+        <td style="padding:8px;">Session / Text / JSON</td>
+        <td style="padding:8px;">Session / Text / JSON (保持一致)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Session ID</td>
+        <td style="padding:8px;">📋 ID 62e1</td>
+        <td style="padding:8px;">ID 62e1 (无 emoji，点击复制)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">右侧工具</td>
+        <td style="padding:8px;">A− A+ | Copy | Find ⌘F</td>
+        <td style="padding:8px;">A− A+ | Copy | Find ⌘F (保持一致)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">分类 Chip</td>
+        <td style="padding:8px;">User / Claude / Tools / Code</td>
+        <td style="padding:8px;">User / Assistant / Tools / Error / Code (增加 Error)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Chip 功能</td>
+        <td style="padding:8px;">计数 + ∧∨ 跳转</td>
+        <td style="padding:8px;">计数 + ∧∨ 跳转 + <strong>点击切换显示/隐藏</strong></td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">Emoji</td>
+        <td style="padding:8px;">📋 🔍 (少量)</td>
+        <td style="padding:8px;"><strong>无 emoji</strong>，用色点和文字</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">在终端告诉我这个方向是否 OK，或者还有想调整的地方</p>

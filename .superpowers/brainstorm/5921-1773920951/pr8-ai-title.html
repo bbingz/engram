@@ -1,0 +1,176 @@
+<h2>PR8: AI 标题优化</h2>
+<p class="subtitle">用小模型自动生成会话标题，替代截断的首条消息</p>
+
+<div class="section">
+  <h3>问题</h3>
+  <div class="mockup">
+    <div class="mockup-header">现在的标题来源</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:10px; font-size:12px;">
+      <div style="margin:4px 0; padding:6px 8px; background:#2a2a2e; border-radius:6px;">
+        <span style="color:#ef4444; font-size:10px;">BAD</span>
+        <span style="color:#e5e5ea; margin-left:6px;">请帮我看一下这个文件，我需要把它重构一下，因为...</span>
+      </div>
+      <div style="margin:4px 0; padding:6px 8px; background:#2a2a2e; border-radius:6px;">
+        <span style="color:#ef4444; font-size:10px;">BAD</span>
+        <span style="color:#e5e5ea; margin-left:6px;">Untitled</span>
+      </div>
+      <div style="margin:4px 0; padding:6px 8px; background:#2a2a2e; border-radius:6px;">
+        <span style="color:#ef4444; font-size:10px;">BAD</span>
+        <span style="color:#e5e5ea; margin-left:6px;">/exit</span>
+      </div>
+      <div style="color:#636366; font-size:10px; margin-top:8px;">标题 = summary || 首条用户消息截断 || "Untitled"</div>
+      <div style="margin:8px 0; border-top:1px solid #38383a;"></div>
+      <div style="margin:4px 0; padding:6px 8px; background:#10b98120; border-radius:6px; border:1px solid #10b98140;">
+        <span style="color:#10b981; font-size:10px;">GOOD</span>
+        <span style="color:#e5e5ea; margin-left:6px;">重构 SessionDetailView 组件</span>
+      </div>
+      <div style="margin:4px 0; padding:6px 8px; background:#10b98120; border-radius:6px; border:1px solid #10b98140;">
+        <span style="color:#10b981; font-size:10px;">GOOD</span>
+        <span style="color:#e5e5ea; margin-left:6px;">修复登录页 OAuth 重定向 bug</span>
+      </div>
+      <div style="color:#10b981; font-size:10px; margin-top:8px;">AI 生成: 简洁、准确、可识别</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>架构设计</h3>
+  <div class="mockup">
+    <div class="mockup-header">标题生成流程</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:10px; font-size:11px; font-family:monospace; line-height:1.8;">
+      <div style="color:#636366;">// 触发条件: 新会话索引完成 + 有 ≥2 条消息 + 无自定义标题</div>
+      <div style="margin:8px 0;">
+        <span style="color:#3b82f6;">1.</span> 提取会话前 3 轮对话 (user + assistant)<br>
+        <span style="color:#3b82f6;">2.</span> 构建 prompt:<br>
+        <span style="color:#8e8e93; padding-left:20px;">"Generate a concise title (≤30 chars, Chinese or English</span><br>
+        <span style="color:#8e8e93; padding-left:20px;"> matching the conversation language) for this conversation."</span><br>
+        <span style="color:#3b82f6;">3.</span> 调用配置的 API (多 provider 支持)<br>
+        <span style="color:#3b82f6;">4.</span> 写入 sessions.summary 字段<br>
+        <span style="color:#3b82f6;">5.</span> Swift 侧 displayTitle 自动更新
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>API 配置 (Settings 新增区域)</h3>
+  <div class="mockup">
+    <div class="mockup-header">Settings → AI Settings → Title Generation</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:12px; font-size:12px;">
+      <div style="font-weight:600; margin-bottom:10px;">Title Generation</div>
+
+      <!-- Provider picker -->
+      <div style="display:flex; align-items:center; gap:8px; margin:8px 0;">
+        <span style="color:#8e8e93; width:80px; font-size:11px;">Provider:</span>
+        <div style="display:flex; border:1px solid #48484a; border-radius:6px; overflow:hidden; font-size:11px;">
+          <span style="background:#3b82f6; color:white; padding:3px 10px;">Ollama</span>
+          <span style="padding:3px 10px; color:#8e8e93; border-left:1px solid #48484a;">OpenAI</span>
+          <span style="padding:3px 10px; color:#8e8e93; border-left:1px solid #48484a;">Dashscope</span>
+          <span style="padding:3px 10px; color:#8e8e93; border-left:1px solid #48484a;">Custom</span>
+        </div>
+      </div>
+
+      <!-- Ollama config -->
+      <div style="background:#2a2a2e; border-radius:8px; padding:10px; margin:8px 0;">
+        <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
+          <span style="color:#8e8e93; width:80px; font-size:11px;">URL:</span>
+          <div style="flex:1; padding:4px 8px; background:#1c1c1e; border:1px solid #48484a; border-radius:4px; font-size:11px; color:#e5e5ea;">http://localhost:11434</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
+          <span style="color:#8e8e93; width:80px; font-size:11px;">Model:</span>
+          <div style="flex:1; padding:4px 8px; background:#1c1c1e; border:1px solid #48484a; border-radius:4px; font-size:11px; color:#e5e5ea;">qwen2.5:3b</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
+          <span style="color:#8e8e93; width:80px; font-size:11px;">API Key:</span>
+          <div style="flex:1; padding:4px 8px; background:#1c1c1e; border:1px solid #48484a; border-radius:4px; font-size:11px; color:#636366;">Not required for Ollama</div>
+        </div>
+      </div>
+
+      <!-- OpenAI/Dashscope config (hidden, shown when selected) -->
+      <div style="color:#636366; font-size:10px; margin-top:6px;">
+        OpenAI: gpt-4o-mini ($0.15/1M) · Dashscope: qwen-turbo (¥0.3/1M) · Ollama: free (local)
+      </div>
+
+      <!-- Auto-generate toggle -->
+      <div style="display:flex; align-items:center; gap:8px; margin:12px 0 4px;">
+        <span style="color:#8e8e93; font-size:11px;">Auto-generate for new sessions:</span>
+        <span style="flex:1;"></span>
+        <div style="width:36px; height:20px; background:#10b981; border-radius:10px; position:relative;">
+          <div style="width:16px; height:16px; background:white; border-radius:8px; position:absolute; right:2px; top:2px;"></div>
+        </div>
+      </div>
+
+      <!-- Test button -->
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <span style="padding:4px 12px; background:#3b82f6; color:white; border-radius:6px; font-size:11px; cursor:pointer;">Test Connection</span>
+        <span style="padding:4px 12px; background:#2a2a2e; border:1px solid #48484a; border-radius:6px; font-size:11px; color:#8e8e93; cursor:pointer;">Regenerate All Titles</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>多 Provider 支持</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">Provider</th>
+        <th style="text-align:left; padding:8px;">推荐模型</th>
+        <th style="text-align:left; padding:8px;">成本</th>
+        <th style="text-align:left; padding:8px;">需要</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Ollama (本地)</td>
+        <td style="padding:8px;">qwen2.5:3b / llama3.2:3b</td>
+        <td style="padding:8px;">免费</td>
+        <td style="padding:8px;">Ollama 已安装</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">OpenAI</td>
+        <td style="padding:8px;">gpt-4o-mini</td>
+        <td style="padding:8px;">极低</td>
+        <td style="padding:8px;">API Key</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Dashscope</td>
+        <td style="padding:8px;">qwen-turbo</td>
+        <td style="padding:8px;">极低</td>
+        <td style="padding:8px;">API Key</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">Custom</td>
+        <td style="padding:8px;">任意 OpenAI 兼容 API</td>
+        <td style="padding:8px;">—</td>
+        <td style="padding:8px;">URL + API Key + Model</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>实现要点</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">与现有 summary 复用</td>
+        <td style="padding:8px;">AI 标题写入 sessions.summary 字段。已有的 Viking summary 逻辑不冲突（summary 是长摘要，title 是短标题），可新增 generated_title 列</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">手动覆盖</td>
+        <td style="padding:8px;">用户的 customName 优先级最高: customName > generated_title > summary > 首条消息</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">批量回填</td>
+        <td style="padding:8px;">"Regenerate All Titles" 按钮触发后台 backfill，带速率限制 (1 req/s API, 并行 for Ollama)</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; font-weight:600;">Token 效率</td>
+        <td style="padding:8px;">只发前 3 轮对话，每轮截断 200 字。标题生成 prompt 约 500 tokens/次</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR7 和 PR8 方向都 OK？在终端回复</p>

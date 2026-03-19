@@ -1,0 +1,178 @@
+<h2>PR3: 顶部功能区集成</h2>
+<p class="subtitle">将搜索、设置、暗黑模式切换、Resume 按钮整合到窗口顶部</p>
+
+<div class="section">
+  <h3>完整布局: 主窗口顶部</h3>
+  <div class="mockup">
+    <div class="mockup-header">Engram 主窗口 — 顶部功能区 + 列表 + 详情</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:0; font-size:12px;">
+
+      <!-- TOP BAR -->
+      <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:#161618; border-bottom:1px solid #38383a;">
+        <!-- Global search -->
+        <div style="display:flex; align-items:center; gap:6px; padding:5px 12px; background:#2a2a2e; border:1px solid #48484a; border-radius:8px; flex:1; max-width:360px;">
+          <span style="color:#636366; font-size:12px;">Search sessions...</span>
+          <span style="flex:1;"></span>
+          <span style="color:#48484a; font-size:10px; border:1px solid #48484a; padding:1px 5px; border-radius:3px;">⌘K</span>
+        </div>
+
+        <span style="flex:1;"></span>
+
+        <!-- Resume button -->
+        <div style="display:flex; align-items:center; gap:4px; padding:4px 10px; background:#10b98125; border:1px solid #10b98150; border-radius:6px; cursor:pointer;">
+          <span style="color:#10b981; font-size:11px;">▶</span>
+          <span style="color:#10b981; font-size:11px;">Resume</span>
+        </div>
+
+        <span style="color:#38383a;">|</span>
+
+        <!-- Dark/Light toggle -->
+        <span style="color:#f5a623; font-size:14px; cursor:pointer;" title="切换暗黑/浅色模式">☀</span>
+
+        <!-- Settings gear -->
+        <span style="color:#8e8e93; font-size:14px; cursor:pointer;" title="设置">⚙</span>
+      </div>
+
+      <!-- CONTENT: List + Detail split -->
+      <div style="display:flex; min-height:260px;">
+        <!-- Left: session list (simplified) -->
+        <div style="width:45%; border-right:1px solid #38383a; font-size:11px;">
+          <!-- Agent filter pills -->
+          <div style="display:flex; align-items:center; gap:5px; padding:6px 10px; border-bottom:1px solid #38383a; flex-wrap:wrap;">
+            <span style="padding:2px 8px; border:1px solid #48484a; border-radius:10px; font-size:10px; background:#3b82f630;">All</span>
+            <span style="padding:2px 8px; border-radius:10px; font-size:10px; background:#f9731625; color:#f97316; border:1px solid #f9731640;">● Claude 24</span>
+            <span style="padding:2px 8px; border-radius:10px; font-size:10px; background:#10b98120; color:#10b981; border:1px solid #10b98140;">● Gemini 15</span>
+            <span style="flex:1;"></span>
+            <span style="padding:2px 8px; border:1px solid #48484a; border-radius:5px; font-size:10px; color:#8e8e93;">Project...</span>
+          </div>
+          <!-- Table header -->
+          <div style="display:grid; grid-template-columns:22px 50px 1fr 60px 36px; padding:4px 8px; font-size:9px; color:#636366; font-weight:600; background:#2a2a2e; border-bottom:1px solid #38383a;">
+            <span>★</span><span>Agent</span><span>Title</span><span>Date</span><span>Msgs</span>
+          </div>
+          <!-- Rows -->
+          <div style="display:grid; grid-template-columns:22px 50px 1fr 60px 36px; padding:4px 8px; font-size:10px; background:#3b82f625; border-bottom:1px solid #2a2a2e;">
+            <span style="color:#f5a623;">★</span><span style="color:#f97316;">Claude</span><span style="color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">重构 Button</span><span style="color:#bbb;">2h</span><span style="color:#bbb;">23</span>
+          </div>
+          <div style="display:grid; grid-template-columns:22px 50px 1fr 60px 36px; padding:4px 8px; font-size:10px; background:#232326; border-bottom:1px solid #2a2a2e;">
+            <span style="color:#48484a;">☆</span><span style="color:#10b981;">Gemini</span><span style="color:#e5e5ea;">Fix login</span><span style="color:#8e8e93;">5h</span><span style="color:#8e8e93;">8</span>
+          </div>
+          <div style="display:grid; grid-template-columns:22px 50px 1fr 60px 36px; padding:4px 8px; font-size:10px; background:#1c1c1e; border-bottom:1px solid #2a2a2e;">
+            <span style="color:#48484a;">☆</span><span style="color:#8b5cf6;">Cursor</span><span style="color:#e5e5ea;">Add API</span><span style="color:#8e8e93;">1d</span><span style="color:#8e8e93;">45</span>
+          </div>
+        </div>
+
+        <!-- Right: detail (simplified) -->
+        <div style="flex:1; padding:0; font-size:11px;">
+          <!-- PR1 toolbar -->
+          <div style="display:flex; align-items:center; gap:6px; padding:6px 10px; border-bottom:1px solid #38383a;">
+            <span style="color:#f5a623;">★</span>
+            <span style="color:#48484a;">|</span>
+            <div style="display:flex; border:1px solid #48484a; border-radius:5px; overflow:hidden; font-size:10px;">
+              <span style="background:#3b82f6; color:white; padding:2px 8px;">Session</span>
+              <span style="padding:2px 8px; color:#8e8e93; border-left:1px solid #48484a;">Text</span>
+              <span style="padding:2px 8px; color:#8e8e93; border-left:1px solid #48484a;">JSON</span>
+            </div>
+            <span style="color:#636366; font-size:10px;">ID 62e1</span>
+            <span style="flex:1;"></span>
+            <span style="color:#8e8e93; font-size:11px;">A−</span>
+            <span style="color:#8e8e93; font-size:13px;">A+</span>
+            <span style="color:#48484a;">|</span>
+            <span style="color:#8e8e93; font-size:10px; padding:2px 6px; border:1px solid #48484a; border-radius:3px;">Copy</span>
+            <span style="color:#48484a;">|</span>
+            <span style="color:#8e8e93; font-size:10px;">Find ⌘F</span>
+          </div>
+          <!-- Filter chips -->
+          <div style="display:flex; gap:8px; padding:4px 10px; border-bottom:1px solid #38383a; font-size:10px;">
+            <span style="border:1px solid #48484a; padding:1px 6px; border-radius:3px;">All</span>
+            <span><span style="color:#3b82f6;">●</span> User 0/6 ∧∨</span>
+            <span><span style="color:#8b5cf6;">●</span> Asst 0/17 ∧∨</span>
+            <span><span style="color:#10b981;">●</span> Tools 0/12 ∧∨</span>
+          </div>
+          <!-- Content -->
+          <div style="padding:8px 10px;">
+            <div style="border-left:3px solid #3b82f6; padding:4px 8px; margin:3px 0; background:#3b82f610; border-radius:0 4px 4px 0;">
+              <span style="font-size:9px; color:#3b82f6; font-weight:600;">USER #1</span><br>
+              <span style="font-size:11px;">请帮我重构这个组件</span>
+            </div>
+            <div style="border-left:3px solid #8b5cf6; padding:4px 8px; margin:3px 0; background:#8b5cf610; border-radius:0 4px 4px 0;">
+              <span style="font-size:9px; color:#8b5cf6; font-weight:600;">ASSISTANT #1</span><br>
+              <span style="font-size:11px;">好的，我来看一下...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>顶部功能区元素</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">元素</th>
+        <th style="text-align:left; padding:8px;">位置</th>
+        <th style="text-align:left; padding:8px;">行为</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">全局搜索框</td>
+        <td style="padding:8px;">左侧</td>
+        <td style="padding:8px;">⌘K 激活。搜索所有会话标题和内容。沿用现有 SearchPageView 的 hybrid/keyword/semantic 三模式</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Resume ▶</td>
+        <td style="padding:8px;">右侧</td>
+        <td style="padding:8px;">选中会话时高亮可用。点击触发 PR7 的 Resume 工作流。未实现前灰色禁用</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">☀/☾ 主题切换</td>
+        <td style="padding:8px;">右侧</td>
+        <td style="padding:8px;">点击切换 Light/Dark/System。当前已有 Theme.swift 基础</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">⚙ 设置</td>
+        <td style="padding:8px;">最右</td>
+        <td style="padding:8px;">点击打开 SettingsView (已有模块化的 5 个 section)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>全局搜索 vs Transcript 内搜索</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;"></th>
+        <th style="text-align:left; padding:8px;">全局搜索 (⌘K)</th>
+        <th style="text-align:left; padding:8px;">Transcript 搜索 (⌘F)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">范围</td>
+        <td style="padding:8px;">所有会话的标题和内容</td>
+        <td style="padding:8px;">当前打开的单个会话内</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">位置</td>
+        <td style="padding:8px;">窗口顶部</td>
+        <td style="padding:8px;">详情面板工具栏右侧</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">引擎</td>
+        <td style="padding:8px;">FTS + 语义搜索 (现有)</td>
+        <td style="padding:8px;">纯文本匹配 + 高亮</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">结果</td>
+        <td style="padding:8px;">跳转到匹配的会话</td>
+        <td style="padding:8px;">在 transcript 内高亮并跳转到匹配位置</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR3 方向 OK？在终端回复</p>

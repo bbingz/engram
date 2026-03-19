@@ -1,0 +1,92 @@
+<h2>Settings 二级导航方式</h2>
+<p class="subtitle">选一个最适合 Engram Settings 页面的导航模式</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>TabView 顶部标签</h3>
+      <p>macOS 原生风格（类似旧版系统偏好设置）。5 个 tab 横排在顶部，点击切换内容区。</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Settings — TabView</div>
+        <div class="mockup-body" style="padding:0">
+          <div style="display:flex;border-bottom:2px solid #333;background:#1a1a2e">
+            <div style="padding:8px 16px;border-bottom:2px solid #6366f1;color:#6366f1;font-weight:600;font-size:13px">通用</div>
+            <div style="padding:8px 16px;color:#888;font-size:13px">AI</div>
+            <div style="padding:8px 16px;color:#888;font-size:13px">数据源</div>
+            <div style="padding:8px 16px;color:#888;font-size:13px">网络</div>
+            <div style="padding:8px 16px;color:#888;font-size:13px">关于</div>
+          </div>
+          <div style="padding:16px;min-height:120px">
+            <div style="color:#aaa;font-size:12px;margin-bottom:8px">显示设置</div>
+            <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>字体大小</span><span style="color:#666">14pt ◀ ▶</span></div>
+            <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>显示系统提示词</span><span style="color:#666">● 开</span></div>
+            <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>噪音过滤</span><span style="color:#666">隐藏噪音 ▾</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>优点</h4><ul><li>macOS 用户熟悉</li><li>所有 tab 一目了然</li><li>SwiftUI TabView 原生支持</li></ul></div>
+        <div class="cons"><h4>缺点</h4><ul><li>5 个 tab 偏多，文字可能挤</li><li>和外层 Sidebar 导航视觉重复</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>左侧 List + 右侧 Detail</h3>
+      <p>类似 macOS Ventura+ 系统设置。左边窄列表，右边内容区。</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Settings — List + Detail</div>
+        <div class="mockup-body" style="padding:0;display:flex">
+          <div style="width:130px;border-right:1px solid #333;padding:8px;background:#111827;min-height:160px">
+            <div style="padding:6px 8px;background:#6366f1;border-radius:4px;font-size:12px;color:white;margin-bottom:4px">⚙️ 通用</div>
+            <div style="padding:6px 8px;font-size:12px;color:#888;margin-bottom:4px">🤖 AI</div>
+            <div style="padding:6px 8px;font-size:12px;color:#888;margin-bottom:4px">📁 数据源</div>
+            <div style="padding:6px 8px;font-size:12px;color:#888;margin-bottom:4px">🌐 网络</div>
+            <div style="padding:6px 8px;font-size:12px;color:#888">ℹ️ 关于</div>
+          </div>
+          <div style="flex:1;padding:16px">
+            <div style="color:#aaa;font-size:12px;margin-bottom:8px">显示设置</div>
+            <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>字体大小</span><span style="color:#666">14pt ◀ ▶</span></div>
+            <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>显示系统提示词</span><span style="color:#666">● 开</span></div>
+            <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>噪音过滤</span><span style="color:#666">隐藏噪音 ▾</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>优点</h4><ul><li>和 macOS 系统设置一致</li><li>扩展性好，以后加页面不挤</li><li>列表可以放 icon+文字更清晰</li></ul></div>
+        <div class="cons"><h4>缺点</h4><ul><li>已经嵌套在主 Sidebar 里，二级 List 可能视觉嘈杂</li><li>内容区宽度被压缩</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Segmented Picker + ScrollView</h3>
+      <p>顶部一排分段控制器，下面是当前页的 ScrollView 内容。轻量、紧凑。</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Settings — Segmented Picker</div>
+        <div class="mockup-body" style="padding:12px">
+          <div style="display:flex;background:#1e1e2e;border-radius:6px;padding:2px;margin-bottom:16px">
+            <div style="flex:1;text-align:center;padding:6px;background:#6366f1;border-radius:4px;font-size:12px;color:white">通用</div>
+            <div style="flex:1;text-align:center;padding:6px;font-size:12px;color:#888">AI</div>
+            <div style="flex:1;text-align:center;padding:6px;font-size:12px;color:#888">数据源</div>
+            <div style="flex:1;text-align:center;padding:6px;font-size:12px;color:#888">网络</div>
+            <div style="flex:1;text-align:center;padding:6px;font-size:12px;color:#888">关于</div>
+          </div>
+          <div style="color:#aaa;font-size:12px;margin-bottom:8px">显示设置</div>
+          <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>字体大小</span><span style="color:#666">14pt ◀ ▶</span></div>
+          <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>显示系统提示词</span><span style="color:#666">● 开</span></div>
+          <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>噪音过滤</span><span style="color:#666">隐藏噪音 ▾</span></div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:8px">
+        <div class="pros"><h4>优点</h4><ul><li>最紧凑，不浪费水平空间</li><li>SwiftUI Picker(.segmented) 一行代码</li><li>和 app 其他页面风格一致（单列滚动）</li></ul></div>
+        <div class="cons"><h4>缺点</h4><ul><li>5 个 segment 文字会小</li><li>扩展超 6 个就不适用</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

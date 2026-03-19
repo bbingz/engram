@@ -1,0 +1,284 @@
+<h2>PR6: Workspace — Git 仓库管理中心</h2>
+<p class="subtitle">参考 Readout Workspace，在侧边栏增加独立的仓库管理区域</p>
+
+<div class="section">
+  <h3>侧边栏导航扩展</h3>
+  <div class="mockup">
+    <div class="mockup-header">Engram 侧边栏 — 新增 Workspace 分组</div>
+    <div class="mockup-body" style="background:#161618; color:#e5e5ea; padding:8px 0; font-size:11px; width:180px;">
+      <div style="color:#636366; font-size:9px; font-weight:600; padding:4px 14px; margin-top:4px;">SESSIONS</div>
+      <div style="padding:4px 14px; color:#8e8e93;">Sessions</div>
+      <div style="padding:4px 14px; color:#8e8e93;">Timeline</div>
+      <div style="padding:4px 14px; color:#8e8e93;">Favorites</div>
+      <div style="padding:4px 14px; color:#8e8e93;">Activity</div>
+
+      <div style="color:#636366; font-size:9px; font-weight:600; padding:4px 14px; margin-top:10px;">WORKSPACE</div>
+      <div style="padding:4px 14px; color:#3b82f6; background:#3b82f620; border-radius:0 6px 6px 0;">Repos</div>
+      <div style="padding:4px 14px; color:#8e8e93;">Work Graph</div>
+      <div style="padding:4px 14px; color:#8e8e93;">Diffs</div>
+
+      <div style="color:#636366; font-size:9px; font-weight:600; padding:4px 14px; margin-top:10px;">CONFIG</div>
+      <div style="padding:4px 14px; color:#8e8e93;">Sources</div>
+      <div style="padding:4px 14px; color:#8e8e93;">Settings</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>页面 1: Repos — 仓库总览</h3>
+  <div class="mockup">
+    <div class="mockup-header">Repos 页 (参考 Readout)</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:0; font-size:12px;">
+      <!-- KPI cards -->
+      <div style="display:flex; gap:8px; padding:12px; border-bottom:1px solid #38383a;">
+        <div style="flex:1; text-align:center; background:#2a2a2e; padding:10px; border-radius:8px;">
+          <div style="font-size:20px; font-weight:700;">5</div>
+          <div style="font-size:10px; color:#10b981;">Active</div>
+        </div>
+        <div style="flex:1; text-align:center; background:#2a2a2e; padding:10px; border-radius:8px;">
+          <div style="font-size:20px; font-weight:700;">12</div>
+          <div style="font-size:10px; color:#f97316;">Dirty</div>
+        </div>
+        <div style="flex:1; text-align:center; background:#2a2a2e; padding:10px; border-radius:8px;">
+          <div style="font-size:20px; font-weight:700;">3</div>
+          <div style="font-size:10px; color:#8b5cf6;">Unpushed</div>
+        </div>
+        <div style="flex:1; text-align:center; background:#2a2a2e; padding:10px; border-radius:8px;">
+          <div style="font-size:20px; font-weight:700;">18</div>
+          <div style="font-size:10px; color:#3b82f6;">Total</div>
+        </div>
+      </div>
+
+      <!-- Active repos -->
+      <div style="padding:10px 12px;">
+        <div style="color:#10b981; font-size:11px; font-weight:600; margin-bottom:8px;">Active 5</div>
+
+        <!-- Repo row 1 -->
+        <div style="background:#2a2a2e; border-radius:8px; padding:10px; margin:6px 0; border-left:3px solid #f97316; cursor:pointer;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-weight:600;">coding-memory</span>
+            <span style="background:#10b98130; color:#10b981; padding:1px 6px; border-radius:3px; font-size:10px;">feat/main-app-redesign</span>
+            <span style="background:#f9731630; color:#f97316; padding:1px 6px; border-radius:3px; font-size:10px;">4 dirty</span>
+            <span style="background:#8b5cf630; color:#8b5cf6; padding:1px 6px; border-radius:3px; font-size:10px;">↑7</span>
+            <span style="flex:1;"></span>
+            <!-- Mini sparkline placeholder -->
+            <span style="color:#3b82f6; font-size:10px;">▁▂▅▃▇▅▂</span>
+            <span style="color:#48484a;">›</span>
+          </div>
+          <div style="color:#636366; font-size:10px; margin-top:4px;">
+            refactor(macos): extract Sources + About sections — 2 hours ago
+          </div>
+        </div>
+
+        <!-- Repo row 2 -->
+        <div style="background:#2a2a2e; border-radius:8px; padding:10px; margin:6px 0; border-left:3px solid #10b981; cursor:pointer;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-weight:600;">CCTV_Admin</span>
+            <span style="background:#10b98130; color:#10b981; padding:1px 6px; border-radius:3px; font-size:10px;">feat/phase-2-dashboard</span>
+            <span style="background:#f9731630; color:#f97316; padding:1px 6px; border-radius:3px; font-size:10px;">50 dirty</span>
+            <span style="flex:1;"></span>
+            <span style="color:#3b82f6; font-size:10px;">▁▁▃▂▅▇▃</span>
+            <span style="color:#48484a;">›</span>
+          </div>
+          <div style="color:#636366; font-size:10px; margin-top:4px;">
+            fix: address code review issues from ChatGPT migration — 13 hours ago
+          </div>
+        </div>
+
+        <!-- Repo row 3 -->
+        <div style="background:#2a2a2e; border-radius:8px; padding:10px; margin:6px 0; border-left:3px solid #3b82f6; cursor:pointer;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-weight:600;">opensense</span>
+            <span style="background:#8e8e9330; color:#8e8e93; padding:1px 6px; border-radius:3px; font-size:10px;">main</span>
+            <span style="background:#f9731630; color:#f97316; padding:1px 6px; border-radius:3px; font-size:10px;">2 dirty</span>
+            <span style="background:#8b5cf630; color:#8b5cf6; padding:1px 6px; border-radius:3px; font-size:10px;">↑13</span>
+            <span style="flex:1;"></span>
+            <span style="color:#3b82f6; font-size:10px;">▃▅▂▁▃▅▇</span>
+            <span style="color:#48484a;">›</span>
+          </div>
+          <div style="color:#636366; font-size:10px; margin-top:4px;">
+            fix: harden session lifecycle edge cases — 12 hours ago
+          </div>
+        </div>
+
+        <!-- Recent section -->
+        <div style="color:#3b82f6; font-size:11px; font-weight:600; margin:12px 0 8px;">Recent 8</div>
+        <div style="background:#2a2a2e; border-radius:8px; padding:8px 10px; margin:4px 0; cursor:pointer;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-weight:500;">2026-Teaching-Plan</span>
+            <span style="background:#8e8e9330; color:#8e8e93; padding:1px 6px; border-radius:3px; font-size:10px;">main</span>
+            <span style="background:#8b5cf630; color:#8b5cf6; padding:1px 6px; border-radius:3px; font-size:10px;">↑26</span>
+            <span style="flex:1;"></span>
+            <span style="color:#48484a;">›</span>
+          </div>
+          <div style="color:#636366; font-size:10px; margin-top:2px;">redesign: professional visual system — 2 days ago</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>页面 2: Repo 详情 (点击进入)</h3>
+  <div class="mockup">
+    <div class="mockup-header">Repo 详情页 — coding-memory (参考 Readout)</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:12px; font-size:12px;">
+      <!-- Header -->
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+        <span style="color:#3b82f6; font-size:11px; cursor:pointer;">‹ Repos</span>
+        <span style="font-size:16px; font-weight:700;">coding-memory</span>
+      </div>
+      <div style="color:#636366; font-size:11px; margin-bottom:4px;">
+        Has a CLAUDE.md · feat/main-app-redesign · fix: extract Sources — 2h ago
+      </div>
+      <!-- Quick actions -->
+      <div style="display:flex; gap:6px; margin:8px 0 12px; flex-wrap:wrap;">
+        <span style="padding:4px 10px; background:#2a2a2e; border:1px solid #48484a; border-radius:6px; font-size:10px; cursor:pointer;">Claude</span>
+        <span style="padding:4px 10px; background:#2a2a2e; border:1px solid #48484a; border-radius:6px; font-size:10px; cursor:pointer;">VS Code</span>
+        <span style="padding:4px 10px; background:#2a2a2e; border:1px solid #48484a; border-radius:6px; font-size:10px; cursor:pointer;">Terminal</span>
+        <span style="padding:4px 10px; background:#2a2a2e; border:1px solid #48484a; border-radius:6px; font-size:10px; cursor:pointer;">Git Pull</span>
+        <span style="padding:4px 10px; background:#2a2a2e; border:1px solid #48484a; border-radius:6px; font-size:10px; cursor:pointer;">Finder</span>
+        <span style="padding:4px 10px; background:#2a2a2e; border:1px solid #48484a; border-radius:6px; font-size:10px; cursor:pointer;">Copy Path</span>
+      </div>
+      <!-- CLAUDE.md content -->
+      <div style="background:#2a2a2e; border-radius:8px; padding:10px; font-family:monospace; font-size:11px; line-height:1.6;">
+        <div style="color:#3b82f6; font-weight:600; margin-bottom:6px;">CLAUDE.md</div>
+        <div style="color:#e5e5ea;"># Engram</div>
+        <div style="color:#8e8e93;">Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar app.</div>
+        <div style="color:#e5e5ea; margin-top:6px;">## Quick Reference</div>
+        <div style="color:#8e8e93;">npm run build &nbsp;# tsc → dist/</div>
+        <div style="color:#8e8e93;">npm test &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# vitest: 173 tests</div>
+        <div style="color:#636366; margin-top:6px;">... 118 more lines</div>
+      </div>
+      <!-- Related sessions -->
+      <div style="margin-top:12px; color:#636366; font-size:10px; font-weight:600;">RECENT SESSIONS IN THIS REPO</div>
+      <div style="margin-top:4px; font-size:11px; color:#8e8e93; padding:4px 0;">重构 Button 组件 · Claude · 2h ago</div>
+      <div style="font-size:11px; color:#8e8e93; padding:4px 0;">Fix login bug · Gemini · 5h ago</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>页面 3: Work Graph — 提交活动总览</h3>
+  <div class="mockup">
+    <div class="mockup-header">Work Graph (参考 Readout)</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:12px; font-size:12px;">
+      <!-- KPI -->
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <div style="flex:1; text-align:center; background:#2a2a2e; padding:8px; border-radius:8px;">
+          <div style="font-size:18px; font-weight:700;">5</div>
+          <div style="font-size:10px; color:#10b981;">Active</div>
+        </div>
+        <div style="flex:1; text-align:center; background:#2a2a2e; padding:8px; border-radius:8px;">
+          <div style="font-size:18px; font-weight:700;">8</div>
+          <div style="font-size:10px; color:#3b82f6;">Idle</div>
+        </div>
+        <div style="flex:1; text-align:center; background:#2a2a2e; padding:8px; border-radius:8px;">
+          <div style="font-size:18px; font-weight:700;">5</div>
+          <div style="font-size:10px; color:#636366;">Dormant</div>
+        </div>
+        <div style="flex:1; text-align:center; background:#2a2a2e; padding:8px; border-radius:8px;">
+          <div style="font-size:18px; font-weight:700;">247</div>
+          <div style="font-size:10px; color:#8b5cf6;">Commits</div>
+        </div>
+      </div>
+      <!-- Commit Activity chart (placeholder) -->
+      <div style="color:#636366; font-size:10px; margin-bottom:4px;">Commit Activity · 30 days</div>
+      <div style="background:#2a2a2e; border-radius:8px; padding:8px; height:60px; display:flex; align-items:flex-end; gap:2px;">
+        <div style="flex:1; background:#3b82f640; height:20%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f640; height:10%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f6; height:45%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f6; height:60%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f640; height:15%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f6; height:80%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f6; height:100%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f6; height:55%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f640; height:25%; border-radius:2px;"></div>
+        <div style="flex:1; background:#3b82f6; height:70%; border-radius:2px;"></div>
+      </div>
+      <!-- Commits by Repo -->
+      <div style="color:#636366; font-size:10px; margin:10px 0 4px;">Commits by Repo · 30 days</div>
+      <div style="display:flex; align-items:center; gap:6px; margin:3px 0; font-size:10px;">
+        <span style="width:90px; color:#8e8e93;">coding-memory</span>
+        <div style="flex:1; height:8px; background:#2a2a2e; border-radius:4px; overflow:hidden;">
+          <div style="width:85%; height:100%; background:#3b82f6; border-radius:4px;"></div>
+        </div>
+        <span style="color:#8e8e93; width:24px; text-align:right;">94</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; margin:3px 0; font-size:10px;">
+        <span style="width:90px; color:#8e8e93;">CCTV_Admin</span>
+        <div style="flex:1; height:8px; background:#2a2a2e; border-radius:4px; overflow:hidden;">
+          <div style="width:60%; height:100%; background:#3b82f6; border-radius:4px;"></div>
+        </div>
+        <span style="color:#8e8e93; width:24px; text-align:right;">67</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; margin:3px 0; font-size:10px;">
+        <span style="width:90px; color:#8e8e93;">opensense</span>
+        <div style="flex:1; height:8px; background:#2a2a2e; border-radius:4px; overflow:hidden;">
+          <div style="width:45%; height:100%; background:#3b82f6; border-radius:4px;"></div>
+        </div>
+        <span style="color:#8e8e93; width:24px; text-align:right;">48</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Engram 独有优势: 会话 × Git 交叉视图</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">Readout 有</th>
+        <th style="text-align:left; padding:8px;">Engram 可以额外做</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Repos 列表 + status</td>
+        <td style="padding:8px;">+ 每个 repo 关联的 AI 会话数和使用的 agent 类型</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">CLAUDE.md 查看</td>
+        <td style="padding:8px;">+ 同时展示 GEMINI.md, AGENTS.md, .cursorrules 等</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Commits by Repo</td>
+        <td style="padding:8px;">+ AI 会话 by Repo (哪个项目用 AI 最多)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Diffs 页面</td>
+        <td style="padding:8px;">+ 关联到具体 AI 会话 (哪次对话改了哪些文件)</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">Quick actions (Claude, VS Code)</td>
+        <td style="padding:8px;">+ Resume 最近会话 (连接 PR7)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>数据采集策略</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">Repo 发现</td>
+        <td style="padding:8px;">从所有 session.cwd 提取唯一的 git 根目录 (git rev-parse --show-toplevel)。不像 Readout 扫全盘，我们只关注有 AI 会话的项目</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">状态采集</td>
+        <td style="padding:8px;">daemon 定时 (5 min) 对已知 repo 跑 git status/branch/log。结果存 git_repos 表</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">Active 判定</td>
+        <td style="padding:8px;">最近 24h 内有 AI 会话或有 commit = Active。7 天内 = Idle。超过 = Dormant</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; font-weight:600;">Quick actions</td>
+        <td style="padding:8px;">open -a "Visual Studio Code" path · open -a Terminal path · git -C path pull</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR6 v2 (Workspace) 方向 OK？在终端回复</p>

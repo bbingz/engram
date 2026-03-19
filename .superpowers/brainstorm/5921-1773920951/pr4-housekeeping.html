@@ -1,0 +1,152 @@
+<h2>PR4: Agent 会话梳理 — 空会话与噪音分类</h2>
+<p class="subtitle">增强 session tier 系统，识别无意义会话并提供灵活过滤</p>
+
+<div class="section">
+  <h3>当前 vs 目标</h3>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">现在: Engram Tier 系统</div>
+      <div class="mockup-body" style="font-size:12px; line-height:1.8;">
+        <div style="color:#8e8e93;">4 个 tier，单维度分类:</div>
+        <div style="margin:8px 0;">
+          <div><span style="color:#ef4444;">skip</span> — DB only，不显示</div>
+          <div><span style="color:#f97316;">lite</span> — +FTS，可搜索</div>
+          <div><span style="color:#3b82f6;">normal</span> — +embedding</div>
+          <div><span style="color:#10b981;">premium</span> — +Viking+summary</div>
+        </div>
+        <div style="color:#8e8e93; margin-top:8px;">过滤: 单一 noiseFilter picker</div>
+        <div style="color:#8e8e93;">(all / hide-skip / hide-noise)</div>
+        <div style="color:#ef4444; margin-top:8px; font-size:11px;">
+          问题: 不识别 preamble-only 会话<br>
+          问题: 不识别 "无回复" 会话<br>
+          问题: 不区分 probe 会话<br>
+          问题: 过滤粒度太粗
+        </div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">目标: 多维度分类 + 细粒度过滤</div>
+      <div class="mockup-body" style="font-size:12px; line-height:1.8;">
+        <div style="color:#8e8e93;">保留 tier + 新增 3 个分类标签:</div>
+        <div style="margin:8px 0;">
+          <div><span style="background:#ef444430; color:#ef4444; padding:1px 6px; border-radius:3px; font-size:10px;">empty</span> 0 条消息 (文件存在但无内容)</div>
+          <div><span style="background:#f9731630; color:#f97316; padding:1px 6px; border-radius:3px; font-size:10px;">preamble</span> 只有系统提示词 (CLAUDE.md 等)</div>
+          <div><span style="background:#8b5cf630; color:#8b5cf6; padding:1px 6px; border-radius:3px; font-size:10px;">no-reply</span> 有用户输入但无 AI 回复</div>
+          <div><span style="background:#10b98130; color:#10b981; padding:1px 6px; border-radius:3px; font-size:10px;">normal</span> 正常对话会话</div>
+        </div>
+        <div style="color:#10b981; margin-top:8px; font-size:11px;">
+          每个标签可独立过滤<br>
+          默认隐藏 empty + preamble<br>
+          用户可选择显示
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>分类逻辑 (Node 侧 session-tier.ts 扩展)</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">标签</th>
+        <th style="text-align:left; padding:8px;">判定条件</th>
+        <th style="text-align:left; padding:8px;">默认显示</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;"><span style="color:#ef4444;">empty</span></td>
+        <td style="padding:8px;">messageCount == 0 或文件 < 1KB</td>
+        <td style="padding:8px;">隐藏</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;"><span style="color:#f97316;">preamble</span></td>
+        <td style="padding:8px;">所有 user 消息匹配 preamble 模式 (CLAUDE.md, system-reminder, environment_context, agents.md 等) 且无 assistant 消息</td>
+        <td style="padding:8px;">隐藏</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;"><span style="color:#8b5cf6;">no-reply</span></td>
+        <td style="padding:8px;">有真实 user 消息，但 assistantMessageCount == 0 且 toolMessageCount == 0</td>
+        <td style="padding:8px;">显示 (可能是中断的会话)</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;"><span style="color:#10b981;">normal</span></td>
+        <td style="padding:8px;">有 user + assistant 对话</td>
+        <td style="padding:8px;">显示</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>Preamble 检测模式 (参考 AgentSessions)</h3>
+  <div class="mockup">
+    <div class="mockup-header">识别为 preamble 的内容特征</div>
+    <div class="mockup-body" style="font-size:12px; line-height:1.6; font-family:monospace;">
+      <div style="color:#f97316; margin-bottom:4px;">// 文件标记</div>
+      <div style="color:#8e8e93;">"CLAUDE.md", "AGENTS.md", "GEMINI.md"</div>
+      <div style="color:#8e8e93;">"environment_context", "system-reminder"</div>
+      <div style="color:#8e8e93;">"&lt;instructions&gt;", "&lt;/instructions&gt;"</div>
+      <div style="color:#f97316; margin:8px 0 4px;">// 系统角色声明</div>
+      <div style="color:#8e8e93;">"you are an expert", "your role is"</div>
+      <div style="color:#8e8e93;">"system:", "# System Instructions"</div>
+      <div style="color:#f97316; margin:8px 0 4px;">// 长 markdown 块 (>6行且>4个 heading/bullet)</div>
+      <div style="color:#8e8e93;">通常是注入的项目说明或规则文档</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>数据库变更</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">变更</th>
+        <th style="text-align:left; padding:8px;">说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">新增列</td>
+        <td style="padding:8px;"><code>session_quality TEXT DEFAULT 'normal'</code> — 值: empty / preamble / no-reply / normal</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">与 tier 关系</td>
+        <td style="padding:8px;">tier 决定处理深度 (索引/嵌入/摘要)，quality 决定内容质量。两者正交</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">迁移策略</td>
+        <td style="padding:8px;">新增列 + 重新扫描现有会话分类（后台一次性 backfill）</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">Swift 侧</td>
+        <td style="padding:8px;">Session 模型增加 <code>quality: String?</code> 字段，Database 查询加入 quality 过滤</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>UI 过滤集成 (与 PR2 联动)</h3>
+  <div class="mockup">
+    <div class="mockup-header">会话列表筛选栏 — 增加 quality 过滤</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:8px 12px; font-size:11px;">
+      <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+        <!-- Agent pills -->
+        <span style="padding:2px 8px; border:1px solid #48484a; border-radius:10px; font-size:10px; background:#3b82f630;">All</span>
+        <span style="padding:2px 8px; border-radius:10px; font-size:10px; background:#f9731625; color:#f97316; border:1px solid #f9731640;">● Claude 24</span>
+        <span style="padding:2px 8px; border-radius:10px; font-size:10px; background:#10b98120; color:#10b981; border:1px solid #10b98140;">● Gemini 15</span>
+        <span style="flex:1;"></span>
+        <!-- Quality filter -->
+        <span style="padding:2px 8px; border:1px solid #48484a; border-radius:10px; font-size:10px; color:#8e8e93; cursor:pointer;">
+          Hide: empty, preamble ▾
+        </span>
+        <span style="color:#38383a;">|</span>
+        <span style="padding:2px 8px; border:1px solid #48484a; border-radius:5px; font-size:10px; color:#8e8e93;">Project...</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR4 方向 OK？在终端回复</p>

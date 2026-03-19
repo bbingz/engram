@@ -1,0 +1,23 @@
+{"type":"server-started","port":55967,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:55967","screen_dir":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr1-transcript-overview.html"}
+{"source":"user-event","type":"click","text":"A\n      \n        消息类型色块分类\n        左侧 4px 色条 + 背景色区分 User(蓝)/Assistant(紫)/Tool(绿)/Error(红)/Code(靛)","choice":"a","id":null,"timestamp":1773921528859}
+{"source":"user-event","type":"click","text":"A\n      \n        消息类型色块分类\n        左侧 4px 色条 + 背景色区分 User(蓝)/Assistant(紫)/Tool(绿)/Error(红)/Code(靛)","choice":"a","id":null,"timestamp":1773921530039}
+{"source":"user-event","type":"click","text":"B\n      \n        分类计数与跳转\n        顶部 chip 显示 \"User ×5\" \"Tool ×12\"，点击跳转到该类型的下一条消息","choice":"b","id":null,"timestamp":1773921531510}
+{"source":"user-event","type":"click","text":"A\n      \n        消息类型色块分类\n        左侧 4px 色条 + 背景色区分 User(蓝)/Assistant(紫)/Tool(绿)/Error(红)/Code(靛)","choice":"a","id":null,"timestamp":1773921532274}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr1-transcript-v2.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr2-session-list.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr2-session-list-v2.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr2-session-list-v3.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr3-top-bar.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr3-top-bar-v2.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr4-housekeeping.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr5-probes.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr5-usage-display.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr6-git-context.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr6-workspace-v2.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr7-resume.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr8-ai-title.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr8-comparison.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/pr8-comparison-v2.html"}
+{"type":"screen-added","file":"/Users/bing/-Code-/coding-memory/.superpowers/brainstorm/5921-1773920951/waiting.html"}
+{"type":"server-stopped","reason":"idle timeout"}

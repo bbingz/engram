@@ -1,0 +1,206 @@
+<h2>PR6: Git Context 集成</h2>
+<p class="subtitle">从会话中提取 Git 状态，结合 Readout 的 Workspace 思路展示项目 Git 信息</p>
+
+<div class="section">
+  <h3>数据来源</h3>
+  <div class="mockup">
+    <div class="mockup-header">Git 信息从哪来？</div>
+    <div class="mockup-body" style="font-size:12px; line-height:1.8; background:#1c1c1e; color:#e5e5ea;">
+      <div style="display:flex; gap:16px;">
+        <div style="flex:1;">
+          <div style="color:#f97316; font-weight:600; margin-bottom:6px;">方式 1: 会话文件解析</div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; font-size:11px; margin:4px 0; border-left:3px solid #f97316;">
+            Claude: environment_context 含 git status<br>
+            Codex: environment_context XML 块<br>
+            Gemini: 会话元数据中的 repo 信息<br>
+            <span style="color:#636366;">→ 解析已有，只需结构化提取</span>
+          </div>
+        </div>
+        <div style="flex:1;">
+          <div style="color:#3b82f6; font-weight:600; margin-bottom:6px;">方式 2: 实时探测 (cwd)</div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; font-size:11px; margin:4px 0; border-left:3px solid #3b82f6;">
+            从 session.cwd 获取项目路径<br>
+            运行 git status / git log --oneline -5<br>
+            运行 git branch --show-current<br>
+            <span style="color:#636366;">→ 展示当前实时状态</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>会话详情 — Git Context 面板</h3>
+  <div class="mockup">
+    <div class="mockup-header">SessionDetailView — Git 信息折叠面板</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:0; font-size:12px;">
+
+      <!-- PR1 toolbar (reference) -->
+      <div style="display:flex; align-items:center; gap:5px; padding:5px 10px; border-bottom:1px solid #38383a; font-size:10px;">
+        <span style="color:#f5a623;">★</span>
+        <span style="color:#48484a;">|</span>
+        <div style="display:flex; border:1px solid #48484a; border-radius:4px; overflow:hidden;">
+          <span style="background:#3b82f6; color:white; padding:2px 7px;">Session</span>
+          <span style="padding:2px 7px; color:#8e8e93; border-left:1px solid #48484a;">Text</span>
+          <span style="padding:2px 7px; color:#8e8e93; border-left:1px solid #48484a;">JSON</span>
+        </div>
+        <span style="color:#636366;">ID 62e1</span>
+        <span style="flex:1;"></span>
+        <span style="color:#8e8e93;">A−</span>
+        <span style="color:#8e8e93; font-size:12px;">A+</span>
+        <span style="color:#48484a;">|</span>
+        <span style="color:#8e8e93; padding:1px 5px; border:1px solid #48484a; border-radius:3px;">Copy</span>
+        <span style="color:#48484a;">|</span>
+        <span style="color:#8e8e93;">Find ⌘F</span>
+      </div>
+
+      <!-- Git context panel (collapsible) -->
+      <div style="background:#1e2430; border-bottom:1px solid #38383a;">
+        <div style="display:flex; align-items:center; padding:6px 10px; cursor:pointer;">
+          <span style="color:#f97316; font-size:10px; margin-right:6px;">▼</span>
+          <span style="color:#f97316; font-size:11px; font-weight:600;">Git Context</span>
+          <span style="color:#48484a; font-size:10px; margin-left:8px;">feat/main-app-redesign</span>
+          <span style="flex:1;"></span>
+          <span style="color:#10b981; font-size:10px;">3 modified</span>
+          <span style="color:#f97316; font-size:10px; margin-left:6px;">1 untracked</span>
+        </div>
+        <!-- Expanded content -->
+        <div style="padding:0 10px 8px 26px; font-family:monospace; font-size:10px; line-height:1.6;">
+          <div style="color:#636366; margin-bottom:4px;">Branch: <span style="color:#10b981;">feat/main-app-redesign</span></div>
+          <div style="color:#636366; margin-bottom:4px;">Last commit: <span style="color:#e5e5ea;">d1d172f refactor(macos): extract Sources + About</span></div>
+          <div style="color:#636366; margin-bottom:6px;">Status:</div>
+          <div style="color:#f97316;"> M macos/Engram/Views/SettingsView.swift</div>
+          <div style="color:#f97316;"> M macos/Engram/Core/Database.swift</div>
+          <div style="color:#10b981;"> M macos/Engram/Views/SessionDetailView.swift</div>
+          <div style="color:#ef4444;">?? docs/superpowers/plans/redesign.md</div>
+        </div>
+      </div>
+
+      <!-- Transcript content -->
+      <div style="padding:8px 10px;">
+        <div style="border-left:3px solid #3b82f6; padding:4px 8px; margin:3px 0; background:#3b82f610; border-radius:0 4px 4px 0;">
+          <span style="font-size:9px; color:#3b82f6; font-weight:600;">USER #1</span><br>
+          <span style="font-size:11px;">请帮我重构这个组件</span>
+        </div>
+        <div style="border-left:3px solid #8b5cf6; padding:4px 8px; margin:3px 0; background:#8b5cf610; border-radius:0 4px 4px 0;">
+          <span style="font-size:9px; color:#8b5cf6; font-weight:600;">ASSISTANT #1</span><br>
+          <span style="font-size:11px;">好的，我来看一下...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>主窗口 Projects 页 — 项目级 Git 概览</h3>
+  <div class="mockup">
+    <div class="mockup-header">Projects 页增加 Git 状态列 (参考 Readout Workspace)</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:0; font-size:11px;">
+      <!-- Project cards -->
+      <div style="padding:10px;">
+        <div style="background:#2a2a2e; border-radius:8px; padding:10px 12px; margin:6px 0;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:14px; font-weight:600; color:#e5e5ea;">coding-memory</span>
+            <span style="color:#10b981; font-size:10px; background:#10b98120; padding:1px 6px; border-radius:3px;">feat/main-app-redesign</span>
+            <span style="flex:1;"></span>
+            <span style="color:#8e8e93; font-size:10px;">12 sessions · 3 agents</span>
+          </div>
+          <div style="display:flex; gap:12px; margin-top:6px; font-size:10px; color:#636366;">
+            <span>Last: 2h ago</span>
+            <span style="color:#f97316;">3M 1U</span>
+            <span>d1d172f refactor: extract Sources</span>
+          </div>
+        </div>
+
+        <div style="background:#2a2a2e; border-radius:8px; padding:10px 12px; margin:6px 0;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:14px; font-weight:600; color:#e5e5ea;">my-api-server</span>
+            <span style="color:#8b5cf6; font-size:10px; background:#8b5cf620; padding:1px 6px; border-radius:3px;">main</span>
+            <span style="flex:1;"></span>
+            <span style="color:#8e8e93; font-size:10px;">5 sessions · 2 agents</span>
+          </div>
+          <div style="display:flex; gap:12px; margin-top:6px; font-size:10px; color:#636366;">
+            <span>Last: 1d ago</span>
+            <span style="color:#10b981;">clean</span>
+            <span>a8f3c21 feat: add caching layer</span>
+          </div>
+        </div>
+
+        <div style="background:#2a2a2e; border-radius:8px; padding:10px 12px; margin:6px 0;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:14px; font-weight:600; color:#e5e5ea;">frontend-app</span>
+            <span style="color:#ef4444; font-size:10px; background:#ef444420; padding:1px 6px; border-radius:3px;">fix/login-bug</span>
+            <span style="flex:1;"></span>
+            <span style="color:#8e8e93; font-size:10px;">8 sessions · 1 agent</span>
+          </div>
+          <div style="display:flex; gap:12px; margin-top:6px; font-size:10px; color:#636366;">
+            <span>Last: 5h ago</span>
+            <span style="color:#ef4444;">5M 2D</span>
+            <span>f12e456 fix: resolve auth redirect</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>实现层级</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">层</th>
+        <th style="text-align:left; padding:8px;">说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">GitContextExtractor (Node)</td>
+        <td style="padding:8px;">从会话消息中提取 environment_context 里的 git 信息 (branch, status, diff stats)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">GitProbe (Node)</td>
+        <td style="padding:8px;">根据 session.cwd 运行 git 命令获取实时状态。结果缓存 60s</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">git_context 表</td>
+        <td style="padding:8px;">session_id, branch, last_commit, modified_count, untracked_count, status_json</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">HTTP API</td>
+        <td style="padding:8px;">GET /api/session/:id/git → 该会话的 Git 上下文<br>GET /api/projects → 项目列表 + Git 摘要</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">Swift UI</td>
+        <td style="padding:8px;">SessionDetailView: 折叠面板<br>ProjectsView: 项目卡片增加 branch + status</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>关键决策</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">历史 vs 实时</td>
+        <td style="padding:8px;">会话解析提取<strong>历史快照</strong> (该会话开始时的 git 状态)。GitProbe 提供<strong>实时</strong>状态。两者都展示</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">全 agent 支持</td>
+        <td style="padding:8px;">不限 Codex — 任何有 cwd 的会话都可以 git probe。Claude/Gemini 的 environment_context 也解析</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">默认折叠</td>
+        <td style="padding:8px;">Git 面板默认折叠只显示 branch + 摘要 (3M 1U)。用户感兴趣时展开看文件列表</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; font-weight:600;">安全</td>
+        <td style="padding:8px;">只运行只读 git 命令 (status, log, branch)。不会修改任何仓库状态</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR6 方向 OK？在终端回复</p>

@@ -1,0 +1,153 @@
+<h2>PR8: AI 标题优化 — 四方对比</h2>
+<p class="subtitle">Engram 现有 vs Readout vs AgentSessions vs 优化后</p>
+
+<div class="section">
+  <h3>标题生成能力对比</h3>
+  <div style="overflow-x:auto;">
+    <table style="width:100%; border-collapse:collapse; font-size:12px; min-width:700px;">
+      <thead>
+        <tr style="border-bottom:2px solid #555;">
+          <th style="text-align:left; padding:8px; width:20%;">维度</th>
+          <th style="text-align:left; padding:8px; width:20%; color:#ef4444;">Engram 现有</th>
+          <th style="text-align:left; padding:8px; width:20%; color:#3b82f6;">Readout</th>
+          <th style="text-align:left; padding:8px; width:20%; color:#8b5cf6;">AgentSessions</th>
+          <th style="text-align:left; padding:8px; width:20%; color:#10b981;">优化后</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Title source -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">标题来源</td>
+          <td style="padding:8px;">summary (Viking AI) || 首条用户消息截断 || "Untitled"</td>
+          <td style="padding:8px;">AI 自动生成 (内置 LLM 调用)，支持自定义</td>
+          <td style="padding:8px;">多级 fallback: preview title → 首条 user → 首条 assistant → 首条 tool → "No prompt"</td>
+          <td style="padding:8px;">customName > generated_title (AI) > summary > 首条消息截断</td>
+        </tr>
+        <!-- AI model -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">AI 模型</td>
+          <td style="padding:8px;">Viking (kimi-k2.5)，仅生成长摘要，非标题</td>
+          <td style="padding:8px;">内置 Claude/GPT 调用，无需用户配置</td>
+          <td style="padding:8px;">无 AI，纯文本提取</td>
+          <td style="padding:8px;">Ollama / OpenAI / Dashscope / Custom，用户选择 provider + model</td>
+        </tr>
+        <!-- Config needed -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">用户配置</td>
+          <td style="padding:8px;">需配置 Viking (Ollama + 外部 API)</td>
+          <td style="padding:8px;">零配置 (内置)</td>
+          <td style="padding:8px;">零配置 (无 AI)</td>
+          <td style="padding:8px;">Settings 中选 provider，Ollama 零成本；API 需填 key</td>
+        </tr>
+        <!-- Auto trigger -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">触发方式</td>
+          <td style="padding:8px;">手动点击 ✨ 按钮 或 premium tier 自动</td>
+          <td style="padding:8px;">自动 (新会话即生成)</td>
+          <td style="padding:8px;">即时 (解析时确定)</td>
+          <td style="padding:8px;">自动 (新会话 ≥2 条消息时) + 手动 ✨ + 批量回填</td>
+        </tr>
+        <!-- Title quality -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">标题质量</td>
+          <td style="padding:8px; color:#ef4444;">差 — 截断消息不可读：<br>"请帮我看一下这个文件，我需要..."</td>
+          <td style="padding:8px; color:#10b981;">好 — AI 生成简洁标题：<br>"重构 SessionDetailView"</td>
+          <td style="padding:8px; color:#f97316;">中等 — 首条消息原文：<br>"请帮我重构这个组件" (完整但冗长)</td>
+          <td style="padding:8px; color:#10b981;">好 — AI 生成 ≤30 字标题 + 多级 fallback 保底</td>
+        </tr>
+        <!-- Language -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">多语言</td>
+          <td style="padding:8px;">跟随原文语言</td>
+          <td style="padding:8px;">英文为主</td>
+          <td style="padding:8px;">跟随原文语言</td>
+          <td style="padding:8px;">Prompt 指定跟随对话语言 (中文对话 → 中文标题)</td>
+        </tr>
+        <!-- Manual override -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">手动修改</td>
+          <td style="padding:8px;">customName (重命名功能已有)</td>
+          <td style="padding:8px;">支持编辑</td>
+          <td style="padding:8px;">不支持</td>
+          <td style="padding:8px;">customName 优先级最高，覆盖 AI 生成</td>
+        </tr>
+        <!-- Cost -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">成本</td>
+          <td style="padding:8px;">Viking API 费用 (kimi 按量计费)</td>
+          <td style="padding:8px;">内含 (Readout 订阅费)</td>
+          <td style="padding:8px;">零成本</td>
+          <td style="padding:8px;">Ollama = 免费 · API ≈ ¥0.0003/次 (极低)</td>
+        </tr>
+        <!-- Speed -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">速度</td>
+          <td style="padding:8px;">摘要需 5-15s (长文本)</td>
+          <td style="padding:8px;">1-3s</td>
+          <td style="padding:8px;">即时 (无 AI)</td>
+          <td style="padding:8px;">Ollama <1s · API 1-2s (仅发 500 tokens)</td>
+        </tr>
+        <!-- Batch -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">批量处理</td>
+          <td style="padding:8px;">Viking backfill (POST /api/viking/backfill)</td>
+          <td style="padding:8px;">自动全量</td>
+          <td style="padding:8px;">不适用</td>
+          <td style="padding:8px;">"Regenerate All" 按钮，后台带速率限制</td>
+        </tr>
+        <!-- Empty handling -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">空/异常会话</td>
+          <td style="padding:8px;">"Untitled"</td>
+          <td style="padding:8px;">跳过</td>
+          <td style="padding:8px;">"No prompt" (标记 housekeeping)</td>
+          <td style="padding:8px;">PR4 tier 降级为 skip，不生成标题。≤1 条消息不触发</td>
+        </tr>
+        <!-- Provider flexibility -->
+        <tr>
+          <td style="padding:8px; font-weight:600;">Provider 灵活性</td>
+          <td style="padding:8px;">绑定 Viking (Ollama + Dashscope)</td>
+          <td style="padding:8px;">绑定 Readout 内置</td>
+          <td style="padding:8px;">无</td>
+          <td style="padding:8px;">4 种 provider 可切换，支持任意 OpenAI 兼容 API</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <h3>优化后的核心优势</h3>
+  <div class="options">
+    <div class="option" data-choice="a" onclick="toggleSelect(this)">
+      <div class="letter">1</div>
+      <div class="content">
+        <h3>零成本可用</h3>
+        <p>Ollama 本地运行，不需要任何 API key 和网络。AgentSessions 没有 AI，Readout 需要订阅</p>
+      </div>
+    </div>
+    <div class="option" data-choice="b" onclick="toggleSelect(this)">
+      <div class="letter">2</div>
+      <div class="content">
+        <h3>与 tier 系统联动</h3>
+        <p>PR4 的 skip/lite 会话不浪费 AI 生成标题。只有 normal/premium 会话触发。三家都没有这种智能过滤</p>
+      </div>
+    </div>
+    <div class="option" data-choice="c" onclick="toggleSelect(this)">
+      <div class="letter">3</div>
+      <div class="content">
+        <h3>多 Provider + 多级 Fallback</h3>
+        <p>AI 不可用时自动降级: generated_title → summary → 首条消息。比任何一家都更健壮</p>
+      </div>
+    </div>
+    <div class="option" data-choice="d" onclick="toggleSelect(this)">
+      <div class="letter">4</div>
+      <div class="content">
+        <h3>与现有 summary 互补</h3>
+        <p>Viking summary = 长摘要 (搜索用)，generated_title = 短标题 (列表显示用)。两者共存互补</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR8 对比表 OK？全部 8 个 PR 设计确认后我开始写完整规格文档</p>

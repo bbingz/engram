@@ -1,0 +1,137 @@
+<h2>PR2: 会话列表重设计 — 表格化</h2>
+<p class="subtitle">从分组卡片列表 → 可排序/可筛选表格</p>
+
+<div class="section">
+  <h3>当前 vs 目标</h3>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">现在: SessionListView (卡片式)</div>
+      <div class="mockup-body" style="font-size:12px; line-height:1.5;">
+        <div style="color:#888; font-size:11px; font-weight:600; margin-bottom:4px;">SOURCE FILTER ▾ &nbsp; PROJECT FILTER ▾</div>
+        <div style="color:#888; font-size:10px; margin-bottom:6px;">Sort: Created ↓ &nbsp; Group by: Project</div>
+        <div style="color:#666; font-size:10px; font-weight:600; margin:8px 0 4px;">▼ my-project (12)</div>
+        <div style="padding:6px; background:#2a2a2e; border-radius:6px; margin:3px 0;">
+          <div style="color:#e5e5ea;">重构 Button 组件</div>
+          <div style="color:#636366; font-size:10px;">claude-code · 2h ago · 23 msgs</div>
+        </div>
+        <div style="padding:6px; background:#2a2a2e; border-radius:6px; margin:3px 0;">
+          <div style="color:#e5e5ea;">Fix login bug</div>
+          <div style="color:#636366; font-size:10px;">gemini-cli · 5h ago · 8 msgs</div>
+        </div>
+        <div style="color:#666; font-size:10px; font-weight:600; margin:8px 0 4px;">▼ another-project (5)</div>
+        <div style="padding:6px; background:#2a2a2e; border-radius:6px; margin:3px 0;">
+          <div style="color:#e5e5ea;">Add API endpoint</div>
+          <div style="color:#636366; font-size:10px;">cursor · 1d ago · 45 msgs</div>
+        </div>
+        <div style="color:#ef4444; font-size:10px; text-align:center; margin-top:10px;">
+          ❌ 无表头排序 · ❌ 无列显隐 · ❌ 效率低
+        </div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">目标: 表格式列表 (参考 AgentSessions)</div>
+      <div class="mockup-body" style="font-size:12px; padding:0;">
+        <!-- Table header -->
+        <div style="display:grid; grid-template-columns:28px 28px 60px 1fr 100px 80px 50px 50px; gap:0; background:#2a2a2e; padding:6px 8px; font-size:10px; color:#8e8e93; font-weight:600; border-bottom:1px solid #38383a;">
+          <span>★</span>
+          <span></span>
+          <span>Agent ↕</span>
+          <span>Title ↕</span>
+          <span>Date ↕</span>
+          <span>Project ↕</span>
+          <span>Msgs ↕</span>
+          <span>Size ↕</span>
+        </div>
+        <!-- Rows -->
+        <div style="display:grid; grid-template-columns:28px 28px 60px 1fr 100px 80px 50px 50px; gap:0; padding:5px 8px; font-size:11px; border-bottom:1px solid #2a2a2e; background:#1c1c1e;">
+          <span style="color:#f5a623;">★</span>
+          <span style="color:#f97316; font-size:9px;">●</span>
+          <span style="color:#f97316;">Claude</span>
+          <span style="color:#e5e5ea; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">重构 Button 组件</span>
+          <span style="color:#8e8e93;">2h ago</span>
+          <span style="color:#8e8e93;">my-proj</span>
+          <span style="color:#8e8e93;">23</span>
+          <span style="color:#8e8e93;">1.2M</span>
+        </div>
+        <div style="display:grid; grid-template-columns:28px 28px 60px 1fr 100px 80px 50px 50px; gap:0; padding:5px 8px; font-size:11px; border-bottom:1px solid #2a2a2e; background:#232326;">
+          <span style="color:#48484a;">☆</span>
+          <span style="color:#10b981; font-size:9px;">●</span>
+          <span style="color:#10b981;">Gemini</span>
+          <span style="color:#e5e5ea;">Fix login bug</span>
+          <span style="color:#8e8e93;">5h ago</span>
+          <span style="color:#8e8e93;">my-proj</span>
+          <span style="color:#8e8e93;">8</span>
+          <span style="color:#8e8e93;">340K</span>
+        </div>
+        <div style="display:grid; grid-template-columns:28px 28px 60px 1fr 100px 80px 50px 50px; gap:0; padding:5px 8px; font-size:11px; border-bottom:1px solid #2a2a2e; background:#1c1c1e;">
+          <span style="color:#48484a;">☆</span>
+          <span style="color:#8b5cf6; font-size:9px;">●</span>
+          <span style="color:#8b5cf6;">Cursor</span>
+          <span style="color:#e5e5ea;">Add API endpoint for tasks</span>
+          <span style="color:#8e8e93;">1d ago</span>
+          <span style="color:#8e8e93;">other</span>
+          <span style="color:#8e8e93;">45</span>
+          <span style="color:#8e8e93;">5.6M</span>
+        </div>
+        <div style="display:grid; grid-template-columns:28px 28px 60px 1fr 100px 80px 50px 50px; gap:0; padding:5px 8px; font-size:11px; border-bottom:1px solid #2a2a2e; background:#232326;">
+          <span style="color:#48484a;">☆</span>
+          <span style="color:#3b82f6; font-size:9px;">●</span>
+          <span style="color:#3b82f6;">Codex</span>
+          <span style="color:#e5e5ea;">Implement caching layer</span>
+          <span style="color:#8e8e93;">2d ago</span>
+          <span style="color:#8e8e93;">my-proj</span>
+          <span style="color:#8e8e93;">67</span>
+          <span style="color:#8e8e93;">12M</span>
+        </div>
+        <div style="color:#10b981; font-size:10px; text-align:center; padding:8px;">
+          ✅ 表头点击排序 · ✅ 列显隐 · ✅ 行内收藏<br>
+          ✅ Agent 色点 · ✅ 交替行背景 · ✅ 高信息密度
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>设计要点</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">要素</th>
+        <th style="text-align:left; padding:8px;">设计</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">表格列</td>
+        <td style="padding:8px;">★ 收藏 | Agent (色点+名) | Title | Date | Project | Msgs | Size — 全部可排序</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">列可见性</td>
+        <td style="padding:8px;">右键表头 → 勾选显隐列（参考 AgentSessions 的 ColumnVisibilityStore）</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">收藏操作</td>
+        <td style="padding:8px;">点击 ★ 列直接切换收藏，无需进入详情</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">排序</td>
+        <td style="padding:8px;">SwiftUI Table + KeyPathComparator，支持多级排序</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">交替行</td>
+        <td style="padding:8px;">奇偶行微妙背景色差异，提升可读性</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">实现方式</td>
+        <td style="padding:8px;">SwiftUI Table (macOS 13+) 原生组件，已有 Session 模型支持所有字段</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">保留功能</td>
+        <td style="padding:8px;">底部 session count + Clean Empty 按钮保留</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR2 方向 OK？在终端回复</p>

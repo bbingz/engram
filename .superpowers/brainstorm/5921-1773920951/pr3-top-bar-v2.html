@@ -1,0 +1,140 @@
+<h2>PR3: 顶部功能区 — v2 精简</h2>
+<p class="subtitle">顶部只保留搜索 + Resume，其余下沉到 Settings</p>
+
+<div class="section">
+  <h3>完整布局</h3>
+  <div class="mockup">
+    <div class="mockup-header">Engram 主窗口 — 精简顶部</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:0; font-size:12px;">
+
+      <!-- TOP BAR: minimal -->
+      <div style="display:flex; min-height:320px;">
+        <!-- LEFT: Sidebar nav -->
+        <div style="width:180px; background:#161618; border-right:1px solid #38383a; padding:8px 0;">
+          <div style="padding:6px 14px; font-size:13px; font-weight:600; color:#e5e5ea; margin-bottom:4px;">Engram</div>
+          <div style="padding:5px 14px; font-size:11px; color:#3b82f6; background:#3b82f620; border-radius:0 6px 6px 0; margin:1px 0;">Sessions</div>
+          <div style="padding:5px 14px; font-size:11px; color:#8e8e93; margin:1px 0;">Timeline</div>
+          <div style="padding:5px 14px; font-size:11px; color:#8e8e93; margin:1px 0;">Favorites</div>
+          <div style="padding:5px 14px; font-size:11px; color:#8e8e93; margin:1px 0;">Activity</div>
+          <div style="padding:5px 14px; font-size:11px; color:#8e8e93; margin:1px 0;">Projects</div>
+          <div style="padding:5px 14px; font-size:11px; color:#8e8e93; margin:1px 0;">Sources</div>
+          <div style="flex:1;"></div>
+          <!-- Theme toggle in sidebar bottom area -->
+          <div style="border-top:1px solid #38383a; margin-top:auto;">
+            <div style="padding:5px 14px; font-size:11px; color:#8e8e93; margin:1px 0; display:flex; align-items:center; gap:6px;">
+              <span>☀ / ☾</span> <span>Theme</span>
+            </div>
+            <div style="padding:5px 14px; font-size:11px; color:#8e8e93; margin:1px 0;">⚙ Settings</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: Content area -->
+        <div style="flex:1; display:flex; flex-direction:column;">
+          <!-- Top bar: only search + resume -->
+          <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:#161618; border-bottom:1px solid #38383a;">
+            <span style="flex:1;"></span>
+            <!-- Global search -->
+            <div style="display:flex; align-items:center; gap:6px; padding:5px 12px; background:#2a2a2e; border:1px solid #48484a; border-radius:8px; width:240px;">
+              <span style="color:#636366; font-size:12px;">Search sessions...</span>
+              <span style="flex:1;"></span>
+              <span style="color:#48484a; font-size:10px; border:1px solid #48484a; padding:1px 5px; border-radius:3px;">⌘K</span>
+            </div>
+            <!-- Resume -->
+            <div style="display:flex; align-items:center; gap:4px; padding:4px 10px; background:#10b98125; border:1px solid #10b98150; border-radius:6px; cursor:pointer;">
+              <span style="color:#10b981; font-size:11px;">▶</span>
+              <span style="color:#10b981; font-size:11px;">Resume</span>
+            </div>
+          </div>
+
+          <!-- Content split -->
+          <div style="display:flex; flex:1;">
+            <!-- Session list -->
+            <div style="width:50%; border-right:1px solid #38383a;">
+              <!-- Agent pills + Project search -->
+              <div style="display:flex; align-items:center; gap:5px; padding:6px 10px; border-bottom:1px solid #38383a; flex-wrap:wrap;">
+                <span style="padding:2px 8px; border:1px solid #48484a; border-radius:10px; font-size:10px; background:#3b82f630;">All</span>
+                <span style="padding:2px 8px; border-radius:10px; font-size:10px; background:#f9731625; color:#f97316; border:1px solid #f9731640;">● Claude 24</span>
+                <span style="padding:2px 8px; border-radius:10px; font-size:10px; background:#10b98120; color:#10b981; border:1px solid #10b98140;">● Gemini 15</span>
+                <span style="flex:1;"></span>
+                <span style="padding:2px 8px; border:1px solid #48484a; border-radius:5px; font-size:10px; color:#8e8e93;">Project...</span>
+              </div>
+              <!-- Table -->
+              <div style="display:grid; grid-template-columns:22px 50px 1fr 50px 30px; padding:4px 8px; font-size:9px; color:#636366; font-weight:600; background:#2a2a2e; border-bottom:1px solid #38383a;">
+                <span>★</span><span>Agent</span><span>Title</span><span>Date</span><span>Msgs</span>
+              </div>
+              <div style="display:grid; grid-template-columns:22px 50px 1fr 50px 30px; padding:4px 8px; font-size:10px; background:#3b82f625; border-bottom:1px solid #2a2a2e;">
+                <span style="color:#f5a623;">★</span><span style="color:#f97316;">Claude</span><span style="color:#fff;">重构 Button</span><span style="color:#bbb;">2h</span><span style="color:#bbb;">23</span>
+              </div>
+              <div style="display:grid; grid-template-columns:22px 50px 1fr 50px 30px; padding:4px 8px; font-size:10px; background:#232326; border-bottom:1px solid #2a2a2e;">
+                <span style="color:#48484a;">☆</span><span style="color:#10b981;">Gemini</span><span style="color:#e5e5ea;">Fix login</span><span style="color:#8e8e93;">5h</span><span style="color:#8e8e93;">8</span>
+              </div>
+            </div>
+
+            <!-- Detail -->
+            <div style="flex:1;">
+              <div style="display:flex; align-items:center; gap:5px; padding:5px 10px; border-bottom:1px solid #38383a; font-size:10px;">
+                <span style="color:#f5a623;">★</span>
+                <span style="color:#48484a;">|</span>
+                <div style="display:flex; border:1px solid #48484a; border-radius:4px; overflow:hidden;">
+                  <span style="background:#3b82f6; color:white; padding:2px 7px;">Session</span>
+                  <span style="padding:2px 7px; color:#8e8e93; border-left:1px solid #48484a;">Text</span>
+                  <span style="padding:2px 7px; color:#8e8e93; border-left:1px solid #48484a;">JSON</span>
+                </div>
+                <span style="color:#636366;">ID 62e1</span>
+                <span style="flex:1;"></span>
+                <span style="color:#8e8e93;">A−</span>
+                <span style="color:#8e8e93; font-size:12px;">A+</span>
+                <span style="color:#48484a;">|</span>
+                <span style="color:#8e8e93; padding:1px 5px; border:1px solid #48484a; border-radius:3px;">Copy</span>
+                <span style="color:#48484a;">|</span>
+                <span style="color:#8e8e93;">Find ⌘F</span>
+              </div>
+              <div style="padding:6px 10px;">
+                <div style="border-left:3px solid #3b82f6; padding:4px 8px; margin:3px 0; background:#3b82f610; border-radius:0 4px 4px 0;">
+                  <span style="font-size:9px; color:#3b82f6; font-weight:600;">USER #1</span><br>
+                  <span style="font-size:11px;">请帮我重构这个组件</span>
+                </div>
+                <div style="border-left:3px solid #8b5cf6; padding:4px 8px; margin:3px 0; background:#8b5cf610; border-radius:0 4px 4px 0;">
+                  <span style="font-size:9px; color:#8b5cf6; font-weight:600;">ASSISTANT #1</span><br>
+                  <span style="font-size:11px;">好的，我来看一下...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>布局规则</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">区域</th>
+        <th style="text-align:left; padding:8px;">内容</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">左侧导航栏</td>
+        <td style="padding:8px;">页面导航 (Sessions/Timeline/...) + 底部: Theme 切换 + Settings 入口</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">顶部栏 (右对齐)</td>
+        <td style="padding:8px;"><strong>只有两项:</strong> Search ⌘K + Resume ▶</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">列表区</td>
+        <td style="padding:8px;">Agent 筛选 + Project 搜索 + 表格 (PR2)</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">详情区</td>
+        <td style="padding:8px;">Transcript 工具栏 + 内容 (PR1)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR3 v2 方向 OK？在终端回复</p>

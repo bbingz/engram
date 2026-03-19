@@ -10,22 +10,29 @@ enum TerminalType: String, CaseIterable, Identifiable {
 }
 
 struct TerminalLauncher {
+    /// Escape a string for safe interpolation into AppleScript double-quoted strings
+    private static func escapeForAppleScript(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
     static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) {
-        let fullCmd = ([command] + args).joined(separator: " ")
+        let safeCwd = escapeForAppleScript(cwd)
+        let safeCmd = ([command] + args).map { escapeForAppleScript($0) }.joined(separator: " ")
         let script: String
         switch terminal {
         case .terminal:
             script = """
             tell application "Terminal"
                 activate
-                do script "cd \\"\(cwd)\\" && \(fullCmd)"
+                do script "cd \\"\(safeCwd)\\" && \(safeCmd)"
             end tell
             """
         case .iterm:
             script = """
             tell application "iTerm2"
                 activate
-                create window with default profile command "cd \\"\(cwd)\\" && \(fullCmd)"
+                create window with default profile command "cd \\"\(safeCwd)\\" && \(safeCmd)"
             end tell
             """
         case .ghostty:

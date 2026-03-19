@@ -1,0 +1,217 @@
+<h2>PR8: AI 辅助能力 — 四方全面对比</h2>
+<p class="subtitle">Viking 是我们的核心优势，标题生成是叠加而非替代</p>
+
+<div class="section">
+  <h3>AI 辅助能力全景对比</h3>
+  <div style="overflow-x:auto;">
+    <table style="width:100%; border-collapse:collapse; font-size:12px; min-width:750px;">
+      <thead>
+        <tr style="border-bottom:2px solid #555;">
+          <th style="text-align:left; padding:8px; width:18%;">AI 能力维度</th>
+          <th style="text-align:left; padding:8px; width:18%; color:#ef4444;">Engram 现有</th>
+          <th style="text-align:left; padding:8px; width:18%; color:#3b82f6;">Readout</th>
+          <th style="text-align:left; padding:8px; width:18%; color:#8b5cf6;">AgentSessions</th>
+          <th style="text-align:left; padding:8px; width:28%; color:#10b981;">Engram 优化后</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Semantic search -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">语义搜索</td>
+          <td style="padding:8px; color:#10b981;">Viking embedding (qwen3-embedding:4b, 2560d)</td>
+          <td style="padding:8px; color:#ef4444;">无</td>
+          <td style="padding:8px; color:#ef4444;">无 (纯文本两阶段搜索)</td>
+          <td style="padding:8px; color:#10b981;">保留 Viking embedding<br>+ FTS trigram fallback</td>
+        </tr>
+        <!-- Long summary -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">长摘要生成</td>
+          <td style="padding:8px; color:#10b981;">Viking (kimi-k2.5) 自动/手动生成</td>
+          <td style="padding:8px; color:#10b981;">内置 LLM 生成</td>
+          <td style="padding:8px; color:#ef4444;">无</td>
+          <td style="padding:8px; color:#10b981;">保留 Viking 长摘要<br>(premium tier 自动触发)</td>
+        </tr>
+        <!-- Short title -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">短标题生成</td>
+          <td style="padding:8px; color:#ef4444;">无 — 截断首条消息 / "Untitled"</td>
+          <td style="padding:8px; color:#10b981;">AI 自动生成</td>
+          <td style="padding:8px; color:#f97316;">纯文本提取 (多级 fallback)</td>
+          <td style="padding:8px; color:#10b981;"><strong>新增</strong> — 小模型生成 ≤30 字标题<br>Ollama/OpenAI/Dashscope/Custom</td>
+        </tr>
+        <!-- VLM -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">视觉理解 (VLM)</td>
+          <td style="padding:8px; color:#10b981;">Viking VLM (kimi-k2.5 视觉)</td>
+          <td style="padding:8px; color:#ef4444;">无</td>
+          <td style="padding:8px; color:#ef4444;">无 (仅 base64 提取展示)</td>
+          <td style="padding:8px; color:#10b981;">保留 Viking VLM</td>
+        </tr>
+        <!-- Tiered processing -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">分级处理</td>
+          <td style="padding:8px; color:#10b981;">4 tier: skip/lite/normal/premium<br>不同 tier 触发不同 AI 能力</td>
+          <td style="padding:8px; color:#ef4444;">无分级</td>
+          <td style="padding:8px; color:#f97316;">housekeeping 二值分类</td>
+          <td style="padding:8px; color:#10b981;">保留 4 tier<br>+ PR4 增强分类智能<br>+ 标题只对 normal/premium 生成</td>
+        </tr>
+        <!-- Context engine -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">上下文引擎</td>
+          <td style="padding:8px; color:#10b981;">Viking tiered retrieval<br>(L0/L1/L2 多级检索)</td>
+          <td style="padding:8px; color:#ef4444;">无</td>
+          <td style="padding:8px; color:#ef4444;">无</td>
+          <td style="padding:8px; color:#10b981;">保留 Viking 上下文引擎</td>
+        </tr>
+        <!-- Dual write -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">数据双写</td>
+          <td style="padding:8px; color:#10b981;">resources 路径双写 → Viking embedding</td>
+          <td style="padding:8px; color:#ef4444;">无</td>
+          <td style="padding:8px; color:#ef4444;">无</td>
+          <td style="padding:8px; color:#10b981;">保留双写机制</td>
+        </tr>
+        <!-- Graceful degradation -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">离线降级</td>
+          <td style="padding:8px; color:#10b981;">Viking 不可用 → FTS fallback<br>circuit breaker 5min</td>
+          <td style="padding:8px; color:#f97316;">依赖网络</td>
+          <td style="padding:8px; color:#10b981;">全本地 (无 AI 依赖)</td>
+          <td style="padding:8px; color:#10b981;">Viking down → FTS<br>标题 API down → Ollama local<br>Ollama down → 首条消息截断<br><strong>三层 fallback</strong></td>
+        </tr>
+        <!-- Title priority -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">标题显示优先级</td>
+          <td style="padding:8px;">summary || 首条消息 || "Untitled"</td>
+          <td style="padding:8px;">AI title || 手动编辑</td>
+          <td style="padding:8px;">preview → user → asst → tool → "No prompt"</td>
+          <td style="padding:8px;">customName<br>> generated_title (小模型)<br>> summary (Viking 摘要)<br>> 首条消息截断</td>
+        </tr>
+        <!-- Provider -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">AI Provider 数量</td>
+          <td style="padding:8px;">1 (Viking: Ollama + Dashscope)</td>
+          <td style="padding:8px;">1 (内置)</td>
+          <td style="padding:8px;">0</td>
+          <td style="padding:8px;">Viking + 4 种标题 provider<br>= <strong>5 个 AI 通道</strong></td>
+        </tr>
+        <!-- Cost structure -->
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px; font-weight:600;">成本结构</td>
+          <td style="padding:8px;">Ollama (免费) + Dashscope (VLM 付费)</td>
+          <td style="padding:8px;">Readout 订阅费</td>
+          <td style="padding:8px;">零成本</td>
+          <td style="padding:8px;">Viking: 现有成本不变<br>标题: Ollama 免费 / API ≈ ¥0.0003/次</td>
+        </tr>
+        <!-- Unique advantages -->
+        <tr>
+          <td style="padding:8px; font-weight:600;">独有能力</td>
+          <td style="padding:8px; color:#10b981;">语义搜索 + VLM + 分级处理 + 上下文检索</td>
+          <td style="padding:8px;">内置零配置</td>
+          <td style="padding:8px;">7 agent 专用解析器</td>
+          <td style="padding:8px; color:#10b981;">全部现有优势<br>+ 智能短标题<br>+ 三层离线 fallback<br>+ 5 个 AI 通道</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <h3>AI 能力矩阵总结</h3>
+  <div style="overflow-x:auto;">
+    <table style="width:100%; border-collapse:collapse; font-size:13px; text-align:center;">
+      <thead>
+        <tr style="border-bottom:2px solid #555;">
+          <th style="text-align:left; padding:8px;">能力</th>
+          <th style="padding:8px; color:#ef4444;">现有</th>
+          <th style="padding:8px; color:#3b82f6;">Readout</th>
+          <th style="padding:8px; color:#8b5cf6;">AgentSessions</th>
+          <th style="padding:8px; color:#10b981;">优化后</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="text-align:left; padding:6px;">语义搜索</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="text-align:left; padding:6px;">长摘要</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="text-align:left; padding:6px;">短标题</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#f97316;">◐</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="text-align:left; padding:6px;">VLM 视觉</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="text-align:left; padding:6px;">分级处理</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#f97316;">◐</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="text-align:left; padding:6px;">上下文检索</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="text-align:left; padding:6px;">离线 fallback</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#48484a;">○</td>
+          <td style="padding:6px; color:#10b981;">●</td>
+          <td style="padding:6px; color:#10b981;">●●●</td>
+        </tr>
+        <tr>
+          <td style="text-align:left; padding:6px; font-weight:600;">总计 ● 数</td>
+          <td style="padding:6px; font-weight:600;">6</td>
+          <td style="padding:6px; font-weight:600;">2</td>
+          <td style="padding:6px; font-weight:600;">1.5</td>
+          <td style="padding:6px; font-weight:600; color:#10b981;">7+</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="font-size:11px; color:#636366; margin-top:6px;">● = 完整支持 · ◐ = 部分支持 · ○ = 不支持</p>
+</div>
+
+<div class="section">
+  <h3>关键结论</h3>
+  <p style="font-size:13px; line-height:1.7;">
+    Viking 是 Engram 在 AI 辅助维度上的<strong>绝对护城河</strong> — 语义搜索、VLM、分级处理、上下文检索，这些 Readout 和 AgentSessions 都没有。
+    <br><br>
+    PR8 的标题生成是在 Viking 体系上<strong>补短板</strong>：Viking 擅长深度理解 (长摘要、语义搜索)，但不做轻量级的短标题。
+    用小模型 (Ollama qwen2.5:3b) 专门生成标题，成本几乎为零，与 Viking 分工明确：
+  </p>
+  <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:8px;">
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600; color:#f97316;">Viking</td>
+        <td style="padding:8px;">深度: embedding (搜索) + VLM (图片) + 长摘要 (理解) + 上下文检索 (跨会话)</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; font-weight:600; color:#10b981;">Title Generator</td>
+        <td style="padding:8px;">轻量: 短标题 (≤30 字，列表显示用)，Ollama 本地 <1s，API 极低成本</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR8 v2 对比表 OK？全部 8 个 PR 确认后写规格文档</p>

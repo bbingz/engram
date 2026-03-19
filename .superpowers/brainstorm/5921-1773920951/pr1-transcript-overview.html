@@ -1,0 +1,129 @@
+<h2>PR1: Transcript 增强 — 总体设计</h2>
+<p class="subtitle">7 个子功能，将 SessionDetailView 从"文本查看器"升级为"交互式 transcript 浏览器"</p>
+
+<div class="section">
+  <h3>当前状态 vs 目标状态</h3>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">现在: SessionDetailView</div>
+      <div class="mockup-body" style="font-size:13px; line-height:1.6;">
+        <div style="padding:8px; background:#2563eb20; border-radius:8px; margin:6px 0; text-align:right;">
+          <span style="font-size:11px; color:#666;">You</span><br>
+          请帮我重构这个组件
+        </div>
+        <div style="padding:8px; background:#f3f4f6; border-radius:8px; margin:6px 0;">
+          <span style="font-size:11px; color:#8b5cf6;">Claude</span><br>
+          好的，我来看一下代码结构...
+        </div>
+        <div style="padding:8px; background:#f3f4f6; border-radius:8px; margin:6px 0; opacity:0.5; font-size:11px;">
+          ▶ System Prompt (collapsed)
+        </div>
+        <div style="padding:8px; background:#f3f4f6; border-radius:8px; margin:6px 0;">
+          <span style="font-size:11px; color:#8b5cf6;">Claude</span><br>
+          我已经完成了重构...
+        </div>
+        <div style="color:#999; font-size:11px; text-align:center; margin-top:12px;">
+          ❌ 无搜索 · ❌ 无分类色块 · ❌ 无跳转<br>
+          ❌ 无过滤开关 · ❌ 无消息计数
+        </div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">目标: 交互式 Transcript 浏览器</div>
+      <div class="mockup-body" style="font-size:13px; line-height:1.6;">
+        <!-- Find bar -->
+        <div style="display:flex; gap:6px; align-items:center; padding:6px 8px; background:#1a1a2e; border-radius:6px; margin-bottom:8px;">
+          <span style="color:#888;">🔍</span>
+          <span style="color:#ccc; font-size:12px;">Search in transcript...</span>
+          <span style="color:#666; font-size:11px; margin-left:auto;">⌘F</span>
+        </div>
+        <!-- Filter chips -->
+        <div style="display:flex; gap:4px; margin-bottom:8px; flex-wrap:wrap;">
+          <span style="background:#3b82f6; color:white; padding:2px 8px; border-radius:10px; font-size:11px;">👤 User ×5</span>
+          <span style="background:#8b5cf6; color:white; padding:2px 8px; border-radius:10px; font-size:11px;">🤖 Assistant ×4</span>
+          <span style="background:#10b981; color:white; padding:2px 8px; border-radius:10px; font-size:11px;">🔧 Tool ×12</span>
+          <span style="background:#ef4444; color:white; padding:2px 8px; border-radius:10px; font-size:11px;">⚠️ Error ×1</span>
+          <span style="background:#6366f1; color:white; padding:2px 8px; border-radius:10px; font-size:11px;">💻 Code ×3</span>
+        </div>
+        <!-- Messages with color blocks -->
+        <div style="border-left:4px solid #3b82f6; padding:4px 8px; margin:4px 0; background:#3b82f620;">
+          <span style="font-size:10px; color:#3b82f6; font-weight:600;">USER #1</span><br>
+          请帮我重构这个组件
+        </div>
+        <div style="border-left:4px solid #8b5cf6; padding:4px 8px; margin:4px 0; background:#8b5cf620;">
+          <span style="font-size:10px; color:#8b5cf6; font-weight:600;">ASSISTANT #1</span><br>
+          好的，我来看一下代码结构...
+        </div>
+        <div style="border-left:4px solid #10b981; padding:4px 8px; margin:4px 0; background:#10b98120;">
+          <span style="font-size:10px; color:#10b981; font-weight:600;">TOOL: Read file</span><br>
+          <span style="opacity:0.7; font-size:12px;">src/components/Button.swift → 42 lines</span>
+        </div>
+        <div style="border-left:4px solid #ef4444; padding:4px 8px; margin:4px 0; background:#ef444420;">
+          <span style="font-size:10px; color:#ef4444; font-weight:600;">ERROR</span><br>
+          <span style="opacity:0.7; font-size:12px;">File not found: utils.ts</span>
+        </div>
+        <div style="color:#10b981; font-size:11px; text-align:center; margin-top:8px;">
+          ✅ 搜索 · ✅ 色块分类 · ✅ 计数跳转<br>
+          ✅ 过滤开关 · ✅ 字体缩放 · ✅ 复制
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>7 个子功能拆解</h3>
+  <div class="options">
+    <div class="option" data-choice="a" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>消息类型色块分类</h3>
+        <p>左侧 4px 色条 + 背景色区分 User(蓝)/Assistant(紫)/Tool(绿)/Error(红)/Code(靛)</p>
+      </div>
+    </div>
+    <div class="option" data-choice="b" onclick="toggleSelect(this)">
+      <div class="letter">B</div>
+      <div class="content">
+        <h3>分类计数与跳转</h3>
+        <p>顶部 chip 显示 "User ×5" "Tool ×12"，点击跳转到该类型的下一条消息</p>
+      </div>
+    </div>
+    <div class="option" data-choice="c" onclick="toggleSelect(this)">
+      <div class="letter">C</div>
+      <div class="content">
+        <h3>显示过滤开关</h3>
+        <p>Chip 可切换 on/off，关闭 Tool chip 则隐藏所有工具调用，只看纯对话</p>
+      </div>
+    </div>
+    <div class="option" data-choice="d" onclick="toggleSelect(this)">
+      <div class="letter">D</div>
+      <div class="content">
+        <h3>Raw/JSON 视图增强</h3>
+        <p>三模式切换: Clean(渲染) / Raw(原始文本) / JSON(格式化JSON)，沿用已有 toggle 扩展</p>
+      </div>
+    </div>
+    <div class="option" data-choice="e" onclick="toggleSelect(this)">
+      <div class="letter">E</div>
+      <div class="content">
+        <h3>字体缩放 (⌘+/⌘-)</h3>
+        <p>Detail view 内快捷键缩放，已有 contentFontSize AppStorage 基础</p>
+      </div>
+    </div>
+    <div class="option" data-choice="f" onclick="toggleSelect(this)">
+      <div class="letter">F</div>
+      <div class="content">
+        <h3>选中内容复制增强</h3>
+        <p>右键菜单: 复制选中/复制整条消息/复制整段对话。⌥⌘C 复制全部</p>
+      </div>
+    </div>
+    <div class="option" data-choice="g" onclick="toggleSelect(this)">
+      <div class="letter">G</div>
+      <div class="content">
+        <h3>对话内搜索 (⌘F)</h3>
+        <p>Find bar + 关键词高亮 + 上/下跳转 + "3/7" 计数器 + Escape 关闭</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:20px;">点击你认为最重要的子功能，或在终端告诉我想调整的地方</p>

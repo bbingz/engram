@@ -1,0 +1,110 @@
+<h2>独立窗口的导航结构</h2>
+<p class="subtitle">NavigationSplitView 的 sidebar 分组和页面组织方式</p>
+
+<div class="cards">
+  <div class="card" data-choice="flat-grouped" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1A1D24;padding:16px;border-radius:8px;font-family:system-ui;color:white;display:flex;height:360px;">
+        <!-- Sidebar -->
+        <div style="width:160px;background:rgba(255,255,255,0.04);border-radius:8px 0 0 8px;padding:12px 10px;font-size:12px;overflow:hidden;">
+          <div style="color:#6E7078;font-size:9px;letter-spacing:0.5px;margin-bottom:6px;">OVERVIEW</div>
+          <div style="background:rgba(74,143,231,0.25);border-radius:6px;padding:5px 8px;margin-bottom:2px;color:#6CB4FF;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">🏠</span> Home
+          </div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">🔍</span> Search
+          </div>
+
+          <div style="color:#6E7078;font-size:9px;letter-spacing:0.5px;margin:10px 0 6px;">MONITOR</div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">💬</span> Sessions
+          </div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">📊</span> Timeline
+          </div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">⚡</span> Activity
+          </div>
+
+          <div style="color:#6E7078;font-size:9px;letter-spacing:0.5px;margin:10px 0 6px;">WORKSPACE</div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">📁</span> Projects
+          </div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">🔌</span> Sources
+          </div>
+
+          <div style="color:#6E7078;font-size:9px;letter-spacing:0.5px;margin:10px 0 6px;">CONFIG</div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">⚡</span> Skills
+          </div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">🤖</span> Agents
+          </div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">🧠</span> Memory
+          </div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">🪝</span> Hooks
+          </div>
+
+          <div style="position:absolute;bottom:12px;left:10px;right:10px;">
+            <div style="padding:5px 8px;color:#6E7078;display:flex;align-items:center;gap:6px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">
+              <span style="font-size:13px;">⚙️</span> Settings
+            </div>
+          </div>
+        </div>
+        <!-- Content placeholder -->
+        <div style="flex:1;padding:20px;display:flex;align-items:center;justify-content:center;">
+          <div style="color:#6E7078;font-size:13px;">← 4 组 · 12 页 · 扁平列表<br><br>每个页面平等，无折叠<br>Settings 固定在底部</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 扁平分组（学 Readout）</h3>
+      <p>所有 12 个页面直接可见，按 4 组分类。组标题是小灰色文字。无折叠、无嵌套。Settings 固定在 sidebar 底部。最大化可发现性——所有功能一目了然。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="collapsible" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1A1D24;padding:16px;border-radius:8px;font-family:system-ui;color:white;display:flex;height:360px;">
+        <!-- Sidebar -->
+        <div style="width:160px;background:rgba(255,255,255,0.04);border-radius:8px 0 0 8px;padding:12px 10px;font-size:12px;">
+          <div style="background:rgba(74,143,231,0.25);border-radius:6px;padding:5px 8px;margin-bottom:2px;color:#6CB4FF;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">🏠</span> Home
+          </div>
+          <div style="padding:5px 8px;margin-bottom:2px;color:#A0A1A8;display:flex;align-items:center;gap:6px;">
+            <span style="font-size:13px;">🔍</span> Search
+          </div>
+
+          <div style="padding:5px 8px;margin:6px 0 2px;color:#C8C9CE;display:flex;align-items:center;gap:6px;font-weight:500;">
+            <span style="color:#6E7078;font-size:10px;">▼</span> Monitor
+            <span style="margin-left:auto;background:rgba(255,255,255,0.08);border-radius:8px;padding:1px 6px;font-size:9px;color:#6E7078;">3</span>
+          </div>
+          <div style="padding:5px 8px 5px 24px;margin-bottom:1px;color:#A0A1A8;font-size:11px;">Sessions</div>
+          <div style="padding:5px 8px 5px 24px;margin-bottom:1px;color:#A0A1A8;font-size:11px;">Timeline</div>
+          <div style="padding:5px 8px 5px 24px;margin-bottom:1px;color:#A0A1A8;font-size:11px;">Activity</div>
+
+          <div style="padding:5px 8px;margin:6px 0 2px;color:#C8C9CE;display:flex;align-items:center;gap:6px;font-weight:500;">
+            <span style="color:#6E7078;font-size:10px;">▶</span> Workspace
+            <span style="margin-left:auto;background:rgba(255,255,255,0.08);border-radius:8px;padding:1px 6px;font-size:9px;color:#6E7078;">2</span>
+          </div>
+
+          <div style="padding:5px 8px;margin:6px 0 2px;color:#C8C9CE;display:flex;align-items:center;gap:6px;font-weight:500;">
+            <span style="color:#6E7078;font-size:10px;">▶</span> Config
+            <span style="margin-left:auto;background:rgba(255,255,255,0.08);border-radius:8px;padding:1px 6px;font-size:9px;color:#6E7078;">4</span>
+          </div>
+        </div>
+        <!-- Content -->
+        <div style="flex:1;padding:20px;display:flex;align-items:center;justify-content:center;">
+          <div style="color:#6E7078;font-size:13px;">← 可折叠组<br><br>只展开当前关注的组<br>sidebar 更紧凑<br>但隐藏了功能可发现性</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 可折叠分组</h3>
+      <p>DisclosureGroup 折叠每个组。节省空间，但用户需要点击展开才能发现功能。12 个页面不算多——折叠可能过度设计。</p>
+    </div>
+  </div>
+</div>

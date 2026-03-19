@@ -1,0 +1,146 @@
+<h2>PR2: 会话列表重设计 — v2 加入顶部筛选栏</h2>
+<p class="subtitle">表格上方增加 Agent 筛选 + Project 快速查找</p>
+
+<div class="section">
+  <h3>完整布局</h3>
+  <div class="mockup">
+    <div class="mockup-header">Engram 会话列表 — 筛选栏 + 表格</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:0; font-size:12px;">
+
+      <!-- Row 1: Agent filter pills + Project filter -->
+      <div style="display:flex; align-items:center; gap:6px; padding:8px 12px; border-bottom:1px solid #38383a; flex-wrap:wrap;">
+        <!-- All button -->
+        <span style="padding:3px 10px; border:1px solid #48484a; border-radius:12px; font-size:11px; color:#e5e5ea; cursor:pointer; background:#3b82f630;">All</span>
+        <!-- Agent pills -->
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; cursor:pointer; background:#f9731630; color:#f97316; border:1px solid #f9731640;">
+          <span style="font-size:8px;">●</span> Claude <span style="color:#f9731688;">24</span>
+        </span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; cursor:pointer; background:#3b82f620; color:#3b82f6; border:1px solid #3b82f640;">
+          <span style="font-size:8px;">●</span> Codex <span style="color:#3b82f688;">8</span>
+        </span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; cursor:pointer; background:#10b98120; color:#10b981; border:1px solid #10b98140;">
+          <span style="font-size:8px;">●</span> Gemini <span style="color:#10b98188;">15</span>
+        </span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; cursor:pointer; background:#8b5cf620; color:#8b5cf6; border:1px solid #8b5cf640;">
+          <span style="font-size:8px;">●</span> Cursor <span style="color:#8b5cf688;">6</span>
+        </span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; cursor:pointer; background:#48484a30; color:#8e8e93; border:1px solid #48484a;">
+          <span style="font-size:8px;">●</span> Copilot <span style="color:#8e8e9388;">3</span>
+        </span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; cursor:pointer; background:#48484a30; color:#8e8e93; border:1px solid #48484a;">
+          <span style="font-size:8px;">●</span> OpenCode <span style="color:#8e8e9388;">2</span>
+        </span>
+        <!-- Spacer -->
+        <span style="flex:1;"></span>
+        <!-- Project filter -->
+        <span style="padding:3px 10px; border:1px solid #48484a; border-radius:6px; font-size:11px; color:#8e8e93; cursor:pointer; display:flex; align-items:center; gap:4px;">
+          Project ▾
+        </span>
+      </div>
+
+      <!-- Table header -->
+      <div style="display:grid; grid-template-columns:28px 28px 64px 1fr 90px 90px 44px 50px; gap:0; background:#2a2a2e; padding:6px 8px; font-size:10px; color:#8e8e93; font-weight:600; border-bottom:1px solid #38383a;">
+        <span>★</span>
+        <span></span>
+        <span>Agent ↕</span>
+        <span>Title ↕</span>
+        <span>Date ↕</span>
+        <span>Project ↕</span>
+        <span>Msgs ↕</span>
+        <span>Size ↕</span>
+      </div>
+
+      <!-- Row 1 - selected -->
+      <div style="display:grid; grid-template-columns:28px 28px 64px 1fr 90px 90px 44px 50px; gap:0; padding:5px 8px; font-size:11px; border-bottom:1px solid #2a2a2e; background:#3b82f630;">
+        <span style="color:#f5a623;">★</span>
+        <span style="color:#f97316; font-size:9px;">●</span>
+        <span style="color:#f97316;">Claude</span>
+        <span style="color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">重构 Button 组件</span>
+        <span style="color:#ccc;">2h ago</span>
+        <span style="color:#ccc;">my-proj</span>
+        <span style="color:#ccc;">23</span>
+        <span style="color:#ccc;">1.2M</span>
+      </div>
+      <!-- Row 2 -->
+      <div style="display:grid; grid-template-columns:28px 28px 64px 1fr 90px 90px 44px 50px; gap:0; padding:5px 8px; font-size:11px; border-bottom:1px solid #2a2a2e; background:#232326;">
+        <span style="color:#48484a;">☆</span>
+        <span style="color:#10b981; font-size:9px;">●</span>
+        <span style="color:#10b981;">Gemini</span>
+        <span style="color:#e5e5ea;">Fix login bug</span>
+        <span style="color:#8e8e93;">5h ago</span>
+        <span style="color:#8e8e93;">my-proj</span>
+        <span style="color:#8e8e93;">8</span>
+        <span style="color:#8e8e93;">340K</span>
+      </div>
+      <!-- Row 3 -->
+      <div style="display:grid; grid-template-columns:28px 28px 64px 1fr 90px 90px 44px 50px; gap:0; padding:5px 8px; font-size:11px; border-bottom:1px solid #2a2a2e; background:#1c1c1e;">
+        <span style="color:#48484a;">☆</span>
+        <span style="color:#8b5cf6; font-size:9px;">●</span>
+        <span style="color:#8b5cf6;">Cursor</span>
+        <span style="color:#e5e5ea;">Add API endpoint for tasks</span>
+        <span style="color:#8e8e93;">1d ago</span>
+        <span style="color:#8e8e93;">other-proj</span>
+        <span style="color:#8e8e93;">45</span>
+        <span style="color:#8e8e93;">5.6M</span>
+      </div>
+      <!-- Row 4 -->
+      <div style="display:grid; grid-template-columns:28px 28px 64px 1fr 90px 90px 44px 50px; gap:0; padding:5px 8px; font-size:11px; border-bottom:1px solid #2a2a2e; background:#232326;">
+        <span style="color:#f5a623;">★</span>
+        <span style="color:#3b82f6; font-size:9px;">●</span>
+        <span style="color:#3b82f6;">Codex</span>
+        <span style="color:#e5e5ea;">Implement caching layer</span>
+        <span style="color:#8e8e93;">2d ago</span>
+        <span style="color:#8e8e93;">my-proj</span>
+        <span style="color:#8e8e93;">67</span>
+        <span style="color:#8e8e93;">12M</span>
+      </div>
+
+      <!-- Footer -->
+      <div style="display:flex; align-items:center; padding:6px 12px; border-top:1px solid #38383a; font-size:10px; color:#636366;">
+        <span>58 sessions</span>
+        <span style="flex:1;"></span>
+        <span style="color:#ef4444; cursor:pointer;">Clean Empty</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>筛选栏交互细节</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">元素</th>
+        <th style="text-align:left; padding:8px;">行为</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">All 按钮</td>
+        <td style="padding:8px;">重置所有筛选，显示全部会话</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Agent pill</td>
+        <td style="padding:8px;">点击切换选中/取消。多选模式：可同时选 Claude + Gemini。数字显示该 agent 的会话数</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Agent pill 样式</td>
+        <td style="padding:8px;">选中: 半透明色底 + 色边框 + 色文字。未选中: 灰底灰文字</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Project ▾</td>
+        <td style="padding:8px;">下拉菜单列出所有项目，支持勾选多个。已选时显示 "Project: my-proj ×"</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">动态显示</td>
+        <td style="padding:8px;">只显示有会话的 agent，无会话的 agent 不出现</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">持久化</td>
+        <td style="padding:8px;">筛选状态存 @AppStorage，重启保持</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR2 v2 方向 OK？在终端回复</p>

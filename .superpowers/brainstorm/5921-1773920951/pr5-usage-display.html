@@ -1,0 +1,253 @@
+<h2>PR5: 用量显示方案对比</h2>
+<p class="subtitle">Claude 有 Opus(5h+周) / Sonnet(独立) / Spark(5h+周)，如何紧凑展示？</p>
+
+<div class="section">
+  <h3>方案 A: 双行紧凑条</h3>
+  <p class="subtitle">每个模型一组，上行 5h 下行 周，同色系深浅区分</p>
+  <div class="mockup">
+    <div class="mockup-header">Popover 用量区</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:10px 14px; font-size:11px;">
+      <div style="color:#636366; font-size:10px; margin-bottom:8px;">USAGE</div>
+
+      <!-- Opus -->
+      <div style="margin-bottom:8px;">
+        <div style="display:flex; align-items:center; gap:6px; margin-bottom:2px;">
+          <span style="color:#f97316; width:52px; font-size:10px;">Opus</span>
+          <div style="flex:1; height:5px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+            <div style="width:72%; height:100%; background:#f97316; border-radius:3px;"></div>
+          </div>
+          <span style="color:#f97316; font-size:9px; width:44px; text-align:right;">72% 5h</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="width:52px;"></span>
+          <div style="flex:1; height:3px; background:#2a2a2e; border-radius:2px; overflow:hidden;">
+            <div style="width:35%; height:100%; background:#f9731666; border-radius:2px;"></div>
+          </div>
+          <span style="color:#636366; font-size:9px; width:44px; text-align:right;">35% wk</span>
+        </div>
+      </div>
+
+      <!-- Sonnet -->
+      <div style="margin-bottom:8px;">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="color:#8b5cf6; width:52px; font-size:10px;">Sonnet</span>
+          <div style="flex:1; height:5px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+            <div style="width:45%; height:100%; background:#8b5cf6; border-radius:3px;"></div>
+          </div>
+          <span style="color:#8b5cf6; font-size:9px; width:44px; text-align:right;">45% 5h</span>
+        </div>
+      </div>
+
+      <!-- Spark -->
+      <div style="margin-bottom:8px;">
+        <div style="display:flex; align-items:center; gap:6px; margin-bottom:2px;">
+          <span style="color:#10b981; width:52px; font-size:10px;">Spark</span>
+          <div style="flex:1; height:5px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+            <div style="width:88%; height:100%; background:#ef4444; border-radius:3px;"></div>
+          </div>
+          <span style="color:#ef4444; font-size:9px; width:44px; text-align:right;">88% 5h</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="width:52px;"></span>
+          <div style="flex:1; height:3px; background:#2a2a2e; border-radius:2px; overflow:hidden;">
+            <div style="width:60%; height:100%; background:#10b98166; border-radius:2px;"></div>
+          </div>
+          <span style="color:#636366; font-size:9px; width:44px; text-align:right;">60% wk</span>
+        </div>
+      </div>
+
+      <!-- Codex -->
+      <div style="margin-bottom:4px;">
+        <div style="display:flex; align-items:center; gap:6px; margin-bottom:2px;">
+          <span style="color:#3b82f6; width:52px; font-size:10px;">Codex</span>
+          <div style="flex:1; height:5px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+            <div style="width:20%; height:100%; background:#3b82f6; border-radius:3px;"></div>
+          </div>
+          <span style="color:#3b82f6; font-size:9px; width:44px; text-align:right;">20% 5h</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="width:52px;"></span>
+          <div style="flex:1; height:3px; background:#2a2a2e; border-radius:2px; overflow:hidden;">
+            <div style="width:12%; height:100%; background:#3b82f666; border-radius:2px;"></div>
+          </div>
+          <span style="color:#636366; font-size:9px; width:44px; text-align:right;">12% wk</span>
+        </div>
+      </div>
+
+      <div style="color:#636366; font-size:9px; text-align:right; margin-top:6px;">
+        Opus resets in 2h 15m · Spark resets in 45m
+      </div>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros"><h4>Pros</h4><ul><li>所有信息一目了然</li><li>深浅色区分 5h/周 直观</li><li>5h 粗条+周 细条，主次分明</li></ul></div>
+    <div class="cons"><h4>Cons</h4><ul><li>占垂直空间较多 (4 模型约 120px)</li><li>Popover 空间紧张时可能拥挤</li></ul></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>方案 B: 最紧急优先 + 展开详情</h3>
+  <p class="subtitle">默认只显示每个模型最紧急的那个窗口，点击展开全部</p>
+  <div class="mockup">
+    <div class="mockup-header">Popover 用量区 — 收起状态</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:10px 14px; font-size:11px;">
+      <div style="color:#636366; font-size:10px; margin-bottom:8px;">USAGE <span style="color:#48484a; float:right; cursor:pointer;">Show All</span></div>
+
+      <div style="display:flex; align-items:center; gap:6px; margin:5px 0;">
+        <span style="color:#f97316; width:52px; font-size:10px;">Opus</span>
+        <div style="flex:1; height:5px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+          <div style="width:72%; height:100%; background:#f97316; border-radius:3px;"></div>
+        </div>
+        <span style="color:#f97316; font-size:9px; width:36px; text-align:right;">72%</span>
+        <span style="color:#48484a; font-size:9px; width:16px;">5h</span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:6px; margin:5px 0;">
+        <span style="color:#8b5cf6; width:52px; font-size:10px;">Sonnet</span>
+        <div style="flex:1; height:5px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+          <div style="width:45%; height:100%; background:#8b5cf6; border-radius:3px;"></div>
+        </div>
+        <span style="color:#8b5cf6; font-size:9px; width:36px; text-align:right;">45%</span>
+        <span style="color:#48484a; font-size:9px; width:16px;">5h</span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:6px; margin:5px 0;">
+        <span style="color:#ef4444; width:52px; font-size:10px;">Spark</span>
+        <div style="flex:1; height:5px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+          <div style="width:88%; height:100%; background:#ef4444; border-radius:3px;"></div>
+        </div>
+        <span style="color:#ef4444; font-size:9px; width:36px; text-align:right;">88%</span>
+        <span style="color:#48484a; font-size:9px; width:16px;">5h</span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:6px; margin:5px 0;">
+        <span style="color:#3b82f6; width:52px; font-size:10px;">Codex</span>
+        <div style="flex:1; height:5px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+          <div style="width:20%; height:100%; background:#3b82f6; border-radius:3px;"></div>
+        </div>
+        <span style="color:#3b82f6; font-size:9px; width:36px; text-align:right;">20%</span>
+        <span style="color:#48484a; font-size:9px; width:16px;">5h</span>
+      </div>
+    </div>
+  </div>
+  <div class="mockup" style="margin-top:8px;">
+    <div class="mockup-header">Popover 用量区 — 展开状态 (点击 Show All)</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:10px 14px; font-size:11px;">
+      <div style="color:#636366; font-size:10px; margin-bottom:8px;">USAGE <span style="color:#48484a; float:right; cursor:pointer;">Collapse</span></div>
+
+      <!-- Opus expanded -->
+      <div style="background:#2a2a2e; border-radius:6px; padding:6px 8px; margin:4px 0;">
+        <div style="color:#f97316; font-size:10px; font-weight:600; margin-bottom:4px;">Opus</div>
+        <div style="display:flex; align-items:center; gap:6px; margin:2px 0;">
+          <span style="color:#8e8e93; width:20px; font-size:9px;">5h</span>
+          <div style="flex:1; height:4px; background:#38383a; border-radius:2px; overflow:hidden;">
+            <div style="width:72%; height:100%; background:#f97316; border-radius:2px;"></div>
+          </div>
+          <span style="color:#f97316; font-size:9px; width:28px; text-align:right;">72%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; margin:2px 0;">
+          <span style="color:#8e8e93; width:20px; font-size:9px;">wk</span>
+          <div style="flex:1; height:4px; background:#38383a; border-radius:2px; overflow:hidden;">
+            <div style="width:35%; height:100%; background:#f9731666; border-radius:2px;"></div>
+          </div>
+          <span style="color:#636366; font-size:9px; width:28px; text-align:right;">35%</span>
+        </div>
+        <div style="color:#48484a; font-size:8px; margin-top:2px;">Resets in 2h 15m</div>
+      </div>
+
+      <!-- Spark expanded -->
+      <div style="background:#2a2a2e; border-radius:6px; padding:6px 8px; margin:4px 0;">
+        <div style="color:#ef4444; font-size:10px; font-weight:600; margin-bottom:4px;">Spark</div>
+        <div style="display:flex; align-items:center; gap:6px; margin:2px 0;">
+          <span style="color:#8e8e93; width:20px; font-size:9px;">5h</span>
+          <div style="flex:1; height:4px; background:#38383a; border-radius:2px; overflow:hidden;">
+            <div style="width:88%; height:100%; background:#ef4444; border-radius:2px;"></div>
+          </div>
+          <span style="color:#ef4444; font-size:9px; width:28px; text-align:right;">88%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; margin:2px 0;">
+          <span style="color:#8e8e93; width:20px; font-size:9px;">wk</span>
+          <div style="flex:1; height:4px; background:#38383a; border-radius:2px; overflow:hidden;">
+            <div style="width:60%; height:100%; background:#10b98166; border-radius:2px;"></div>
+          </div>
+          <span style="color:#636366; font-size:9px; width:28px; text-align:right;">60%</span>
+        </div>
+        <div style="color:#48484a; font-size:8px; margin-top:2px;">Resets in 45m</div>
+      </div>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros"><h4>Pros</h4><ul><li>默认很紧凑 (4行)</li><li>展开后信息完整</li><li>只看最紧急，减少认知负担</li></ul></div>
+    <div class="cons"><h4>Cons</h4><ul><li>收起时丢失周用量信息</li><li>多一次点击才能看全貌</li></ul></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>方案 C: 分段条 — 单条双窗口</h3>
+  <p class="subtitle">一个条里用两段表示：深色 = 5h，浅色 = 周</p>
+  <div class="mockup">
+    <div class="mockup-header">Popover 用量区 — 分段条</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:10px 14px; font-size:11px;">
+      <div style="color:#636366; font-size:10px; margin-bottom:8px;">USAGE</div>
+
+      <!-- Opus: segmented bar -->
+      <div style="display:flex; align-items:center; gap:6px; margin:6px 0;">
+        <span style="color:#f97316; width:52px; font-size:10px;">Opus</span>
+        <div style="flex:1; height:8px; background:#2a2a2e; border-radius:4px; overflow:hidden; position:relative;">
+          <!-- Week layer (back, lighter) -->
+          <div style="position:absolute; left:0; top:0; width:35%; height:100%; background:#f9731640; border-radius:4px;"></div>
+          <!-- 5h layer (front, solid) -->
+          <div style="position:absolute; left:0; top:0; width:72%; height:100%; background:#f97316; border-radius:4px;"></div>
+        </div>
+        <span style="color:#f97316; font-size:9px; width:60px; text-align:right;">72/35%</span>
+      </div>
+
+      <!-- Sonnet -->
+      <div style="display:flex; align-items:center; gap:6px; margin:6px 0;">
+        <span style="color:#8b5cf6; width:52px; font-size:10px;">Sonnet</span>
+        <div style="flex:1; height:8px; background:#2a2a2e; border-radius:4px; overflow:hidden;">
+          <div style="width:45%; height:100%; background:#8b5cf6; border-radius:4px;"></div>
+        </div>
+        <span style="color:#8b5cf6; font-size:9px; width:60px; text-align:right;">45%</span>
+      </div>
+
+      <!-- Spark -->
+      <div style="display:flex; align-items:center; gap:6px; margin:6px 0;">
+        <span style="color:#10b981; width:52px; font-size:10px;">Spark</span>
+        <div style="flex:1; height:8px; background:#2a2a2e; border-radius:4px; overflow:hidden; position:relative;">
+          <div style="position:absolute; left:0; top:0; width:60%; height:100%; background:#10b98140; border-radius:4px;"></div>
+          <div style="position:absolute; left:0; top:0; width:88%; height:100%; background:#ef4444; border-radius:4px;"></div>
+        </div>
+        <span style="color:#ef4444; font-size:9px; width:60px; text-align:right;">88/60%</span>
+      </div>
+
+      <!-- Codex -->
+      <div style="display:flex; align-items:center; gap:6px; margin:6px 0;">
+        <span style="color:#3b82f6; width:52px; font-size:10px;">Codex</span>
+        <div style="flex:1; height:8px; background:#2a2a2e; border-radius:4px; overflow:hidden; position:relative;">
+          <div style="position:absolute; left:0; top:0; width:12%; height:100%; background:#3b82f640; border-radius:4px;"></div>
+          <div style="position:absolute; left:0; top:0; width:20%; height:100%; background:#3b82f6; border-radius:4px;"></div>
+        </div>
+        <span style="color:#3b82f6; font-size:9px; width:60px; text-align:right;">20/12%</span>
+      </div>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros"><h4>Pros</h4><ul><li>最紧凑 (4行搞定)</li><li>一眼看到两个维度</li></ul></div>
+    <div class="cons"><h4>Cons</h4><ul><li>5h 总 > 周时视觉上层叠混乱 (Spark: 88% 盖住 60%)</li><li>"72/35%" 文字不够直觉</li></ul></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>我的推荐: 方案 B</h3>
+  <p>
+    Popover 空间有限，默认展示<strong>最紧急</strong>的那个窗口，用户随时可展开看全部。
+    主窗口 Sources 页有充足空间，永远显示方案 A 的完整双行视图。
+  </p>
+  <p>
+    <strong>Popover</strong> = 方案 B (紧凑 + 可展开)<br>
+    <strong>主窗口 Sources 页</strong> = 方案 A (完整双行)
+  </p>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">你倾向哪个方案？或者在终端告诉我想调整的地方</p>

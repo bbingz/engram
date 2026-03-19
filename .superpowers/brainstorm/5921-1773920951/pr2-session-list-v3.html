@@ -1,0 +1,115 @@
+<h2>PR2: 会话列表 — v3 Project 快速搜索</h2>
+<p class="subtitle">Project 筛选改为输入框 + 模糊匹配</p>
+
+<div class="section">
+  <h3>Project 筛选交互流程</h3>
+
+  <div class="mockup">
+    <div class="mockup-header">状态 1: 未激活 — 紧凑显示</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:8px 12px;">
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <span style="padding:3px 10px; border:1px solid #48484a; border-radius:12px; font-size:11px; background:#3b82f630;">All</span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; background:#f9731630; color:#f97316; border:1px solid #f9731640;">● Claude 24</span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; background:#10b98120; color:#10b981; border:1px solid #10b98140;">● Gemini 15</span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; background:#48484a30; color:#8e8e93; border:1px solid #48484a;">● Codex 8</span>
+        <span style="flex:1;"></span>
+        <!-- Project: collapsed state -->
+        <div style="display:flex; align-items:center; gap:4px; padding:3px 10px; border:1px solid #48484a; border-radius:6px; font-size:11px; color:#8e8e93; cursor:pointer;">
+          <span style="font-size:10px;">🔍</span> Project...
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup" style="margin-top:12px;">
+    <div class="mockup-header">状态 2: 输入中 — 展开搜索框 + 下拉候选</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:8px 12px;">
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <span style="padding:3px 10px; border:1px solid #48484a; border-radius:12px; font-size:11px; background:#3b82f630;">All</span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; background:#f9731630; color:#f97316; border:1px solid #f9731640;">● Claude 24</span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; background:#10b98120; color:#10b981; border:1px solid #10b98140;">● Gemini 15</span>
+        <span style="flex:1;"></span>
+        <!-- Project: expanded input -->
+        <div style="position:relative;">
+          <div style="display:flex; align-items:center; gap:4px; padding:4px 10px; border:1px solid #3b82f6; border-radius:6px; font-size:12px; background:#2a2a2e; width:180px;">
+            <span style="color:#3b82f6; font-size:10px;">🔍</span>
+            <span style="color:#e5e5ea;">code.co</span>
+            <span style="color:#48484a; font-size:9px; animation:blink 1s infinite;">|</span>
+          </div>
+          <!-- Dropdown suggestions -->
+          <div style="position:absolute; top:32px; right:0; width:220px; background:#2a2a2e; border:1px solid #48484a; border-radius:6px; overflow:hidden; box-shadow:0 4px 12px #00000060; z-index:10;">
+            <div style="padding:6px 10px; font-size:11px; background:#3b82f630; cursor:pointer;">
+              <span style="color:#e5e5ea;">coding-memory</span>
+              <span style="color:#636366; float:right;">12 sessions</span>
+            </div>
+            <div style="padding:6px 10px; font-size:11px; border-top:1px solid #38383a; cursor:pointer;">
+              <span style="color:#e5e5ea;">code-review-tool</span>
+              <span style="color:#636366; float:right;">3 sessions</span>
+            </div>
+            <div style="padding:6px 10px; font-size:11px; border-top:1px solid #38383a; cursor:pointer;">
+              <span style="color:#e5e5ea;">vscode-extension</span>
+              <span style="color:#636366; float:right;">7 sessions</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup" style="margin-top:12px;">
+    <div class="mockup-header">状态 3: 已选中 — 显示选中项 + 清除按钮</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:8px 12px;">
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <span style="padding:3px 10px; border:1px solid #48484a; border-radius:12px; font-size:11px; background:#3b82f630;">All</span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; background:#f9731630; color:#f97316; border:1px solid #f9731640;">● Claude 24</span>
+        <span style="padding:3px 10px; border-radius:12px; font-size:11px; background:#10b98120; color:#10b981; border:1px solid #10b98140;">● Gemini 15</span>
+        <span style="flex:1;"></span>
+        <!-- Project: selected state -->
+        <div style="display:flex; align-items:center; gap:6px; padding:3px 10px; border:1px solid #3b82f680; border-radius:6px; font-size:11px; background:#3b82f620; color:#3b82f6;">
+          coding-memory
+          <span style="color:#3b82f6; cursor:pointer; font-size:13px;">×</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>交互细节</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">行为</th>
+        <th style="text-align:left; padding:8px;">说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">激活</td>
+        <td style="padding:8px;">点击 "Project..." 或快捷键，输入框展开并自动聚焦</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">模糊匹配</td>
+        <td style="padding:8px;">输入任意片段即时过滤。"code.co" 匹配 "coding-memory"、"code-review-tool" 等</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">候选列表</td>
+        <td style="padding:8px;">下拉浮层显示匹配项目 + 会话数。键盘 ↑↓ 导航，Enter 选中</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">选中后</td>
+        <td style="padding:8px;">输入框收起，显示蓝色 pill "coding-memory ×"。表格即时过滤</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">清除</td>
+        <td style="padding:8px;">点击 × 清除筛选，回到"Project..."状态</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">空输入</td>
+        <td style="padding:8px;">未输入时显示所有项目列表（按会话数降序排列）</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR2 v3 方向 OK？在终端回复</p>

@@ -1,0 +1,219 @@
+<h2>PR5: 探针系统 — AI 工具用量监控</h2>
+<p class="subtitle">采集各 AI 工具的用量/配额数据，在 Popover 和主窗口展示</p>
+
+<div class="section">
+  <h3>整体架构</h3>
+  <div class="mockup">
+    <div class="mockup-header">探针系统数据流</div>
+    <div class="mockup-body" style="font-size:12px; line-height:1.8; font-family:monospace; background:#1c1c1e; color:#e5e5ea;">
+      <div style="display:flex; gap:20px; align-items:flex-start;">
+        <!-- Sources -->
+        <div style="flex:1;">
+          <div style="color:#f97316; font-weight:600; margin-bottom:6px;">采集层 (Node daemon)</div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; margin:4px 0; border-left:3px solid #f97316;">
+            Claude: OAuth API<br>
+            <span style="color:#636366;">→ /v1/usage (token 余额)</span>
+          </div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; margin:4px 0; border-left:3px solid #3b82f6;">
+            Codex: tmux probe<br>
+            <span style="color:#636366;">→ headless /status 采集</span>
+          </div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; margin:4px 0; border-left:3px solid #10b981;">
+            Gemini: API quota<br>
+            <span style="color:#636366;">→ Google API 配额查询</span>
+          </div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; margin:4px 0; border-left:3px solid #8b5cf6;">
+            Cursor/Others: 文件探测<br>
+            <span style="color:#636366;">→ 读取本地 usage 文件</span>
+          </div>
+        </div>
+        <!-- Arrow -->
+        <div style="display:flex; align-items:center; color:#636366; font-size:20px; padding-top:60px;">→</div>
+        <!-- Storage + Display -->
+        <div style="flex:1;">
+          <div style="color:#3b82f6; font-weight:600; margin-bottom:6px;">存储 + 展示</div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; margin:4px 0; border-left:3px solid #3b82f6;">
+            usage_snapshots 表<br>
+            <span style="color:#636366;">source | metric | value | ts</span>
+          </div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; margin:4px 0; border-left:3px solid #10b981;">
+            daemon stdout 事件<br>
+            <span style="color:#636366;">{"event":"usage", source, data}</span>
+          </div>
+          <div style="background:#2a2a2e; padding:8px; border-radius:6px; margin:4px 0; border-left:3px solid #8b5cf6;">
+            Swift UI 展示<br>
+            <span style="color:#636366;">Popover + 主窗口 Sources 页</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Popover 用量条</h3>
+  <div class="mockup">
+    <div class="mockup-header">Menu Bar Popover — 底部用量概览</div>
+    <div class="mockup-body" style="background:#1c1c1e; color:#e5e5ea; padding:10px 14px; font-size:12px;">
+      <!-- Existing popover content (simplified) -->
+      <div style="color:#636366; font-size:10px; margin-bottom:8px;">RECENT SESSIONS</div>
+      <div style="color:#8e8e93; font-size:11px; padding:4px 0;">重构 Button 组件 · 2h ago</div>
+      <div style="color:#8e8e93; font-size:11px; padding:4px 0;">Fix login bug · 5h ago</div>
+
+      <!-- Divider -->
+      <div style="border-top:1px solid #38383a; margin:10px 0;"></div>
+
+      <!-- Usage bars -->
+      <div style="color:#636366; font-size:10px; margin-bottom:6px;">USAGE</div>
+
+      <!-- Claude -->
+      <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
+        <span style="color:#f97316; font-size:10px; width:50px;">Claude</span>
+        <div style="flex:1; height:6px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+          <div style="width:65%; height:100%; background:#f97316; border-radius:3px;"></div>
+        </div>
+        <span style="color:#8e8e93; font-size:10px; width:36px; text-align:right;">65%</span>
+      </div>
+
+      <!-- Codex -->
+      <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
+        <span style="color:#3b82f6; font-size:10px; width:50px;">Codex</span>
+        <div style="flex:1; height:6px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+          <div style="width:30%; height:100%; background:#3b82f6; border-radius:3px;"></div>
+        </div>
+        <span style="color:#8e8e93; font-size:10px; width:36px; text-align:right;">30%</span>
+      </div>
+
+      <!-- Gemini -->
+      <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
+        <span style="color:#10b981; font-size:10px; width:50px;">Gemini</span>
+        <div style="flex:1; height:6px; background:#2a2a2e; border-radius:3px; overflow:hidden;">
+          <div style="width:88%; height:100%; background:#ef4444; border-radius:3px;"></div>
+        </div>
+        <span style="color:#ef4444; font-size:10px; width:36px; text-align:right;">88%</span>
+      </div>
+
+      <!-- Reset time -->
+      <div style="color:#636366; font-size:9px; text-align:right; margin-top:4px;">
+        Resets in 3h 22m
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>采集策略 (分级)</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">工具</th>
+        <th style="text-align:left; padding:8px;">采集方式</th>
+        <th style="text-align:left; padding:8px;">频率</th>
+        <th style="text-align:left; padding:8px;">需要配置</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Claude</td>
+        <td style="padding:8px;">OAuth API 或 tmux probe (fallback)</td>
+        <td style="padding:8px;">5 min</td>
+        <td style="padding:8px;">OAuth token (自动从 ~/.claude/ 读取)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Codex</td>
+        <td style="padding:8px;">tmux headless probe → /status</td>
+        <td style="padding:8px;">10 min</td>
+        <td style="padding:8px;">tmux 已安装</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Gemini</td>
+        <td style="padding:8px;">Google API 配额端点 (如可用)</td>
+        <td style="padding:8px;">15 min</td>
+        <td style="padding:8px;">API key (Settings)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Cursor</td>
+        <td style="padding:8px;">读取本地 usage/state 文件</td>
+        <td style="padding:8px;">5 min</td>
+        <td style="padding:8px;">无</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">Others</td>
+        <td style="padding:8px;">可扩展: 每个 adapter 可选实现 probeUsage()</td>
+        <td style="padding:8px;">自定义</td>
+        <td style="padding:8px;">按工具而定</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>实现层级</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="border-bottom:2px solid #555;">
+        <th style="text-align:left; padding:8px;">层</th>
+        <th style="text-align:left; padding:8px;">位置</th>
+        <th style="text-align:left; padding:8px;">职责</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">UsageProbe 接口</td>
+        <td style="padding:8px;">src/core/usage-probe.ts</td>
+        <td style="padding:8px;">定义 probe() → { source, metrics[] } 接口，adapter 可选实现</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">UsageCollector</td>
+        <td style="padding:8px;">src/core/usage-collector.ts</td>
+        <td style="padding:8px;">定时器调度，调用各 probe，写入 DB + 发 stdout 事件</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">usage_snapshots 表</td>
+        <td style="padding:8px;">src/core/db.ts migrate()</td>
+        <td style="padding:8px;">source, metric_name, value, unit, reset_at, collected_at</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">HTTP API</td>
+        <td style="padding:8px;">src/web.ts</td>
+        <td style="padding:8px;">GET /api/usage → 最新各工具用量快照</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px;">Daemon 事件</td>
+        <td style="padding:8px;">daemon stdout</td>
+        <td style="padding:8px;">{"event":"usage", "data":[...]} 推送给 Swift</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;">Swift UI</td>
+        <td style="padding:8px;">PopoverView + SourcePulseView</td>
+        <td style="padding:8px;">用量条显示，告警 (>80% 变红)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>关键设计决策</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <tbody>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">渐进式</td>
+        <td style="padding:8px;">先支持 Claude + Codex (有成熟参考)，其余工具后续 PR 扩展</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">Graceful</td>
+        <td style="padding:8px;">probe 失败不影响主功能，静默跳过 + 日志记录</td>
+      </tr>
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:8px; font-weight:600;">Probe 隔离</td>
+        <td style="padding:8px;">tmux probe 用专用目录，PR4 的增强 tier 会自动将其分类为 skip</td>
+      </tr>
+      <tr>
+        <td style="padding:8px; font-weight:600;">用量告警</td>
+        <td style="padding:8px;">>80% 用量条变红，Popover 状态栏闪烁提示</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">PR5 方向 OK？在终端回复</p>
