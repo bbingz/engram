@@ -4,9 +4,10 @@ import { homedir } from 'os'
 import { join } from 'path'
 import type { SessionAdapter, SourceName } from '../adapters/types.js'
 import type { Indexer } from './indexer.js'
+import type { SessionTier } from './session-tier.js'
 
 export interface WatcherOptions {
-  onIndexed?: (sessionId: string, messageCount: number) => void
+  onIndexed?: (sessionId: string, messageCount: number, tier: SessionTier) => void
 }
 
 /** Source names that have file watchers (jsonl-based, filesystem events work) */
@@ -49,7 +50,7 @@ export function startWatcher(adapters: SessionAdapter[], indexer: Indexer, opts?
       if (filePath.startsWith(watchPath)) {
         const result = await indexer.indexFile(adapter, filePath)
         if (result.indexed && result.sessionId) {
-          opts?.onIndexed?.(result.sessionId, result.messageCount ?? 0)
+          opts?.onIndexed?.(result.sessionId, result.messageCount ?? 0, result.tier ?? 'normal')
         }
         break
       }

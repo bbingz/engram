@@ -153,9 +153,11 @@ function getAutoSummary(): AutoSummaryManager | undefined {
 
 // File watcher (persistent — keeps process alive)
 const watcher = startWatcher(adapters, indexer, {
-  onIndexed: (sessionId, messageCount) => {
+  onIndexed: (sessionId, messageCount, tier) => {
     emit({ event: 'watcher_indexed', total: db.countSessions() })
-    getAutoSummary()?.onSessionIndexed(sessionId, messageCount)
+    if (tier === 'premium') {
+      getAutoSummary()?.onSessionIndexed(sessionId, messageCount)
+    }
     indexJobRunner.runRecoverableJobs().catch(() => {})
   },
 })
