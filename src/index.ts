@@ -39,7 +39,7 @@ const vikingBridge = initViking(fileSettings)
 const authoritativeNode = fileSettings.syncNodeName ?? 'local'
 
 // Apply tier-based noise filter
-db.noiseFilter = (fileSettings.noiseFilter as any) ?? 'hide-skip'
+db.noiseFilter = fileSettings.noiseFilter ?? 'hide-skip'
 
 const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode })
 

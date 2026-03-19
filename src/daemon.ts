@@ -22,7 +22,7 @@ const settings = readFileSettings()
 const authoritativeNode = settings.syncNodeName ?? 'local'
 
 // Apply tier-based noise filter
-db.noiseFilter = (settings.noiseFilter as any) ?? 'hide-skip'
+db.noiseFilter = settings.noiseFilter ?? 'hide-skip'
 
 // Viking bridge — optional external context engine
 const vikingBridge = initViking(settings)
