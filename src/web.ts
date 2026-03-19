@@ -18,6 +18,7 @@ import { SyncEngine, type SyncPeer } from './core/sync.js'
 import { handleLinkSessions } from './tools/link_sessions.js'
 import type { VikingBridge } from './core/viking-bridge.js'
 import { WATCHED_SOURCES } from './core/watcher.js'
+import type { UsageCollector } from './core/usage-collector.js'
 
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = []
@@ -62,6 +63,7 @@ export function createApp(db: Database, opts?: {
   settings?: FileSettings
   adapters?: SessionAdapter[]
   viking?: VikingBridge | null
+  usageCollector?: UsageCollector
 }) {
   const app = new Hono()
   const settings = opts?.settings ?? readFileSettings()
@@ -245,6 +247,12 @@ export function createApp(db: Database, opts?: {
 
     const result = await handleStats(db, { since, until, group_by, exclude_noise })
     return c.json(result)
+  })
+
+  // Usage snapshots
+  app.get('/api/usage', (c) => {
+    const latest = opts?.usageCollector?.getLatest() ?? []
+    return c.json({ usage: latest })
   })
 
   // Project aliases

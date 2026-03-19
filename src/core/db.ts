@@ -203,6 +203,19 @@ export class Database {
       this.setMetadata('fts_version', FTS_VERSION)
     }
 
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS usage_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL,
+        metric TEXT NOT NULL,
+        value REAL NOT NULL,
+        unit TEXT DEFAULT '%',
+        reset_at TEXT,
+        collected_at TEXT NOT NULL
+      )
+    `)
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_usage_latest ON usage_snapshots(source, metric, collected_at DESC)`)
+
     this.runPostMigrationBackfill()
     this.backfillTiers()
   }
