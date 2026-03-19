@@ -1,18 +1,6 @@
 // macos/Engram/Views/SessionDetailView.swift
 import SwiftUI
 
-// MARK: - Shared source display info
-
-enum SourceDisplay {
-    static func label(for source: String) -> String {
-        SourceColors.label(for: source)
-    }
-
-    static func color(for source: String) -> Color {
-        SourceColors.color(for: source)
-    }
-}
-
 struct SessionDetailView: View {
     let session: Session
     @EnvironmentObject var db: DatabaseManager
@@ -20,92 +8,147 @@ struct SessionDetailView: View {
     @State private var isFavorite = false
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
-    @State private var showRaw = false
     @State private var isSummarizing = false
     @State private var summaryError: String? = nil
     @State private var currentSummary: String?
 
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
-    @State private var displayMessages: [ChatMessage] = []
 
-    private func updateDisplayMessages() {
-        if showRaw {
-            displayMessages = messages
-        } else {
-            displayMessages = messages.filter { msg in
-                switch msg.systemCategory {
-                case .none:         return true
-                case .systemPrompt: return showSystemPrompts
-                case .agentComm:    return showAgentComm
-                }
-            }
+    // Transcript state
+    @State private var viewMode: TranscriptViewMode = .session
+    @State private var showFind = false
+    @State private var searchText = ""
+    @State private var currentMatchIndex: Int = -1
+    @State private var indexedMessages: [IndexedMessage] = []
+    @State private var typeCounts: [MessageType: Int] = [:]
+    @State private var typeVisibility: [MessageType: Bool] = Dictionary(uniqueKeysWithValues: MessageType.allCases.map { ($0, true) })
+    @State private var navPositions: [MessageType: Int] = Dictionary(uniqueKeysWithValues: MessageType.allCases.map { ($0, -1) })
+    @State private var scrollTarget: UUID? = nil
+
+    // MARK: - Computed
+
+    var displayIndexed: [IndexedMessage] {
+        indexedMessages.filter { idx in
+            guard typeVisibility[idx.messageType] ?? true else { return false }
+            if !showSystemPrompts && idx.message.systemCategory == .systemPrompt { return false }
+            if !showAgentComm && idx.message.systemCategory == .agentComm { return false }
+            return true
         }
     }
 
+    var matchIndices: [Int] {
+        guard !searchText.isEmpty else { return [] }
+        let query = searchText.lowercased()
+        return displayIndexed.enumerated().compactMap { i, msg in
+            msg.message.content.lowercased().contains(query) ? i : nil
+        }
+    }
+
+    // MARK: - Body
+
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                Section(header: headerView) {
-                    if session.sizeCategory != .normal {
-                        HStack(spacing: 6) {
-                            Image(systemName: session.sizeCategory == .huge
-                                  ? "exclamationmark.triangle.fill"
-                                  : "info.circle.fill")
-                                .foregroundStyle(session.sizeCategory == .huge ? .red : .orange)
-                            Text("This session is \(session.formattedSize) — loading may take a moment")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            (session.sizeCategory == .huge ? Color.red : Color.orange)
-                                .opacity(0.08)
-                        )
-                    }
-                    if isLoadingMessages {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                            .padding(40)
-                    } else if displayMessages.isEmpty && !messages.isEmpty {
-                        ContentUnavailableView {
-                            Label("System Messages Only", systemImage: "eye.slash")
-                        } description: {
-                            Text("All messages are system injections. Tap \"Raw\" to see raw content.")
-                        }
-                        .padding(.top, 20)
-                    } else if messages.isEmpty {
-                        ContentUnavailableView {
-                            Label("No Messages", systemImage: "bubble.left.and.bubble.right")
-                        } description: {
-                            Text(unsupportedMessage)
-                        }
-                        .padding(.top, 20)
-                    } else if showRaw {
-                        ForEach(displayMessages) { msg in
-                            RawMessageRow(message: msg)
-                            Divider().opacity(0.3)
-                        }
+        VStack(spacing: 0) {
+            TranscriptToolbar(
+                session: session,
+                isFavorite: isFavorite,
+                typeCounts: typeCounts,
+                typeVisibility: typeVisibility,
+                navPositions: navPositions,
+                onToggleFavorite: {
+                    if isFavorite {
+                        try? db.removeFavorite(sessionId: session.id)
                     } else {
-                        ForEach(Array(displayMessages.enumerated()), id: \.element.id) { idx, msg in
-                            if msg.isSystem {
-                                CollapsibleSystemBubble(message: msg)
-                            } else {
-                                CleanMessageBubble(message: msg, source: session.source)
-                            }
-                            // Subtle separator between assistant→user transitions
-                            if idx < displayMessages.count - 1 {
-                                let next = displayMessages[idx + 1]
-                                if msg.role == "assistant" && next.role == "user" && !next.isSystem {
-                                    Divider()
-                                        .padding(.horizontal, 20)
-                                        .opacity(0.25)
+                        try? db.addFavorite(sessionId: session.id)
+                    }
+                    isFavorite.toggle()
+                },
+                onCopyAll: { copyAllTranscript() },
+                onToggleFind: { showFind.toggle() },
+                onToggleType: { type in typeVisibility[type]?.toggle() },
+                onShowAll: { for type in MessageType.allCases { typeVisibility[type] = true } },
+                onNavPrev: { type in navigateType(type, direction: -1) },
+                onNavNext: { type in navigateType(type, direction: 1) },
+                viewMode: $viewMode
+            )
+
+            if showFind {
+                TranscriptFindBar(
+                    searchText: $searchText,
+                    isVisible: $showFind,
+                    matchCount: matchIndices.count,
+                    currentMatch: max(currentMatchIndex, 0),
+                    onPrev: { navigateFind(direction: -1) },
+                    onNext: { navigateFind(direction: 1) }
+                )
+                Divider()
+            }
+
+            // Size warning banner
+            if session.sizeCategory != .normal {
+                HStack(spacing: 6) {
+                    Image(systemName: session.sizeCategory == .huge
+                          ? "exclamationmark.triangle.fill"
+                          : "info.circle.fill")
+                        .foregroundStyle(session.sizeCategory == .huge ? .red : .orange)
+                    Text("This session is \(session.formattedSize) — loading may take a moment")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    (session.sizeCategory == .huge ? Color.red : Color.orange)
+                        .opacity(0.08)
+                )
+            }
+
+            if isLoadingMessages {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(40)
+            } else if viewMode == .session && displayIndexed.isEmpty && !indexedMessages.isEmpty {
+                ContentUnavailableView {
+                    Label("Filtered Out", systemImage: "eye.slash")
+                } description: {
+                    Text("All messages are hidden by current filters. Tap \"All\" to reset.")
+                }
+                .padding(.top, 20)
+            } else if messages.isEmpty {
+                ContentUnavailableView {
+                    Label("No Messages", systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    Text(unsupportedMessage)
+                }
+                .padding(.top, 20)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            switch viewMode {
+                            case .session:
+                                ForEach(displayIndexed) { indexed in
+                                    ColorBarMessageView(indexed: indexed, searchText: searchText)
+                                        .id(indexed.id)
+                                }
+                            case .text:
+                                ForEach(messages) { msg in
+                                    RawMessageRow(message: msg)
+                                    Divider().opacity(0.3)
+                                }
+                            case .json:
+                                ForEach(messages) { msg in
+                                    RawMessageRow(message: msg)
+                                    Divider().opacity(0.3)
                                 }
                             }
                         }
-                        .padding(.bottom, 12)
+                    }
+                    .onChange(of: scrollTarget) { _, target in
+                        if let target {
+                            withAnimation { proxy.scrollTo(target, anchor: .center) }
+                        }
                     }
                 }
             }
@@ -116,121 +159,21 @@ struct SessionDetailView: View {
         .task(id: session.id) {
             isLoadingMessages = true
             messages = []
-            displayMessages = []
+            indexedMessages = []
+            typeCounts = [:]
             let path = session.filePath
             let source = session.source
             messages = await Task.detached(priority: .userInitiated) {
                 MessageParser.parse(filePath: path, source: source)
             }.value
-            updateDisplayMessages()
+            let result = IndexedMessage.build(from: messages)
+            indexedMessages = result.messages
+            typeCounts = result.counts
             isLoadingMessages = false
         }
-        .onChange(of: showRaw) { _, _ in updateDisplayMessages() }
-        .onChange(of: showSystemPrompts) { _, _ in updateDisplayMessages() }
-        .onChange(of: showAgentComm) { _, _ in updateDisplayMessages() }
     }
 
-    // MARK: - Header (pinned)
-
-    var headerView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: currentSummary ?? session.displayTitle)
-                        .font(.headline)
-                        .lineLimit(3)
-                    Text(verbatim: "\(session.source) · \(session.displayDate) · \(session.msgCountLabel)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-
-                // Summary button (if no summary yet)
-                if currentSummary == nil && session.summary == nil && !isLoadingMessages {
-                    Button {
-                        Task { await generateSummary() }
-                    } label: {
-                        if isSummarizing {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: 20, height: 20)
-                        } else {
-                            Image(systemName: "sparkles")
-                                .foregroundStyle(.purple)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isSummarizing)
-                    .help("Generate AI Summary")
-                }
-
-                // Raw / Clean toggle
-                Button {
-                    showRaw.toggle()
-                } label: {
-                    Text(showRaw ? LocalizedStringKey("Clean") : LocalizedStringKey("Raw"))
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(showRaw ? Color.orange.opacity(0.15) : Color.secondary.opacity(0.12))
-                        .foregroundStyle(showRaw ? .orange : .secondary)
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                }
-                .buttonStyle(.plain)
-                .help(showRaw ? "Show clean view" : "Show raw messages")
-
-                // Favorite
-                Button {
-                    if isFavorite {
-                        try? db.removeFavorite(sessionId: session.id)
-                    } else {
-                        try? db.addFavorite(sessionId: session.id)
-                    }
-                    isFavorite.toggle()
-                } label: {
-                    Image(systemName: isFavorite ? "star.fill" : "star")
-                        .foregroundStyle(isFavorite ? .yellow : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help(isFavorite ? "Remove from favorites" : "Add to favorites")
-            }
-
-            HStack(spacing: 12) {
-                if let project = session.project {
-                    Label { Text(verbatim: project) } icon: { Image(systemName: "folder") }
-                }
-                if !session.cwd.isEmpty {
-                    Label { Text(verbatim: session.cwd) } icon: { Image(systemName: "terminal") }
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-
-            HStack(spacing: 4) {
-                Text(verbatim: session.id)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.quaternary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(session.id, forType: .string)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .font(.caption2)
-                        .foregroundStyle(.quaternary)
-                }
-                .buttonStyle(.plain)
-                .help("Copy session ID")
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.bar)
-    }
+    // MARK: - Helpers
 
     var unsupportedMessage: LocalizedStringKey {
         switch session.source {
@@ -239,6 +182,51 @@ struct SessionDetailView: View {
         default:
             return "No messages found."
         }
+    }
+
+    func navigateType(_ type: MessageType, direction: Int) {
+        let matching = displayIndexed.enumerated().filter { $0.element.messageType == type }
+        guard !matching.isEmpty else { return }
+        let current = navPositions[type] ?? -1
+        let newPos: Int
+        if direction > 0 {
+            newPos = (current + 1) % matching.count
+        } else {
+            newPos = current <= 0 ? matching.count - 1 : current - 1
+        }
+        navPositions[type] = newPos
+        scrollTarget = matching[newPos].element.id
+    }
+
+    func navigateFind(direction: Int) {
+        guard !matchIndices.isEmpty else { return }
+        if direction > 0 {
+            currentMatchIndex = (currentMatchIndex + 1) % matchIndices.count
+        } else {
+            currentMatchIndex = currentMatchIndex <= 0 ? matchIndices.count - 1 : currentMatchIndex - 1
+        }
+        let msgIndex = matchIndices[currentMatchIndex]
+        let displayed = displayIndexed
+        if msgIndex < displayed.count {
+            scrollTarget = displayed[msgIndex].id
+        }
+    }
+
+    func copyAllTranscript() {
+        let text = displayIndexed.map { idx in
+            let prefix: String
+            switch idx.messageType {
+            case .user:      prefix = "> "
+            case .assistant: prefix = ""
+            case .tool:      prefix = "› "
+            case .error:     prefix = "! "
+            case .code:      prefix = "```\n"
+            case .system:    prefix = "[system] "
+            }
+            return prefix + idx.message.content
+        }.joined(separator: "\n\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     func generateSummary() async {
@@ -282,56 +270,6 @@ struct SessionDetailView: View {
         }
 
         isSummarizing = false
-    }
-}
-
-// MARK: - Clean chat bubble
-
-struct CleanMessageBubble: View {
-    let message: ChatMessage
-    let source: String
-    @AppStorage("contentFontSize") var fontSize: Double = 14
-
-    var isUser: Bool { message.role == "user" }
-
-    var body: some View {
-        if isUser {
-            // User: right-aligned bubble
-            HStack(alignment: .top, spacing: 0) {
-                Spacer(minLength: 60)
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text("You")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(verbatim: message.content)
-                        .font(.system(size: fontSize))
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Color.accentColor.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-        } else {
-            // Assistant: full-width with segmented content
-            VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: SourceDisplay.label(for: source))
-                    .font(.caption2.bold())
-                    .foregroundStyle(SourceDisplay.color(for: source))
-                VStack(alignment: .leading, spacing: 0) {
-                    SegmentedMessageView(content: message.content)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                }
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-        }
     }
 }
 
