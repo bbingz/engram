@@ -216,6 +216,22 @@ export class Database {
     `)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_usage_latest ON usage_snapshots(source, metric, collected_at DESC)`)
 
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS git_repos (
+        path TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        branch TEXT,
+        dirty_count INTEGER DEFAULT 0,
+        untracked_count INTEGER DEFAULT 0,
+        unpushed_count INTEGER DEFAULT 0,
+        last_commit_hash TEXT,
+        last_commit_msg TEXT,
+        last_commit_at TEXT,
+        session_count INTEGER DEFAULT 0,
+        probed_at TEXT
+      )
+    `)
+
     this.runPostMigrationBackfill()
     this.backfillTiers()
   }

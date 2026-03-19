@@ -255,6 +255,11 @@ export function createApp(db: Database, opts?: {
     return c.json({ usage: latest })
   })
 
+  app.get('/api/repos', (c) => {
+    const rows = db.getRawDb().prepare('SELECT * FROM git_repos ORDER BY last_commit_at DESC').all()
+    return c.json({ repos: rows })
+  })
+
   // Project aliases
   app.get('/api/project-aliases', (c) => {
     return c.json(db.listProjectAliases())

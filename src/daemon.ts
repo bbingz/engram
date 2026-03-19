@@ -13,6 +13,7 @@ import { readFileSettings, type FileSettings } from './core/config.js'
 import { SyncEngine } from './core/sync.js'
 import { AutoSummaryManager } from './core/auto-summary.js'
 import { summarizeConversation } from './core/ai-client.js'
+import { startGitProbeLoop } from './core/git-probe.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
@@ -218,10 +219,14 @@ const syncTimer = settings.syncEnabled && syncPeers.length > 0
   ? setInterval(() => { syncAndEmit().catch(() => {}) }, syncIntervalMs)
   : null
 
+// Git repo probe loop — runs once immediately, then every 5 minutes
+const gitProbeTimer = startGitProbeLoop(db.getRawDb())
+
 // Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
 function shutdown() {
   clearInterval(rescanTimer)
   if (syncTimer) clearInterval(syncTimer)
+  clearInterval(gitProbeTimer)
   autoSummary?.cleanup()
   watcher?.close()
   webServer.close()
