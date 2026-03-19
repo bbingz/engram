@@ -128,7 +128,7 @@ MONITOR
   ⚡ Activity
 WORKSPACE
   📁 Projects
-  🔌 Sources
+  🔌 Source Pulse
 CONFIG
   ⚡ Skills
   🤖 Agents
@@ -143,10 +143,22 @@ Selected item: blue tinted background `rgba(74,143,231,0.25)` with blue text `#6
 ### 2d. Integration with Existing Code
 
 - `MenuBarController.openWindow()` creates the new `MainWindowView` instead of `ContentView`
-- `ContentView` is renamed/replaced — it currently just wraps PopoverView content
+- `ContentView.swift` is kept for the Popover (it hosts the Browse/Search/Timeline/Favorites tabs). The `Notification.Name` extensions (`.openSettings`, `.openWindow`, `.openSession`) and `SessionBox` class defined in `ContentView.swift` remain there — the new `MainWindowView` imports and uses them.
 - `PopoverView` remains unchanged (menu bar popover)
+- Existing `SearchView.swift`, `FavoritesView.swift`, `TimelineView.swift` remain for Popover use. The new window has separate page files in `Views/Pages/`.
 - `SettingsView` becomes a page inside the main window (Screen.settings), AND keeps its standalone window for the Settings menu item
 - `DatabaseManager` and `IndexerProcess` are injected as `@EnvironmentObject` (same as current)
+
+### 2e. Prerequisites — Session Model Update
+
+The Swift `Session` struct in `Models/Session.swift` must be updated before any new page can work:
+
+1. Add `let tier: String?` property + CodingKey mapping. Required by `tierDistribution()`, `TierBar` component, and tier-based filtering.
+2. Add `let toolMessageCount: Int` property + CodingKey mapping. Required by Activity page breakdowns.
+
+### 2f. Source Color Unification
+
+The existing `SourceDisplay.color()` in `SessionDetailView.swift` and `SourceBadge.color` in `SearchView.swift` use different colors than the new design system (§1c). As part of Phase 1, create `SourceColors.swift` as the single source of truth for source→color mapping, and refactor both existing callsites to use it. This ensures consistent colors across Popover and main window.
 
 ---
 
@@ -277,7 +289,7 @@ Extend `DatabaseManager` with new query methods:
 |--------|---------|---------|
 | `kpiStats()` | `(sessions: Int, sources: Int, messages: Int, projects: Int)` | Home KPI |
 | `dailyActivity(days: Int)` | `[(date: String, count: Int)]` | Home Activity chart |
-| `hourlyActivity()` | `[Int]` (24 values) | Home When You Work |
+| `hourlyActivity()` | `[Int]` (24 values, use `strftime('%H', start_time, 'localtime')`) | Home When You Work |
 | `sourceDistribution()` | `[(source: String, count: Int)]` | Home Sources chart |
 | `tierDistribution()` | `[(tier: String, count: Int)]` | Home Tier chart |
 | `recentSessions(limit: Int)` | `[Session]` | Home Recent Sessions |
@@ -295,24 +307,25 @@ Extend the Hono web server with new endpoints. Swift calls these via `URLSession
 |----------|---------|---------|
 | `GET /api/sources` | Adapter names, detect status, session counts | Source Pulse |
 | `GET /api/skills` | List of installed skills (from `~/.claude/`) | Skills page |
-| `GET /api/agents` | Agent session summaries | Agents page |
 | `GET /api/memory` | Memory files across projects | Memory page |
 | `GET /api/hooks` | Configured hooks from settings | Hooks page |
 | `GET /api/health/sources` | Already exists | Source Pulse alerts |
 
+Note: Agents page uses GRDB directly (sessions WHERE agentRole IS NOT NULL), no daemon API needed.
+
 ### 4c. Swift API Client
 
-New `DaemonClient` class in Swift:
+New `DaemonClient` class in Swift. Uses `ObservableObject` to match the existing `DatabaseManager`/`IndexerProcess` pattern:
 
 ```swift
-@Observable class DaemonClient {
+class DaemonClient: ObservableObject {
     private let baseURL: String  // http://127.0.0.1:3457
 
     func fetch<T: Decodable>(_ path: String) async throws -> T
 }
 ```
 
-Injected alongside `DatabaseManager` via `@EnvironmentObject` or `@Environment`.
+Injected via `@EnvironmentObject` (same as `DatabaseManager` and `IndexerProcess`). Created in `AppDelegate` and passed through the view hierarchy.
 
 ---
 
@@ -482,11 +495,11 @@ Each page is independent. Can be built by parallel subagents in separate worktre
 - Timeline page
 - Activity page
 - Projects page
+- Agents page
 
 **Batch B** (needs daemon API endpoints from Phase 1 Task 4):
 - Source Pulse page
 - Skills page
-- Agents page
 - Memory page
 - Hooks page
 
@@ -523,7 +536,7 @@ macos/Engram/
 │   ├── FilterPills.swift
 │   └── SourceColors.swift             (color mapping)
 ├── Models/
-│   ├── Session.swift                  (no changes)
+│   ├── Session.swift                  (modify: add tier, toolMessageCount)
 │   └── Screen.swift                   (NEW: enum)
 ├── Views/
 │   ├── MainWindowView.swift           (NEW: NavigationSplitView shell)
