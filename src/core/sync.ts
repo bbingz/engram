@@ -2,6 +2,7 @@ import type { Database } from './db.js'
 import type { SessionInfo } from '../adapters/types.js'
 import type { AuthoritativeSessionSnapshot, SyncCursor } from './session-snapshot.js'
 import { SessionSnapshotWriter } from './session-writer.js'
+import { computeTier } from './session-tier.js'
 
 export interface SyncPeer {
   name: string
@@ -54,6 +55,7 @@ export class SyncEngine {
       summary: raw.summary,
       summaryMessageCount: 'summaryMessageCount' in raw ? raw.summaryMessageCount : undefined,
       origin: peerName,
+      agentRole: 'agentRole' in raw ? (raw as any).agentRole ?? null : null,
     }
   }
 
@@ -95,6 +97,16 @@ export class SyncEngine {
         let lastCursor: SyncCursor | null = cursor
         for (const session of sessions) {
           const snapshot = this.normalizeRemoteSnapshot(peer.name, session)
+          snapshot.tier = computeTier({
+            messageCount: snapshot.messageCount,
+            agentRole: snapshot.agentRole ?? null,
+            filePath: snapshot.sourceLocator,
+            project: snapshot.project ?? null,
+            summary: snapshot.summary ?? null,
+            startTime: snapshot.startTime,
+            endTime: snapshot.endTime ?? null,
+            source: snapshot.source,
+          })
           const writeResult = this.writer.writeAuthoritativeSnapshot(snapshot)
           if (writeResult.action === 'noop') {
             pageSkipped++

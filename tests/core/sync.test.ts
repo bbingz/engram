@@ -191,4 +191,26 @@ describe('SyncEngine', () => {
     expect(result.pulled).toBe(0)
     expect(db.getSyncCursor('peer-a')).toBeNull()
   })
+
+  it('computes tier for synced sessions', async () => {
+    const mockSessions = [
+      validSnapshot('sess-premium', '2026-03-18T12:00:00Z', {
+        messageCount: 25,
+        userMessageCount: 13,
+        assistantMessageCount: 12,
+      }),
+    ]
+
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(jsonOk({ sessionCount: 1, nodeName: 'peer-a', timestamp: new Date().toISOString() }))
+      .mockResolvedValueOnce(jsonOk({ sessions: mockSessions }))
+      .mockResolvedValueOnce(jsonOk({ sessions: [] }))
+
+    const engine = new SyncEngine(db, mockFetch as unknown as typeof fetch)
+    const result = await engine.pullFromPeer({ name: 'peer-a', url: 'http://peer-a:3457' })
+
+    expect(result.pulled).toBe(1)
+    const stored = db.getAuthoritativeSnapshot('sess-premium')
+    expect(stored?.tier).toBe('premium')
+  })
 })
