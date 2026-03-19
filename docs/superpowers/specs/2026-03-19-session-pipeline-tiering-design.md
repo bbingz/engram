@@ -309,8 +309,9 @@ Tier drives job enqueue:
 | `src/core/session-snapshot.ts` | Add `tier` and `agentRole` fields to `AuthoritativeSessionSnapshot`. |
 | `src/core/session-writer.ts` | Gate FTS/embedding job dispatch on tier from the incoming snapshot. |
 | `src/core/indexer.ts` | Call `computeTier()` in `buildLocalAuthoritativeSnapshot()`. Gate `pushToViking()` on tier. Extend `indexFile()` return to include tier. |
+| `src/core/watcher.ts` | Extend `WatcherOptions.onIndexed` callback signature to include `tier`. Pass tier from `indexFile()` result to callback. |
 | `src/core/sync.ts` | Call `computeTier()` after `normalizeRemoteSnapshot()`. |
-| `src/core/db.ts` | Add `tier` column migration + backfill + index. Add `agentRole` to `upsertAuthoritativeSnapshot()`. Replace `buildNoiseFilters()` and `isNoiseSession()` with tier-based filtering. Update `statsGroupBy()`. |
+| `src/core/db.ts` | Add `tier` column migration + backfill + index. Add `agentRole` and `tier` to `upsertAuthoritativeSnapshot()` INSERT/UPDATE SQL. Replace `buildNoiseFilters()` and `isNoiseSession()` with tier-based filtering. Update `statsGroupBy()`. |
 | `src/core/config.ts` | Replace 3 noise toggles with `noiseFilter` setting. Add migration for old toggles (handle undefined = default). |
 | `src/daemon.ts` | Gate auto-summary trigger on tier (from `indexFile()` return value). |
 | `src/web.ts` | Update `listSessions` API to accept tier filter parameter. Include `agentRole` in sync export. |
