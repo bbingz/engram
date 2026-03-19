@@ -46,7 +46,7 @@ struct TierBar: View {
                         Circle().fill(seg.color).frame(width: 8, height: 8)
                         Text("\(seg.name) \(seg.count)")
                             .font(.caption2)
-                            .foregroundStyle(Color(hex: 0xA0A1A8))
+                            .foregroundStyle(Theme.secondaryText)
                     }
                 }
             }

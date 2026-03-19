@@ -12,7 +12,7 @@ struct SessionCard: View {
 
                 Text(session.displayTitle)
                     .font(.callout)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.primaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
@@ -24,23 +24,23 @@ struct SessionCard: View {
 
                 Text("\(session.messageCount) msgs")
                     .font(.caption)
-                    .foregroundStyle(Color(hex: 0x6E7078))
+                    .foregroundStyle(Theme.tertiaryText)
 
                 Text(relativeTime(session.startTime))
                     .font(.caption)
-                    .foregroundStyle(Color(hex: 0x6E7078))
+                    .foregroundStyle(Theme.tertiaryText)
                     .frame(width: 40, alignment: .trailing)
 
                 Image(systemName: "chevron.right")
                     .font(.caption2)
-                    .foregroundStyle(Color(hex: 0x6E7078).opacity(0.5))
+                    .foregroundStyle(Theme.tertiaryText.opacity(0.5))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(Color.white.opacity(0.02))
+            .background(Theme.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                    .stroke(Theme.border, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }

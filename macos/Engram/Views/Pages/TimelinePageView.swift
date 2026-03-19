@@ -19,10 +19,10 @@ struct TimelinePageView: View {
                                 HStack {
                                     Text(formatDateLabel(group.date))
                                         .font(.headline)
-                                        .foregroundStyle(.white)
+                                        .foregroundStyle(Theme.primaryText)
                                     Text("\(group.sessions.count) sessions")
                                         .font(.caption)
-                                        .foregroundStyle(Color(hex: 0x6E7078))
+                                        .foregroundStyle(Theme.tertiaryText)
                                     Spacer()
                                 }
                                 .padding(.top, 4)

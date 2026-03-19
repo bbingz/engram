@@ -11,10 +11,10 @@ struct KPICard: View {
         VStack(spacing: 4) {
             Text(value)
                 .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
             Text(label)
                 .font(.caption)
-                .foregroundStyle(Color(hex: 0xA0A1A8))
+                .foregroundStyle(Theme.secondaryText)
             if let delta {
                 Text(delta)
                     .font(.caption2)
@@ -23,10 +23,10 @@ struct KPICard: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
-        .background(Color.white.opacity(0.02))
+        .background(Theme.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                .stroke(Theme.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }

@@ -3,7 +3,7 @@ import SwiftUI
 
 struct ActivityChart: View {
     let data: [(date: String, count: Int)]
-    var accentColor: Color = Color(hex: 0x4A8FE7)
+    var accentColor: Color = Theme.accent
 
     private var maxCount: Int { data.map(\.count).max() ?? 1 }
 

@@ -24,11 +24,11 @@ struct MemoryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(Color(hex: 0x6E7078))
+                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.tertiaryText)
                     TextField("Search memory files...", text: $searchText).textFieldStyle(.plain)
                 }
                 .padding(10)
-                .background(Color.white.opacity(0.04))
+                .background(Theme.inputBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 if let error { AlertBanner(message: error) }
@@ -37,21 +37,21 @@ struct MemoryView: View {
                     HStack {
                         Button(action: { selectedFile = nil }) {
                             HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("All Memory") }
-                                .font(.callout).foregroundStyle(Color(hex: 0x4A8FE7))
+                                .font(.callout).foregroundStyle(Theme.accent)
                         }.buttonStyle(.plain)
                         Spacer()
                     }
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(selected.name).font(.headline).foregroundStyle(.white)
-                        Text(selected.project).font(.caption).foregroundStyle(Color(hex: 0x6E7078))
+                        Text(selected.name).font(.headline).foregroundStyle(Theme.primaryText)
+                        Text(selected.project).font(.caption).foregroundStyle(Theme.tertiaryText)
                         Divider().opacity(0.2)
                         Text(selected.preview)
                             .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(Color(hex: 0xA0A1A8))
+                            .foregroundStyle(Theme.secondaryText)
                             .textSelection(.enabled)
                     }
                     .padding(16)
-                    .background(Color.white.opacity(0.02))
+                    .background(Theme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 } else {
                     ForEach(groupedByProject, id: \.project) { group in
@@ -60,16 +60,16 @@ struct MemoryView: View {
                             Button(action: { selectedFile = file }) {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(file.name).font(.callout).foregroundStyle(.white)
-                                        Text(file.preview.prefix(80)).font(.caption).foregroundStyle(Color(hex: 0x6E7078)).lineLimit(1)
+                                        Text(file.name).font(.callout).foregroundStyle(Theme.primaryText)
+                                        Text(file.preview.prefix(80)).font(.caption).foregroundStyle(Theme.tertiaryText).lineLimit(1)
                                     }
                                     Spacer()
-                                    Text(formatSize(file.sizeBytes)).font(.caption).foregroundStyle(Color(hex: 0x6E7078))
-                                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Color(hex: 0x6E7078).opacity(0.5))
+                                    Text(formatSize(file.sizeBytes)).font(.caption).foregroundStyle(Theme.tertiaryText)
+                                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiaryText.opacity(0.5))
                                 }
                                 .padding(.horizontal, 12).padding(.vertical, 10)
-                                .background(Color.white.opacity(0.02))
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                                .background(Theme.surface)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }.buttonStyle(.plain)
                         }

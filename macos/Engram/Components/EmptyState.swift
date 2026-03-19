@@ -11,19 +11,19 @@ struct EmptyState: View {
         VStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 40))
-                .foregroundStyle(Color(hex: 0x6E7078))
+                .foregroundStyle(Theme.tertiaryText)
             Text(title)
                 .font(.headline)
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
             Text(message)
                 .font(.callout)
-                .foregroundStyle(Color(hex: 0xA0A1A8))
+                .foregroundStyle(Theme.secondaryText)
                 .multilineTextAlignment(.center)
             if let action {
                 Button(action: action.action) {
                     Text(action.label)
                         .font(.callout)
-                        .foregroundStyle(Color(hex: 0x4A8FE7))
+                        .foregroundStyle(Theme.accent)
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 4)

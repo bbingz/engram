@@ -34,17 +34,17 @@ struct SourcePulseView: View {
                                 Spacer()
                                 Text("\(source.sessionCount) sessions")
                                     .font(.caption)
-                                    .foregroundStyle(Color(hex: 0xA0A1A8))
+                                    .foregroundStyle(Theme.secondaryText)
                                 if let latest = source.latestIndexed {
                                     Text(latest.prefix(10))
                                         .font(.caption)
-                                        .foregroundStyle(Color(hex: 0x6E7078))
+                                        .foregroundStyle(Theme.tertiaryText)
                                 }
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
-                            .background(Color.white.opacity(0.02))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                            .background(Theme.surface)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                     }

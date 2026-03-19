@@ -37,11 +37,11 @@ struct HomeView: View {
             Text(greeting)
                 .font(.title2)
                 .fontWeight(.bold)
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
             if let kpi {
                 Text("\(kpi.sessions) sessions across \(kpi.sources) sources")
                     .font(.callout)
-                    .foregroundStyle(Color(hex: 0xA0A1A8))
+                    .foregroundStyle(Theme.secondaryText)
             }
         }
     }

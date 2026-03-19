@@ -15,7 +15,7 @@ struct ProjectBadge: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(SourceColors.color(for: source).opacity(0.08))
-            .foregroundStyle(Color(hex: 0xA0A1A8))
+            .foregroundStyle(Theme.secondaryText)
             .clipShape(Capsule())
     }
 }

@@ -7,14 +7,14 @@ struct SkeletonRow: View {
     var body: some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 4)
-                .fill(Color.white.opacity(0.04))
+                .fill(Theme.border)
                 .frame(width: 60, height: 20)
             RoundedRectangle(cornerRadius: 4)
-                .fill(Color.white.opacity(0.04))
+                .fill(Theme.border)
                 .frame(height: 16)
             Spacer()
             RoundedRectangle(cornerRadius: 4)
-                .fill(Color.white.opacity(0.04))
+                .fill(Theme.border)
                 .frame(width: 80, height: 14)
         }
         .padding(.vertical, 8)

@@ -20,11 +20,11 @@ struct SkillsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(Color(hex: 0x6E7078))
+                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.tertiaryText)
                     TextField("Search skills...", text: $searchText).textFieldStyle(.plain)
                 }
                 .padding(10)
-                .background(Color.white.opacity(0.04))
+                .background(Theme.inputBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 if let error { AlertBanner(message: error) }
@@ -47,16 +47,16 @@ struct SkillsView: View {
 
     private func skillRow(_ skill: SkillInfo) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(skill.name).font(.callout).fontWeight(.medium).foregroundStyle(.white)
+            Text(skill.name).font(.callout).fontWeight(.medium).foregroundStyle(Theme.primaryText)
             if !skill.description.isEmpty {
-                Text(skill.description).font(.caption).foregroundStyle(Color(hex: 0xA0A1A8)).lineLimit(2)
+                Text(skill.description).font(.caption).foregroundStyle(Theme.secondaryText).lineLimit(2)
             }
-            Text(skill.path).font(.caption2).foregroundStyle(Color(hex: 0x6E7078))
+            Text(skill.path).font(.caption2).foregroundStyle(Theme.tertiaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(Color.white.opacity(0.02))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.04), lineWidth: 1))
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 

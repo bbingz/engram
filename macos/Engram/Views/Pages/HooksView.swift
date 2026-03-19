@@ -36,18 +36,18 @@ struct HooksView: View {
             Text(hook.event)
                 .font(.caption).fontWeight(.medium)
                 .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(Color(hex: 0x4A8FE7).opacity(0.15))
-                .foregroundStyle(Color(hex: 0x4A8FE7))
+                .background(Theme.accent.opacity(0.15))
+                .foregroundStyle(Theme.accent)
                 .clipShape(Capsule())
             Text(hook.command)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color(hex: 0xA0A1A8))
+                .foregroundStyle(Theme.secondaryText)
                 .lineLimit(2)
             Spacer()
         }
         .padding(12)
-        .background(Color.white.opacity(0.02))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.04), lineWidth: 1))
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 

@@ -14,15 +14,15 @@ struct FilterPills: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(selected == option
-                            ? Color(hex: 0x4A8FE7).opacity(0.25)
-                            : Color.white.opacity(0.04))
+                            ? Theme.sidebarSelection
+                            : Theme.border)
                         .foregroundStyle(selected == option
-                            ? Color(hex: 0x6CB4FF)
-                            : Color(hex: 0xA0A1A8))
+                            ? Theme.sidebarSelectedText
+                            : Theme.secondaryText)
                         .clipShape(Capsule())
                         .overlay(
                             Capsule().stroke(selected == option
-                                ? Color(hex: 0x4A8FE7).opacity(0.3)
+                                ? Theme.accent.opacity(0.3)
                                 : Color.clear, lineWidth: 1)
                         )
                 }

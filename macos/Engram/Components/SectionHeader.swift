@@ -11,24 +11,24 @@ struct SectionHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .foregroundStyle(Color(hex: 0x6E7078))
+                .foregroundStyle(Theme.tertiaryText)
             Text(title)
                 .font(.headline)
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
             if let badge {
                 Text(badge)
                     .font(.caption2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.white.opacity(0.06))
+                    .background(Theme.surfaceHighlight)
                     .clipShape(Capsule())
-                    .foregroundStyle(Color(hex: 0xA0A1A8))
+                    .foregroundStyle(Theme.secondaryText)
             }
             if let onRefresh {
                 Button(action: onRefresh) {
                     Image(systemName: "arrow.clockwise")
                         .font(.caption)
-                        .foregroundStyle(Color(hex: 0x6E7078))
+                        .foregroundStyle(Theme.tertiaryText)
                 }
                 .buttonStyle(.plain)
             }
@@ -40,7 +40,7 @@ struct SectionHeader: View {
                         Image(systemName: "chevron.right")
                     }
                     .font(.caption)
-                    .foregroundStyle(Color(hex: 0x4A8FE7))
+                    .foregroundStyle(Theme.accent)
                 }
                 .buttonStyle(.plain)
             }

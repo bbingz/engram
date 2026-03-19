@@ -11,7 +11,7 @@ struct SidebarView: View {
                     ForEach(Screen.Section.allCases, id: \.self) { section in
                         Text(section.rawValue)
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color(hex: 0x6E7078))
+                            .foregroundStyle(Theme.tertiaryText)
                             .padding(.horizontal, 12)
                             .padding(.top, section == .overview ? 8 : 16)
                             .padding(.bottom, 4)
@@ -61,11 +61,11 @@ private struct SidebarItem: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(isSelected
-                ? Color(hex: 0x4A8FE7).opacity(0.25)
+                ? Theme.sidebarSelection
                 : Color.clear)
             .foregroundStyle(isSelected
-                ? Color(hex: 0x6CB4FF)
-                : Color(hex: 0xA0A1A8))
+                ? Theme.sidebarSelectedText
+                : Theme.secondaryText)
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)

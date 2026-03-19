@@ -29,7 +29,7 @@ struct ActivityView: View {
                         Spacer()
                         Text("\(item.count) sessions")
                             .font(.caption)
-                            .foregroundStyle(Color(hex: 0xA0A1A8))
+                            .foregroundStyle(Theme.secondaryText)
                     }
                     .padding(.vertical, 4)
                 }

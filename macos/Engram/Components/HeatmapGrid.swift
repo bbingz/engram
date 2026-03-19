@@ -3,7 +3,7 @@ import SwiftUI
 
 struct HeatmapGrid: View {
     let data: [Int]  // 24 values for hours 0-23
-    var colorBase: Color = Color(hex: 0x4A8FE7)
+    var colorBase: Color = Theme.accent
 
     private var maxValue: Int { data.max() ?? 1 }
 
@@ -18,7 +18,7 @@ struct HeatmapGrid: View {
                     RoundedRectangle(cornerRadius: 3)
                         .fill(intensity > 0
                             ? colorBase.opacity(0.15 + intensity * 0.65)
-                            : Color.white.opacity(0.02))
+                            : Theme.surface)
                         .frame(height: 24)
                         .overlay(
                             Group {
@@ -35,7 +35,7 @@ struct HeatmapGrid: View {
                 ForEach([0, 3, 6, 9, 12, 15, 18, 21], id: \.self) { hour in
                     Text(hourLabels[hour])
                         .font(.system(size: 9))
-                        .foregroundStyle(Color(hex: 0x6E7078))
+                        .foregroundStyle(Theme.tertiaryText)
                         .frame(maxWidth: .infinity)
                 }
             }

@@ -19,7 +19,7 @@ struct BarChart: View {
                 HStack(spacing: 8) {
                     Text(item.label)
                         .font(.caption)
-                        .foregroundStyle(Color(hex: 0xA0A1A8))
+                        .foregroundStyle(Theme.secondaryText)
                         .frame(width: 90, alignment: .trailing)
                     GeometryReader { geo in
                         let width = maxValue > 0
@@ -32,7 +32,7 @@ struct BarChart: View {
                     .frame(height: 16)
                     Text("\(item.value)")
                         .font(.caption)
-                        .foregroundStyle(Color(hex: 0x6E7078))
+                        .foregroundStyle(Theme.tertiaryText)
                         .frame(width: 50, alignment: .leading)
                 }
             }

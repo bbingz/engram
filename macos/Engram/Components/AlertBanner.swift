@@ -11,7 +11,7 @@ struct AlertBanner: View {
                 .foregroundStyle(Color(hex: 0xFF9F0A))
             Text(message)
                 .font(.callout)
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.primaryText)
             Spacer()
             if let action {
                 Button(action: action.action) {

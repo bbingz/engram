@@ -15,18 +15,18 @@ struct SearchPageView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(Color(hex: 0x6E7078))
+                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.tertiaryText)
                     TextField("Search sessions...", text: $query)
                         .textFieldStyle(.plain)
                         .onSubmit { Task { await performSearch() } }
                     if !query.isEmpty {
                         Button(action: { query = ""; results = [] }) {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(Color(hex: 0x6E7078))
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.tertiaryText)
                         }.buttonStyle(.plain)
                     }
                 }
                 .padding(12)
-                .background(Color.white.opacity(0.04))
+                .background(Theme.inputBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
                 FilterPills(options: timeOptions, selected: $timeFilter)
@@ -36,7 +36,7 @@ struct SearchPageView: View {
                 } else if results.isEmpty && query.isEmpty {
                     EmptyState(icon: "magnifyingglass", title: "Search sessions", message: "Search by summary, project, or content")
                 } else {
-                    Text("\(results.count) results").font(.caption).foregroundStyle(Color(hex: 0x6E7078))
+                    Text("\(results.count) results").font(.caption).foregroundStyle(Theme.tertiaryText)
                     LazyVStack(spacing: 4) {
                         ForEach(results) { session in
                             SessionCard(session: session) {

@@ -21,7 +21,7 @@ struct MainWindowView: View {
                                 Text("Back")
                             }
                             .font(.callout)
-                            .foregroundStyle(Color(hex: 0x4A8FE7))
+                            .foregroundStyle(Theme.accent)
                         }
                         .buttonStyle(.plain)
                         Spacer()
@@ -31,11 +31,11 @@ struct MainWindowView: View {
                     SessionDetailView(session: session)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(hex: 0x1A1D24))
+                .background(Theme.background)
             } else {
                 detailView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(hex: 0x1A1D24))
+                    .background(Theme.background)
             }
         }
         .navigationSplitViewStyle(.balanced)
