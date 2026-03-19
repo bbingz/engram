@@ -16,6 +16,7 @@ import type { VectorStore } from './core/vector-store.js'
 import type { EmbeddingClient } from './core/embeddings.js'
 import { SyncEngine, type SyncPeer } from './core/sync.js'
 import { handleLinkSessions } from './tools/link_sessions.js'
+import { buildResumeCommand } from './core/resume-coordinator.js'
 import type { VikingBridge } from './core/viking-bridge.js'
 import { WATCHED_SOURCES } from './core/watcher.js'
 import type { UsageCollector } from './core/usage-collector.js'
@@ -176,6 +177,14 @@ export function createApp(db: Database, opts?: {
       return c.json({ error: 'Session not found' }, 404)
     }
     return c.json(session)
+  })
+
+  // Session resume — detect CLI tool and build resume command
+  app.post('/api/session/:id/resume', (c) => {
+    const session = db.getSession(c.req.param('id'))
+    if (!session) return c.json({ error: 'Session not found', hint: '' }, 404)
+    const result = buildResumeCommand(session.source, session.id, session.cwd ?? '')
+    return c.json(result)
   })
 
   // Embedding status endpoint
