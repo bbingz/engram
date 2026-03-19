@@ -12,6 +12,8 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
     // Workspace
     case projects
     case sourcePulse
+    case repos
+    case workGraph
     // Config
     case skills
     case agents
@@ -31,6 +33,8 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .activity:    return "Activity"
         case .projects:    return "Projects"
         case .sourcePulse: return "Sources"
+        case .repos:       return "Repos"
+        case .workGraph:   return "Work Graph"
         case .skills:      return "Skills"
         case .agents:      return "Agents"
         case .memory:      return "Memory"
@@ -48,6 +52,8 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .activity:    return "bolt"
         case .projects:    return "folder"
         case .sourcePulse: return "antenna.radiowaves.left.and.right"
+        case .repos:       return "arrow.triangle.branch"
+        case .workGraph:   return "point.3.connected.trianglepath.dotted"
         case .skills:      return "sparkles"
         case .agents:      return "cpu"
         case .memory:      return "brain"
@@ -67,7 +73,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
             switch self {
             case .overview:  return [.home, .search]
             case .monitor:   return [.sessions, .timeline, .activity]
-            case .workspace: return [.projects, .sourcePulse]
+            case .workspace: return [.projects, .sourcePulse, .repos, .workGraph]
             case .config:    return [.skills, .agents, .memory, .hooks]
             }
         }

@@ -87,6 +87,10 @@ struct MainWindowView: View {
             ProjectsView()
         case .sourcePulse:
             SourcePulseView()
+        case .repos:
+            ReposView()
+        case .workGraph:
+            WorkGraphView()
         case .skills:
             SkillsView()
         case .agents:

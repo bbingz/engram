@@ -713,6 +713,14 @@ class DatabaseManager: ObservableObject {
         let sessions: [Session]
     }
 
+    // MARK: - Git Repos
+
+    func listGitRepos() throws -> [GitRepo] {
+        try pool!.read { db in
+            try GitRepo.fetchAll(db, sql: "SELECT * FROM git_repos ORDER BY last_commit_at DESC")
+        }
+    }
+
     func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
