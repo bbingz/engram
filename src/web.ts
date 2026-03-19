@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { existsSync } from 'fs'
+import { readdir, readFile, stat } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Database } from './core/db.js'
@@ -462,6 +463,129 @@ export function createApp(db: Database, opts?: {
 
   app.get('/api/health/sources', async (c) => {
     return c.json(await getHealthData())
+  })
+
+  // Active sources with adapter info
+  app.get('/api/sources', async (c) => {
+    const sources = db.listSources()
+    const stats = db.getSourceStats()
+    const statsMap = new Map(stats.map(s => [s.source, s]))
+    return c.json(sources.map(source => ({
+      name: source,
+      sessionCount: statsMap.get(source)?.sessionCount ?? 0,
+      latestIndexed: statsMap.get(source)?.latestIndexed ?? null,
+    })))
+  })
+
+  // Skills from Claude Code config
+  app.get('/api/skills', async (c) => {
+    const results: { name: string; description: string; path: string; scope: string }[] = []
+    const home = homedir()
+
+    // Global commands from settings
+    try {
+      const settingsPath = join(home, '.claude', 'settings.json')
+      const raw = await readFile(settingsPath, 'utf-8')
+      const settings = JSON.parse(raw)
+      if (settings.customCommands) {
+        for (const [name, cmd] of Object.entries(settings.customCommands)) {
+          results.push({ name, description: String(cmd).slice(0, 100), path: settingsPath, scope: 'global' })
+        }
+      }
+    } catch { /* no settings */ }
+
+    // Plugin skills
+    const pluginsDir = join(home, '.claude', 'plugins', 'cache')
+    try {
+      const vendors = await readdir(pluginsDir)
+      for (const vendor of vendors) {
+        const vendorPath = join(pluginsDir, vendor)
+        const vendorStat = await stat(vendorPath).catch(() => null)
+        if (!vendorStat?.isDirectory()) continue
+        const items = await readdir(vendorPath, { recursive: true })
+        for (const item of items) {
+          if (typeof item === 'string' && item.endsWith('.md') && !item.includes('node_modules')) {
+            try {
+              const content = await readFile(join(vendorPath, item), 'utf-8')
+              const nameMatch = content.match(/^name:\s*(.+)$/m)
+              const descMatch = content.match(/^description:\s*(.+)$/m)
+              if (nameMatch) {
+                results.push({
+                  name: nameMatch[1].trim(),
+                  description: descMatch?.[1]?.trim() ?? '',
+                  path: join(vendorPath, item).replace(home, '~'),
+                  scope: 'plugin',
+                })
+              }
+            } catch { /* skip unreadable */ }
+          }
+        }
+      }
+    } catch { /* no plugins dir */ }
+
+    return c.json(results)
+  })
+
+  // Memory files across Claude Code projects
+  app.get('/api/memory', async (c) => {
+    const results: { name: string; project: string; path: string; sizeBytes: number; preview: string }[] = []
+    const home = homedir()
+    const projectsDir = join(home, '.claude', 'projects')
+
+    try {
+      const projects = await readdir(projectsDir)
+      for (const project of projects) {
+        const memoryDir = join(projectsDir, project, 'memory')
+        try {
+          const files = await readdir(memoryDir)
+          for (const file of files) {
+            if (!file.endsWith('.md')) continue
+            const filePath = join(memoryDir, file)
+            const fileStat = await stat(filePath).catch(() => null)
+            if (!fileStat?.isFile()) continue
+            const content = await readFile(filePath, 'utf-8').catch(() => '')
+            results.push({
+              name: file,
+              project: project.replace(/-/g, '/'),
+              path: filePath.replace(home, '~'),
+              sizeBytes: fileStat.size,
+              preview: content.slice(0, 200),
+            })
+          }
+        } catch { /* no memory dir for this project */ }
+      }
+    } catch { /* no projects dir */ }
+
+    return c.json(results)
+  })
+
+  // Hooks from Claude Code settings
+  app.get('/api/hooks', async (c) => {
+    const results: { event: string; command: string; scope: string }[] = []
+    const home = homedir()
+
+    for (const scope of ['global', 'project'] as const) {
+      const path = scope === 'global'
+        ? join(home, '.claude', 'settings.json')
+        : join(home, '.claude', 'settings.local.json')
+      try {
+        const raw = await readFile(path, 'utf-8')
+        const settings = JSON.parse(raw)
+        if (settings.hooks) {
+          for (const [event, handlers] of Object.entries(settings.hooks)) {
+            if (Array.isArray(handlers)) {
+              for (const handler of handlers) {
+                const cmd = typeof handler === 'string' ? handler
+                  : (handler as { command?: string }).command ?? JSON.stringify(handler)
+                results.push({ event, command: cmd, scope })
+              }
+            }
+          }
+        }
+      } catch { /* no settings file */ }
+    }
+
+    return c.json(results)
   })
 
   app.get('/health', async (c) => {
