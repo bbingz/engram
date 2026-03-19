@@ -153,6 +153,22 @@ struct SessionDetailView: View {
                 }
             }
         }
+        .background {
+            Group {
+                Button("") { showFind.toggle() }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button("") { navigateFind(direction: 1) }
+                    .keyboardShortcut("g", modifiers: .command)
+                Button("") { navigateFind(direction: -1) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                Button("") { copyAllTranscript() }
+                    .keyboardShortcut("c", modifiers: [.command, .option])
+                Button("") { if showFind { searchText = ""; showFind = false } }
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+        }
         .task {
             isFavorite = (try? db.isFavorite(sessionId: session.id)) ?? false
         }
