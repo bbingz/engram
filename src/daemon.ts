@@ -14,6 +14,8 @@ import { SyncEngine } from './core/sync.js'
 import { AutoSummaryManager } from './core/auto-summary.js'
 import { summarizeConversation } from './core/ai-client.js'
 import { startGitProbeLoop } from './core/git-probe.js'
+import { UsageCollector } from './core/usage-collector.js'
+import { TitleGenerator } from './core/title-generator.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
@@ -27,6 +29,17 @@ db.noiseFilter = settings.noiseFilter ?? 'hide-skip'
 
 // Viking bridge — optional external context engine
 const vikingBridge = initViking(settings)
+
+const usageCollector = new UsageCollector(db.getRawDb(), (event, data) => emit({ event, ...(typeof data === 'object' && data !== null ? data : { data }) }))
+
+const titleConfig = {
+  provider: settings.titleProvider ?? 'ollama',
+  baseUrl: settings.titleBaseUrl ?? 'http://localhost:11434',
+  model: settings.titleModel ?? 'qwen2.5:3b',
+  apiKey: settings.titleApiKey,
+  autoGenerate: settings.titleAutoGenerate ?? false,
+}
+const titleGenerator = new TitleGenerator(titleConfig)
 
 const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode })
 
@@ -203,6 +216,8 @@ const app = createApp(db, {
   settings,
   adapters,
   viking: vikingBridge,
+  usageCollector,
+  titleGenerator,
 })
 const { serve } = await import('@hono/node-server')
 const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {

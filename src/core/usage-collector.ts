@@ -33,8 +33,13 @@ export class UsageCollector {
     this.timers.clear()
   }
 
+  private cleanup() {
+    this.db.prepare(`DELETE FROM usage_snapshots WHERE collected_at < datetime('now', '-7 days')`).run()
+  }
+
   private async runProbe(probe: UsageProbe) {
     try {
+      this.cleanup()
       const snapshots = await probe.probe()
       this.storeSnapshots(snapshots)
       this.emit('usage', snapshots)

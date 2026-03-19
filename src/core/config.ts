@@ -81,6 +81,13 @@ export interface FileSettings {
 
   // ── OpenViking ──────────────────────────────────────────────────
   viking?: VikingSettings;
+
+  // ── Title generation ─────────────────────────────────────────────
+  titleProvider?: 'ollama' | 'openai' | 'dashscope' | 'custom';
+  titleBaseUrl?: string;
+  titleModel?: string;
+  titleApiKey?: string;
+  titleAutoGenerate?: boolean;
 }
 
 // ── Preset defaults ──────────────────────────────────────────────────

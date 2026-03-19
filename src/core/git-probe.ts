@@ -1,5 +1,5 @@
 // src/core/git-probe.ts
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import type Database from 'better-sqlite3'
 
 export interface GitRepo {
@@ -18,7 +18,8 @@ export interface GitRepo {
 
 function gitCmd(repoPath: string, args: string): string | null {
   try {
-    return execSync(`git -C "${repoPath}" ${args}`, { encoding: 'utf-8', timeout: 10000 }).trim()
+    const argList = args.split(/\s+/)
+    return execFileSync('git', ['-C', repoPath, ...argList], { encoding: 'utf-8', timeout: 10000 }).trim()
   } catch { return null }
 }
 
@@ -41,9 +42,9 @@ export function probeRepo(repoPath: string): Omit<GitRepo, 'sessionCount'> {
   const statusLines = (gitCmd(repoPath, 'status --porcelain') || '').split('\n').filter(Boolean)
   const dirtyCount = statusLines.filter(l => !l.startsWith('??')).length
   const untrackedCount = statusLines.filter(l => l.startsWith('??')).length
-  const unpushedStr = gitCmd(repoPath, 'rev-list --count @{push}..HEAD 2>/dev/null')
+  const unpushedStr = gitCmd(repoPath, 'rev-list --count @{push}..HEAD')
   const unpushedCount = unpushedStr ? parseInt(unpushedStr, 10) || 0 : 0
-  const logLine = gitCmd(repoPath, 'log --format="%H|%s|%aI" -1')
+  const logLine = gitCmd(repoPath, 'log --format=%H|%s|%aI -1')
   let lastCommitHash: string | null = null
   let lastCommitMsg: string | null = null
   let lastCommitAt: string | null = null

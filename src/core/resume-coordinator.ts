@@ -1,5 +1,5 @@
 // src/core/resume-coordinator.ts
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 
 export interface ResumeCommand {
   tool: string
@@ -17,7 +17,7 @@ export type ResumeResult = ResumeCommand | ResumeError
 
 function which(cmd: string): string | null {
   try {
-    return execSync(`which ${cmd}`, { encoding: 'utf-8', timeout: 5000 }).trim()
+    return execFileSync('which', [cmd], { encoding: 'utf-8', timeout: 5000 }).trim()
   } catch { return null }
 }
 

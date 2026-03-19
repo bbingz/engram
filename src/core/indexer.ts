@@ -6,6 +6,7 @@ import type { Database } from './db.js'
 import { resolveProjectName } from './project.js'
 import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
 import { computeTier, type SessionTier } from './session-tier.js'
+import { isPreambleOnly } from './preamble-detector.js'
 import { SessionSnapshotWriter } from './session-writer.js'
 import { toVikingUri, type VikingBridge } from './viking-bridge.js'
 
@@ -56,6 +57,11 @@ export class Indexer {
     }
     const snapshotHash = createHash('sha256').update(JSON.stringify(syncPayload)).digest('hex')
 
+    const userMsgs = messages.filter(m => m.role === 'user').slice(0, 3).map(m => m.content?.slice(0, 500) || '')
+    const isPreamble = isPreambleOnly(userMsgs)
+    const assistantCount = messages.filter(m => m.role === 'assistant').length
+    const toolCount = messages.filter(m => m.role === 'tool' || (m as { toolName?: string }).toolName).length
+
     const tier = computeTier({
       messageCount: info.messageCount,
       agentRole: info.agentRole ?? null,
@@ -65,6 +71,9 @@ export class Indexer {
       startTime: info.startTime,
       endTime: info.endTime ?? null,
       source: info.source,
+      isPreamble,
+      assistantCount,
+      toolCount,
     })
 
     return {

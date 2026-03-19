@@ -30,17 +30,16 @@ export function computeTier(input: TierInput): SessionTier {
   if (input.isPreamble) return 'skip'
   // Probe sessions → skip
   if (input.filePath?.includes('/.engram/probes/')) return 'skip'
-  // No-reply (user messages but no AI response) → lite
+  if (input.agentRole != null) return 'skip'
+  if (input.filePath.includes('/subagents/')) return 'skip'
+  if (input.messageCount <= 1) return 'skip'
+  // No-reply (multiple user messages but no AI response) → lite
   // Only apply when assistantCount is explicitly known (not just absent)
   if (
-    input.messageCount > 0 &&
     input.assistantCount !== undefined &&
     input.assistantCount === 0 &&
     (input.toolCount ?? 0) === 0
   ) return 'lite'
-  if (input.agentRole != null) return 'skip'
-  if (input.filePath.includes('/subagents/')) return 'skip'
-  if (input.messageCount <= 1) return 'skip'
 
   // 2. premium
   if (input.messageCount >= 20) return 'premium'

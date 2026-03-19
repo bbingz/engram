@@ -128,7 +128,8 @@ export class Database {
         source_locator TEXT,
         sync_version INTEGER NOT NULL DEFAULT 0,
         snapshot_hash TEXT,
-        tier TEXT
+        tier TEXT,
+        generated_title TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
