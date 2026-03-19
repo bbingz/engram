@@ -33,6 +33,7 @@
 		5020CE74853C590CFEE9F0CA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3ED5F4A67BA499CAD0CB87E2 /* Assets.xcassets */; };
 		543DAA68759484B288DD28B7 /* EmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ED247967A05A65CC875DA32 /* EmptyState.swift */; };
 		55A1E938C15DB4BE1A88AE36 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B088996486F740E1114B97 /* App.swift */; };
+		5BC88D4C00CCF6027506F957 /* AISettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6517DA2EA76B3A5C369919FF /* AISettingsSection.swift */; };
 		5CB6726FE0E6D7FB312D42A9 /* TimelinePageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 087DCD921D81CFC96DFF84C6 /* TimelinePageView.swift */; };
 		5FC7F55BFF4B35D133BBBB19 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 926B3C0260A07A71774FB824 /* PopoverView.swift */; };
 		66DFAA8A94AEDE10DE23646E /* KPICard.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD55A13FC016BAD5E5F5B88E /* KPICard.swift */; };
@@ -92,6 +93,7 @@
 		5B1A940D0D6719B788CA2E97 /* TierBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TierBar.swift; sourceTree = "<group>"; };
 		5ED247967A05A65CC875DA32 /* EmptyState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyState.swift; sourceTree = "<group>"; };
 		5FE90809B9536D6ACEC06384 /* SourcePulseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcePulseView.swift; sourceTree = "<group>"; };
+		6517DA2EA76B3A5C369919FF /* AISettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsSection.swift; sourceTree = "<group>"; };
 		67EE4A65A9D897846E86326E /* SourceColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceColors.swift; sourceTree = "<group>"; };
 		6893032E186098253529B5FF /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		6A0E4988B449A25982524EB7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -225,6 +227,7 @@
 		907A3B020AFFC832272B3322 /* Settings */ = {
 			isa = PBXGroup;
 			children = (
+				6517DA2EA76B3A5C369919FF /* AISettingsSection.swift */,
 				36006D527ADCA5DD8673D6E3 /* GeneralSettingsSection.swift */,
 				E8A3841D86B13AA2C3546896 /* SettingsIO.swift */,
 			);
@@ -456,6 +459,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5BC88D4C00CCF6027506F957 /* AISettingsSection.swift in Sources */,
 				DC3A79E8817B1DDB1F937B98 /* ActivityChart.swift in Sources */,
 				BD36B61F0A90AA98F049B7E5 /* ActivityView.swift in Sources */,
 				88A627094763276DC13149E0 /* AgentsView.swift in Sources */,
