@@ -12,13 +12,15 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     // Stored so openWindow() can inject them into the standalone window
     private let db: DatabaseManager
     private let indexer: IndexerProcess
+    private let daemonClient: DaemonClient
     private var clickTimer: Timer?
     private var dockIconObserver: NSObjectProtocol?
     private var lastShowDockIcon: Bool?
 
-    init(db: DatabaseManager, indexer: IndexerProcess) {
+    init(db: DatabaseManager, indexer: IndexerProcess, daemonClient: DaemonClient) {
         self.db = db
         self.indexer = indexer
+        self.daemonClient = daemonClient
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover    = NSPopover()
@@ -29,6 +31,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             rootView: PopoverView()
                 .environmentObject(db)
                 .environmentObject(indexer)
+                .environmentObject(daemonClient)
         )
 
         super.init()
@@ -160,6 +163,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             rootView: SettingsView()
                 .environmentObject(db)
                 .environmentObject(indexer)
+                .environmentObject(daemonClient)
         )
 
         let win = NSWindow(contentViewController: hostingController)
@@ -214,6 +218,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             rootView: ContentView()
                 .environmentObject(db)
                 .environmentObject(indexer)
+                .environmentObject(daemonClient)
         )
 
         let win = NSWindow(contentViewController: hostingController)

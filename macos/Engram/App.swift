@@ -10,14 +10,16 @@ struct EngramApp: App {
             SettingsView()
                 .environmentObject(appDelegate.db)
                 .environmentObject(appDelegate.indexer)
+                .environmentObject(appDelegate.daemonClient)
         }
     }
 }
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
-    let db      = DatabaseManager()
-    let indexer = IndexerProcess()
+    let db           = DatabaseManager()
+    let indexer      = IndexerProcess()
+    let daemonClient = DaemonClient()
     private var menuBarController: MenuBarController?
     private var mcpServer: MCPServer?
 
@@ -55,7 +57,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Setup menu bar
-        menuBarController = MenuBarController(db: db, indexer: indexer)
+        menuBarController = MenuBarController(db: db, indexer: indexer, daemonClient: daemonClient)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
