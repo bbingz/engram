@@ -24,12 +24,23 @@ describe('Indexer', () => {
     rmSync(tmpDir, { recursive: true })
   })
 
-  function makeSessionFile(dir: string, id: string, cwd: string, content: string): string {
+  function makeSessionFile(dir: string, id: string, cwd: string, content: string, extraMessages = 0): string {
     const filePath = join(dir, `rollout-${id}.jsonl`)
-    writeFileSync(filePath, [
+    const lines = [
       JSON.stringify({ timestamp: '2026-01-15T10:00:00.000Z', type: 'session_meta', payload: { id, timestamp: '2026-01-15T10:00:00.000Z', cwd, model_provider: 'openai' } }),
       JSON.stringify({ timestamp: '2026-01-15T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: content }] } }),
-    ].join('\n'))
+    ]
+    // Add extra assistant+user message pairs to reach desired message count
+    for (let i = 0; i < extraMessages; i++) {
+      const role = i % 2 === 0 ? 'assistant' : 'user'
+      const contentType = role === 'user' ? 'input_text' : 'output_text'
+      lines.push(JSON.stringify({
+        timestamp: `2026-01-15T10:${String(i + 2).padStart(2, '0')}:00.000Z`,
+        type: 'response_item',
+        payload: { type: 'message', role, content: [{ type: contentType, text: `msg ${i}` }] },
+      }))
+    }
+    writeFileSync(filePath, lines.join('\n'))
     return filePath
   }
 
@@ -47,7 +58,8 @@ describe('Indexer', () => {
   })
 
   it('routes local session indexing through durable jobs', async () => {
-    makeSessionFile(sessionsDir, 'test-001b', '/Users/test', '修复登录 bug')
+    // Need ≥2 messages so tier is not 'skip' (skip tier suppresses job dispatch)
+    makeSessionFile(sessionsDir, 'test-001b', '/Users/test', '修复登录 bug', 1)
     const codexAdapter = new CodexAdapter(join(tmpDir, 'sessions'))
     const indexer = new Indexer(db, [codexAdapter], { authoritativeNode: 'local' })
 
@@ -70,7 +82,8 @@ describe('Indexer', () => {
   })
 
   it('enqueues durable jobs for searchable content', async () => {
-    makeSessionFile(sessionsDir, 'test-003', '/Users/test', '帮我修复 SSL 证书错误')
+    // Need ≥2 messages so tier is not 'skip' (skip tier suppresses job dispatch)
+    makeSessionFile(sessionsDir, 'test-003', '/Users/test', '帮我修复 SSL 证书错误', 1)
     const codexAdapter = new CodexAdapter(join(tmpDir, 'sessions'))
     const indexer = new Indexer(db, [codexAdapter], { authoritativeNode: 'local' })
     await indexer.indexAll()
@@ -90,5 +103,46 @@ describe('Indexer', () => {
     // Now with matching source
     const count2 = await indexer.indexAll({ sources: new Set(['codex']) })
     expect(count2).toBe(1)
+  })
+
+  it('computes tier and upgrades on re-index', async () => {
+    // Helper to build a multi-message codex session file
+    function makeMultiMessageFile(dir: string, id: string, cwd: string, msgCount: number): string {
+      const filePath = join(dir, `rollout-${id}.jsonl`)
+      const lines = [
+        JSON.stringify({ timestamp: '2026-01-15T10:00:00.000Z', type: 'session_meta', payload: { id, timestamp: '2026-01-15T10:00:00.000Z', cwd, model_provider: 'openai' } }),
+      ]
+      for (let i = 0; i < msgCount; i++) {
+        const role = i % 2 === 0 ? 'user' : 'assistant'
+        const contentType = role === 'user' ? 'input_text' : 'output_text'
+        lines.push(JSON.stringify({
+          timestamp: `2026-01-15T10:${String(i + 1).padStart(2, '0')}:00.000Z`,
+          type: 'response_item',
+          payload: { type: 'message', role, content: [{ type: contentType, text: `message ${i}` }] },
+        }))
+      }
+      writeFileSync(filePath, lines.join('\n'))
+      return filePath
+    }
+
+    const codexAdapter = new CodexAdapter(join(tmpDir, 'sessions'))
+    const indexer = new Indexer(db, [codexAdapter])
+
+    // 1 message → messageCount=1, tier should be 'skip'
+    const filePath = makeMultiMessageFile(sessionsDir, 'tier-001', '/Users/test', 1)
+    const result1 = await indexer.indexFile(codexAdapter, filePath)
+    expect(result1.indexed).toBe(true)
+    expect(result1.tier).toBe('skip')
+    const snap1 = db.getAuthoritativeSnapshot('tier-001')
+    expect(snap1?.tier).toBe('skip')
+
+    // Overwrite with 15 messages (8 user + 7 assistant) + project from cwd
+    // messageCount=15 >= 10, and project resolves from cwd → premium
+    makeMultiMessageFile(sessionsDir, 'tier-001', '/Users/test/my-project', 15)
+    const result2 = await indexer.indexFile(codexAdapter, filePath)
+    expect(result2.indexed).toBe(true)
+    expect(result2.tier).toBe('premium')
+    const snap2 = db.getAuthoritativeSnapshot('tier-001')
+    expect(snap2?.tier).toBe('premium')
   })
 })

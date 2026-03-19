@@ -34,7 +34,8 @@ describe('Indexer with Viking', () => {
       name: 'codex',
       detect: () => Promise.resolve(true),
       listSessionFiles: async function* () { yield filePath },
-      parseSessionInfo: () => Promise.resolve(makeSessionInfo({ id: 'test-session-1', filePath })),
+      // messageCount >= 20 → premium tier, which allows Viking push
+      parseSessionInfo: () => Promise.resolve(makeSessionInfo({ id: 'test-session-1', filePath, messageCount: 20, userMessageCount: 10, assistantMessageCount: 10 })),
       streamMessages: async function* () {
         yield { role: 'user', content: 'Hello' }
         yield { role: 'assistant', content: 'Hi there' }

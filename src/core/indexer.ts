@@ -5,6 +5,7 @@ import type { SessionAdapter, SessionInfo } from '../adapters/types.js'
 import type { Database } from './db.js'
 import { resolveProjectName } from './project.js'
 import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
+import { computeTier, type SessionTier } from './session-tier.js'
 import { SessionSnapshotWriter } from './session-writer.js'
 import { toVikingUri, type VikingBridge } from './viking-bridge.js'
 
@@ -55,6 +56,17 @@ export class Indexer {
     }
     const snapshotHash = createHash('sha256').update(JSON.stringify(syncPayload)).digest('hex')
 
+    const tier = computeTier({
+      messageCount: info.messageCount,
+      agentRole: info.agentRole ?? null,
+      filePath,
+      project: info.project ?? null,
+      summary: info.summary ?? null,
+      startTime: info.startTime,
+      endTime: info.endTime ?? null,
+      source: info.source,
+    })
+
     return {
       id: info.id,
       source: info.source,
@@ -67,6 +79,8 @@ export class Indexer {
       startTime: info.startTime,
       endTime: info.endTime,
       origin: authoritativeNode,
+      tier,
+      agentRole: info.agentRole ?? null,
       ...syncPayload,
     }
   }
@@ -115,7 +129,9 @@ export class Indexer {
           const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
           this.writer.writeAuthoritativeSnapshot(snapshot)
 
-          this.pushToViking(info, messages)
+          if (snapshot.tier === 'premium') {
+            this.pushToViking(info, messages)
+          }
 
           newCount++
         } catch {
@@ -155,7 +171,7 @@ export class Indexer {
   }
 
   // 索引单个文件（文件变化时增量更新用）
-  async indexFile(adapter: SessionAdapter, filePath: string): Promise<{ indexed: boolean; sessionId?: string; messageCount?: number }> {
+  async indexFile(adapter: SessionAdapter, filePath: string): Promise<{ indexed: boolean; sessionId?: string; messageCount?: number; tier?: SessionTier }> {
     try {
       let fileSize = 0
       try { fileSize = (await stat(filePath)).size } catch { /* virtual path */ }
@@ -178,9 +194,11 @@ export class Indexer {
       const snapshot = this.buildLocalAuthoritativeSnapshot(current, { ...info, sizeBytes: info.sizeBytes || fileSize }, filePath, messages)
       this.writer.writeAuthoritativeSnapshot(snapshot)
 
-      this.pushToViking(info, messages)
+      if (snapshot.tier === 'premium') {
+        this.pushToViking(info, messages)
+      }
 
-      return { indexed: true, sessionId: info.id, messageCount: info.messageCount ?? messages.length }
+      return { indexed: true, sessionId: info.id, messageCount: info.messageCount ?? messages.length, tier: snapshot.tier }
     } catch {
       return { indexed: false }
     }
