@@ -49,7 +49,7 @@ type SessionTier = 'skip' | 'lite' | 'normal' | 'premium'
 interface TierInput {
   messageCount: number
   agentRole: string | null
-  filePath: string
+  filePath: string        // file_path or source_locator — used for /subagents/ check
   project: string | null
   summary: string | null
   startTime: string | null
@@ -58,16 +58,24 @@ interface TierInput {
 }
 ```
 
+**Where each field comes from:**
+
+- Local indexing path: `agentRole` from `SessionInfo` (adapter parse), all other fields from `SessionInfo`.
+- Sync path: `agentRole` from the remote snapshot's `agentRole` field (must be added to sync export), `filePath` from `sourceLocator` (remote file path, preserves `/subagents/` pattern). If `sourceLocator` is a sync URI without path info, `agentRole` is the primary agent detection signal.
+- Snapshot pipeline: `agentRole` must be added to `AuthoritativeSessionSnapshot` and threaded through `buildLocalAuthoritativeSnapshot()` and `upsertAuthoritativeSnapshot()`.
+
 ### 1d. Classification rules
 
 Evaluated in order. First match wins.
 
 1. **skip**: `agentRole != null` OR `filePath` contains `/subagents/` OR `messageCount <= 1`
 2. **premium**: `messageCount >= 20` OR (`messageCount >= 10` AND `project != null`) OR session duration > 30 minutes
-3. **lite**: (`messageCount <= 5` AND `project == null`) OR summary matches noise patterns (`/usage`, `Generate a short, clear title`)
+3. **lite**: summary matches noise patterns (`/usage`, `Generate a short, clear title`)
 4. **normal**: everything else
 
 Session duration is computed as `(endTime - startTime)` in minutes. If either timestamp is missing, duration is treated as 0.
+
+Note: The original draft had `messageCount <= 5 AND project == null` as a lite condition. This was removed because short sessions without a project (e.g., a 3-message debugging session) are still useful for search and embedding. The lite tier is now reserved for sessions whose summary explicitly indicates noise.
 
 ### 1e. Pure function contract
 
@@ -77,9 +85,17 @@ Session duration is computed as `(endTime - startTime)` in minutes. If either ti
 
 ## 2. Pipeline Gates
 
-### 2a. Session writer gate
+### 2a. Tier computation site
 
-`session-writer.ts` calls `computeTier()` before writing. The tier value is included in the snapshot and persisted to the `tier` column.
+`computeTier()` is called by the **indexer** (local path) and **sync engine** (remote path), NOT by the session writer. The tier is set on the snapshot before the writer receives it:
+
+- **Local**: `indexer.ts:buildLocalAuthoritativeSnapshot()` calls `computeTier()` with fields from `SessionInfo`. The resulting tier is set on the `AuthoritativeSessionSnapshot`.
+- **Sync**: `sync.ts:pullFromPeer()` calls `computeTier()` after `normalizeRemoteSnapshot()`, sets tier on the snapshot.
+- **Writer**: `session-writer.ts:writeAuthoritativeSnapshot()` receives a snapshot with tier already set. It persists the tier column and uses it to gate job dispatch.
+
+This avoids the problem of the writer needing external context (like `SessionInfo.agentRole`) that isn't available inside the merge transaction.
+
+### 2b. Session writer gate
 
 Job enqueue logic changes from:
 
@@ -95,23 +111,34 @@ if tier != 'skip' AND search_text_changed → enqueue FTS
 if tier IN ('normal', 'premium') AND embedding_text_changed → enqueue embedding
 ```
 
-### 2b. Viking push gate
+### 2c. Viking push gate
 
-`indexer.ts:pushToViking()` adds a tier check at the top:
-
-```
-if tier != 'premium' → return early
-```
-
-### 2c. Auto-summary gate
-
-`daemon.ts` onSessionIndexed callback adds a tier check:
+`indexer.ts` gates `pushToViking()` on the tier returned from snapshot building:
 
 ```
-if tier != 'premium' → do not schedule summary
+if tier != 'premium' → skip Viking push
 ```
 
-### 2d. Tier upgrade behavior
+The tier is available because `buildLocalAuthoritativeSnapshot()` returns it as part of the snapshot (or as a separate return value alongside the snapshot).
+
+### 2d. Auto-summary gate
+
+`daemon.ts` onIndexed callback needs the tier to gate auto-summary. The `indexFile()` return value is extended to include the computed tier:
+
+```typescript
+// indexer.ts
+indexFile() returns { sessionId, tier, ... }
+
+// daemon.ts onIndexed callback
+onIndexed: (sessionId, messageCount, tier) => {
+  if (tier === 'premium') {
+    getAutoSummary()?.onSessionIndexed(sessionId, messageCount)
+  }
+  indexJobRunner.runRecoverableJobs().catch(() => {})
+}
+```
+
+### 2e. Tier upgrade behavior
 
 Every `indexFile()` / `indexAll()` / `pullFromPeer()` call recomputes tier from current session state. If a session upgrades (e.g., skip → normal), the writer:
 
@@ -127,7 +154,13 @@ No "backfill" or "catch-up" mechanism needed — the standard pipeline handles u
 
 ### 3a. Current state (to be replaced)
 
-`buildNoiseFilters()` in `db.ts` produces 5 SQL conditions controlled by 3 boolean settings (`hideUsageSessions`, `hideEmptySessions`, `hideAutoSummary`).
+Three layers of noise filtering exist today:
+
+1. **SQL**: `buildNoiseFilters()` in `db.ts` produces 5 SQL conditions controlled by 3 boolean settings. Used by `applyFilters()` (drives `listSessions`, `countSessions`) and `statsGroupBy()` (drives `/api/stats`).
+2. **JS**: `isNoiseSession()` in `db.ts` is a parallel TypeScript implementation used by `search.ts` for in-memory filtering of search results.
+3. **Swift**: `Database.swift` has 6 separate methods with hardcoded `agent_role IS NULL AND file_path NOT LIKE '%/subagents/%' AND message_count > 1` conditions (lines ~99, 178, 215, 457, 509, 560). There is no `NOISE_FILTER_SQL` constant — the SQL is inlined in each method.
+
+All three layers must be updated.
 
 ### 3b. New model
 
@@ -139,17 +172,25 @@ Replace with a single `noiseFilter` setting and tier-based SQL:
 | `hide-skip` (default) | `WHERE tier != 'skip'` | Hide agents and 1-message sessions |
 | `hide-noise` | `WHERE tier NOT IN ('skip', 'lite')` | Cleanest view: only normal + premium |
 
+**All three layers converge:**
+
+1. `buildNoiseFilters()` replaced with `buildTierFilter(noiseFilter)` returning a single `WHERE tier ...` clause.
+2. `isNoiseSession()` replaced with `isSkippedTier(session)` checking `session.tier === 'skip'` (or `'lite'` depending on setting). Used by `search.ts`.
+3. Swift `Database.swift`: all 6 hardcoded agent/noise conditions replaced with `AND tier != 'skip'` (or parameterized by the `noiseFilter` setting).
+
 ### 3c. Settings migration
 
 Old toggles map to new setting on first read:
 
-- If all three old toggles are `true` (default) → `hide-skip`
-- If any old toggle is `false` → `all` (user wanted to see more, preserve that intent)
+- If no old toggle fields exist in settings file (undefined = default) → `hide-skip`
+- If all three old toggles are explicitly `true` → `hide-skip`
+- If any old toggle is explicitly `false` → `all` (user wanted to see more, preserve that intent)
 - Old toggle fields are ignored after migration.
 
 ### 3d. Swift side changes
 
-- `NOISE_FILTER_SQL` in PopoverView / SessionListView replaced with `tier`-based predicate.
+- All 6 hardcoded noise filter SQL fragments in `Database.swift` replaced with `tier`-based predicate.
+- `PopoverView.swift` inline noise filter SQL (lines ~200-215) replaced with tier check.
 - Settings UI: 3 toggles → 1 picker (all / hide agents & noise / clean view).
 
 ---
@@ -167,6 +208,8 @@ Old toggles map to new setting on first read:
 ### 4c. Export
 
 `/api/sync/sessions` does NOT include `tier` in the export payload. Each peer computes its own tier.
+
+The export DOES include `agentRole` (newly added) so that peers can classify agent sessions correctly even if their `sourceLocator` doesn't contain `/subagents/`.
 
 ---
 
@@ -190,13 +233,14 @@ UPDATE sessions SET tier = CASE
   WHEN message_count >= 20 THEN 'premium'
   WHEN message_count >= 10 AND project IS NOT NULL THEN 'premium'
   WHEN (julianday(end_time) - julianday(start_time)) * 1440 > 30 THEN 'premium'
-  WHEN message_count <= 5 AND project IS NULL THEN 'lite'
   WHEN summary LIKE '%/usage%' THEN 'lite'
   WHEN summary LIKE '%Generate a short, clear title%' THEN 'lite'
   ELSE 'normal'
 END
 WHERE tier IS NULL
 ```
+
+Note: `julianday(NULL)` returns NULL in SQLite, and `NULL > 30` evaluates to false, so sessions with missing timestamps correctly skip the premium duration check (treated as 0 duration).
 
 Idempotent: `WHERE tier IS NULL` ensures it only touches unclassified rows.
 
@@ -224,11 +268,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier)
 - messageCount 25, no project → premium
 - messageCount 15 + project → premium
 - 40-minute session → premium
-- messageCount 3, no project → lite
 - `/usage` summary → lite
 - auto-summary noise pattern → lite
+- messageCount 3, no project, clean summary → normal (not lite — short sessions are still valuable)
 - messageCount 8, with project → normal
-- Boundary values: messageCount exactly 1, 2, 5, 10, 20
+- Boundary values: messageCount exactly 1, 2, 10, 20
 - Missing timestamps → duration treated as 0
 
 ### 6b. Integration tests — `session-writer.test.ts`
@@ -262,19 +306,21 @@ Tier drives job enqueue:
 | File | Change |
 |------|--------|
 | `src/core/session-tier.ts` | **New.** `SessionTier` type, `TierInput` interface, `computeTier()` function, noise pattern constants. |
-| `src/core/session-writer.ts` | Import and call `computeTier()`. Gate FTS/embedding job dispatch on tier. |
-| `src/core/session-snapshot.ts` | Add `tier` field to `AuthoritativeSessionSnapshot`. |
-| `src/core/indexer.ts` | Pass tier input to snapshot builder. Gate `pushToViking()` on tier. |
-| `src/core/sync.ts` | Call `computeTier()` after normalizing remote snapshot. |
-| `src/core/db.ts` | Add `tier` column migration + backfill + index. Replace `buildNoiseFilters()` with tier-based filtering. |
-| `src/core/config.ts` | Replace 3 noise toggles with `noiseFilter` setting. Add migration for old toggles. |
-| `src/daemon.ts` | Gate auto-summary trigger on tier. |
-| `src/web.ts` | Update `listSessions` API to accept tier filter parameter. |
+| `src/core/session-snapshot.ts` | Add `tier` and `agentRole` fields to `AuthoritativeSessionSnapshot`. |
+| `src/core/session-writer.ts` | Gate FTS/embedding job dispatch on tier from the incoming snapshot. |
+| `src/core/indexer.ts` | Call `computeTier()` in `buildLocalAuthoritativeSnapshot()`. Gate `pushToViking()` on tier. Extend `indexFile()` return to include tier. |
+| `src/core/sync.ts` | Call `computeTier()` after `normalizeRemoteSnapshot()`. |
+| `src/core/db.ts` | Add `tier` column migration + backfill + index. Add `agentRole` to `upsertAuthoritativeSnapshot()`. Replace `buildNoiseFilters()` and `isNoiseSession()` with tier-based filtering. Update `statsGroupBy()`. |
+| `src/core/config.ts` | Replace 3 noise toggles with `noiseFilter` setting. Add migration for old toggles (handle undefined = default). |
+| `src/daemon.ts` | Gate auto-summary trigger on tier (from `indexFile()` return value). |
+| `src/web.ts` | Update `listSessions` API to accept tier filter parameter. Include `agentRole` in sync export. |
+| `src/tools/search.ts` | Replace `isNoiseSession()` call with tier-based check. |
 | `tests/core/session-tier.test.ts` | **New.** Exhaustive `computeTier()` tests. |
 | `tests/core/session-writer.test.ts` | Add tier-gated job enqueue tests. |
 | `tests/core/db.test.ts` | Add migration backfill and tier filter tests. |
 | `tests/core/indexer.test.ts` | Add tier upgrade test. |
-| `macos/Engram/Core/Database.swift` | Update `NOISE_FILTER_SQL` to use `tier` column. |
+| `macos/Engram/Core/Database.swift` | Replace 6 hardcoded agent/noise SQL fragments with `tier`-based predicate. |
+| `macos/Engram/Views/PopoverView.swift` | Replace inline noise filter SQL with tier check. |
 | `macos/Engram/Views/SettingsView.swift` | Replace 3 noise toggles with 1 picker. |
 
 ---
