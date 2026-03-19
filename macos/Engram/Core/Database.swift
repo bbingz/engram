@@ -567,4 +567,162 @@ class DatabaseManager: ObservableObject {
                                         arguments: StatementArguments(args))
         }
     }
+
+    // MARK: - Dashboard Queries
+
+    struct KPIStats {
+        let sessions: Int
+        let sources: Int
+        let messages: Int
+        let projects: Int
+    }
+
+    func kpiStats() throws -> KPIStats {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let row = try Row.fetchOne(db, sql: """
+                SELECT
+                    COUNT(*) as sessions,
+                    COUNT(DISTINCT source) as sources,
+                    SUM(message_count) as messages,
+                    COUNT(DISTINCT project) as projects
+                FROM sessions WHERE hidden_at IS NULL
+            """)!
+            return KPIStats(
+                sessions: row["sessions"],
+                sources: row["sources"],
+                messages: row["messages"] ?? 0,
+                projects: row["projects"]
+            )
+        }
+    }
+
+    func dailyActivity(days: Int = 30) throws -> [(date: String, count: Int)] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT DATE(start_time) as day, COUNT(*) as count
+                FROM sessions
+                WHERE hidden_at IS NULL
+                  AND start_time >= DATE('now', '-\(days) days')
+                GROUP BY day ORDER BY day
+            """)
+            return rows.map { (date: $0["day"] as String, count: $0["count"] as Int) }
+        }
+    }
+
+    func hourlyActivity() throws -> [Int] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT CAST(strftime('%H', start_time, 'localtime') AS INTEGER) as hour,
+                       COUNT(*) as count
+                FROM sessions
+                WHERE hidden_at IS NULL
+                GROUP BY hour ORDER BY hour
+            """)
+            var hours = Array(repeating: 0, count: 24)
+            for row in rows {
+                let h: Int = row["hour"]
+                let c: Int = row["count"]
+                if h >= 0 && h < 24 { hours[h] = c }
+            }
+            return hours
+        }
+    }
+
+    func sourceDistribution() throws -> [(source: String, count: Int)] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT source, COUNT(*) as count
+                FROM sessions WHERE hidden_at IS NULL
+                GROUP BY source ORDER BY count DESC
+            """)
+            return rows.map { (source: $0["source"] as String, count: $0["count"] as Int) }
+        }
+    }
+
+    func tierDistribution() throws -> (premium: Int, normal: Int, lite: Int, skip: Int) {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT COALESCE(tier, 'normal') as t, COUNT(*) as count
+                FROM sessions WHERE hidden_at IS NULL
+                GROUP BY t
+            """)
+            var result = (premium: 0, normal: 0, lite: 0, skip: 0)
+            for row in rows {
+                let t: String = row["t"]
+                let c: Int = row["count"]
+                switch t {
+                case "premium": result.premium = c
+                case "normal":  result.normal = c
+                case "lite":    result.lite = c
+                case "skip":    result.skip = c
+                default:        result.normal += c
+                }
+            }
+            return result
+        }
+    }
+
+    func recentSessions(limit: Int = 8) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Session.fetchAll(db, sql: """
+                SELECT * FROM sessions
+                WHERE hidden_at IS NULL AND (tier IS NULL OR tier != 'skip')
+                ORDER BY start_time DESC LIMIT ?
+            """, arguments: [limit])
+        }
+    }
+
+    func sessionTimeline(days: Int = 30) throws -> [(date: String, sessions: [Session])] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let sessions = try Session.fetchAll(db, sql: """
+                SELECT * FROM sessions
+                WHERE hidden_at IS NULL
+                  AND start_time >= DATE('now', '-\(days) days')
+                  AND (tier IS NULL OR tier != 'skip')
+                ORDER BY start_time DESC
+            """)
+            let grouped = Dictionary(grouping: sessions) { String($0.startTime.prefix(10)) }
+            return grouped.sorted { $0.key > $1.key }
+                .map { (date: $0.key, sessions: $0.value) }
+        }
+    }
+
+    struct ProjectGroup: Identifiable {
+        let id: String
+        let project: String
+        let sessionCount: Int
+        let lastActive: String
+        let sessions: [Session]
+    }
+
+    func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let sessions = try Session.fetchAll(db, sql: """
+                SELECT * FROM sessions
+                WHERE hidden_at IS NULL AND project IS NOT NULL
+                  AND (tier IS NULL OR tier != 'skip')
+                ORDER BY start_time DESC
+                LIMIT ?
+            """, arguments: [limit * 10])
+            let grouped = Dictionary(grouping: sessions) { $0.project ?? "(unknown)" }
+            return grouped.map { project, sessions in
+                ProjectGroup(
+                    id: project,
+                    project: project,
+                    sessionCount: sessions.count,
+                    lastActive: sessions.first?.startTime ?? "",
+                    sessions: Array(sessions.prefix(limit))
+                )
+            }
+            .sorted { $0.lastActive > $1.lastActive }
+        }
+    }
 }
