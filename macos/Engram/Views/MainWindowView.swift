@@ -56,17 +56,17 @@ struct MainWindowView: View {
         case .sessions:
             SessionsPageView()
         case .timeline:
-            StubPageView(screen: .timeline)
+            TimelinePageView()
         case .activity:
-            StubPageView(screen: .activity)
+            ActivityView()
         case .projects:
-            StubPageView(screen: .projects)
+            ProjectsView()
         case .sourcePulse:
             StubPageView(screen: .sourcePulse)
         case .skills:
             StubPageView(screen: .skills)
         case .agents:
-            StubPageView(screen: .agents)
+            AgentsView()
         case .memory:
             StubPageView(screen: .memory)
         case .hooks:
