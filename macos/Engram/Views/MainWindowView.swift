@@ -50,7 +50,7 @@ struct MainWindowView: View {
     private var detailView: some View {
         switch selectedScreen {
         case .home:
-            StubPageView(screen: .home)
+            HomeView()
         case .search:
             StubPageView(screen: .search)
         case .sessions:
