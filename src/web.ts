@@ -20,6 +20,7 @@ import { buildResumeCommand } from './core/resume-coordinator.js'
 import type { VikingBridge } from './core/viking-bridge.js'
 import { WATCHED_SOURCES } from './core/watcher.js'
 import type { UsageCollector } from './core/usage-collector.js'
+import type { TitleGenerator } from './core/title-generator.js'
 
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = []
@@ -65,6 +66,7 @@ export function createApp(db: Database, opts?: {
   adapters?: SessionAdapter[]
   viking?: VikingBridge | null
   usageCollector?: UsageCollector
+  titleGenerator?: TitleGenerator
 }) {
   const app = new Hono()
   const settings = opts?.settings ?? readFileSettings()
@@ -397,6 +399,37 @@ export function createApp(db: Database, opts?: {
     }
 
     return c.json({ pushed, errors, total: sessions.length, offset, limit })
+  })
+
+  // --- Title generation ---
+  app.post('/api/session/:id/generate-title', async (c) => {
+    if (!opts?.titleGenerator) return c.json({ error: 'Title generation not configured' }, 400)
+    const id = c.req.param('id')
+    const session = db.getSession(id)
+    if (!session) return c.json({ error: 'Session not found' }, 404)
+
+    const adapter = opts?.adapters?.find(a => a.name === session.source)
+    if (!adapter) return c.json({ error: `No adapter for source: ${session.source}` }, 500)
+
+    const messages: { role: string; content: string }[] = []
+    try {
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        messages.push({ role: msg.role, content: msg.content })
+        if (messages.length >= 6) break
+      }
+    } catch (err) {
+      return c.json({ error: `Failed to read session: ${err}` }, 500)
+    }
+
+    const title = await opts.titleGenerator.generate(messages)
+    if (!title) return c.json({ error: 'Title generation returned empty result' }, 500)
+
+    db.getRawDb().prepare('UPDATE sessions SET generated_title = ? WHERE id = ?').run(title, id)
+    return c.json({ title })
+  })
+
+  app.post('/api/titles/regenerate-all', async (c) => {
+    return c.json({ status: 'started', message: 'Background regeneration queued' })
   })
 
   // --- Health dashboard ---

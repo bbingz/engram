@@ -232,6 +232,11 @@ export class Database {
       )
     `)
 
+    const sessionCols = this.db.pragma('table_info(sessions)') as { name: string }[]
+    if (!sessionCols.some(c => c.name === 'generated_title')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN generated_title TEXT')
+    }
+
     this.runPostMigrationBackfill()
     this.backfillTiers()
   }
