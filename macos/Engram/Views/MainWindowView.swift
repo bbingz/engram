@@ -52,7 +52,7 @@ struct MainWindowView: View {
         case .home:
             HomeView()
         case .search:
-            StubPageView(screen: .search)
+            SearchPageView()
         case .sessions:
             SessionsPageView()
         case .timeline:
@@ -62,15 +62,15 @@ struct MainWindowView: View {
         case .projects:
             ProjectsView()
         case .sourcePulse:
-            StubPageView(screen: .sourcePulse)
+            SourcePulseView()
         case .skills:
-            StubPageView(screen: .skills)
+            SkillsView()
         case .agents:
             AgentsView()
         case .memory:
-            StubPageView(screen: .memory)
+            MemoryView()
         case .hooks:
-            StubPageView(screen: .hooks)
+            HooksView()
         case .settings:
             SettingsView()
         }
