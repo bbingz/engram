@@ -70,4 +70,109 @@ describe('SessionSnapshotWriter', () => {
     expect(second.action).toBe('noop')
     expect(db.listIndexJobs('sess-1')).toHaveLength(2)
   })
+
+  describe('tier-gated job dispatch', () => {
+    it('skip tier → 0 index jobs', () => {
+      const writer = new SessionSnapshotWriter(db)
+
+      writer.writeAuthoritativeSnapshot({
+        id: 'sess-skip',
+        source: 'codex',
+        authoritativeNode: 'node-a',
+        syncVersion: 1,
+        snapshotHash: 'hash-skip',
+        indexedAt: '2026-03-18T12:00:00Z',
+        sourceLocator: '/tmp/skip.jsonl',
+        startTime: '2026-03-18T11:00:00Z',
+        cwd: '/repo',
+        messageCount: 2,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        toolMessageCount: 0,
+        systemMessageCount: 0,
+        summary: 'unique summary for skip tier test',
+        tier: 'skip',
+      })
+
+      expect(db.listIndexJobs('sess-skip')).toHaveLength(0)
+    })
+
+    it('lite tier → FTS job only', () => {
+      const writer = new SessionSnapshotWriter(db)
+
+      writer.writeAuthoritativeSnapshot({
+        id: 'sess-lite',
+        source: 'codex',
+        authoritativeNode: 'node-a',
+        syncVersion: 1,
+        snapshotHash: 'hash-lite',
+        indexedAt: '2026-03-18T12:00:00Z',
+        sourceLocator: '/tmp/lite.jsonl',
+        startTime: '2026-03-18T11:00:00Z',
+        cwd: '/repo',
+        messageCount: 2,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        toolMessageCount: 0,
+        systemMessageCount: 0,
+        summary: 'unique summary for lite tier test',
+        tier: 'lite',
+      })
+
+      const jobs = db.listIndexJobs('sess-lite').map(j => j.jobKind)
+      expect(jobs).toEqual(['fts'])
+    })
+
+    it('normal tier → FTS + embedding jobs', () => {
+      const writer = new SessionSnapshotWriter(db)
+
+      writer.writeAuthoritativeSnapshot({
+        id: 'sess-normal',
+        source: 'codex',
+        authoritativeNode: 'node-a',
+        syncVersion: 1,
+        snapshotHash: 'hash-normal',
+        indexedAt: '2026-03-18T12:00:00Z',
+        sourceLocator: '/tmp/normal.jsonl',
+        startTime: '2026-03-18T11:00:00Z',
+        cwd: '/repo',
+        messageCount: 2,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        toolMessageCount: 0,
+        systemMessageCount: 0,
+        summary: 'unique summary for normal tier test',
+        tier: 'normal',
+      })
+
+      const jobs = db.listIndexJobs('sess-normal').map(j => j.jobKind).sort()
+      expect(jobs).toEqual(['embedding', 'fts'])
+    })
+
+    it('premium tier → FTS + embedding jobs', () => {
+      const writer = new SessionSnapshotWriter(db)
+
+      writer.writeAuthoritativeSnapshot({
+        id: 'sess-premium',
+        source: 'codex',
+        authoritativeNode: 'node-a',
+        syncVersion: 1,
+        snapshotHash: 'hash-premium',
+        indexedAt: '2026-03-18T12:00:00Z',
+        sourceLocator: '/tmp/premium.jsonl',
+        startTime: '2026-03-18T11:00:00Z',
+        cwd: '/repo',
+        messageCount: 2,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        toolMessageCount: 0,
+        systemMessageCount: 0,
+        summary: 'unique summary for premium tier test',
+        tier: 'premium',
+      })
+
+      const jobs = db.listIndexJobs('sess-premium').map(j => j.jobKind).sort()
+      expect(jobs).toEqual(['embedding', 'fts'])
+    })
+  })
 })

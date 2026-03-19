@@ -23,9 +23,10 @@ export class SessionSnapshotWriter {
 
       this.db.upsertAuthoritativeSnapshot(mergeResult.merged)
 
+      const tier = mergeResult.merged.tier ?? 'normal'
       const jobKinds: IndexJobKind[] = []
-      if (mergeResult.changeSet.flags.has('search_text_changed')) jobKinds.push('fts')
-      if (mergeResult.changeSet.flags.has('embedding_text_changed')) jobKinds.push('embedding')
+      if (tier !== 'skip' && mergeResult.changeSet.flags.has('search_text_changed')) jobKinds.push('fts')
+      if ((tier === 'normal' || tier === 'premium') && mergeResult.changeSet.flags.has('embedding_text_changed')) jobKinds.push('embedding')
       if (jobKinds.length > 0) {
         this.db.insertIndexJobs(snapshot.id, snapshot.syncVersion, jobKinds)
       }
