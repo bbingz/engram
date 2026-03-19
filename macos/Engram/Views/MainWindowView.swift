@@ -31,14 +31,13 @@ struct MainWindowView: View {
                     SessionDetailView(session: session)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Theme.background)
             } else {
                 detailView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Theme.background)
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .background(Theme.background)
         .onReceive(NotificationCenter.default.publisher(for: .openSession)) { notification in
             if let box = notification.object as? SessionBox {
                 selectedSession = box.session

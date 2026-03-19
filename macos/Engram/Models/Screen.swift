@@ -30,7 +30,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .timeline:    return "Timeline"
         case .activity:    return "Activity"
         case .projects:    return "Projects"
-        case .sourcePulse: return "Source Pulse"
+        case .sourcePulse: return "Sources"
         case .skills:      return "Skills"
         case .agents:      return "Agents"
         case .memory:      return "Memory"

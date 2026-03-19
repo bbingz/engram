@@ -10,10 +10,10 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Screen.Section.allCases, id: \.self) { section in
                         Text(section.rawValue)
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(Theme.tertiaryText)
                             .padding(.horizontal, 12)
-                            .padding(.top, section == .overview ? 8 : 16)
+                            .padding(.top, section == .overview ? 8 : 12)
                             .padding(.bottom, 4)
 
                         ForEach(section.screens) { screen in
@@ -52,10 +52,11 @@ private struct SidebarItem: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: screen.icon)
-                    .font(.system(size: 13))
-                    .frame(width: 20)
+                    .font(.system(size: 11))
+                    .frame(width: 18)
                 Text(screen.title)
-                    .font(.system(size: 13))
+                    .font(.system(size: 11))
+                    .lineLimit(1)
                 Spacer()
             }
             .padding(.horizontal, 12)
@@ -69,6 +70,7 @@ private struct SidebarItem: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .padding(.horizontal, 8)
     }
 }
