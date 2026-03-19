@@ -215,7 +215,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
 
         let hostingController = NSHostingController(
-            rootView: ContentView()
+            rootView: MainWindowView()
                 .environmentObject(db)
                 .environmentObject(indexer)
                 .environmentObject(daemonClient)
