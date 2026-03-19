@@ -196,22 +196,16 @@ struct PopoverView: View {
             let projectCount = (try? db.readInBackground { d in
                 try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT project) FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL")
             }) ?? 0
-            // Build noise filter SQL from settings
-            var noiseConditions = [
-                "hidden_at IS NULL",
-                "agent_role IS NULL",
-                "file_path NOT LIKE '%/subagents/%'",
-                "message_count > 1",
-            ]
-            let noiseSettings = PopoverView.readNoiseSettings()
-            if noiseSettings.hideUsage {
-                noiseConditions.append("(summary IS NULL OR summary NOT LIKE '%/usage%')")
-            }
-            if noiseSettings.hideEmpty {
-                noiseConditions.append("(summary IS NULL OR length(trim(summary)) >= 10 OR message_count > 3)")
-            }
-            if noiseSettings.hideAutoSummary {
-                noiseConditions.append("(summary IS NULL OR summary NOT LIKE '%Generate a short, clear title%')")
+            // Build tier-based filter from settings
+            let noiseFilter = PopoverView.readNoiseFilter()
+            var noiseConditions = ["hidden_at IS NULL"]
+            switch noiseFilter {
+            case "all":
+                break  // no tier filter
+            case "hide-noise":
+                noiseConditions.append("(tier IS NULL OR tier NOT IN ('skip', 'lite'))")
+            default:  // "hide-skip"
+                noiseConditions.append("(tier IS NULL OR tier != 'skip')")
             }
             let whereClause = noiseConditions.joined(separator: " AND ")
 
@@ -330,18 +324,14 @@ struct PopoverView: View {
         return groups.map { DateGroup(key: $0.0, sessions: $0.1) }
     }
 
-    // Read noise filter settings from ~/.engram/settings.json
-    private static func readNoiseSettings() -> (hideUsage: Bool, hideEmpty: Bool, hideAutoSummary: Bool) {
+    // Read noise filter setting from ~/.engram/settings.json
+    private static func readNoiseFilter() -> String {
         let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".engram/settings.json")
         guard let data = try? Data(contentsOf: path),
               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return (true, true, true) // defaults: all on
+            return "hide-skip" // default
         }
-        return (
-            hideUsage: (settings["hideUsageSessions"] as? Bool) ?? true,
-            hideEmpty: (settings["hideEmptySessions"] as? Bool) ?? true,
-            hideAutoSummary: (settings["hideAutoSummary"] as? Bool) ?? true
-        )
+        return (settings["noiseFilter"] as? String) ?? "hide-skip"
     }
 
     private func relativeTime(_ ts: String) -> String {

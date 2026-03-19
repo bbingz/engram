@@ -84,10 +84,8 @@ struct SettingsView: View {
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
     @AppStorage("showDockIcon") var showDockIcon: Bool = false
 
-    // Noise filtering
-    @State private var hideUsageSessions: Bool = true
-    @State private var hideEmptySessions: Bool = true
-    @State private var hideAutoSummary: Bool = true
+    // Noise filtering (tier-based)
+    @State private var noiseFilter: String = "hide-skip"
 
     var body: some View {
         Form {
@@ -119,22 +117,16 @@ struct SettingsView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            Section("Noise Filtering") {
-                Toggle("Hide /usage sessions", isOn: $hideUsageSessions)
-                    .onChange(of: hideUsageSessions) { saveNoiseSettings() }
-                Text("Sessions where the only action was checking token usage")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            Section("Session Filter") {
+                Picker("Session Filter", selection: $noiseFilter) {
+                    Text("Show All").tag("all")
+                    Text("Hide Agents & Noise").tag("hide-skip")
+                    Text("Clean View").tag("hide-noise")
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: noiseFilter) { saveNoiseSettings() }
 
-                Toggle("Hide empty sessions", isOn: $hideEmptySessions)
-                    .onChange(of: hideEmptySessions) { saveNoiseSettings() }
-                Text("Sessions with very short or empty summaries (< 10 chars, ≤ 3 messages)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-
-                Toggle("Hide auto-summary prompts", isOn: $hideAutoSummary)
-                    .onChange(of: hideAutoSummary) { saveNoiseSettings() }
-                Text("Sessions that are just the title generation prompt")
+                Text(noiseFilterDescription)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -684,19 +676,23 @@ struct SettingsView: View {
         if let key = viking["apiKey"] as? String { vikingApiKey = key }
     }
 
+    private var noiseFilterDescription: String {
+        switch noiseFilter {
+        case "all": return "Show all sessions including agents and noise"
+        case "hide-noise": return "Hide agents, empty sessions, and low-signal sessions"
+        default: return "Hide sub-agents and trivial sessions (default)"
+        }
+    }
+
     private func saveNoiseSettings() {
         mutateSettings { settings in
-            settings["hideUsageSessions"] = hideUsageSessions
-            settings["hideEmptySessions"] = hideEmptySessions
-            settings["hideAutoSummary"] = hideAutoSummary
+            settings["noiseFilter"] = noiseFilter
         }
     }
 
     private func loadNoiseSettings() {
         guard let settings = readSettings() else { return }
-        if let v = settings["hideUsageSessions"] as? Bool { hideUsageSessions = v }
-        if let v = settings["hideEmptySessions"] as? Bool { hideEmptySessions = v }
-        if let v = settings["hideAutoSummary"] as? Bool { hideAutoSummary = v }
+        if let v = settings["noiseFilter"] as? String { noiseFilter = v }
     }
 
     private func checkVikingStatus() {

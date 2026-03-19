@@ -96,7 +96,7 @@ class DatabaseManager: ObservableObject {
             if let since { parts.append("AND start_time >= ?"); args.append(since) }
             if let subAgent {
                 if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND agent_role IS NULL AND file_path NOT LIKE '%/subagents/%' AND message_count > 1") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
             parts.append("ORDER BY \(sort.rawValue) LIMIT ? OFFSET ?")
             args.append(limit); args.append(offset)
@@ -175,7 +175,7 @@ class DatabaseManager: ObservableObject {
             }
             if let subAgent {
                 if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND agent_role IS NULL AND file_path NOT LIKE '%/subagents/%' AND message_count > 1") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
             parts.append("ORDER BY start_time DESC LIMIT ?")
             args.append(limit)
@@ -212,7 +212,7 @@ class DatabaseManager: ObservableObject {
             }
             if let subAgent {
                 if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND agent_role IS NULL AND file_path NOT LIKE '%/subagents/%' AND message_count > 1") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
             return try Int.fetchOne(db, sql: parts.joined(separator: " "),
                                     arguments: StatementArguments(args)) ?? 0
@@ -454,7 +454,7 @@ class DatabaseManager: ObservableObject {
             }
             if let subAgent {
                 if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND agent_role IS NULL AND file_path NOT LIKE '%/subagents/%' AND message_count > 1") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
             parts.append("ORDER BY start_time DESC LIMIT ? OFFSET ?")
             args.append(limit); args.append(offset)
@@ -506,7 +506,7 @@ class DatabaseManager: ObservableObject {
             }
             if let subAgent {
                 if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND agent_role IS NULL AND file_path NOT LIKE '%/subagents/%' AND message_count > 1") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
             parts.append("GROUP BY group_key ORDER BY sort_value \(orderDir)")
 
@@ -557,7 +557,7 @@ class DatabaseManager: ObservableObject {
             }
             if let subAgent {
                 if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND agent_role IS NULL AND file_path NOT LIKE '%/subagents/%' AND message_count > 1") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
 
             parts.append("ORDER BY \(sort.rawValue) LIMIT ?")
