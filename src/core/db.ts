@@ -43,42 +43,18 @@ export interface StatsGroup {
   toolMessageCount: number
 }
 
-// Base noise filters (always applied when agents='hide')
-const NOISE_FILTER_BASE = [
-  "agent_role IS NULL AND file_path NOT LIKE '%/subagents/%'",
-  'message_count > 1',
-]
+export type NoiseFilter = 'all' | 'hide-skip' | 'hide-noise'
 
-// Optional noise filters — controlled by settings, default on
-const NOISE_FILTER_USAGE = "(summary IS NULL OR summary NOT LIKE '%/usage%')"
-const NOISE_FILTER_EMPTY = "(summary IS NULL OR length(trim(summary)) >= 10 OR message_count > 3)"
-const NOISE_FILTER_AUTO_SUMMARY = "(summary IS NULL OR summary NOT LIKE '%Generate a short, clear title%')"
-
-export interface NoiseFilterSettings {
-  hideUsageSessions?: boolean   // default: true
-  hideEmptySessions?: boolean   // default: true
-  hideAutoSummary?: boolean     // default: true
+export function buildTierFilter(filter: NoiseFilter = 'hide-skip'): string[] {
+  if (filter === 'all') return []
+  if (filter === 'hide-noise') return ["(tier IS NULL OR tier NOT IN ('skip', 'lite'))"]
+  return ["(tier IS NULL OR tier != 'skip')"]
 }
 
-/** Build noise filter SQL conditions based on settings */
-export function buildNoiseFilters(settings: NoiseFilterSettings = {}): string[] {
-  const filters = [...NOISE_FILTER_BASE]
-  if (settings.hideUsageSessions !== false) filters.push(NOISE_FILTER_USAGE)
-  if (settings.hideEmptySessions !== false) filters.push(NOISE_FILTER_EMPTY)
-  if (settings.hideAutoSummary !== false) filters.push(NOISE_FILTER_AUTO_SUMMARY)
-  return filters
-}
-
-// Default for backward compat — uses all filters
-const NOISE_FILTER_SQL = buildNoiseFilters()
-
-export function isNoiseSession(session: { agentRole?: string; filePath: string; messageCount: number; summary?: string }, settings: NoiseFilterSettings = {}): boolean {
-  if (session.agentRole || session.filePath.includes('/subagents/')) return true
-  if (session.messageCount <= 1) return true
-  if (settings.hideUsageSessions !== false && session.summary?.includes('/usage')) return true
-  if (settings.hideEmptySessions !== false && session.summary != null && session.summary.trim().length < 10 && session.messageCount <= 3) return true
-  if (settings.hideAutoSummary !== false && session.summary?.includes('Generate a short, clear title')) return true
-  return false
+export function isTierHidden(tier: string | null | undefined, filter: NoiseFilter = 'hide-skip'): boolean {
+  if (filter === 'all') return false
+  if (filter === 'hide-noise') return tier === 'skip' || tier === 'lite'
+  return tier === 'skip'
 }
 
 export interface SearchFilters {
@@ -93,7 +69,7 @@ function buildIndexJobId(sessionId: string, targetSyncVersion: number, jobKind: 
 
 export class Database {
   private db: BetterSqlite3.Database
-  noiseSettings: NoiseFilterSettings = {}
+  noiseFilter: NoiseFilter = 'hide-skip'
 
   constructor(dbPath: string) {
     this.db = new BetterSqlite3(dbPath)
@@ -825,14 +801,14 @@ export class Database {
     if (since) { conditions.push('start_time >= @since'); params.since = since }
     if (until) { conditions.push('start_time <= @until'); params.until = until }
     if (opts?.excludeNoise) {
-      conditions.push(...buildNoiseFilters(this.noiseSettings))
+      conditions.push(...buildTierFilter(this.noiseFilter))
     }
     const where = `WHERE ${conditions.join(' AND ')}`
 
-    // Exclude /usage sessions from user message count even when showing all sessions
+    // Exclude skip/lite sessions from user message count even when showing all sessions
     const userMsgExpr = opts?.excludeNoise
       ? 'SUM(user_message_count)'
-      : "SUM(CASE WHEN summary LIKE '%/usage%' OR message_count <= 1 THEN 0 ELSE user_message_count END)"
+      : "SUM(CASE WHEN tier IS NOT NULL AND tier IN ('skip', 'lite') THEN 0 ELSE user_message_count END)"
 
     return this.db.prepare(`
       SELECT ${groupExpr} as key,
@@ -908,7 +884,7 @@ export class Database {
     if ('since' in opts && opts.since) { conditions.push('start_time >= @since'); params.since = opts.since }
     if ('until' in opts && opts.until) { conditions.push('start_time <= @until'); params.until = opts.until }
     if (opts.agents === 'hide') {
-      conditions.push(...buildNoiseFilters(this.noiseSettings))
+      conditions.push(...buildTierFilter(this.noiseFilter))
     } else if (opts.agents === 'only') {
       conditions.push("(agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
     }

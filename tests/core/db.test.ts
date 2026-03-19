@@ -1,6 +1,6 @@
 // tests/core/db.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { Database, isNoiseSession } from '../../src/core/db.js'
+import { Database, isTierHidden } from '../../src/core/db.js'
 import type { SessionInfo } from '../../src/adapters/types.js'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -203,22 +203,29 @@ describe('Database', () => {
     expect(db.listIndexJobs('sess-1').map(j => j.jobKind).sort()).toEqual(['embedding', 'fts'])
   })
 
-  // --- isNoiseSession ---
+  // --- tier-based filtering ---
 
-  it('isNoiseSession identifies agent sessions', () => {
-    expect(isNoiseSession({ agentRole: 'subagent', filePath: '/f', messageCount: 10 })).toBe(true)
-    expect(isNoiseSession({ filePath: '/subagents/agent-1.jsonl', messageCount: 10 })).toBe(true)
-  })
-
-  it('isNoiseSession identifies empty and /usage sessions', () => {
-    expect(isNoiseSession({ filePath: '/f', messageCount: 0 })).toBe(true)
-    expect(isNoiseSession({ filePath: '/f', messageCount: 1 })).toBe(true)
-    expect(isNoiseSession({ filePath: '/f', messageCount: 5, summary: '\n/usage\n' })).toBe(true)
-  })
-
-  it('isNoiseSession returns false for normal sessions', () => {
-    expect(isNoiseSession({ filePath: '/f', messageCount: 10, summary: 'Fix login bug' })).toBe(false)
-    expect(isNoiseSession({ filePath: '/f', messageCount: 2 })).toBe(false)
+  describe('tier-based filtering', () => {
+    it('isTierHidden with hide-skip', () => {
+      expect(isTierHidden('skip', 'hide-skip')).toBe(true)
+      expect(isTierHidden('lite', 'hide-skip')).toBe(false)
+      expect(isTierHidden('normal', 'hide-skip')).toBe(false)
+      expect(isTierHidden('premium', 'hide-skip')).toBe(false)
+    })
+    it('isTierHidden with hide-noise', () => {
+      expect(isTierHidden('skip', 'hide-noise')).toBe(true)
+      expect(isTierHidden('lite', 'hide-noise')).toBe(true)
+      expect(isTierHidden('normal', 'hide-noise')).toBe(false)
+      expect(isTierHidden('premium', 'hide-noise')).toBe(false)
+    })
+    it('isTierHidden with all', () => {
+      expect(isTierHidden('skip', 'all')).toBe(false)
+      expect(isTierHidden('lite', 'all')).toBe(false)
+    })
+    it('isTierHidden with null/undefined tier', () => {
+      expect(isTierHidden(null, 'hide-skip')).toBe(false)
+      expect(isTierHidden(undefined, 'hide-skip')).toBe(false)
+    })
   })
 
   // --- Project aliases ---

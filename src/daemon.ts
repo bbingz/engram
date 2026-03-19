@@ -21,12 +21,8 @@ const adapters = createAdapters()
 const settings = readFileSettings()
 const authoritativeNode = settings.syncNodeName ?? 'local'
 
-// Apply noise filter settings
-db.noiseSettings = {
-  hideUsageSessions: settings.hideUsageSessions,
-  hideEmptySessions: settings.hideEmptySessions,
-  hideAutoSummary: settings.hideAutoSummary,
-}
+// Apply tier-based noise filter
+db.noiseFilter = (settings.noiseFilter as any) ?? 'hide-skip'
 
 // Viking bridge — optional external context engine
 const vikingBridge = initViking(settings)

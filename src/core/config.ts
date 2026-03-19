@@ -74,6 +74,7 @@ export interface FileSettings {
   syncEnabled?: boolean;
 
   // ── Noise filtering ──────────────────────────────────────────────
+  noiseFilter?: 'all' | 'hide-skip' | 'hide-noise';
   hideUsageSessions?: boolean;    // hide /usage check sessions (default: true)
   hideEmptySessions?: boolean;    // hide summary < 10 chars && <= 3 messages (default: true)
   hideAutoSummary?: boolean;      // hide auto-summary prompt leaks (default: true)
@@ -183,6 +184,11 @@ export function readFileSettings(): FileSettings {
         mkdirSync(CONFIG_DIR, { recursive: true });
         writeFileSync(CONFIG_FILE, JSON.stringify(migrated, null, 2), 'utf-8');
       } catch { /* best-effort */ }
+    }
+    // Migrate legacy noise toggles → unified noiseFilter
+    if (migrated.noiseFilter === undefined) {
+      const hasExplicitFalse = migrated.hideUsageSessions === false || migrated.hideEmptySessions === false || migrated.hideAutoSummary === false
+      migrated.noiseFilter = hasExplicitFalse ? 'all' : 'hide-skip'
     }
     return migrated;
   } catch {

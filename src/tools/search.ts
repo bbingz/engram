@@ -1,5 +1,5 @@
 // src/tools/search.ts
-import { isNoiseSession, type Database, type SearchFilters } from '../core/db.js'
+import { isTierHidden, type Database, type SearchFilters } from '../core/db.js'
 import type { SessionInfo, SourceName } from '../adapters/types.js'
 import type { VectorStore } from '../core/vector-store.js'
 import { sessionIdFromVikingUri, type VikingBridge } from '../core/viking-bridge.js'
@@ -147,7 +147,7 @@ export async function handleSearch(
     if (results.length >= limit) break
     const session = db.getSession(m.sessionId)
     if (!session) continue
-    if (params.agents === 'hide' && isNoiseSession(session, db.noiseSettings)) continue
+    if (params.agents === 'hide' && isTierHidden(session.tier, db.noiseFilter)) continue
     if (params.tools === 'hide' && session.toolMessageCount > 0 && session.userMessageCount === 0) continue
     // Semantic-only results need JS-level filtering (sqlite-vec can't JOIN)
     if (m.matchType === 'semantic') {

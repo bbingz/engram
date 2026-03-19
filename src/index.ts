@@ -38,12 +38,8 @@ const fileSettings = readFileSettings()
 const vikingBridge = initViking(fileSettings)
 const authoritativeNode = fileSettings.syncNodeName ?? 'local'
 
-// Apply noise filter settings
-db.noiseSettings = {
-  hideUsageSessions: fileSettings.hideUsageSessions,
-  hideEmptySessions: fileSettings.hideEmptySessions,
-  hideAutoSummary: fileSettings.hideAutoSummary,
-}
+// Apply tier-based noise filter
+db.noiseFilter = (fileSettings.noiseFilter as any) ?? 'hide-skip'
 
 const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode })
 
