@@ -388,22 +388,11 @@ struct SourceBadge: View {
     let source: String
 
     private var label: String {
-        let map: [String: String] = [
-            "claude-code": "Claude", "codex": "Codex", "copilot": "Copilot",
-            "gemini-cli": "Gemini", "kimi": "Kimi", "qwen": "Qwen",
-            "minimax": "MiniMax", "lobsterai": "Lobster", "cline": "Cline",
-            "cursor": "Cursor", "windsurf": "Windsurf", "antigravity": "Antigravity",
-            "opencode": "OpenCode", "iflow": "iFlow", "vscode": "VS Code",
-        ]
-        return map[source] ?? source
+        SourceColors.label(for: source)
     }
 
     private var color: Color {
-        let map: [String: Color] = [
-            "claude-code": .orange, "codex": .green, "copilot": .gray,
-            "gemini-cli": .cyan, "cursor": .blue, "cline": .teal,
-        ]
-        return map[source] ?? .secondary
+        SourceColors.color(for: source)
     }
 
     var body: some View {

@@ -25,22 +25,7 @@ enum SourceDisplay {
     }
 
     static func color(for source: String) -> Color {
-        switch source {
-        case "claude-code":            return .orange
-        case "codex":                  return .green
-        case "cursor":                 return .blue
-        case "gemini-cli", "antigravity": return .cyan
-        case "copilot":                return .gray
-        case "opencode":               return .indigo
-        case "iflow":                  return .purple
-        case "qwen":                   return .teal
-        case "kimi":                   return .pink
-        case "cline":                  return .mint
-        case "minimax":                return .red
-        case "lobsterai":              return .yellow
-        case "windsurf":               return .brown
-        default:                       return .gray
-        }
+        SourceColors.color(for: source)
     }
 }
 
