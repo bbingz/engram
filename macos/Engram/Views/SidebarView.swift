@@ -31,6 +31,11 @@ struct SidebarView: View {
             Divider()
                 .opacity(0.2)
 
+            // Theme toggle
+            ThemeToggleButton()
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+
             // Pinned Settings button
             SidebarItem(
                 screen: .settings,
@@ -40,6 +45,50 @@ struct SidebarView: View {
             .padding(.vertical, 8)
         }
         .frame(minWidth: 160, maxWidth: 160)
+    }
+}
+
+private struct ThemeToggleButton: View {
+    @AppStorage("appTheme") var appTheme: String = "system"
+
+    private var icon: String {
+        switch appTheme {
+        case "light": return "sun.max.fill"
+        case "dark": return "moon.fill"
+        default: return "circle.lefthalf.filled"
+        }
+    }
+
+    private var label: String {
+        switch appTheme {
+        case "light": return "Light"
+        case "dark": return "Dark"
+        default: return "System"
+        }
+    }
+
+    var body: some View {
+        Button {
+            switch appTheme {
+            case "system": appTheme = "light"
+            case "light": appTheme = "dark"
+            default: appTheme = "system"
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .frame(width: 18)
+                Text(label)
+                    .font(.system(size: 11))
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .foregroundStyle(Theme.secondaryText)
+        }
+        .buttonStyle(.plain)
+        .help("Toggle theme: System → Light → Dark")
     }
 }
 
