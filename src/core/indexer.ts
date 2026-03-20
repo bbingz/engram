@@ -3,6 +3,7 @@ import { createHash } from 'crypto'
 import { stat } from 'fs/promises'
 import type { SessionAdapter, SessionInfo } from '../adapters/types.js'
 import type { Database } from './db.js'
+import { computeCost } from './pricing.js'
 import { resolveProjectName } from './project.js'
 import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
 import { computeTier, type SessionTier } from './session-tier.js'
@@ -51,6 +52,16 @@ export class Indexer {
     const title = await titleGenerator.generate(msgs)
     if (title) {
       this.db.getRawDb().prepare('UPDATE sessions SET generated_title = ? WHERE id = ?').run(title, sessionId)
+    }
+  }
+
+  private writeExtractedData(sessionId: string, model: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, toolCounts: Map<string, number>): void {
+    if (inputTokens > 0 || outputTokens > 0) {
+      const cost = computeCost(model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+      this.db.upsertSessionCost(sessionId, model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, cost)
+    }
+    if (toolCounts.size > 0) {
+      this.db.upsertSessionTools(sessionId, toolCounts)
     }
   }
 
@@ -146,15 +157,35 @@ export class Indexer {
           }
 
           const messages: { role: string; content: string }[] = []
+          let totalInputTokens = 0
+          let totalOutputTokens = 0
+          let totalCacheReadTokens = 0
+          let totalCacheCreationTokens = 0
+          const toolCounts = new Map<string, number>()
+
           for await (const msg of adapter.streamMessages(filePath)) {
             if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
               messages.push({ role: msg.role, content: msg.content })
+            }
+            if (msg.usage) {
+              totalInputTokens += msg.usage.inputTokens
+              totalOutputTokens += msg.usage.outputTokens
+              totalCacheReadTokens += msg.usage.cacheReadTokens ?? 0
+              totalCacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
+            }
+            if (msg.toolCalls) {
+              for (const tc of msg.toolCalls) {
+                toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1)
+              }
             }
           }
 
           const current = this.db.getAuthoritativeSnapshot(info.id)
           const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
           this.writer.writeAuthoritativeSnapshot(snapshot)
+
+          // Write cost and tool data
+          this.writeExtractedData(info.id, info.model || '', totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens, toolCounts)
 
           if (snapshot.tier === 'premium') {
             this.pushToViking(info, messages)
@@ -201,6 +232,38 @@ export class Indexer {
     return count
   }
 
+  // Backfill costs and tools for sessions that have no session_costs row
+  async backfillCosts(): Promise<number> {
+    const ids = this.db.sessionsWithoutCosts()
+    let count = 0
+    for (const id of ids) {
+      const session = this.db.getSession(id)
+      if (!session?.filePath) continue
+      const adapter = this.adapters.find(a => a.name === session.source)
+      if (!adapter) continue
+      try {
+        let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreationTokens = 0
+        const toolCounts = new Map<string, number>()
+        for await (const msg of adapter.streamMessages(session.filePath)) {
+          if (msg.usage) {
+            inputTokens += msg.usage.inputTokens
+            outputTokens += msg.usage.outputTokens
+            cacheReadTokens += msg.usage.cacheReadTokens ?? 0
+            cacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
+          }
+          if (msg.toolCalls) {
+            for (const tc of msg.toolCalls) {
+              toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1)
+            }
+          }
+        }
+        this.writeExtractedData(id, session.model || '', inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, toolCounts)
+        count++
+      } catch { /* skip failed sessions */ }
+    }
+    return count
+  }
+
   // 索引单个文件（文件变化时增量更新用）
   async indexFile(adapter: SessionAdapter, filePath: string): Promise<{ indexed: boolean; sessionId?: string; messageCount?: number; tier?: SessionTier }> {
     try {
@@ -215,15 +278,35 @@ export class Indexer {
       }
 
       const messages: { role: string; content: string }[] = []
+      let totalInputTokens = 0
+      let totalOutputTokens = 0
+      let totalCacheReadTokens = 0
+      let totalCacheCreationTokens = 0
+      const toolCounts = new Map<string, number>()
+
       for await (const msg of adapter.streamMessages(filePath)) {
         if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
           messages.push({ role: msg.role, content: msg.content })
+        }
+        if (msg.usage) {
+          totalInputTokens += msg.usage.inputTokens
+          totalOutputTokens += msg.usage.outputTokens
+          totalCacheReadTokens += msg.usage.cacheReadTokens ?? 0
+          totalCacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
+        }
+        if (msg.toolCalls) {
+          for (const tc of msg.toolCalls) {
+            toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1)
+          }
         }
       }
 
       const current = this.db.getAuthoritativeSnapshot(info.id)
       const snapshot = this.buildLocalAuthoritativeSnapshot(current, { ...info, sizeBytes: info.sizeBytes || fileSize }, filePath, messages)
       this.writer.writeAuthoritativeSnapshot(snapshot)
+
+      // Write cost and tool data
+      this.writeExtractedData(info.id, info.model || '', totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens, toolCounts)
 
       if (snapshot.tier === 'premium') {
         this.pushToViking(info, messages)
