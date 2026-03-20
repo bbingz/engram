@@ -3,10 +3,11 @@
 // Outputs JSON lines to stdout for the Swift app to parse.
 // Usage: node dist/daemon.js [db-path]
 import { join } from 'path'
+// os/homedir no longer needed — getWatchEntries() handles it internally
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { IndexJobRunner } from './core/index-job-runner.js'
-import { startWatcher, WATCHED_SOURCES } from './core/watcher.js'
+import { startWatcher, WATCHED_SOURCES, getWatchEntries } from './core/watcher.js'
 import { ensureDataDirs, createAdapters, initVectorDeps, initViking } from './core/bootstrap.js'
 import { createApp } from './web.js'
 import { readFileSettings, type FileSettings } from './core/config.js'
@@ -16,6 +17,9 @@ import { summarizeConversation } from './core/ai-client.js'
 import { startGitProbeLoop } from './core/git-probe.js'
 import { UsageCollector } from './core/usage-collector.js'
 import { TitleGenerator } from './core/title-generator.js'
+import { LiveSessionMonitor, type WatchDir } from './core/live-sessions.js'
+import { BackgroundMonitor } from './core/monitor.js'
+import { populateMockData } from './core/mock-data.js'
 
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
@@ -26,6 +30,9 @@ const authoritativeNode = settings.syncNodeName ?? 'local'
 
 // Apply tier-based noise filter
 db.noiseFilter = settings.noiseFilter ?? 'hide-skip'
+
+// Build watch directories for live session detection (reuse canonical entries from watcher)
+const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({ path, source }))
 
 // Viking bridge — optional external context engine
 const vikingBridge = initViking(settings)
@@ -65,6 +72,15 @@ if (!vecDeps) {
   emit({ event: 'warning', message: 'Vector store unavailable' })
 }
 const indexJobRunner = new IndexJobRunner(db, vecDeps?.vectorStore, vecDeps?.embeddingClient)
+
+// Handle --mock flag for development
+if (process.argv.includes('--mock')) {
+  populateMockData(db).then(stats => {
+    emit({ event: 'mock_data', ...stats })
+  }).catch(err => {
+    emit({ event: 'error', message: `Mock data failed: ${String(err)}` })
+  })
+}
 
 // Initial full scan
 indexer.indexAll().then(async (indexed) => {
@@ -180,6 +196,19 @@ const watcher = startWatcher(adapters, indexer, {
   },
 })
 
+// Live session monitor — detects active coding sessions via file mtime
+const liveMonitor = new LiveSessionMonitor({ watchDirs })
+liveMonitor.start(5000)
+
+// Background monitor — periodic health checks + alerts
+const monitorConfig = settings.monitor ?? { enabled: true }
+const backgroundMonitor = new BackgroundMonitor(db, monitorConfig, (alert) => {
+  emit({ event: 'alert', alert })
+}, liveMonitor)
+if (monitorConfig.enabled) {
+  backgroundMonitor.start(600_000) // every 10 minutes
+}
+
 // Periodic re-scan every 10 minutes — only for non-watchable sources
 // (SQLite-based: Cursor, OpenCode, VS Code, Windsurf, Copilot)
 const RESCAN_INTERVAL = 10 * 60 * 1000
@@ -226,6 +255,8 @@ const app = createApp(db, {
   viking: vikingBridge,
   usageCollector,
   titleGenerator,
+  liveMonitor,
+  backgroundMonitor,
 })
 const { serve } = await import('@hono/node-server')
 const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
@@ -250,6 +281,8 @@ function shutdown() {
   clearInterval(rescanTimer)
   if (syncTimer) clearInterval(syncTimer)
   clearInterval(gitProbeTimer)
+  liveMonitor.stop()
+  backgroundMonitor.stop()
   autoSummary?.cleanup()
   watcher?.close()
   webServer.close()

@@ -24,6 +24,14 @@ export interface VikingSettings {
   enabled?: boolean;
 }
 
+export interface MonitorConfig {
+  enabled: boolean
+  dailyCostBudget?: number        // USD, default 20
+  longSessionMinutes?: number     // default 180
+  notifyOnCostThreshold?: boolean // default true
+  notifyOnLongSession?: boolean   // default true
+}
+
 export interface FileSettings {
   // ── Unified AI provider ───────────────────────────────────────────
   aiProtocol?: AiProtocol;
@@ -81,6 +89,12 @@ export interface FileSettings {
 
   // ── OpenViking ──────────────────────────────────────────────────
   viking?: VikingSettings;
+
+  // ── Background monitor ────────────────────────────────────────────
+  monitor?: MonitorConfig;
+
+  // ── Dev mode ──────────────────────────────────────────────────────
+  devMode?: boolean;
 
   // ── Title generation ─────────────────────────────────────────────
   titleProvider?: 'ollama' | 'openai' | 'dashscope' | 'custom';
