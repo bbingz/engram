@@ -30,6 +30,8 @@ import { getMemoryTool, handleGetMemory } from './tools/get_memory.js'
 import { getCostsTool, handleGetCosts } from './tools/get_costs.js'
 import { toolAnalyticsTool, handleToolAnalytics } from './tools/tool_analytics.js'
 import { handoffTool, handleHandoff } from './tools/handoff.js'
+import { liveSessionsTool, handleLiveSessions } from './tools/live_sessions.js'
+import { lintConfigTool, handleLintConfig } from './tools/lint_config.js'
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
@@ -88,6 +90,8 @@ const allTools = [
   getCostsTool,
   toolAnalyticsTool,
   handoffTool,
+  liveSessionsTool,
+  lintConfigTool,
 ]
 
 const server = new Server(
@@ -164,6 +168,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string })
     } else if (name === 'handoff') {
       result = await handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' }, adapters)
+    } else if (name === 'live_sessions') {
+      result = handleLiveSessions(null) // No live monitor in MCP server mode
+    } else if (name === 'lint_config') {
+      if (!a.cwd) return { content: [{ type: 'text', text: 'cwd parameter required' }], isError: true }
+      result = await handleLintConfig({ cwd: a.cwd as string })
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }

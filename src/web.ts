@@ -24,6 +24,10 @@ import type { VikingBridge } from './core/viking-bridge.js'
 import { WATCHED_SOURCES } from './core/watcher.js'
 import type { UsageCollector } from './core/usage-collector.js'
 import type { TitleGenerator } from './core/title-generator.js'
+import type { LiveSessionMonitor } from './core/live-sessions.js'
+import type { BackgroundMonitor } from './core/monitor.js'
+import { populateMockData, clearMockData } from './core/mock-data.js'
+import { handleLintConfig } from './tools/lint_config.js'
 
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = []
@@ -70,6 +74,8 @@ export function createApp(db: Database, opts?: {
   viking?: VikingBridge | null
   usageCollector?: UsageCollector
   titleGenerator?: TitleGenerator
+  liveMonitor?: LiveSessionMonitor
+  backgroundMonitor?: BackgroundMonitor
 }) {
   const app = new Hono()
   const settings = opts?.settings ?? readFileSettings()
@@ -930,6 +936,47 @@ export function createApp(db: Database, opts?: {
       }
     }
     return c.html(sessionDetailPage(session, messages))
+  })
+
+  // --- Live Sessions API ---
+  app.get('/api/live', (c) => {
+    const sessions = opts?.liveMonitor?.getSessions() ?? []
+    return c.json({ sessions, count: sessions.length })
+  })
+
+  // --- Monitor Alerts API ---
+  app.get('/api/monitor/alerts', (c) => {
+    const alerts = opts?.backgroundMonitor?.getAlerts() ?? []
+    const undismissed = alerts.filter(a => !a.dismissed)
+    return c.json({ alerts: undismissed, total: alerts.length })
+  })
+
+  app.post('/api/monitor/alerts/:id/dismiss', (c) => {
+    const id = c.req.param('id')
+    opts?.backgroundMonitor?.dismissAlert(id)
+    return c.json({ dismissed: id })
+  })
+
+  // --- Dev Mode API ---
+  app.post('/api/dev/mock', async (c) => {
+    if (!settings.devMode) return c.json({ error: 'Dev mode not enabled' }, 403)
+    const stats = await populateMockData(db)
+    return c.json(stats)
+  })
+
+  app.delete('/api/dev/mock', (c) => {
+    if (!settings.devMode) return c.json({ error: 'Dev mode not enabled' }, 403)
+    const cleared = clearMockData(db)
+    return c.json({ cleared })
+  })
+
+  // --- Config Linter API ---
+  app.post('/api/lint', async (c) => {
+    const body = await c.req.json().catch(() => ({}))
+    const cwd = (body as Record<string, unknown>).cwd as string | undefined
+    if (!cwd) return c.json({ error: 'cwd required' }, 400)
+    const result = await handleLintConfig({ cwd })
+    return c.json(result)
   })
 
   return app
