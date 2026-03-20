@@ -29,6 +29,7 @@ import { linkSessionsTool, handleLinkSessions } from './tools/link_sessions.js'
 import { getMemoryTool, handleGetMemory } from './tools/get_memory.js'
 import { getCostsTool, handleGetCosts } from './tools/get_costs.js'
 import { toolAnalyticsTool, handleToolAnalytics } from './tools/tool_analytics.js'
+import { handoffTool, handleHandoff } from './tools/handoff.js'
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
@@ -86,6 +87,7 @@ const allTools = [
   getMemoryTool,
   getCostsTool,
   toolAnalyticsTool,
+  handoffTool,
 ]
 
 const server = new Server(
@@ -160,6 +162,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = handleGetCosts(db, a as { group_by?: string; since?: string; until?: string })
     } else if (name === 'tool_analytics') {
       result = handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string })
+    } else if (name === 'handoff') {
+      result = await handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' }, adapters)
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }

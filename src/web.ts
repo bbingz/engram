@@ -13,6 +13,7 @@ import { handleSearch, type SearchDeps } from './tools/search.js'
 import { handleStats } from './tools/stats.js'
 import { handleGetCosts } from './tools/get_costs.js'
 import { handleToolAnalytics } from './tools/tool_analytics.js'
+import { handleHandoff } from './tools/handoff.js'
 import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage, healthPage } from './web/views.js'
 import type { VectorStore } from './core/vector-store.js'
 import type { EmbeddingClient } from './core/embeddings.js'
@@ -181,6 +182,100 @@ export function createApp(db: Database, opts?: {
       return c.json({ error: 'Session not found' }, 404)
     }
     return c.json(session)
+  })
+
+  // Session timeline for replay
+  app.get('/api/sessions/:id/timeline', async (c) => {
+    const session = db.getSession(c.req.param('id'))
+    if (!session) return c.json({ error: 'Session not found' }, 404)
+
+    const adapter = opts?.adapters?.find(a => a.name === session.source)
+    if (!adapter) return c.json({ error: `No adapter for source: ${session.source}` }, 500)
+
+    const limitParam = c.req.query('limit')
+    const offsetParam = c.req.query('offset')
+    const limit = limitParam ? parseInt(limitParam, 10) : undefined
+    if (limit !== undefined && (isNaN(limit) || limit < 1)) return c.json({ error: 'limit must be a positive integer' }, 400)
+    const clampedLimit = limit !== undefined ? Math.min(limit, 500) : undefined
+    const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+    if (isNaN(offset) || offset < 0) return c.json({ error: 'offset must be a non-negative integer' }, 400)
+
+    const entries: Array<{
+      index: number
+      timestamp: string | undefined
+      role: string
+      type: string
+      preview: string
+      toolName?: string
+      durationToNextMs?: number
+      tokens?: { input: number; output: number }
+    }> = []
+
+    // When limit is set, collect limit + 1 entries to determine hasMore accurately.
+    // If we get limit + 1, pop the last and set hasMore = true.
+    const collectTarget = clampedLimit !== undefined ? clampedLimit + 1 : undefined
+
+    try {
+      let idx = 0
+      let collected = 0
+      let prevTimestamp: string | undefined
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        if (idx < offset) {
+          idx++
+          prevTimestamp = msg.timestamp
+          // NOTE: durationToNextMs for the first entry after offset > 0 will be
+          // computed relative to the last skipped message's timestamp, which is
+          // correct. However the skipped entry itself won't have durationToNextMs
+          // set — acceptable limitation for v1 pagination.
+          continue
+        }
+        if (collectTarget !== undefined && collected >= collectTarget) {
+          break
+        }
+        const entry: typeof entries[0] = {
+          index: idx,
+          timestamp: msg.timestamp,
+          role: msg.role,
+          type: msg.role === 'tool' ? 'tool_result'
+              : msg.toolCalls?.length ? 'tool_use'
+              : 'message',
+          preview: msg.content.slice(0, 100),
+        }
+        if (msg.toolCalls?.length) {
+          entry.toolName = msg.toolCalls[0].name
+        }
+        if (msg.usage) {
+          entry.tokens = {
+            input: msg.usage.inputTokens,
+            output: msg.usage.outputTokens,
+          }
+        }
+        // Compute gap to previous entry
+        if (prevTimestamp && msg.timestamp) {
+          const gap = new Date(msg.timestamp).getTime() - new Date(prevTimestamp).getTime()
+          if (entries.length > 0) entries[entries.length - 1].durationToNextMs = gap
+        }
+        prevTimestamp = msg.timestamp
+        entries.push(entry)
+        idx++
+        collected++
+      }
+    } catch (err) {
+      return c.json({ error: `Failed to read session: ${err}` }, 500)
+    }
+
+    // If we collected more than the requested limit, there are more entries
+    const hasMore = clampedLimit !== undefined && entries.length > clampedLimit
+    if (hasMore) entries.pop()
+
+    return c.json({
+      sessionId: session.id,
+      source: session.source,
+      totalEntries: session.messageCount || entries.length,
+      entries,
+      ...(offset > 0 ? { offset } : {}),
+      ...(clampedLimit !== undefined ? { limit: clampedLimit, hasMore } : {}),
+    })
   })
 
   // Session resume — detect CLI tool and build resume command
@@ -367,6 +462,31 @@ export function createApp(db: Database, opts?: {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return c.json({ error: msg }, 500)
+    }
+  })
+
+  // --- Handoff brief generation ---
+  app.post('/api/handoff', async (c) => {
+    const body = await c.req.json().catch(() => ({}))
+    const cwd = (body as Record<string, unknown>).cwd as string | undefined
+    if (!cwd) {
+      return c.json({ error: 'Missing required field: cwd' }, 400)
+    }
+    const sessionId = (body as Record<string, unknown>).sessionId as string | undefined
+    const format = (body as Record<string, unknown>).format as string | undefined
+    const validFormats = ['markdown', 'plain']
+    if (format && !validFormats.includes(format)) {
+      return c.json({ error: `Invalid format: ${format}. Must be one of: ${validFormats.join(', ')}` }, 400)
+    }
+    try {
+      const result = await handleHandoff(db, {
+        cwd,
+        sessionId,
+        format: format as 'markdown' | 'plain' | undefined,
+      }, opts?.adapters)
+      return c.json(result)
+    } catch (err) {
+      return c.json({ error: `Handoff failed: ${err}` }, 500)
     }
   })
 
