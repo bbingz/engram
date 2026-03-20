@@ -62,8 +62,10 @@ struct SessionListView: View {
             .map { (name: $0.key, count: $0.value) }
     }
 
-    /// Sessions filtered by source pills + project selection
-    private var filteredSessions: [Session] {
+    @State private var filteredSessions: [Session] = []
+
+    /// Recompute filtered sessions from current state
+    private func updateFilteredSessions() {
         var result = sessions
         if !selectedSources.isEmpty {
             result = result.filter { selectedSources.contains($0.source) }
@@ -71,8 +73,7 @@ struct SessionListView: View {
         if let proj = selectedProject {
             result = result.filter { $0.project == proj }
         }
-        // Apply table sort
-        return result.sorted(using: sortOrder)
+        filteredSessions = result.sorted(using: sortOrder)
     }
 
     /// Selected session object
@@ -96,6 +97,7 @@ struct SessionListView: View {
         }
         .task {
             await loadSessions()
+            updateFilteredSessions()
             await loadFavorites()
             if let session = deepLinkSession {
                 handleDeepLink(session)
@@ -107,8 +109,12 @@ struct SessionListView: View {
                 try? await Task.sleep(for: .milliseconds(150))
                 guard !Task.isCancelled else { return }
                 await loadSessions()
+                updateFilteredSessions()
             }
         }
+        .onChange(of: selectedSourcesStr) { _, _ in updateFilteredSessions() }
+        .onChange(of: selectedProject) { _, _ in updateFilteredSessions() }
+        .onChange(of: sortOrder) { _, _ in updateFilteredSessions() }
         .onChange(of: deepLinkSession) { _, session in
             handleDeepLink(session)
         }
