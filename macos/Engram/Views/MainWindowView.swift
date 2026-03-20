@@ -15,28 +15,65 @@ struct MainWindowView: View {
             SidebarView(selectedScreen: $selectedScreen)
         } detail: {
             ZStack(alignment: .top) {
-                VStack(spacing: 0) {
-                    TopBarView(
-                        showSearch: $showSearch,
-                        selectedSession: selectedSession,
-                        onResume: { resumeSelectedSession() }
-                    )
-                    Divider()
-
-                    if let session = selectedSession {
-                        SessionDetailView(session: session, onBack: { selectedSession = nil })
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        detailView
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
+                if let session = selectedSession {
+                    SessionDetailView(session: session, onBack: { selectedSession = nil })
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    detailView
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
                 if showSearch {
                     GlobalSearchOverlay(isVisible: $showSearch) { sessionId in
                         navigateToSession(id: sessionId)
                     }
-                    .padding(.top, 46) // below TopBarView
+                    .padding(.top, 8)
+                }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 8) {
+                    // Search button
+                    Button { showSearch.toggle() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 11))
+                            Text("Search sessions...")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Text("⌘K")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.secondary.opacity(0.1))
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.15)))
+                    }
+                    .buttonStyle(.plain)
+
+                    // Resume button
+                    Button(action: { resumeSelectedSession() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 8))
+                            Text("Resume")
+                                .font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(selectedSession != nil ? Color.green.opacity(0.15) : Color.secondary.opacity(0.06))
+                        .foregroundStyle(selectedSession != nil ? .green : .secondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedSession == nil)
                 }
             }
         }
