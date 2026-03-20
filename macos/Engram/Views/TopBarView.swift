@@ -33,6 +33,7 @@ struct TopBarView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
             }
             .buttonStyle(.plain)
+            .focusEffectDisabled()
 
             // Resume button
             Button(action: onResume) {

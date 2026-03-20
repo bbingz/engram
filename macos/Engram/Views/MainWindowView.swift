@@ -42,6 +42,10 @@ struct MainWindowView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
+        .onChange(of: selectedScreen) { _, _ in
+            // Clear session detail when navigating to a different page
+            selectedSession = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openSession)) { notification in
             if let box = notification.object as? SessionBox {
                 selectedSession = box.session
