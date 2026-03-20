@@ -4,7 +4,7 @@ import { stat, readdir } from 'fs/promises'
 import { createInterface } from 'readline'
 import { homedir } from 'os'
 import { join } from 'path'
-import type { SessionAdapter, SessionInfo, Message, StreamMessagesOptions } from './types.js'
+import type { SessionAdapter, SessionInfo, Message, StreamMessagesOptions, TokenUsage, ToolCall } from './types.js'
 
 export class ClaudeCodeAdapter implements SessionAdapter {
   readonly name = 'claude-code' as const
@@ -170,11 +170,40 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       count++
 
       const msg = obj.message as Record<string, unknown>
-      yield {
-        role: type as 'user' | 'assistant',
-        content: this.extractContent(msg?.content),
-        timestamp: obj.timestamp as string | undefined,
+      const role = type as 'user' | 'assistant'
+      const content = this.extractContent(msg?.content)
+      const timestamp = obj.timestamp as string | undefined
+
+      // Extract usage from message object
+      let usage: TokenUsage | undefined
+      let toolCalls: ToolCall[] | undefined
+
+      if (msg && typeof msg === 'object') {
+        // Extract usage
+        const rawUsage = (msg as any).usage
+        if (rawUsage && typeof rawUsage === 'object') {
+          usage = {
+            inputTokens: rawUsage.input_tokens ?? 0,
+            outputTokens: rawUsage.output_tokens ?? 0,
+            cacheReadTokens: rawUsage.cache_read_input_tokens,
+            cacheCreationTokens: rawUsage.cache_creation_input_tokens,
+          }
+        }
+
+        // Extract toolCalls from content array
+        const rawContent = (msg as any).content
+        if (Array.isArray(rawContent)) {
+          const calls = rawContent
+            .filter((c: any) => c.type === 'tool_use' && c.name)
+            .map((c: any) => ({
+              name: c.name as string,
+              input: c.input ? JSON.stringify(c.input).slice(0, 500) : undefined,
+            }))
+          if (calls.length > 0) toolCalls = calls
+        }
       }
+
+      yield { role, content, timestamp, usage, toolCalls }
       yielded++
     }
   }
