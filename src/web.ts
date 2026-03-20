@@ -429,7 +429,68 @@ export function createApp(db: Database, opts?: {
   })
 
   app.post('/api/titles/regenerate-all', async (c) => {
-    return c.json({ status: 'started', message: 'Background regeneration queued' })
+    if (!opts?.titleGenerator) return c.json({ error: 'Title generation not configured' }, 400)
+
+    const titleGenerator = opts.titleGenerator
+    const adapters = opts.adapters
+
+    // Get sessions needing titles
+    const sessions = db.getRawDb().prepare(`
+      SELECT id, source, file_path, message_count, tier
+      FROM sessions
+      WHERE (generated_title IS NULL OR generated_title = '')
+        AND message_count >= 2
+        AND (tier IS NULL OR tier NOT IN ('skip', 'lite'))
+      ORDER BY start_time DESC
+      LIMIT 500
+    `).all() as { id: string; source: string; file_path: string; message_count: number; tier: string | null }[]
+
+    const count = sessions.length
+
+    // Run in background (don't await)
+    ;(async () => {
+      let generated = 0
+      const isOllama = (titleGenerator as any).config?.provider === 'ollama'
+
+      for (const session of sessions) {
+        try {
+          if (!session.file_path) continue
+
+          const adapter = adapters?.find(a => a.name === session.source)
+          if (!adapter) continue
+
+          const messages: { role: string; content: string }[] = []
+          try {
+            for await (const msg of adapter.streamMessages(session.file_path)) {
+              if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
+                messages.push({ role: msg.role, content: msg.content })
+              }
+              if (messages.length >= 6) break
+            }
+          } catch {
+            continue
+          }
+
+          if (messages.length < 2) continue
+
+          const title = await titleGenerator.generate(messages)
+          if (title) {
+            db.getRawDb().prepare('UPDATE sessions SET generated_title = ? WHERE id = ?').run(title, session.id)
+            generated++
+          }
+
+          // Rate limit: 1 req/sec for non-Ollama providers
+          if (!isOllama) {
+            await new Promise(r => setTimeout(r, 1000))
+          }
+        } catch (err) {
+          console.error(`[title-regen] Error for ${session.id}:`, err)
+        }
+      }
+      console.log(`[title-regen] Completed: ${generated}/${count} titles generated`)
+    })()
+
+    return c.json({ status: 'started', total: count, message: `Regenerating titles for ${count} sessions in background` })
   })
 
   // --- Health dashboard ---

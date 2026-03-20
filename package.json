@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "engram": "dist/index.js"
+    "engram": "dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc",
