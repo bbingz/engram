@@ -31,11 +31,19 @@ export interface ToolCall {
   output?: string
 }
 
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
+}
+
 export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   timestamp?: string
   toolCalls?: ToolCall[]
+  usage?: TokenUsage
 }
 
 export interface StreamMessagesOptions {
