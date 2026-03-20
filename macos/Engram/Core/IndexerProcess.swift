@@ -39,12 +39,21 @@ class IndexerProcess: ObservableObject {
         }
     }
 
+    struct UsageItem: Identifiable {
+        var id: String { "\(source)_\(metric)" }
+        let source: String
+        let metric: String
+        let value: Double   // 0-100
+        let resetAt: String?
+    }
+
     private nonisolated static let logger = Logger(subsystem: "com.engram.app", category: "daemon")
 
     @Published var status: Status = .stopped
     @Published var totalSessions: Int = 0
     @Published var lastSummarySessionId: String?
     @Published var port: Int?
+    @Published var usageData: [UsageItem] = []
 
     private var process: Process?
     private var stdoutPipe: Pipe?
@@ -94,7 +103,16 @@ class IndexerProcess: ObservableObject {
             guard !data.isEmpty else { return }
             let text = String(data: data, encoding: .utf8) ?? ""
             for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                guard let event = try? JSONDecoder().decode(DaemonEvent.self, from: Data(line.utf8)) else { continue }
+                let lineData = Data(line.utf8)
+                // Handle usage events via raw JSON (data field is an array, not in DaemonEvent)
+                if let raw = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                   let eventName = raw["event"] as? String,
+                   eventName == "usage" {
+                    let dataArray = raw["data"] as? [[String: Any]] ?? []
+                    Task { @MainActor [weak self] in self?.handleUsageEvent(dataArray) }
+                    continue
+                }
+                guard let event = try? JSONDecoder().decode(DaemonEvent.self, from: lineData) else { continue }
                 Task { @MainActor [weak self] in self?.handleEvent(event) }
             }
         }
@@ -137,6 +155,15 @@ class IndexerProcess: ObservableObject {
             status = .error(event.message ?? "Unknown error")
         default:
             break
+        }
+    }
+
+    private func handleUsageEvent(_ dataArray: [[String: Any]]) {
+        usageData = dataArray.compactMap { item in
+            guard let source = item["source"] as? String,
+                  let metric = item["metric"] as? String,
+                  let value = item["value"] as? Double else { return nil }
+            return UsageItem(source: source, metric: metric, value: value, resetAt: item["resetAt"] as? String)
         }
     }
 }

@@ -22,6 +22,8 @@ struct PopoverView: View {
             healthSummary
             Divider()
             timelineSection
+            PopoverUsageSection(usageData: indexer.usageData)
+                .padding(.horizontal, 12)
             footerSection
         }
         .padding(16)
