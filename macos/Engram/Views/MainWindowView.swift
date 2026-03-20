@@ -24,24 +24,8 @@ struct MainWindowView: View {
                     Divider()
 
                     if let session = selectedSession {
-                        VStack(spacing: 0) {
-                            HStack {
-                                Button(action: { selectedSession = nil }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "chevron.left")
-                                        Text("Back")
-                                    }
-                                    .font(.callout)
-                                    .foregroundStyle(Theme.accent)
-                                }
-                                .buttonStyle(.plain)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            SessionDetailView(session: session)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        SessionDetailView(session: session, onBack: { selectedSession = nil })
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         detailView
                             .frame(maxWidth: .infinity, maxHeight: .infinity)

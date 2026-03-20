@@ -4,6 +4,12 @@ Issues found during autonomous execution that need human attention.
 
 ---
 
+## Pre-existing Bug: claude-code sessions missing file_path (FIXED in Swift)
+**Root cause**: Node indexer's claude-code adapter doesn't store `file_path` for main sessions (only subagents have it). 112 out of 2055 claude-code sessions have empty `file_path` in the DB.
+**Symptom**: SessionDetailView shows "No Messages" because MessageParser.parse(filePath: "", ...) returns empty.
+**Swift-side workaround**: Added `findSessionFile()` that scans `~/.claude/projects/` to locate the JSONL file when `filePath` is empty.
+**Proper fix needed**: The Node indexer should always populate `file_path` for claude-code sessions. Check `src/adapters/claude-code.ts` → `parseSessionInfo()`.
+
 ## Committed Artifacts (Easy Fix)
 Last commit accidentally included `.superpowers/brainstorm/` HTML mockups and `.claude/` files. Run:
 ```bash

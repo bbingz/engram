@@ -6,6 +6,7 @@ private let logger = Logger(subsystem: "com.engram.app", category: "SessionDetai
 
 struct SessionDetailView: View {
     let session: Session
+    var onBack: (() -> Void)? = nil
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
     @State private var isFavorite = false
@@ -56,6 +57,7 @@ struct SessionDetailView: View {
         VStack(spacing: 0) {
             TranscriptToolbar(
                 session: session,
+                onBack: onBack,
                 isFavorite: isFavorite,
                 typeCounts: typeCounts,
                 typeVisibility: typeVisibility,

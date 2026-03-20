@@ -8,6 +8,7 @@ enum TranscriptViewMode: String, CaseIterable {
 
 struct TranscriptToolbar: View {
     let session: Session
+    var onBack: (() -> Void)? = nil
     let isFavorite: Bool
     let typeCounts: [MessageType: Int]
     let typeVisibility: [MessageType: Bool]
@@ -27,6 +28,21 @@ struct TranscriptToolbar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
+                // Back button (only when navigated from main window)
+                if let onBack {
+                    Button(action: onBack) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text("Back")
+                        }
+                        .font(.system(size: 12))
+                        .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+
+                    Divider().frame(height: 14)
+                }
+
                 Button(action: onToggleFavorite) {
                     Image(systemName: isFavorite ? "star.fill" : "star")
                         .foregroundStyle(isFavorite ? .yellow : .secondary)
