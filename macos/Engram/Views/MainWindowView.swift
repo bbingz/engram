@@ -15,12 +15,37 @@ struct MainWindowView: View {
         NavigationSplitView {
             SidebarView(selectedScreen: $selectedScreen)
         } detail: {
-            if let session = selectedSession {
-                SessionDetailView(session: session, onBack: { selectedSession = nil })
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                detailView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                // Thin resume bar — only shows when a session is selected
+                if selectedSession != nil {
+                    HStack {
+                        Spacer()
+                        Button(action: { resumeSelectedSession() }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 8))
+                                Text("Resume")
+                                    .font(.system(size: 11))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.green.opacity(0.12))
+                            .foregroundStyle(.green)
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                }
+
+                if let session = selectedSession {
+                    SessionDetailView(session: session, onBack: { selectedSession = nil })
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    detailView
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .navigationTitle("")
@@ -29,21 +54,9 @@ struct MainWindowView: View {
         .onChange(of: searchQuery) { _, query in
             if query.isEmpty { searchResults = [] }
         }
-        .toolbar(id: "main") {
-            ToolbarItem(id: "resume", placement: .confirmationAction) {
-                Button(action: { resumeSelectedSession() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 8))
-                        Text("Resume")
-                            .font(.system(size: 11))
-                    }
-                }
-                .disabled(selectedSession == nil)
-                .help(selectedSession != nil ? "Resume session" : "Select a session")
-            }
+        .toolbar {
+            // Empty — search is via .searchable, Resume is inline
         }
-        .toolbarRole(.automatic)
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
         .onChange(of: selectedScreen) { _, _ in
