@@ -192,6 +192,11 @@ export function createApp(db: Database, opts?: {
     const adapter = opts?.adapters?.find(a => a.name === session.source)
     if (!adapter) return c.json({ error: `No adapter for source: ${session.source}` }, 500)
 
+    const limitParam = c.req.query('limit')
+    const offsetParam = c.req.query('offset')
+    const limit = limitParam ? Math.min(parseInt(limitParam, 10), 500) : undefined
+    const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+
     const entries: Array<{
       index: number
       timestamp: string | undefined
@@ -205,13 +210,24 @@ export function createApp(db: Database, opts?: {
 
     try {
       let idx = 0
+      let collected = 0
       let prevTimestamp: string | undefined
       for await (const msg of adapter.streamMessages(session.filePath)) {
+        if (idx < offset) {
+          idx++
+          prevTimestamp = msg.timestamp
+          continue
+        }
+        if (limit !== undefined && collected >= limit) {
+          break
+        }
         const entry: typeof entries[0] = {
           index: idx,
           timestamp: msg.timestamp,
           role: msg.role,
-          type: msg.toolCalls?.length ? 'tool_use' : 'message',
+          type: msg.role === 'tool' ? 'tool_result'
+              : msg.toolCalls?.length ? 'tool_use'
+              : 'message',
           preview: msg.content.slice(0, 100),
         }
         if (msg.toolCalls?.length) {
@@ -231,6 +247,7 @@ export function createApp(db: Database, opts?: {
         prevTimestamp = msg.timestamp
         entries.push(entry)
         idx++
+        collected++
       }
     } catch (err) {
       return c.json({ error: `Failed to read session: ${err}` }, 500)
@@ -241,6 +258,8 @@ export function createApp(db: Database, opts?: {
       source: session.source,
       totalEntries: entries.length,
       entries,
+      ...(offset > 0 ? { offset } : {}),
+      ...(limit !== undefined ? { limit, hasMore: entries.length === limit } : {}),
     })
   })
 
@@ -440,12 +459,16 @@ export function createApp(db: Database, opts?: {
     }
     const sessionId = (body as Record<string, unknown>).sessionId as string | undefined
     const format = (body as Record<string, unknown>).format as string | undefined
+    const validFormats = ['markdown', 'plain']
+    if (format && !validFormats.includes(format)) {
+      return c.json({ error: `Invalid format: ${format}. Must be one of: ${validFormats.join(', ')}` }, 400)
+    }
     try {
       const result = await handleHandoff(db, {
         cwd,
         sessionId,
         format: format as 'markdown' | 'plain' | undefined,
-      })
+      }, opts?.adapters)
       return c.json(result)
     } catch (err) {
       return c.json({ error: `Handoff failed: ${err}` }, 500)

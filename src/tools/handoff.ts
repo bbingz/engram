@@ -1,5 +1,6 @@
 import { basename } from 'path'
 import type { Database } from '../core/db.js'
+import type { SessionAdapter } from '../adapters/types.js'
 
 export const handoffTool = {
   name: 'handoff',
@@ -26,6 +27,8 @@ interface SessionWithCost {
   id: string
   source: string
   startTime: string
+  endTime?: string
+  filePath: string
   summary?: string
   model?: string
   messageCount: number
@@ -35,7 +38,8 @@ interface SessionWithCost {
 
 export async function handleHandoff(
   db: Database,
-  params: HandoffParams
+  params: HandoffParams,
+  adapters?: SessionAdapter[]
 ): Promise<{ brief: string; sessionCount: number }> {
   const format = params.format ?? 'markdown'
 
@@ -82,6 +86,10 @@ export async function handleHandoff(
   const mostRecent = sessions[0]
   const relativeTime = formatRelativeTime(mostRecent.startTime)
 
+  // I-1: Read last user message from the most recent session via adapter
+  const lastUserMessage = await getLastUserMessage(mostRecent, adapters)
+  const lastTask = lastUserMessage ?? mostRecent.summary
+
   if (format === 'markdown') {
     const lines: string[] = []
     lines.push(`## Handoff — ${projectName}`)
@@ -90,13 +98,15 @@ export async function handleHandoff(
     for (let i = 0; i < sessions.length; i++) {
       const s = sessions[i]
       const cost = s.costUsd != null ? `, $${s.costUsd.toFixed(2)}` : ''
-      lines.push(`${i + 1}. [${s.source}] ${s.summary || 'No summary'} — ${s.messageCount} msgs${cost}`)
+      const duration = formatDuration(s.startTime, s.endTime)
+      const durationStr = duration ? `, ${duration}` : ''
+      lines.push(`${i + 1}. [${s.source}] ${s.summary || 'No summary'} — ${s.messageCount} msgs${durationStr}${cost}`)
     }
     lines.push('')
-    if (mostRecent.summary) {
-      lines.push(`**Last task**: ${mostRecent.summary.slice(0, 200)}`)
-      const shortSummary = mostRecent.summary.slice(0, 60)
-      lines.push(`**Suggested prompt**: "继续 ${shortSummary}"`)
+    if (lastTask) {
+      lines.push(`**Last task**: ${lastTask.slice(0, 200)}`)
+      const shortText = lastTask.slice(0, 60)
+      lines.push(`**Suggested prompt**: "继续 ${shortText}"`)
     }
     return { brief: lines.join('\n'), sessionCount: sessions.length }
   }
@@ -109,20 +119,58 @@ export async function handleHandoff(
   for (let i = 0; i < sessions.length; i++) {
     const s = sessions[i]
     const cost = s.costUsd != null ? `, $${s.costUsd.toFixed(2)}` : ''
-    lines.push(`  ${i + 1}. [${s.source}] ${s.summary || 'No summary'} — ${s.messageCount} msgs${cost}`)
+    const duration = formatDuration(s.startTime, s.endTime)
+    const durationStr = duration ? `, ${duration}` : ''
+    lines.push(`  ${i + 1}. [${s.source}] ${s.summary || 'No summary'} — ${s.messageCount} msgs${durationStr}${cost}`)
   }
-  if (mostRecent.summary) {
-    lines.push(`Last task: ${mostRecent.summary.slice(0, 200)}`)
+  if (lastTask) {
+    lines.push(`Last task: ${lastTask.slice(0, 200)}`)
   }
   return { brief: lines.join('\n'), sessionCount: sessions.length }
 }
 
-function mapSession(s: { id: string; source: string; startTime: string; summary?: string; model?: string; messageCount: number; project?: string }): SessionWithCost {
-  return { id: s.id, source: s.source, startTime: s.startTime, summary: s.summary, model: s.model, messageCount: s.messageCount, project: s.project }
+function mapSession(s: { id: string; source: string; startTime: string; endTime?: string; filePath: string; summary?: string; model?: string; messageCount: number; project?: string }): SessionWithCost {
+  return { id: s.id, source: s.source, startTime: s.startTime, endTime: s.endTime, filePath: s.filePath, summary: s.summary, model: s.model, messageCount: s.messageCount, project: s.project }
 }
 
-function formatRelativeTime(isoTime: string): string {
+/** Read the last user message from a session via its adapter. Falls back to null. */
+async function getLastUserMessage(
+  session: SessionWithCost,
+  adapters?: SessionAdapter[]
+): Promise<string | null> {
+  if (!adapters?.length) return null
+  const adapter = adapters.find(a => a.name === session.source)
+  if (!adapter) return null
+  try {
+    let lastUserContent: string | null = null
+    for await (const msg of adapter.streamMessages(session.filePath)) {
+      if (msg.role === 'user' && msg.content.trim()) {
+        lastUserContent = msg.content
+      }
+    }
+    return lastUserContent
+  } catch {
+    return null
+  }
+}
+
+/** Format duration between two ISO timestamps as human-readable (e.g., "2h 15m", "45m", "5m") */
+export function formatDuration(startTime: string, endTime?: string): string | null {
+  if (!endTime) return null
+  const diffMs = new Date(endTime).getTime() - new Date(startTime).getTime()
+  if (diffMs <= 0) return null
+  const totalMinutes = Math.floor(diffMs / 60_000)
+  if (totalMinutes < 1) return '< 1m'
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (hours === 0) return `${minutes}m`
+  if (minutes === 0) return `${hours}h`
+  return `${hours}h ${minutes}m`
+}
+
+export function formatRelativeTime(isoTime: string): string {
   const diffMs = Date.now() - new Date(isoTime).getTime()
+  if (diffMs < 0) return 'just now'
   const minutes = Math.floor(diffMs / 60_000)
   if (minutes < 1) return 'just now'
   if (minutes < 60) return `${minutes}m ago`

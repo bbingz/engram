@@ -163,7 +163,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (name === 'tool_analytics') {
       result = handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string })
     } else if (name === 'handoff') {
-      result = await handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' })
+      result = await handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' }, adapters)
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }
