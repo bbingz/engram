@@ -229,8 +229,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         win.isReleasedWhenClosed = false
         win.delegate = self
         win.center()
-        win.titlebarAppearsTransparent = true
         win.titleVisibility = .hidden
+        win.toolbarStyle = .unified
         win.styleMask.insert(.fullSizeContentView)
 
         // Switch to regular app: show Dock icon + main menu bar

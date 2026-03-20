@@ -14,30 +14,38 @@ struct MainWindowView: View {
         NavigationSplitView {
             SidebarView(selectedScreen: $selectedScreen)
         } detail: {
-            VStack(spacing: 0) {
-                // Fixed top bar: search + resume — always in the same position
-                HStack(spacing: 8) {
-                    Spacer()
+            if let session = selectedSession {
+                SessionDetailView(session: session, onBack: { selectedSession = nil })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                detailView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .navigationTitle("")
+        .toolbar {
+            ToolbarItemGroup(placement: .automatic) {
+                Spacer()
 
-                    // Search field
-                    HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        TextField("Search sessions…", text: $searchQuery)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12))
-                            .onSubmit { performSearch() }
-                        if !searchQuery.isEmpty {
-                            Button {
-                                searchQuery = ""
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .buttonStyle(.plain)
+                // Search field
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    TextField("Search sessions…", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .onSubmit { performSearch() }
+                    if !searchQuery.isEmpty {
+                        Button {
+                            searchQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
                         }
+                        .buttonStyle(.plain)
+                    } else {
                         Text("⌘K")
                             .font(.system(size: 9))
                             .foregroundStyle(.quaternary)
@@ -46,46 +54,26 @@ struct MainWindowView: View {
                             .background(Color.secondary.opacity(0.08))
                             .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .frame(minWidth: 200, maxWidth: 300)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.15)))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .frame(width: 250)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.15)))
 
-                    // Resume button
-                    Button(action: { resumeSelectedSession() }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 8))
-                            Text("Resume")
-                                .font(.system(size: 11))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(selectedSession != nil ? Color.green.opacity(0.12) : Color.secondary.opacity(0.05))
-                        .foregroundStyle(selectedSession != nil ? .green : .secondary)
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                // Resume button
+                Button(action: { resumeSelectedSession() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 8))
+                        Text("Resume")
+                            .font(.system(size: 11))
                     }
-                    .buttonStyle(.plain)
-                    .disabled(selectedSession == nil)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-
-                Divider()
-
-                if let session = selectedSession {
-                    SessionDetailView(session: session, onBack: { selectedSession = nil })
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    detailView
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                .disabled(selectedSession == nil)
             }
         }
-        .navigationTitle("")
-        .toolbar(.hidden)
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
         .onChange(of: selectedScreen) { _, _ in
