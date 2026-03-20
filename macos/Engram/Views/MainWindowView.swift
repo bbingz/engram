@@ -32,7 +32,12 @@ struct MainWindowView: View {
         .toolbar(id: "main") {
             ToolbarItem(id: "resume", placement: .confirmationAction) {
                 Button(action: { resumeSelectedSession() }) {
-                    Label("Resume", systemImage: "play.fill")
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 8))
+                        Text("Resume")
+                            .font(.system(size: 11))
+                    }
                 }
                 .disabled(selectedSession == nil)
                 .help(selectedSession != nil ? "Resume session" : "Select a session")
