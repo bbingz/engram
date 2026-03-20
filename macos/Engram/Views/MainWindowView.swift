@@ -4,7 +4,8 @@ import SwiftUI
 struct MainWindowView: View {
     @State private var selectedScreen: Screen = .home
     @State private var selectedSession: Session? = nil
-    @State private var showSearch: Bool = false
+    @State private var searchQuery: String = ""
+    @State private var searchResults: [Session] = []
     @State private var showResume: Bool = false
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
@@ -14,71 +15,31 @@ struct MainWindowView: View {
         NavigationSplitView {
             SidebarView(selectedScreen: $selectedScreen)
         } detail: {
-            ZStack(alignment: .top) {
-                if let session = selectedSession {
-                    SessionDetailView(session: session, onBack: { selectedSession = nil })
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    detailView
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-
-                if showSearch {
-                    GlobalSearchOverlay(isVisible: $showSearch) { sessionId in
-                        navigateToSession(id: sessionId)
-                    }
-                    .padding(.top, 8)
-                }
+            if let session = selectedSession {
+                SessionDetailView(session: session, onBack: { selectedSession = nil })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                detailView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .searchable(text: $searchQuery, placement: .toolbar, prompt: "Search sessions…")
+        .onSubmit(of: .search) { performSearch() }
+        .onChange(of: searchQuery) { _, query in
+            if query.isEmpty { searchResults = [] }
+        }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                HStack {
-                    Spacer()
-
-                    // Search button
-                    Button { showSearch.toggle() } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 11))
-                            Text("Search sessions...")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                            Text("⌘K")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.secondary.opacity(0.1))
-                                .clipShape(RoundedRectangle(cornerRadius: 3))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.15)))
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: { resumeSelectedSession() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 8))
+                        Text("Resume")
+                            .font(.system(size: 11))
                     }
-                    .buttonStyle(.plain)
-                    .focusEffectDisabled()
-
-                    // Resume button
-                    Button(action: { resumeSelectedSession() }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 8))
-                            Text("Resume")
-                                .font(.system(size: 11))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(selectedSession != nil ? Color.green.opacity(0.15) : Color.secondary.opacity(0.06))
-                        .foregroundStyle(selectedSession != nil ? .green : .secondary)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(selectedSession == nil)
                 }
-                .frame(maxWidth: .infinity)
+                .disabled(selectedSession == nil)
+                .help(selectedSession != nil ? "Resume session" : "Select a session")
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -92,12 +53,6 @@ struct MainWindowView: View {
                 selectedSession = box.session
             }
         }
-        // ⌘K keyboard shortcut
-        .background(
-            Button("") { showSearch.toggle() }
-                .keyboardShortcut("k", modifiers: .command)
-                .hidden()
-        )
         .sheet(isPresented: $showResume) {
             if let session = selectedSession {
                 ResumeDialog(session: session)
@@ -145,6 +100,19 @@ struct MainWindowView: View {
             if let session = try? db.getSession(id: id) {
                 await MainActor.run {
                     selectedSession = session
+                }
+            }
+        }
+    }
+
+    private func performSearch() {
+        guard !searchQuery.isEmpty else { return }
+        Task {
+            let query = searchQuery
+            let results = (try? db.search(query: query, limit: 20)) ?? []
+            await MainActor.run {
+                if let first = results.first {
+                    selectedSession = first
                 }
             }
         }
