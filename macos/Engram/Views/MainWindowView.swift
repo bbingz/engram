@@ -27,15 +27,16 @@ struct MainWindowView: View {
             ToolbarItemGroup(placement: .automatic) {
                 Spacer()
 
-                // Search field
+                // Search field — flat style matching toolbar background
                 HStack(spacing: 5) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                     TextField("Search sessions…", text: $searchQuery)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12))
                         .onSubmit { performSearch() }
+                        .frame(minWidth: 140)
                     if !searchQuery.isEmpty {
                         Button {
                             searchQuery = ""
@@ -47,26 +48,22 @@ struct MainWindowView: View {
                         .buttonStyle(.plain)
                     }
                     Text("⌘K")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.quaternary)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .frame(width: 220)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.04))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
 
-                // Resume button
+                // Resume
                 Button(action: { resumeSelectedSession() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 8))
-                        Text("Resume")
-                            .font(.system(size: 11))
-                    }
+                    Label("Resume", systemImage: "play.fill")
+                        .font(.system(size: 11))
+                        .labelStyle(.titleAndIcon)
                 }
                 .disabled(selectedSession == nil)
+                .fixedSize()
             }
         }
         .navigationSplitViewStyle(.balanced)
