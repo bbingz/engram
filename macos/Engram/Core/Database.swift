@@ -721,6 +721,36 @@ class DatabaseManager: ObservableObject {
         }
     }
 
+    /// Returns session counts for the last 7 days (index 0 = 6 days ago, index 6 = today)
+    /// for sessions whose cwd starts with repoPath.
+    func sparklineData(for repoPath: String) throws -> [Int] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT date(start_time) as day, COUNT(*) as n
+                FROM sessions
+                WHERE hidden_at IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
+                  AND cwd LIKE ?
+                  AND start_time >= date('now', '-6 days')
+                GROUP BY day
+            """, arguments: ["\(repoPath)%"])
+            var counts = [Int](repeating: 0, count: 7)
+            let today = Calendar.current.startOfDay(for: Date())
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd"
+            for row in rows {
+                guard let dayStr = row["day"] as String?,
+                      let date = fmt.date(from: dayStr) else { continue }
+                let daysAgo = Calendar.current.dateComponents([.day], from: date, to: today).day ?? 99
+                if daysAgo >= 0 && daysAgo < 7 {
+                    counts[6 - daysAgo] = row["n"]
+                }
+            }
+            return counts
+        }
+    }
+
     func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in

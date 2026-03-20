@@ -7,6 +7,7 @@ struct ReposView: View {
     @State private var isLoading = true
     @State private var error: String? = nil
     @State private var selectedRepo: GitRepo?
+    @State private var sparklines: [String: [Int]] = [:]  // keyed by repo.path
 
     private var activeRepos: [GitRepo] { repos.filter { $0.isActive } }
     private var recentRepos: [GitRepo] { repos.filter { !$0.isActive } }
@@ -41,7 +42,7 @@ struct ReposView: View {
                                   onRefresh: { Task { await loadData() } })
                     LazyVStack(spacing: 4) {
                         ForEach(activeRepos) { repo in
-                            RepoRow(repo: repo) { selectedRepo = repo }
+                            RepoRow(repo: repo, sparkline: sparklines[repo.path] ?? [Int](repeating: 0, count: 7)) { selectedRepo = repo }
                         }
                     }
                 }
@@ -50,7 +51,7 @@ struct ReposView: View {
                     SectionHeader(icon: "clock", title: "Recent")
                     LazyVStack(spacing: 4) {
                         ForEach(recentRepos) { repo in
-                            RepoRow(repo: repo) { selectedRepo = repo }
+                            RepoRow(repo: repo, sparkline: sparklines[repo.path] ?? [Int](repeating: 0, count: 7)) { selectedRepo = repo }
                         }
                     }
                 }
@@ -73,6 +74,11 @@ struct ReposView: View {
         defer { isLoading = false }
         do {
             repos = try db.listGitRepos()
+            var map = [String: [Int]]()
+            for repo in repos {
+                map[repo.path] = (try? db.sparklineData(for: repo.path)) ?? [Int](repeating: 0, count: 7)
+            }
+            sparklines = map
         } catch {
             self.error = error.localizedDescription
         }
@@ -83,6 +89,7 @@ struct ReposView: View {
 
 private struct RepoRow: View {
     let repo: GitRepo
+    let sparkline: [Int]
     let onTap: () -> Void
 
     var body: some View {
@@ -149,6 +156,8 @@ private struct RepoRow: View {
                     .font(.caption)
                     .foregroundStyle(Theme.secondaryText)
             }
+
+            SparklineView(values: sparkline, color: Theme.accent)
 
             Image(systemName: "chevron.right")
                 .font(.caption2)
