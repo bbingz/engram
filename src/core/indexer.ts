@@ -245,9 +245,17 @@ export class Indexer {
       if (ids.length === 0) break
       for (const id of ids) {
         const session = this.db.getSession(id)
-        if (!session?.filePath) continue
+        if (!session?.filePath) {
+          this.writeExtractedData(id, '', 0, 0, 0, 0, new Map())
+          total++
+          continue
+        }
         const adapter = this.adapters.find(a => a.name === session.source)
-        if (!adapter) continue
+        if (!adapter) {
+          this.writeExtractedData(id, session.model || '', 0, 0, 0, 0, new Map())
+          total++
+          continue
+        }
         try {
           const acc = Indexer.newAccumulator()
           for await (const msg of adapter.streamMessages(session.filePath)) {
@@ -255,7 +263,10 @@ export class Indexer {
           }
           this.writeExtractedData(id, session.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
           total++
-        } catch { /* skip failed sessions */ }
+        } catch {
+          this.writeExtractedData(id, session.model || '', 0, 0, 0, 0, new Map())
+          total++
+        }
       }
     }
     return total

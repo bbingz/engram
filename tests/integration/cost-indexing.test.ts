@@ -132,4 +132,59 @@ describe('backfill termination', () => {
 
     db.close()
   })
+
+  it('backfillCosts handles sessions with no adapter or missing filePath without looping', async () => {
+    const db = new Database(':memory:')
+
+    // Session with no matching adapter (source = 'unknown-tool')
+    db.getRawDb().exec(`INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('no-adapter', 'unknown-tool', '2026-03-20T10:00:00Z', '/test', 'proj', 'some-model', 3, 1, 1, 0, 1, '/test/no-adapter.jsonl', 200, 'normal')`)
+
+    // Session with empty filePath (use 'lite' tier since sessionsWithoutCosts excludes 'skip')
+    db.getRawDb().exec(`INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('no-filepath', 'claude-code', '2026-03-20T11:00:00Z', '/test', 'proj', 'claude-sonnet-4-6', 1, 0, 0, 0, 1, '', 0, 'lite')`)
+
+    // Session whose adapter throws during streamMessages
+    db.getRawDb().exec(`INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('throws', 'claude-code', '2026-03-20T12:00:00Z', '/test', 'proj', 'claude-sonnet-4-6', 2, 1, 1, 0, 0, '/test/throws.jsonl', 100, 'normal')`)
+
+    expect(db.sessionsWithoutCosts().length).toBe(3)
+
+    const mockClaudeAdapter: SessionAdapter = {
+      name: 'claude-code' as any,
+      detect: async () => true,
+      listSessionFiles: async function* () {},
+      parseSessionInfo: async () => null,
+      streamMessages: async function* (filePath: string): AsyncGenerator<Message> {
+        if (filePath === '/test/throws.jsonl') throw new Error('file not found')
+        yield { role: 'user', content: 'hello' }
+      },
+    }
+
+    const indexer = new Indexer(db, [mockClaudeAdapter])
+    const count = await indexer.backfillCosts()
+
+    // All 3 sessions processed (zero-cost rows written for all)
+    expect(count).toBe(3)
+    expect(db.sessionsWithoutCosts().length).toBe(0)
+
+    // no-adapter: zero-cost row with its model preserved
+    const noAdapterCosts = db.getRawDb().prepare('SELECT * FROM session_costs WHERE session_id = ?').get('no-adapter') as any
+    expect(noAdapterCosts).toBeDefined()
+    expect(noAdapterCosts.model).toBe('some-model')
+    expect(noAdapterCosts.input_tokens).toBe(0)
+    expect(noAdapterCosts.cost_usd).toBe(0)
+
+    // no-filepath: zero-cost row with empty model
+    const noFilepathCosts = db.getRawDb().prepare('SELECT * FROM session_costs WHERE session_id = ?').get('no-filepath') as any
+    expect(noFilepathCosts).toBeDefined()
+    expect(noFilepathCosts.input_tokens).toBe(0)
+    expect(noFilepathCosts.cost_usd).toBe(0)
+
+    // throws: zero-cost row written via catch path
+    const throwsCosts = db.getRawDb().prepare('SELECT * FROM session_costs WHERE session_id = ?').get('throws') as any
+    expect(throwsCosts).toBeDefined()
+    expect(throwsCosts.model).toBe('claude-sonnet-4-6')
+    expect(throwsCosts.input_tokens).toBe(0)
+    expect(throwsCosts.cost_usd).toBe(0)
+
+    db.close()
+  })
 })
