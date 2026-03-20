@@ -474,6 +474,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
+					CBCDC5ABCED1290D34EC5E45 = {
+						ProvisioningStyle = Manual;
+					};
 				};
 			};
 			buildConfigurationList = D7DA28092788B0F19E287981 /* Build configuration list for PBXProject "Engram" */;
@@ -714,6 +717,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				INFOPLIST_FILE = Engram/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -824,6 +829,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				INFOPLIST_FILE = Engram/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

@@ -23,6 +23,7 @@ struct MainWindowView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .navigationTitle("")
         .searchable(text: $searchQuery, placement: .toolbar, prompt: "Search sessions…")
         .onSubmit(of: .search) { performSearch() }
         .onChange(of: searchQuery) { _, query in

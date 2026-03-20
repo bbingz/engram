@@ -61,6 +61,8 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.app
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
 
   EngramCLI:
     type: tool
