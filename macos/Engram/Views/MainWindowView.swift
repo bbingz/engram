@@ -27,15 +27,16 @@ struct MainWindowView: View {
             ToolbarItemGroup(placement: .automatic) {
                 Spacer()
 
-                // Search field
+                // Search field — native style
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     TextField("Search sessions…", text: $searchQuery)
-                        .textFieldStyle(.plain)
+                        .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
                         .onSubmit { performSearch() }
+                        .frame(width: 200)
                     if !searchQuery.isEmpty {
                         Button {
                             searchQuery = ""
@@ -49,18 +50,8 @@ struct MainWindowView: View {
                         Text("⌘K")
                             .font(.system(size: 9))
                             .foregroundStyle(.quaternary)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .frame(width: 250)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.15)))
 
                 // Resume button
                 Button(action: { resumeSelectedSession() }) {
