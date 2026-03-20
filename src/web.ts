@@ -286,7 +286,8 @@ export function createApp(db: Database, opts?: {
   app.get('/api/tool-analytics', (c) => {
     const project = c.req.query('project')
     const since = c.req.query('since')
-    const result = handleToolAnalytics(db, { project, since })
+    const group_by = c.req.query('group_by')
+    const result = handleToolAnalytics(db, { project, since, group_by })
     return c.json(result)
   })
 

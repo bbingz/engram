@@ -1,7 +1,7 @@
 // src/core/indexer.ts
 import { createHash } from 'crypto'
 import { stat } from 'fs/promises'
-import type { SessionAdapter, SessionInfo } from '../adapters/types.js'
+import type { SessionAdapter, SessionInfo, Message } from '../adapters/types.js'
 import type { Database } from './db.js'
 import { computeCost } from './pricing.js'
 import { resolveProjectName } from './project.js'
@@ -56,13 +56,32 @@ export class Indexer {
   }
 
   private writeExtractedData(sessionId: string, model: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, toolCounts: Map<string, number>): void {
-    if (inputTokens > 0 || outputTokens > 0) {
-      const cost = computeCost(model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
-      this.db.upsertSessionCost(sessionId, model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, cost)
-    }
+    // Always write a session_costs row, even with zero tokens.
+    // Without this, sessionsWithoutCosts() returns non-claude-code sessions forever → infinite backfill loop.
+    const cost = computeCost(model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+    this.db.upsertSessionCost(sessionId, model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, cost)
     if (toolCounts.size > 0) {
       this.db.upsertSessionTools(sessionId, toolCounts)
     }
+  }
+
+  /** Accumulate token usage and tool calls from a message stream. */
+  private static accumulateFromStream(msg: Message, acc: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; toolCounts: Map<string, number> }): void {
+    if (msg.usage) {
+      acc.inputTokens += msg.usage.inputTokens
+      acc.outputTokens += msg.usage.outputTokens
+      acc.cacheReadTokens += msg.usage.cacheReadTokens ?? 0
+      acc.cacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
+    }
+    if (msg.toolCalls) {
+      for (const tc of msg.toolCalls) {
+        acc.toolCounts.set(tc.name, (acc.toolCounts.get(tc.name) || 0) + 1)
+      }
+    }
+  }
+
+  private static newAccumulator() {
+    return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, toolCounts: new Map<string, number>() }
   }
 
   private buildLocalAuthoritativeSnapshot(
@@ -157,27 +176,13 @@ export class Indexer {
           }
 
           const messages: { role: string; content: string }[] = []
-          let totalInputTokens = 0
-          let totalOutputTokens = 0
-          let totalCacheReadTokens = 0
-          let totalCacheCreationTokens = 0
-          const toolCounts = new Map<string, number>()
+          const acc = Indexer.newAccumulator()
 
           for await (const msg of adapter.streamMessages(filePath)) {
             if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
               messages.push({ role: msg.role, content: msg.content })
             }
-            if (msg.usage) {
-              totalInputTokens += msg.usage.inputTokens
-              totalOutputTokens += msg.usage.outputTokens
-              totalCacheReadTokens += msg.usage.cacheReadTokens ?? 0
-              totalCacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
-            }
-            if (msg.toolCalls) {
-              for (const tc of msg.toolCalls) {
-                toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1)
-              }
-            }
+            Indexer.accumulateFromStream(msg, acc)
           }
 
           const current = this.db.getAuthoritativeSnapshot(info.id)
@@ -185,7 +190,7 @@ export class Indexer {
           this.writer.writeAuthoritativeSnapshot(snapshot)
 
           // Write cost and tool data
-          this.writeExtractedData(info.id, info.model || '', totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens, toolCounts)
+          this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
 
           if (snapshot.tier === 'premium') {
             this.pushToViking(info, messages)
@@ -244,22 +249,11 @@ export class Indexer {
         const adapter = this.adapters.find(a => a.name === session.source)
         if (!adapter) continue
         try {
-          let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreationTokens = 0
-          const toolCounts = new Map<string, number>()
+          const acc = Indexer.newAccumulator()
           for await (const msg of adapter.streamMessages(session.filePath)) {
-            if (msg.usage) {
-              inputTokens += msg.usage.inputTokens
-              outputTokens += msg.usage.outputTokens
-              cacheReadTokens += msg.usage.cacheReadTokens ?? 0
-              cacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
-            }
-            if (msg.toolCalls) {
-              for (const tc of msg.toolCalls) {
-                toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1)
-              }
-            }
+            Indexer.accumulateFromStream(msg, acc)
           }
-          this.writeExtractedData(id, session.model || '', inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, toolCounts)
+          this.writeExtractedData(id, session.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
           total++
         } catch { /* skip failed sessions */ }
       }
@@ -281,27 +275,13 @@ export class Indexer {
       }
 
       const messages: { role: string; content: string }[] = []
-      let totalInputTokens = 0
-      let totalOutputTokens = 0
-      let totalCacheReadTokens = 0
-      let totalCacheCreationTokens = 0
-      const toolCounts = new Map<string, number>()
+      const acc = Indexer.newAccumulator()
 
       for await (const msg of adapter.streamMessages(filePath)) {
         if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
           messages.push({ role: msg.role, content: msg.content })
         }
-        if (msg.usage) {
-          totalInputTokens += msg.usage.inputTokens
-          totalOutputTokens += msg.usage.outputTokens
-          totalCacheReadTokens += msg.usage.cacheReadTokens ?? 0
-          totalCacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
-        }
-        if (msg.toolCalls) {
-          for (const tc of msg.toolCalls) {
-            toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1)
-          }
-        }
+        Indexer.accumulateFromStream(msg, acc)
       }
 
       const current = this.db.getAuthoritativeSnapshot(info.id)
@@ -309,7 +289,7 @@ export class Indexer {
       this.writer.writeAuthoritativeSnapshot(snapshot)
 
       // Write cost and tool data
-      this.writeExtractedData(info.id, info.model || '', totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens, toolCounts)
+      this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
 
       if (snapshot.tier === 'premium') {
         this.pushToViking(info, messages)

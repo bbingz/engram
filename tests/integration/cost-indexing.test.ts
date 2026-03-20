@@ -3,6 +3,8 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { Database } from '../../src/core/db.js'
 import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.js'
+import { Indexer } from '../../src/core/indexer.js'
+import type { SessionAdapter, Message } from '../../src/adapters/types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURE = resolve(__dirname, '../fixtures/claude-code/session-with-usage.jsonl')
@@ -62,10 +64,10 @@ describe('cost indexing integration', () => {
   it('stores tool calls in session_tools', () => {
     const tools = db.getToolAnalytics({})
     expect(tools.length).toBe(2) // Read + Edit
-    const readTool = tools.find((t: any) => t.name === 'Read')
+    const readTool = tools.find((t: any) => t.key === 'Read')
     expect(readTool).toBeDefined()
     expect(readTool.callCount).toBe(1)
-    const editTool = tools.find((t: any) => t.name === 'Edit')
+    const editTool = tools.find((t: any) => t.key === 'Edit')
     expect(editTool).toBeDefined()
     expect(editTool.callCount).toBe(1)
   })
@@ -79,5 +81,55 @@ describe('cost indexing integration', () => {
     // cacheWrite: 1000/1M * 3.75 = 0.00375
     // total = 0.01719
     expect(costs[0].costUsd).toBeCloseTo(0.017, 2)
+  })
+})
+
+describe('backfill termination', () => {
+  it('backfillCosts terminates for sessions without usage data (no infinite loop)', async () => {
+    const db = new Database(':memory:')
+
+    // Insert two sessions: one claude-code (has usage), one codex (no usage data)
+    db.getRawDb().exec(`INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('cc1', 'claude-code', '2026-03-20T10:00:00Z', '/test', 'proj', 'claude-sonnet-4-6', 5, 2, 2, 0, 1, '/test/cc1.jsonl', 500, 'normal')`)
+    db.getRawDb().exec(`INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('cx1', 'codex', '2026-03-20T11:00:00Z', '/test', 'proj', 'gpt-4', 3, 1, 1, 0, 1, '/test/cx1.jsonl', 300, 'normal')`)
+
+    // Both should appear in sessionsWithoutCosts
+    expect(db.sessionsWithoutCosts().length).toBe(2)
+
+    // Create a mock adapter that yields messages without usage
+    const mockAdapter: SessionAdapter = {
+      name: 'codex' as any,
+      detect: async () => true,
+      listSessionFiles: async function* () {},
+      parseSessionInfo: async () => null,
+      streamMessages: async function* (): AsyncGenerator<Message> {
+        yield { role: 'user', content: 'hello' }
+        yield { role: 'assistant', content: 'hi there' }
+      },
+    }
+    const mockClaudeAdapter: SessionAdapter = {
+      name: 'claude-code' as any,
+      detect: async () => true,
+      listSessionFiles: async function* () {},
+      parseSessionInfo: async () => null,
+      streamMessages: async function* (): AsyncGenerator<Message> {
+        yield { role: 'user', content: 'hello' }
+        yield { role: 'assistant', content: 'response', usage: { inputTokens: 100, outputTokens: 50 } }
+      },
+    }
+
+    const indexer = new Indexer(db, [mockClaudeAdapter, mockAdapter])
+    const count = await indexer.backfillCosts()
+
+    // Both sessions should have been processed
+    expect(count).toBe(2)
+    // No sessions left without costs (backfill terminated)
+    expect(db.sessionsWithoutCosts().length).toBe(0)
+    // The codex session should have a zero-cost row
+    const costs = db.getRawDb().prepare('SELECT * FROM session_costs WHERE session_id = ?').get('cx1') as any
+    expect(costs).toBeDefined()
+    expect(costs.input_tokens).toBe(0)
+    expect(costs.cost_usd).toBe(0)
+
+    db.close()
   })
 })

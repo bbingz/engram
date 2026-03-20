@@ -22,7 +22,7 @@ export function handleToolAnalytics(db: Database, params: { project?: string; si
   })
 
   const totalCalls = tools.reduce((sum: number, t: any) => sum + (t.callCount || 0), 0)
-  const uniqueTools = tools.length
+  const groupCount = tools.length
 
-  return { tools, totalCalls, uniqueTools }
+  return { tools, totalCalls, groupCount }
 }

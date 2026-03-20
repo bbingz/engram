@@ -931,13 +931,17 @@ export class Database {
         groupCol = 's.project'
         break
       default: // 'tool'
-        selectCols = 't.tool_name as name, SUM(t.call_count) as callCount, COUNT(DISTINCT t.session_id) as sessionCount'
+        selectCols = 't.tool_name as key, SUM(t.call_count) as callCount, COUNT(DISTINCT t.session_id) as sessionCount'
         groupCol = 't.tool_name'
         break
     }
     let sql = `SELECT ${selectCols} FROM session_tools t JOIN sessions s ON t.session_id = s.id WHERE 1=1`
     const binds: any[] = []
-    if (params.project) { sql += ' AND s.project LIKE ?'; binds.push(`%${params.project}%`) }
+    if (params.project) {
+      const escaped = params.project.replace(/[%_\\]/g, '\\$&')
+      sql += " AND s.project LIKE ? ESCAPE '\\'"
+      binds.push(`%${escaped}%`)
+    }
     if (params.since) { sql += ' AND s.start_time >= ?'; binds.push(params.since) }
     sql += ` GROUP BY ${groupCol} ORDER BY callCount DESC`
     return this.db.prepare(sql).all(...binds) as any[]
