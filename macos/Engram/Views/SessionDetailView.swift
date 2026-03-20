@@ -26,21 +26,23 @@ struct SessionDetailView: View {
     @State private var navPositions: [MessageType: Int] = Dictionary(uniqueKeysWithValues: MessageType.allCases.map { ($0, -1) })
     @State private var scrollTarget: UUID? = nil
 
-    // MARK: - Computed
+    @State private var displayIndexed: [IndexedMessage] = []
+    @State private var matchIndices: [Int] = []
 
-    var displayIndexed: [IndexedMessage] {
-        indexedMessages.filter { idx in
+    private func updateDisplayIndexed() {
+        displayIndexed = indexedMessages.filter { idx in
             guard typeVisibility[idx.messageType] ?? true else { return false }
             if !showSystemPrompts && idx.message.systemCategory == .systemPrompt { return false }
             if !showAgentComm && idx.message.systemCategory == .agentComm { return false }
             return true
         }
+        updateMatchIndices()
     }
 
-    var matchIndices: [Int] {
-        guard !searchText.isEmpty else { return [] }
+    private func updateMatchIndices() {
+        guard !searchText.isEmpty else { matchIndices = []; return }
         let query = searchText.lowercased()
-        return displayIndexed.enumerated().compactMap { i, msg in
+        matchIndices = displayIndexed.enumerated().compactMap { i, msg in
             msg.message.content.lowercased().contains(query) ? i : nil
         }
     }
@@ -185,8 +187,13 @@ struct SessionDetailView: View {
             let result = IndexedMessage.build(from: messages)
             indexedMessages = result.messages
             typeCounts = result.counts
+            updateDisplayIndexed()
             isLoadingMessages = false
         }
+        .onChange(of: typeVisibility) { _, _ in updateDisplayIndexed() }
+        .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
+        .onChange(of: showAgentComm) { _, _ in updateDisplayIndexed() }
+        .onChange(of: searchText) { _, _ in updateMatchIndices() }
     }
 
     // MARK: - Helpers
