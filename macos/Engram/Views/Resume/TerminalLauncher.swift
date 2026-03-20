@@ -46,11 +46,18 @@ struct TerminalLauncher {
             end tell
             """
         }
+        // Log the script for debugging
+        let logMsg = "[TerminalLauncher] Executing script:\n\(script)\n"
+        try? logMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
+
         if let appleScript = NSAppleScript(source: script) {
             var error: NSDictionary?
             appleScript.executeAndReturnError(&error)
             if let error {
-                print("[TerminalLauncher] AppleScript error: \(error)")
+                let errMsg = "[TerminalLauncher] AppleScript error: \(error)\n"
+                if let data = errMsg.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/engram-terminal.log") {
+                    fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+                }
             }
         }
     }
