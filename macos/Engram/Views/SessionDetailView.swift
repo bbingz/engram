@@ -198,7 +198,13 @@ struct SessionDetailView: View {
                 case "kimi":
                     effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.kimi/chats") ?? ""
                 case "copilot":
-                    effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.copilot/session-state") ?? ""
+                    // Copilot stores as {sessionId}/events.jsonl
+                    let copilotDirect = home + "/.copilot/session-state/\(session.id)/events.jsonl"
+                    if FileManager.default.fileExists(atPath: copilotDirect) {
+                        effectivePath = copilotDirect
+                    } else {
+                        effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.copilot/session-state") ?? ""
+                    }
                 default:
                     break
                 }
