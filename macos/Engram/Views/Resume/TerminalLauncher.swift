@@ -32,7 +32,10 @@ struct TerminalLauncher {
             script = """
             tell application "iTerm2"
                 activate
-                create window with default profile command "cd \\"\(safeCwd)\\" && \(safeCmd)"
+                set newWindow to (create window with default profile)
+                tell current session of newWindow
+                    write text "cd \\"\(safeCwd)\\" && \(safeCmd)"
+                end tell
             end tell
             """
         case .ghostty:
