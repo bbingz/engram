@@ -32,8 +32,10 @@ struct MainWindowView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: 8) {
+            ToolbarItem(placement: .principal) {
+                HStack {
+                    Spacer()
+
                     // Search button
                     Button { showSearch.toggle() } label: {
                         HStack(spacing: 6) {
@@ -57,6 +59,7 @@ struct MainWindowView: View {
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.15)))
                     }
                     .buttonStyle(.plain)
+                    .focusEffectDisabled()
 
                     // Resume button
                     Button(action: { resumeSelectedSession() }) {
@@ -75,6 +78,7 @@ struct MainWindowView: View {
                     .buttonStyle(.plain)
                     .disabled(selectedSession == nil)
                 }
+                .frame(maxWidth: .infinity)
             }
         }
         .navigationSplitViewStyle(.balanced)
