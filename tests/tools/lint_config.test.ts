@@ -68,6 +68,18 @@ describe('lint_config', () => {
       expect(looksLikeFilePath('Database')).toBe(false)
       expect(looksLikeFilePath('true')).toBe(false)
     })
+
+    it('rejects URLs', () => {
+      expect(looksLikeFilePath('http://example.com/foo')).toBe(false)
+      expect(looksLikeFilePath('https://github.com/user/repo')).toBe(false)
+      expect(looksLikeFilePath('https://docs.example.com/guide.html')).toBe(false)
+    })
+
+    it('rejects scoped npm packages', () => {
+      expect(looksLikeFilePath('@scope/pkg')).toBe(false)
+      expect(looksLikeFilePath('@types/node')).toBe(false)
+      expect(looksLikeFilePath('@hono/node-server')).toBe(false)
+    })
   })
 
   describe('looksLikeNpmScript', () => {
@@ -123,6 +135,26 @@ describe('lint_config', () => {
       expect(result.score).toBe(100)
 
       rmSync(cleanDir, { recursive: true, force: true })
+    })
+
+    it('ignores path traversal references that escape project root', async () => {
+      const traversalDir = join(tmpdir(), 'engram-lint-traversal-' + Date.now())
+      mkdirSync(traversalDir, { recursive: true })
+      writeFileSync(join(traversalDir, 'CLAUDE.md'), [
+        '# Config',
+        'See `../../etc/passwd` for secrets.',
+        'Check `../sibling/file.ts` too.',
+      ].join('\n'), 'utf-8')
+
+      const result = await handleLintConfig({ cwd: traversalDir })
+      // Path traversal refs should be silently skipped, not reported as broken
+      const traversalIssues = result.issues.filter(i =>
+        i.message.includes('etc/passwd') || i.message.includes('sibling/file.ts')
+      )
+      expect(traversalIssues.length).toBe(0)
+      expect(result.score).toBe(100)
+
+      rmSync(traversalDir, { recursive: true, force: true })
     })
 
     it('returns empty issues when no config files exist', async () => {

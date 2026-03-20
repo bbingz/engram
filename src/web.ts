@@ -977,6 +977,24 @@ export function createApp(db: Database, opts?: {
     const body = await c.req.json().catch(() => ({}))
     const cwd = (body as Record<string, unknown>).cwd as string | undefined
     if (!cwd) return c.json({ error: 'cwd required' }, 400)
+
+    // Validate: must be absolute path
+    if (!cwd.startsWith('/')) return c.json({ error: 'cwd must be an absolute path' }, 400)
+
+    // Defense-in-depth: reject paths outside $HOME
+    const home = homedir()
+    if (!cwd.startsWith(home + '/') && cwd !== home) {
+      return c.json({ error: 'cwd must be within the home directory' }, 400)
+    }
+
+    // Validate: must exist as a directory
+    try {
+      const s = await stat(cwd)
+      if (!s.isDirectory()) return c.json({ error: 'cwd is not a directory' }, 400)
+    } catch {
+      return c.json({ error: 'cwd does not exist' }, 400)
+    }
+
     const result = await handleLintConfig({ cwd })
     return c.json(result)
   })

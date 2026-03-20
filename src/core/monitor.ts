@@ -63,18 +63,21 @@ export class BackgroundMonitor {
   }
 
   async check(): Promise<void> {
-    // Evict: prune dismissed alerts older than 24h, then cap at 100 most recent
+    // Evict dismissed alerts older than 24h before running checks
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
     this.alerts = this.alerts.filter(
       a => !(a.dismissed && new Date(a.timestamp).getTime() < oneDayAgo)
     )
-    if (this.alerts.length > 100) {
-      this.alerts = this.alerts.slice(-100)
-    }
 
     await this.checkDailyCost()
     await this.checkUnpushedCommits()
     this.checkLongSessions()
+
+    // Cap at 100 most recent AFTER all checks complete,
+    // so new alerts from this cycle are included in the cap
+    if (this.alerts.length > 100) {
+      this.alerts = this.alerts.slice(-100)
+    }
   }
 
   private async checkDailyCost(): Promise<void> {

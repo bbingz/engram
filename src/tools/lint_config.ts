@@ -41,6 +41,11 @@ export function extractBacktickRefs(line: string): string[] {
  * Check if a string looks like a file or directory path.
  */
 export function looksLikeFilePath(ref: string): boolean {
+  // Exclude URLs
+  if (/^https?:\/\//.test(ref)) return false
+  // Exclude scoped npm packages (e.g., @scope/pkg)
+  if (ref.startsWith('@') && ref.includes('/') && !ref.includes(' ')) return false
+
   // Must contain a slash or have a recognized extension
   if (ref.includes(' ') && !ref.includes('/')) return false
   if (ref.endsWith('/')) return true
