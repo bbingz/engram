@@ -29,20 +29,16 @@ struct MainWindowView: View {
         .onChange(of: searchQuery) { _, query in
             if query.isEmpty { searchResults = [] }
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+        .toolbar(id: "main") {
+            ToolbarItem(id: "resume", placement: .confirmationAction) {
                 Button(action: { resumeSelectedSession() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 8))
-                        Text("Resume")
-                            .font(.system(size: 11))
-                    }
+                    Label("Resume", systemImage: "play.fill")
                 }
                 .disabled(selectedSession == nil)
                 .help(selectedSession != nil ? "Resume session" : "Select a session")
             }
         }
+        .toolbarRole(.automatic)
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
         .onChange(of: selectedScreen) { _, _ in
