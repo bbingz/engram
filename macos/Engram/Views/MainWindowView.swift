@@ -36,7 +36,8 @@ struct MainWindowView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
                         .onSubmit { performSearch() }
-                        .frame(width: 200)
+                        .frame(width: 180)
+                        .focusEffectDisabled()
                     if !searchQuery.isEmpty {
                         Button {
                             searchQuery = ""
