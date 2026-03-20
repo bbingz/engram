@@ -194,8 +194,11 @@ export function createApp(db: Database, opts?: {
 
     const limitParam = c.req.query('limit')
     const offsetParam = c.req.query('offset')
-    const limit = limitParam ? Math.min(parseInt(limitParam, 10), 500) : undefined
+    const limit = limitParam ? parseInt(limitParam, 10) : undefined
+    if (limit !== undefined && (isNaN(limit) || limit < 1)) return c.json({ error: 'limit must be a positive integer' }, 400)
+    const clampedLimit = limit !== undefined ? Math.min(limit, 500) : undefined
     const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+    if (isNaN(offset) || offset < 0) return c.json({ error: 'offset must be a non-negative integer' }, 400)
 
     const entries: Array<{
       index: number
@@ -208,6 +211,10 @@ export function createApp(db: Database, opts?: {
       tokens?: { input: number; output: number }
     }> = []
 
+    // When limit is set, collect limit + 1 entries to determine hasMore accurately.
+    // If we get limit + 1, pop the last and set hasMore = true.
+    const collectTarget = clampedLimit !== undefined ? clampedLimit + 1 : undefined
+
     try {
       let idx = 0
       let collected = 0
@@ -216,9 +223,13 @@ export function createApp(db: Database, opts?: {
         if (idx < offset) {
           idx++
           prevTimestamp = msg.timestamp
+          // NOTE: durationToNextMs for the first entry after offset > 0 will be
+          // computed relative to the last skipped message's timestamp, which is
+          // correct. However the skipped entry itself won't have durationToNextMs
+          // set — acceptable limitation for v1 pagination.
           continue
         }
-        if (limit !== undefined && collected >= limit) {
+        if (collectTarget !== undefined && collected >= collectTarget) {
           break
         }
         const entry: typeof entries[0] = {
@@ -253,13 +264,17 @@ export function createApp(db: Database, opts?: {
       return c.json({ error: `Failed to read session: ${err}` }, 500)
     }
 
+    // If we collected more than the requested limit, there are more entries
+    const hasMore = clampedLimit !== undefined && entries.length > clampedLimit
+    if (hasMore) entries.pop()
+
     return c.json({
       sessionId: session.id,
       source: session.source,
-      totalEntries: entries.length,
+      totalEntries: session.messageCount || entries.length,
       entries,
       ...(offset > 0 ? { offset } : {}),
-      ...(limit !== undefined ? { limit, hasMore: entries.length === limit } : {}),
+      ...(clampedLimit !== undefined ? { limit: clampedLimit, hasMore } : {}),
     })
   })
 

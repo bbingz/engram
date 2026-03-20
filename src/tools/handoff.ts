@@ -54,9 +54,9 @@ export async function handleHandoff(
     sessions = s ? [mapSession(s)] : []
   } else {
     const raw = db.listSessions({ projects: projectNames, limit: 10 })
-    // Fallback: try cwd-based search if project name yields nothing
+    // Fallback: try basename-based search if alias resolution yields nothing
     if (raw.length === 0) {
-      const fallback = db.listSessions({ project: params.cwd, limit: 10 })
+      const fallback = db.listSessions({ project: projectName, limit: 10 })
       sessions = fallback.map(mapSession)
     } else {
       sessions = raw.map(mapSession)
@@ -106,7 +106,7 @@ export async function handleHandoff(
     if (lastTask) {
       lines.push(`**Last task**: ${lastTask.slice(0, 200)}`)
       const shortText = lastTask.slice(0, 60)
-      lines.push(`**Suggested prompt**: "继续 ${shortText}"`)
+      lines.push(`**Suggested prompt**: "Continue: ${shortText}"`)
     }
     return { brief: lines.join('\n'), sessionCount: sessions.length }
   }
