@@ -24,7 +24,5 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>Engram needs to send commands to terminal apps to resume AI sessions.</string>
 </dict>
 </plist>
