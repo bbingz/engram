@@ -41,7 +41,7 @@ const titleConfig = {
 }
 const titleGenerator = new TitleGenerator(titleConfig)
 
-const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode })
+const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode, titleGenerator })
 
 function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')

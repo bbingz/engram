@@ -9,6 +9,7 @@ import { computeTier, type SessionTier } from './session-tier.js'
 import { isPreambleOnly } from './preamble-detector.js'
 import { SessionSnapshotWriter } from './session-writer.js'
 import { toVikingUri, type VikingBridge } from './viking-bridge.js'
+import type { TitleGenerator } from './title-generator.js'
 
 export class Indexer {
   private writer: SessionSnapshotWriter
@@ -16,7 +17,7 @@ export class Indexer {
   constructor(
     private db: Database,
     private adapters: SessionAdapter[],
-    private opts?: { viking?: VikingBridge | null; authoritativeNode?: string; writer?: SessionSnapshotWriter }
+    private opts?: { viking?: VikingBridge | null; authoritativeNode?: string; writer?: SessionSnapshotWriter; titleGenerator?: TitleGenerator }
   ) {
     this.writer = opts?.writer ?? new SessionSnapshotWriter(db)
   }
@@ -34,6 +35,23 @@ export class Indexer {
         model: info.model ?? '',
       }).catch(() => {})
     }).catch(() => {})
+  }
+
+  private async generateTitleIfNeeded(sessionId: string, tier: SessionTier, messages: { role: string; content: string }[]): Promise<void> {
+    const titleGenerator = this.opts?.titleGenerator
+    if (!titleGenerator) return
+    if (tier === 'skip' || tier === 'lite') return
+    if (messages.length < 2) return
+
+    // Skip if title already exists
+    const existing = this.db.getRawDb().prepare('SELECT generated_title FROM sessions WHERE id = ?').get(sessionId) as { generated_title: string | null } | undefined
+    if (existing?.generated_title) return
+
+    const msgs = messages.slice(0, 6).map(m => ({ role: m.role, content: m.content?.slice(0, 200) || '' }))
+    const title = await titleGenerator.generate(msgs)
+    if (title) {
+      this.db.getRawDb().prepare('UPDATE sessions SET generated_title = ? WHERE id = ?').run(title, sessionId)
+    }
   }
 
   private buildLocalAuthoritativeSnapshot(
@@ -142,6 +160,10 @@ export class Indexer {
             this.pushToViking(info, messages)
           }
 
+          if (snapshot.tier) {
+            await this.generateTitleIfNeeded(info.id, snapshot.tier, messages)
+          }
+
           newCount++
         } catch {
           // 跳过无法处理的文件，不中断整体流程
@@ -205,6 +227,10 @@ export class Indexer {
 
       if (snapshot.tier === 'premium') {
         this.pushToViking(info, messages)
+      }
+
+      if (snapshot.tier) {
+        await this.generateTitleIfNeeded(info.id, snapshot.tier, messages)
       }
 
       return { indexed: true, sessionId: info.id, messageCount: info.messageCount ?? messages.length, tier: snapshot.tier }
