@@ -1,5 +1,8 @@
 // macos/Engram/Views/SessionDetailView.swift
 import SwiftUI
+import os.log
+
+private let logger = Logger(subsystem: "com.engram.app", category: "SessionDetail")
 
 struct SessionDetailView: View {
     let session: Session
@@ -181,8 +184,19 @@ struct SessionDetailView: View {
             typeCounts = [:]
             let path = session.filePath
             let source = session.source
+            // If filePath is empty, try to find the session file via source_locator or known paths
+            var effectivePath = path
+            if effectivePath.isEmpty {
+                // Try to find claude-code session file by ID pattern
+                if source == "claude-code" {
+                    let claudeBase = NSHomeDirectory() + "/.claude/projects"
+                    if let found = findSessionFile(sessionId: session.id, baseDir: claudeBase) {
+                        effectivePath = found
+                    }
+                }
+            }
             messages = await Task.detached(priority: .userInitiated) {
-                MessageParser.parse(filePath: path, source: source)
+                MessageParser.parse(filePath: effectivePath, source: source)
             }.value
             let result = IndexedMessage.build(from: messages)
             indexedMessages = result.messages
@@ -233,6 +247,31 @@ struct SessionDetailView: View {
         if msgIndex < displayed.count {
             scrollTarget = displayed[msgIndex].id
         }
+    }
+
+    /// Find a session JSONL file by scanning claude projects directory
+    func findSessionFile(sessionId: String, baseDir: String) -> String? {
+        let fm = FileManager.default
+        guard let projectDirs = try? fm.contentsOfDirectory(atPath: baseDir) else { return nil }
+        for project in projectDirs {
+            let projectPath = (baseDir as NSString).appendingPathComponent(project)
+            // Check direct session file: {project}/{sessionId}.jsonl
+            let directPath = (projectPath as NSString).appendingPathComponent("\(sessionId).jsonl")
+            if fm.fileExists(atPath: directPath) { return directPath }
+            // Check subdirectories (session folders)
+            if let entries = try? fm.contentsOfDirectory(atPath: projectPath) {
+                for entry in entries where entry == sessionId || entry.hasSuffix(sessionId) {
+                    let entryPath = (projectPath as NSString).appendingPathComponent(entry)
+                    var isDir: ObjCBool = false
+                    if fm.fileExists(atPath: entryPath, isDirectory: &isDir) {
+                        if !isDir.boolValue && entryPath.hasSuffix(".jsonl") {
+                            return entryPath
+                        }
+                    }
+                }
+            }
+        }
+        return nil
     }
 
     func copyAllTranscript() {
