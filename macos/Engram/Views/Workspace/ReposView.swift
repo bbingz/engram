@@ -6,6 +6,7 @@ struct ReposView: View {
     @State private var repos: [GitRepo] = []
     @State private var isLoading = true
     @State private var error: String? = nil
+    @State private var selectedRepo: GitRepo?
 
     private var activeRepos: [GitRepo] { repos.filter { $0.isActive } }
     private var recentRepos: [GitRepo] { repos.filter { !$0.isActive } }
@@ -13,6 +14,14 @@ struct ReposView: View {
     private var unpushedCount: Int { repos.filter { $0.unpushedCount > 0 }.count }
 
     var body: some View {
+        if let repo = selectedRepo {
+            RepoDetailView(repo: repo, onBack: { selectedRepo = nil })
+        } else {
+            repoListView
+        }
+    }
+
+    private var repoListView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 // KPI cards
@@ -32,7 +41,7 @@ struct ReposView: View {
                                   onRefresh: { Task { await loadData() } })
                     LazyVStack(spacing: 4) {
                         ForEach(activeRepos) { repo in
-                            RepoRow(repo: repo)
+                            RepoRow(repo: repo) { selectedRepo = repo }
                         }
                     }
                 }
@@ -41,7 +50,7 @@ struct ReposView: View {
                     SectionHeader(icon: "clock", title: "Recent")
                     LazyVStack(spacing: 4) {
                         ForEach(recentRepos) { repo in
-                            RepoRow(repo: repo)
+                            RepoRow(repo: repo) { selectedRepo = repo }
                         }
                     }
                 }
@@ -74,8 +83,10 @@ struct ReposView: View {
 
 private struct RepoRow: View {
     let repo: GitRepo
+    let onTap: () -> Void
 
     var body: some View {
+        Button(action: onTap) {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -148,5 +159,7 @@ private struct RepoRow: View {
         .background(Theme.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
     }
 }
