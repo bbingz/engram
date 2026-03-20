@@ -32,7 +32,7 @@ struct MainWindowView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
+            ToolbarItem(placement: .primaryAction) {
                 HStack(spacing: 8) {
                     // Search button
                     Button { showSearch.toggle() } label: {
