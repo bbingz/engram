@@ -27,7 +27,7 @@ struct MainWindowView: View {
             ToolbarItemGroup(placement: .automatic) {
                 Spacer()
 
-                // Search field — flat style matching toolbar background
+                // Search field — fixed width, flat style
                 HStack(spacing: 5) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 12))
@@ -36,7 +36,6 @@ struct MainWindowView: View {
                         .textFieldStyle(.plain)
                         .font(.system(size: 12))
                         .onSubmit { performSearch() }
-                        .frame(minWidth: 140)
                     if !searchQuery.isEmpty {
                         Button {
                             searchQuery = ""
@@ -52,8 +51,9 @@ struct MainWindowView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.04))
+                .padding(.vertical, 4)
+                .frame(width: 220)
+                .background(Color.primary.opacity(0.05))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
 
                 // Resume
