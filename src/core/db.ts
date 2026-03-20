@@ -910,7 +910,7 @@ export class Database {
       case 'day': groupCol = "date(s.start_time)"; break
       default: groupCol = 'c.model'; break
     }
-    let sql = `SELECT ${groupCol} as key, SUM(c.input_tokens) as inputTokens, SUM(c.output_tokens) as outputTokens, SUM(c.cost_usd) as costUsd, COUNT(*) as sessionCount FROM session_costs c JOIN sessions s ON c.session_id = s.id WHERE 1=1`
+    let sql = `SELECT ${groupCol} as key, SUM(c.input_tokens) as inputTokens, SUM(c.output_tokens) as outputTokens, SUM(c.cache_read_tokens) as cacheReadTokens, SUM(c.cache_creation_tokens) as cacheCreationTokens, SUM(c.cost_usd) as costUsd, COUNT(*) as sessionCount FROM session_costs c JOIN sessions s ON c.session_id = s.id WHERE 1=1`
     const binds: any[] = []
     if (params.since) { sql += ' AND s.start_time >= ?'; binds.push(params.since) }
     if (params.until) { sql += ' AND s.start_time < ?'; binds.push(params.until) }
@@ -919,20 +919,32 @@ export class Database {
   }
 
   getToolAnalytics(params: { project?: string; since?: string; groupBy?: string }): any[] {
-    let sql = `SELECT t.tool_name as name, SUM(t.call_count) as callCount, COUNT(DISTINCT t.session_id) as sessionCount FROM session_tools t JOIN sessions s ON t.session_id = s.id WHERE 1=1`
+    let selectCols: string
+    let groupCol: string
+    switch (params.groupBy) {
+      case 'session':
+        selectCols = 't.session_id as key, s.summary as label, SUM(t.call_count) as callCount, COUNT(DISTINCT t.tool_name) as toolCount'
+        groupCol = 't.session_id'
+        break
+      case 'project':
+        selectCols = 's.project as key, SUM(t.call_count) as callCount, COUNT(DISTINCT t.tool_name) as toolCount, COUNT(DISTINCT t.session_id) as sessionCount'
+        groupCol = 's.project'
+        break
+      default: // 'tool'
+        selectCols = 't.tool_name as name, SUM(t.call_count) as callCount, COUNT(DISTINCT t.session_id) as sessionCount'
+        groupCol = 't.tool_name'
+        break
+    }
+    let sql = `SELECT ${selectCols} FROM session_tools t JOIN sessions s ON t.session_id = s.id WHERE 1=1`
     const binds: any[] = []
     if (params.project) { sql += ' AND s.project LIKE ?'; binds.push(`%${params.project}%`) }
     if (params.since) { sql += ' AND s.start_time >= ?'; binds.push(params.since) }
-    sql += ' GROUP BY t.tool_name ORDER BY callCount DESC'
+    sql += ` GROUP BY ${groupCol} ORDER BY callCount DESC`
     return this.db.prepare(sql).all(...binds) as any[]
   }
 
   sessionsWithoutCosts(limit = 100): string[] {
     return (this.db.prepare(`SELECT s.id FROM sessions s LEFT JOIN session_costs c ON s.id = c.session_id WHERE c.session_id IS NULL AND (s.tier IS NULL OR s.tier != 'skip') LIMIT ?`).all(limit) as { id: string }[]).map(r => r.id)
-  }
-
-  sessionsWithoutTools(limit = 100): string[] {
-    return (this.db.prepare(`SELECT s.id FROM sessions s LEFT JOIN session_tools t ON s.id = t.session_id WHERE t.session_id IS NULL AND (s.tier IS NULL OR s.tier != 'skip') LIMIT ?`).all(limit) as { id: string }[]).map(r => r.id)
   }
 
   close(): void {

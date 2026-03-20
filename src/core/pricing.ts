@@ -31,13 +31,16 @@ export function getModelPrice(model: string, customPricing?: Record<string, Mode
   if (MODEL_PRICING[model]) return MODEL_PRICING[model]
 
   // Prefix match (e.g. 'claude-sonnet-4-5-20250929' -> 'claude-sonnet-4-5')
-  for (const [key, price] of Object.entries(MODEL_PRICING)) {
+  // Sort by key length descending to match longest prefix first (e.g. 'gpt-4o-mini' before 'gpt-4o')
+  const sortedEntries = Object.entries(MODEL_PRICING).sort((a, b) => b[0].length - a[0].length)
+  for (const [key, price] of sortedEntries) {
     if (model.startsWith(key)) return price
   }
 
-  // Custom pricing prefix match
+  // Custom pricing prefix match (same longest-first strategy)
   if (customPricing) {
-    for (const [key, price] of Object.entries(customPricing)) {
+    const sortedCustom = Object.entries(customPricing).sort((a, b) => b[0].length - a[0].length)
+    for (const [key, price] of sortedCustom) {
       if (model.startsWith(key)) return price
     }
   }

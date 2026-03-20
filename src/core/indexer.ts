@@ -234,34 +234,37 @@ export class Indexer {
 
   // Backfill costs and tools for sessions that have no session_costs row
   async backfillCosts(): Promise<number> {
-    const ids = this.db.sessionsWithoutCosts()
-    let count = 0
-    for (const id of ids) {
-      const session = this.db.getSession(id)
-      if (!session?.filePath) continue
-      const adapter = this.adapters.find(a => a.name === session.source)
-      if (!adapter) continue
-      try {
-        let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreationTokens = 0
-        const toolCounts = new Map<string, number>()
-        for await (const msg of adapter.streamMessages(session.filePath)) {
-          if (msg.usage) {
-            inputTokens += msg.usage.inputTokens
-            outputTokens += msg.usage.outputTokens
-            cacheReadTokens += msg.usage.cacheReadTokens ?? 0
-            cacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
-          }
-          if (msg.toolCalls) {
-            for (const tc of msg.toolCalls) {
-              toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1)
+    let total = 0
+    while (true) {
+      const ids = this.db.sessionsWithoutCosts()
+      if (ids.length === 0) break
+      for (const id of ids) {
+        const session = this.db.getSession(id)
+        if (!session?.filePath) continue
+        const adapter = this.adapters.find(a => a.name === session.source)
+        if (!adapter) continue
+        try {
+          let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreationTokens = 0
+          const toolCounts = new Map<string, number>()
+          for await (const msg of adapter.streamMessages(session.filePath)) {
+            if (msg.usage) {
+              inputTokens += msg.usage.inputTokens
+              outputTokens += msg.usage.outputTokens
+              cacheReadTokens += msg.usage.cacheReadTokens ?? 0
+              cacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
+            }
+            if (msg.toolCalls) {
+              for (const tc of msg.toolCalls) {
+                toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1)
+              }
             }
           }
-        }
-        this.writeExtractedData(id, session.model || '', inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, toolCounts)
-        count++
-      } catch { /* skip failed sessions */ }
+          this.writeExtractedData(id, session.model || '', inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, toolCounts)
+          total++
+        } catch { /* skip failed sessions */ }
+      }
     }
-    return count
+    return total
   }
 
   // 索引单个文件（文件变化时增量更新用）

@@ -272,7 +272,8 @@ export function createApp(db: Database, opts?: {
   })
 
   app.get('/api/costs/sessions', (c) => {
-    const limit = parseInt(c.req.query('limit') || '20')
+    const rawLimit = parseInt(c.req.query('limit') || '20')
+    const limit = Math.min(Math.max(isNaN(rawLimit) ? 20 : rawLimit, 1), 100)
     const rows = db.getRawDb().prepare(`
       SELECT c.*, s.source, s.project, s.start_time, s.summary
       FROM session_costs c JOIN sessions s ON c.session_id = s.id

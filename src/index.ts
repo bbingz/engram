@@ -157,9 +157,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (name === 'get_memory') {
       result = await handleGetMemory(a as { query: string }, { viking: vikingBridge })
     } else if (name === 'get_costs') {
-      result = handleGetCosts(db, a as any)
+      result = handleGetCosts(db, a as { group_by?: string; since?: string; until?: string })
     } else if (name === 'tool_analytics') {
-      result = handleToolAnalytics(db, a as any)
+      result = handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string })
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }
