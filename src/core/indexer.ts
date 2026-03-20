@@ -1,8 +1,9 @@
 // src/core/indexer.ts
 import { createHash } from 'crypto'
 import { stat } from 'fs/promises'
-import type { SessionAdapter, SessionInfo } from '../adapters/types.js'
+import type { SessionAdapter, SessionInfo, Message } from '../adapters/types.js'
 import type { Database } from './db.js'
+import { computeCost } from './pricing.js'
 import { resolveProjectName } from './project.js'
 import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
 import { computeTier, type SessionTier } from './session-tier.js'
@@ -52,6 +53,35 @@ export class Indexer {
     if (title) {
       this.db.getRawDb().prepare('UPDATE sessions SET generated_title = ? WHERE id = ?').run(title, sessionId)
     }
+  }
+
+  private writeExtractedData(sessionId: string, model: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, toolCounts: Map<string, number>): void {
+    // Always write a session_costs row, even with zero tokens.
+    // Without this, sessionsWithoutCosts() returns non-claude-code sessions forever → infinite backfill loop.
+    const cost = computeCost(model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+    this.db.upsertSessionCost(sessionId, model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, cost)
+    if (toolCounts.size > 0) {
+      this.db.upsertSessionTools(sessionId, toolCounts)
+    }
+  }
+
+  /** Accumulate token usage and tool calls from a message stream. */
+  private static accumulateFromStream(msg: Message, acc: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; toolCounts: Map<string, number> }): void {
+    if (msg.usage) {
+      acc.inputTokens += msg.usage.inputTokens
+      acc.outputTokens += msg.usage.outputTokens
+      acc.cacheReadTokens += msg.usage.cacheReadTokens ?? 0
+      acc.cacheCreationTokens += msg.usage.cacheCreationTokens ?? 0
+    }
+    if (msg.toolCalls) {
+      for (const tc of msg.toolCalls) {
+        acc.toolCounts.set(tc.name, (acc.toolCounts.get(tc.name) || 0) + 1)
+      }
+    }
+  }
+
+  private static newAccumulator() {
+    return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, toolCounts: new Map<string, number>() }
   }
 
   private buildLocalAuthoritativeSnapshot(
@@ -146,15 +176,21 @@ export class Indexer {
           }
 
           const messages: { role: string; content: string }[] = []
+          const acc = Indexer.newAccumulator()
+
           for await (const msg of adapter.streamMessages(filePath)) {
             if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
               messages.push({ role: msg.role, content: msg.content })
             }
+            Indexer.accumulateFromStream(msg, acc)
           }
 
           const current = this.db.getAuthoritativeSnapshot(info.id)
           const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
           this.writer.writeAuthoritativeSnapshot(snapshot)
+
+          // Write cost and tool data
+          this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
 
           if (snapshot.tier === 'premium') {
             this.pushToViking(info, messages)
@@ -201,6 +237,41 @@ export class Indexer {
     return count
   }
 
+  // Backfill costs and tools for sessions that have no session_costs row
+  async backfillCosts(): Promise<number> {
+    let total = 0
+    while (true) {
+      const ids = this.db.sessionsWithoutCosts()
+      if (ids.length === 0) break
+      for (const id of ids) {
+        const session = this.db.getSession(id)
+        if (!session?.filePath) {
+          this.writeExtractedData(id, '', 0, 0, 0, 0, new Map())
+          total++
+          continue
+        }
+        const adapter = this.adapters.find(a => a.name === session.source)
+        if (!adapter) {
+          this.writeExtractedData(id, session.model || '', 0, 0, 0, 0, new Map())
+          total++
+          continue
+        }
+        try {
+          const acc = Indexer.newAccumulator()
+          for await (const msg of adapter.streamMessages(session.filePath)) {
+            Indexer.accumulateFromStream(msg, acc)
+          }
+          this.writeExtractedData(id, session.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
+          total++
+        } catch {
+          this.writeExtractedData(id, session.model || '', 0, 0, 0, 0, new Map())
+          total++
+        }
+      }
+    }
+    return total
+  }
+
   // 索引单个文件（文件变化时增量更新用）
   async indexFile(adapter: SessionAdapter, filePath: string): Promise<{ indexed: boolean; sessionId?: string; messageCount?: number; tier?: SessionTier }> {
     try {
@@ -215,15 +286,21 @@ export class Indexer {
       }
 
       const messages: { role: string; content: string }[] = []
+      const acc = Indexer.newAccumulator()
+
       for await (const msg of adapter.streamMessages(filePath)) {
         if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
           messages.push({ role: msg.role, content: msg.content })
         }
+        Indexer.accumulateFromStream(msg, acc)
       }
 
       const current = this.db.getAuthoritativeSnapshot(info.id)
       const snapshot = this.buildLocalAuthoritativeSnapshot(current, { ...info, sizeBytes: info.sizeBytes || fileSize }, filePath, messages)
       this.writer.writeAuthoritativeSnapshot(snapshot)
+
+      // Write cost and tool data
+      this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
 
       if (snapshot.tier === 'premium') {
         this.pushToViking(info, messages)

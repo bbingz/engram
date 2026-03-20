@@ -79,6 +79,14 @@ indexer.indexAll().then(async (indexed) => {
     }
   } catch { /* ignore */ }
 
+  // Backfill costs and tool analytics for sessions without cost data
+  try {
+    const costBackfilled = await indexer.backfillCosts()
+    if (costBackfilled > 0) {
+      emit({ event: 'backfill', type: 'costs', count: costBackfilled })
+    }
+  } catch { /* ignore */ }
+
   // DB maintenance: dedup, optimize FTS, VACUUM if fragmented
   try {
     const deduped = db.deduplicateFilePaths()

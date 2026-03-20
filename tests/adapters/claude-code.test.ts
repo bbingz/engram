@@ -1,6 +1,7 @@
 // tests/adapters/claude-code.test.ts
 import { describe, it, expect } from 'vitest'
 import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.js'
+import type { Message } from '../../src/adapters/types.js'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -8,6 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURE = join(__dirname, '../fixtures/claude-code/sample.jsonl')
 const TOOL_FIXTURE = join(__dirname, '../fixtures/claude-code/with-tools.jsonl')
 const FMT_FIXTURE = join(__dirname, '../fixtures/claude-code/tool-formatting.jsonl')
+const USAGE_FIXTURE = join(__dirname, '../fixtures/claude-code/session-with-usage.jsonl')
 
 describe('ClaudeCodeAdapter', () => {
   const adapter = new ClaudeCodeAdapter()
@@ -83,5 +85,47 @@ describe('ClaudeCodeAdapter', () => {
     // 算法：先替换 -- 为占位符，再替换单 - 为 /，再恢复占位符为 -
     expect(ClaudeCodeAdapter.decodeCwd('-Users-bing--Code--project'))
       .toBe('/Users/bing-Code-project')
+  })
+
+  describe('streamMessages with usage data', () => {
+    it('extracts token usage from assistant messages', async () => {
+      const messages: Message[] = []
+      for await (const msg of adapter.streamMessages(USAGE_FIXTURE)) {
+        messages.push(msg)
+      }
+      const assistantMsgs = messages.filter(m => m.role === 'assistant')
+      expect(assistantMsgs.length).toBeGreaterThanOrEqual(2)
+
+      // First assistant message should have usage
+      const first = assistantMsgs[0]
+      expect(first.usage).toBeDefined()
+      expect(first.usage!.inputTokens).toBe(1500)
+      expect(first.usage!.outputTokens).toBe(50)
+      expect(first.usage!.cacheCreationTokens).toBe(1000)
+      expect(first.usage!.cacheReadTokens).toBe(500)
+
+      // Second assistant message
+      const second = assistantMsgs[1]
+      expect(second.usage).toBeDefined()
+      expect(second.usage!.inputTokens).toBe(2000)
+      expect(second.usage!.outputTokens).toBe(100)
+    })
+
+    it('extracts toolCalls from assistant messages', async () => {
+      const messages: Message[] = []
+      for await (const msg of adapter.streamMessages(USAGE_FIXTURE)) {
+        messages.push(msg)
+      }
+      const assistantMsgs = messages.filter(m => m.role === 'assistant')
+
+      const first = assistantMsgs[0]
+      expect(first.toolCalls).toBeDefined()
+      expect(first.toolCalls!.length).toBe(1)
+      expect(first.toolCalls![0].name).toBe('Read')
+
+      const second = assistantMsgs[1]
+      expect(second.toolCalls).toBeDefined()
+      expect(second.toolCalls![0].name).toBe('Edit')
+    })
   })
 })

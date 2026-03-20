@@ -233,6 +233,33 @@ export class Database {
       )
     `)
 
+    // session_costs — token usage and cost per session (separate from snapshot write path)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_costs (
+        session_id TEXT PRIMARY KEY,
+        model TEXT,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        cache_read_tokens INTEGER DEFAULT 0,
+        cache_creation_tokens INTEGER DEFAULT 0,
+        cost_usd REAL DEFAULT 0,
+        computed_at TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      )
+    `)
+
+    // session_tools — tool call counts per session
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_tools (
+        session_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        call_count INTEGER DEFAULT 0,
+        PRIMARY KEY (session_id, tool_name),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      )
+    `)
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_session_tools_name ON session_tools(tool_name)')
+
     const sessionCols = this.db.pragma('table_info(sessions)') as { name: string }[]
     if (!sessionCols.some(c => c.name === 'generated_title')) {
       this.db.exec('ALTER TABLE sessions ADD COLUMN generated_title TEXT')
@@ -856,6 +883,72 @@ export class Database {
       GROUP BY ${groupExpr}
       ORDER BY sessionCount DESC
     `).all(params) as StatsGroup[]
+  }
+
+  // --- Cost tracking ---
+
+  upsertSessionCost(sessionId: string, model: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, costUsd: number): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO session_costs (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, computed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(sessionId, model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd)
+  }
+
+  upsertSessionTools(sessionId: string, tools: Map<string, number>): void {
+    const stmt = this.db.prepare(`INSERT OR REPLACE INTO session_tools (session_id, tool_name, call_count) VALUES (?, ?, ?)`)
+    const runMany = this.db.transaction((items: [string, string, number][]) => {
+      for (const item of items) stmt.run(...item)
+    })
+    runMany([...tools.entries()].map(([name, count]) => [sessionId, name, count]))
+  }
+
+  getCostsSummary(params: { groupBy?: string; since?: string; until?: string }): any[] {
+    let groupCol: string
+    switch (params.groupBy) {
+      case 'source': groupCol = 's.source'; break
+      case 'project': groupCol = 's.project'; break
+      case 'day': groupCol = "date(s.start_time)"; break
+      default: groupCol = 'c.model'; break
+    }
+    let sql = `SELECT ${groupCol} as key, SUM(c.input_tokens) as inputTokens, SUM(c.output_tokens) as outputTokens, SUM(c.cache_read_tokens) as cacheReadTokens, SUM(c.cache_creation_tokens) as cacheCreationTokens, SUM(c.cost_usd) as costUsd, COUNT(*) as sessionCount FROM session_costs c JOIN sessions s ON c.session_id = s.id WHERE 1=1`
+    const binds: any[] = []
+    if (params.since) { sql += ' AND s.start_time >= ?'; binds.push(params.since) }
+    if (params.until) { sql += ' AND s.start_time < ?'; binds.push(params.until) }
+    sql += ` GROUP BY ${groupCol} ORDER BY costUsd DESC`
+    return this.db.prepare(sql).all(...binds) as any[]
+  }
+
+  getToolAnalytics(params: { project?: string; since?: string; groupBy?: string }): any[] {
+    let selectCols: string
+    let groupCol: string
+    switch (params.groupBy) {
+      case 'session':
+        selectCols = 't.session_id as key, s.summary as label, SUM(t.call_count) as callCount, COUNT(DISTINCT t.tool_name) as toolCount'
+        groupCol = 't.session_id'
+        break
+      case 'project':
+        selectCols = 's.project as key, SUM(t.call_count) as callCount, COUNT(DISTINCT t.tool_name) as toolCount, COUNT(DISTINCT t.session_id) as sessionCount'
+        groupCol = 's.project'
+        break
+      default: // 'tool'
+        selectCols = 't.tool_name as key, SUM(t.call_count) as callCount, COUNT(DISTINCT t.session_id) as sessionCount'
+        groupCol = 't.tool_name'
+        break
+    }
+    let sql = `SELECT ${selectCols} FROM session_tools t JOIN sessions s ON t.session_id = s.id WHERE 1=1`
+    const binds: any[] = []
+    if (params.project) {
+      const escaped = params.project.replace(/[%_\\]/g, '\\$&')
+      sql += " AND s.project LIKE ? ESCAPE '\\'"
+      binds.push(`%${escaped}%`)
+    }
+    if (params.since) { sql += ' AND s.start_time >= ?'; binds.push(params.since) }
+    sql += ` GROUP BY ${groupCol} ORDER BY callCount DESC`
+    return this.db.prepare(sql).all(...binds) as any[]
+  }
+
+  sessionsWithoutCosts(limit = 100): string[] {
+    return (this.db.prepare(`SELECT s.id FROM sessions s LEFT JOIN session_costs c ON s.id = c.session_id WHERE c.session_id IS NULL AND (s.tier IS NULL OR s.tier != 'skip') LIMIT ?`).all(limit) as { id: string }[]).map(r => r.id)
   }
 
   close(): void {

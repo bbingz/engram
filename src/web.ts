@@ -11,6 +11,8 @@ import type { SessionAdapter, SourceName } from './adapters/types.js'
 import { summarizeConversation } from './core/ai-client.js'
 import { handleSearch, type SearchDeps } from './tools/search.js'
 import { handleStats } from './tools/stats.js'
+import { handleGetCosts } from './tools/get_costs.js'
+import { handleToolAnalytics } from './tools/tool_analytics.js'
 import { layout, sessionListPage, searchPage, statsPage, settingsPage, sessionDetailPage, healthPage } from './web/views.js'
 import type { VectorStore } from './core/vector-store.js'
 import type { EmbeddingClient } from './core/embeddings.js'
@@ -257,6 +259,35 @@ export function createApp(db: Database, opts?: {
     const exclude_noise = c.req.query('exclude_noise') !== '0'  // default: true
 
     const result = await handleStats(db, { since, until, group_by, exclude_noise })
+    return c.json(result)
+  })
+
+  // Cost tracking API
+  app.get('/api/costs', (c) => {
+    const group_by = c.req.query('group_by')
+    const since = c.req.query('since')
+    const until = c.req.query('until')
+    const result = handleGetCosts(db, { group_by, since, until })
+    return c.json(result)
+  })
+
+  app.get('/api/costs/sessions', (c) => {
+    const rawLimit = parseInt(c.req.query('limit') || '20')
+    const limit = Math.min(Math.max(isNaN(rawLimit) ? 20 : rawLimit, 1), 100)
+    const rows = db.getRawDb().prepare(`
+      SELECT c.*, s.source, s.project, s.start_time, s.summary
+      FROM session_costs c JOIN sessions s ON c.session_id = s.id
+      ORDER BY c.cost_usd DESC LIMIT ?
+    `).all(limit)
+    return c.json({ sessions: rows })
+  })
+
+  // Tool analytics API
+  app.get('/api/tool-analytics', (c) => {
+    const project = c.req.query('project')
+    const since = c.req.query('since')
+    const group_by = c.req.query('group_by')
+    const result = handleToolAnalytics(db, { project, since, group_by })
     return c.json(result)
   })
 
