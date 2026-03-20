@@ -323,6 +323,46 @@ API 端点：
 
 ---
 
+### `link_sessions` — 链接会话文件
+
+将某项目的所有 AI 会话文件以符号链接形式集中到项目目录下的 `conversation_log/<source>/`，方便查看和管理。
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `targetDir` | string | ✅ | 项目目录（绝对路径），自动从 basename 推导项目名 |
+
+**示例：**
+
+```json
+{ "targetDir": "/Users/me/my-project" }
+```
+
+**返回：** `created`（新建链接数）、`skipped`（已存在跳过数）、`errors`（错误列表）
+
+---
+
+### `get_memory` — 记忆检索
+
+从历史会话中提取的记忆信息中搜索。需要配置 OpenViking。
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `query` | string | ✅ | 要回忆的内容，如 "用户的编码偏好" |
+
+**示例：**
+
+```json
+{ "query": "用户的编码偏好" }
+```
+
+**返回：** 匹配的记忆列表。未配置 OpenViking 时返回空列表和配置提示。
+
+---
+
 ### `manage_project_alias` — 项目别名管理
 
 声明两个项目名是同一个项目，所有按项目过滤的查询自动展开别名。详见[项目别名](#项目别名)。
@@ -520,7 +560,7 @@ interface SessionAdapter {
 ## 开发
 
 ```bash
-npm test              # 运行测试（109 tests）
+npm test              # 运行测试（278 tests）
 npm run test:watch    # 监听模式
 npm run test:coverage # 覆盖率报告
 npm run build         # 编译 TypeScript -> dist/

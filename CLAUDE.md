@@ -7,7 +7,7 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 173 tests, ~2s
+npm test               # vitest: 278 tests, ~2.5s
 npm run dev            # tsx: run without compile
 
 # macOS (from macos/)
@@ -22,18 +22,23 @@ xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 
 ```
 src/
-  adapters/    # SessionAdapter implementations (15 tools: codex, claude-code, cursor, etc.)
-  core/        # db.ts (SQLite), indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts
-  tools/       # MCP tool handlers (get_context, search, list_sessions, etc.)
+  adapters/    # SessionAdapter implementations (15 sources: codex, claude-code, cursor, etc.)
+  core/        # db.ts (SQLite), indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, viking-bridge.ts
+  tools/       # MCP tool handlers (10 tools: get_context, search, list_sessions, get_memory, link_sessions, etc.)
   web.ts       # Hono HTTP server + API endpoints
   index.ts     # MCP server entry (stdin/stdout transport)
   daemon.ts    # Daemon entry (indexer + watcher + web server)
 
 macos/
-  Engram/      # SwiftUI app (menu bar)
-    Core/      # IndexerProcess.swift (launches node daemon), Database.swift (GRDB read-only)
-    Views/     # PopoverView, SessionListView, SearchView, SettingsView
-    Models/    # Session.swift
+  Engram/      # SwiftUI app (menu bar + main window)
+    Core/      # IndexerProcess, Database (GRDB), DaemonClient, MCPServer, MessageParser
+    Views/     # MainWindowView, SidebarView, PopoverView, SessionListView, SessionDetailView, SettingsView
+      Pages/   # HomeView, SessionsPageView, SearchPageView, ActivityView, ProjectsView, TimelinePageView, etc.
+      Settings/  # GeneralSettingsSection, AISettingsSection, NetworkSettingsSection, SourcesSettingsSection
+      Transcript/  # ColorBarMessageView, TranscriptToolbar, TranscriptFindBar
+      Workspace/   # ReposView, RepoDetailView, SparklineView, WorkGraphView
+    Components/  # Theme, SourceColors, SessionCard, FilterPills, KPICard, HeatmapGrid, etc.
+    Models/    # Session, GitRepo, IndexedMessage, MessageTypeClassifier, Screen
   project.yml  # xcodegen config → generates Engram.xcodeproj
   scripts/build-node-bundle.sh  # Xcode prebuild: npm build → copy dist/ into app bundle
 ```
@@ -41,7 +46,7 @@ macos/
 ## Key Patterns
 
 ### Adapter Pattern
-All 15 adapters implement `SessionAdapter` from `src/adapters/types.ts`:
+13 adapters (handling 15 sources) implement `SessionAdapter` from `src/adapters/types.ts`:
 - `detect()` — check if tool's session dir exists
 - `listSessionFiles()` — async generator yielding file paths
 - `parseSessionInfo()` — extract metadata from session file
@@ -57,6 +62,20 @@ New adapters: create `src/adapters/<name>.ts`, register in `src/core/bootstrap.t
 
 ### Process Lifecycle
 `setupProcessLifecycle()` MUST be called AFTER `server.connect(transport)` — stdin race with StdioServerTransport.
+
+### Session Tiering
+4 tiers in `src/core/session-tier.ts`: `skip` / `lite` / `normal` / `premium`.
+- skip = DB only (noise, preamble, agent subprocesses)
+- lite = +FTS indexing
+- normal = +embedding
+- premium = +Viking push + auto-summary
+UI noise filter uses `buildTierFilter()` / `isTierHidden()`. Swift filters via `tier != 'skip'`.
+
+### OpenViking (Optional)
+External context engine at `src/core/viking-bridge.ts`. Factory `initViking()` in `bootstrap.ts`.
+- Dual-write via resources path — only resources triggers embedding
+- Graceful degradation: Viking down = FTS fallback, circuit breaker 5min
+- Config: `viking.url` + `viking.apiKey` in `~/.engram/settings.json`
 
 ### Daemon ↔ Swift Communication
 - Daemon writes JSON lines to stdout: `{ event: "ready", indexed: N, total: M }`
