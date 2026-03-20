@@ -186,15 +186,21 @@ struct SessionDetailView: View {
             typeCounts = [:]
             let path = session.filePath
             let source = session.source
-            // If filePath is empty, try to find the session file via source_locator or known paths
+            // If filePath is empty, try to find the session file by scanning known directories
             var effectivePath = path
             if effectivePath.isEmpty {
-                // Try to find claude-code session file by ID pattern
-                if source == "claude-code" {
-                    let claudeBase = NSHomeDirectory() + "/.claude/projects"
-                    if let found = findSessionFile(sessionId: session.id, baseDir: claudeBase) {
-                        effectivePath = found
-                    }
+                let home = NSHomeDirectory()
+                switch source {
+                case "claude-code":
+                    effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.claude/projects") ?? ""
+                case "codex":
+                    effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.codex/sessions") ?? ""
+                case "kimi":
+                    effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.kimi/chats") ?? ""
+                case "copilot":
+                    effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.copilot/session-state") ?? ""
+                default:
+                    break
                 }
             }
             messages = await Task.detached(priority: .userInitiated) {
@@ -251,27 +257,40 @@ struct SessionDetailView: View {
         }
     }
 
-    /// Find a session JSONL file by scanning claude projects directory
+    /// Find a session file by scanning a base directory recursively (up to 3 levels)
     func findSessionFile(sessionId: String, baseDir: String) -> String? {
         let fm = FileManager.default
-        guard let projectDirs = try? fm.contentsOfDirectory(atPath: baseDir) else { return nil }
-        for project in projectDirs {
-            let projectPath = (baseDir as NSString).appendingPathComponent(project)
-            // Check direct session file: {project}/{sessionId}.jsonl
-            let directPath = (projectPath as NSString).appendingPathComponent("\(sessionId).jsonl")
-            if fm.fileExists(atPath: directPath) { return directPath }
-            // Check subdirectories (session folders)
-            if let entries = try? fm.contentsOfDirectory(atPath: projectPath) {
-                for entry in entries where entry == sessionId || entry.hasSuffix(sessionId) {
-                    let entryPath = (projectPath as NSString).appendingPathComponent(entry)
-                    var isDir: ObjCBool = false
-                    if fm.fileExists(atPath: entryPath, isDirectory: &isDir) {
-                        if !isDir.boolValue && entryPath.hasSuffix(".jsonl") {
-                            return entryPath
-                        }
-                    }
+        let extensions = ["jsonl", "json", "ndjson"]
+
+        // Quick check: direct file at baseDir/{sessionId}.{ext}
+        for ext in extensions {
+            let direct = (baseDir as NSString).appendingPathComponent("\(sessionId).\(ext)")
+            if fm.fileExists(atPath: direct) { return direct }
+        }
+
+        // Recursive scan up to 3 levels deep
+        guard let enumerator = fm.enumerator(
+            at: URL(fileURLWithPath: baseDir),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        var depth = 0
+        for case let fileURL as URL in enumerator {
+            // Limit depth
+            if enumerator.level > 3 { enumerator.skipDescendants(); continue }
+
+            let name = fileURL.lastPathComponent
+            // Match: filename contains sessionId
+            if name.contains(sessionId) {
+                let ext = fileURL.pathExtension
+                if extensions.contains(ext) {
+                    return fileURL.path
                 }
             }
+
+            depth += 1
+            if depth > 5000 { break } // safety limit
         }
         return nil
     }
