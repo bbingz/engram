@@ -27,6 +27,8 @@ import { exportTool, handleExport } from './tools/export.js'
 import { generateSummaryTool, handleGenerateSummary } from './tools/generate_summary.js'
 import { linkSessionsTool, handleLinkSessions } from './tools/link_sessions.js'
 import { getMemoryTool, handleGetMemory } from './tools/get_memory.js'
+import { getCostsTool, handleGetCosts } from './tools/get_costs.js'
+import { toolAnalyticsTool, handleToolAnalytics } from './tools/tool_analytics.js'
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
@@ -82,6 +84,8 @@ const allTools = [
   manageProjectAliasTool,
   linkSessionsTool,
   getMemoryTool,
+  getCostsTool,
+  toolAnalyticsTool,
 ]
 
 const server = new Server(
@@ -152,6 +156,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await handleLinkSessions(db, a as { targetDir: string })
     } else if (name === 'get_memory') {
       result = await handleGetMemory(a as { query: string }, { viking: vikingBridge })
+    } else if (name === 'get_costs') {
+      result = handleGetCosts(db, a as any)
+    } else if (name === 'tool_analytics') {
+      result = handleToolAnalytics(db, a as any)
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }
