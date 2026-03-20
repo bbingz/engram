@@ -1,5 +1,5 @@
 import { readFileSync, existsSync, readdirSync } from 'fs'
-import { join, extname, dirname, basename } from 'path'
+import { join, extname, dirname, basename, resolve } from 'path'
 
 export const lintConfigTool = {
   name: 'lint_config',
@@ -172,7 +172,10 @@ export async function handleLintConfig(params: { cwd: string }): Promise<{ issue
       for (const ref of refs) {
         // Check file references
         if (looksLikeFilePath(ref)) {
-          const fullPath = join(cwd, ref)
+          const resolvedCwd = resolve(cwd)
+          const fullPath = resolve(resolvedCwd, ref)
+          // Skip refs that would escape the project root (path traversal)
+          if (!fullPath.startsWith(resolvedCwd + '/') && fullPath !== resolvedCwd) continue
           if (!existsSync(fullPath)) {
             const suggestion = findSimilarFile(cwd, ref)
             issues.push({

@@ -15,24 +15,34 @@ export interface MonitorAlert {
 export class BackgroundMonitor {
   private alerts: MonitorAlert[] = []
   private interval: ReturnType<typeof setInterval> | null = null
+  private startupTimeout: ReturnType<typeof setTimeout> | null = null
   private db: Database
   private config: MonitorConfig
   private onAlert?: (alert: MonitorAlert) => void
+  private liveMonitor?: { getSessions(): Array<{ startedAt: string; filePath: string; source: string; project?: string }> }
 
-  constructor(db: Database, config: MonitorConfig, onAlert?: (alert: MonitorAlert) => void) {
+  constructor(db: Database, config: MonitorConfig, onAlert?: (alert: MonitorAlert) => void, liveMonitor?: BackgroundMonitor['liveMonitor']) {
     this.db = db
     this.config = config
     this.onAlert = onAlert
+    this.liveMonitor = liveMonitor
   }
 
   start(intervalMs = 600_000): void {
     if (this.interval) return
     this.interval = setInterval(() => this.check().catch(() => {}), intervalMs)
     // Run initial check after a short delay (don't block startup)
-    setTimeout(() => this.check().catch(() => {}), 10_000)
+    this.startupTimeout = setTimeout(() => {
+      this.startupTimeout = null
+      this.check().catch(() => {})
+    }, 10_000)
   }
 
   stop(): void {
+    if (this.startupTimeout) {
+      clearTimeout(this.startupTimeout)
+      this.startupTimeout = null
+    }
     if (this.interval) {
       clearInterval(this.interval)
       this.interval = null
@@ -53,8 +63,18 @@ export class BackgroundMonitor {
   }
 
   async check(): Promise<void> {
+    // Evict: prune dismissed alerts older than 24h, then cap at 100 most recent
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
+    this.alerts = this.alerts.filter(
+      a => !(a.dismissed && new Date(a.timestamp).getTime() < oneDayAgo)
+    )
+    if (this.alerts.length > 100) {
+      this.alerts = this.alerts.slice(-100)
+    }
+
     await this.checkDailyCost()
     await this.checkUnpushedCommits()
+    this.checkLongSessions()
   }
 
   private async checkDailyCost(): Promise<void> {
@@ -116,5 +136,40 @@ export class BackgroundMonitor {
         }
       }
     } catch { /* git_repos table may not exist yet */ }
+  }
+
+  private checkLongSessions(): void {
+    if (!this.liveMonitor) return
+    const thresholdMs = (this.config.longSessionMinutes ?? 180) * 60 * 1000
+    const now = Date.now()
+
+    for (const session of this.liveMonitor.getSessions()) {
+      if (!session.startedAt) continue
+      const startMs = new Date(session.startedAt).getTime()
+      if (isNaN(startMs)) continue
+      const durationMs = now - startMs
+      if (durationMs < thresholdMs) continue
+
+      const durationHours = Math.round(durationMs / (60 * 60 * 1000) * 10) / 10
+      const label = session.project || session.source
+
+      // Skip if we already have an undismissed alert for this session file
+      const existing = this.alerts.find(
+        a => a.category === 'long_session' && a.detail.includes(session.filePath) && !a.dismissed
+      )
+      if (existing) continue
+
+      const alert: MonitorAlert = {
+        id: randomUUID(),
+        category: 'long_session',
+        severity: durationMs > thresholdMs * 2 ? 'critical' : 'warning',
+        title: `${label}: session running ${durationHours}h`,
+        detail: `Session at ${session.filePath} has been active for ${durationHours} hours`,
+        timestamp: new Date().toISOString(),
+        dismissed: false,
+      }
+      this.alerts.push(alert)
+      this.onAlert?.(alert)
+    }
   }
 }

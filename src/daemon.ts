@@ -3,11 +3,11 @@
 // Outputs JSON lines to stdout for the Swift app to parse.
 // Usage: node dist/daemon.js [db-path]
 import { join } from 'path'
-import { homedir } from 'os'
+// os/homedir no longer needed — getWatchEntries() handles it internally
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { IndexJobRunner } from './core/index-job-runner.js'
-import { startWatcher, WATCHED_SOURCES } from './core/watcher.js'
+import { startWatcher, WATCHED_SOURCES, getWatchEntries } from './core/watcher.js'
 import { ensureDataDirs, createAdapters, initVectorDeps, initViking } from './core/bootstrap.js'
 import { createApp } from './web.js'
 import { readFileSettings, type FileSettings } from './core/config.js'
@@ -31,18 +31,8 @@ const authoritativeNode = settings.syncNodeName ?? 'local'
 // Apply tier-based noise filter
 db.noiseFilter = settings.noiseFilter ?? 'hide-skip'
 
-// Build watch directories for live session detection
-const HOME = homedir()
-const watchDirs: WatchDir[] = [
-  { path: join(HOME, '.codex', 'sessions'), source: 'codex' },
-  { path: join(HOME, '.claude', 'projects'), source: 'claude-code' },
-  { path: join(HOME, '.gemini', 'tmp'), source: 'gemini-cli' },
-  { path: join(HOME, '.gemini', 'antigravity'), source: 'antigravity' },
-  { path: join(HOME, '.iflow', 'projects'), source: 'iflow' },
-  { path: join(HOME, '.qwen', 'projects'), source: 'qwen' },
-  { path: join(HOME, '.kimi', 'sessions'), source: 'kimi' },
-  { path: join(HOME, '.cline', 'data', 'tasks'), source: 'cline' },
-]
+// Build watch directories for live session detection (reuse canonical entries from watcher)
+const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({ path, source }))
 
 // Viking bridge — optional external context engine
 const vikingBridge = initViking(settings)
@@ -214,7 +204,7 @@ liveMonitor.start(5000)
 const monitorConfig = settings.monitor ?? { enabled: true }
 const backgroundMonitor = new BackgroundMonitor(db, monitorConfig, (alert) => {
   emit({ event: 'alert', alert })
-})
+}, liveMonitor)
 if (monitorConfig.enabled) {
   backgroundMonitor.start(600_000) // every 10 minutes
 }

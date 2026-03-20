@@ -939,6 +939,8 @@ export function createApp(db: Database, opts?: {
   })
 
   // --- Live Sessions API ---
+  // TODO: SSE endpoint (deferred) — add GET /api/live/stream that pushes live session
+  // updates and monitor alerts via Server-Sent Events instead of polling.
   app.get('/api/live', (c) => {
     const sessions = opts?.liveMonitor?.getSessions() ?? []
     return c.json({ sessions, count: sessions.length })

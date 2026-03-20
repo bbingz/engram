@@ -1,4 +1,4 @@
-import { readdirSync, statSync, readFileSync } from 'fs'
+import { readdirSync, statSync, openSync, readSync, closeSync } from 'fs'
 import { join, extname } from 'path'
 import type { SourceName } from '../adapters/types.js'
 
@@ -24,8 +24,15 @@ export interface LiveSessionMonitorOptions {
   stalenessMs?: number  // default 60_000 (60s)
 }
 
+interface SessionMetadata {
+  sessionId?: string
+  cwd: string
+  startedAt: string
+}
+
 export class LiveSessionMonitor {
   private sessions: Map<string, LiveSession> = new Map()
+  private metadataCache: Map<string, SessionMetadata> = new Map()
   private interval: ReturnType<typeof setInterval> | null = null
   private watchDirs: WatchDir[]
   private stalenessMs: number
@@ -74,7 +81,7 @@ export class LiveSessionMonitor {
             if (existing && existing.lastModifiedAt === new Date(mtimeMs).toISOString()) continue
 
             // Parse session metadata from file
-            const session = this.parseSessionFile(filePath, source, mtimeMs)
+            const session = this.parseSessionFile(filePath, source, mtimeMs, st.size)
             if (session) {
               this.sessions.set(filePath, session)
             }
@@ -87,6 +94,7 @@ export class LiveSessionMonitor {
     for (const key of this.sessions.keys()) {
       if (!found.has(key)) {
         this.sessions.delete(key)
+        this.metadataCache.delete(key)
       }
     }
   }
@@ -114,29 +122,61 @@ export class LiveSessionMonitor {
     } catch { /* skip unreadable dirs */ }
   }
 
-  private parseSessionFile(filePath: string, source: SourceName, mtimeMs: number): LiveSession | null {
+  /** Read at most `bytes` from the start of a file. */
+  private readHead(filePath: string, bytes: number): string {
+    const fd = openSync(filePath, 'r')
     try {
-      const content = readFileSync(filePath, 'utf-8')
-      const lines = content.split('\n').filter(Boolean)
-      if (lines.length === 0) return null
+      const buf = Buffer.alloc(bytes)
+      const bytesRead = readSync(fd, buf, 0, bytes, 0)
+      return buf.toString('utf-8', 0, bytesRead)
+    } finally {
+      closeSync(fd)
+    }
+  }
 
-      // Parse first line for session metadata
-      let sessionId: string | undefined
-      let cwd = ''
-      let startedAt = ''
+  /** Read at most `bytes` from the end of a file, given its size. */
+  private readTail(filePath: string, fileSize: number, bytes: number): string {
+    const fd = openSync(filePath, 'r')
+    try {
+      const readSize = Math.min(bytes, fileSize)
+      const offset = Math.max(0, fileSize - readSize)
+      const buf = Buffer.alloc(readSize)
+      const bytesRead = readSync(fd, buf, 0, readSize, offset)
+      return buf.toString('utf-8', 0, bytesRead)
+    } finally {
+      closeSync(fd)
+    }
+  }
+
+  private parseSessionFile(filePath: string, source: SourceName, mtimeMs: number, fileSize: number): LiveSession | null {
+    try {
+      // --- First-line metadata (cached; session metadata never changes) ---
+      let meta = this.metadataCache.get(filePath)
+      if (!meta) {
+        const head = this.readHead(filePath, 4096)
+        const firstLineEnd = head.indexOf('\n')
+        const firstLine = firstLineEnd >= 0 ? head.slice(0, firstLineEnd) : head
+        if (!firstLine) return null
+
+        meta = { sessionId: undefined, cwd: '', startedAt: '' }
+        try {
+          const first = JSON.parse(firstLine)
+          meta.sessionId = first.sessionId
+          meta.cwd = first.cwd ?? ''
+          meta.startedAt = first.timestamp ?? ''
+        } catch { /* skip unparseable first line */ }
+        this.metadataCache.set(filePath, meta)
+      }
+
+      // --- Tail: last 8KB for current activity + model ---
       let model: string | undefined
-
-      try {
-        const first = JSON.parse(lines[0])
-        sessionId = first.sessionId
-        cwd = first.cwd ?? ''
-        startedAt = first.timestamp ?? ''
-      } catch { /* skip unparseable first line */ }
-
-      // Parse last few lines for current activity + model
       let currentActivity: string | undefined
-      const tailLines = lines.slice(-10)
-      for (let i = tailLines.length - 1; i >= 0; i--) {
+
+      const tail = this.readTail(filePath, fileSize, 8192)
+      const tailLines = tail.split('\n').filter(Boolean)
+      // First partial line may be truncated — start from the second if tail was truncated
+      const startIdx = (fileSize > 8192 && tailLines.length > 0) ? 1 : 0
+      for (let i = tailLines.length - 1; i >= startIdx; i--) {
         try {
           const line = JSON.parse(tailLines[i])
           if (!model && line.message?.model) {
@@ -160,15 +200,15 @@ export class LiveSessionMonitor {
       }
 
       // Derive project from cwd
-      const project = cwd ? cwd.split('/').pop() : undefined
+      const project = meta.cwd ? meta.cwd.split('/').pop() : undefined
 
       return {
         source,
-        sessionId,
+        sessionId: meta.sessionId,
         project,
-        cwd,
+        cwd: meta.cwd,
         filePath,
-        startedAt,
+        startedAt: meta.startedAt,
         model,
         currentActivity,
         lastModifiedAt: new Date(mtimeMs).toISOString(),

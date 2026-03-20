@@ -17,19 +17,25 @@ export const WATCHED_SOURCES = new Set([
   'lobsterai', 'minimax',
 ])
 
+/** Canonical mapping of watch directories to source names. Shared by watcher and daemon. */
+export function getWatchEntries(home?: string): Array<[string, SourceName]> {
+  const h = home ?? homedir()
+  return [
+    [join(h, '.codex', 'sessions'), 'codex'],
+    [join(h, '.claude', 'projects'), 'claude-code'],
+    [join(h, '.gemini', 'tmp'), 'gemini-cli'],
+    [join(h, '.gemini', 'antigravity'), 'antigravity'],
+    [join(h, '.iflow', 'projects'), 'iflow'],
+    [join(h, '.qwen', 'projects'), 'qwen'],
+    [join(h, '.kimi', 'sessions'), 'kimi'],
+    [join(h, '.cline', 'data', 'tasks'), 'cline'],
+  ]
+}
+
 export function startWatcher(adapters: SessionAdapter[], indexer: Indexer, opts?: WatcherOptions): FSWatcher | null {
   const home = homedir()
   const adaptersByName = new Map(adapters.map(a => [a.name, a]))
-  const watchEntries: Array<[string, SourceName]> = [
-    [join(home, '.codex', 'sessions'), 'codex'],
-    [join(home, '.claude', 'projects'), 'claude-code'],
-    [join(home, '.gemini', 'tmp'), 'gemini-cli'],
-    [join(home, '.gemini', 'antigravity'), 'antigravity'],
-    [join(home, '.iflow', 'projects'), 'iflow'],
-    [join(home, '.qwen', 'projects'), 'qwen'],
-    [join(home, '.kimi', 'sessions'), 'kimi'],
-    [join(home, '.cline', 'data', 'tasks'), 'cline'],
-  ]
+  const watchEntries = getWatchEntries(home)
   const watchMap: Record<string, SessionAdapter> = {}
   for (const [path, name] of watchEntries) {
     const adapter = adaptersByName.get(name)

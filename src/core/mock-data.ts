@@ -85,6 +85,9 @@ function randomDate(daysBack: number): Date {
 }
 
 export async function populateMockData(db: Database): Promise<MockStats> {
+  // Clear existing mock data first to ensure idempotency
+  clearMockData(db)
+
   const rawDb = db.getRawDb()
   const SESSION_COUNT = 50
   let totalCost = 0
