@@ -161,8 +161,11 @@ export class LiveSessionMonitor {
     try {
       // --- First-line metadata (cached; session metadata never changes) ---
       let meta = this.metadataCache.get(filePath)
+      // Re-parse if cached metadata has empty cwd (codex fix: payload.cwd)
+      if (meta && meta.cwd === '') meta = undefined
       if (!meta) {
-        const head = this.readHead(filePath, 4096)
+        // Codex first lines can be 15KB+ (includes base_instructions), read enough
+        const head = this.readHead(filePath, 32768)
         const firstLineEnd = head.indexOf('\n')
         const firstLine = firstLineEnd >= 0 ? head.slice(0, firstLineEnd) : head
         if (!firstLine) return null
@@ -170,9 +173,11 @@ export class LiveSessionMonitor {
         meta = { sessionId: undefined, cwd: '', startedAt: '' }
         try {
           const first = JSON.parse(firstLine)
-          meta.sessionId = first.sessionId
-          meta.cwd = first.cwd ?? ''
-          meta.startedAt = first.timestamp ?? ''
+          // Claude Code: top-level sessionId/cwd/timestamp
+          // Codex: payload.id/payload.cwd/payload.timestamp
+          meta.sessionId = first.sessionId ?? first.payload?.id
+          meta.cwd = first.cwd ?? first.payload?.cwd ?? ''
+          meta.startedAt = first.timestamp ?? first.payload?.timestamp ?? ''
         } catch { /* skip unparseable first line */ }
         this.metadataCache.set(filePath, meta)
       }
@@ -208,8 +213,14 @@ export class LiveSessionMonitor {
         } catch { /* skip unparseable lines */ }
       }
 
-      // Derive project from cwd
-      const project = meta.cwd ? meta.cwd.split('/').pop() : undefined
+      // Derive project from cwd or file path
+      let project: string | undefined
+      if (meta.cwd) {
+        project = meta.cwd.split('/').pop()
+      } else {
+        // Try to extract from claude-code path: ~/.claude/projects/-Users-bing--Code--foo/SESSION.jsonl
+        project = this.projectFromPath(filePath)
+      }
 
       const ageMs = Date.now() - mtimeMs
       const activityLevel: ActivityLevel = ageMs <= ACTIVE_MS ? 'active'
@@ -231,5 +242,16 @@ export class LiveSessionMonitor {
     } catch {
       return null
     }
+  }
+
+  /** Extract project name from claude-code path like ~/.claude/projects/-Users-bing--Code--foo/SESSION.jsonl */
+  private projectFromPath(filePath: string): string | undefined {
+    const match = filePath.match(/\.claude\/projects\/([^/]+)\//)
+    if (!match) return undefined
+    const encoded = match[1]
+    if (encoded === '-') return undefined // global session, no project
+    // Decode: -Users-bing--Code--foo → /Users/bing/-Code-/foo → last segment = "foo"
+    const decoded = encoded.replace(/^-/, '/').replace(/--/g, '§').replace(/-/g, '/').replace(/§/g, '-')
+    return decoded.split('/').pop() || undefined
   }
 }
