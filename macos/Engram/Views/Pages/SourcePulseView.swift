@@ -7,10 +7,16 @@ struct SourcePulseView: View {
 
     @State private var sources: [SourceInfo] = []
     @State private var sourceDist: [(source: String, count: Int)] = []
+    @State private var liveSessions: [LiveSessionInfo] = []
     @State private var isLoading = true
     @State private var error: String? = nil
+    @State private var liveTimer: Timer?
+    @State private var expandedGroups: Set<String> = []
 
     private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
+    private var activeSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "active" } }
+    private var idleSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "idle" } }
+    private var recentSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "recent" || $0.activityLevel == nil } }
 
     var body: some View {
         ScrollView {
@@ -18,6 +24,22 @@ struct SourcePulseView: View {
                 HStack(spacing: 12) {
                     KPICard(value: "\(sources.count)", label: "Active Sources")
                     KPICard(value: formatNumber(totalIndexed), label: "Total Indexed")
+                    if !activeSessions.isEmpty {
+                        KPICard(value: "\(activeSessions.count)", label: "Active")
+                    }
+                    if !idleSessions.isEmpty {
+                        KPICard(value: "\(idleSessions.count)", label: "Idle")
+                    }
+                }
+
+                // Live Sessions section — grouped by activity level
+                if !liveSessions.isEmpty {
+                    SectionHeader(icon: "bolt.fill", title: "Sessions (\(liveSessions.count))",
+                                 onRefresh: { Task { await loadLiveSessions() } })
+
+                    sessionGroup("Active", color: .green, sessions: activeSessions)
+                    sessionGroup("Idle", color: .yellow, sessions: idleSessions)
+                    sessionGroup("Recent", color: .gray, sessions: recentSessions)
                 }
                 if let error {
                     AlertBanner(message: "Failed to load source data: \(error)")
@@ -58,7 +80,24 @@ struct SourcePulseView: View {
             }
             .padding(24)
         }
-        .task { await loadData() }
+        .task {
+            await loadData()
+            await loadLiveSessions()
+            // Auto-refresh live sessions every 10s
+            liveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
+                Task { @MainActor in await loadLiveSessions() }
+            }
+        }
+        .onDisappear { liveTimer?.invalidate(); liveTimer = nil }
+    }
+
+    private func loadLiveSessions() async {
+        do {
+            let response: LiveSessionsResponse = try await daemonClient.fetch("/api/live")
+            liveSessions = response.sessions
+        } catch {
+            liveSessions = []
+        }
     }
 
     private func loadData() async {
@@ -74,6 +113,46 @@ struct SourcePulseView: View {
             } catch {}
         }
         do { sourceDist = try db.sourceDistribution() } catch {}
+    }
+
+    @ViewBuilder
+    private func sessionGroup(_ label: String, color: Color, sessions: [LiveSessionInfo]) -> some View {
+        if !sessions.isEmpty {
+            let isExpanded = expandedGroups.contains(label)
+            let shown = isExpanded ? sessions : Array(sessions.prefix(10))
+
+            HStack(spacing: 6) {
+                Label(label, systemImage: "circle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(color)
+                Text("(\(sessions.count))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            VStack(spacing: 4) {
+                ForEach(shown) { session in
+                    LiveSessionCard(session: session)
+                }
+                if sessions.count > 10 {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            if isExpanded {
+                                expandedGroups.remove(label)
+                            } else {
+                                expandedGroups.insert(label)
+                            }
+                        }
+                    } label: {
+                        Text(isExpanded ? "Show less" : "+ \(sessions.count - 10) more")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.blue)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
     }
 
     private func formatNumber(_ n: Int) -> String {

@@ -6,6 +6,9 @@ struct MainWindowView: View {
     @State private var selectedSession: Session? = nil
     @State private var searchQuery: String = ""
     @State private var showResume: Bool = false
+    @State private var showPalette: Bool = false
+    @State private var paletteItems: [PaletteItem] = []
+    @State private var paletteSelection: Int = 0
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
     @EnvironmentObject var daemonClient: DaemonClient
@@ -27,34 +30,27 @@ struct MainWindowView: View {
             ToolbarItemGroup(placement: .automatic) {
                 Spacer()
 
-                // Search field — fixed width, flat style
-                HStack(spacing: 5) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    TextField("Search sessions…", text: $searchQuery)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                        .onSubmit { performSearch() }
-                    if !searchQuery.isEmpty {
-                        Button {
-                            searchQuery = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.plain)
+                // Command palette trigger
+                Button { showPalette = true } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Text("Search or command…")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("⌘K")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
                     }
-                    Text("⌘K")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .frame(width: 220)
+                    .background(Color.primary.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .frame(width: 220)
-                .background(Color.primary.opacity(0.05))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .buttonStyle(.plain)
 
                 // Resume
                 Button(action: { resumeSelectedSession() }) {
@@ -66,6 +62,7 @@ struct MainWindowView: View {
                 .fixedSize()
             }
         }
+        .keyboardShortcut("k", modifiers: .command)
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
         .onChange(of: selectedScreen) { _, _ in
@@ -82,6 +79,21 @@ struct MainWindowView: View {
                 ResumeDialog(session: session)
                     .environmentObject(indexer)
             }
+        }
+        .sheet(isPresented: $showPalette) {
+            CommandPaletteView(
+                onNavigate: { screen in
+                    selectedScreen = screen
+                    showPalette = false
+                },
+                onSelectSession: { id in
+                    navigateToSession(id: id)
+                    showPalette = false
+                }
+            )
+            .environmentObject(db)
+            .environmentObject(indexer)
+            .frame(width: 480, height: 360)
         }
     }
 

@@ -192,6 +192,64 @@ describe('SyncEngine', () => {
     expect(db.getSyncCursor('peer-a')).toBeNull()
   })
 
+  it('preserves agentRole through sync roundtrip', async () => {
+    const mockSessions = [
+      validSnapshot('agent-sess-1', '2026-03-19T10:00:00Z', {
+        source: 'claude-code',
+        agentRole: 'code-review',
+        messageCount: 5,
+        userMessageCount: 2,
+        assistantMessageCount: 3,
+      } as Partial<AuthoritativeSessionSnapshot>),
+    ]
+
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(jsonOk({ sessionCount: 1, nodeName: 'peer-a', timestamp: new Date().toISOString() }))
+      .mockResolvedValueOnce(jsonOk({ sessions: mockSessions }))
+      .mockResolvedValueOnce(jsonOk({ sessions: [] }))
+
+    const engine = new SyncEngine(db, mockFetch as unknown as typeof fetch)
+    const result = await engine.pullFromPeer({ name: 'peer-a', url: 'http://peer-a:3457' })
+
+    expect(result.pulled).toBe(1)
+    const stored = db.getAuthoritativeSnapshot('agent-sess-1')
+    expect(stored?.agentRole).toBe('code-review')
+    expect(stored?.tier).toBe('skip') // agent sessions → skip tier
+  })
+
+  it('defaults agentRole to null when missing from remote', async () => {
+    const mockSessions = [
+      validSnapshot('normal-sess-1', '2026-03-19T10:00:00Z', {
+        messageCount: 10,
+        userMessageCount: 5,
+        assistantMessageCount: 5,
+      }),
+    ]
+
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(jsonOk({ sessionCount: 1, nodeName: 'peer-a', timestamp: new Date().toISOString() }))
+      .mockResolvedValueOnce(jsonOk({ sessions: mockSessions }))
+      .mockResolvedValueOnce(jsonOk({ sessions: [] }))
+
+    const engine = new SyncEngine(db, mockFetch as unknown as typeof fetch)
+    await engine.pullFromPeer({ name: 'peer-a', url: 'http://peer-a:3457' })
+
+    const stored = db.getAuthoritativeSnapshot('normal-sess-1')
+    expect(stored?.agentRole).toBeUndefined()
+  })
+
+  it('exports agentRole in sync session list', async () => {
+    db.upsertAuthoritativeSnapshot(validSnapshot('local-agent-1', '2026-03-19T10:00:00Z', {
+      source: 'claude-code',
+      agentRole: 'refactor',
+    } as Partial<AuthoritativeSessionSnapshot>))
+
+    const exported = db.listSessionsAfterCursor(null, 10)
+    const agentSession = exported.find(s => s.id === 'local-agent-1')
+    expect(agentSession).toBeDefined()
+    expect(agentSession!.agentRole).toBe('refactor')
+  })
+
   it('computes tier for synced sessions', async () => {
     const mockSessions = [
       validSnapshot('sess-premium', '2026-03-18T12:00:00Z', {

@@ -9,7 +9,10 @@ struct SessionDetailView: View {
     var onBack: (() -> Void)? = nil
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
+    @EnvironmentObject var daemonClient: DaemonClient
     @State private var isFavorite = false
+    @State private var handoffStatus: String? = nil
+    @State private var showReplay = false
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
     @State private var isSummarizing = false
@@ -76,8 +79,26 @@ struct SessionDetailView: View {
                 onShowAll: { for type in MessageType.allCases { typeVisibility[type] = true } },
                 onNavPrev: { type in navigateType(type, direction: -1) },
                 onNavNext: { type in navigateType(type, direction: 1) },
+                onHandoff: { performHandoff() },
+                onReplay: { showReplay = true },
                 viewMode: $viewMode
             )
+
+            // Handoff status toast
+            if let status = handoffStatus {
+                HStack(spacing: 6) {
+                    Image(systemName: status.hasPrefix("Handoff copied") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(status.hasPrefix("Handoff copied") ? .green : .red)
+                    Text(status)
+                        .font(.system(size: 11))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .animation(.easeInOut(duration: 0.2), value: handoffStatus)
+            }
 
             if showFind {
                 TranscriptFindBar(
@@ -222,6 +243,11 @@ struct SessionDetailView: View {
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
         .onChange(of: showAgentComm) { _, _ in updateDisplayIndexed() }
         .onChange(of: searchText) { _, _ in updateMatchIndices() }
+        .sheet(isPresented: $showReplay) {
+            SessionReplayView(sessionId: session.id)
+                .environmentObject(daemonClient)
+                .frame(minWidth: 600, minHeight: 450)
+        }
     }
 
     // MARK: - Helpers
@@ -299,6 +325,29 @@ struct SessionDetailView: View {
             if depth > 5000 { break } // safety limit
         }
         return nil
+    }
+
+    func performHandoff() {
+        Task {
+            do {
+                struct HandoffRequest: Encodable {
+                    let cwd: String
+                }
+                let response: HandoffResponse = try await daemonClient.post(
+                    "/api/handoff",
+                    body: HandoffRequest(cwd: session.cwd ?? "")
+                )
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(response.brief, forType: .string)
+                handoffStatus = "Handoff copied! (\(response.sessionCount) sessions)"
+                // Clear status after 3s
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    if handoffStatus?.hasPrefix("Handoff") == true { handoffStatus = nil }
+                }
+            } catch {
+                handoffStatus = "Handoff failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     func copyAllTranscript() {

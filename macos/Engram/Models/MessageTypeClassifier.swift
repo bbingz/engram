@@ -45,11 +45,20 @@ struct MessageTypeClassifier {
     ]
 
     private static let errorPatterns: [String] = [
-        "Error:", "error:", "ERROR",
-        "permission denied", "Permission denied",
-        "not found", "Not found",
+        "Error:", "error:", "ERROR", "FAILED",
         "Exit code: 1", "exit code 1",
-        "Command failed", "command failed"
+        "Exit code: 127", "Exit code: 128",
+        "Command failed", "command failed",
+        "ENOENT:", "EACCES:"
+    ]
+
+    /// Strict error markers inside tool output — only these override tool classification
+    private static let explicitToolErrorPatterns: [String] = [
+        "Exit code: 1", "exit code 1", "exit code 2",
+        "Exit code: 127", "Exit code: 128",
+        "Command failed", "command failed",
+        "ENOENT:", "EACCES:",
+        "ERROR:"
     ]
 
     static func classify(_ message: ChatMessage) -> MessageType {
@@ -63,17 +72,16 @@ struct MessageTypeClassifier {
             return .user
         }
         let content = message.content
+        // Tool detection BEFORE error — normal tool output often contains
+        // words like "not found" or "permission denied" that aren't errors
+        if containsToolPattern(content) {
+            return containsExplicitToolError(content) ? .error : .tool
+        }
         if containsErrorPattern(content) {
             return .error
         }
-        if containsToolPattern(content) {
-            return .tool
-        }
         if message.role == "assistant" && hasSignificantCodeBlock(content) {
             return .code
-        }
-        if message.role == "assistant" {
-            return .assistant
         }
         return .assistant
     }
@@ -86,6 +94,11 @@ struct MessageTypeClassifier {
     private static func containsErrorPattern(_ text: String) -> Bool {
         let prefix = text.prefix(1000)
         return errorPatterns.contains { prefix.contains($0) }
+    }
+
+    private static func containsExplicitToolError(_ text: String) -> Bool {
+        let prefix = text.prefix(1000)
+        return explicitToolErrorPatterns.contains { prefix.contains($0) }
     }
 
     private static func hasSignificantCodeBlock(_ text: String) -> Bool {

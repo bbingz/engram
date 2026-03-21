@@ -2,16 +2,20 @@ import { readdirSync, statSync, openSync, readSync, closeSync } from 'fs'
 import { join, extname } from 'path'
 import type { SourceName } from '../adapters/types.js'
 
+export type ActivityLevel = 'active' | 'idle' | 'recent'
+
 export interface LiveSession {
   source: SourceName
   sessionId?: string
   project?: string
+  title?: string
   cwd: string
   filePath: string
   startedAt: string
   model?: string
   currentActivity?: string
   lastModifiedAt: string
+  activityLevel: ActivityLevel
 }
 
 export interface WatchDir {
@@ -19,15 +23,21 @@ export interface WatchDir {
   source: SourceName
 }
 
+// Activity level thresholds
+const ACTIVE_MS  = 15 * 60 * 1000   // 15 min → green (active)
+const IDLE_MS    = 8 * 3600 * 1000   // 8 hours → yellow (idle)
+const RECENT_MS  = 48 * 3600 * 1000  // 48 hours → gray (recent)
+
 export interface LiveSessionMonitorOptions {
   watchDirs: WatchDir[]
-  stalenessMs?: number  // default 60_000 (60s)
+  stalenessMs?: number  // default 48 hours
 }
 
 interface SessionMetadata {
   sessionId?: string
   cwd: string
   startedAt: string
+  title?: string
 }
 
 export class LiveSessionMonitor {
@@ -39,7 +49,7 @@ export class LiveSessionMonitor {
 
   constructor(opts: LiveSessionMonitorOptions) {
     this.watchDirs = opts.watchDirs
-    this.stalenessMs = opts.stalenessMs ?? 60_000
+    this.stalenessMs = opts.stalenessMs ?? RECENT_MS
   }
 
   start(intervalMs = 5000): void {
@@ -152,8 +162,11 @@ export class LiveSessionMonitor {
     try {
       // --- First-line metadata (cached; session metadata never changes) ---
       let meta = this.metadataCache.get(filePath)
+      // Re-parse if cached metadata has empty cwd (codex fix: payload.cwd)
+      if (meta && meta.cwd === '') meta = undefined
       if (!meta) {
-        const head = this.readHead(filePath, 4096)
+        // Codex first lines can be 15KB+ (includes base_instructions), read enough
+        const head = this.readHead(filePath, 32768)
         const firstLineEnd = head.indexOf('\n')
         const firstLine = firstLineEnd >= 0 ? head.slice(0, firstLineEnd) : head
         if (!firstLine) return null
@@ -161,10 +174,37 @@ export class LiveSessionMonitor {
         meta = { sessionId: undefined, cwd: '', startedAt: '' }
         try {
           const first = JSON.parse(firstLine)
-          meta.sessionId = first.sessionId
-          meta.cwd = first.cwd ?? ''
-          meta.startedAt = first.timestamp ?? ''
+          // Claude Code: top-level sessionId/cwd/timestamp
+          // Codex: payload.id/payload.cwd/payload.timestamp
+          meta.sessionId = first.sessionId ?? first.payload?.id
+          meta.cwd = first.cwd ?? first.payload?.cwd ?? ''
+          meta.startedAt = first.timestamp ?? first.payload?.timestamp ?? ''
         } catch { /* skip unparseable first line */ }
+
+        // Extract title from first user message in the head
+        const headLines = head.split('\n').filter(Boolean)
+        for (let i = 0; i < Math.min(headLines.length, 15); i++) {
+          try {
+            const line = JSON.parse(headLines[i])
+            // Claude Code: role=user at top level or message.role=user
+            // Codex: type=event_msg, payload.type=user_message, payload.message=text
+            const isUser = line.role === 'user'
+              || line.message?.role === 'user'
+              || (line.type === 'event_msg' && line.payload?.type === 'user_message')
+            if (isUser) {
+              const text = typeof line.content === 'string' ? line.content
+                : typeof line.message?.content === 'string' ? line.message.content
+                : typeof line.payload?.message === 'string' ? line.payload.message
+                : ''
+              // Skip system-like content that gets classified as user messages
+              if (text && !text.startsWith('<') && !text.startsWith('//') && text.length > 5) {
+                meta.title = text.replace(/\s+/g, ' ').trim().slice(0, 60)
+                break
+              }
+            }
+          } catch { /* skip */ }
+        }
+
         this.metadataCache.set(filePath, meta)
       }
 
@@ -199,22 +239,46 @@ export class LiveSessionMonitor {
         } catch { /* skip unparseable lines */ }
       }
 
-      // Derive project from cwd
-      const project = meta.cwd ? meta.cwd.split('/').pop() : undefined
+      // Derive project from cwd or file path
+      let project: string | undefined
+      if (meta.cwd) {
+        project = meta.cwd.split('/').pop()
+      } else {
+        // Try to extract from claude-code path: ~/.claude/projects/-Users-bing--Code--foo/SESSION.jsonl
+        project = this.projectFromPath(filePath)
+      }
+
+      const ageMs = Date.now() - mtimeMs
+      const activityLevel: ActivityLevel = ageMs <= ACTIVE_MS ? 'active'
+        : ageMs <= IDLE_MS ? 'idle'
+        : 'recent'
 
       return {
         source,
         sessionId: meta.sessionId,
         project,
+        title: meta.title,
         cwd: meta.cwd,
         filePath,
         startedAt: meta.startedAt,
         model,
         currentActivity,
         lastModifiedAt: new Date(mtimeMs).toISOString(),
+        activityLevel,
       }
     } catch {
       return null
     }
+  }
+
+  /** Extract project name from claude-code path like ~/.claude/projects/-Users-bing--Code--foo/SESSION.jsonl */
+  private projectFromPath(filePath: string): string | undefined {
+    const match = filePath.match(/\.claude\/projects\/([^/]+)\//)
+    if (!match) return undefined
+    const encoded = match[1]
+    if (encoded === '-') return undefined // global session, no project
+    // Decode: -Users-bing--Code--foo → /Users/bing/-Code-/foo → last segment = "foo"
+    const decoded = encoded.replace(/^-/, '/').replace(/--/g, '§').replace(/-/g, '/').replace(/§/g, '-')
+    return decoded.split('/').pop() || undefined
   }
 }

@@ -942,8 +942,41 @@ export function createApp(db: Database, opts?: {
   // TODO: SSE endpoint (deferred) — add GET /api/live/stream that pushes live session
   // updates and monitor alerts via Server-Sent Events instead of polling.
   app.get('/api/live', (c) => {
-    const sessions = opts?.liveMonitor?.getSessions() ?? []
-    return c.json({ sessions, count: sessions.length })
+    const raw = opts?.liveMonitor?.getSessions() ?? []
+    // Filter out agent/subagent noise
+    const filtered = raw.filter(s => {
+      // Skip subagent sessions (claude-code spawns into subagents/ dir)
+      if (s.filePath.includes('/subagents/')) return false
+      // Skip sessions in the global "-" project dir (typically system/preamble)
+      if (s.filePath.includes('/.claude/projects/-/')) return false
+      return true
+    })
+    // Enrich with DB data (title, project, model) and filter by tier
+    const sessions = filtered.map(s => {
+      const dbRow = s.filePath
+        ? db.getRawDb().prepare('SELECT generated_title, summary, project, model, tier, agent_role FROM sessions WHERE file_path = ? LIMIT 1').get(s.filePath) as { generated_title?: string; summary?: string; project?: string; model?: string; tier?: string; agent_role?: string } | undefined
+        : undefined
+      // Skip sessions with skip tier or agent role in DB
+      if (dbRow?.tier === 'skip' || dbRow?.agent_role) return null
+      return {
+        ...s,
+        title: dbRow?.generated_title ?? dbRow?.summary?.slice(0, 60) ?? s.title ?? undefined,
+        project: s.project || dbRow?.project || (s.cwd ? s.cwd.split('/').pop() : undefined),
+        model: s.model || dbRow?.model || undefined,
+      }
+    }).filter(Boolean) as typeof raw
+
+    // Deduplicate: same source + project → keep most recent only
+    const deduped = new Map<string, typeof sessions[0]>()
+    for (const s of sessions) {
+      const key = `${s.source}:${s.project || s.cwd || s.filePath}`
+      const existing = deduped.get(key)
+      if (!existing || s.lastModifiedAt > existing.lastModifiedAt) {
+        deduped.set(key, s)
+      }
+    }
+    const result = [...deduped.values()]
+    return c.json({ sessions: result, count: result.length })
   })
 
   // --- Monitor Alerts API ---
