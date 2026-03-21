@@ -16,6 +16,8 @@ import { AutoSummaryManager } from './core/auto-summary.js'
 import { summarizeConversation } from './core/ai-client.js'
 import { startGitProbeLoop } from './core/git-probe.js'
 import { UsageCollector } from './core/usage-collector.js'
+import { ClaudeUsageProbe } from './adapters/claude-usage-probe.js'
+import { CodexUsageProbe } from './adapters/codex-usage-probe.js'
 import { TitleGenerator } from './core/title-generator.js'
 import { LiveSessionMonitor, type WatchDir } from './core/live-sessions.js'
 import { BackgroundMonitor } from './core/monitor.js'
@@ -38,6 +40,8 @@ const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({ path,
 const vikingBridge = initViking(settings)
 
 const usageCollector = new UsageCollector(db.getRawDb(), (event, data) => emit({ event, ...(typeof data === 'object' && data !== null ? data : { data }) }))
+usageCollector.register(new ClaudeUsageProbe())
+usageCollector.register(new CodexUsageProbe())
 
 const titleConfig = {
   provider: settings.titleProvider ?? 'ollama',
