@@ -365,9 +365,9 @@ export class Database {
 
   /** List premium-tier sessions with proper DB-level pagination (for Viking backfill) */
   listPremiumSessions(opts: { limit?: number; offset?: number; source?: string } = {}): SessionInfo[] {
-    const conditions: string[] = ["hidden_at IS NULL", "tier = 'premium'"]
+    const conditions: string[] = ["s.hidden_at IS NULL", "s.tier = 'premium'", "s.file_path != ''"]
     const params: Record<string, unknown> = {}
-    if (opts.source) { conditions.push('source = @source'); params.source = opts.source }
+    if (opts.source) { conditions.push('s.source = @source'); params.source = opts.source }
     const limit = opts.limit ?? 100
     const offset = opts.offset ?? 0
     const rows = this.db.prepare(`
@@ -375,7 +375,7 @@ export class Database {
       FROM sessions s
       LEFT JOIN session_local_state ls ON ls.session_id = s.id
       WHERE ${conditions.join(' AND ')}
-      ORDER BY start_time DESC
+      ORDER BY s.start_time DESC
       LIMIT @limit OFFSET @offset
     `).all({ ...params, limit, offset }) as Record<string, unknown>[]
     return rows.map(r => this.rowToSession(r))
