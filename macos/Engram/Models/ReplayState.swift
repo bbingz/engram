@@ -1,6 +1,7 @@
 // macos/Engram/Models/ReplayState.swift
 import Foundation
 
+@MainActor
 @Observable
 class ReplayState {
     var entries: [ReplayTimelineEntry] = []
@@ -133,7 +134,7 @@ class ReplayState {
         }
     }
 
-    deinit {
-        playTimer?.invalidate()
+    nonisolated deinit {
+        // Timer cleanup handled by stop() or pause() calls
     }
 }

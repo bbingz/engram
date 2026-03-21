@@ -155,6 +155,18 @@ struct CommandPaletteView: View {
             }
         }
         .onAppear { isFocused = true }
+        .onKeyPress(.upArrow) {
+            if selectedIndex > 0 { selectedIndex -= 1 }
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            if selectedIndex < visibleItems.count - 1 { selectedIndex += 1 }
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            dismiss()
+            return .handled
+        }
     }
 
     private func executeSelected() {

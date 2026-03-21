@@ -14,6 +14,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let indexer: IndexerProcess
     private let daemonClient: DaemonClient
     private var clickTimer: Timer?
+    private var badgeTimer: Timer?
     private var dockIconObserver: NSObjectProtocol?
     private var lastShowDockIcon: Bool?
 
@@ -49,29 +50,19 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             btn.target = self
         }
 
-        // Update badge with session count + live session count
+        // Update badge: total sessions + live count (consolidated, 10s poll)
         Task { @MainActor in
-            for await total in indexer.$totalSessions.values {
-                self.statusItem.button?.title = total > 0 ? " \(total)" : ""
+            // Initial badge
+            self.updateBadge()
+            // Re-update whenever totalSessions changes
+            for await _ in indexer.$totalSessions.values {
+                self.updateBadge()
             }
         }
 
-        // Poll live sessions every 10s for badge
-        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
-                do {
-                    let live: [LiveSessionInfo] = try await self.daemonClient.fetch("/api/live")
-                    let total = self.indexer.totalSessions
-                    if live.isEmpty {
-                        self.statusItem.button?.title = total > 0 ? " \(total)" : ""
-                    } else {
-                        self.statusItem.button?.title = " \(total) \u{25CF} \(live.count)"
-                    }
-                } catch {
-                    // Daemon not running — keep showing total only
-                }
-            }
+        // Poll live sessions every 10s for badge update
+        badgeTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateBadge() }
         }
 
         // Listen for settings open requests from PopoverView/ContentView gear button
@@ -291,6 +282,22 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // Programmatically set the Dock icon from the asset catalog
         if let icon = NSImage(named: "AppIcon") {
             NSApp.applicationIconImage = icon
+        }
+    }
+
+    private func updateBadge() {
+        let total = indexer.totalSessions
+        Task {
+            do {
+                let live: [LiveSessionInfo] = try await daemonClient.fetch("/api/live")
+                if live.isEmpty {
+                    self.statusItem.button?.title = total > 0 ? " \(total)" : ""
+                } else {
+                    self.statusItem.button?.title = " \(total) \u{25CF} \(live.count)"
+                }
+            } catch {
+                self.statusItem.button?.title = total > 0 ? " \(total)" : ""
+            }
         }
     }
 

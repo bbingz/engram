@@ -99,16 +99,11 @@ indexer.indexAll().then(async (indexed) => {
     }
   } catch { /* ignore */ }
 
-  // Backfill costs and tool analytics (multi-round, max 5 to cap startup time)
+  // Backfill costs and tool analytics for sessions without cost data
   try {
-    let totalBackfilled = 0
-    for (let round = 0; round < 5; round++) {
-      const count = await indexer.backfillCosts()
-      if (count === 0) break
-      totalBackfilled += count
-    }
-    if (totalBackfilled > 0) {
-      emit({ event: 'backfill', type: 'costs', count: totalBackfilled })
+    const costBackfilled = await indexer.backfillCosts()
+    if (costBackfilled > 0) {
+      emit({ event: 'backfill', type: 'costs', count: costBackfilled })
     }
   } catch { /* ignore */ }
 
@@ -127,6 +122,9 @@ indexer.indexAll().then(async (indexed) => {
       emit({ event: 'index_jobs_recovered', ...jobSummary })
     }
   } catch { /* ignore */ }
+
+  // Start usage probe collection after indexing is ready
+  usageCollector.start()
 }).catch(err => {
   emit({ event: 'error', message: String(err) })
 })
@@ -292,6 +290,7 @@ function shutdown() {
   clearInterval(gitProbeTimer)
   liveMonitor.stop()
   backgroundMonitor.stop()
+  usageCollector.stop()
   autoSummary?.cleanup()
   watcher?.close()
   webServer.close()

@@ -84,6 +84,22 @@ struct SessionDetailView: View {
                 viewMode: $viewMode
             )
 
+            // Handoff status toast
+            if let status = handoffStatus {
+                HStack(spacing: 6) {
+                    Image(systemName: status.hasPrefix("Handoff copied") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(status.hasPrefix("Handoff copied") ? .green : .red)
+                    Text(status)
+                        .font(.system(size: 11))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .animation(.easeInOut(duration: 0.2), value: handoffStatus)
+            }
+
             if showFind {
                 TranscriptFindBar(
                     searchText: $searchText,

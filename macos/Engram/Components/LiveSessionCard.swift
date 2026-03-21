@@ -9,6 +9,7 @@ struct LiveSessionCard: View {
     private var elapsedText: String {
         guard let started = session.startedAt else { return "" }
         let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = formatter.date(from: started) else { return "" }
         let seconds = Int(Date().timeIntervalSince(date))
         if seconds < 60 { return "\(seconds)s" }
