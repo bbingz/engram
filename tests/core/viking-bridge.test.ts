@@ -72,6 +72,8 @@ describe('addResource', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/resources/temp_upload');
     expect(mockFetch.mock.calls[1][0]).toBe('http://localhost:1933/api/v1/resources');
+    const importBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(importBody.preserve_structure).toBe(true);
   });
 
   it('throws on temp_upload error', async () => {

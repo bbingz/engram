@@ -548,8 +548,13 @@ export function createApp(db: Database, opts?: {
         const filtered = filterForViking(messages)
         if (filtered.length === 0) { skipped++; continue }
 
-        const sessionId = `engram-${session.source}-${session.project ?? 'unknown'}-${session.id}`
-        await viking.pushSession(sessionId, filtered)
+        const content = filtered.map(m => `[${m.role}] ${m.content}`).join('\n\n')
+        const uri = `viking://session/${session.source}/${session.project ?? 'unknown'}/${session.id}`
+        await viking.addResource(uri, content, {
+          source: session.source,
+          project: session.project ?? '',
+          startTime: session.startTime,
+        })
         pushed++
       } catch (err) {
         failures.push({ id: session.id, error: err instanceof Error ? err.message : String(err) })

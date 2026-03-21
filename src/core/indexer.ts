@@ -9,7 +9,7 @@ import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
 import { computeTier, type SessionTier } from './session-tier.js'
 import { isPreambleOnly } from './preamble-detector.js'
 import { SessionSnapshotWriter } from './session-writer.js'
-import { type VikingBridge } from './viking-bridge.js'
+import { toVikingUri, type VikingBridge } from './viking-bridge.js'
 import { filterForViking } from './viking-filter.js'
 import type { TitleGenerator } from './title-generator.js'
 
@@ -30,8 +30,14 @@ export class Indexer {
       if (!ok) return
       const filtered = filterForViking(messages)
       if (filtered.length === 0) return
-      const sessionId = `engram-${info.source}-${info.project ?? 'unknown'}-${info.id}`
-      this.opts!.viking!.pushSession(sessionId, filtered).catch(() => {})
+      const uri = toVikingUri(info.source, info.project, info.id)
+      const content = filtered.map(m => `[${m.role}] ${m.content}`).join('\n\n')
+      this.opts!.viking!.addResource(uri, content, {
+        source: info.source,
+        project: info.project ?? '',
+        startTime: info.startTime,
+        model: info.model ?? '',
+      }).catch(() => {})
     }).catch(() => {})
   }
 

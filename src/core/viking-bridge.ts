@@ -166,7 +166,7 @@ export class VikingBridge {
     const importRes = await fetch(`${this.api}/resources`, {
       method: 'POST',
       headers: this.headers,
-      body: JSON.stringify({ temp_path: tempPath, wait: false }),
+      body: JSON.stringify({ temp_path: tempPath, wait: false, preserve_structure: true }),
       signal: AbortSignal.timeout(10000),
     });
     if (!importRes.ok) {
