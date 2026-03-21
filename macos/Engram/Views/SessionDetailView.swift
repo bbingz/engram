@@ -12,6 +12,7 @@ struct SessionDetailView: View {
     @EnvironmentObject var daemonClient: DaemonClient
     @State private var isFavorite = false
     @State private var handoffStatus: String? = nil
+    @State private var showReplay = false
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
     @State private var isSummarizing = false
@@ -79,6 +80,7 @@ struct SessionDetailView: View {
                 onNavPrev: { type in navigateType(type, direction: -1) },
                 onNavNext: { type in navigateType(type, direction: 1) },
                 onHandoff: { performHandoff() },
+                onReplay: { showReplay = true },
                 viewMode: $viewMode
             )
 
@@ -225,6 +227,11 @@ struct SessionDetailView: View {
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
         .onChange(of: showAgentComm) { _, _ in updateDisplayIndexed() }
         .onChange(of: searchText) { _, _ in updateMatchIndices() }
+        .sheet(isPresented: $showReplay) {
+            SessionReplayView(sessionId: session.id)
+                .environmentObject(daemonClient)
+                .frame(minWidth: 600, minHeight: 450)
+        }
     }
 
     // MARK: - Helpers

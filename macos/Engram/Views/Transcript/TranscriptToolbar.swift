@@ -22,6 +22,7 @@ struct TranscriptToolbar: View {
     let onNavPrev: (MessageType) -> Void
     let onNavNext: (MessageType) -> Void
     var onHandoff: (() -> Void)? = nil
+    var onReplay: (() -> Void)? = nil
 
     @Binding var viewMode: TranscriptViewMode
     @AppStorage("contentFontSize") var fontSize: Double = 14
@@ -89,6 +90,23 @@ struct TranscriptToolbar: View {
                     }
                     .buttonStyle(.plain)
                     .help("Generate handoff brief and copy to clipboard")
+                }
+
+                if let onReplay {
+                    Button(action: onReplay) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "play.rectangle")
+                                .font(.system(size: 11))
+                            Text("Replay")
+                                .font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.purple.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Replay session timeline")
                 }
 
                 Spacer()
