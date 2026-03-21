@@ -290,7 +290,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         Task {
             do {
                 let response: LiveSessionsResponse = try await daemonClient.fetch("/api/live")
-                    let live = response.sessions
+                    let live = response.sessions.filter { $0.activityLevel == "active" }
                 if live.isEmpty {
                     self.statusItem.button?.title = total > 0 ? " \(total)" : ""
                 } else {

@@ -6,25 +6,47 @@ struct LiveSessionCard: View {
 
     @State private var isPulsing = false
 
+    private var levelColor: Color {
+        switch session.activityLevel {
+        case "active": return .green
+        case "idle":   return .yellow
+        default:       return .gray
+        }
+    }
+
+    private var levelLabel: String {
+        switch session.activityLevel {
+        case "active": return "Active"
+        case "idle":   return "Idle"
+        default:       return "Recent"
+        }
+    }
+
     private var elapsedText: String {
-        guard let started = session.startedAt else { return "" }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = formatter.date(from: started) else { return "" }
+        // Use lastModifiedAt for "how long ago was it active"
+        guard let date = formatter.date(from: session.lastModifiedAt) else { return "" }
         let seconds = Int(Date().timeIntervalSince(date))
-        if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3600 { return "\(seconds / 60)m" }
-        return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
+        if seconds < 60 { return "just now" }
+        if seconds < 3600 { return "\(seconds / 60)m ago" }
+        if seconds < 86400 { return "\(seconds / 3600)h ago" }
+        return "\(seconds / 86400)d ago"
     }
 
     var body: some View {
         HStack(spacing: 10) {
-            // Pulse dot
+            // Status dot — pulses only for active
             Circle()
-                .fill(Color.green)
+                .fill(levelColor)
                 .frame(width: 8, height: 8)
-                .opacity(isPulsing ? 0.4 : 1.0)
-                .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: isPulsing)
+                .opacity(session.activityLevel == "active" && isPulsing ? 0.4 : 1.0)
+                .animation(
+                    session.activityLevel == "active"
+                        ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true)
+                        : .default,
+                    value: isPulsing
+                )
 
             SourcePill(source: session.source)
 
@@ -46,7 +68,7 @@ struct LiveSessionCard: View {
                     .foregroundStyle(Theme.secondaryText)
             }
 
-            if let activity = session.currentActivity {
+            if let activity = session.currentActivity, session.activityLevel == "active" {
                 Text(activity)
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.tertiaryText)
@@ -54,18 +76,16 @@ struct LiveSessionCard: View {
                     .frame(maxWidth: 80)
             }
 
-            if !elapsedText.isEmpty {
-                Text(elapsedText)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Theme.secondaryText)
-            }
+            Text(elapsedText)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(Theme.secondaryText)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Theme.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.green.opacity(0.3), lineWidth: 1)
+                .stroke(levelColor.opacity(0.3), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onAppear { isPulsing = true }

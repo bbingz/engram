@@ -13,6 +13,9 @@ struct SourcePulseView: View {
     @State private var liveTimer: Timer?
 
     private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
+    private var activeSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "active" } }
+    private var idleSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "idle" } }
+    private var recentSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "recent" || $0.activityLevel == nil } }
 
     var body: some View {
         ScrollView {
@@ -20,18 +23,51 @@ struct SourcePulseView: View {
                 HStack(spacing: 12) {
                     KPICard(value: "\(sources.count)", label: "Active Sources")
                     KPICard(value: formatNumber(totalIndexed), label: "Total Indexed")
-                    if !liveSessions.isEmpty {
-                        KPICard(value: "\(liveSessions.count)", label: "Live Now")
+                    if !activeSessions.isEmpty {
+                        KPICard(value: "\(activeSessions.count)", label: "Active")
+                    }
+                    if !idleSessions.isEmpty {
+                        KPICard(value: "\(idleSessions.count)", label: "Idle")
                     }
                 }
 
-                // Live Sessions section
+                // Live Sessions section — grouped by activity level
                 if !liveSessions.isEmpty {
-                    SectionHeader(icon: "bolt.fill", title: "Live Sessions",
+                    SectionHeader(icon: "bolt.fill", title: "Sessions",
                                  onRefresh: { Task { await loadLiveSessions() } })
-                    LazyVStack(spacing: 4) {
-                        ForEach(liveSessions) { session in
-                            LiveSessionCard(session: session)
+
+                    if !activeSessions.isEmpty {
+                        Label("Active", systemImage: "circle.fill")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.green)
+                        LazyVStack(spacing: 4) {
+                            ForEach(activeSessions) { session in
+                                LiveSessionCard(session: session)
+                            }
+                        }
+                    }
+
+                    if !idleSessions.isEmpty {
+                        Label("Idle", systemImage: "circle.fill")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.yellow)
+                            .padding(.top, activeSessions.isEmpty ? 0 : 8)
+                        LazyVStack(spacing: 4) {
+                            ForEach(idleSessions) { session in
+                                LiveSessionCard(session: session)
+                            }
+                        }
+                    }
+
+                    if !recentSessions.isEmpty {
+                        Label("Recent", systemImage: "circle.fill")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.gray)
+                            .padding(.top, (activeSessions.isEmpty && idleSessions.isEmpty) ? 0 : 8)
+                        LazyVStack(spacing: 4) {
+                            ForEach(recentSessions) { session in
+                                LiveSessionCard(session: session)
+                            }
                         }
                     }
                 }

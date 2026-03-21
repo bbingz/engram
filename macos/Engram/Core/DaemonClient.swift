@@ -132,6 +132,7 @@ struct LiveSessionInfo: Decodable, Identifiable {
     let model: String?
     let currentActivity: String?
     let lastModifiedAt: String
+    let activityLevel: String?  // "active" | "idle" | "recent"
 }
 
 struct MonitorAlert: Decodable, Identifiable {
