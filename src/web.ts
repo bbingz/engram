@@ -28,6 +28,7 @@ import type { LiveSessionMonitor } from './core/live-sessions.js'
 import type { BackgroundMonitor } from './core/monitor.js'
 import { populateMockData, clearMockData } from './core/mock-data.js'
 import { handleLintConfig } from './tools/lint_config.js'
+import { filterForViking } from './core/viking-filter.js'
 
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = []
@@ -512,7 +513,7 @@ export function createApp(db: Database, opts?: {
     }
   })
 
-  // --- Viking backfill: push existing sessions to OpenViking ---
+  // --- Viking backfill: push premium sessions to OpenViking via Sessions API ---
   app.post('/api/viking/backfill', async (c) => {
     if (!opts?.viking || !opts?.adapters) {
       return c.json({ error: 'Viking not configured or no adapters' }, 501)
@@ -526,10 +527,11 @@ export function createApp(db: Database, opts?: {
     const limit = parseInt(c.req.query('limit') ?? '100', 10)
     const offset = parseInt(c.req.query('offset') ?? '0', 10)
     const source = c.req.query('source')
-    const sessions = db.listSessions({ source: source as any, limit, offset, agents: 'hide' })
+    const sessions = db.listPremiumSessions({ source: source || undefined, limit, offset })
 
     let pushed = 0
-    let errors = 0
+    let skipped = 0
+    const failures: { id: string; error: string }[] = []
     for (const session of sessions) {
       try {
         const adapter = opts.adapters.find(a => a.name === session.source)
@@ -543,19 +545,31 @@ export function createApp(db: Database, opts?: {
         }
         if (messages.length === 0) continue
 
-        const content = messages.map(m => `[${m.role}] ${m.content}`).join('\n\n')
-        await viking.addResource(`engram-${session.source}-${session.id}`, content, {
-          source: session.source,
-          project: session.project ?? '',
-          startTime: session.startTime,
-        })
+        const filtered = filterForViking(messages)
+        if (filtered.length === 0) { skipped++; continue }
+
+        const sessionId = `engram-${session.source}-${session.project ?? 'unknown'}-${session.id}`
+        await viking.pushSession(sessionId, filtered)
         pushed++
-      } catch {
-        errors++
+      } catch (err) {
+        failures.push({ id: session.id, error: err instanceof Error ? err.message : String(err) })
       }
     }
 
-    return c.json({ pushed, errors, total: sessions.length, offset, limit })
+    return c.json({ pushed, skipped, errors: failures.length, failures: failures.slice(0, 10), total: sessions.length, offset, limit })
+  })
+
+  // --- Viking cleanup: delete old resources data ---
+  app.post('/api/viking/cleanup', async (c) => {
+    if (!opts?.viking) {
+      return c.json({ error: 'Viking not configured' }, 501)
+    }
+    try {
+      await opts.viking.deleteResources()
+      return c.json({ status: 'ok', message: 'Resources data deleted' })
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+    }
   })
 
   // --- Title generation ---
