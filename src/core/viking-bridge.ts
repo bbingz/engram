@@ -78,6 +78,56 @@ export class VikingBridge {
     return ok;
   }
 
+  /** Generic POST helper with retry on 429/5xx. Retries up to 3 times with linear backoff. */
+  private async post(url: string, body: Record<string, unknown>, timeout = 10000): Promise<unknown> {
+    const MAX_RETRIES = 3;
+    const path = url.replace(this.api, '');
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (res.ok) return res.json();
+      if (res.status === 429 || res.status >= 500) {
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        }
+        continue;
+      }
+      throw new Error(`Viking ${path} failed (${res.status}): ${await res.text()}`);
+    }
+    throw new Error(`Viking ${path} failed after ${MAX_RETRIES} retries`);
+  }
+
+  /** Push a session via Sessions API (create → add messages serially → commit).
+   *  Messages sent serially to preserve conversation order (Viking stores by arrival order).
+   *  Built-in MD5 dedup: re-pushing same messages is a no-op. */
+  async pushSession(sessionId: string, messages: { role: string; content: string }[]): Promise<void> {
+    await this.post(`${this.api}/sessions/custom`, { session_id: sessionId });
+
+    for (const msg of messages) {
+      await this.post(`${this.api}/sessions/${sessionId}/messages/async`, {
+        role: msg.role,
+        content: msg.content,
+      }, 5000);
+    }
+
+    await this.post(`${this.api}/sessions/${sessionId}/commit/async`, {});
+  }
+
+  /** Delete all old resources data (cleanup after migration) */
+  async deleteResources(): Promise<void> {
+    const res = await fetch(
+      `${this.api}/fs?uri=${encodeURIComponent('viking://resources/')}&recursive=true`,
+      { method: 'DELETE', headers: this.headers, signal: AbortSignal.timeout(60000) }
+    );
+    if (!res.ok) {
+      throw new Error(`Viking deleteResources failed (${res.status}): ${await res.text()}`);
+    }
+  }
+
   // Push content to OpenViking via resources path (triggers embedding pipeline)
   // Flow: temp_upload .md file → import as resource (async, triggers L0/L1 + embedding)
   async addResource(uri: string, content: string, metadata?: Record<string, string>): Promise<void> {
