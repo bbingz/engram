@@ -33,43 +33,12 @@ struct SourcePulseView: View {
 
                 // Live Sessions section — grouped by activity level
                 if !liveSessions.isEmpty {
-                    SectionHeader(icon: "bolt.fill", title: "Sessions",
+                    SectionHeader(icon: "bolt.fill", title: "Sessions (\(liveSessions.count))",
                                  onRefresh: { Task { await loadLiveSessions() } })
 
-                    if !activeSessions.isEmpty {
-                        Label("Active", systemImage: "circle.fill")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.green)
-                        LazyVStack(spacing: 4) {
-                            ForEach(activeSessions) { session in
-                                LiveSessionCard(session: session)
-                            }
-                        }
-                    }
-
-                    if !idleSessions.isEmpty {
-                        Label("Idle", systemImage: "circle.fill")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.yellow)
-                            .padding(.top, activeSessions.isEmpty ? 0 : 8)
-                        LazyVStack(spacing: 4) {
-                            ForEach(idleSessions) { session in
-                                LiveSessionCard(session: session)
-                            }
-                        }
-                    }
-
-                    if !recentSessions.isEmpty {
-                        Label("Recent", systemImage: "circle.fill")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.gray)
-                            .padding(.top, (activeSessions.isEmpty && idleSessions.isEmpty) ? 0 : 8)
-                        LazyVStack(spacing: 4) {
-                            ForEach(recentSessions) { session in
-                                LiveSessionCard(session: session)
-                            }
-                        }
-                    }
+                    sessionGroup("Active", color: .green, sessions: activeSessions)
+                    sessionGroup("Idle", color: .yellow, sessions: idleSessions)
+                    sessionGroup("Recent", color: .gray, sessions: recentSessions)
                 }
                 if let error {
                     AlertBanner(message: "Failed to load source data: \(error)")
@@ -143,6 +112,32 @@ struct SourcePulseView: View {
             } catch {}
         }
         do { sourceDist = try db.sourceDistribution() } catch {}
+    }
+
+    @ViewBuilder
+    private func sessionGroup(_ label: String, color: Color, sessions: [LiveSessionInfo]) -> some View {
+        if !sessions.isEmpty {
+            HStack(spacing: 6) {
+                Label(label, systemImage: "circle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(color)
+                Text("(\(sessions.count))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            VStack(spacing: 4) {
+                ForEach(Array(sessions.prefix(10))) { session in
+                    LiveSessionCard(session: session)
+                }
+                if sessions.count > 10 {
+                    Text("+ \(sessions.count - 10) more")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+            }
+        }
     }
 
     private func formatNumber(_ n: Int) -> String {
