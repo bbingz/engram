@@ -1,6 +1,51 @@
 // src/core/viking-bridge.ts
 // HTTP client for OpenViking API — all paths match the real server routes.
 
+import http from 'node:http';
+
+/** Proxy-aware fetch: routes through http_proxy when set (Node's native fetch ignores it). */
+function vikingFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+  const proxy = process.env.http_proxy || process.env.HTTP_PROXY;
+  if (!proxy) return fetch(url, init);
+
+  const target = new URL(String(url));
+  // Skip proxy for localhost
+  if (target.hostname === 'localhost' || target.hostname === '127.0.0.1') return fetch(url, init);
+
+  const proxyUrl = new URL(proxy);
+  const signal = init?.signal as AbortSignal | undefined;
+
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: proxyUrl.hostname,
+      port: Number(proxyUrl.port),
+      path: String(url),
+      method: init?.method ?? 'GET',
+      headers: {
+        ...(init?.headers as Record<string, string>),
+        Host: target.host,
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks);
+        resolve(new Response(body, {
+          status: res.statusCode ?? 500,
+          statusText: res.statusMessage ?? '',
+          headers: res.headers as Record<string, string>,
+        }));
+      });
+    });
+
+    req.on('error', reject);
+    signal?.addEventListener('abort', () => { req.destroy(); reject(new DOMException('Aborted', 'AbortError')); });
+
+    if (init?.body) req.write(init.body);
+    req.end();
+  });
+}
+
 export interface VikingSearchResult {
   uri: string;
   score: number;
@@ -57,7 +102,7 @@ export class VikingBridge {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.api}/debug/health`, {
+      const res = await vikingFetch(`${this.api}/debug/health`, {
         method: 'GET',
         headers: this.headers,
         signal: AbortSignal.timeout(3000),
@@ -83,7 +128,7 @@ export class VikingBridge {
     const MAX_RETRIES = 3;
     const path = url.replace(this.api, '');
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      const res = await fetch(url, {
+      const res = await vikingFetch(url, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify(body),
@@ -119,9 +164,9 @@ export class VikingBridge {
 
   /** Delete all old resources data (cleanup after migration) */
   async deleteResources(): Promise<void> {
-    const res = await fetch(
+    const res = await vikingFetch(
       `${this.api}/fs?uri=${encodeURIComponent('viking://resources/')}&recursive=true`,
-      { method: 'DELETE', headers: this.headers, signal: AbortSignal.timeout(60000) }
+      { method: 'DELETE', headers: this.headers, signal: AbortSignal.timeout(60000) } as RequestInit,
     );
     if (!res.ok) {
       throw new Error(`Viking deleteResources failed (${res.status}): ${await res.text()}`);
@@ -146,7 +191,7 @@ export class VikingBridge {
       `--${boundary}--`,
     ].join('\r\n');
 
-    const uploadRes = await fetch(`${this.api}/resources/temp_upload`, {
+    const uploadRes = await vikingFetch(`${this.api}/resources/temp_upload`, {
       method: 'POST',
       headers: {
         ...this.headers,
@@ -163,7 +208,7 @@ export class VikingBridge {
     if (!tempPath) throw new Error('Viking temp_upload returned no temp_path');
 
     // Step 2: import as resource (async — triggers L0/L1 generation + embedding)
-    const importRes = await fetch(`${this.api}/resources`, {
+    const importRes = await vikingFetch(`${this.api}/resources`, {
       method: 'POST',
       headers: this.headers,
       body: JSON.stringify({ temp_path: tempPath, wait: false, preserve_structure: true }),
@@ -179,7 +224,7 @@ export class VikingBridge {
     try {
       const body: Record<string, unknown> = { query, limit: 20 };
       if (targetUri) body.target_uri = targetUri;
-      const res = await fetch(`${this.api}/search/find`, {
+      const res = await vikingFetch(`${this.api}/search/find`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify(body),
@@ -204,7 +249,7 @@ export class VikingBridge {
   async grep(pattern: string, targetUri?: string): Promise<VikingSearchResult[]> {
     try {
       const body: Record<string, unknown> = { pattern, uri: targetUri ?? 'viking://' };
-      const res = await fetch(`${this.api}/search/grep`, {
+      const res = await vikingFetch(`${this.api}/search/grep`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify(body),
@@ -236,7 +281,7 @@ export class VikingBridge {
 
   private async getContent(url: string): Promise<string> {
     try {
-      const res = await fetch(url, {
+      const res = await vikingFetch(url, {
         method: 'GET',
         headers: this.headers,
         signal: AbortSignal.timeout(10000),
@@ -254,7 +299,7 @@ export class VikingBridge {
   // GET /ls?uri= — list entries
   async ls(uri: string): Promise<VikingEntry[]> {
     try {
-      const res = await fetch(`${this.api}/fs/ls?uri=${encodeURIComponent(uri)}`, {
+      const res = await vikingFetch(`${this.api}/fs/ls?uri=${encodeURIComponent(uri)}`, {
         method: 'GET',
         headers: this.headers,
         signal: AbortSignal.timeout(10000),
