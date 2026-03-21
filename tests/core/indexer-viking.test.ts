@@ -26,7 +26,7 @@ describe('Indexer with Viking', () => {
     db = new Database(join(tmpDir, 'test.sqlite'))
     const mockViking = {
       checkAvailable: vi.fn().mockResolvedValue(true),
-      addResource: vi.fn().mockResolvedValue(undefined),
+      pushSession: vi.fn().mockResolvedValue(undefined),
     } as unknown as VikingBridge
 
     const filePath = join(tmpDir, 'session.jsonl')
@@ -46,10 +46,11 @@ describe('Indexer with Viking', () => {
     await indexer.indexAll()
     // Wait for fire-and-forget promises
     await new Promise(r => setTimeout(r, 50))
-    expect(mockViking.addResource).toHaveBeenCalledWith(
-      expect.stringContaining('viking://session/codex/'),
-      expect.stringContaining('[user] Hello'),
-      expect.objectContaining({ source: 'codex' })
+    expect(mockViking.pushSession).toHaveBeenCalledWith(
+      expect.stringContaining('engram-codex-'),
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: 'Hello' }),
+      ])
     )
   })
 
@@ -58,7 +59,7 @@ describe('Indexer with Viking', () => {
     db = new Database(join(tmpDir, 'test.sqlite'))
     const mockViking = {
       checkAvailable: vi.fn().mockResolvedValue(true),
-      addResource: vi.fn().mockRejectedValue(new Error('server down')),
+      pushSession: vi.fn().mockRejectedValue(new Error('server down')),
     } as unknown as VikingBridge
 
     const filePath = join(tmpDir, 'session.jsonl')
