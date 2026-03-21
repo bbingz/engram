@@ -11,6 +11,7 @@ struct SourcePulseView: View {
     @State private var isLoading = true
     @State private var error: String? = nil
     @State private var liveTimer: Timer?
+    @State private var expandedGroups: Set<String> = []
 
     private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
     private var activeSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "active" } }
@@ -117,6 +118,9 @@ struct SourcePulseView: View {
     @ViewBuilder
     private func sessionGroup(_ label: String, color: Color, sessions: [LiveSessionInfo]) -> some View {
         if !sessions.isEmpty {
+            let isExpanded = expandedGroups.contains(label)
+            let shown = isExpanded ? sessions : Array(sessions.prefix(10))
+
             HStack(spacing: 6) {
                 Label(label, systemImage: "circle.fill")
                     .font(.system(size: 11, weight: .medium))
@@ -126,15 +130,26 @@ struct SourcePulseView: View {
                     .foregroundStyle(.secondary)
             }
             VStack(spacing: 4) {
-                ForEach(Array(sessions.prefix(10))) { session in
+                ForEach(shown) { session in
                     LiveSessionCard(session: session)
                 }
                 if sessions.count > 10 {
-                    Text("+ \(sessions.count - 10) more")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            if isExpanded {
+                                expandedGroups.remove(label)
+                            } else {
+                                expandedGroups.insert(label)
+                            }
+                        }
+                    } label: {
+                        Text(isExpanded ? "Show less" : "+ \(sessions.count - 10) more")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.blue)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
