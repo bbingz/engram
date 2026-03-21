@@ -116,6 +116,11 @@ struct HookInfo: Decodable, Identifiable {
 
 // MARK: - Live Sessions & Monitor Types
 
+struct LiveSessionsResponse: Decodable {
+    let sessions: [LiveSessionInfo]
+    let count: Int
+}
+
 struct LiveSessionInfo: Decodable, Identifiable {
     var id: String { sessionId ?? filePath }
     let source: String

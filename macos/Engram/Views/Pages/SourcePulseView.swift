@@ -87,7 +87,8 @@ struct SourcePulseView: View {
 
     private func loadLiveSessions() async {
         do {
-            liveSessions = try await daemonClient.fetch("/api/live")
+            let response: LiveSessionsResponse = try await daemonClient.fetch("/api/live")
+            liveSessions = response.sessions
         } catch {
             liveSessions = []
         }
