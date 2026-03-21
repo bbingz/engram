@@ -95,11 +95,16 @@ indexer.indexAll().then(async (indexed) => {
     }
   } catch { /* ignore */ }
 
-  // Backfill costs and tool analytics for sessions without cost data
+  // Backfill costs and tool analytics (multi-round, max 5 to cap startup time)
   try {
-    const costBackfilled = await indexer.backfillCosts()
-    if (costBackfilled > 0) {
-      emit({ event: 'backfill', type: 'costs', count: costBackfilled })
+    let totalBackfilled = 0
+    for (let round = 0; round < 5; round++) {
+      const count = await indexer.backfillCosts()
+      if (count === 0) break
+      totalBackfilled += count
+    }
+    if (totalBackfilled > 0) {
+      emit({ event: 'backfill', type: 'costs', count: totalBackfilled })
     }
   } catch { /* ignore */ }
 

@@ -267,7 +267,10 @@ export class Indexer {
           this.writeExtractedData(id, session.model || '', 0, 0, 0, 0, new Map())
           total++
         }
+        // Rate limit: avoid I/O storms during large backfill
+        await new Promise(r => setTimeout(r, 50))
       }
+      console.log(`[backfill] Costs: ${ids.length} sessions processed (running total: ${total})`)
     }
     return total
   }
