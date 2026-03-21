@@ -345,10 +345,60 @@ describe('pushSession', () => {
   it('throws on session creation failure with descriptive error', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false, status: 500, text: () => Promise.resolve('Internal error'),
+      ok: false, status: 400, text: () => Promise.resolve('Bad request'),
     }));
     await expect(bridge.pushSession('id', [{ role: 'user', content: 'hi' }]))
-      .rejects.toThrow(/sessions\/custom.*500/);
+      .rejects.toThrow(/sessions\/custom.*400/);
+  });
+});
+
+describe('post retry logic', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('retries on 429 and succeeds', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, text: () => Promise.resolve('rate limited') })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }) });
+    vi.stubGlobal('fetch', mockFetch);
+
+    // pushSession internally calls post() which retries on 429
+    await bridge.pushSession('test-retry', []);
+    // 1st attempt (429) + retry (200) + commit = 3 calls
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries on 500 and succeeds', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('server error') })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }) });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await bridge.pushSession('test-retry-500', []);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('throws after 3 retries on persistent 429', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 429, text: () => Promise.resolve('rate limited'),
+    }));
+    await expect(bridge.pushSession('test-exhaust', []))
+      .rejects.toThrow(/after 3 retries/);
+  });
+
+  it('does NOT retry on 400 client error', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false, status: 400, text: () => Promise.resolve('bad request'),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    await expect(bridge.pushSession('test-no-retry', []))
+      .rejects.toThrow(/400/);
+    // Only 1 call — no retries for 4xx (non-429)
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -387,19 +437,29 @@ Expected: FAIL — `pushSession` / `deleteResources` is not a function
 在 `src/core/viking-bridge.ts` 的 `VikingBridge` 类中，`checkAvailable()` 之后（line 79）添加：
 
 ```typescript
-  /** Generic POST helper — error message includes the URL path for debuggability */
+  /** Generic POST helper with retry on 429/5xx. Retries up to 3 times with linear backoff. */
   private async post(url: string, body: Record<string, unknown>, timeout = 10000): Promise<unknown> {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeout),
-    });
-    if (!res.ok) {
-      const path = url.replace(this.api, '');
+    const MAX_RETRIES = 3;
+    const path = url.replace(this.api, '');
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (res.ok) return res.json();
+      // Retry on 429 (rate limit) or 5xx (server error)
+      if (res.status === 429 || res.status >= 500) {
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+      }
+      // 4xx (non-429) = client error, don't retry
       throw new Error(`Viking ${path} failed (${res.status}): ${await res.text()}`);
     }
-    return res.json();
+    throw new Error(`Viking ${path} failed after ${MAX_RETRIES} retries`);
   }
 
   /** Push a session via Sessions API (create → add messages serially → commit).
@@ -433,8 +493,10 @@ Expected: FAIL — `pushSession` / `deleteResources` is not a function
 ```
 
 **关键设计：**
+- `post()` 自动重试 429/5xx，最多 3 次，线性退避（1s, 2s, 3s）；4xx 客户端错误不重试
 - `post()` 错误消息包含 URL path（非硬编码方法名），方便调试
 - messages 串行发送保持对话顺序（Viking 按到达顺序存储，并发会乱序）
+- 部分失败恢复：消息 N 失败 → 下次重推时 MD5 dedup 跳过 1..N-1，从 N 继续
 - `deleteResources()` 检查 `res.ok`，失败时抛出错误
 
 - [ ] **Step 4: 运行测试确认 PASS**
