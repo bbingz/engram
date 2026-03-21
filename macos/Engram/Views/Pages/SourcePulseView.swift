@@ -7,8 +7,10 @@ struct SourcePulseView: View {
 
     @State private var sources: [SourceInfo] = []
     @State private var sourceDist: [(source: String, count: Int)] = []
+    @State private var liveSessions: [LiveSessionInfo] = []
     @State private var isLoading = true
     @State private var error: String? = nil
+    @State private var liveTimer: Timer?
 
     private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
 
@@ -18,6 +20,20 @@ struct SourcePulseView: View {
                 HStack(spacing: 12) {
                     KPICard(value: "\(sources.count)", label: "Active Sources")
                     KPICard(value: formatNumber(totalIndexed), label: "Total Indexed")
+                    if !liveSessions.isEmpty {
+                        KPICard(value: "\(liveSessions.count)", label: "Live Now")
+                    }
+                }
+
+                // Live Sessions section
+                if !liveSessions.isEmpty {
+                    SectionHeader(icon: "bolt.fill", title: "Live Sessions",
+                                 onRefresh: { Task { await loadLiveSessions() } })
+                    LazyVStack(spacing: 4) {
+                        ForEach(liveSessions) { session in
+                            LiveSessionCard(session: session)
+                        }
+                    }
                 }
                 if let error {
                     AlertBanner(message: "Failed to load source data: \(error)")
@@ -58,7 +74,23 @@ struct SourcePulseView: View {
             }
             .padding(24)
         }
-        .task { await loadData() }
+        .task {
+            await loadData()
+            await loadLiveSessions()
+            // Auto-refresh live sessions every 10s
+            liveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
+                Task { @MainActor in await loadLiveSessions() }
+            }
+        }
+        .onDisappear { liveTimer?.invalidate(); liveTimer = nil }
+    }
+
+    private func loadLiveSessions() async {
+        do {
+            liveSessions = try await daemonClient.fetch("/api/live")
+        } catch {
+            liveSessions = []
+        }
     }
 
     private func loadData() async {

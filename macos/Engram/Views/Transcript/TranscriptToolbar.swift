@@ -21,6 +21,7 @@ struct TranscriptToolbar: View {
     let onShowAll: () -> Void
     let onNavPrev: (MessageType) -> Void
     let onNavNext: (MessageType) -> Void
+    var onHandoff: (() -> Void)? = nil
 
     @Binding var viewMode: TranscriptViewMode
     @AppStorage("contentFontSize") var fontSize: Double = 14
@@ -70,6 +71,25 @@ struct TranscriptToolbar: View {
                 }
                 .buttonStyle(.plain)
                 .help("Copy session ID: \(session.id)")
+
+                if let onHandoff {
+                    Divider().frame(height: 14)
+
+                    Button(action: onHandoff) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.right.doc.on.clipboard")
+                                .font(.system(size: 11))
+                            Text("Handoff")
+                                .font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Generate handoff brief and copy to clipboard")
+                }
 
                 Spacer()
 

@@ -9,7 +9,9 @@ struct SessionDetailView: View {
     var onBack: (() -> Void)? = nil
     @EnvironmentObject var db: DatabaseManager
     @EnvironmentObject var indexer: IndexerProcess
+    @EnvironmentObject var daemonClient: DaemonClient
     @State private var isFavorite = false
+    @State private var handoffStatus: String? = nil
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
     @State private var isSummarizing = false
@@ -76,6 +78,7 @@ struct SessionDetailView: View {
                 onShowAll: { for type in MessageType.allCases { typeVisibility[type] = true } },
                 onNavPrev: { type in navigateType(type, direction: -1) },
                 onNavNext: { type in navigateType(type, direction: 1) },
+                onHandoff: { performHandoff() },
                 viewMode: $viewMode
             )
 
@@ -299,6 +302,29 @@ struct SessionDetailView: View {
             if depth > 5000 { break } // safety limit
         }
         return nil
+    }
+
+    func performHandoff() {
+        Task {
+            do {
+                struct HandoffRequest: Encodable {
+                    let cwd: String
+                }
+                let response: HandoffResponse = try await daemonClient.post(
+                    "/api/handoff",
+                    body: HandoffRequest(cwd: session.cwd ?? "")
+                )
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(response.brief, forType: .string)
+                handoffStatus = "Handoff copied! (\(response.sessionCount) sessions)"
+                // Clear status after 3s
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    if handoffStatus?.hasPrefix("Handoff") == true { handoffStatus = nil }
+                }
+            } catch {
+                handoffStatus = "Handoff failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     func copyAllTranscript() {

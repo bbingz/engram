@@ -49,10 +49,28 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             btn.target = self
         }
 
-        // Update badge with session count
+        // Update badge with session count + live session count
         Task { @MainActor in
             for await total in indexer.$totalSessions.values {
                 self.statusItem.button?.title = total > 0 ? " \(total)" : ""
+            }
+        }
+
+        // Poll live sessions every 10s for badge
+        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                do {
+                    let live: [LiveSessionInfo] = try await self.daemonClient.fetch("/api/live")
+                    let total = self.indexer.totalSessions
+                    if live.isEmpty {
+                        self.statusItem.button?.title = total > 0 ? " \(total)" : ""
+                    } else {
+                        self.statusItem.button?.title = " \(total) \u{25CF} \(live.count)"
+                    }
+                } catch {
+                    // Daemon not running — keep showing total only
+                }
             }
         }
 
