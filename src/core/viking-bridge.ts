@@ -139,8 +139,8 @@ export class VikingBridge {
       : '';
     const body = [
       `--${boundary}`,
-      `Content-Disposition: form-data; name="file"; filename="${slug}.md"`,
-      'Content-Type: text/markdown',
+      `Content-Disposition: form-data; name="file"; filename="${slug}.txt"`,
+      'Content-Type: text/plain',
       '',
       header + content,
       `--${boundary}--`,
