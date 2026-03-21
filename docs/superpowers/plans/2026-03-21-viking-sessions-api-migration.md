@@ -161,6 +161,17 @@ describe('filterForViking', () => {
     expect(filterForViking(msgs)).toHaveLength(0)
   })
 
+  // --- 脱敏在预算之前（安全性先于裁剪） ---
+
+  it('redacts sensitive data before budget check', () => {
+    // A 2.5MB message with a password buried inside — redaction must happen
+    // before budget shrinking, otherwise the password could end up in the kept portion
+    const msgs = [{ role: 'user', content: 'A'.repeat(1_000_000) + ' PGPASSWORD=SuperSecret ' + 'B'.repeat(1_500_000) }]
+    const result = filterForViking(msgs)
+    expect(result[0].content).not.toContain('SuperSecret')
+    expect(result[0].content).toContain('PGPASSWORD=***')
+  })
+
   // --- Session 级预算（2MB） ---
 
   it('does not touch messages when total content is under budget', () => {
@@ -173,22 +184,55 @@ describe('filterForViking', () => {
     expect(result[1].content.length).toBe(100_000)
   })
 
+  it('does not touch a large message if total is under budget', () => {
+    // Single 1.9MB message — under 2MB budget, should not be touched
+    const msgs = [{ role: 'user', content: 'X'.repeat(1_900_000) }]
+    const result = filterForViking(msgs)
+    expect(result[0].content.length).toBe(1_900_000)
+  })
+
   it('shrinks longest messages first when over budget', () => {
     // 3 messages totaling 3MB — over the 2MB budget
     const msgs = [
-      { role: 'user', content: 'A'.repeat(500_000) },        // 500KB — shortest, should be last to shrink
+      { role: 'user', content: 'A'.repeat(500_000) },        // 500KB — shortest
       { role: 'assistant', content: 'B'.repeat(1_500_000) },  // 1.5MB — longest, shrinks first
       { role: 'user', content: 'C'.repeat(1_000_000) },       // 1MB — second longest
     ]
     const result = filterForViking(msgs)
-    // Total should be <= 2MB
     const total = result.reduce((s, m) => s + m.content.length, 0)
-    expect(total).toBeLessThanOrEqual(2_000_000)
+    expect(total).toBeLessThanOrEqual(2_100_000) // budget + marker overhead tolerance
     // Shortest message untouched
     expect(result[0].content.length).toBe(500_000)
-    // Longest got shrunk, has truncation marker
+    // Longest got shrunk
     expect(result[1].content).toContain('...[truncated')
     expect(result[1].content.length).toBeLessThan(1_500_000)
+  })
+
+  it('shrinks multiple messages when one is not enough', () => {
+    // 3 messages each 1MB = 3MB total, need to cut 1MB
+    // After shrinking the first (longest by index order among equals), if still over, shrink next
+    const msgs = [
+      { role: 'user', content: 'A'.repeat(1_000_000) },
+      { role: 'assistant', content: 'B'.repeat(1_000_000) },
+      { role: 'user', content: 'C'.repeat(1_000_000) },
+    ]
+    const result = filterForViking(msgs)
+    const total = result.reduce((s, m) => s + m.content.length, 0)
+    expect(total).toBeLessThanOrEqual(2_100_000)
+    // At least one message was shrunk
+    const shrunk = result.filter(m => m.content.includes('[truncated'))
+    expect(shrunk.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('never shrinks messages ≤ 2000 chars', () => {
+    // 1 tiny message + 1 huge message totaling > 2MB
+    const msgs = [
+      { role: 'user', content: 'Short message' },           // 13 chars — must not be touched
+      { role: 'assistant', content: 'X'.repeat(2_500_000) }, // 2.5MB — will be shrunk
+    ]
+    const result = filterForViking(msgs)
+    expect(result[0].content).toBe('Short message')
+    expect(result[1].content).toContain('[truncated')
   })
 
   it('includes char count in truncation marker', () => {
@@ -305,9 +349,10 @@ function applySessionBudget(
     const shrinkBy = Math.min(excess, content.length - MIN_KEEP)
     const keepLen = content.length - shrinkBy
     const half = Math.floor(keepLen / 2)
-    result[i].content = content.slice(0, half)
-      + `\n...[truncated ${shrinkBy.toLocaleString()} chars]...\n`
-      + content.slice(-half)
+    // NOTE: tail uses keepLen - half (not half) to handle odd keepLen correctly.
+    // total -= shrinkBy ignores the ~35 char marker overhead — acceptable at 2MB budget scale.
+    const marker = `\n...[truncated ${shrinkBy.toLocaleString()} chars]...\n`
+    result[i].content = content.slice(0, half) + marker + content.slice(-(keepLen - half))
     total -= shrinkBy
   }
 
