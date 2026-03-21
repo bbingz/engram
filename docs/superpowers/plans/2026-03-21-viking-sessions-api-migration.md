@@ -19,9 +19,10 @@
 | `src/core/viking-filter.ts` | **NEW** — 内容过滤管道：系统注入检测、敏感数据脱敏、截断、工具噪声剥离 |
 | `src/core/viking-bridge.ts` | 新增 `pushSession()` + `post()` helper + `deleteResources()`；保留 `addResource()` |
 | `src/core/indexer.ts` | `pushToViking()` 改用 `pushSession()` + `filterForViking()` |
-| `src/web.ts` | backfill 端点改用 Sessions API + 过滤；新增 cleanup 端点 |
+| `src/core/db.ts` | 新增 `listPremiumSessions()` 支持 premium-only 分页查询 |
+| `src/web.ts` | backfill 端点改用 Sessions API + 过滤 + premium 分页；新增 cleanup 端点 |
 | `tests/core/viking-filter.test.ts` | **NEW** — 过滤规则单元测试 |
-| `tests/core/viking-bridge.test.ts` | 新增 `pushSession()` 测试 |
+| `tests/core/viking-bridge.test.ts` | 新增 `pushSession()` / `deleteResources()` 测试 |
 | `tests/core/indexer-viking.test.ts` | 更新断言为 `pushSession()` |
 
 ---
@@ -93,6 +94,8 @@ describe('filterForViking', () => {
     expect(filterForViking(msgs)).toHaveLength(0)
   })
 
+  // --- 敏感数据脱敏 ---
+
   it('redacts PGPASSWORD', () => {
     const msgs = [{ role: 'assistant', content: 'Running: PGPASSWORD=TPmCa4FjQhRG psql -h 10.10.0.12' }]
     const result = filterForViking(msgs)
@@ -100,11 +103,20 @@ describe('filterForViking', () => {
     expect(result[0].content).not.toContain('TPmCa4FjQhRG')
   })
 
-  it('redacts API keys (sk-...)', () => {
-    const msgs = [{ role: 'assistant', content: 'Use key sk-henhtN3lOMGKYoTkDX2PDFY0irmW8Rha14xO3OmAIolGipzJ for auth' }]
+  it('redacts MYSQL_PWD', () => {
+    const msgs = [{ role: 'assistant', content: 'MYSQL_PWD=secret123 mysql -u root' }]
     const result = filterForViking(msgs)
-    expect(result[0].content).toContain('sk-***')
-    expect(result[0].content).not.toContain('henhtN3l')
+    expect(result[0].content).toContain('MYSQL_PWD=***')
+    expect(result[0].content).not.toContain('secret123')
+  })
+
+  it('redacts sk- API keys including dash/underscore formats', () => {
+    // Standard format
+    expect(filterForViking([{ role: 'user', content: 'sk-henhtN3lOMGKYoTkDX2PDFY0irmW8Rha14xO3OmAIolGipzJ' }])[0].content).toBe('sk-***')
+    // Anthropic format: sk-ant-api03-xxxx
+    expect(filterForViking([{ role: 'user', content: 'sk-ant-api03-abcdefghijklmnop' }])[0].content).toBe('sk-***')
+    // Project format: sk-proj-xxxx
+    expect(filterForViking([{ role: 'user', content: 'sk-proj-abcdefghijklmnopqrstuv' }])[0].content).toBe('sk-***')
   })
 
   it('redacts Bearer tokens', () => {
@@ -114,11 +126,26 @@ describe('filterForViking', () => {
     expect(result[0].content).not.toContain('engram-viking-2026')
   })
 
+  // --- 脱敏优先于截断（安全性先于裁剪）---
+
+  it('redacts sensitive data BEFORE truncation', () => {
+    // Password at position 1990-2020 — straddles the truncation boundary
+    const prefix = 'A'.repeat(1985)
+    const secret = ' PGPASSWORD=SuperSecret123 '
+    const suffix = 'B'.repeat(3000)
+    const msgs = [{ role: 'user', content: prefix + secret + suffix }]
+    const result = filterForViking(msgs)
+    expect(result[0].content).not.toContain('SuperSecret123')
+    expect(result[0].content).toContain('PGPASSWORD=***')
+  })
+
+  // --- 截断 ---
+
   it('truncates messages over 4000 chars', () => {
     const long = 'A'.repeat(5000)
     const msgs = [{ role: 'user', content: long }]
     const result = filterForViking(msgs)
-    expect(result[0].content.length).toBeLessThan(4200) // 2000 + separator + 2000
+    expect(result[0].content.length).toBeLessThan(4200)
     expect(result[0].content).toContain('...[truncated]...')
   })
 
@@ -127,16 +154,33 @@ describe('filterForViking', () => {
     expect(filterForViking(msgs)[0].content.length).toBe(3999)
   })
 
-  it('strips tool-only messages (backtick format)', () => {
+  // --- 工具噪声 ---
+
+  it('strips tool-only messages (single line backtick format)', () => {
     const msgs = [
       { role: 'assistant', content: '`Bash`: ls -la /tmp' },
       { role: 'assistant', content: '`Read`: /path/to/file.ts' },
+    ]
+    expect(filterForViking(msgs)).toHaveLength(0)
+  })
+
+  it('strips multiline tool-only messages (tool + output, no analysis)', () => {
+    const msgs = [
+      { role: 'assistant', content: '`Bash`: ls -la /tmp\n`Read`: /path/to/file.ts\n`Grep`: pattern' },
+    ]
+    expect(filterForViking(msgs)).toHaveLength(0)
+  })
+
+  it('keeps messages that mix tools with natural language', () => {
+    const msgs = [
       { role: 'assistant', content: 'The issue is in the Bash command `ls`. Let me fix it.' },
+      { role: 'assistant', content: '`Read`: /src/auth.ts\n\nAfter reading, I found the bug on line 42.' },
     ]
     const result = filterForViking(msgs)
-    expect(result).toHaveLength(1)
-    expect(result[0].content).toContain('The issue is')
+    expect(result).toHaveLength(2)
   })
+
+  // --- 空消息 ---
 
   it('strips empty messages after filtering', () => {
     const msgs = [
@@ -146,12 +190,14 @@ describe('filterForViking', () => {
     expect(filterForViking(msgs)).toHaveLength(0)
   })
 
+  // --- 综合测试 ---
+
   it('handles mixed content — keeps valuable, strips noise', () => {
     const msgs = [
       { role: 'user', content: '# AGENTS.md instructions for /foo\n<INSTRUCTIONS>Be helpful</INSTRUCTIONS>' },
       { role: 'user', content: 'Help me fix the auth bug in login.ts' },
       { role: 'assistant', content: '`Read`: /src/login.ts' },
-      { role: 'assistant', content: 'The bug is on line 42. The token validation skips expired tokens. Here is the fix...' },
+      { role: 'assistant', content: 'The bug is on line 42. The token validation skips expired tokens.' },
       { role: 'user', content: '<system-reminder>Task tools available</system-reminder>' },
     ]
     const result = filterForViking(msgs)
@@ -172,7 +218,7 @@ Expected: FAIL — module `viking-filter.js` not found
 ```typescript
 // src/core/viking-filter.ts
 
-/** System content detection — matches patterns from claude-code adapter's isSystemInjection() */
+/** System content detection — patterns from claude-code adapter's isSystemInjection() */
 function isSystemContent(text: string): boolean {
   return (
     text.startsWith('# AGENTS.md instructions for ') ||
@@ -191,15 +237,18 @@ function isSystemContent(text: string): boolean {
   )
 }
 
-/** Tool-only message: entire content is just a backtick tool summary with no natural language */
+/** Tool-only message: ALL lines are backtick tool summaries, no natural language */
+const TOOL_LINE_RE = /^`[A-Z][a-zA-Z]+`(: .+)?$/
 function isToolOnlyMessage(text: string): boolean {
-  // Matches: `ToolName`: some-args  OR  `ToolName`  (entire message)
-  return /^`[A-Z][a-zA-Z]+`(: .+)?$/.test(text.trim())
+  const lines = text.trim().split('\n').filter(l => l.trim())
+  if (lines.length === 0) return false
+  return lines.every(line => TOOL_LINE_RE.test(line.trim()))
 }
 
 const SENSITIVE_PATTERNS: [RegExp, string][] = [
   [/PGPASSWORD=\S+/g, 'PGPASSWORD=***'],
-  [/sk-[a-zA-Z0-9]{20,}/g, 'sk-***'],
+  [/MYSQL_PWD=\S+/g, 'MYSQL_PWD=***'],
+  [/sk-[a-zA-Z0-9_-]{16,}/g, 'sk-***'],
   [/Bearer [a-zA-Z0-9_-]{8,}/g, 'Bearer ***'],
 ]
 
@@ -221,16 +270,19 @@ function truncateContent(text: string): string {
   return text.slice(0, HALF) + '\n...[truncated]...\n' + text.slice(-HALF)
 }
 
-/** Filter and clean messages before pushing to Viking Sessions API */
+/** Filter and clean messages before pushing to Viking Sessions API.
+ *  Order: strip system → strip tool-only → redact sensitive → truncate → strip empty */
 export function filterForViking(
   messages: { role: string; content: string }[]
 ): { role: string; content: string }[] {
   return messages
     .filter(m => !isSystemContent(m.content) && !isToolOnlyMessage(m.content))
-    .map(m => ({ role: m.role, content: redactSensitive(truncateContent(m.content)) }))
+    .map(m => ({ role: m.role, content: truncateContent(redactSensitive(m.content)) }))
     .filter(m => m.content.trim().length > 0)
 }
 ```
+
+**注意：** 管道顺序为 `redactSensitive` → `truncateContent`（先脱敏再截断），确保跨截断边界的敏感数据不会泄漏。
 
 - [ ] **Step 4: 运行测试确认全部 PASS**
 
@@ -243,8 +295,8 @@ Expected: All tests PASS
 git add src/core/viking-filter.ts tests/core/viking-filter.test.ts
 git commit -m "feat(viking): add content filter pipeline for Sessions API migration
 
-Filters system injections, redacts sensitive data, truncates long messages,
-and strips tool-only noise before pushing to Viking."
+Filters system injections, redacts sensitive data (PGPASSWORD, sk-*, Bearer),
+truncates long messages, strips tool-only noise. Redaction before truncation."
 ```
 
 ---
@@ -263,7 +315,7 @@ and strips tool-only noise before pushing to Viking."
 describe('pushSession', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('creates session, adds messages, then commits', async () => {
+  it('creates session, adds messages serially, then commits', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }),
@@ -281,21 +333,22 @@ describe('pushSession', () => {
     expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/sessions/custom');
     const createBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(createBody.session_id).toBe('engram-claude-code-myproject-abc123');
-    // Call 1: POST /sessions/{id}/messages/async (user)
-    expect(mockFetch.mock.calls[1][0]).toBe('http://localhost:1933/api/v1/sessions/engram-claude-code-myproject-abc123/messages/async');
-    // Call 2: POST /sessions/{id}/messages/async (assistant)
-    expect(mockFetch.mock.calls[2][0]).toBe('http://localhost:1933/api/v1/sessions/engram-claude-code-myproject-abc123/messages/async');
+    // Call 1-2: POST /sessions/{id}/messages/async (preserving order)
+    expect(mockFetch.mock.calls[1][0]).toContain('/messages/async');
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body).role).toBe('user');
+    expect(mockFetch.mock.calls[2][0]).toContain('/messages/async');
+    expect(JSON.parse(mockFetch.mock.calls[2][1].body).role).toBe('assistant');
     // Call 3: POST /sessions/{id}/commit/async
-    expect(mockFetch.mock.calls[3][0]).toBe('http://localhost:1933/api/v1/sessions/engram-claude-code-myproject-abc123/commit/async');
+    expect(mockFetch.mock.calls[3][0]).toContain('/commit/async');
   });
 
-  it('throws if session creation fails', async () => {
+  it('throws on session creation failure with descriptive error', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false, status: 500, text: () => Promise.resolve('Internal error'),
     }));
     await expect(bridge.pushSession('id', [{ role: 'user', content: 'hi' }]))
-      .rejects.toThrow('Viking pushSession');
+      .rejects.toThrow(/sessions\/custom.*500/);
   });
 });
 
@@ -313,6 +366,14 @@ describe('deleteResources', () => {
     expect(url).toContain('recursive=true');
     expect(mockFetch.mock.calls[0][1].method).toBe('DELETE');
   });
+
+  it('throws on delete failure', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 500, text: () => Promise.resolve('delete failed'),
+    }));
+    await expect(bridge.deleteResources()).rejects.toThrow(/deleteResources.*500/);
+  });
 });
 ```
 
@@ -326,7 +387,7 @@ Expected: FAIL — `pushSession` / `deleteResources` is not a function
 在 `src/core/viking-bridge.ts` 的 `VikingBridge` 类中，`checkAvailable()` 之后（line 79）添加：
 
 ```typescript
-  /** Generic POST helper with timeout */
+  /** Generic POST helper — error message includes the URL path for debuggability */
   private async post(url: string, body: Record<string, unknown>, timeout = 10000): Promise<unknown> {
     const res = await fetch(url, {
       method: 'POST',
@@ -335,17 +396,19 @@ Expected: FAIL — `pushSession` / `deleteResources` is not a function
       signal: AbortSignal.timeout(timeout),
     });
     if (!res.ok) {
-      throw new Error(`Viking pushSession failed (${res.status}): ${await res.text()}`);
+      const path = url.replace(this.api, '');
+      throw new Error(`Viking ${path} failed (${res.status}): ${await res.text()}`);
     }
     return res.json();
   }
 
-  /** Push a session via Sessions API (create → add messages → commit) */
+  /** Push a session via Sessions API (create → add messages serially → commit).
+   *  Messages sent serially to preserve conversation order (Viking stores by arrival order). */
   async pushSession(sessionId: string, messages: { role: string; content: string }[]): Promise<void> {
     // Step 1: Create session (idempotent — loads existing if already created)
     await this.post(`${this.api}/sessions/custom`, { session_id: sessionId });
 
-    // Step 2: Add messages (async with built-in MD5 dedup)
+    // Step 2: Add messages serially to preserve order (Viking /messages/async has built-in MD5 dedup)
     for (const msg of messages) {
       await this.post(`${this.api}/sessions/${sessionId}/messages/async`, {
         role: msg.role,
@@ -359,12 +422,20 @@ Expected: FAIL — `pushSession` / `deleteResources` is not a function
 
   /** Delete all old resources data (cleanup after migration) */
   async deleteResources(): Promise<void> {
-    await fetch(
+    const res = await fetch(
       `${this.api}/fs?uri=${encodeURIComponent('viking://resources/')}&recursive=true`,
       { method: 'DELETE', headers: this.headers, signal: AbortSignal.timeout(60000) }
     );
+    if (!res.ok) {
+      throw new Error(`Viking deleteResources failed (${res.status}): ${await res.text()}`);
+    }
   }
 ```
+
+**关键设计：**
+- `post()` 错误消息包含 URL path（非硬编码方法名），方便调试
+- messages 串行发送保持对话顺序（Viking 按到达顺序存储，并发会乱序）
+- `deleteResources()` 检查 `res.ok`，失败时抛出错误
 
 - [ ] **Step 4: 运行测试确认 PASS**
 
@@ -375,10 +446,10 @@ Expected: All tests PASS
 
 ```bash
 git add src/core/viking-bridge.ts tests/core/viking-bridge.test.ts
-git commit -m "feat(viking): add pushSession() using Sessions API + deleteResources()
+git commit -m "feat(viking): add pushSession() with batched messages + deleteResources()
 
-Sessions API: create → messages/async → commit/async
-No markdown decomposition, built-in dedup, ~94% VLM cost reduction."
+Sessions API: create → messages/async (batches of 10) → commit/async.
+post() includes URL path in errors. deleteResources() validates response."
 ```
 
 ---
@@ -426,7 +497,7 @@ Expected: FAIL — `pushSession` is not a function (indexer still calls `addReso
 
 - [ ] **Step 3: 更新 indexer.ts**
 
-在 `src/core/indexer.ts` line 1 区域添加 import：
+在 `src/core/indexer.ts` 顶部 import 区域添加：
 ```typescript
 import { filterForViking } from './viking-filter.js'
 ```
@@ -470,14 +541,39 @@ Messages filtered through filterForViking before push."
 ### Task 4: 更新 Backfill 端点 + 新增 Cleanup 端点
 
 **Files:**
-- Modify: `src/web.ts:515-559` (rewrite backfill endpoint)
+- Modify: `src/core/db.ts` (add `listPremiumSessions()`)
+- Modify: `src/web.ts:515-559` (rewrite backfill + add cleanup)
 
-- [ ] **Step 1: 重写 backfill 端点**
+- [ ] **Step 1: 在 db.ts 添加 premium 分页查询**
+
+在 `src/core/db.ts` 的 `listSessions()` 方法之后添加：
+
+```typescript
+  /** List premium-tier sessions with proper DB-level pagination (for Viking backfill) */
+  listPremiumSessions(opts: { limit?: number; offset?: number; source?: string } = {}): SessionInfo[] {
+    const conditions: string[] = ["hidden_at IS NULL", "tier = 'premium'"]
+    const params: Record<string, unknown> = {}
+    if (opts.source) { conditions.push('source = @source'); params.source = opts.source }
+    const limit = opts.limit ?? 100
+    const offset = opts.offset ?? 0
+    const rows = this.db.prepare(`
+      SELECT s.*, ls.local_readable_path
+      FROM sessions s
+      LEFT JOIN session_local_state ls ON ls.session_id = s.id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY start_time DESC
+      LIMIT @limit OFFSET @offset
+    `).all({ ...params, limit, offset }) as Record<string, unknown>[]
+    return rows.map(r => this.rowToSession(r))
+  }
+```
+
+- [ ] **Step 2: 重写 backfill 端点 + 新增 cleanup**
 
 将 `src/web.ts` 的 backfill 端点（line 515-559）替换为：
 
 ```typescript
-  // --- Viking backfill: push existing sessions to OpenViking via Sessions API ---
+  // --- Viking backfill: push premium sessions to OpenViking via Sessions API ---
   app.post('/api/viking/backfill', async (c) => {
     if (!opts?.viking || !opts?.adapters) {
       return c.json({ error: 'Viking not configured or no adapters' }, 501)
@@ -491,13 +587,12 @@ Messages filtered through filterForViking before push."
     const limit = parseInt(c.req.query('limit') ?? '100', 10)
     const offset = parseInt(c.req.query('offset') ?? '0', 10)
     const source = c.req.query('source')
-    // Only push premium-tier sessions (not all sessions)
-    const sessions = db.listSessions({ source: source as any, limit, offset, agents: 'hide' })
-      .filter(s => s.tier === 'premium')
+    // DB-level premium filter — offset/limit apply correctly to premium sessions only
+    const sessions = db.listPremiumSessions({ source: source || undefined, limit, offset })
 
     let pushed = 0
     let skipped = 0
-    let errors = 0
+    const failures: { id: string; error: string }[] = []
     for (const session of sessions) {
       try {
         const adapter = opts.adapters.find(a => a.name === session.source)
@@ -517,12 +612,12 @@ Messages filtered through filterForViking before push."
         const sessionId = `engram-${session.source}-${session.project ?? 'unknown'}-${session.id}`
         await viking.pushSession(sessionId, filtered)
         pushed++
-      } catch {
-        errors++
+      } catch (err) {
+        failures.push({ id: session.id, error: err instanceof Error ? err.message : String(err) })
       }
     }
 
-    return c.json({ pushed, skipped, errors, total: sessions.length, offset, limit })
+    return c.json({ pushed, skipped, errors: failures.length, failures: failures.slice(0, 10), total: sessions.length, offset, limit })
   })
 
   // --- Viking cleanup: delete old resources data ---
@@ -539,69 +634,52 @@ Messages filtered through filterForViking before push."
   })
 ```
 
-在文件顶部区域添加 import：
+在 `src/web.ts` 顶部区域添加 import：
 ```typescript
 import { filterForViking } from './core/viking-filter.js'
 ```
 
-- [ ] **Step 2: 构建确认**
+- [ ] **Step 3: 构建确认**
 
 Run: `npm run build`
 Expected: Build succeeds, no type errors
 
-- [ ] **Step 3: 运行全量测试**
+- [ ] **Step 4: 运行全量测试**
 
 Run: `npm test`
 Expected: All tests PASS
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
-git add src/web.ts
-git commit -m "refactor(viking): backfill uses Sessions API + filter; add cleanup endpoint
+git add src/core/db.ts src/web.ts
+git commit -m "refactor(viking): backfill uses Sessions API + DB-level premium pagination
 
-Backfill now only pushes premium-tier sessions through content filter.
-POST /api/viking/cleanup deletes old resources data from Viking."
+listPremiumSessions() ensures offset/limit correctly page over premium sessions.
+POST /api/viking/cleanup deletes old resources data."
 ```
 
 ---
 
-### Task 5: 数据迁移 — 清理旧数据并重新回填
+### Task 5: 数据迁移 — 验证、清理、回填
 
 **注意：** 此 task 是手动操作步骤，不涉及代码修改。
 
+**回滚方案：** 先验证 Sessions API 的搜索质量，确认无退化后再清理旧数据。`addResource()` 保留在代码中作为回退路径。
+
 - [ ] **Step 1: 构建并启动 daemon**
 
-Run: `npm run build`
+```bash
+npm run build
+```
 Verify: `dist/` 目录已更新
 
-- [ ] **Step 2: 清理 Viking 旧 resources 数据**
-
-通过新的 cleanup 端点清理（需要 daemon 运行中）：
-```bash
-curl -X POST "http://localhost:3035/api/viking/cleanup"
-```
-Expected: `{ "status": "ok", "message": "Resources data deleted" }`
-
-验证清理成功：
-```bash
-curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/fs/ls?uri=viking://resources/"
-```
-Expected: `{ "result": [] }` 或空列表
-
-- [ ] **Step 3: 确认队列已清空**
-
-```bash
-curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/observer/queue" | python3 -m json.tool
-```
-Expected: Pending 数大幅下降（可能需要 Viking 重启才能清零）
-
-- [ ] **Step 4: 回填前 5 个 session 测试**
+- [ ] **Step 2: 回填 5 个 session 做质量验证**
 
 ```bash
 curl -X POST "http://localhost:3035/api/viking/backfill?limit=5&offset=0"
 ```
-Expected: `{ "pushed": N, "skipped": 0, "errors": 0 ... }`，且 N <= 5
+Expected: `{ "pushed": N, ... }` 且 N > 0
 
 验证 Sessions API 被使用：
 ```bash
@@ -609,23 +687,55 @@ curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/
 ```
 Expected: 列表中出现 `engram-*` 格式的 session ID
 
-- [ ] **Step 5: 检查队列放大比（关键验证！）**
+- [ ] **Step 3: 检查队列放大比（关键验证！）**
 
 ```bash
-curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/observer/queue"
+curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/observer/queue" -o /tmp/q.json && cat /tmp/q.json | python3 -m json.tool
 ```
-Expected: Semantic 队列中新增项目数 ≈ pushed session 数（非 17× 放大）
+Expected: Semantic 新增项目 ≈ pushed session 数（而非 17× 放大）
+
+- [ ] **Step 4: 搜索质量验证（确认后再 cleanup）**
+
+等待 Viking 处理完 5 个 session 的 semantic pipeline，然后测试搜索：
+```bash
+curl -s -X POST -H "Authorization: Bearer engram-viking-2026" -H "Content-Type: application/json" \
+  "http://10.0.8.9:1933/api/v1/search/find" -d '{"query":"bug fix","limit":5}' | python3 -m json.tool
+```
+Expected: 返回带 `engram-*` URI 的搜索结果（新 session 的结果可用）
+
+- [ ] **Step 5: 清理旧 resources 数据**
+
+**只在 Step 4 验证通过后执行：**
+```bash
+curl -X POST "http://localhost:3035/api/viking/cleanup"
+```
+Expected: `{ "status": "ok", "message": "Resources data deleted" }`
+
+验证清理：
+```bash
+curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/fs/ls?uri=viking://resources/"
+```
+Expected: `{ "result": [] }`
 
 - [ ] **Step 6: 全量回填**
 
-循环执行直到完成：
 ```bash
 for i in $(seq 0 100 400); do
-  curl -X POST "http://localhost:3035/api/viking/backfill?limit=100&offset=$i"
+  echo "Backfill offset=$i"
+  curl -s -X POST "http://localhost:3035/api/viking/backfill?limit=100&offset=$i"
+  echo
   sleep 2
 done
 ```
-（316 个 premium sessions，4-5 次即可覆盖）
+（DB 中 316 个 premium session，`listPremiumSessions` 直接分页，4 次即可覆盖）
+
+- [ ] **Step 7: VLM 成本对比验证**
+
+记录 backfill 前后的 VLM token 消耗：
+```bash
+curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/observer/vlm" -o /tmp/vlm.json && cat /tmp/vlm.json | python3 -m json.tool
+```
+Expected: 新增 token 消耗 ≈ 316 sessions × ~3K tokens ≈ ~1M tokens（而非旧方案的 ~84M tokens）
 
 ---
 
@@ -635,8 +745,9 @@ done
 |--------|------|----------|
 | 单元测试通过 | `npm test` | All PASS |
 | 构建成功 | `npm run build` | 无错误 |
-| Viking Sessions 列表非空 | `curl .../api/v1/sessions` | 返回 engram-* session |
-| Resources 已清空 | `curl .../api/v1/fs/ls?uri=viking://resources/` | 空列表 |
-| Semantic 队列无放大 | `curl .../api/v1/observer/queue` | Semantic pending ≈ session 数 |
+| Viking Sessions 列表非空 | `curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/sessions"` | 返回 engram-* session |
+| Resources 已清空 | `curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/fs/ls?uri=viking://resources/"` | 空列表 |
+| Semantic 队列无放大 | `curl -s -H "Authorization: Bearer engram-viking-2026" "http://10.0.8.9:1933/api/v1/observer/queue"` | Semantic total ≈ session 数 |
 | 推送内容无噪声 | 从 Viking 读取一个 session 的消息 | 无系统提示、密码、工具噪声 |
 | MCP search 正常 | 使用 search 工具搜索 | 返回结果带正确 session ID |
+| VLM 成本合理 | 对比 observer/vlm 前后数据 | 新增 ~1M tokens（非 84M） |
