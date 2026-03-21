@@ -1,3 +1,6 @@
+// src/core/viking-filter.ts
+// Content filter pipeline for Viking Sessions API — strips noise, redacts secrets, enforces session budget.
+
 /** System content detection — patterns from claude-code adapter's isSystemInjection() */
 function isSystemContent(text: string): boolean {
   return (
@@ -29,7 +32,7 @@ const SENSITIVE_PATTERNS: [RegExp, string][] = [
   [/PGPASSWORD=\S+/g, 'PGPASSWORD=***'],
   [/MYSQL_PWD=\S+/g, 'MYSQL_PWD=***'],
   [/sk-[a-zA-Z0-9_-]{16,}/g, 'sk-***'],
-  [/Bearer [a-zA-Z0-9_-]{8,}/g, 'Bearer ***'],
+  [/Bearer [a-zA-Z0-9_.\-]{8,}/g, 'Bearer ***'],
 ]
 
 /** Redact passwords, API keys, bearer tokens */

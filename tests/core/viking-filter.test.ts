@@ -86,6 +86,13 @@ describe('filterForViking', () => {
     expect(result[0].content).not.toContain('engram-viking-2026')
   })
 
+  it('redacts Bearer JWT tokens with dots', () => {
+    const msgs = [{ role: 'assistant', content: 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123' }]
+    const result = filterForViking(msgs)
+    expect(result[0].content).toContain('Bearer ***')
+    expect(result[0].content).not.toContain('eyJhbG')
+  })
+
   // --- 工具噪声 ---
 
   it('strips tool-only messages (single line backtick format)', () => {
@@ -154,7 +161,7 @@ describe('filterForViking', () => {
     ]
     const result = filterForViking(msgs)
     const total = result.reduce((s, m) => s + m.content.length, 0)
-    expect(total).toBeLessThanOrEqual(2_100_000)
+    expect(total).toBeLessThanOrEqual(2_010_000)
     expect(result[0].content.length).toBe(500_000)
     expect(result[1].content).toContain('...[truncated')
     expect(result[1].content.length).toBeLessThan(1_500_000)
@@ -168,7 +175,7 @@ describe('filterForViking', () => {
     ]
     const result = filterForViking(msgs)
     const total = result.reduce((s, m) => s + m.content.length, 0)
-    expect(total).toBeLessThanOrEqual(2_100_000)
+    expect(total).toBeLessThanOrEqual(2_010_000)
     const shrunk = result.filter(m => m.content.includes('[truncated'))
     expect(shrunk.length).toBeGreaterThanOrEqual(1)
   })
