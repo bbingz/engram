@@ -964,8 +964,19 @@ export function createApp(db: Database, opts?: {
         project: s.project || dbRow?.project || (s.cwd ? s.cwd.split('/').pop() : undefined),
         model: s.model || dbRow?.model || undefined,
       }
-    }).filter(Boolean)
-    return c.json({ sessions, count: sessions.length })
+    }).filter(Boolean) as typeof raw
+
+    // Deduplicate: same source + project → keep most recent only
+    const deduped = new Map<string, typeof sessions[0]>()
+    for (const s of sessions) {
+      const key = `${s.source}:${s.project || s.cwd || s.filePath}`
+      const existing = deduped.get(key)
+      if (!existing || s.lastModifiedAt > existing.lastModifiedAt) {
+        deduped.set(key, s)
+      }
+    }
+    const result = [...deduped.values()]
+    return c.json({ sessions: result, count: result.length })
   })
 
   // --- Monitor Alerts API ---
