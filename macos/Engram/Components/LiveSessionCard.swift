@@ -50,10 +50,18 @@ struct LiveSessionCard: View {
 
             SourcePill(source: session.source)
 
-            if let project = session.project {
-                Text(project)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                if let project = session.project {
+                    Text(project)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                }
+                if let title = session.title {
+                    Text(title)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(1)
+                }
             }
 
             Spacer()

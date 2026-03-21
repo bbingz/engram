@@ -8,6 +8,7 @@ export interface LiveSession {
   source: SourceName
   sessionId?: string
   project?: string
+  title?: string
   cwd: string
   filePath: string
   startedAt: string

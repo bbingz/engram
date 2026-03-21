@@ -318,6 +318,17 @@ export class Database {
     })
   }
 
+  getSessionByFilePath(filePath: string): SessionInfo | null {
+    const row = this.db.prepare(`
+      SELECT s.*, ls.local_readable_path
+      FROM sessions s
+      LEFT JOIN session_local_state ls ON ls.session_id = s.id
+      WHERE s.file_path = ?
+      LIMIT 1
+    `).get(filePath) as Record<string, unknown> | undefined
+    return row ? this.rowToSession(row) : null
+  }
+
   getSession(id: string): SessionInfo | null {
     const row = this.db.prepare(`
       SELECT s.*, ls.local_readable_path

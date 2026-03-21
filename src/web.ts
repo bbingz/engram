@@ -942,7 +942,19 @@ export function createApp(db: Database, opts?: {
   // TODO: SSE endpoint (deferred) — add GET /api/live/stream that pushes live session
   // updates and monitor alerts via Server-Sent Events instead of polling.
   app.get('/api/live', (c) => {
-    const sessions = opts?.liveMonitor?.getSessions() ?? []
+    const raw = opts?.liveMonitor?.getSessions() ?? []
+    // Enrich with DB data (title, project, model)
+    const sessions = raw.map(s => {
+      const dbRow = s.filePath
+        ? db.getRawDb().prepare('SELECT generated_title, summary, project, model FROM sessions WHERE file_path = ? LIMIT 1').get(s.filePath) as { generated_title?: string; summary?: string; project?: string; model?: string } | undefined
+        : undefined
+      return {
+        ...s,
+        title: dbRow?.generated_title ?? dbRow?.summary?.slice(0, 60) ?? undefined,
+        project: s.project || dbRow?.project || (s.cwd ? s.cwd.split('/').pop() : undefined),
+        model: s.model || dbRow?.model || undefined,
+      }
+    })
     return c.json({ sessions, count: sessions.length })
   })
 

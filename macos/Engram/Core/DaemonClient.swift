@@ -126,6 +126,7 @@ struct LiveSessionInfo: Decodable, Identifiable {
     let source: String
     let sessionId: String?
     let project: String?
+    let title: String?
     let cwd: String?
     let filePath: String
     let startedAt: String?
