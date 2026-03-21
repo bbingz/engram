@@ -950,7 +950,7 @@ export function createApp(db: Database, opts?: {
         : undefined
       return {
         ...s,
-        title: dbRow?.generated_title ?? dbRow?.summary?.slice(0, 60) ?? undefined,
+        title: dbRow?.generated_title ?? dbRow?.summary?.slice(0, 60) ?? s.title ?? undefined,
         project: s.project || dbRow?.project || (s.cwd ? s.cwd.split('/').pop() : undefined),
         model: s.model || dbRow?.model || undefined,
       }

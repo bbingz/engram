@@ -37,6 +37,7 @@ interface SessionMetadata {
   sessionId?: string
   cwd: string
   startedAt: string
+  title?: string
 }
 
 export class LiveSessionMonitor {
@@ -179,6 +180,31 @@ export class LiveSessionMonitor {
           meta.cwd = first.cwd ?? first.payload?.cwd ?? ''
           meta.startedAt = first.timestamp ?? first.payload?.timestamp ?? ''
         } catch { /* skip unparseable first line */ }
+
+        // Extract title from first user message in the head
+        const headLines = head.split('\n').filter(Boolean)
+        for (let i = 0; i < Math.min(headLines.length, 15); i++) {
+          try {
+            const line = JSON.parse(headLines[i])
+            // Claude Code: role=user at top level or message.role=user
+            // Codex: type=event_msg, payload.type=user_message, payload.message=text
+            const isUser = line.role === 'user'
+              || line.message?.role === 'user'
+              || (line.type === 'event_msg' && line.payload?.type === 'user_message')
+            if (isUser) {
+              const text = typeof line.content === 'string' ? line.content
+                : typeof line.message?.content === 'string' ? line.message.content
+                : typeof line.payload?.message === 'string' ? line.payload.message
+                : ''
+              // Skip system-like content that gets classified as user messages
+              if (text && !text.startsWith('<') && !text.startsWith('//') && text.length > 5) {
+                meta.title = text.replace(/\s+/g, ' ').trim().slice(0, 60)
+                break
+              }
+            }
+          } catch { /* skip */ }
+        }
+
         this.metadataCache.set(filePath, meta)
       }
 
@@ -231,6 +257,7 @@ export class LiveSessionMonitor {
         source,
         sessionId: meta.sessionId,
         project,
+        title: meta.title,
         cwd: meta.cwd,
         filePath,
         startedAt: meta.startedAt,
