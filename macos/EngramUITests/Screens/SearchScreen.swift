@@ -6,7 +6,7 @@ struct SearchScreen {
     // MARK: - Elements
 
     var container: XCUIElement { app.element(id: "search_container") }
-    var searchInput: XCUIElement { app.textFields["search_input"] }
+    var searchInput: XCUIElement { app.element(id: "search_input") }
     var results: XCUIElement { app.element(id: "search_results") }
     var emptyState: XCUIElement { app.element(id: "search_emptyState") }
     var resultCount: XCUIElement { app.staticTexts["search_resultCount"] }
@@ -14,19 +14,28 @@ struct SearchScreen {
     // MARK: - Actions
 
     func search(query: String) {
-        let input = searchInput
-        XCTAssertTrue(input.waitForExistence(timeout: 3),
+        let container = searchInput
+        XCTAssertTrue(container.waitForExistence(timeout: 3),
                       "Search input not found")
-        input.click()
-        input.typeText(query)
+        // The identifier is on the wrapper — find the actual TextField inside
+        let textField = container.textFields.firstMatch
+        if textField.exists {
+            textField.click()
+            textField.typeText(query)
+        } else {
+            container.click()
+            container.typeText(query)
+        }
     }
 
     func clearSearch() {
-        let input = searchInput
-        if input.exists {
-            input.click()
-            input.typeKey("a", modifierFlags: .command)
-            input.typeKey(.delete, modifierFlags: [])
+        let container = searchInput
+        if container.exists {
+            let textField = container.textFields.firstMatch
+            let target = textField.exists ? textField : container
+            target.click()
+            target.typeKey("a", modifierFlags: .command)
+            target.typeKey(.delete, modifierFlags: [])
         }
     }
 

@@ -110,6 +110,9 @@ targets:
         buildPhase: resources
     dependencies:
       - target: Engram
+    info:
+      properties:
+        NSPrincipalClass: ScreenshotTestObserver
     settings:
       TEST_TARGET_NAME: Engram
       GENERATE_INFOPLIST_FILE: YES
