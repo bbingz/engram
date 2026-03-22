@@ -11,6 +11,8 @@ import type {
   SyncCursor,
 } from './session-snapshot.js'
 
+export const SCHEMA_VERSION = 1
+
 export interface ListSessionsOptions {
   source?: SourceName
   sources?: string[]
@@ -217,6 +219,8 @@ export class Database {
       try { this.db.exec('DELETE FROM vec_sessions') } catch { /* table may not exist yet */ }
       this.setMetadata('fts_version', FTS_VERSION)
     }
+
+    this.setMetadata('schema_version', String(SCHEMA_VERSION))
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS usage_snapshots (

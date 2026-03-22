@@ -1,6 +1,6 @@
 // tests/core/db.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { Database, isTierHidden, containsCJK } from '../../src/core/db.js'
+import { Database, isTierHidden, containsCJK, SCHEMA_VERSION } from '../../src/core/db.js'
 import type { SessionInfo } from '../../src/adapters/types.js'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -340,6 +340,13 @@ describe('Database', () => {
       expect(raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('lite-1')).toHaveProperty('tier', 'lite')
       expect(raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('normal-1')).toHaveProperty('tier', 'normal')
     })
+  })
+
+  it('SCHEMA_VERSION matches metadata table value', () => {
+    const raw = db.getRawDb()
+    const row = raw.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get() as { value: string }
+    expect(row).not.toBeNull()
+    expect(Number(row.value)).toBe(SCHEMA_VERSION)
   })
 
   it('deduplicateFilePaths removes duplicates', () => {
