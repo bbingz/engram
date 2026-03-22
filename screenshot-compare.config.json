@@ -1,0 +1,7 @@
+{
+  "ssim_threshold": 0.95,
+  "phash_max_distance": 8,
+  "pixel_diff_max_percent": 0.5,
+  "baselines_dir": "macos/EngramUITests/baselines",
+  "ignore_regions": {}
+}
