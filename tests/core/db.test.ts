@@ -1,6 +1,6 @@
 // tests/core/db.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { Database, isTierHidden } from '../../src/core/db.js'
+import { Database, isTierHidden, containsCJK } from '../../src/core/db.js'
 import type { SessionInfo } from '../../src/adapters/types.js'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -75,6 +75,31 @@ describe('Database', () => {
     const results = db.searchSessions('SSL 证书')
     expect(results.length).toBeGreaterThan(0)
     expect(results[0].sessionId).toBe('session-001')
+  })
+
+  it('searches pure Chinese queries via LIKE fallback', () => {
+    db.upsertSession(mockSession)
+    db.indexSessionContent('session-001', [
+      { role: 'user', content: '帮我修复登录页面的bug' },
+      { role: 'assistant', content: '已经修复了认证逻辑的问题' },
+    ])
+
+    // Pure Chinese query — trigram tokenizer can't handle this, needs LIKE fallback
+    const results = db.searchSessions('修复')
+    expect(results.length).toBeGreaterThan(0)
+    expect(results[0].sessionId).toBe('session-001')
+    expect(results[0].snippet).toContain('修复')
+  })
+
+  it('searches Chinese with filters', () => {
+    db.upsertSession(mockSession)
+    db.upsertSession({ ...mockSession, id: 'session-002', source: 'claude-code', filePath: '/f2', project: 'other' })
+    db.indexSessionContent('session-001', [{ role: 'user', content: '修复数据库连接问题' }])
+    db.indexSessionContent('session-002', [{ role: 'user', content: '修复网络请求超时' }])
+
+    const filtered = db.searchSessions('修复', 20, { source: 'codex' })
+    expect(filtered).toHaveLength(1)
+    expect(filtered[0].sessionId).toBe('session-001')
   })
 
   it('deletes a session', () => {
@@ -201,6 +226,24 @@ describe('Database', () => {
 
     db.insertIndexJobs('sess-1', 2, ['fts', 'embedding'])
     expect(db.listIndexJobs('sess-1').map(j => j.jobKind).sort()).toEqual(['embedding', 'fts'])
+  })
+
+  // --- containsCJK ---
+
+  describe('containsCJK', () => {
+    it('detects Chinese characters', () => {
+      expect(containsCJK('修复')).toBe(true)
+      expect(containsCJK('SSL 证书')).toBe(true)
+      expect(containsCJK('hello 世界')).toBe(true)
+    })
+    it('returns false for pure ASCII', () => {
+      expect(containsCJK('hello world')).toBe(false)
+      expect(containsCJK('SSL certificate')).toBe(false)
+    })
+    it('detects Japanese and Korean', () => {
+      expect(containsCJK('テスト')).toBe(true)  // katakana (in CJK range)
+      expect(containsCJK('漢字')).toBe(true)
+    })
   })
 
   // --- tier-based filtering ---
