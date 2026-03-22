@@ -1,6 +1,8 @@
 // src/tools/search.ts
 import { isTierHidden, type Database, type SearchFilters } from '../core/db.js'
 import type { SessionInfo, SourceName } from '../adapters/types.js'
+import type { Logger } from '../core/logger.js'
+import type { Tracer } from '../core/tracer.js'
 import type { VectorStore } from '../core/vector-store.js'
 import { sessionIdFromVikingUri, type VikingBridge } from '../core/viking-bridge.js'
 
@@ -8,6 +10,8 @@ export interface SearchDeps {
   vectorStore?: VectorStore
   embed?: (text: string) => Promise<Float32Array | null>
   viking?: VikingBridge | null
+  log?: Logger
+  tracer?: Tracer
 }
 
 export interface SearchResult {
@@ -46,6 +50,9 @@ export async function handleSearch(
   params: { query: string; source?: SourceName; project?: string; since?: string; limit?: number; mode?: string; agents?: 'hide'; tools?: 'hide' },
   deps: SearchDeps = {}
 ): Promise<{ results: SearchResult[]; query: string; searchModes: string[]; warning?: string }> {
+  const searchSpan = deps.tracer?.startSpan('search', 'search', { attributes: { query: params.query.slice(0, 100), mode: params.mode ?? 'hybrid' } })
+  deps.log?.info('search invoked', { query: params.query.slice(0, 100), source: params.source, project: params.project })
+
   const limit = Math.min(params.limit ?? 10, 50)
   const mode = params.mode ?? 'hybrid'
   const searchModes: string[] = []
@@ -54,6 +61,8 @@ export async function handleSearch(
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
   if (uuidPattern.test(params.query.trim())) {
     const session = db.getSession(params.query.trim())
+    searchSpan?.setAttribute('matchType', 'id')
+    searchSpan?.end()
     if (session) {
       return { results: [{ session, snippet: '', matchType: 'keyword', score: 1 }], query: params.query, searchModes: ['id'] }
     }
@@ -84,6 +93,7 @@ export async function handleSearch(
     // FTS keyword search (synchronous SQLite, resolves immediately)
     (async () => {
       if (mode !== 'semantic' && params.query.length >= 3) {
+        const ftsSpan = deps.tracer?.startSpan('search.fts', 'search', { parentSpan: searchSpan })
         searchModes.push('keyword')
         const ftsResults = db.searchSessions(params.query, limit * 3, filters)
         const seen = new Set<string>()
@@ -94,12 +104,15 @@ export async function handleSearch(
           ftsScores.set(match.sessionId, { score: rrfScore(rank), snippet: match.snippet })
           rank++
         }
+        ftsSpan?.setAttribute('resultCount', ftsScores.size)
+        ftsSpan?.end()
       }
     })(),
 
     // Local vector search
     (async () => {
       if (mode !== 'keyword' && params.query.length >= 2 && deps.vectorStore && deps.embed) {
+        const vecSpan = deps.tracer?.startSpan('search.vector', 'search', { parentSpan: searchSpan })
         try {
           const queryVec = await deps.embed(params.query)
           if (queryVec) {
@@ -111,13 +124,19 @@ export async function handleSearch(
               rank++
             }
           }
-        } catch { /* vector search unavailable */ }
+          vecSpan?.setAttribute('resultCount', vecScores.size)
+          vecSpan?.end()
+        } catch (err) {
+          vecSpan?.setError(err)
+          /* vector search unavailable */
+        }
       }
     })(),
 
     // Viking semantic search (find only — grep excluded for latency)
     (async () => {
       if (deps.viking && vikingAvailable) {
+        const vikingSpan = deps.tracer?.startSpan('search.viking', 'search', { parentSpan: searchSpan })
         try {
           const findResults = await deps.viking.find(params.query)
           if (findResults.length > 0) searchModes.push('viking-semantic')
@@ -130,7 +149,12 @@ export async function handleSearch(
             vikingScores.set(sessionId, { score: rrfScore(rank) + VIKING_RRF_BOOST, snippet: vr.snippet })
             rank++
           }
-        } catch { /* Viking search failed, continue with FTS */ }
+          vikingSpan?.setAttribute('resultCount', vikingScores.size)
+          vikingSpan?.end()
+        } catch (err) {
+          vikingSpan?.setError(err)
+          /* Viking search failed, continue with FTS */
+        }
       }
     })(),
   ])
@@ -178,6 +202,10 @@ export async function handleSearch(
   const warning = searchModes.length === 0
     ? (params.query.length < 3 ? 'Search query needs at least 3 characters for keyword search (2 for semantic)' : undefined)
     : undefined
+
+  searchSpan?.setAttribute('resultCount', results.length)
+  searchSpan?.setAttribute('searchModes', searchModes.join(','))
+  searchSpan?.end()
 
   return { results, query: params.query, searchModes, warning }
 }

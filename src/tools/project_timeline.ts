@@ -1,5 +1,6 @@
 // src/tools/project_timeline.ts
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 import { toLocalDateTime } from '../utils/time.js'
 
 export const projectTimelineTool = {
@@ -19,8 +20,10 @@ export const projectTimelineTool = {
 
 export async function handleProjectTimeline(
   db: Database,
-  params: { project: string; since?: string; until?: string }
+  params: { project: string; since?: string; until?: string },
+  opts?: { log?: Logger }
 ) {
+  opts?.log?.info('project_timeline invoked', { project: params.project })
   const sessions = db.listSessions({
     project: params.project,
     since: params.since,

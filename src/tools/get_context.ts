@@ -1,5 +1,6 @@
 import { basename } from 'path'
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 import type { VectorStore } from '../core/vector-store.js'
 import type { LiveSession } from '../core/live-sessions.js'
 import type { MonitorAlert } from '../core/monitor.js'
@@ -32,6 +33,7 @@ export interface GetContextDeps {
   viking?: VikingBridge | null
   liveMonitor?: { getSessions(): LiveSession[] }
   backgroundMonitor?: { getAlerts(): MonitorAlert[] }
+  log?: Logger
 }
 
 export async function handleGetContext(
@@ -39,6 +41,8 @@ export async function handleGetContext(
   params: { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full'; sort_by?: 'recency' | 'score'; include_environment?: boolean },
   deps: GetContextDeps = {}
 ) {
+  deps.log?.info('get_context invoked', { cwd: params.cwd, task: params.task?.slice(0, 100), detail: params.detail })
+
   const maxTokens = params.max_tokens ?? 4000
   const maxChars = maxTokens * CHARS_PER_TOKEN
 

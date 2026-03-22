@@ -1,4 +1,5 @@
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 
 export const getCostsTool = {
   name: 'get_costs',
@@ -14,7 +15,8 @@ export const getCostsTool = {
   },
 }
 
-export function handleGetCosts(db: Database, params: { group_by?: string; since?: string; until?: string }) {
+export function handleGetCosts(db: Database, params: { group_by?: string; since?: string; until?: string }, opts?: { log?: Logger }) {
+  opts?.log?.info('get_costs invoked', { groupBy: params.group_by, since: params.since })
   const breakdown = db.getCostsSummary({
     groupBy: params.group_by,
     since: params.since,

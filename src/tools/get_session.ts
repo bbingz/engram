@@ -1,5 +1,6 @@
 // src/tools/get_session.ts
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 import type { SessionAdapter } from '../adapters/types.js'
 
 const PAGE_SIZE = 50
@@ -26,8 +27,10 @@ export const getSessionTool = {
 export async function handleGetSession(
   db: Database,
   adapter: SessionAdapter,
-  params: { id: string; page?: number; roles?: string[] }
+  params: { id: string; page?: number; roles?: string[] },
+  opts?: { log?: Logger }
 ) {
+  opts?.log?.info('get_session invoked', { id: params.id, page: params.page })
   const session = db.getSession(params.id)
   if (!session) throw new Error(`Session not found: ${params.id}`)
 

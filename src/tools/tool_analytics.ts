@@ -1,4 +1,5 @@
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 
 export const toolAnalyticsTool = {
   name: 'tool_analytics',
@@ -14,7 +15,8 @@ export const toolAnalyticsTool = {
   },
 }
 
-export function handleToolAnalytics(db: Database, params: { project?: string; since?: string; group_by?: string }) {
+export function handleToolAnalytics(db: Database, params: { project?: string; since?: string; group_by?: string }, opts?: { log?: Logger }) {
+  opts?.log?.info('tool_analytics invoked', { project: params.project, groupBy: params.group_by })
   const tools = db.getToolAnalytics({
     project: params.project,
     since: params.since,

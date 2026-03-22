@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, readdirSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join, extname, dirname, basename, resolve } from 'path'
+import type { Logger } from '../core/logger.js'
 
 export const lintConfigTool = {
   name: 'lint_config',
@@ -146,7 +147,8 @@ function readPackageJsonScripts(cwd: string): Record<string, string> | null {
   }
 }
 
-export async function handleLintConfig(params: { cwd: string }): Promise<{ issues: LintIssue[]; score: number }> {
+export async function handleLintConfig(params: { cwd: string }, opts?: { log?: Logger }): Promise<{ issues: LintIssue[]; score: number }> {
+  opts?.log?.info('lint_config invoked', { cwd: params.cwd })
   const { cwd } = params
   const issues: LintIssue[] = []
   const configFiles = findConfigFiles(cwd)

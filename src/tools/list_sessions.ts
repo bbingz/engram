@@ -1,5 +1,6 @@
 // src/tools/list_sessions.ts
 import type { Database, ListSessionsOptions } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 import type { SourceName } from '../adapters/types.js'
 import { toLocalDateTime } from '../utils/time.js'
 
@@ -33,8 +34,10 @@ export async function handleListSessions(
     until?: string
     limit?: number
     offset?: number
-  }
+  },
+  opts2?: { log?: Logger }
 ) {
+  opts2?.log?.info('list_sessions invoked', { source: params.source, project: params.project, limit: params.limit })
   const opts: ListSessionsOptions = {
     source: params.source,
     project: params.project,
