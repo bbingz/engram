@@ -26,6 +26,7 @@ import type { Database } from './db.js'
 import type { FileSettings } from './config.js'
 import { VikingBridge } from './viking-bridge.js'
 import type { Logger } from './logger.js'
+import type { MetricsCollector } from './metrics.js'
 import type { Tracer } from './tracer.js'
 
 export const ENGRAM_DIR = join(homedir(), '.engram')
@@ -64,7 +65,7 @@ export function getAdapter(name: string): SessionAdapter | undefined {
 
 // --- Viking bridge factory ---
 
-export function initViking(settings: FileSettings, opts?: { log?: Logger; tracer?: Tracer }): VikingBridge | null {
+export function initViking(settings: FileSettings, opts?: { log?: Logger; metrics?: MetricsCollector; tracer?: Tracer }): VikingBridge | null {
   if (settings.viking?.enabled && settings.viking.url && settings.viking.apiKey) {
     return new VikingBridge(settings.viking.url, settings.viking.apiKey, opts)
   }

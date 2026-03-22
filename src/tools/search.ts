@@ -2,6 +2,7 @@
 import { isTierHidden, type Database, type SearchFilters } from '../core/db.js'
 import type { SessionInfo, SourceName } from '../adapters/types.js'
 import type { Logger } from '../core/logger.js'
+import type { MetricsCollector } from '../core/metrics.js'
 import type { Tracer } from '../core/tracer.js'
 import type { VectorStore } from '../core/vector-store.js'
 import { sessionIdFromVikingUri, type VikingBridge } from '../core/viking-bridge.js'
@@ -11,6 +12,7 @@ export interface SearchDeps {
   embed?: (text: string) => Promise<Float32Array | null>
   viking?: VikingBridge | null
   log?: Logger
+  metrics?: MetricsCollector
   tracer?: Tracer
 }
 
@@ -50,6 +52,7 @@ export async function handleSearch(
   params: { query: string; source?: SourceName; project?: string; since?: string; limit?: number; mode?: string; agents?: 'hide'; tools?: 'hide' },
   deps: SearchDeps = {}
 ): Promise<{ results: SearchResult[]; query: string; searchModes: string[]; warning?: string }> {
+  const searchStart = Date.now()
   const searchSpan = deps.tracer?.startSpan('search', 'search', { attributes: { query: params.query.slice(0, 100), mode: params.mode ?? 'hybrid' } })
   deps.log?.info('search invoked', { query: params.query.slice(0, 100), source: params.source, project: params.project })
 
@@ -206,6 +209,9 @@ export async function handleSearch(
   searchSpan?.setAttribute('resultCount', results.length)
   searchSpan?.setAttribute('searchModes', searchModes.join(','))
   searchSpan?.end()
+
+  deps.metrics?.histogram('search.duration_ms', Date.now() - searchStart, { mode: params.mode ?? 'hybrid' })
+  deps.metrics?.counter('search.queries', 1)
 
   return { results, query: params.query, searchModes, warning }
 }

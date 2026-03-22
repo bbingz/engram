@@ -3,6 +3,7 @@
 
 import http from 'node:http';
 import type { Logger } from './logger.js';
+import type { MetricsCollector } from './metrics.js';
 import type { Tracer } from './tracer.js';
 
 /** Proxy-aware fetch: routes through http_proxy when set (Node's native fetch ignores it). */
@@ -87,11 +88,12 @@ export class VikingBridge {
   private circuitOpen = false;
   private lastHealthCheck = 0;
   private log?: Logger;
+  private metrics?: MetricsCollector;
   private tracer?: Tracer;
 
   private api: string; // baseUrl + /api/v1
 
-  constructor(url: string, apiKey: string, opts?: { log?: Logger; tracer?: Tracer }) {
+  constructor(url: string, apiKey: string, opts?: { log?: Logger; metrics?: MetricsCollector; tracer?: Tracer }) {
     this.baseUrl = url.replace(/\/$/, '');
     this.api = `${this.baseUrl}/api/v1`;
     this.headers = {
@@ -99,6 +101,7 @@ export class VikingBridge {
       'Authorization': `Bearer ${apiKey}`,
     };
     this.log = opts?.log;
+    this.metrics = opts?.metrics;
     this.tracer = opts?.tracer;
   }
 
@@ -129,6 +132,7 @@ export class VikingBridge {
     this.lastHealthCheck = now;
     if (this.circuitOpen && !wasOpen) {
       this.log?.warn('viking circuit breaker opened');
+      this.metrics?.counter('viking.circuit_breaker_opens', 1);
     } else if (!this.circuitOpen && wasOpen) {
       this.log?.info('viking circuit breaker closed (recovered)');
     }
@@ -162,6 +166,7 @@ export class VikingBridge {
    *  Messages sent serially to preserve conversation order (Viking stores by arrival order).
    *  Built-in MD5 dedup: re-pushing same messages is a no-op. */
   async pushSession(sessionId: string, messages: { role: string; content: string }[]): Promise<void> {
+    const pushStart = Date.now();
     const span = this.tracer?.startSpan('viking.pushSession', 'viking', {
       attributes: { sessionId, messageCount: messages.length },
     });
@@ -177,6 +182,8 @@ export class VikingBridge {
 
       await this.post(`${this.api}/sessions/${sessionId}/commit/async`, {});
       span?.end();
+      this.metrics?.histogram('viking.push_duration_ms', Date.now() - pushStart);
+      this.metrics?.counter('viking.pushes', 1);
     } catch (err) {
       span?.setError(err);
       this.log?.error('viking pushSession failed', { sessionId }, err);
@@ -251,6 +258,7 @@ export class VikingBridge {
 
   // POST /find — semantic search
   async find(query: string, targetUri?: string): Promise<VikingSearchResult[]> {
+    const findStart = Date.now();
     const span = this.tracer?.startSpan('viking.find', 'viking', { attributes: { query: query.slice(0, 100) } });
     try {
       const body: Record<string, unknown> = { query, limit: 20 };
@@ -277,6 +285,8 @@ export class VikingBridge {
       const results = items.map(i => ({ uri: i.uri ?? '', score: i.score ?? 0, snippet: i.abstract ?? '', metadata: i.metadata }));
       span?.setAttribute('resultCount', results.length);
       span?.end();
+      this.metrics?.histogram('viking.find_duration_ms', Date.now() - findStart);
+      this.metrics?.counter('viking.queries', 1);
       return results;
     } catch (err) {
       span?.setError(err);

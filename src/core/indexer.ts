@@ -4,6 +4,7 @@ import { stat } from 'fs/promises'
 import type { SessionAdapter, SessionInfo, Message } from '../adapters/types.js'
 import type { Database } from './db.js'
 import type { Logger } from './logger.js'
+import type { MetricsCollector } from './metrics.js'
 import type { Tracer } from './tracer.js'
 import { computeCost } from './pricing.js'
 import { resolveProjectName } from './project.js'
@@ -19,15 +20,17 @@ export class Indexer {
   private writer: SessionSnapshotWriter
   private log?: Logger
   private tracer?: Tracer
+  private metrics?: MetricsCollector
 
   constructor(
     private db: Database,
     private adapters: SessionAdapter[],
-    private opts?: { viking?: VikingBridge | null; authoritativeNode?: string; writer?: SessionSnapshotWriter; titleGenerator?: TitleGenerator; log?: Logger; tracer?: Tracer }
+    private opts?: { viking?: VikingBridge | null; authoritativeNode?: string; writer?: SessionSnapshotWriter; titleGenerator?: TitleGenerator; log?: Logger; tracer?: Tracer; metrics?: MetricsCollector }
   ) {
     this.writer = opts?.writer ?? new SessionSnapshotWriter(db)
     this.log = opts?.log
     this.tracer = opts?.tracer
+    this.metrics = opts?.metrics
   }
 
   private pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): void {
@@ -221,6 +224,7 @@ export class Indexer {
             // 例如 antigravity 用 .pb 文件大小，此时用 info.sizeBytes 再做一次 dedup
             if (info.sizeBytes !== fileSize && info.sizeBytes > 0 && this.db.isIndexed(filePath, info.sizeBytes)) continue
 
+            const sessionStartTime = Date.now()
             const sessionSpan = this.tracer?.startSpan('indexer.indexSession', 'indexer', {
               attributes: { sessionId: info.id, source: adapter.name },
               parentSpan: span,
@@ -257,6 +261,7 @@ export class Indexer {
             }
 
             sessionSpan?.end()
+            this.metrics?.histogram('indexer.session_duration_ms', Date.now() - sessionStartTime, { source: adapter.name })
             newCount++
           } catch (err) {
             // 跳过无法处理的文件，不中断整体流程
@@ -267,6 +272,7 @@ export class Indexer {
 
       span?.setAttribute('newCount', newCount)
       span?.end()
+      this.metrics?.counter('indexer.sessions_indexed', newCount)
     } catch (err) {
       span?.setError(err)
       this.log?.error('indexAll failed', {}, err)

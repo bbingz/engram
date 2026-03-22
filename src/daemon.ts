@@ -71,7 +71,7 @@ emit({ event: 'power', mode: powerMode })
 const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({ path, source }))
 
 // Viking bridge — optional external context engine
-const vikingBridge = initViking(settings, { log, tracer })
+const vikingBridge = initViking(settings, { log, metrics, tracer })
 
 const usageCollector = new UsageCollector(db.getRawDb(), (event, data) => emit({ event, ...(typeof data === 'object' && data !== null ? data : { data }) }))
 usageCollector.register(new ClaudeUsageProbe())
@@ -86,7 +86,7 @@ const titleConfig = {
 }
 const titleGenerator = new TitleGenerator(titleConfig)
 
-const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode, titleGenerator, log, tracer })
+const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode, titleGenerator, log, tracer, metrics })
 
 function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')
@@ -343,6 +343,7 @@ const app = createApp(db, {
   liveMonitor,
   backgroundMonitor,
   logWriter,
+  metrics,
 })
 const { serve } = await import('@hono/node-server')
 const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
@@ -380,6 +381,12 @@ const metricsRollupTimer = setTimeout(() => {
   rollupInterval = setInterval(() => { metrics.rollup() }, 3600000)
 }, 300000)
 
+// Daemon uptime gauge — report every 60 seconds
+const daemonStartTime = Date.now()
+const uptimeTimer = setInterval(() => {
+  metrics.gauge('daemon.uptime_s', Math.floor((Date.now() - daemonStartTime) / 1000))
+}, 60000)
+
 // Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
 function shutdown() {
   clearInterval(rescanTimer)
@@ -388,6 +395,7 @@ function shutdown() {
   clearInterval(logRotationTimer)
   clearTimeout(metricsRollupTimer)
   if (rollupInterval) clearInterval(rollupInterval)
+  clearInterval(uptimeTimer)
   metrics.destroy()
   liveMonitor.stop()
   backgroundMonitor.stop()

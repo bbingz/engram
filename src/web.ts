@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { randomUUID } from 'crypto'
 import { existsSync } from 'fs'
 import { readdir, readFile, stat } from 'fs/promises'
 import { join } from 'path'
@@ -27,6 +28,7 @@ import type { TitleGenerator } from './core/title-generator.js'
 import type { LiveSessionMonitor } from './core/live-sessions.js'
 import type { BackgroundMonitor } from './core/monitor.js'
 import type { LogWriter } from './core/logger.js'
+import type { MetricsCollector } from './core/metrics.js'
 import { populateMockData, clearMockData } from './core/mock-data.js'
 import { handleLintConfig } from './tools/lint_config.js'
 import { filterForViking } from './core/viking-filter.js'
@@ -79,8 +81,10 @@ export function createApp(db: Database, opts?: {
   liveMonitor?: LiveSessionMonitor
   backgroundMonitor?: BackgroundMonitor
   logWriter?: LogWriter
+  metrics?: MetricsCollector
 }) {
-  const app = new Hono()
+  type Variables = { traceId: string }
+  const app = new Hono<{ Variables: Variables }>()
   const settings = opts?.settings ?? readFileSettings()
   const semanticLimiter = createRateLimiter(30)
 
@@ -118,7 +122,7 @@ export function createApp(db: Database, opts?: {
         // Set CORS headers for valid localhost origins
         c.header('Access-Control-Allow-Origin', origin)
         c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
-        c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id')
         if (c.req.method === 'OPTIONS') {
           return new Response(null, { status: 204 })
         }
@@ -128,6 +132,25 @@ export function createApp(db: Database, opts?: {
     }
     await next()
   })
+
+  // Trace propagation middleware — extract or generate X-Trace-Id for cross-process correlation
+  app.use('*', async (c, next) => {
+    const traceId = c.req.header('x-trace-id') ?? randomUUID()
+    c.set('traceId', traceId)
+    c.header('X-Trace-Id', traceId)
+    await next()
+  })
+
+  // Request metrics middleware
+  if (opts?.metrics) {
+    const metricsRef = opts.metrics
+    app.use('*', async (c, next) => {
+      const start = Date.now()
+      await next()
+      metricsRef.counter('http.requests', 1, { method: c.req.method, path: c.req.path.split('/').slice(0, 3).join('/') })
+      metricsRef.histogram('http.duration_ms', Date.now() - start, { method: c.req.method })
+    })
+  }
 
   // Bearer token auth on write endpoints — scoped to /api/* only
   const bearerToken = settings.httpBearerToken
@@ -356,6 +379,7 @@ export function createApp(db: Database, opts?: {
       ? { vectorStore: opts.vectorStore, embed: (text: string) => opts!.embeddingClient!.embed(text) }
       : {}),
     viking: opts?.viking ?? null,
+    metrics: opts?.metrics,
   }
 
   app.get('/api/search', async (c) => {
@@ -1113,12 +1137,15 @@ export function createApp(db: Database, opts?: {
     if (!VALID_LEVELS.has(body.level)) return c.json({ ok: false, error: 'invalid level' }, 400)
 
     if (opts?.logWriter) {
+      // Use traceId from body (Swift-provided) or fall back to the request header trace ID
+      const traceId = body.traceId ?? c.get('traceId')
       opts.logWriter.write({
         level: body.level,
         module: body.module,
         message: typeof body.message === 'string' ? body.message.slice(0, 10000) : String(body.message),
         data: body.data,
         error: body.error,
+        traceId,
         source: 'app',
       })
     }
