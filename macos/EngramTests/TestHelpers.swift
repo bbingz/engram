@@ -59,31 +59,37 @@ func createSessionsTable(at path: String) throws {
             CREATE TABLE IF NOT EXISTS traces (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trace_id TEXT NOT NULL,
-                span_id TEXT NOT NULL,
+                span_id TEXT NOT NULL UNIQUE,
                 parent_span_id TEXT,
-                operation TEXT NOT NULL,
-                start_time TEXT NOT NULL,
-                end_time TEXT,
+                name TEXT NOT NULL,
+                module TEXT NOT NULL,
+                start_ts TEXT NOT NULL,
+                end_ts TEXT,
+                duration_ms INTEGER,
                 status TEXT NOT NULL DEFAULT 'ok',
-                attributes TEXT
+                attributes TEXT,
+                source TEXT NOT NULL CHECK (source IN ('daemon', 'app'))
             );
             CREATE TABLE IF NOT EXISTS metrics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
                 name TEXT NOT NULL,
+                type TEXT NOT NULL CHECK (type IN ('counter', 'gauge', 'histogram')),
                 value REAL NOT NULL,
-                labels TEXT
+                tags TEXT,
+                ts TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS metrics_hourly (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                hour TEXT NOT NULL,
                 name TEXT NOT NULL,
-                count INTEGER NOT NULL DEFAULT 0,
-                sum REAL NOT NULL DEFAULT 0,
-                min REAL,
-                max REAL,
-                labels TEXT,
-                UNIQUE(hour, name, labels)
+                type TEXT NOT NULL,
+                hour TEXT NOT NULL,
+                count INTEGER NOT NULL,
+                sum REAL NOT NULL,
+                min REAL NOT NULL,
+                max REAL NOT NULL,
+                p95 REAL,
+                tags TEXT,
+                UNIQUE(name, type, hour, tags)
             );
         """)
     }
