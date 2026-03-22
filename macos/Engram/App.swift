@@ -17,12 +17,21 @@ struct EngramApp: App {
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
-    let db           = DatabaseManager()
-    let indexer      = IndexerProcess()
-    let daemonClient = DaemonClient()
+    let environment: AppEnvironment
+    let db: DatabaseManager
+    let indexer: IndexerProcess
+    let daemonClient: DaemonClient
     private var menuBarController: MenuBarController?
     private var mcpServer: MCPServer?
     private var onboardingWindow: NSWindow?
+
+    override init() {
+        self.environment = AppEnvironment.fromCommandLine()
+        self.db = DatabaseManager(path: environment.dbPath)
+        self.indexer = IndexerProcess()
+        self.daemonClient = DaemonClient(port: environment.daemonPort)
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One-time: migrate plaintext API keys from settings.json to Keychain
@@ -54,9 +63,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let _ = portPref > 0 ? portPref : 3456  // reserved for future MCPServer port wiring
         let scriptPath = Bundle.main.path(forResource: "daemon", ofType: "js", inDirectory: "node") ?? ""
 
-        if !scriptPath.isEmpty {
+        if environment.autoStartDaemon && !scriptPath.isEmpty {
             indexer.start(nodePath: resolvedNodePath, scriptPath: scriptPath)
-        } else {
+        } else if scriptPath.isEmpty {
             print("Warning: daemon.js not bundled — indexer disabled (normal during development)")
         }
 
