@@ -57,40 +57,23 @@ describe('filterForViking', () => {
     expect(filterForViking(msgs)).toHaveLength(0)
   })
 
-  // --- 敏感数据脱敏 ---
+  // --- 敏感数据保留（个人知识库，不脱敏）---
 
-  it('redacts PGPASSWORD', () => {
+  it('preserves PGPASSWORD (no redaction)', () => {
     const msgs = [{ role: 'assistant', content: 'Running: PGPASSWORD=TPmCa4FjQhRG psql -h 10.10.0.12' }]
     const result = filterForViking(msgs)
-    expect(result[0].content).toContain('PGPASSWORD=***')
-    expect(result[0].content).not.toContain('TPmCa4FjQhRG')
+    expect(result[0].content).toContain('PGPASSWORD=TPmCa4FjQhRG')
   })
 
-  it('redacts MYSQL_PWD', () => {
-    const msgs = [{ role: 'assistant', content: 'MYSQL_PWD=secret123 mysql -u root' }]
-    const result = filterForViking(msgs)
-    expect(result[0].content).toContain('MYSQL_PWD=***')
-    expect(result[0].content).not.toContain('secret123')
+  it('preserves API keys (no redaction)', () => {
+    const msgs = [{ role: 'user', content: 'sk-henhtN3lOMGKYoTkDX2PDFY0irmW8Rha14xO3OmAIolGipzJ' }]
+    expect(filterForViking(msgs)[0].content).toContain('sk-henhtN3lOMGKYoTkDX2PDFY0irmW8Rha14xO3OmAIolGipzJ')
   })
 
-  it('redacts sk- API keys including dash/underscore formats', () => {
-    expect(filterForViking([{ role: 'user', content: 'sk-henhtN3lOMGKYoTkDX2PDFY0irmW8Rha14xO3OmAIolGipzJ' }])[0].content).toBe('sk-***')
-    expect(filterForViking([{ role: 'user', content: 'sk-ant-api03-abcdefghijklmnop' }])[0].content).toBe('sk-***')
-    expect(filterForViking([{ role: 'user', content: 'sk-proj-abcdefghijklmnopqrstuv' }])[0].content).toBe('sk-***')
-  })
-
-  it('redacts Bearer tokens', () => {
+  it('preserves Bearer tokens (no redaction)', () => {
     const msgs = [{ role: 'assistant', content: 'curl -H "Authorization: Bearer engram-viking-2026" http://...' }]
     const result = filterForViking(msgs)
-    expect(result[0].content).toContain('Bearer ***')
-    expect(result[0].content).not.toContain('engram-viking-2026')
-  })
-
-  it('redacts Bearer JWT tokens with dots', () => {
-    const msgs = [{ role: 'assistant', content: 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123' }]
-    const result = filterForViking(msgs)
-    expect(result[0].content).toContain('Bearer ***')
-    expect(result[0].content).not.toContain('eyJhbG')
+    expect(result[0].content).toContain('Bearer engram-viking-2026')
   })
 
   // --- 工具噪声 ---
@@ -128,11 +111,10 @@ describe('filterForViking', () => {
 
   // --- 脱敏在预算之前 ---
 
-  it('redacts sensitive data before budget check', () => {
-    const msgs = [{ role: 'user', content: 'A'.repeat(1_000_000) + ' PGPASSWORD=SuperSecret ' + 'B'.repeat(1_500_000) }]
+  it('preserves sensitive data even in large messages (no redaction before budget)', () => {
+    const msgs = [{ role: 'user', content: 'A'.repeat(1_000_000) + ' PGPASSWORD=SuperSecret ' + 'B'.repeat(500_000) }]
     const result = filterForViking(msgs)
-    expect(result[0].content).not.toContain('SuperSecret')
-    expect(result[0].content).toContain('PGPASSWORD=***')
+    expect(result[0].content).toContain('PGPASSWORD=SuperSecret')
   })
 
   // --- Session 级预算（2MB） ---

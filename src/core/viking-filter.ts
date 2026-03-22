@@ -90,7 +90,6 @@ export function filterForViking(
 ): { role: string; content: string }[] {
   const cleaned = messages
     .filter(m => !isSystemContent(m.content) && !isToolOnlyMessage(m.content))
-    .map(m => ({ role: m.role, content: redactSensitive(m.content) }))
     .filter(m => m.content.trim().length > 0)
 
   return applySessionBudget(cleaned)
