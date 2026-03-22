@@ -8,13 +8,13 @@
 
 ## Problem
 
-Engram's TypeScript layer has 473 tests (vitest), but the macOS SwiftUI app (86 files, 12K+ LOC) has only 20 tests in one file. There is no fixture database, no schema version tracking, no CI/CD pipeline, and no test coverage measurement. When schema changes or Swift code breaks, nothing catches it until manual testing.
+Engram's TypeScript layer has 473 tests (vitest), but the macOS SwiftUI app (91 files, ~44K LOC) has only 20 tests in one file. There is no fixture database, no schema version tracking, no CI/CD pipeline, and no test coverage measurement. When schema changes or Swift code breaks, nothing catches it until manual testing.
 
 ## Goals
 
 1. Schema version tracking with fixture DB generation and CI validation
 2. 9 Swift unit test files covering all testable core logic (~120 tests)
-3. TypeScript test coverage measurement with gap filling (473 → ~520 tests, 65%+ coverage)
+3. TypeScript test coverage measurement with gap filling (473 → ~508 tests, 65%+ coverage)
 4. Basic CI/CD pipeline (TS tests + Swift unit tests + fixture validation)
 
 ## Non-Goals
@@ -37,13 +37,10 @@ Add `SCHEMA_VERSION` as a named export in `src/core/db.ts`:
 export const SCHEMA_VERSION = 1
 ```
 
-Store in a `metadata` table created during `migrate()`:
+Store in the existing `metadata` table (already used by `fts_version`) during `migrate()`:
 
 ```sql
-CREATE TABLE IF NOT EXISTS metadata (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
+-- metadata table already exists (created for fts_version)
 INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '1');
 ```
 
@@ -84,10 +81,10 @@ Also seeds 3 favorites and 5 tags for testing extension table queries.
 
 ### Fixture Schema Checker
 
-`scripts/check-fixture-schema.mjs`:
+`scripts/check-fixture-schema.ts` — run via `tsx`:
 
-- Imports `SCHEMA_VERSION` from `../src/core/db.js` (via tsx — already a devDependency)
-- Opens `test-fixtures/test-index.sqlite` read-only
+- Imports `SCHEMA_VERSION` from `../src/core/db.js`
+- Opens `test-fixtures/test-index.sqlite` read-only via better-sqlite3
 - Reads `SELECT value FROM metadata WHERE key = 'schema_version'`
 - Compares. Mismatch → exit 1 with clear error message.
 
@@ -96,10 +93,11 @@ Also seeds 3 favorites and 5 tags for testing extension table queries.
 `test-fixtures/` at project root:
 
 - `test-index.sqlite` — generated fixture DB
-- `sessions/` — JSONL fixture files (moved from `tests/fixtures/`)
-  - Organized by source: `claude-code/`, `cursor/`, `codex/`, etc.
+- `sessions/` — JSONL fixture files for Swift tests (subset copied from `tests/fixtures/`)
+  - Organized by source: `claude-code/`, `codex/`, `gemini-cli/`, etc.
+  - Note: existing TS fixtures stay in `tests/fixtures/` to avoid mass path updates in 473 tests
 
-Both TS (`vitest.config.ts` updated paths) and Swift (`project.yml` resource reference) read from here.
+Both TS (via existing `tests/fixtures/`) and Swift (`project.yml` resource reference to `test-fixtures/`) access their respective fixtures.
 
 ### Git Handling
 
@@ -113,7 +111,7 @@ Fixture committed directly (< 100KB). No LFS needed.
 ### CI Validation
 
 Two checks run in parallel:
-1. `check-fixture-schema.mjs` — version number match
+1. `check-fixture-schema.ts` — version number match
 2. Regenerate fixture + `git diff --exit-code test-fixtures/test-index.sqlite` — catches seed logic drift
 
 ---
@@ -130,7 +128,7 @@ EngramTests:
   sources:
     - path: EngramTests
   resources:
-    - path: ../test-fixtures
+    - path: ../../test-fixtures
       type: folder
   dependencies:
     - target: Engram
@@ -183,17 +181,17 @@ New tests to add:
 - FTS search returns matching sessions
 - FTS with CJK content (Chinese, Japanese) — tests LIKE fallback
 - Tier filtering edge cases (null tier treated as normal)
-- Observability table queries: `fetchLogs`, `errorsByModule24h`, `fetchTraces`, `observabilityTableCounts`
+- Observability table queries: `fetchLogs`, `errorsByModule24h`, `fetchTraces`, `observabilityTableCounts` (Note: observability tables are created by the Node daemon's migrate(), not by DatabaseManager.open(). Test setup must create these tables via raw SQL.)
 - Stats with empty database
 - Multiple source filter combinations
 
 **2. `MessageParserTests.swift`** (15 tests)
 
-Test each source format's JSONL parsing:
-- claude-code: `type`/`message` format
-- cursor: `role`/`content` format
-- codex: structured message format
+Test each source format's parsing:
+- claude-code: `type`/`message` JSONL format
+- codex: structured JSONL message format
 - gemini-cli: specific field structure
+- Note: cursor uses `.vscdb` (SQLite), not JSONL — test cursor parsing separately with a `.vscdb` fixture if available
 - Malformed JSON line → skip, continue
 - Empty file → empty result
 - Mixed valid/invalid lines → only valid returned
@@ -213,7 +211,7 @@ Uses real JSONL fixtures from `test-fixtures/sessions/`.
 - Plain `user` text
 - Edge: empty content → defaults to type based on role
 - Edge: content with multiple indicators → first match wins
-- Edge: nil content → unknown
+- Edge: empty string content + assistant role → .assistant
 
 **4. `StreamingJSONLReaderTests.swift`** (10 tests)
 
@@ -224,16 +222,16 @@ Uses real JSONL fixtures from `test-fixtures/sessions/`.
 - Malformed JSON lines → skipped
 - Very long lines → handled without OOM
 - Partial last line (no trailing newline) → still parsed
-- Cancellation mid-stream
+- Stop iteration early (break mid-sequence) — no resource leak
 - Concurrent reads don't interfere
 - Binary/non-text content → graceful failure
 
 **5. `SessionModelTests.swift`** (10 tests)
 
 - `init` from DB row
-- `displayTitle` computed property: custom_name > generated_title > source fallback
-- `duration` computed from start_time/end_time
-- `duration` nil when end_time is nil
+- `displayTitle` computed property: custom_name > generated_title > summary > "Untitled"
+- `formattedSize` returns human-readable size string
+- `sizeCategory` returns correct category for various sizes
 - Sorting by start_time descending
 - Equatable: same id = equal
 - Hashable: can be used in Set
@@ -250,13 +248,19 @@ Uses real JSONL fixtures from `test-fixtures/sessions/`.
 - Handle empty stdout line → ignore
 - `autoStart=false` prevents process launch (via AppEnvironment.test)
 - Multiple status events → latest state wins
-- Parse viking_status event
+- Parse summary_generated event
 - Parse web_ready event with port
 - Handle process unexpected exit
 
 **7. `DaemonClientTests.swift`** (10 tests)
 
-DaemonClient accepts `init(port:session:)` for dependency injection. Tests use `MockURLProtocol`.
+**Prerequisite**: Modify `DaemonClient` to accept an optional `URLSession` parameter:
+```swift
+init(port: Int = 3457, session: URLSession = .shared)
+```
+Currently `DaemonClient` hardcodes `URLSession.shared`. This change enables `MockURLProtocol` injection for testing without affecting production behavior (default is `.shared`).
+
+Tests use `MockURLProtocol` via injected `URLSessionConfiguration.ephemeral` session.
 
 - `fetch()` sends GET with X-Trace-Id header
 - `post()` sends correct Content-Type and body
@@ -323,29 +327,25 @@ coverage: {
 "test:coverage": "vitest run --coverage"
 ```
 
-### Gap Filling (~47 new tests)
+### Gap Filling (~35 net-new tests)
 
-**`tests/core/db.test.ts`** (8 tests):
-- `migrate()` creates all expected tables
-- `migrate()` is idempotent (run twice, no error)
+Note: some target files already exist. Where noted, expand with new tests (check for duplicates first).
+
+**`tests/core/db.test.ts`** (expand — file exists, add ~5 new tests):
 - `SCHEMA_VERSION` matches metadata table value
 - Observability tables exist with correct columns
 - `metrics_hourly` UNIQUE constraint works
-- Session count with various filters
-- WAL mode enabled
 - Close is idempotent
+- Schema migration adds new tables to existing DB
 
 **`tests/core/lifecycle.test.ts`** (3 tests):
 - Signal handlers registered without throwing
 - Idle timeout calls cleanup callback
 - Parent process check handles missing PID
 
-**`tests/core/config.test.ts`** (5 tests):
-- Read settings with defaults
-- Read settings with overrides
+**`tests/core/config.test.ts`** (expand — file exists, add ~2 new tests):
 - `observability` config block parsed correctly
-- Missing settings file → defaults
-- Write + read roundtrip
+- Write + read roundtrip for new fields
 
 **`tests/web/api.test.ts`** (10 tests):
 - GET /health returns 200
@@ -366,12 +366,9 @@ coverage: {
 - `parseDuration('')` → throws
 - `parseDuration('1x')` → throws
 
-**`tests/core/auto-summary.test.ts`** (5 tests):
+**`tests/core/auto-summary.test.ts`** (expand — file exists, add ~2 new tests):
 - Uses `vi.useFakeTimers()` for time control
-- Cooldown prevents re-trigger within window
-- `minMessages` threshold respected
-- Session with existing summary → `hasSummary` returns true
-- `onSessionIndexed` triggers callback when conditions met
+- Cooldown prevents re-trigger within window (if not already covered)
 
 **`tests/adapters/edge-cases.test.ts`** (8 tests):
 - Empty JSONL file → 0 messages
@@ -388,7 +385,7 @@ coverage: {
 - Existing DB with old schema gets new tables added
 - Migration is idempotent across multiple opens
 
-Total: 473 + 47 = ~520 tests. Target coverage: 65%+ lines, 55%+ functions.
+Total: 473 + ~35 net-new = ~508 tests. Target coverage: 65%+ lines, 55%+ functions.
 
 ---
 
@@ -416,8 +413,10 @@ Triggers: PR to main, push to main.
 - uses: actions/checkout@v4
 - brew install xcodegen (if not cached)
 - cd macos && xcodegen generate
-- xcodebuild test -project Engram.xcodeproj -scheme EngramTests -destination 'platform=macOS'
+- xcodebuild test -project Engram.xcodeproj -scheme Engram -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 ```
+
+Note: `EngramTests` is part of the `Engram` scheme's test plan (XcodeGen default). Use `-scheme Engram`, not `-scheme EngramTests`. Add a `schemes:` entry in `project.yml` if a separate test scheme is needed later.
 
 **Job 3: `fixture-check`** (ubuntu-latest, ~1 min)
 ```
@@ -425,7 +424,7 @@ Triggers: PR to main, push to main.
 - uses: actions/setup-node@v4
 - npm ci
 - npm run build
-- npx tsx scripts/check-fixture-schema.mjs
+- npx tsx scripts/check-fixture-schema.ts
 - npx tsx scripts/generate-test-fixtures.ts
 - git diff --exit-code test-fixtures/test-index.sqlite
 ```
@@ -444,7 +443,7 @@ Triggers: PR to main, push to main.
 | Metric | Target |
 |--------|--------|
 | Swift unit tests | 120+ tests across 9 files, all passing |
-| TS tests | 520+ tests, all passing |
+| TS tests | 508+ tests, all passing |
 | TS coverage | lines ≥ 60%, branches ≥ 50%, functions ≥ 55% |
 | CI pipeline | 3 jobs, all green on PR, < 8 min total |
 | Fixture DB | Deterministic, schema-validated, < 100KB |
