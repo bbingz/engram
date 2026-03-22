@@ -109,7 +109,7 @@ export class MetricsCollector {
     if (rows.length === 0) return
 
     const insertRollup = this.db.prepare(`
-      INSERT INTO metrics_hourly (name, type, hour, count, sum, min, max, p95, tags)
+      INSERT OR REPLACE INTO metrics_hourly (name, type, hour, count, sum, min, max, p95, tags)
       VALUES (@name, @type, @hour, @count, @sum, @min, @max, @p95, @tags)
     `)
 
@@ -117,8 +117,8 @@ export class MetricsCollector {
       for (const row of rollupRows) {
         // Compute p95 for this name+hour+tags group
         const values = this.db.prepare(
-          `SELECT value FROM metrics WHERE name = ? AND substr(ts, 1, 13) = ? ORDER BY value`
-        ).all(row.name, row.hour) as { value: number }[]
+          `SELECT value FROM metrics WHERE name = ? AND substr(ts, 1, 13) = ? AND (tags IS ? OR tags = ?) ORDER BY value`
+        ).all(row.name, row.hour, row.tags, row.tags) as { value: number }[]
 
         const p95Index = Math.floor(values.length * 0.95)
         const p95 = values.length > 0 ? values[Math.min(p95Index, values.length - 1)].value : null

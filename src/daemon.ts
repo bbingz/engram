@@ -55,7 +55,7 @@ const metrics = new MetricsCollector(db.raw, {
   sampleRates: { 'db.query_duration_ms': 0.1 },
 })
 const tracer = new Tracer(traceWriter)
-const log = createLogger('daemon', { writer: logWriter, level: (settings as any).observability?.logLevel ?? 'info' })
+const log = createLogger('daemon', { writer: logWriter, level: settings.observability?.logLevel ?? 'info' })
 
 log.info('daemon starting', { powerMode })
 
@@ -71,7 +71,7 @@ emit({ event: 'power', mode: powerMode })
 const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({ path, source }))
 
 // Viking bridge — optional external context engine
-const vikingBridge = initViking(settings)
+const vikingBridge = initViking(settings, { log, tracer })
 
 const usageCollector = new UsageCollector(db.getRawDb(), (event, data) => emit({ event, ...(typeof data === 'object' && data !== null ? data : { data }) }))
 usageCollector.register(new ClaudeUsageProbe())
@@ -86,7 +86,7 @@ const titleConfig = {
 }
 const titleGenerator = new TitleGenerator(titleConfig)
 
-const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode, titleGenerator })
+const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode, titleGenerator, log, tracer })
 
 function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')
@@ -364,7 +364,7 @@ const gitProbeTimer = startGitProbeLoop(db.getRawDb(), 300_000 * POWER_MULTIPLIE
 
 // Observability: log rotation + metrics rollup
 const logRotationTimer = setInterval(() => {
-  const retentionDays = (settings as any).observability?.logRetentionDays ?? 7
+  const retentionDays = settings.observability?.logRetentionDays ?? 7
   logWriter.rotate(retentionDays)
   logWriter.enforceMaxRows(100_000)
   db.raw.prepare("DELETE FROM traces WHERE start_ts < ?").run(
@@ -375,8 +375,9 @@ const logRotationTimer = setInterval(() => {
   )
 }, 3600000)
 
+let rollupInterval: ReturnType<typeof setInterval> | null = null
 const metricsRollupTimer = setTimeout(() => {
-  setInterval(() => { metrics.rollup() }, 3600000)
+  rollupInterval = setInterval(() => { metrics.rollup() }, 3600000)
 }, 300000)
 
 // Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
@@ -386,6 +387,7 @@ function shutdown() {
   clearInterval(gitProbeTimer)
   clearInterval(logRotationTimer)
   clearTimeout(metricsRollupTimer)
+  if (rollupInterval) clearInterval(rollupInterval)
   metrics.destroy()
   liveMonitor.stop()
   backgroundMonitor.stop()

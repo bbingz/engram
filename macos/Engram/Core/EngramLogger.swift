@@ -2,20 +2,22 @@
 import Foundation
 import os
 
-enum LogModule: String {
+enum LogModule: String, CaseIterable {
     case daemon, database, ui, mcp, indexer, network
 }
 
 struct EngramLogger {
     private static let subsystem = "com.engram.app"
-    private static var loggers: [LogModule: os.Logger] = [:]
-    private static var isForwarding = false
+    private static let loggers: [LogModule: os.Logger] = {
+        var dict: [LogModule: os.Logger] = [:]
+        for module in LogModule.allCases {
+            dict[module] = os.Logger(subsystem: subsystem, category: module.rawValue)
+        }
+        return dict
+    }()
 
     private static func logger(for module: LogModule) -> os.Logger {
-        if let cached = loggers[module] { return cached }
-        let l = os.Logger(subsystem: subsystem, category: module.rawValue)
-        loggers[module] = l
-        return l
+        loggers[module]!
     }
 
     static func info(_ message: String, module: LogModule) {
@@ -40,9 +42,7 @@ struct EngramLogger {
     // MARK: - Daemon Forwarding (fire-and-forget)
 
     private static func forwardToDaemon(level: String, module: LogModule, message: String) {
-        guard !isForwarding, module != .daemon, module != .network else { return }
-        isForwarding = true
-        defer { isForwarding = false }
+        guard module != .daemon, module != .network else { return }
 
         Task.detached {
             guard let url = URL(string: "http://127.0.0.1:3457/api/log") else { return }

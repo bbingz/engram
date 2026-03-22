@@ -355,7 +355,8 @@ export class Database {
         min REAL NOT NULL,
         max REAL NOT NULL,
         p95 REAL,
-        tags TEXT
+        tags TEXT,
+        UNIQUE(name, type, hour, tags)
       );
       CREATE INDEX IF NOT EXISTS idx_metrics_hourly_name ON metrics_hourly(name, hour);
     `)

@@ -1105,12 +1105,18 @@ export function createApp(db: Database, opts?: {
 
   // Observability: accept log forwarding from Swift app
   app.post('/api/log', async (c) => {
-    const body = await c.req.json()
-    if (opts?.logWriter && body.level && body.module && body.message) {
+    let body: any
+    try { body = await c.req.json() } catch { return c.json({ ok: false }, 400) }
+
+    const VALID_LEVELS = new Set(['debug', 'info', 'warn', 'error'])
+    if (!body.level || !body.module || !body.message) return c.json({ ok: false }, 400)
+    if (!VALID_LEVELS.has(body.level)) return c.json({ ok: false, error: 'invalid level' }, 400)
+
+    if (opts?.logWriter) {
       opts.logWriter.write({
         level: body.level,
         module: body.module,
-        message: body.message,
+        message: typeof body.message === 'string' ? body.message.slice(0, 10000) : String(body.message),
         data: body.data,
         error: body.error,
         source: 'app',

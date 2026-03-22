@@ -113,6 +113,12 @@ export interface FileSettings {
   // ── Background monitor ────────────────────────────────────────────
   monitor?: MonitorConfig;
 
+  // ── Observability ──────────────────────────────────────────────────
+  observability?: {
+    logLevel?: 'debug' | 'info' | 'warn' | 'error'
+    logRetentionDays?: number
+  }
+
   // ── Dev mode ──────────────────────────────────────────────────────
   devMode?: boolean;
 
