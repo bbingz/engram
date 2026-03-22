@@ -21,7 +21,7 @@ export interface LogEntry {
 export interface Logger {
   debug(message: string, data?: Record<string, unknown>): void
   info(message: string, data?: Record<string, unknown>): void
-  warn(message: string, data?: Record<string, unknown>): void
+  warn(message: string, data?: Record<string, unknown>, err?: unknown): void
   error(message: string, data?: Record<string, unknown>, err?: unknown): void
   child(extra: { traceId?: string; spanId?: string }): Logger
 }
@@ -123,7 +123,7 @@ export function createLogger(module: string, opts: LoggerOpts = {}): Logger {
   return {
     debug: (msg, data) => log('debug', msg, data),
     info: (msg, data) => log('info', msg, data),
-    warn: (msg, data) => log('warn', msg, data),
+    warn: (msg, data, err) => log('warn', msg, data, err),
     error: (msg, data, err) => log('error', msg, data, err),
     child: (extra) => createLogger(module, { ...opts, ...extra }),
   }

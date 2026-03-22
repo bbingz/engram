@@ -1,7 +1,6 @@
 // macos/Engram/Core/IndexerProcess.swift
 import Foundation
 import Combine
-import os.log
 
 struct DaemonEvent: Decodable {
     let event: String        // "ready" | "indexed" | "error" | "web_ready" | "summary_generated" | "db_maintenance"
@@ -47,8 +46,6 @@ class IndexerProcess: ObservableObject {
         let resetAt: String?
     }
 
-    private nonisolated static let logger = Logger(subsystem: "com.engram.app", category: "daemon")
-
     @Published var status: Status = .stopped
     @Published var totalSessions: Int = 0
     @Published var lastSummarySessionId: String?
@@ -87,7 +84,7 @@ class IndexerProcess: ObservableObject {
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !text.isEmpty else { return }
-            Self.logger.error("\(text, privacy: .public)")
+            EngramLogger.error(text, module: .daemon)
         }
 
         proc.terminationHandler = { [weak self] _ in

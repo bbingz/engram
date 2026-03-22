@@ -1,0 +1,58 @@
+// macos/Engram/Core/EngramLogger.swift
+import Foundation
+import os
+
+enum LogModule: String {
+    case daemon, database, ui, mcp, indexer, network
+}
+
+struct EngramLogger {
+    private static let subsystem = "com.engram.app"
+    private static var loggers: [LogModule: os.Logger] = [:]
+    private static var isForwarding = false
+
+    private static func logger(for module: LogModule) -> os.Logger {
+        if let cached = loggers[module] { return cached }
+        let l = os.Logger(subsystem: subsystem, category: module.rawValue)
+        loggers[module] = l
+        return l
+    }
+
+    static func info(_ message: String, module: LogModule) {
+        logger(for: module).info("\(message, privacy: .public)")
+    }
+
+    static func warn(_ message: String, module: LogModule) {
+        logger(for: module).warning("\(message, privacy: .public)")
+        forwardToDaemon(level: "warn", module: module, message: message)
+    }
+
+    static func error(_ message: String, module: LogModule, error: Error? = nil) {
+        let msg = error.map { "\(message): \($0.localizedDescription)" } ?? message
+        logger(for: module).error("\(msg, privacy: .public)")
+        forwardToDaemon(level: "error", module: module, message: msg)
+    }
+
+    static func debug(_ message: String, module: LogModule) {
+        logger(for: module).debug("\(message, privacy: .public)")
+    }
+
+    // MARK: - Daemon Forwarding (fire-and-forget)
+
+    private static func forwardToDaemon(level: String, module: LogModule, message: String) {
+        guard !isForwarding, module != .daemon, module != .network else { return }
+        isForwarding = true
+        defer { isForwarding = false }
+
+        Task.detached {
+            guard let url = URL(string: "http://127.0.0.1:3457/api/log") else { return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 2
+            let body: [String: Any] = ["level": level, "module": module.rawValue, "message": message]
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            _ = try? await URLSession.shared.data(for: request)
+        }
+    }
+}
