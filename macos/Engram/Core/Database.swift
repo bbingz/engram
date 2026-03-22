@@ -987,6 +987,63 @@ class DatabaseManager: ObservableObject {
 
     // MARK: - Observability: Health
 
+    // MARK: - Observability: Log Observation
+
+    /// Start a ValueObservation on the logs table. Returns a cancellable that must
+    /// be retained by the caller. The onChange closure fires on the main actor whenever
+    /// the logs table changes (insert / update / delete).
+    nonisolated func observeLogs(
+        level: String,
+        module: String,
+        limit: Int,
+        onError: @escaping @Sendable (Error) -> Void,
+        onChange: @escaping @Sendable (LogQueryResult) -> Void
+    ) throws -> AnyDatabaseCancellable {
+        guard let pool else { throw DatabaseError.notOpen }
+
+        let observation = ValueObservation.tracking { db -> LogQueryResult in
+            // Fetch available modules
+            let modules = try String.fetchAll(db, sql: """
+                SELECT DISTINCT module FROM logs ORDER BY module
+            """)
+
+            // Build filtered query
+            var parts = ["SELECT * FROM logs WHERE 1=1"]
+            var args: [DatabaseValueConvertible] = []
+            if level != "All" {
+                parts.append("AND level = ?")
+                args.append(level)
+            }
+            if module != "All" {
+                parts.append("AND module = ?")
+                args.append(module)
+            }
+            parts.append("ORDER BY ts DESC LIMIT ?")
+            args.append(limit)
+
+            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
+            let entries = rows.map { row in
+                LogEntry(
+                    id: row["id"],
+                    ts: row["ts"],
+                    level: row["level"],
+                    module: row["module"],
+                    message: row["message"],
+                    traceId: row["trace_id"],
+                    source: row["source"],
+                    errorName: row["error_name"],
+                    errorMessage: row["error_message"]
+                )
+            }
+            return LogQueryResult(entries: entries, modules: modules)
+        }
+
+        return observation
+            .removeDuplicates()
+            .start(in: pool, scheduling: .immediate, onError: onError, onChange: onChange)
+    }
+
     func observabilityTableCounts() throws -> [(table: String, count: Int)] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in

@@ -85,6 +85,18 @@ enum Theme {
     static let gray = Color(hex: 0x636366)
 }
 
+// MARK: - Shared Utilities
+
+/// Extract HH:MM:SS from an ISO-8601 timestamp string.
+/// Used across Observability views (LogStream, ErrorDashboard, TraceExplorer).
+func formatTimestamp(_ ts: String) -> String {
+    if let tIndex = ts.firstIndex(of: "T") {
+        let time = ts[ts.index(after: tIndex)...]
+        return String(time.prefix(8))
+    }
+    return String(ts.suffix(8))
+}
+
 // MARK: - NSAppearance helper
 
 extension NSAppearance {

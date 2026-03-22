@@ -95,11 +95,4 @@ struct ErrorDashboardView: View {
         }
     }
 
-    private func formatTimestamp(_ ts: String) -> String {
-        if let tIndex = ts.firstIndex(of: "T") {
-            let time = ts[ts.index(after: tIndex)...]
-            return String(time.prefix(8))
-        }
-        return String(ts.suffix(8))
-    }
 }

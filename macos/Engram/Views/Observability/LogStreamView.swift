@@ -9,9 +9,9 @@ struct LogStreamView: View {
     @State private var selectedModule: String = "All"
     @State private var availableModules: [String] = []
     @State private var isLoading = true
+    @State private var cancellable: AnyDatabaseCancellable?
 
     private let levels = ["All", "debug", "info", "warn", "error"]
-    private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,23 +66,39 @@ struct LogStreamView: View {
                 .listStyle(.plain)
             }
         }
-        .task { await loadData() }
-        .onReceive(timer) { _ in Task { await loadData() } }
-        .onChange(of: selectedLevel) { _, _ in Task { await loadData() } }
-        .onChange(of: selectedModule) { _, _ in Task { await loadData() } }
+        .onAppear { startObservation() }
+        .onDisappear { cancellable?.cancel(); cancellable = nil }
+        .onChange(of: selectedLevel) { _, _ in startObservation() }
+        .onChange(of: selectedModule) { _, _ in startObservation() }
     }
 
-    private func loadData() async {
+    private func startObservation() {
+        // Cancel any existing observation before starting a new one
+        cancellable?.cancel()
         isLoading = true
-        defer { isLoading = false }
         do {
-            let result = try db.fetchLogs(level: selectedLevel, module: selectedModule, limit: 200)
-            logs = result.entries
-            if availableModules.isEmpty {
-                availableModules = result.modules
-            }
+            let level = selectedLevel
+            let module = selectedModule
+            cancellable = try db.observeLogs(
+                level: level,
+                module: module,
+                limit: 200,
+                onError: { error in
+                    print("LogStreamView observation error:", error)
+                },
+                onChange: { result in
+                    Task { @MainActor in
+                        self.logs = result.entries
+                        if self.availableModules.isEmpty {
+                            self.availableModules = result.modules
+                        }
+                        self.isLoading = false
+                    }
+                }
+            )
         } catch {
-            print("LogStreamView error:", error)
+            print("LogStreamView error starting observation:", error)
+            isLoading = false
         }
     }
 }
@@ -114,14 +130,6 @@ private struct LogRow: View {
         .padding(.vertical, 2)
     }
 
-    private func formatTimestamp(_ ts: String) -> String {
-        // Show just HH:MM:SS from ISO timestamp
-        if let tIndex = ts.firstIndex(of: "T") {
-            let time = ts[ts.index(after: tIndex)...]
-            return String(time.prefix(8))
-        }
-        return String(ts.suffix(8))
-    }
 }
 
 // MARK: - Level Badge
@@ -153,7 +161,7 @@ struct LevelBadge: View {
 
 // MARK: - Model
 
-struct LogEntry: Identifiable {
+struct LogEntry: Identifiable, Equatable {
     let id: Int64
     let ts: String
     let level: String
@@ -165,7 +173,7 @@ struct LogEntry: Identifiable {
     let errorMessage: String?
 }
 
-struct LogQueryResult {
+struct LogQueryResult: Equatable {
     let entries: [LogEntry]
     let modules: [String]
 }
