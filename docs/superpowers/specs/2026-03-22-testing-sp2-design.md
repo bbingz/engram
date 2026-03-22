@@ -2,7 +2,7 @@
 
 - **Date**: 2026-03-22
 - **Status**: Draft
-- **Scope**: 59 XCUITest cases across 15 pages + popover, Node-based screenshot comparison with pHash+SSIM+pixelmatch, Git LFS baseline management, CI smoke/full pipeline
+- **Scope**: 61 XCUITest cases across 15 pages + popover, Node-based screenshot comparison with pHash+SSIM+pixelmatch, Git LFS baseline management, CI smoke/full pipeline
 - **Dependencies**: SP1 (fixture DB, AppEnvironment, Swift unit tests, CI pipeline)
 - **Followed by**: SP3 (E2E full-chain testing, AI triage, release gating)
 
@@ -12,10 +12,10 @@ Engram's macOS app has 91 Swift files (~13K LOC), 15 page screens, a menu bar po
 
 ## Goals
 
-1. Full XCUITest coverage: 59 tests across all 15 pages + popover + navigation
-2. Screenshot regression pipeline: capture PNGs in Swift, compare in Node (pixelmatch + ssim.js + imghash)
+1. Full XCUITest coverage: 61 tests across all 15 pages + popover + navigation
+2. Screenshot regression pipeline: capture PNGs in Swift, compare in Node (pixelmatch + ssim.js + blockhash-core)
 3. Git LFS baseline management with CLI update workflow
-4. CI integration: PR smoke tests (~15 core tests), main branch full suite (59 tests)
+4. CI integration: PR smoke tests (~15 core tests), main branch full suite (61 tests)
 5. Structured comparison report (JSON) with SP3 AI triage field pre-reserved
 6. Popover testable via `--popover-standalone` mode
 
@@ -39,9 +39,9 @@ SP1 established `AppEnvironment` with `--test-mode` and `--fixture-db` support. 
 |----------|---------|
 | `--popover-standalone` | Render PopoverView in a standard NSWindow (400×600) instead of menu bar NSPopover |
 | `--fixed-date 2026-01-15T10:00:00Z` | Deterministic timestamps — overrides `AppEnvironment.test()` hardcoded date (see parsing below) |
-| `--window-size 1280x800` | Fixed main window size for consistent screenshots (parsed in `AppEnvironment`, applied in `MenuBarController.openWindow()`) |
+| `--window-size 1280x800` | Fixed main window size for consistent screenshots (parsed in `AppEnvironment`, applied in `MenuBarController.openWindow()` at `macos/Engram/MenuBarController.swift`) |
 | `--mock-daemon` | DaemonClient returns fixture JSON instead of HTTP calls (see 1.2) |
-| `--appearance dark\|light` | Override system appearance (applied via `NSApp.appearance` in AppDelegate) |
+| `--appearance dark\|light` | Override system appearance (applied via `NSApp.appearance` in AppDelegate class within App.swift) |
 
 **`--fixed-date` parsing** in `AppEnvironment.fromCommandLine()`:
 
@@ -66,34 +66,33 @@ static func fromCommandLine() -> AppEnvironment {
 
 **Process boundary**: XCUITest runs in a separate process from the app under test. The mock must be compiled into the **app target** and activated via launch arguments — the UI test process cannot inject mocks at runtime.
 
+**Approach: URLSession DI via MockURLProtocol** — SP1 already established `DaemonClient(port:session:)` with injectable URLSession, and `MockURLProtocol` exists in `EngramTests`. This approach avoids modifying any production code paths in DaemonClient:
+
 ```swift
-// DaemonClient.swift — test mode branch (in app target, #if DEBUG)
+// In AppDelegate.applicationDidFinishLaunching() (App.swift), when --mock-daemon is detected:
 #if DEBUG
-class DaemonClient: ObservableObject {
-    var testMode: Bool = false  // Set by AppDelegate when --mock-daemon is passed
-
-    func fetch<T: Decodable>(_ endpoint: String) async throws -> T {
-        if testMode {
-            return try mockResponse(for: endpoint)
-        }
-        // ... real HTTP call
+if CommandLine.arguments.contains("--mock-daemon") {
+    MockURLProtocol.requestHandler = { request in
+        MockDaemonFixtures.response(for: request.url!.path)
     }
-
-    private func mockResponse<T: Decodable>(for endpoint: String) throws -> T {
-        let json = MockDaemonFixtures.response(for: endpoint)
-        return try JSONDecoder().decode(T.self, from: json)
-    }
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [MockURLProtocol.self]
+    let mockSession = URLSession(configuration: config)
+    daemonClient = DaemonClient(port: 9999, session: mockSession)
 }
 #endif
 ```
 
-**Activation**: `AppDelegate.applicationDidFinishLaunching()` parses `--mock-daemon` from launch arguments, sets `daemonClient.testMode = true`.
+**File placement**: `MockURLProtocol` and `MockDaemonFixtures` must be in the **app target** (not test target) since they run in the app process during UI tests. Place both in `macos/Engram/TestSupport/` with `#if DEBUG`:
 
-`MockDaemonFixtures` lives in `macos/Engram/Core/MockDaemonFixtures.swift` (app target, `#if DEBUG`) — hardcoded JSON responses:
-- `/api/live` → 2 mock active sessions
-- `/api/memory` → 3 mock memory entries
-- `/api/skills` → empty list
-- `/api/hooks` → 2 mock hooks
+- `macos/Engram/TestSupport/MockURLProtocol.swift` — copy from EngramTests (or move to shared location)
+- `macos/Engram/TestSupport/MockDaemonFixtures.swift` — hardcoded JSON responses:
+  - `/api/live` → 2 mock active sessions
+  - `/api/memory` → 3 mock memory entries
+  - `/api/skills` → empty list
+  - `/api/hooks` → 2 mock hooks
+
+**Tradeoff vs testMode flag approach**: URLSession DI keeps `DaemonClient.swift` unchanged (zero production code modification), and `#if DEBUG` files are stripped from Release builds. The only cost is duplicating `MockURLProtocol` between app target and test target (or refactoring into a shared source set).
 
 ### 1.3 Fixture DB Expansion
 
@@ -108,12 +107,24 @@ The SP1 fixture DB (`test-fixtures/test-index.sqlite`, 20 sessions) needs additi
 
 Added to `scripts/generate-test-fixtures.ts`. Minimal data — enough to verify non-empty rendering. Empty state testing uses filter combinations that yield 0 results.
 
+**Prerequisite**: `EngramTests/TestHelpers.swift` has schema mismatches for these tables that must be fixed first:
+
+| Table | TestHelpers column | Actual DB column |
+|-------|--------------------|------------------|
+| `traces` | `operation` | `name` |
+| `traces` | `start_time` | `start_ts` |
+| `metrics` | `timestamp` | `ts` |
+| `metrics` | `labels` | `tags` |
+| `metrics` | _(missing)_ | `type` |
+
+`generate-test-fixtures.ts` uses `new Database()` → real schema, so the fixture DB is correct. But Swift `TestHelpers` and any new Swift code reading these tables must use the real column names. Fix TestHelpers schema alignment as a pre-task before seeding data.
+
 ### 1.4 Popover Standalone Mode
 
 The main window and popover are created programmatically via `MenuBarController` using `NSWindow` and `NSPopover` — not SwiftUI `Scene` declarations. The standalone mode follows the same programmatic pattern:
 
 ```swift
-// In AppDelegate.applicationDidFinishLaunching()
+// In AppDelegate.applicationDidFinishLaunching() — located in App.swift (in App.swift)
 if environment.popoverStandalone {
     // Skip MenuBarController + NSStatusItem entirely
     let window = NSWindow(
@@ -122,11 +133,12 @@ if environment.popoverStandalone {
         backing: .buffered,
         defer: false
     )
-    // PopoverView requires @EnvironmentObject var db: DatabaseManager
-    // and @EnvironmentObject var indexer: IndexerProcess
+    // PopoverView and its children require db, indexer, and daemonClient
+    // (MenuBarController passes all three — match that here)
     window.contentView = NSHostingView(rootView: PopoverView()
         .environmentObject(db)
-        .environmentObject(indexer))
+        .environmentObject(indexer)
+        .environmentObject(daemonClient))
     window.title = "Popover Preview"
     window.center()
     window.makeKeyAndOrderFront(nil)
@@ -196,6 +208,7 @@ macos/EngramUITests/
 │   ├── MemoryScreen.swift
 │   ├── HooksScreen.swift
 │   ├── SkillsScreen.swift
+│   ├── WorkGraphScreen.swift
 │   ├── PopoverScreen.swift
 │   └── SidebarScreen.swift
 ├── Helpers/
@@ -265,7 +278,7 @@ struct SessionsScreen {
 
 ## Layer 3: Test Coverage Matrix
 
-### 3.1 Full Coverage (59 tests)
+### 3.1 Full Coverage (61 tests)
 
 | Page | Type | Tests | Coverage | Screenshot |
 |------|------|-------|----------|------------|
@@ -280,6 +293,7 @@ struct SessionsScreen {
 | **Projects** | Data | 3 | Project list, per-project session group, empty project | 2 shots |
 | **Observability** | Normal | 5 | Log stream, trace explorer, error dashboard, performance charts, system health | 3 shots |
 | **Repos** | Normal | 2 | Repo list with sparklines, repo detail | 2 shots |
+| **WorkGraph** | Normal | 2 | Graph renders with repo data, node interaction | 1 shot |
 | **Agents** | Normal | 2 | Agent filter, agent session list | 1 shot |
 | **Memory** | Normal | 2 | Entry list, search | 1 shot |
 | **Hooks** | Normal | 2 | Hook list, hook detail | 1 shot |
@@ -287,7 +301,7 @@ struct SessionsScreen {
 | **Popover** | Core | 3 | Status indicators, stats grid, recent activity | 2 shots |
 | **Navigation** | Core | 2 | Sidebar full traversal, Command Palette open/search | 1 shot |
 | **Dark Mode** | Core | 5 | Home, Sessions, SessionDetail, Settings, Popover (dark variants) | 5 shots |
-| | | **59** | | **39 baseline screenshots** |
+| | | **61** | | **40 baseline screenshots** |
 
 ### 3.2 Smoke Subset (PR trigger, ~15 tests)
 
@@ -296,7 +310,11 @@ Home(2) + Sessions(3) + SessionDetail(2) + Search(2) + Settings(1) +
 Navigation(2) + Popover(1) + Activity(1) + Timeline(1) = 15 tests
 ```
 
-Smoke tests are a subset of full tests — same test classes, filtered by `-only-testing:EngramUITests/SmokeTests`.
+Smoke tests and full tests are **separate test classes** in different directories (`Tests/SmokeTests/` vs `Tests/FullTests/`). There is no overlap — smoke tests cover the most critical assertions for each core page, while full tests cover deeper interactions and edge cases.
+
+**CI commands**:
+- PR (smoke only): `-only-testing:EngramUITests/SmokeTests` → runs 15 tests
+- Main (full suite): no `-only-testing` filter → runs **all** tests in both directories (15 smoke + 46 full = 61 total)
 
 ### 3.3 Dark Mode Strategy
 
@@ -313,7 +331,7 @@ func testHomePageDarkMode() throws {
 }
 ```
 
-**Appearance override implementation** (in `AppDelegate.applicationDidFinishLaunching()`, not `AppEnvironment`):
+**Appearance override implementation** (in `AppDelegate.applicationDidFinishLaunching() (in App.swift)`, not `AppEnvironment`):
 
 ```swift
 if let idx = CommandLine.arguments.firstIndex(of: "--appearance"),
@@ -385,7 +403,7 @@ Output `test-manifest.json`:
 - `pixelmatch` — pixel-level diff, generates diff image
 - `sharp` — PNG read/write, image manipulation
 - `ssim.js` — structural similarity index
-- `imghash` — perceptual hash (average hash + hamming distance)
+- `blockhash-core` — perceptual hash (block-based hash + hamming distance, actively maintained replacement for deprecated `imghash`)
 
 **Flow**:
 
@@ -398,7 +416,7 @@ Output `test-manifest.json`:
    d. Size mismatch → status: "size_mismatch", fail
    e. Run pixelmatch → diffCount, generate diff PNG
    f. Run ssim.js → SSIM score (0.0 – 1.0)
-   g. Run imghash → pHash hamming distance
+   g. Run blockhash-core → pHash hamming distance
    h. All three pass thresholds → status: "passed"
    i. Any fails → status: "failed"
 3. Write comparison-report.json
@@ -428,6 +446,7 @@ Output `test-manifest.json`:
 - All three metrics must pass for a screenshot to pass
 - `ignore_regions` masks dynamic content (timestamps, animation frames) by zeroing those pixels before comparison
 - Per-screenshot overrides possible
+- **Caveat**: Hardcoded pixel coordinates are fragile if layout shifts. For v1 this is acceptable with fixed `--window-size`. Future improvement: use accessibility identifiers to locate elements and compute ignore regions dynamically from XCUITest element frames (written to manifest)
 
 ### 4.4 Comparison Report
 
@@ -478,6 +497,8 @@ The `ai_triage` field is reserved for SP3. Current value is always `null`.
 ### 4.5 Baseline Management
 
 **Storage**: `macos/EngramUITests/baselines/` tracked by Git LFS.
+
+**LFS budget estimate**: 40 baseline PNGs × ~100-200KB each (1280×800@2x compressed) ≈ 4-8 MB storage. GitHub LFS free tier: 1 GB storage + 1 GB/month bandwidth. Each CI run (checkout with LFS) downloads ~8 MB. At 20 PRs/week + daily main merges ≈ ~30 runs/week × 8 MB = 240 MB/month — well within free tier. If baseline count grows significantly or images get larger, consider self-hosted LFS or artifact-based approach.
 
 ```gitattributes
 # .gitattributes
@@ -603,7 +624,21 @@ ui-test-smoke:
           });
 ```
 
-**Code signing note**: `CODE_SIGN_IDENTITY="-"` enables ad-hoc signing, which is sufficient for UI test runners on GitHub Actions macOS runners. If this fails on certain runner images, fall back to `CODE_SIGNING_ALLOWED=NO` — but UI tests may require a signed test runner to launch. Verify during initial CI setup.
+**Code signing note**: UI tests require a signed test runner to launch the app process. Strategy:
+
+1. **First try**: `CODE_SIGN_IDENTITY="-"` + `DEVELOPMENT_TEAM=""` (ad-hoc signing, no Apple Developer account needed)
+2. **If that fails**: Create a self-signed certificate in CI via `security create-keychain` + `security import` step
+3. **GitHub Actions `macos-15` runners** have a logged-in graphical session (required for XCUITest)
+
+**Verification step** (must be done before full SP2 implementation):
+```bash
+# Run on a GitHub Actions macos-15 runner to verify UI test launching:
+xcodebuild test -project macos/Engram.xcodeproj -scheme Engram \
+  -only-testing:EngramUITests/SmokeTests/HomeSmokeTests/testHomePageLoads \
+  -destination 'platform=macOS' \
+  CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM=""
+```
+If this fails with a signing error, document the exact error and implement option 2.
 
 ### 5.2 Main Branch Full Suite (push to main)
 
@@ -649,7 +684,7 @@ ui-test-full:
 | Job | Trigger | Tests | Est. Time | Runner Cost |
 |-----|---------|-------|-----------|-------------|
 | ui-test-smoke | PR | 15 | ~4-5 min | ~$0.50 |
-| ui-test-full | main push | 59 | ~12-15 min | ~$1.50 |
+| ui-test-full | main push | 61 | ~12-15 min | ~$1.50 |
 
 ### 5.4 xcodegen project.yml Addition
 
@@ -669,7 +704,7 @@ EngramUITests:
     SCREENSHOTS_DIR: $(SCREENSHOTS_DIR)
 ```
 
-**Scheme configuration**: UI tests run under the main `Engram` scheme (not a separate `EngramUITests` scheme). Add the UI test target to the existing Engram scheme's test action:
+**Scheme configuration**: UI tests run under the main `Engram` scheme (not a separate `EngramUITests` scheme). The current `project.yml` has **no `schemes:` section** — xcodegen auto-generates schemes. SP2 must **add a new `schemes:` section** to `project.yml` to customize the Engram scheme with the UI test target and environment variables:
 
 ```yaml
 # In the existing Engram scheme definition
@@ -725,13 +760,13 @@ permissions:
   "pixelmatch": "^6.0.0",
   "sharp": "^0.33.0",
   "ssim.js": "^3.5.0",
-  "imghash": "^1.1.0"
+  "blockhash-core": "^0.1.0"
 }
 ```
 
 **Notes**:
 - `sharp` handles all PNG I/O — read images, extract raw pixel buffers (`.raw().toBuffer()`), write diff PNGs. No need for separate `pngjs`.
-- `imghash` latest published is 1.1.x (no 2.x exists).
+- `blockhash-core` replaces deprecated `imghash` (last updated 2021). If `blockhash-core` proves insufficient, fall back to computing average hash manually with `sharp` raw pixel data (~30 lines).
 - `sharp` uses native `libvips` bindings. On GitHub Actions `macos-15` runners, prebuilt binaries are available for arm64. If installation fails, add `brew install vips` as a CI prerequisite step.
 
 ---
@@ -744,24 +779,25 @@ permissions:
 
 | File | Purpose |
 |------|---------|
-| `Screens/*.swift` (17) | Page Objects: Home, Sessions, SessionDetail, Search, Settings, Activity, Timeline, SourcePulse, Projects, Observability, Repos, Agents, Memory, Hooks, Skills, Popover, Sidebar |
+| `Screens/*.swift` (18) | Page Objects: Home, Sessions, SessionDetail, Search, Settings, Activity, Timeline, SourcePulse, Projects, Observability, Repos, WorkGraph, Agents, Memory, Hooks, Skills, Popover, Sidebar |
 | `Helpers/TestLaunchConfig.swift` | Launch argument configuration |
 | `Helpers/ScreenshotCapture.swift` | Screenshot utility + manifest writer |
 | `Helpers/WaitUtils.swift` | Explicit waits for async data loading |
 | `Tests/SmokeTests/*.swift` (7) | HomeSmokeTests, SessionsSmokeTests, SessionDetailSmokeTests, SearchSmokeTests, NavigationSmokeTests, PopoverSmokeTests, ActivitySmokeTests |
-| `Tests/FullTests/*.swift` (17) | HomeTests, SessionsTests, SessionDetailTests, SearchTests, SettingsTests, ActivityTests, TimelineTests, SourcePulseTests, ProjectsTests, ObservabilityTests, ReposTests, AgentsTests, MemoryTests, HooksTests, SkillsTests, NavigationTests, DarkModeTests |
+| `Tests/FullTests/*.swift` (18) | HomeTests, SessionsTests, SessionDetailTests, SearchTests, SettingsTests, ActivityTests, TimelineTests, SourcePulseTests, ProjectsTests, ObservabilityTests, ReposTests, WorkGraphTests, AgentsTests, MemoryTests, HooksTests, SkillsTests, NavigationTests, DarkModeTests |
 
-**App Target** (`macos/Engram/Core/`, `#if DEBUG`):
+**App Target** (`macos/Engram/TestSupport/`, `#if DEBUG`):
 
 | File | Purpose |
 |------|---------|
-| `MockDaemonFixtures.swift` | Hardcoded JSON responses for DaemonClient test mode |
+| `MockURLProtocol.swift` | URLSession mock (copy from EngramTests or shared source) |
+| `MockDaemonFixtures.swift` | Hardcoded JSON responses for DaemonClient mock endpoints |
 
 ### New Files (TypeScript — 3 files)
 
 | File | Purpose |
 |------|---------|
-| `scripts/screenshot-compare.ts` | Comparison pipeline (pixelmatch + ssim.js + imghash) |
+| `scripts/screenshot-compare.ts` | Comparison pipeline (pixelmatch + ssim.js + blockhash-core) |
 | `scripts/baselines-generate.ts` | First-time baseline generation |
 | `scripts/baselines-update.ts` | Selective baseline update |
 
@@ -772,26 +808,26 @@ permissions:
 | `macos/project.yml` | Add EngramUITests target + update Engram scheme with UI test target |
 | `.github/workflows/test.yml` | Add ui-test-smoke and ui-test-full jobs |
 | `.gitattributes` | Add LFS tracking for baseline PNGs |
-| `package.json` | Add scripts + devDependencies (pixelmatch, sharp, ssim.js, imghash) |
+| `package.json` | Add scripts + devDependencies (pixelmatch, sharp, ssim.js, blockhash-core) |
 | `scripts/generate-test-fixtures.ts` | Seed git_repos, logs, traces, metrics |
-| `macos/Engram/Core/DaemonClient.swift` | Add `testMode` flag + `#if DEBUG` mock response path |
+| `macos/Engram/Core/DaemonClient.swift` | No changes needed — URLSession DI already exists from SP1 |
 | `macos/Engram/Core/AppEnvironment.swift` | Add `popoverStandalone`, `windowSize` parsed from CLI args |
-| `macos/Engram/AppDelegate.swift` | Parse `--mock-daemon`, `--appearance`, `--popover-standalone`; create standalone popover window |
-| `macos/Engram/Core/MenuBarController.swift` | Respect `windowSize` from AppEnvironment in `openWindow()` |
+| `macos/Engram/App.swift` | In AppDelegate class: parse `--mock-daemon`, `--appearance`, `--popover-standalone`; create standalone popover window; skip onboarding check in test mode (`hasCompletedOnboarding` would be false on CI first run) |
+| `macos/Engram/MenuBarController.swift` | Respect `windowSize` from AppEnvironment in `openWindow()` |
 | ~53 view files | Add `.accessibilityIdentifier()` modifiers |
 
 ### Baseline Files (Git LFS)
 
 | Directory | Contents |
 |-----------|----------|
-| `macos/EngramUITests/baselines/` | 39 baseline PNGs (~2-5 MB total) |
+| `macos/EngramUITests/baselines/` | 40 baseline PNGs (~2-5 MB total) |
 
 ---
 
 ## Success Criteria
 
-1. **59 XCUITest cases pass** on macOS 15 with fixture DB
-2. **39 baseline screenshots** captured and committed via Git LFS
+1. **61 XCUITest cases pass** on macOS 15 with fixture DB
+2. **40 baseline screenshots** captured and committed via Git LFS
 3. **Screenshot comparison pipeline** detects intentional changes (SSIM < 0.95 triggers failure)
 4. **PR smoke tests** complete in < 5 minutes
 5. **Full suite** completes in < 15 minutes on main branch
