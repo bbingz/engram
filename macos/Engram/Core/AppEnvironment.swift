@@ -28,6 +28,10 @@ struct AppEnvironment {
     }
 
     static func fromCommandLine() -> AppEnvironment {
+        // Detect XCTest environment (TEST_HOST loads tests into app process)
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return .test(fixturePath: "")
+        }
         let args = CommandLine.arguments
         if args.contains("--test-mode") {
             let fixturePath = args.firstIndex(of: "--fixture-db")

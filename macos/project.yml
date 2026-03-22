@@ -80,3 +80,30 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.cli
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+  EngramTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramTests
+    resources:
+      - path: ../test-fixtures
+        type: folder
+    dependencies:
+      - target: Engram
+    settings:
+      SWIFT_VERSION: "5.9"
+      TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
+      BUNDLE_LOADER: "$(TEST_HOST)"
+
+  EngramUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramUITests
+    dependencies:
+      - target: Engram
+    settings:
+      SWIFT_VERSION: "5.9"
