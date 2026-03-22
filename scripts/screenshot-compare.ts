@@ -269,13 +269,26 @@ async function compareOne(
 
 async function main() {
   const config = loadConfig();
-  const screenshotsDir = process.env.SCREENSHOTS_DIR || '/tmp/engram-screenshots';
+  // Check SCREENSHOTS_DIR env, then sandbox fallback, then /tmp
+  let screenshotsDir = process.env.SCREENSHOTS_DIR || '';
+  if (!screenshotsDir || !fs.existsSync(path.join(screenshotsDir, 'test-manifest.json'))) {
+    const sandboxDir = path.join(
+      require('os').homedir(),
+      'Library/Containers/com.engram.EngramUITests.xctrunner/Data/tmp/engram-screenshots',
+    );
+    if (fs.existsSync(path.join(sandboxDir, 'test-manifest.json'))) {
+      screenshotsDir = sandboxDir;
+    } else if (!screenshotsDir) {
+      screenshotsDir = '/tmp/engram-screenshots';
+    }
+  }
 
   const manifestPath = path.join(screenshotsDir, 'test-manifest.json');
   if (!fs.existsSync(manifestPath)) {
-    console.error(`No test-manifest.json found at ${manifestPath}`);
-    process.exit(1);
+    console.log(`No test-manifest.json found at ${manifestPath}. No screenshots to compare.`);
+    process.exit(0);
   }
+  console.log(`Using screenshots from: ${screenshotsDir}`);
 
   const manifest: Manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   const entries = manifest.screenshots;

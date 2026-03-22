@@ -110,12 +110,10 @@ targets:
         buildPhase: resources
     dependencies:
       - target: Engram
-    info:
-      properties:
-        NSPrincipalClass: ScreenshotTestObserver
     settings:
       TEST_TARGET_NAME: Engram
       GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_NSPrincipalClass: ScreenshotTestObserver
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
@@ -132,7 +130,4 @@ schemes:
       targets:
         - EngramTests
         - EngramUITests
-      environmentVariables:
-        - variable: SCREENSHOTS_DIR
-          value: $(SCREENSHOTS_DIR)
-          isEnabled: true
+      environmentVariables: []

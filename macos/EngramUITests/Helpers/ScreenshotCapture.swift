@@ -2,9 +2,16 @@ import XCTest
 
 class ScreenshotCapture {
     static let outputDir: String = {
-        ProcessInfo.processInfo.environment["SCREENSHOTS_DIR"]
-            ?? NSTemporaryDirectory() + "engram-screenshots"
+        // Check env var first
+        if let envDir = ProcessInfo.processInfo.environment["SCREENSHOTS_DIR"], !envDir.isEmpty {
+            return envDir
+        }
+        // XCUITest runner is sandboxed — use NSTemporaryDirectory() which is inside the sandbox
+        return NSTemporaryDirectory() + "engram-screenshots"
     }()
+
+    /// The actual resolved output directory — read this after tests to find screenshots
+    static var resolvedOutputDir: String { outputDir }
 
     private static var manifestEntries: [[String: Any]] = []
     private static var hasCleanedUp = false
@@ -13,6 +20,7 @@ class ScreenshotCapture {
     static func cleanOutputDir() {
         guard !hasCleanedUp else { return }
         hasCleanedUp = true
+        NSLog("ScreenshotCapture: outputDir = \(outputDir)")
         let fm = FileManager.default
         if fm.fileExists(atPath: outputDir) {
             try? fm.removeItem(atPath: outputDir)
@@ -23,9 +31,27 @@ class ScreenshotCapture {
     }
 
     static func capture(name: String, app: XCUIApplication, screen: String, test: String) {
-        let screenshot = app.windows.firstMatch.screenshot()
-        let path = "\(outputDir)/\(name).png"
-        try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: path))
+        // Ensure output directory exists (in case observer didn't fire)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: outputDir) {
+            do {
+                try fm.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+                NSLog("ScreenshotCapture: created dir \(outputDir)")
+            } catch {
+                NSLog("ScreenshotCapture: failed to create dir \(outputDir): \(error)")
+                return
+            }
+        }
+
+        // Use app screenshot (captures the app window)
+        let screenshot = app.screenshot()
+        let filePath = "\(outputDir)/\(name).png"
+        do {
+            try screenshot.pngRepresentation.write(to: URL(fileURLWithPath: filePath))
+            NSLog("ScreenshotCapture: wrote \(filePath) (\(screenshot.pngRepresentation.count) bytes)")
+        } catch {
+            NSLog("ScreenshotCapture: failed to write \(filePath): \(error)")
+        }
 
         let entry: [String: Any] = [
             "name": name,
