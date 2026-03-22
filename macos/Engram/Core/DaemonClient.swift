@@ -15,8 +15,9 @@ class DaemonClient: ObservableObject {
     // MARK: - HTTP Methods
 
     func fetch<T: Decodable>(_ path: String) async throws -> T {
-        let url = URL(string: "\(baseURL)\(path)")!
-        let (data, response) = try await URLSession.shared.data(from: url)
+        var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Trace-Id")
+        let (data, response) = try await URLSession.shared.data(for: request)
         try validateResponse(response)
         return try JSONDecoder().decode(T.self, from: data)
     }
@@ -37,6 +38,7 @@ class DaemonClient: ObservableObject {
     func delete(_ path: String) async throws {
         var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
         request.httpMethod = "DELETE"
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Trace-Id")
         if let token = bearerToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -49,6 +51,7 @@ class DaemonClient: ObservableObject {
     private func buildRequest(_ path: String, method: String, body: (any Encodable)?) throws -> URLRequest {
         var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
         request.httpMethod = method
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Trace-Id")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(AnyEncodable(body))

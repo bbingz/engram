@@ -41,7 +41,7 @@ struct EngramLogger {
 
     // MARK: - Daemon Forwarding (fire-and-forget)
 
-    private static func forwardToDaemon(level: String, module: LogModule, message: String) {
+    private static func forwardToDaemon(level: String, module: LogModule, message: String, traceId: String? = nil) {
         guard module != .daemon, module != .network else { return }
 
         Task.detached {
@@ -49,8 +49,11 @@ struct EngramLogger {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let requestTraceId = traceId ?? UUID().uuidString
+            request.setValue(requestTraceId, forHTTPHeaderField: "X-Trace-Id")
             request.timeoutInterval = 2
-            let body: [String: Any] = ["level": level, "module": module.rawValue, "message": message]
+            var body: [String: Any] = ["level": level, "module": module.rawValue, "message": message]
+            if let traceId { body["traceId"] = traceId }
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
             _ = try? await URLSession.shared.data(for: request)
         }
