@@ -31,6 +31,7 @@ struct SourcePulseView: View {
                         KPICard(value: "\(idleSessions.count)", label: "Idle")
                     }
                 }
+                .accessibilityIdentifier("sourcePulse_statusGrid")
 
                 // Live Sessions section — grouped by activity level
                 if !liveSessions.isEmpty {
@@ -48,6 +49,7 @@ struct SourcePulseView: View {
                              onRefresh: { Task { await loadData() } })
                 if sources.isEmpty && !isLoading {
                     EmptyState(icon: "antenna.radiowaves.left.and.right", title: "No sources", message: "No adapter sources detected")
+                        .accessibilityIdentifier("sourcePulse_emptyState")
                 } else {
                     LazyVStack(spacing: 4) {
                         ForEach(sources) { source in
@@ -80,6 +82,7 @@ struct SourcePulseView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("sourcePulse_container")
         .task {
             await loadData()
             await loadLiveSessions()

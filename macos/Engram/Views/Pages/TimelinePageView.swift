@@ -12,6 +12,7 @@ struct TimelinePageView: View {
                 SectionHeader(icon: "chart.bar.xaxis", title: "Timeline", badge: "30d")
                 if timeline.isEmpty && !isLoading {
                     EmptyState(icon: "calendar", title: "No activity", message: "No sessions in the last 30 days")
+                        .accessibilityIdentifier("timeline_emptyState")
                 } else {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         ForEach(timeline, id: \.date) { group in
@@ -38,6 +39,7 @@ struct TimelinePageView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("timeline_container")
         .task { await loadData() }
     }
 

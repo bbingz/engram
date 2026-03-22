@@ -21,6 +21,7 @@ struct ObservabilityView: View {
             }
             .pickerStyle(.segmented)
             .padding()
+            .accessibilityIdentifier("observability_tabPicker")
 
             switch selectedTab {
             case .logs:
@@ -35,5 +36,6 @@ struct ObservabilityView: View {
                 SystemHealthView()
             }
         }
+        .accessibilityIdentifier("observability_container")
     }
 }

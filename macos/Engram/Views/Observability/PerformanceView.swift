@@ -80,6 +80,7 @@ struct PerformanceView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("observability_performance")
         .task { await loadData() }
         .onReceive(timer) { _ in Task { await loadData() } }
     }

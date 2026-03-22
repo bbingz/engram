@@ -79,6 +79,7 @@ struct ErrorDashboardView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("observability_errorDashboard")
         .task { await loadData() }
         .onReceive(timer) { _ in Task { await loadData() } }
     }

@@ -30,6 +30,7 @@ struct MemoryView: View {
                 .padding(10)
                 .background(Theme.inputBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityIdentifier("memory_search")
 
                 if let error { AlertBanner(message: error) }
 
@@ -76,11 +77,13 @@ struct MemoryView: View {
                     }
                     if filteredFiles.isEmpty && !isLoading {
                         EmptyState(icon: "brain", title: "No memory files", message: "Memory files from ~/.claude/projects/ will appear here")
+                            .accessibilityIdentifier("memory_emptyState")
                     }
                 }
             }
             .padding(24)
         }
+        .accessibilityIdentifier("memory_container")
         .task { await loadData() }
     }
 

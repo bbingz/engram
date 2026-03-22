@@ -23,6 +23,7 @@ struct LogStreamView: View {
                     }
                 }
                 .frame(width: 140)
+                .accessibilityIdentifier("observability_logLevelPicker")
 
                 Picker("Module", selection: $selectedModule) {
                     Text("All").tag("All")
@@ -31,6 +32,7 @@ struct LogStreamView: View {
                     }
                 }
                 .frame(width: 180)
+                .accessibilityIdentifier("observability_logModulePicker")
 
                 Spacer()
 
@@ -64,8 +66,10 @@ struct LogStreamView: View {
                     LogRow(entry: entry)
                 }
                 .listStyle(.plain)
+                .accessibilityIdentifier("observability_logList")
             }
         }
+        .accessibilityIdentifier("observability_logStream")
         .onAppear { startObservation() }
         .onDisappear { cancellable?.cancel(); cancellable = nil }
         .onChange(of: selectedLevel) { _, _ in startObservation() }

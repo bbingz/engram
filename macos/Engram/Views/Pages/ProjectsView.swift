@@ -53,9 +53,10 @@ struct ProjectsView: View {
                     SectionHeader(icon: "folder", title: "Projects")
                     if projectGroups.isEmpty && !isLoading {
                         EmptyState(icon: "folder", title: "No projects", message: "Sessions without project associations won't appear here")
+                            .accessibilityIdentifier("projects_emptyState")
                     } else {
                         LazyVStack(spacing: 4) {
-                            ForEach(projectGroups) { group in
+                            ForEach(Array(projectGroups.enumerated()), id: \.element.id) { index, group in
                                 Button(action: { selectedProject = group }) {
                                     HStack {
                                         Text(group.project.split(separator: "/").last.map(String.init) ?? group.project)
@@ -84,13 +85,16 @@ struct ProjectsView: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityIdentifier("projects_group_\(index)")
                             }
                         }
+                        .accessibilityIdentifier("projects_list")
                     }
                 }
             }
             .padding(24)
         }
+        .accessibilityIdentifier("projects_container")
         .task { await loadData() }
     }
 
