@@ -1,0 +1,4 @@
+{"type":"user","message":{"content":"Hello from Claude Code"}}
+{"type":"assistant","message":{"content":"Hi! How can I help?"}}
+{"type":"user","message":{"content":"Write a function"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Here is the function"}]}}
