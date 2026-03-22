@@ -2,6 +2,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import BetterSqlite3 from 'better-sqlite3'
 import { Database } from '../../src/core/db.js'
+import { createLogger, type LogWriter as LogWriterType } from '../../src/core/logger.js'
+import { LogWriter } from '../../src/core/logger.js'
 
 describe('observability schema', () => {
   let db: Database
@@ -40,5 +42,111 @@ describe('observability schema', () => {
     expect(() => {
       db.raw.prepare("INSERT INTO logs (level, module, message, source) VALUES ('invalid', 'test', 'msg', 'daemon')").run()
     }).toThrow()
+  })
+})
+
+describe('createLogger', () => {
+  it('creates logger with module name', () => {
+    const log = createLogger('indexer')
+    expect(log).toBeDefined()
+    expect(log.info).toBeTypeOf('function')
+    expect(log.error).toBeTypeOf('function')
+    expect(log.warn).toBeTypeOf('function')
+    expect(log.debug).toBeTypeOf('function')
+  })
+})
+
+describe('log writing', () => {
+  let db: Database
+  let writer: LogWriterType
+  beforeEach(() => {
+    db = new Database(':memory:')
+    writer = new LogWriter(db.raw)
+  })
+  afterEach(() => { db.close() })
+
+  it('writes info log to SQLite', () => {
+    writer.write({ level: 'info', module: 'test', message: 'hello', source: 'daemon' })
+    const rows = db.raw.prepare('SELECT * FROM logs').all() as any[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].level).toBe('info')
+    expect(rows[0].module).toBe('test')
+    expect(rows[0].message).toBe('hello')
+  })
+
+  it('writes error with serialized error data', () => {
+    writer.write({
+      level: 'error', module: 'test', message: 'fail', source: 'daemon',
+      error: { name: 'Error', message: 'oops', stack: 'at line 1' },
+    })
+    const row = db.raw.prepare('SELECT * FROM logs').get() as any
+    expect(row.error_name).toBe('Error')
+    expect(row.error_message).toBe('oops')
+    expect(row.error_stack).toBe('at line 1')
+  })
+
+  it('writes structured data as JSON', () => {
+    writer.write({
+      level: 'info', module: 'test', message: 'indexed', source: 'daemon',
+      data: { sessionId: 'abc', count: 42 },
+    })
+    const row = db.raw.prepare('SELECT * FROM logs').get() as any
+    expect(JSON.parse(row.data)).toEqual({ sessionId: 'abc', count: 42 })
+  })
+
+  it('respects level filtering', () => {
+    const log = createLogger('test', { writer, level: 'warn' })
+    log.info('should be skipped')
+    log.warn('should appear')
+    const rows = db.raw.prepare('SELECT * FROM logs').all()
+    expect(rows).toHaveLength(1)
+  })
+})
+
+describe('debug rate limiting', () => {
+  let db: Database
+  let writer: LogWriterType
+  beforeEach(() => {
+    db = new Database(':memory:')
+    writer = new LogWriter(db.raw)
+  })
+  afterEach(() => { db.close() })
+
+  it('throttles debug logs beyond 100/min per module', () => {
+    const log = createLogger('watcher', { writer, level: 'debug', rateLimitPerMin: 5 })
+    for (let i = 0; i < 10; i++) log.debug(`msg ${i}`)
+    const rows = db.raw.prepare('SELECT * FROM logs').all()
+    // Should have 5 regular + 1 suppression summary = 6 max
+    expect(rows.length).toBeLessThanOrEqual(6)
+  })
+})
+
+describe('log rotation', () => {
+  let db: Database
+  let writer: LogWriterType
+  beforeEach(() => {
+    db = new Database(':memory:')
+    writer = new LogWriter(db.raw)
+  })
+  afterEach(() => { db.close() })
+
+  it('deletes logs older than retention days', () => {
+    // Insert old log
+    db.raw.prepare(
+      "INSERT INTO logs (ts, level, module, message, source) VALUES ('2020-01-01T00:00:00.000', 'info', 'test', 'old', 'daemon')"
+    ).run()
+    writer.write({ level: 'info', module: 'test', message: 'new', source: 'daemon' })
+    writer.rotate(7)
+    const rows = db.raw.prepare('SELECT * FROM logs').all()
+    expect(rows).toHaveLength(1)
+  })
+
+  it('enforces max row cap', () => {
+    for (let i = 0; i < 20; i++) {
+      writer.write({ level: 'info', module: 'test', message: `msg ${i}`, source: 'daemon' })
+    }
+    writer.enforceMaxRows(10)
+    const rows = db.raw.prepare('SELECT * FROM logs').all()
+    expect(rows).toHaveLength(10)
   })
 })
