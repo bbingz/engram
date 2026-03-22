@@ -105,6 +105,9 @@ targets:
       - path: EngramUITests
         excludes:
           - "baselines/**"
+      - path: ../test-fixtures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Engram
     settings:
@@ -112,3 +115,21 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+schemes:
+  Engram:
+    build:
+      targets:
+        Engram: all
+        EngramCLI: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EngramTests
+        - EngramUITests
+      environmentVariables:
+        - variable: SCREENSHOTS_DIR
+          value: $(SCREENSHOTS_DIR)
+          isEnabled: true
