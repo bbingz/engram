@@ -97,13 +97,5 @@ targets:
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
       BUNDLE_LOADER: "$(TEST_HOST)"
 
-  EngramUITests:
-    type: bundle.ui-testing
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources:
-      - path: EngramUITests
-    dependencies:
-      - target: Engram
-    settings:
-      SWIFT_VERSION: "5.9"
+  # EngramUITests: removed — placeholder target produces damaged Runner.app
+  # Will be re-added in SP2 when real UI tests are implemented.
