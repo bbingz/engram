@@ -27,6 +27,23 @@ Engram's macOS app has 91 Swift files (~13K LOC), 15 page screens, a menu bar po
 - Performance benchmarking of UI rendering
 - Accessibility compliance testing (potential future SP)
 
+## Task 0: CI Code Signing Verification (Blocker)
+
+Before any SP2 implementation, verify that XCUITest can launch on GitHub Actions `macos-15` with ad-hoc signing. This is a **blocker** — if it fails, the entire CI pipeline design must be revised (self-signed certificate setup, or self-hosted runner).
+
+```bash
+# Minimal verification — run a single UI test on CI:
+xcodebuild test -project macos/Engram.xcodeproj -scheme Engram \
+  -only-testing:EngramUITests/SmokeTests/HomeSmokeTests/testHomePageLoads \
+  -destination 'platform=macOS' \
+  CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM=""
+```
+
+This should be the first task in the implementation plan. If ad-hoc signing fails, options are:
+1. Add a `security create-keychain` + self-signed certificate CI step
+2. Use a self-hosted macOS runner with a valid signing identity
+3. Revisit whether `CODE_SIGNING_ALLOWED=NO` works for UI tests on the specific runner image
+
 ---
 
 ## Layer 1: App Test Mode Enhancements
@@ -85,14 +102,14 @@ if CommandLine.arguments.contains("--mock-daemon") {
 
 **File placement**: `MockURLProtocol` and `MockDaemonFixtures` must be in the **app target** (not test target) since they run in the app process during UI tests. Place both in `macos/Engram/TestSupport/` with `#if DEBUG`:
 
-- `macos/Engram/TestSupport/MockURLProtocol.swift` — copy from EngramTests (or move to shared location)
+- `macos/Engram/TestSupport/MockURLProtocol.swift` — **copy** from `EngramTests/MockURLProtocol.swift` (独立维护，~40 行几乎不会变，比 xcodegen shared source set 简单)
 - `macos/Engram/TestSupport/MockDaemonFixtures.swift` — hardcoded JSON responses:
   - `/api/live` → 2 mock active sessions
   - `/api/memory` → 3 mock memory entries
   - `/api/skills` → empty list
   - `/api/hooks` → 2 mock hooks
 
-**Tradeoff vs testMode flag approach**: URLSession DI keeps `DaemonClient.swift` unchanged (zero production code modification), and `#if DEBUG` files are stripped from Release builds. The only cost is duplicating `MockURLProtocol` between app target and test target (or refactoring into a shared source set).
+**Tradeoff vs testMode flag approach**: URLSession DI keeps `DaemonClient.swift` unchanged (zero production code modification), and `#if DEBUG` files are stripped from Release builds. The cost is two copies of `MockURLProtocol` (~40 lines each) — acceptable for simplicity.
 
 ### 1.3 Fixture DB Expansion
 
