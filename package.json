@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "generate:fixtures": "tsx scripts/generate-test-fixtures.ts"
+    "generate:fixtures": "tsx scripts/generate-test-fixtures.ts",
+    "check:fixtures": "tsx scripts/check-fixture-schema.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
