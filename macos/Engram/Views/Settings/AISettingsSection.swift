@@ -86,7 +86,7 @@ struct AISettingsSection: View {
                             .onChange(of: aiModel) { saveAISettings() }
                     }
 
-                    Text("API keys are stored locally in ~/.engram/settings.json")
+                    Text("API keys are stored in macOS Keychain")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -299,6 +299,9 @@ struct AISettingsSection: View {
                                 do {
                                     var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/titles/regenerate-all")!)
                                     req.httpMethod = "POST"
+                                    if let token = readEngramSettings()?["httpBearerToken"] as? String {
+                                        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                                    }
                                     let (data, _) = try await URLSession.shared.data(for: req)
                                     let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                                     titleRegenerateStatus = (json?["status"] as? String) ?? "Started"
@@ -333,10 +336,22 @@ struct AISettingsSection: View {
     }
 
     private func saveAISettings() {
+        // Try Keychain first; fall back to plaintext JSON for ad-hoc builds
+        if !aiApiKey.isEmpty {
+            let saved = KeychainHelper.set("aiApiKey", value: aiApiKey)
+            if saved {
+                mutateEngramSettings { $0["aiApiKey"] = "@keychain" }
+            } else {
+                // Keychain unavailable (ad-hoc build) — store in JSON
+                mutateEngramSettings { $0["aiApiKey"] = aiApiKey }
+            }
+        } else {
+            KeychainHelper.delete("aiApiKey")
+            mutateEngramSettings { $0.removeValue(forKey: "aiApiKey") }
+        }
         mutateEngramSettings { settings in
             settings["aiProtocol"] = aiProtocol
             if !aiBaseURL.isEmpty { settings["aiBaseURL"] = aiBaseURL } else { settings.removeValue(forKey: "aiBaseURL") }
-            settings["aiApiKey"] = aiApiKey
             settings["aiModel"] = aiModel
 
             settings["summaryLanguage"] = summaryLanguage
@@ -371,15 +386,23 @@ struct AISettingsSection: View {
     }
 
     private func saveTitleSettings() {
+        // Try Keychain first; fall back to plaintext JSON for ad-hoc builds
+        if titleProvider != "ollama" && !titleApiKey.isEmpty {
+            let saved = KeychainHelper.set("titleApiKey", value: titleApiKey)
+            if saved {
+                mutateEngramSettings { $0["titleApiKey"] = "@keychain" }
+            } else {
+                mutateEngramSettings { $0["titleApiKey"] = titleApiKey }
+            }
+        } else {
+            KeychainHelper.delete("titleApiKey")
+            mutateEngramSettings { $0.removeValue(forKey: "titleApiKey") }
+        }
         mutateEngramSettings { settings in
             settings["titleProvider"] = titleProvider
             if !titleBaseURL.isEmpty { settings["titleBaseURL"] = titleBaseURL } else { settings.removeValue(forKey: "titleBaseURL") }
             settings["titleModel"] = titleModel
-            if titleProvider != "ollama" && !titleApiKey.isEmpty {
-                settings["titleApiKey"] = titleApiKey
-            } else {
-                settings.removeValue(forKey: "titleApiKey")
-            }
+            // titleApiKey handled above via Keychain
             settings["titleAutoGenerate"] = titleAutoGenerate
         }
     }
@@ -389,7 +412,8 @@ struct AISettingsSection: View {
 
         if let v = settings["aiProtocol"] as? String { aiProtocol = v }
         if let v = settings["aiBaseURL"] as? String { aiBaseURL = v }
-        if let v = settings["aiApiKey"] as? String { aiApiKey = v }
+        aiApiKey = KeychainHelper.get("aiApiKey")
+            ?? { let v = settings["aiApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
         if let v = settings["aiModel"] as? String { aiModel = v }
 
         if let v = settings["summaryLanguage"] as? String { summaryLanguage = v }
@@ -413,7 +437,8 @@ struct AISettingsSection: View {
         if let v = settings["titleProvider"] as? String { titleProvider = v }
         if let v = settings["titleBaseURL"] as? String { titleBaseURL = v }
         if let v = settings["titleModel"] as? String { titleModel = v }
-        if let v = settings["titleApiKey"] as? String { titleApiKey = v }
+        titleApiKey = KeychainHelper.get("titleApiKey")
+            ?? { let v = settings["titleApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
         if let v = settings["titleAutoGenerate"] as? Bool { titleAutoGenerate = v }
     }
 }

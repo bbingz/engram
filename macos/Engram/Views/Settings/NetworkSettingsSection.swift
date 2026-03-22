@@ -209,10 +209,27 @@ struct NetworkSettingsSection: View {
     // MARK: - Viking
 
     private func saveVikingSettings() {
+        // Save Viking API key to Keychain
+        if !vikingApiKey.isEmpty {
+            let saved = KeychainHelper.set("vikingApiKey", value: vikingApiKey)
+            if saved {
+                mutateEngramSettings { settings in
+                    var viking = settings["viking"] as? [String: Any] ?? [:]
+                    viking["apiKey"] = "@keychain"
+                    viking["enabled"] = vikingEnabled
+                    if !vikingURL.isEmpty { viking["url"] = vikingURL }
+                    settings["viking"] = viking
+                }
+                return
+            }
+        } else {
+            KeychainHelper.delete("vikingApiKey")
+        }
         mutateEngramSettings { settings in
             var viking: [String: Any] = [:]
             viking["enabled"] = vikingEnabled
             if !vikingURL.isEmpty { viking["url"] = vikingURL }
+            // Keychain unavailable — fall back to plaintext JSON
             if !vikingApiKey.isEmpty { viking["apiKey"] = vikingApiKey }
             settings["viking"] = viking
         }
@@ -223,7 +240,8 @@ struct NetworkSettingsSection: View {
               let viking = settings["viking"] as? [String: Any] else { return }
         if let enabled = viking["enabled"] as? Bool { vikingEnabled = enabled }
         if let url = viking["url"] as? String { vikingURL = url }
-        if let key = viking["apiKey"] as? String { vikingApiKey = key }
+        vikingApiKey = KeychainHelper.get("vikingApiKey")
+            ?? { let v = viking["apiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
     }
 
     private func checkVikingStatus() {
@@ -293,6 +311,9 @@ struct NetworkSettingsSection: View {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = readEngramSettings()?["httpBearerToken"] as? String {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
 
         URLSession.shared.dataTask(with: request) { _, response, error in
             DispatchQueue.main.async {

@@ -3,6 +3,7 @@
 // Outputs JSON lines to stdout for the Swift app to parse.
 // Usage: node dist/daemon.js [db-path]
 import { join } from 'path'
+import { execFileSync } from 'child_process'
 // os/homedir no longer needed — getWatchEntries() handles it internally
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
@@ -23,6 +24,20 @@ import { LiveSessionMonitor, type WatchDir } from './core/live-sessions.js'
 import { BackgroundMonitor } from './core/monitor.js'
 import { populateMockData } from './core/mock-data.js'
 
+// Power state detection — one-time check at startup (macOS only)
+function isOnACPower(): boolean {
+  try {
+    const result = execFileSync('pmset', ['-g', 'batt'], { encoding: 'utf-8', timeout: 3000 })
+    return result.includes("'AC Power'")
+  } catch {
+    return true // assume AC if detection fails
+  }
+}
+
+const onACPower = isOnACPower()
+const powerMode = onACPower ? 'ac' : 'battery'
+const POWER_MULTIPLIER = onACPower ? 1 : 2
+
 const DB_DIR = ensureDataDirs()
 const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
 const db = new Database(dbPath)
@@ -32,6 +47,9 @@ const authoritativeNode = settings.syncNodeName ?? 'local'
 
 // Apply tier-based noise filter
 db.noiseFilter = settings.noiseFilter ?? 'hide-skip'
+
+// Emit power state
+emit({ event: 'power', mode: powerMode })
 
 // Build watch directories for live session detection (reuse canonical entries from watcher)
 const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({ path, source }))
@@ -104,6 +122,14 @@ indexer.indexAll().then(async (indexed) => {
     const costBackfilled = await indexer.backfillCosts()
     if (costBackfilled > 0) {
       emit({ event: 'backfill', type: 'costs', count: costBackfilled })
+    }
+  } catch { /* ignore */ }
+
+  // Backfill quality scores for sessions without scores
+  try {
+    const scoreBackfilled = db.backfillScores()
+    if (scoreBackfilled > 0) {
+      emit({ event: 'backfill', type: 'scores', count: scoreBackfilled })
     }
   } catch { /* ignore */ }
 
@@ -205,20 +231,27 @@ const watcher = startWatcher(adapters, indexer, {
 
 // Live session monitor — detects active coding sessions via file mtime
 const liveMonitor = new LiveSessionMonitor({ watchDirs })
-liveMonitor.start(5000)
+liveMonitor.start(5000 * POWER_MULTIPLIER)
 
 // Background monitor — periodic health checks + alerts
 const monitorConfig = settings.monitor ?? { enabled: true }
+// Merge costAlerts into monitor config (costAlerts overrides monitor defaults)
+if (settings.costAlerts?.dailyBudget != null) {
+  monitorConfig.dailyCostBudget = settings.costAlerts.dailyBudget
+}
+if (settings.costAlerts?.monthlyBudget != null) {
+  monitorConfig.monthlyCostBudget = settings.costAlerts.monthlyBudget
+}
 const backgroundMonitor = new BackgroundMonitor(db, monitorConfig, (alert) => {
   emit({ event: 'alert', alert })
 }, liveMonitor)
 if (monitorConfig.enabled) {
-  backgroundMonitor.start(600_000) // every 10 minutes
+  backgroundMonitor.start(600_000 * POWER_MULTIPLIER) // every 10 minutes (20 on battery)
 }
 
 // Periodic re-scan every 10 minutes — only for non-watchable sources
 // (SQLite-based: Cursor, OpenCode, VS Code, Windsurf, Copilot)
-const RESCAN_INTERVAL = 10 * 60 * 1000
+const RESCAN_INTERVAL = 10 * 60 * 1000 * POWER_MULTIPLIER
 const allSourceNames = new Set(adapters.map(a => a.name))
 const nonWatchable = new Set([...allSourceNames].filter(s => !WATCHED_SOURCES.has(s)))
 
@@ -252,6 +285,22 @@ async function syncAndEmit(): Promise<void> {
 // Start web server
 const port = settings.httpPort ?? 3457
 const host = settings.httpHost ?? '127.0.0.1'
+
+// Safety: non-localhost binding requires CIDR whitelist
+if (host !== '127.0.0.1' && (!settings.httpAllowCIDR || settings.httpAllowCIDR.length === 0)) {
+  emit({ event: 'error', message: `Refusing to bind to ${host} without httpAllowCIDR. Add allowed CIDRs to settings.json.` })
+  process.exit(1)
+}
+
+// Auto-generate bearer token for non-localhost binding
+if (host !== '127.0.0.1' && !settings.httpBearerToken) {
+  const { randomBytes } = await import('crypto')
+  const token = randomBytes(32).toString('hex')
+  const { writeFileSettings } = await import('./core/config.js')
+  writeFileSettings({ httpBearerToken: token })
+  settings.httpBearerToken = token
+  emit({ event: 'security', message: 'Bearer token auto-generated for non-localhost binding' })
+}
 const app = createApp(db, {
   vectorStore: vecDeps?.vectorStore,
   embeddingClient: vecDeps?.embeddingClient,
@@ -280,8 +329,8 @@ const syncTimer = settings.syncEnabled && syncPeers.length > 0
   ? setInterval(() => { syncAndEmit().catch(() => {}) }, syncIntervalMs)
   : null
 
-// Git repo probe loop — runs once immediately, then every 5 minutes
-const gitProbeTimer = startGitProbeLoop(db.getRawDb())
+// Git repo probe loop — runs once immediately, then every 5 minutes (10 on battery)
+const gitProbeTimer = startGitProbeLoop(db.getRawDb(), 300_000 * POWER_MULTIPLIER)
 
 // Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
 function shutdown() {

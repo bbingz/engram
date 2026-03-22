@@ -101,6 +101,47 @@ export function createApp(db: Database, opts?: {
     })
   }
 
+  // Security headers + CORS
+  app.use('*', async (c, next) => {
+    c.header('X-Content-Type-Options', 'nosniff')
+    c.header('X-Frame-Options', 'DENY')
+    const origin = c.req.header('origin')
+    if (origin) {
+      try {
+        const url = new URL(origin)
+        const isLocal = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
+        if (!isLocal) {
+          return c.text('CORS rejected', 403)
+        }
+        // Set CORS headers for valid localhost origins
+        c.header('Access-Control-Allow-Origin', origin)
+        c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
+        c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        if (c.req.method === 'OPTIONS') {
+          return new Response(null, { status: 204 })
+        }
+      } catch {
+        return c.text('CORS rejected', 403)
+      }
+    }
+    await next()
+  })
+
+  // Bearer token auth on write endpoints — scoped to /api/* only
+  const bearerToken = settings.httpBearerToken
+  if (bearerToken) {
+    const WRITE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH'])
+    app.use('/api/*', async (c, next) => {
+      if (WRITE_METHODS.has(c.req.method)) {
+        const auth = c.req.header('authorization')
+        if (auth !== `Bearer ${bearerToken}`) {
+          return c.text('Unauthorized', 401)
+        }
+      }
+      await next()
+    })
+  }
+
   app.get('/api/sync/status', (c) => {
     return c.json({
       nodeName: settings.syncNodeName ?? 'unnamed',
@@ -382,6 +423,15 @@ export function createApp(db: Database, opts?: {
       ORDER BY c.cost_usd DESC LIMIT ?
     `).all(limit)
     return c.json({ sessions: rows })
+  })
+
+  // File activity API
+  app.get('/api/file-activity', (c) => {
+    const project = c.req.query('project')
+    const since = c.req.query('since')
+    const limit = c.req.query('limit') ? parseInt(c.req.query('limit')!) : undefined
+    const result = db.getFileActivity({ project: project ?? undefined, since: since ?? undefined, limit })
+    return c.json({ files: result, totalFiles: result.length })
   })
 
   // Tool analytics API

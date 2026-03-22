@@ -74,6 +74,12 @@ struct MainWindowView: View {
                 selectedSession = box.session
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .navigateToScreen)) { notification in
+            if let rawValue = notification.object as? String,
+               let screen = Screen(rawValue: rawValue) {
+                selectedScreen = screen
+            }
+        }
         .sheet(isPresented: $showResume) {
             if let session = selectedSession {
                 ResumeDialog(session: session)

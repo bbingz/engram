@@ -354,12 +354,15 @@ struct SessionDetailView: View {
         let text = displayIndexed.map { idx in
             let prefix: String
             switch idx.messageType {
-            case .user:      prefix = "> "
-            case .assistant: prefix = ""
-            case .tool:      prefix = "› "
-            case .error:     prefix = "! "
-            case .code:      prefix = "```\n"
-            case .system:    prefix = "[system] "
+            case .user:       prefix = "> "
+            case .assistant:  prefix = ""
+            case .tool:       prefix = "› "
+            case .toolCall:   prefix = "› "
+            case .toolResult: prefix = "‹ "
+            case .thinking:   prefix = "~ "
+            case .error:      prefix = "! "
+            case .code:       prefix = "```\n"
+            case .system:     prefix = "[system] "
             }
             return prefix + idx.message.content
         }.joined(separator: "\n\n")

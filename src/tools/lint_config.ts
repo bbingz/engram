@@ -1,4 +1,5 @@
 import { readFileSync, existsSync, readdirSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { join, extname, dirname, basename, resolve } from 'path'
 
 export const lintConfigTool = {
@@ -214,4 +215,67 @@ export async function handleLintConfig(params: { cwd: string }): Promise<{ issue
     s + (i.severity === 'error' ? 10 : i.severity === 'warning' ? 3 : 1), 0))
 
   return { issues, score }
+}
+
+// ── Infrastructure Health Checks ────────────────────────────────────
+
+export interface HealthIssue {
+  kind: string
+  severity: 'warning' | 'error' | 'info'
+  message: string
+  detail?: string
+}
+
+/** Check for stale git branches (merged into main but not deleted). */
+export function checkStaleBranches(cwd: string): HealthIssue[] {
+  try {
+    const mainBranch = (() => {
+      try {
+        return execFileSync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'], { cwd, encoding: 'utf-8', timeout: 5000 }).trim().replace('origin/', '')
+      } catch {
+        return 'main'
+      }
+    })()
+    const merged = execFileSync('git', ['branch', '--merged', mainBranch], { cwd, encoding: 'utf-8', timeout: 5000 })
+    const stale = merged.split('\n')
+      .map(b => b.trim().replace('* ', ''))
+      .filter(b => b && b !== mainBranch && b !== 'master' && b !== 'main' && !b.startsWith('('))
+    if (stale.length > 3) {
+      return [{ kind: 'stale_branches', severity: 'info', message: `${stale.length} merged branches can be cleaned up`, detail: stale.slice(0, 5).join(', ') }]
+    }
+  } catch { /* not a git repo or git unavailable */ }
+  return []
+}
+
+/** Check for large uncommitted changes. */
+export function checkLargeUncommitted(cwd: string): HealthIssue[] {
+  try {
+    const status = execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf-8', timeout: 5000 })
+    const files = status.split('\n').filter(l => l.trim())
+    if (files.length > 20) {
+      return [{ kind: 'large_uncommitted', severity: 'warning', message: `${files.length} uncommitted changes in ${basename(cwd)}`, detail: files.slice(0, 5).map(f => f.slice(3)).join(', ') }]
+    }
+  } catch { /* not a git repo */ }
+  return []
+}
+
+/** Check for zombie node processes related to Engram. */
+export function checkZombieProcesses(): HealthIssue[] {
+  try {
+    const ps = execFileSync('pgrep', ['-lf', 'engram.*daemon|daemon.*engram'], { encoding: 'utf-8', timeout: 3000 })
+    const procs = ps.split('\n').filter(l => l.trim())
+    if (procs.length > 2) {
+      return [{ kind: 'zombie_processes', severity: 'warning', message: `${procs.length} Engram daemon processes running (expected 1)` }]
+    }
+  } catch { /* pgrep found nothing — normal */ }
+  return []
+}
+
+/** Run all health checks for a project directory. */
+export function runHealthChecks(cwd: string): HealthIssue[] {
+  return [
+    ...checkStaleBranches(cwd),
+    ...checkLargeUncommitted(cwd),
+    ...checkZombieProcesses(),
+  ]
 }

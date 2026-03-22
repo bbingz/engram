@@ -49,76 +49,90 @@ struct MessageParser {
     // claude-code/iflow: {"type":"user"/"assistant", "message":{"content": string | [{type,text}]}, ...}
     // qwen:             {"type":"user"/"assistant", "message":{"parts":[{text:"..."}]}, ...}
     private static func parseTypeMessageFormat(filePath: String, source: String) -> [ChatMessage] {
-        guard let lines = readLines(filePath) else { return [] }
-        return lines.compactMap { line in
+        guard let reader = StreamingJSONLReader(filePath: filePath) else { return [] }
+        defer { reader.close() }
+        var messages: [ChatMessage] = []
+        for line in reader {
             guard let obj = parseJSON(line),
                   let type_ = obj["type"] as? String,
                   type_ == "user" || type_ == "assistant",
-                  let msg = obj["message"] as? [String: Any] else { return nil }
+                  let msg = obj["message"] as? [String: Any] else { continue }
             var content = extractMessageContent(msg["content"])
             // Qwen uses message.parts[].text instead of message.content
             if content.isEmpty { content = extractPartsContent(msg["parts"]) }
-            guard !content.isEmpty else { return nil }
+            guard !content.isEmpty else { continue }
             let cat = type_ == "user" ? classifySystem(content: content, source: source) : .none
-            return ChatMessage(role: type_, content: content, systemCategory: cat)
+            messages.append(ChatMessage(role: type_, content: content, systemCategory: cat))
         }
+        return messages
     }
 
     // MARK: - kimi / antigravity / windsurf
     // {"role":"user"/"assistant", "content":"..."}  (antigravity/windsurf skip first meta line)
     private static func parseRoleDirectFormat(filePath: String, skipFirst: Bool, source: String) -> [ChatMessage] {
-        guard let lines = readLines(filePath) else { return [] }
-        return lines.enumerated().compactMap { (i, line) in
-            if skipFirst && i == 0 { return nil }
+        guard let reader = StreamingJSONLReader(filePath: filePath) else { return [] }
+        defer { reader.close() }
+        var messages: [ChatMessage] = []
+        var isFirst = true
+        for line in reader {
+            if skipFirst && isFirst { isFirst = false; continue }
+            isFirst = false
             guard let obj = parseJSON(line),
                   let role = obj["role"] as? String,
                   role == "user" || role == "assistant",
                   let content = obj["content"] as? String,
-                  !content.isEmpty else { return nil }
+                  !content.isEmpty else { continue }
             let cat = role == "user" ? classifySystem(content: content, source: source) : .none
-            return ChatMessage(role: role, content: content, systemCategory: cat)
+            messages.append(ChatMessage(role: role, content: content, systemCategory: cat))
         }
+        return messages
     }
 
     // MARK: - copilot
     // {"type":"user.message","data":{"content":"..."}}
     // {"type":"assistant.message","data":{"content":"...","toolRequests":[...]}}
     private static func parseCopilotFormat(filePath: String) -> [ChatMessage] {
-        guard let lines = readLines(filePath) else { return [] }
-        return lines.compactMap { line in
+        guard let reader = StreamingJSONLReader(filePath: filePath) else { return [] }
+        defer { reader.close() }
+        var messages: [ChatMessage] = []
+        for line in reader {
             guard let obj = parseJSON(line),
                   let type_ = obj["type"] as? String,
-                  let data = obj["data"] as? [String: Any] else { return nil }
+                  let data = obj["data"] as? [String: Any] else { continue }
             let role: String
             if type_ == "user.message" {
                 role = "user"
             } else if type_ == "assistant.message" {
                 role = "assistant"
             } else {
-                return nil
+                continue
             }
             let content = (data["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { return nil }
-            return ChatMessage(role: role, content: content, systemCategory: .none)
+            guard !content.isEmpty else { continue }
+            messages.append(ChatMessage(role: role, content: content, systemCategory: .none))
         }
+        return messages
     }
 
     // MARK: - codex
     // {"type":"response_item","payload":{"type":"message","role":...,"content":[{"text":...}]}}
     private static func parseCodexFormat(filePath: String) -> [ChatMessage] {
-        guard let lines = readLines(filePath) else { return [] }
-        return lines.compactMap { line in
+        guard let reader = StreamingJSONLReader(filePath: filePath) else { return [] }
+        defer { reader.close() }
+        var messages: [ChatMessage] = []
+        for line in reader {
             guard let obj = parseJSON(line),
                   obj["type"] as? String == "response_item",
                   let payload = obj["payload"] as? [String: Any],
                   payload["type"] as? String == "message",
                   let role = payload["role"] as? String,
-                  role == "user" || role == "assistant" else { return nil }
+                  role == "user" || role == "assistant" else { continue }
             let content = extractTextArray(payload["content"])
-            guard !content.isEmpty else { return nil }
+            guard !content.isEmpty else { continue }
             let cat = role == "user" ? classifySystem(content: content, source: "codex") : .none
-            return ChatMessage(role: role, content: content, systemCategory: cat)
+            messages.append(ChatMessage(role: role, content: content, systemCategory: cat))
         }
+        return messages
     }
 
     // MARK: - gemini-cli
@@ -282,11 +296,6 @@ struct MessageParser {
     }
 
     // MARK: - Helpers
-
-    private static func readLines(_ filePath: String) -> [String]? {
-        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { return nil }
-        return content.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-    }
 
     private static func parseJSON(_ s: String) -> [String: Any]? {
         guard let data = s.data(using: .utf8),

@@ -25,6 +25,9 @@ struct SessionListView: View {
     @State private var renameText: String = ""
     @State private var refreshTrigger = UUID()
     @State private var filterTask: Task<Void, Never>?
+    @State private var isChurning = false
+    /// Cached session to hold detail panel steady during reloads
+    @State private var lastSelectedSession: Session?
 
     @StateObject private var columnStore = ColumnVisibilityStore()
 
@@ -76,10 +79,17 @@ struct SessionListView: View {
         filteredSessions = result.sorted(using: sortOrder)
     }
 
-    /// Selected session object
+    /// Selected session object — falls back to cached session during churning to prevent flicker
     private var selectedSession: Session? {
         guard let id = selectedSessionId else { return nil }
-        return sessions.first { $0.id == id }
+        if let found = sessions.first(where: { $0.id == id }) {
+            return found
+        }
+        // During reload, the session may be temporarily absent — preserve the last selection
+        if isChurning {
+            return lastSelectedSession
+        }
+        return nil
     }
 
     private var filterFingerprint: String {
@@ -96,8 +106,10 @@ struct SessionListView: View {
                 .frame(minWidth: 200)
         }
         .task {
+            isChurning = true
             await loadSessions()
             updateFilteredSessions()
+            isChurning = false
             await loadFavorites()
             if let session = deepLinkSession {
                 handleDeepLink(session)
@@ -108,8 +120,15 @@ struct SessionListView: View {
             filterTask = Task {
                 try? await Task.sleep(for: .milliseconds(150))
                 guard !Task.isCancelled else { return }
+                isChurning = true
                 await loadSessions()
                 updateFilteredSessions()
+                isChurning = false
+            }
+        }
+        .onChange(of: selectedSessionId) { _, newId in
+            if let newId, let session = sessions.first(where: { $0.id == newId }) {
+                lastSelectedSession = session
             }
         }
         .onChange(of: selectedSourcesStr) { _, _ in updateFilteredSessions() }
@@ -159,16 +178,27 @@ struct SessionListView: View {
             Divider()
 
             // Table
-            SessionTableView(
-                sessions: filteredSessions,
-                selectedSessionId: $selectedSessionId,
-                sortOrder: $sortOrder,
-                columns: columnStore,
-                favoriteIds: favoriteIds,
-                onToggleFavorite: { id, isFav in toggleFavorite(id: id, current: isFav) },
-                onDelete: { id in deleteSession(id) },
-                onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" }
-            )
+            if filteredSessions.isEmpty && !sessions.isEmpty {
+                EmptyState(icon: "line.3.horizontal.decrease.circle", title: "No matches", message: "No sessions match your current filters")
+            } else if sessions.isEmpty && !isChurning {
+                VStack(spacing: 0) {
+                    ForEach(0..<6, id: \.self) { _ in SkeletonRow() }
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+            } else {
+                SessionTableView(
+                    sessions: filteredSessions,
+                    selectedSessionId: $selectedSessionId,
+                    sortOrder: $sortOrder,
+                    columns: columnStore,
+                    favoriteIds: favoriteIds,
+                    onToggleFavorite: { id, isFav in toggleFavorite(id: id, current: isFav) },
+                    onDelete: { id in deleteSession(id) },
+                    onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" },
+                    onFilterProject: { project in selectedProject = project }
+                )
+            }
 
             // Footer
             footerView
@@ -263,17 +293,22 @@ struct SessionListView: View {
 
         if showingTrash {
             sessions = (try? db.listHiddenSessions(limit: 500)) ?? []
-            return
+        } else {
+            do {
+                sessions = try db.listSessions(
+                    subAgent: agentFilter,
+                    limit: 2000
+                )
+            } catch {
+                print("[SessionListView] error loading sessions:", error)
+                sessions = []
+            }
         }
 
-        do {
-            sessions = try db.listSessions(
-                subAgent: agentFilter,
-                limit: 2000
-            )
-        } catch {
-            print("[SessionListView] error loading sessions:", error)
-            sessions = []
+        // Refresh cached selection after reload
+        if let id = selectedSessionId,
+           let fresh = sessions.first(where: { $0.id == id }) {
+            lastSelectedSession = fresh
         }
     }
 

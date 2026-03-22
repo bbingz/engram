@@ -66,7 +66,9 @@ struct UsageBar: View {
     var suffix: String = ""
 
     private var barColor: Color {
-        value > 80 ? .red : .blue
+        if value > 50 { return .green }
+        if value >= 20 { return .orange }
+        return .red
     }
 
     var body: some View {
@@ -87,7 +89,7 @@ struct UsageBar: View {
             .frame(height: 5)
             Text("\(Int(value))%\(suffix.isEmpty ? "" : " \(suffix)")")
                 .font(.system(size: 9))
-                .foregroundStyle(value > 80 ? .red : .secondary)
+                .foregroundStyle(value < 20 ? .red : .secondary)
                 .frame(width: 40, alignment: .trailing)
                 .monospacedDigit()
         }

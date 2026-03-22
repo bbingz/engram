@@ -22,8 +22,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let daemonClient = DaemonClient()
     private var menuBarController: MenuBarController?
     private var mcpServer: MCPServer?
+    private var onboardingWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // One-time: migrate plaintext API keys from settings.json to Keychain
+        migrateKeysToKeychainIfNeeded()
+
         // Hide from Dock — menu bar only
         NSApp.setActivationPolicy(.accessory)
 
@@ -58,6 +62,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Setup menu bar
         menuBarController = MenuBarController(db: db, indexer: indexer, daemonClient: daemonClient)
+
+        // First-run onboarding
+        if !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
+            showOnboarding()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -70,5 +79,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         indexer.stop()
         mcpServer?.stop()
+    }
+
+    // MARK: - Onboarding
+
+    private func showOnboarding() {
+        let onboardingView = OnboardingView {
+            self.completeOnboarding()
+        }
+        let hostingController = NSHostingController(rootView: onboardingView)
+
+        let win = NSWindow(contentViewController: hostingController)
+        win.title = "Welcome to Engram"
+        win.setContentSize(NSSize(width: 460, height: 380))
+        win.styleMask = [.titled, .closable, .fullSizeContentView]
+        win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
+        win.isMovableByWindowBackground = true
+        win.isReleasedWhenClosed = false
+        win.center()
+
+        NSApp.setActivationPolicy(.regular)
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        self.onboardingWindow = win
+    }
+
+    private func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
+        onboardingWindow?.close()
+        onboardingWindow = nil
+
+        // Revert to accessory mode, then open the main window
+        NSApp.setActivationPolicy(.accessory)
+        menuBarController?.openWindow()
     }
 }

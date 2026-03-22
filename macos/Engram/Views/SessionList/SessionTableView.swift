@@ -12,6 +12,7 @@ struct SessionTableView: View {
     var onToggleFavorite: ((String, Bool) -> Void)?
     var onDelete: ((String) -> Void)?
     var onRename: ((Session) -> Void)?
+    var onFilterProject: ((String) -> Void)?
 
     var body: some View {
         Table(of: Session.self, selection: $selectedSessionId, sortOrder: $sortOrder) {
@@ -86,7 +87,30 @@ struct SessionTableView: View {
             ForEach(sessions) { session in
                 TableRow(session)
                     .contextMenu {
+                        if !session.cwd.isEmpty {
+                            Button("Open Working Directory") {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd))
+                            }
+                        }
+                        Button("Reveal Session Log") {
+                            NSWorkspace.shared.selectFile(session.filePath, inFileViewerRootedAtPath: "")
+                        }
+                        Divider()
+                        Button("Copy Session ID") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(session.id, forType: .string)
+                        }
+                        if let project = session.project {
+                            Button("Filter by Project: \(project)") {
+                                onFilterProject?(project)
+                            }
+                        }
+                        Divider()
                         Button("Rename...") { onRename?(session) }
+                        let isFav = favoriteIds.contains(session.id)
+                        Button(isFav ? "Remove from Saved" : "Save") {
+                            onToggleFavorite?(session.id, isFav)
+                        }
                         Divider()
                         Button("Delete", role: .destructive) { onDelete?(session.id) }
                     }

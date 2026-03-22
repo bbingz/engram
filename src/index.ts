@@ -32,6 +32,7 @@ import { toolAnalyticsTool, handleToolAnalytics } from './tools/tool_analytics.j
 import { handoffTool, handleHandoff } from './tools/handoff.js'
 import { liveSessionsTool, handleLiveSessions } from './tools/live_sessions.js'
 import { lintConfigTool, handleLintConfig } from './tools/lint_config.js'
+import { handleFileActivity } from './tools/file_activity.js'
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
@@ -92,6 +93,18 @@ const allTools = [
   handoffTool,
   liveSessionsTool,
   lintConfigTool,
+  {
+    name: 'file_activity',
+    description: 'Show most frequently edited/read files across sessions for a project. Helps understand project activity patterns.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        project: { type: 'string', description: 'Filter by project name' },
+        since: { type: 'string', description: 'ISO 8601 date filter' },
+        limit: { type: 'number', description: 'Max results (default 50)' },
+      },
+    },
+  },
 ]
 
 const server = new Server(
@@ -133,7 +146,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await handleStats(db, a)
     } else if (name === 'get_context') {
       const ctxDeps: GetContextDeps = { ...vectorDeps, viking: vikingBridge }
-      const ctx = await handleGetContext(db, a as { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full' }, ctxDeps)
+      const ctx = await handleGetContext(db, a as { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full'; sort_by?: 'recency' | 'score'; include_environment?: boolean }, ctxDeps)
       return { content: [{ type: 'text', text: ctx.contextText }] }
     } else if (name === 'export') {
       const session = db.getSession(a.id as string)
@@ -173,6 +186,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (name === 'lint_config') {
       if (!a.cwd) return { content: [{ type: 'text', text: 'cwd parameter required' }], isError: true }
       result = await handleLintConfig({ cwd: a.cwd as string })
+    } else if (name === 'file_activity') {
+      result = handleFileActivity(db, a as { project?: string; since?: string; limit?: number })
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }

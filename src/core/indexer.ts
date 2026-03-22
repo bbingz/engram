@@ -58,7 +58,7 @@ export class Indexer {
     }
   }
 
-  private writeExtractedData(sessionId: string, model: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, toolCounts: Map<string, number>): void {
+  private writeExtractedData(sessionId: string, model: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, toolCounts: Map<string, number>, fileCounts?: Map<string, { action: string; count: number }>): void {
     // Always write a session_costs row, even with zero tokens.
     // Without this, sessionsWithoutCosts() returns non-claude-code sessions forever → infinite backfill loop.
     const cost = computeCost(model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
@@ -66,10 +66,29 @@ export class Indexer {
     if (toolCounts.size > 0) {
       this.db.upsertSessionTools(sessionId, toolCounts)
     }
+    // Write file paths extracted from Edit/Write/Read tool calls
+    if (fileCounts && fileCounts.size > 0) {
+      // Convert composite key "path\0action" back to { path, action, count }
+      const files = new Map<string, { action: string; count: number }>()
+      for (const [key, val] of fileCounts) {
+        const path = key.split('\0')[0]
+        files.set(`${path}\0${val.action}`, val)
+      }
+      this.db.upsertSessionFiles(sessionId, files)
+    }
   }
 
-  /** Accumulate token usage and tool calls from a message stream. */
-  private static accumulateFromStream(msg: Message, acc: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; toolCounts: Map<string, number> }): void {
+  // Tools that operate on files — extract file_path from their input
+  private static readonly FILE_TOOLS: Record<string, string> = {
+    'Read': 'read', 'Edit': 'edit', 'Write': 'write',
+    'read_file': 'read', 'edit_file': 'edit', 'write_file': 'write',
+  }
+
+  /** Accumulate token usage, tool calls, and file paths from a message stream. */
+  private static accumulateFromStream(msg: Message, acc: {
+    inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number;
+    toolCounts: Map<string, number>; fileCounts: Map<string, { action: string; count: number }>
+  }): void {
     if (msg.usage) {
       acc.inputTokens += msg.usage.inputTokens
       acc.outputTokens += msg.usage.outputTokens
@@ -79,12 +98,33 @@ export class Indexer {
     if (msg.toolCalls) {
       for (const tc of msg.toolCalls) {
         acc.toolCounts.set(tc.name, (acc.toolCounts.get(tc.name) || 0) + 1)
+        // Extract file_path from file-related tool calls
+        const action = Indexer.FILE_TOOLS[tc.name]
+        if (action && tc.input) {
+          try {
+            const parsed = typeof tc.input === 'string' ? JSON.parse(tc.input) : tc.input
+            const fp = parsed?.file_path
+            if (fp && typeof fp === 'string' && fp.startsWith('/')) {
+              const key = `${fp}\0${action}`
+              const existing = acc.fileCounts.get(key)
+              if (existing) {
+                existing.count++
+              } else {
+                acc.fileCounts.set(key, { action, count: 1 })
+              }
+            }
+          } catch { /* malformed input, skip */ }
+        }
       }
     }
   }
 
   private static newAccumulator() {
-    return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, toolCounts: new Map<string, number>() }
+    return {
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+      toolCounts: new Map<string, number>(),
+      fileCounts: new Map<string, { action: string; count: number }>(),
+    }
   }
 
   private buildLocalAuthoritativeSnapshot(
@@ -193,7 +233,7 @@ export class Indexer {
           this.writer.writeAuthoritativeSnapshot(snapshot)
 
           // Write cost and tool data
-          this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
+          this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
 
           if (snapshot.tier === 'premium') {
             this.pushToViking(info, messages)
@@ -264,7 +304,7 @@ export class Indexer {
           for await (const msg of adapter.streamMessages(session.filePath)) {
             Indexer.accumulateFromStream(msg, acc)
           }
-          this.writeExtractedData(id, session.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
+          this.writeExtractedData(id, session.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
           total++
         } catch {
           this.writeExtractedData(id, session.model || '', 0, 0, 0, 0, new Map())
@@ -306,7 +346,7 @@ export class Indexer {
       this.writer.writeAuthoritativeSnapshot(snapshot)
 
       // Write cost and tool data
-      this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts)
+      this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
 
       if (snapshot.tier === 'premium') {
         this.pushToViking(info, messages)

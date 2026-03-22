@@ -48,6 +48,7 @@ export function startWatcher(adapters: SessionAdapter[], indexer: Indexer, opts?
   const watcher = chokidar.watch(watchPaths, {
     persistent: true,
     ignoreInitial: true,
+    followSymlinks: false,
     awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 500 },
   })
 

@@ -4,7 +4,7 @@ import type { MonitorConfig } from './config.js'
 
 export interface MonitorAlert {
   id: string
-  category: 'cost_threshold' | 'long_session' | 'high_error_rate' | 'unpushed_commits'
+  category: 'cost_threshold' | 'cost_budget' | 'long_session' | 'high_error_rate' | 'unpushed_commits'
   severity: 'info' | 'warning' | 'critical'
   title: string
   detail: string
@@ -70,6 +70,7 @@ export class BackgroundMonitor {
     )
 
     await this.checkDailyCost()
+    await this.checkCostBudget()
     await this.checkUnpushedCommits()
     this.checkLongSessions()
 
@@ -108,6 +109,83 @@ export class BackgroundMonitor {
           }
           this.alerts.push(alert)
           this.onAlert?.(alert)
+        }
+      }
+    } catch { /* session_costs table may not exist yet */ }
+  }
+
+  private async checkCostBudget(): Promise<void> {
+    const dailyBudget = this.config.dailyCostBudget
+    const monthlyBudget = this.config.monthlyCostBudget
+    if (!dailyBudget && !monthlyBudget) return
+
+    try {
+      const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
+      const firstOfMonth = today.slice(0, 7) + '-01'      // YYYY-MM-01
+
+      if (dailyBudget) {
+        const row = this.db.getRawDb().prepare(`
+          SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
+          FROM session_costs c
+          JOIN sessions s ON c.session_id = s.id
+          WHERE date(s.start_time) = date('now')
+        `).get() as { totalCost: number } | undefined
+        const totalCost = row?.totalCost ?? 0
+        const pct = Math.round((totalCost / dailyBudget) * 100)
+
+        if (pct >= 80) {
+          const existing = this.alerts.find(
+            a => a.category === 'cost_budget' && a.detail.includes('Daily') && a.timestamp.startsWith(today)
+          )
+          if (!existing) {
+            const alert: MonitorAlert = {
+              id: randomUUID(),
+              category: 'cost_budget',
+              severity: pct >= 100 ? 'critical' : 'warning',
+              title: pct >= 100
+                ? `Daily cost $${totalCost.toFixed(2)} exceeds budget $${dailyBudget.toFixed(2)}`
+                : `Daily cost approaching budget (${pct}%)`,
+              detail: `Daily spend: $${totalCost.toFixed(2)} of $${dailyBudget.toFixed(2)} budget (${pct}%)`,
+              timestamp: new Date().toISOString(),
+              dismissed: false,
+            }
+            this.alerts.push(alert)
+            this.onAlert?.(alert)
+          }
+        }
+      }
+
+      if (monthlyBudget) {
+        const row = this.db.getRawDb().prepare(`
+          SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
+          FROM session_costs c
+          JOIN sessions s ON c.session_id = s.id
+          WHERE date(s.start_time) >= date(?)
+        `).get(firstOfMonth) as { totalCost: number } | undefined
+        const totalCost = row?.totalCost ?? 0
+        const pct = Math.round((totalCost / monthlyBudget) * 100)
+
+        if (pct >= 80) {
+          // One monthly alert per calendar month
+          const monthKey = today.slice(0, 7) // YYYY-MM
+          const existing = this.alerts.find(
+            a => a.category === 'cost_budget' && a.detail.includes('Monthly') && a.timestamp.startsWith(monthKey)
+          )
+          if (!existing) {
+            const alert: MonitorAlert = {
+              id: randomUUID(),
+              category: 'cost_budget',
+              severity: pct >= 100 ? 'critical' : 'warning',
+              title: pct >= 100
+                ? `Monthly cost $${totalCost.toFixed(2)} exceeds budget $${monthlyBudget.toFixed(2)}`
+                : `Monthly cost approaching budget (${pct}%)`,
+              detail: `Monthly spend: $${totalCost.toFixed(2)} of $${monthlyBudget.toFixed(2)} budget (${pct}%)`,
+              timestamp: new Date().toISOString(),
+              dismissed: false,
+            }
+            this.alerts.push(alert)
+            this.onAlert?.(alert)
+          }
         }
       }
     } catch { /* session_costs table may not exist yet */ }

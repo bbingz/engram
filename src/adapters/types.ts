@@ -23,6 +23,7 @@ export interface SessionInfo {
   origin?: string         // machine/device identifier for sync (default: 'local')
   summaryMessageCount?: number  // message count at last summary generation (for auto-refresh)
   tier?: string           // session tier: 'skip' | 'lite' | 'normal' | 'premium'
+  qualityScore?: number   // 0-100 quality score based on session heuristics
 }
 
 export interface ToolCall {

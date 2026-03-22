@@ -1,6 +1,8 @@
 import { basename } from 'path'
 import type { Database } from '../core/db.js'
 import type { VectorStore } from '../core/vector-store.js'
+import type { LiveSession } from '../core/live-sessions.js'
+import type { MonitorAlert } from '../core/monitor.js'
 import { sessionIdFromVikingUri, toVikingUri, type VikingBridge } from '../core/viking-bridge.js'
 import { toLocalDate } from '../utils/time.js'
 
@@ -15,6 +17,8 @@ export const getContextTool = {
       task: { type: 'string', description: '当前任务描述（可选，用于语义搜索）' },
       max_tokens: { type: 'number', description: 'token 预算，默认 4000（约 16000 字符）' },
       detail: { type: 'string', enum: ['abstract', 'overview', 'full'], description: '详情级别 (需要 OpenViking): abstract (~100 tokens), overview (~2K tokens), full' },
+      sort_by: { type: 'string', enum: ['recency', 'score'], description: '排序方式: recency (默认按时间倒序) 或 score (按质量分数倒序)' },
+      include_environment: { type: 'boolean', description: '包含实时环境数据（活跃会话、今日成本、工具使用、告警），默认 true' },
     },
     additionalProperties: false,
   },
@@ -26,11 +30,13 @@ export interface GetContextDeps {
   vectorStore?: VectorStore
   embed?: (text: string) => Promise<Float32Array | null>
   viking?: VikingBridge | null
+  liveMonitor?: { getSessions(): LiveSession[] }
+  backgroundMonitor?: { getAlerts(): MonitorAlert[] }
 }
 
 export async function handleGetContext(
   db: Database,
-  params: { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full' },
+  params: { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full'; sort_by?: 'recency' | 'score'; include_environment?: boolean },
   deps: GetContextDeps = {}
 ) {
   const maxTokens = params.max_tokens ?? 4000
@@ -41,6 +47,11 @@ export async function handleGetContext(
   let sessions = db.listSessions({ projects: projectNames, limit: 50 })
   if (sessions.length === 0 && params.cwd) {
     sessions = db.listSessions({ project: params.cwd, limit: 50 })
+  }
+
+  // Sort by quality score if requested
+  if (params.sort_by === 'score') {
+    sessions.sort((a, b) => (b.qualityScore ?? 0) - (a.qualityScore ?? 0))
   }
 
   // Semantic boost: if task + vector store available, merge vector results
@@ -118,8 +129,10 @@ export async function handleGetContext(
     const footer = `\n— ${selectedSessions.length} sessions (${params.detail}), ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`
     parts.push(footer)
 
+    const envSection = (params.include_environment !== false) ? await gatherEnvironmentData(db, deps) : ''
+
     return {
-      contextText: parts.join(''),
+      contextText: parts.join('') + envSection,
       sessionCount: selectedSessions.length,
       sessionIds: selectedSessions.map(s => s.id),
     }
@@ -147,9 +160,84 @@ export async function handleGetContext(
   const footer = `\n— ${selectedSessions.length} sessions, ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`
   contextParts.push(footer)
 
+  const envSection = (params.include_environment !== false) ? await gatherEnvironmentData(db, deps) : ''
+
   return {
-    contextText: contextParts.join(''),
+    contextText: contextParts.join('') + envSection,
     sessionCount: selectedSessions.length,
     sessionIds: selectedSessions.map(s => s.id),
   }
+}
+
+async function gatherEnvironmentData(db: Database, deps: GetContextDeps): Promise<string> {
+  const sections: string[] = []
+
+  // Live sessions
+  try {
+    if (deps.liveMonitor) {
+      const live = deps.liveMonitor.getSessions()
+      if (live.length > 0) {
+        const lines = live.map(s => `  ${s.source} ${s.project ?? '?'} [${s.activityLevel}]`)
+        sections.push(`Live sessions (${live.length}):\n${lines.join('\n')}`)
+      }
+    }
+  } catch (err: unknown) {
+    if (!isNoSuchTableError(err)) console.error('[get_context] liveSessions error:', err)
+  }
+
+  // Today's cost
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    const breakdown = db.getCostsSummary({ since: `${today}T00:00:00Z` })
+    const totalCost = breakdown.reduce((sum: number, r: any) => sum + (r.costUsd || 0), 0)
+    if (totalCost > 0) {
+      sections.push(`Cost today: $${(Math.round(totalCost * 100) / 100).toFixed(2)}`)
+    }
+  } catch (err: unknown) {
+    if (!isNoSuchTableError(err)) console.error('[get_context] costToday error:', err)
+  }
+
+  // Recent tool usage (last 7 days, top 10)
+  try {
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    const tools = db.getToolAnalytics({ since, groupBy: 'tool' })
+    if (tools.length > 0) {
+      const top10 = tools.slice(0, 10)
+      const lines = top10.map((t: any) => `  ${t.key}: ${t.callCount} calls`)
+      sections.push(`Top tools (7d):\n${lines.join('\n')}`)
+    }
+  } catch (err: unknown) {
+    if (!isNoSuchTableError(err)) console.error('[get_context] recentTools error:', err)
+  }
+
+  // Active alerts
+  try {
+    if (deps.backgroundMonitor) {
+      const alerts = deps.backgroundMonitor.getAlerts().filter(a => !a.dismissed)
+      if (alerts.length > 0) {
+        const lines = alerts.map(a => `  [${a.severity}] ${a.title}`)
+        sections.push(`Alerts (${alerts.length}):\n${lines.join('\n')}`)
+      }
+    }
+  } catch (err: unknown) {
+    if (!isNoSuchTableError(err)) console.error('[get_context] alerts error:', err)
+  }
+
+  // Infrastructure health checks (if cwd is available in params scope)
+  try {
+    const { runHealthChecks } = await import('./lint_config.js')
+    const cwd = process.cwd()
+    const healthIssues = runHealthChecks(cwd)
+    if (healthIssues.length > 0) {
+      const lines = healthIssues.map(h => `  [${h.severity}] ${h.message}`)
+      sections.push(`Health (${healthIssues.length}):\n${lines.join('\n')}`)
+    }
+  } catch { /* health checks are best-effort */ }
+
+  if (sections.length === 0) return ''
+  return `\n\n## Environment\n${sections.join('\n')}`
+}
+
+function isNoSuchTableError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('no such table')
 }

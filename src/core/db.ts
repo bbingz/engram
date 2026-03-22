@@ -1,6 +1,7 @@
 // src/core/db.ts
 import BetterSqlite3 from 'better-sqlite3'
 import type { SessionInfo, SourceName } from '../adapters/types.js'
+import { computeQualityScore } from './session-scoring.js'
 import type {
   AuthoritativeSessionSnapshot,
   IndexJobKind,
@@ -105,6 +106,9 @@ export class Database {
         this.db.exec('ALTER TABLE sessions ADD COLUMN tier TEXT')
         this.db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier)')
       }
+      if (!colNames.has('quality_score')) {
+        this.db.exec('ALTER TABLE sessions ADD COLUMN quality_score INTEGER DEFAULT 0')
+      }
     }
 
     this.db.exec(`
@@ -135,7 +139,8 @@ export class Database {
         sync_version INTEGER NOT NULL DEFAULT 0,
         snapshot_hash TEXT,
         tier TEXT,
-        generated_title TEXT
+        generated_title TEXT,
+        quality_score INTEGER DEFAULT 0
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -266,6 +271,19 @@ export class Database {
     `)
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_session_tools_name ON session_tools(tool_name)')
 
+    // session_files — file paths touched per session (extracted from Edit/Write/Read tool calls)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_files (
+        session_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        action TEXT NOT NULL,
+        count INTEGER DEFAULT 1,
+        PRIMARY KEY (session_id, file_path, action),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      )
+    `)
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_session_files_path ON session_files(file_path)')
+
     const sessionCols = this.db.pragma('table_info(sessions)') as { name: string }[]
     if (!sessionCols.some(c => c.name === 'generated_title')) {
       this.db.exec('ALTER TABLE sessions ADD COLUMN generated_title TEXT')
@@ -273,6 +291,7 @@ export class Database {
 
     this.runPostMigrationBackfill()
     this.backfillTiers()
+    this.backfillScores()
   }
 
   upsertSession(session: SessionInfo): void {
@@ -674,6 +693,37 @@ export class Database {
     `)
   }
 
+  backfillScores(): number {
+    const rows = this.db.prepare(`
+      SELECT id, user_message_count, assistant_message_count, tool_message_count, system_message_count,
+             start_time, end_time, project
+      FROM sessions
+      WHERE (quality_score IS NULL OR quality_score = 0)
+        AND tier != 'skip'
+        AND (user_message_count > 0 OR assistant_message_count > 0)
+    `).all() as { id: string; user_message_count: number; assistant_message_count: number; tool_message_count: number; system_message_count: number; start_time: string; end_time: string | null; project: string | null }[]
+
+    if (rows.length === 0) return 0
+
+    const updateStmt = this.db.prepare('UPDATE sessions SET quality_score = ? WHERE id = ?')
+    const transaction = this.db.transaction(() => {
+      for (const row of rows) {
+        const score = computeQualityScore({
+          userCount: row.user_message_count,
+          assistantCount: row.assistant_message_count,
+          toolCount: row.tool_message_count,
+          systemCount: row.system_message_count,
+          startTime: row.start_time,
+          endTime: row.end_time,
+          project: row.project,
+        })
+        updateStmt.run(score, row.id)
+      }
+    })
+    transaction()
+    return rows.length
+  }
+
   getSyncTime(peerName: string): string | null {
     const row = this.db.prepare(
       'SELECT last_sync_time FROM sync_state WHERE peer_name = ?'
@@ -725,13 +775,13 @@ export class Database {
         message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
         summary, summary_message_count, file_path, size_bytes, indexed_at, origin,
         authoritative_node, source_locator, sync_version, snapshot_hash,
-        tier, agent_role
+        tier, agent_role, quality_score
       ) VALUES (
         @id, @source, @startTime, @endTime, @cwd, @project, @model,
         @messageCount, @userMessageCount, @assistantMessageCount, @toolMessageCount, @systemMessageCount,
         @summary, @summaryMessageCount, @legacyFilePath, @sizeBytes, @indexedAt, @origin,
         @authoritativeNode, @sourceLocator, @syncVersion, @snapshotHash,
-        @tier, @agentRole
+        @tier, @agentRole, @qualityScore
       )
       ON CONFLICT(id) DO UPDATE SET
         source = excluded.source,
@@ -755,7 +805,8 @@ export class Database {
         sync_version = excluded.sync_version,
         snapshot_hash = excluded.snapshot_hash,
         tier = excluded.tier,
-        agent_role = excluded.agent_role
+        agent_role = excluded.agent_role,
+        quality_score = excluded.quality_score
     `).run({
       id: snapshot.id,
       source: snapshot.source,
@@ -781,6 +832,15 @@ export class Database {
       snapshotHash: snapshot.snapshotHash,
       tier: snapshot.tier ?? 'normal',
       agentRole: snapshot.agentRole ?? null,
+      qualityScore: computeQualityScore({
+        userCount: snapshot.userMessageCount,
+        assistantCount: snapshot.assistantMessageCount,
+        toolCount: snapshot.toolMessageCount,
+        systemCount: snapshot.systemMessageCount,
+        startTime: snapshot.startTime,
+        endTime: snapshot.endTime,
+        project: snapshot.project,
+      }),
     })
   }
 
@@ -987,6 +1047,42 @@ export class Database {
     `).run(sessionId, model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd)
   }
 
+  upsertSessionFiles(sessionId: string, files: Map<string, { action: string; count: number }>): void {
+    const stmt = this.db.prepare(`INSERT OR REPLACE INTO session_files (session_id, file_path, action, count) VALUES (?, ?, ?, ?)`)
+    const runMany = this.db.transaction((items: [string, string, string, number][]) => {
+      for (const item of items) stmt.run(...item)
+    })
+    runMany([...files.entries()].map(([key, { action, count }]) => {
+      const path = key.includes('\0') ? key.split('\0')[0] : key
+      return [sessionId, path, action, count]
+    }))
+  }
+
+  getFileActivity(params: { project?: string; since?: string; limit?: number }): any[] {
+    const conditions: string[] = []
+    const binds: any[] = []
+    if (params.project) {
+      conditions.push('s.project = ?')
+      binds.push(params.project)
+    }
+    if (params.since) {
+      conditions.push('s.start_time >= ?')
+      binds.push(params.since)
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const limit = params.limit ?? 50
+    return this.db.prepare(`
+      SELECT sf.file_path, sf.action, SUM(sf.count) as total_count,
+             COUNT(DISTINCT sf.session_id) as session_count
+      FROM session_files sf
+      JOIN sessions s ON s.id = sf.session_id
+      ${where}
+      GROUP BY sf.file_path, sf.action
+      ORDER BY total_count DESC
+      LIMIT ?
+    `).all(...binds, limit)
+  }
+
   upsertSessionTools(sessionId: string, tools: Map<string, number>): void {
     const stmt = this.db.prepare(`INSERT OR REPLACE INTO session_tools (session_id, tool_name, call_count) VALUES (?, ?, ?)`)
     const runMany = this.db.transaction((items: [string, string, number][]) => {
@@ -1164,6 +1260,7 @@ export class Database {
       origin: row.origin as string | undefined,
       summaryMessageCount: row.summary_message_count as number | undefined,
       tier: row.tier as string | undefined,
+      qualityScore: (row.quality_score as number | null) ?? 0,
     }
   }
 

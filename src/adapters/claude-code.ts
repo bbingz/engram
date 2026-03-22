@@ -265,6 +265,11 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         } else if (c.type === 'tool_result') {
           const formatted = this.formatToolResult(c)
           if (formatted) parts.push(formatted)
+        } else if (c.type === 'image') {
+          const mediaType = (c.source as Record<string, unknown>)?.media_type ?? 'image/unknown'
+          const dataLen = ((c.source as Record<string, unknown>)?.data as string)?.length ?? 0
+          const sizeKB = Math.round(dataLen * 0.75 / 1024)
+          parts.push(`[Image: ${mediaType}, ~${sizeKB} KB]`)
         }
       }
       const nonEmpty = parts.filter(p => p)

@@ -315,6 +315,12 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
     }
 
+    @objc private func navigateToScreenAction(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let screen = Screen(rawValue: rawValue) else { return }
+        NotificationCenter.default.post(name: .navigateToScreen, object: screen.rawValue)
+    }
+
     // MARK: - Main menu bar (shown in regular/window mode)
 
     private func setupMainMenu() {
@@ -342,6 +348,25 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
+
+        // View menu (navigation shortcuts)
+        let viewMenu = NSMenu(title: String(localized: "View"))
+        let viewShortcuts: [(String, Screen, String)] = [
+            ("Home", .home, "1"),
+            ("Sessions", .sessions, "2"),
+            ("Search", .search, "3"),
+            ("Timeline", .timeline, "4"),
+            ("Activity", .activity, "5"),
+        ]
+        for (title, screen, key) in viewShortcuts {
+            let item = NSMenuItem(title: title, action: #selector(navigateToScreenAction(_:)), keyEquivalent: key)
+            item.target = self
+            item.representedObject = screen.rawValue
+            viewMenu.addItem(item)
+        }
+        let viewMenuItem = NSMenuItem()
+        viewMenuItem.submenu = viewMenu
+        mainMenu.addItem(viewMenuItem)
 
         // Window menu
         let windowMenu = NSMenu(title: String(localized: "Window"))

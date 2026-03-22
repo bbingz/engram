@@ -6,6 +6,9 @@ enum MessageType: String, CaseIterable {
     case user
     case assistant
     case tool
+    case toolCall
+    case toolResult
+    case thinking
     case error
     case code
     case system
@@ -15,6 +18,9 @@ enum MessageType: String, CaseIterable {
         case .user: return "User"
         case .assistant: return "Assistant"
         case .tool: return "Tools"
+        case .toolCall: return "Tool Call"
+        case .toolResult: return "Tool Result"
+        case .thinking: return "Thinking"
         case .error: return "Error"
         case .code: return "Code"
         case .system: return "System"
@@ -23,19 +29,43 @@ enum MessageType: String, CaseIterable {
 
     var color: Color {
         switch self {
-        case .user:      return Color(red: 0.23, green: 0.51, blue: 0.96)
-        case .assistant: return Color(red: 0.55, green: 0.36, blue: 0.96)
-        case .tool:      return Color(red: 0.06, green: 0.73, blue: 0.51)
-        case .error:     return Color(red: 0.94, green: 0.27, blue: 0.27)
-        case .code:      return Color(red: 0.39, green: 0.40, blue: 0.95)
-        case .system:    return Color.secondary
+        case .user:       return Color(red: 0.23, green: 0.51, blue: 0.96)
+        case .assistant:  return Color(red: 0.55, green: 0.36, blue: 0.96)
+        case .tool:       return Color(red: 0.06, green: 0.73, blue: 0.51)
+        case .toolCall:   return Color(red: 0.60, green: 0.32, blue: 0.85) // purple
+        case .toolResult: return Color(red: 0.15, green: 0.65, blue: 0.60) // teal
+        case .thinking:   return Color(red: 0.50, green: 0.50, blue: 0.55) // gray
+        case .error:      return Color(red: 0.94, green: 0.27, blue: 0.27)
+        case .code:       return Color(red: 0.39, green: 0.40, blue: 0.95)
+        case .system:     return Color.secondary
         }
     }
 
-    static var chipTypes: [MessageType] { [.user, .assistant, .tool, .error, .code] }
+    static var chipTypes: [MessageType] { [.user, .assistant, .toolCall, .toolResult, .thinking, .tool, .error, .code] }
 }
 
 struct MessageTypeClassifier {
+
+    // MARK: - Tool call patterns (assistant invoking a tool)
+    private static let toolCallPatterns: [String] = [
+        "`Read`:", "`Edit`:", "`Write`:", "`Bash`:",
+        "`Grep`:", "`Glob`:", "`Agent`:",
+        "`Read(`", "`Edit(`", "`Write(`", "`Bash(`",
+        "`Grep(`", "`Glob(`", "`Agent(`",
+        "tool_call"
+    ]
+
+    // MARK: - Tool result patterns (output returned from a tool)
+    private static let toolResultPatterns: [String] = [
+        "tool_result", "⟪out⟫",
+        "<local-command-stdout>", "<local-command-caveat>"
+    ]
+
+    // MARK: - Thinking patterns (reasoning / chain-of-thought)
+    private static let thinkingPatterns: [String] = [
+        "<thinking>", "<antThinking>", "[thinking]",
+        "**Thinking:**", "**thinking**"
+    ]
 
     private static let toolPatterns: [String] = [
         "Tool:", "tool_call", "tool_result",
@@ -66,14 +96,32 @@ struct MessageTypeClassifier {
             return .system
         }
         if message.systemCategory == .agentComm {
-            return .tool
+            // Agent comm can be further refined: tool results vs tool calls
+            let content = message.content
+            if containsPattern(content, toolResultPatterns) {
+                return .toolResult
+            }
+            return .toolCall
         }
         if message.role == "user" {
             return .user
         }
         let content = message.content
-        // Tool detection BEFORE error — normal tool output often contains
-        // words like "not found" or "permission denied" that aren't errors
+
+        // Thinking detection — assistant reasoning blocks
+        if message.role == "assistant" && containsThinkingPattern(content) {
+            return .thinking
+        }
+
+        // Semantic tool sub-types BEFORE generic tool detection
+        if containsToolCallPattern(content) {
+            return containsExplicitToolError(content) ? .error : .toolCall
+        }
+        if containsToolResultPattern(content) {
+            return containsExplicitToolError(content) ? .error : .toolResult
+        }
+
+        // Generic tool detection (fallback for patterns that don't fit call/result)
         if containsToolPattern(content) {
             return containsExplicitToolError(content) ? .error : .tool
         }
@@ -84,6 +132,25 @@ struct MessageTypeClassifier {
             return .code
         }
         return .assistant
+    }
+
+    // MARK: - Pattern matchers
+
+    private static func containsPattern(_ text: String, _ patterns: [String]) -> Bool {
+        let prefix = text.prefix(500)
+        return patterns.contains { prefix.contains($0) }
+    }
+
+    private static func containsToolCallPattern(_ text: String) -> Bool {
+        containsPattern(text, toolCallPatterns)
+    }
+
+    private static func containsToolResultPattern(_ text: String) -> Bool {
+        containsPattern(text, toolResultPatterns)
+    }
+
+    private static func containsThinkingPattern(_ text: String) -> Bool {
+        containsPattern(text, thinkingPatterns)
     }
 
     private static func containsToolPattern(_ text: String) -> Bool {

@@ -1,8 +1,23 @@
 // src/core/config.ts
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
 import type { SyncPeer } from './sync.js';
+
+// ── Keychain integration (macOS) ─────────────────────────────────────
+
+function readKeychainValue(key: string): string | undefined {
+  if (process.platform !== 'darwin') return undefined;
+  try {
+    const result = execFileSync('security', [
+      'find-generic-password', '-s', 'com.engram.app', '-a', key, '-w',
+    ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
+    return result.trim() || undefined;
+  } catch {
+    return undefined;  // key not in Keychain
+  }
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -27,6 +42,7 @@ export interface VikingSettings {
 export interface MonitorConfig {
   enabled: boolean
   dailyCostBudget?: number        // USD, default 20
+  monthlyCostBudget?: number      // USD, no default (disabled if unset)
   longSessionMinutes?: number     // default 180
   notifyOnCostThreshold?: boolean // default true
   notifyOnLongSession?: boolean   // default true
@@ -76,6 +92,7 @@ export interface FileSettings {
   httpPort?: number;
   httpHost?: string;        // '127.0.0.1' (default) | '0.0.0.0' | specific IP
   httpAllowCIDR?: string[]; // e.g. ['10.0.0.0/8', '192.168.1.0/24']
+  httpBearerToken?: string; // auto-generated bearer token for write API auth
   syncNodeName?: string;
   syncPeers?: SyncPeer[];
   syncIntervalMinutes?: number;
@@ -89,6 +106,9 @@ export interface FileSettings {
 
   // ── OpenViking ──────────────────────────────────────────────────
   viking?: VikingSettings;
+
+  // ── Cost budget alerts ───────────────────────────────────────────
+  costAlerts?: { dailyBudget?: number; monthlyBudget?: number };
 
   // ── Background monitor ────────────────────────────────────────────
   monitor?: MonitorConfig;
@@ -210,6 +230,22 @@ export function readFileSettings(): FileSettings {
     if (migrated.noiseFilter === undefined) {
       const hasExplicitFalse = migrated.hideUsageSessions === false || migrated.hideEmptySessions === false || migrated.hideAutoSummary === false
       migrated.noiseFilter = hasExplicitFalse ? 'all' : 'hide-skip'
+    }
+    // Overlay Keychain values — "@keychain" sentinel in JSON means "read from macOS Keychain"
+    if (migrated.aiApiKey === '@keychain' || !migrated.aiApiKey) {
+      const kc = readKeychainValue('aiApiKey');
+      if (kc) migrated.aiApiKey = kc;
+    }
+    if (migrated.titleApiKey === '@keychain' || !migrated.titleApiKey) {
+      const kc = readKeychainValue('titleApiKey');
+      if (kc) migrated.titleApiKey = kc;
+    }
+    if (migrated.viking?.apiKey === '@keychain' || !migrated.viking?.apiKey) {
+      const kc = readKeychainValue('vikingApiKey');
+      if (kc) {
+        if (!migrated.viking) migrated.viking = {} as any;
+        migrated.viking!.apiKey = kc;
+      }
     }
     return migrated;
   } catch {

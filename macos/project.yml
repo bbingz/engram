@@ -61,8 +61,10 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.app
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
-      CODE_SIGN_IDENTITY: "-"
-      CODE_SIGN_STYLE: Manual
+      CODE_SIGN_IDENTITY: "Apple Development"
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: J25GS8J4XM
+      CODE_SIGN_ENTITLEMENTS: Engram/Engram.entitlements
 
   EngramCLI:
     type: tool

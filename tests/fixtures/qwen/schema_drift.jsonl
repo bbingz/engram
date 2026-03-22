@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","parts":[{"text":"Fix the bug"},{"type":"new_part","data":"unknown"}]},"timestamp":"2026-03-22T10:00:00.000Z","sessionId":"drift-qwen","cwd":"/test","version":"2.0","uuid":"uuid-1","futureField":true}
+{"type":"assistant","message":{"role":"assistant","parts":[{"text":"Fixed."}],"model":"qwen3-coder","newProp":"ignored"},"timestamp":"2026-03-22T10:00:01.000Z","sessionId":"drift-qwen","cwd":"/test","version":"2.0","uuid":"uuid-2","responseMetadata":{"latency_ms":200}}

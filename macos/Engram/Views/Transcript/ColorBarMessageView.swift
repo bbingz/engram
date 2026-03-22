@@ -48,6 +48,12 @@ struct ColorBarMessageView: View {
                             .font(.system(size: fontSize))
                             .textSelection(.enabled)
                     }
+                case .thinking:
+                    Text(highlightedText(indexed.message.content))
+                        .font(.system(size: fontSize))
+                        .textSelection(.enabled)
+                        .foregroundStyle(.secondary)
+                        .italic()
                 case .system:
                     CollapsibleSystemBubble(message: indexed.message)
                 default:

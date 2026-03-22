@@ -4,9 +4,12 @@ import Foundation
 @MainActor
 class DaemonClient: ObservableObject {
     private let baseURL: String
+    private let bearerToken: String?
 
     init(port: Int = 3457) {
         self.baseURL = "http://127.0.0.1:\(port)"
+        // Read bearer token from settings for authenticated write requests
+        self.bearerToken = (readEngramSettings()?["httpBearerToken"] as? String)
     }
 
     // MARK: - HTTP Methods
@@ -34,6 +37,9 @@ class DaemonClient: ObservableObject {
     func delete(_ path: String) async throws {
         var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
         request.httpMethod = "DELETE"
+        if let token = bearerToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         let (_, response) = try await URLSession.shared.data(for: request)
         try validateResponse(response)
     }
@@ -46,6 +52,10 @@ class DaemonClient: ObservableObject {
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(AnyEncodable(body))
+        }
+        // Attach bearer token for write methods
+        if let token = bearerToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         return request
     }
