@@ -220,8 +220,35 @@ class DatabaseManager: ObservableObject {
     }
 
     // MARK: - search (FTS5 trigram)
+
+    /// SQLite trigram tokenizer uses byte-level 3-byte windows — CJK chars (3 bytes each)
+    /// produce cross-character garbage trigrams. Detect CJK and fall back to LIKE.
+    private static func containsCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { s in
+            (0x2E80...0x9FFF).contains(s.value) ||
+            (0xF900...0xFAFF).contains(s.value) ||
+            (0xFE30...0xFE4F).contains(s.value)
+        }
+    }
+
     func search(query: String, limit: Int = 10) throws -> [Session] {
         guard let pool else { throw DatabaseError.notOpen }
+        guard query.count >= 2 else { return [] }
+
+        // CJK: use LIKE fallback (trigram MATCH broken for CJK)
+        if Self.containsCJK(query) {
+            return try pool.read { db in
+                try Session.fetchAll(db, sql: """
+                    SELECT DISTINCT s.* FROM sessions_fts f
+                    JOIN sessions s ON s.id = f.session_id
+                    WHERE f.content LIKE ? AND s.hidden_at IS NULL
+                    ORDER BY s.start_time DESC
+                    LIMIT ?
+                """, arguments: ["%\(query)%", limit])
+            }
+        }
+
+        // ASCII/Latin: use fast FTS MATCH
         guard query.count >= 3 else { return [] }
         return try pool.read { db in
             let matches = try FtsMatch.fetchAll(db,

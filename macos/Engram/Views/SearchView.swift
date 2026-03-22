@@ -293,15 +293,29 @@ struct SearchView: View {
                 }
             } catch {
                 // Fallback to local FTS — run query off main thread
+                // CJK: use LIKE (trigram MATCH broken for CJK byte alignment)
                 let db = self.db
+                let isCJK = q.unicodeScalars.contains { (0x2E80...0x9FFF).contains($0.value) || (0xF900...0xFAFF).contains($0.value) }
                 let sessions: [Session] = (try? await Task.detached {
-                    try db.readInBackground { d in
-                        try Session.fetchAll(d, sql: """
-                            SELECT s.* FROM sessions_fts f
-                            JOIN sessions s ON s.id = f.session_id
-                            WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
-                            LIMIT 20
-                        """, arguments: [q])
+                    if isCJK {
+                        return try db.readInBackground { d in
+                            try Session.fetchAll(d, sql: """
+                                SELECT DISTINCT s.* FROM sessions_fts f
+                                JOIN sessions s ON s.id = f.session_id
+                                WHERE f.content LIKE ? AND s.hidden_at IS NULL
+                                ORDER BY s.start_time DESC
+                                LIMIT 20
+                            """, arguments: ["%\(q)%"])
+                        }
+                    } else {
+                        return try db.readInBackground { d in
+                            try Session.fetchAll(d, sql: """
+                                SELECT s.* FROM sessions_fts f
+                                JOIN sessions s ON s.id = f.session_id
+                                WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+                                LIMIT 20
+                            """, arguments: [q])
+                        }
                     }
                 }.value) ?? []
                 await MainActor.run {
