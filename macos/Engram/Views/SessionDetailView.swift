@@ -234,6 +234,14 @@ struct SessionDetailView: View {
                     break
                 }
             }
+            // Resolve relative paths against the DB's parent directory (test fixtures)
+            if !effectivePath.isEmpty && !effectivePath.hasPrefix("/") {
+                let dbDir = (db.path as NSString).deletingLastPathComponent
+                let resolved = (dbDir as NSString).appendingPathComponent(effectivePath)
+                if FileManager.default.fileExists(atPath: resolved) {
+                    effectivePath = resolved
+                }
+            }
             messages = await Task.detached(priority: .userInitiated) {
                 MessageParser.parse(filePath: effectivePath, source: source)
             }.value

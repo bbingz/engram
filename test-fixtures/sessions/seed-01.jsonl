@@ -1,0 +1,7 @@
+{"type":"summary","summary":"Refactored adapter pipeline for performance","model":"claude-sonnet-4-20250514"}
+{"type":"user","message":{"content":"Can you refactor the adapter pipeline for better performance?"}}
+{"type":"assistant","message":{"content":"I'll analyze the current adapter pipeline and identify performance bottlenecks."}}
+{"type":"user","message":{"content":"Focus on the streaming path first."}}
+{"type":"assistant","message":{"content":"The streaming path has a key bottleneck in the message buffering. Here's the optimized version that uses lazy evaluation."}}
+{"type":"user","message":{"content":"Looks good. What about the indexer?"}}
+{"type":"assistant","message":{"content":"The indexer can be improved by batching database writes. I'll update the batch size from 10 to 50."}}
