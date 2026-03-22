@@ -9,6 +9,7 @@ import {
 import { join } from 'path'
 
 import { createLogger } from './core/logger.js'
+import { Tracer, TraceWriter } from './core/tracer.js'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { IndexJobRunner } from './core/index-job-runner.js'
@@ -39,6 +40,8 @@ const log = createLogger('mcp')
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
+const traceWriter = new TraceWriter(db.raw)
+const tracer = new Tracer(traceWriter)
 const adapters = createAdapters()
 const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 
@@ -142,6 +145,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ...(vecDeps ? { vectorStore: vecDeps.vectorStore, embed: (text: string) => vecDeps.embeddingClient.embed(text) } : {}),
         viking: vikingBridge,
         log,
+        tracer,
       }
       result = await handleSearch(db, a as { query: string; mode?: string }, sDeps)
     } else if (name === 'project_timeline') {
