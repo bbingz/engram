@@ -24,12 +24,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
     private var mcpServer: MCPServer?
     private var onboardingWindow: NSWindow?
+    private var popoverWindow: NSWindow?
 
     override init() {
         self.environment = AppEnvironment.fromCommandLine()
         self.db = DatabaseManager(path: environment.dbPath)
         self.indexer = IndexerProcess()
+        #if DEBUG
+        if environment.mockDaemon {
+            MockURLProtocol.requestHandler = { request in
+                MockDaemonFixtures.response(for: request.url!.path)
+            }
+            let mockSession = createMockSession()
+            self.daemonClient = DaemonClient(port: 9999, session: mockSession)
+        } else {
+            self.daemonClient = DaemonClient(port: environment.daemonPort)
+        }
+        #else
         self.daemonClient = DaemonClient(port: environment.daemonPort)
+        #endif
         super.init()
     }
 
@@ -39,6 +52,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Hide from Dock — menu bar only
         NSApp.setActivationPolicy(.accessory)
+
+        // Appearance override for screenshot tests
+        if let idx = CommandLine.arguments.firstIndex(of: "--appearance"),
+           CommandLine.arguments.indices.contains(idx + 1) {
+            let name: NSAppearance.Name = CommandLine.arguments[idx + 1] == "dark"
+                ? .darkAqua : .aqua
+            NSApp.appearance = NSAppearance(named: name)
+        }
 
         // Open SQLite
         do { try db.open() } catch { print("DB error:", error) }
@@ -69,12 +90,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("Warning: daemon.js not bundled — indexer disabled (normal during development)")
         }
 
-        // Setup menu bar
-        menuBarController = MenuBarController(db: db, indexer: indexer, daemonClient: daemonClient)
+        // Setup menu bar (or standalone popover window in test mode)
+        if environment.popoverStandalone {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 600),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = NSHostingView(rootView: PopoverView()
+                .environmentObject(db)
+                .environmentObject(indexer)
+                .environmentObject(daemonClient))
+            window.title = "Popover Preview"
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            window.setContentSize(NSSize(width: 400, height: 600))
+            window.styleMask.remove(.resizable)
+            self.popoverWindow = window
+        } else {
+            menuBarController = MenuBarController(db: db, indexer: indexer, daemonClient: daemonClient)
+        }
 
-        // First-run onboarding
-        if !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
-            showOnboarding()
+        // First-run onboarding (skip in test mode)
+        let isTestMode = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || !environment.autoStartDaemon
+        if !isTestMode {
+            if !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
+                showOnboarding()
+            }
         }
     }
 
