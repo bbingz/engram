@@ -29,11 +29,12 @@ struct ObservabilityScreen {
     // MARK: - Actions
 
     func selectTab(_ tabName: String) {
-        // Segmented picker tabs appear as buttons in the accessibility tree
-        let tab = app.buttons[tabName]
-        XCTAssertTrue(tab.waitForExistence(timeout: 3),
+        // Use type-agnostic lookup since macOS Picker segments can be buttons, radioButtons, etc.
+        let tabId = "observability_tab_\(tabName.lowercased())"
+        let tab = app.element(id: tabId)
+        XCTAssertTrue(tab.waitForExistence(timeout: 5),
                       "Observability tab '\(tabName)' not found")
-        tab.click()
+        tab.tap()
     }
 
     // MARK: - Waits

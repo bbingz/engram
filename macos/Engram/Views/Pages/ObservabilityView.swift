@@ -17,6 +17,7 @@ struct ObservabilityView: View {
             Picker("", selection: $selectedTab) {
                 ForEach(Tab.allCases, id: \.self) { tab in
                     Text(tab.rawValue).tag(tab)
+                        .accessibilityIdentifier("observability_tab_\(tab.rawValue.lowercased())")
                 }
             }
             .pickerStyle(.segmented)
