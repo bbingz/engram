@@ -116,6 +116,8 @@ struct MainWindowView: View {
             TimelinePageView()
         case .activity:
             ActivityView()
+        case .observability:
+            ObservabilityView()
         case .projects:
             ProjectsView()
         case .sourcePulse:

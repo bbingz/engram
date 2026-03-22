@@ -801,4 +801,208 @@ class DatabaseManager: ObservableObject {
             .sorted { $0.lastActive > $1.lastActive }
         }
     }
+
+    // MARK: - Observability: Logs
+
+    func fetchLogs(level: String, module: String, limit: Int) throws -> LogQueryResult {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            // Fetch available modules
+            let modules = try String.fetchAll(db, sql: """
+                SELECT DISTINCT module FROM logs ORDER BY module
+            """)
+
+            // Build filtered query
+            var parts = ["SELECT * FROM logs WHERE 1=1"]
+            var args: [DatabaseValueConvertible] = []
+            if level != "All" {
+                parts.append("AND level = ?")
+                args.append(level)
+            }
+            if module != "All" {
+                parts.append("AND module = ?")
+                args.append(module)
+            }
+            parts.append("ORDER BY ts DESC LIMIT ?")
+            args.append(limit)
+
+            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
+            let entries = rows.map { row in
+                LogEntry(
+                    id: row["id"],
+                    ts: row["ts"],
+                    level: row["level"],
+                    module: row["module"],
+                    message: row["message"],
+                    traceId: row["trace_id"],
+                    source: row["source"],
+                    errorName: row["error_name"],
+                    errorMessage: row["error_message"]
+                )
+            }
+            return LogQueryResult(entries: entries, modules: modules)
+        }
+    }
+
+    // MARK: - Observability: Errors
+
+    func countErrors24h() throws -> Int {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM logs
+                WHERE level = 'error'
+                  AND ts >= datetime('now', '-24 hours')
+            """) ?? 0
+        }
+    }
+
+    func errorsByModule24h() throws -> [(module: String, count: Int)] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT module, COUNT(*) as count FROM logs
+                WHERE level = 'error'
+                  AND ts >= datetime('now', '-24 hours')
+                GROUP BY module
+                ORDER BY count DESC
+            """)
+            return rows.map { (module: $0["module"] as String, count: $0["count"] as Int) }
+        }
+    }
+
+    func recentErrors(limit: Int) throws -> [LogEntry] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM logs
+                WHERE level IN ('error', 'warn')
+                ORDER BY ts DESC LIMIT ?
+            """, arguments: [limit])
+            return rows.map { row in
+                LogEntry(
+                    id: row["id"],
+                    ts: row["ts"],
+                    level: row["level"],
+                    module: row["module"],
+                    message: row["message"],
+                    traceId: row["trace_id"],
+                    source: row["source"],
+                    errorName: row["error_name"],
+                    errorMessage: row["error_message"]
+                )
+            }
+        }
+    }
+
+    // MARK: - Observability: Traces
+
+    func fetchTraces(nameFilter: String, limit: Int) throws -> [TraceEntry] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            var parts = ["SELECT * FROM traces WHERE 1=1"]
+            var args: [DatabaseValueConvertible] = []
+            if !nameFilter.isEmpty {
+                parts.append("AND name LIKE ?")
+                args.append("%\(nameFilter)%")
+            }
+            parts.append("ORDER BY start_ts DESC LIMIT ?")
+            args.append(limit)
+
+            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
+            return rows.map { row in
+                TraceEntry(
+                    id: row["id"],
+                    traceId: row["trace_id"],
+                    spanId: row["span_id"],
+                    parentSpanId: row["parent_span_id"],
+                    name: row["name"],
+                    module: row["module"],
+                    startTs: row["start_ts"],
+                    endTs: row["end_ts"],
+                    durationMs: row["duration_ms"],
+                    status: row["status"],
+                    attributes: row["attributes"],
+                    source: row["source"]
+                )
+            }
+        }
+    }
+
+    func slowTraces(minDurationMs: Int, limit: Int) throws -> [TraceEntry] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM traces
+                WHERE duration_ms > ?
+                ORDER BY duration_ms DESC
+                LIMIT ?
+            """, arguments: [minDurationMs, limit])
+            return rows.map { row in
+                TraceEntry(
+                    id: row["id"],
+                    traceId: row["trace_id"],
+                    spanId: row["span_id"],
+                    parentSpanId: row["parent_span_id"],
+                    name: row["name"],
+                    module: row["module"],
+                    startTs: row["start_ts"],
+                    endTs: row["end_ts"],
+                    durationMs: row["duration_ms"],
+                    status: row["status"],
+                    attributes: row["attributes"],
+                    source: row["source"]
+                )
+            }
+        }
+    }
+
+    // MARK: - Observability: Metrics
+
+    func recentHourlyMetrics(limit: Int) throws -> [HourlyMetric] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM metrics_hourly
+                ORDER BY hour DESC
+                LIMIT ?
+            """, arguments: [limit])
+            return rows.map { row in
+                HourlyMetric(
+                    id: row["id"],
+                    name: row["name"],
+                    type: row["type"],
+                    hour: row["hour"],
+                    count: row["count"],
+                    sum: row["sum"],
+                    min: row["min"],
+                    max: row["max"],
+                    p95: row["p95"]
+                )
+            }
+        }
+    }
+
+    // MARK: - Observability: Health
+
+    func observabilityTableCounts() throws -> [(table: String, count: Int)] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let tables = ["sessions", "logs", "traces", "metrics", "metrics_hourly", "sessions_fts"]
+            var results: [(table: String, count: Int)] = []
+            for table in tables {
+                // Use IF EXISTS pattern — table may not exist yet
+                let exists = try Row.fetchOne(db, sql: """
+                    SELECT name FROM sqlite_master WHERE type='table' AND name=?
+                """, arguments: [table])
+                if exists != nil {
+                    let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") ?? 0
+                    results.append((table: table, count: count))
+                }
+            }
+            return results
+        }
+    }
 }
