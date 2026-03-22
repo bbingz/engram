@@ -33,7 +33,7 @@ function isOnACPower(): boolean {
     const result = execFileSync('pmset', ['-g', 'batt'], { encoding: 'utf-8', timeout: 3000 })
     return result.includes("'AC Power'")
   } catch {
-    return true // assume AC if detection fails
+    return true // intentional: assume AC if pmset detection fails (non-macOS or cmd not found)
   }
 }
 
@@ -95,7 +95,8 @@ function emit(obj: object): void {
 if (vikingBridge) {
   vikingBridge.isAvailable().then(available => {
     emit({ event: 'viking_status', available })
-  }).catch(() => {
+  }).catch((err) => {
+    log.warn('viking availability check failed', {}, err)
     emit({ event: 'viking_status', available: false })
   })
 }
@@ -131,7 +132,9 @@ indexer.indexAll().then(async (indexed) => {
     if (backfilled > 0) {
       emit({ event: 'backfill_counts', backfilled })
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    log.warn('backfill counts failed', {}, err)
+  }
 
   // Backfill costs and tool analytics for sessions without cost data
   try {
@@ -139,7 +142,9 @@ indexer.indexAll().then(async (indexed) => {
     if (costBackfilled > 0) {
       emit({ event: 'backfill', type: 'costs', count: costBackfilled })
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    log.warn('backfill costs failed', {}, err)
+  }
 
   // Backfill quality scores for sessions without scores
   try {
@@ -147,7 +152,9 @@ indexer.indexAll().then(async (indexed) => {
     if (scoreBackfilled > 0) {
       emit({ event: 'backfill', type: 'scores', count: scoreBackfilled })
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    log.warn('backfill scores failed', {}, err)
+  }
 
   // DB maintenance: dedup, optimize FTS, VACUUM if fragmented
   try {
@@ -156,14 +163,18 @@ indexer.indexAll().then(async (indexed) => {
     db.optimizeFts()
     const vacuumed = db.vacuumIfNeeded(15) // VACUUM if >15% fragmentation
     if (vacuumed) emit({ event: 'db_maintenance', action: 'vacuum' })
-  } catch { /* ignore */ }
+  } catch (err) {
+    log.warn('db maintenance failed', {}, err)
+  }
 
   try {
     const jobSummary = await indexJobRunner.runRecoverableJobs()
     if (jobSummary.completed > 0 || jobSummary.notApplicable > 0) {
       emit({ event: 'index_jobs_recovered', ...jobSummary })
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    log.warn('index job recovery failed', {}, err)
+  }
 
   // Start usage probe collection after indexing is ready
   usageCollector.start()
@@ -241,7 +252,7 @@ const watcher = startWatcher(adapters, indexer, {
     if (tier === 'premium') {
       getAutoSummary()?.onSessionIndexed(sessionId, messageCount)
     }
-    indexJobRunner.runRecoverableJobs().catch(() => {})
+    indexJobRunner.runRecoverableJobs().catch(() => {}) // intentional: fire-and-forget background job
   },
 })
 
@@ -279,9 +290,11 @@ const rescanTimer = setInterval(async () => {
     if (indexed > 0) {
       const total = db.countSessions()
       emit({ event: 'rescan', indexed, total })
-      indexJobRunner.runRecoverableJobs().catch(() => {})
+      indexJobRunner.runRecoverableJobs().catch(() => {}) // intentional: fire-and-forget background job
     }
-  } catch (_) { /* ignore */ }
+  } catch (err) {
+    log.warn('periodic rescan failed', {}, err)
+  }
 }, RESCAN_INTERVAL)
 
 // Sync engine
@@ -294,7 +307,7 @@ async function syncAndEmit(): Promise<void> {
   const totalPulled = results.reduce((sum, r) => sum + r.pulled, 0)
   if (totalPulled > 0) {
     emit({ event: 'sync_complete', results, totalPulled, total: db.countSessions() })
-    indexJobRunner.runRecoverableJobs().catch(() => {})
+    indexJobRunner.runRecoverableJobs().catch(() => {}) // intentional: fire-and-forget background job
   }
 }
 
@@ -338,12 +351,12 @@ const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
 
 // Initial sync on startup
 if (settings.syncEnabled && syncPeers.length > 0) {
-  syncAndEmit().catch(() => {})
+  syncAndEmit().catch((err) => { log.warn('initial sync failed', {}, err) })
 }
 
 // Periodic sync timer
 const syncTimer = settings.syncEnabled && syncPeers.length > 0
-  ? setInterval(() => { syncAndEmit().catch(() => {}) }, syncIntervalMs)
+  ? setInterval(() => { syncAndEmit().catch((err) => { log.warn('periodic sync failed', {}, err) }) }, syncIntervalMs)
   : null
 
 // Git repo probe loop — runs once immediately, then every 5 minutes (10 on battery)

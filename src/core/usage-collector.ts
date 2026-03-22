@@ -44,7 +44,7 @@ export class UsageCollector {
       this.storeSnapshots(snapshots)
       this.emit('usage', snapshots)
     } catch (err) {
-      console.error(`[usage-collector] ${probe.source} probe failed:`, err)
+      console.error(`[usage-collector] ${probe.source} probe failed:`, err) // stderr → os_log in daemon mode
     }
   }
 

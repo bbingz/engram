@@ -20,7 +20,7 @@ export class AutoSummaryManager {
     if (existing) clearTimeout(existing)
     const timer = setTimeout(() => {
       this.timers.delete(sessionId)
-      this.tryGenerate(sessionId).catch(() => {})
+      this.tryGenerate(sessionId).catch(() => {}) // intentional: fire-and-forget, errors handled by onTrigger callback
     }, this.opts.cooldownMs)
     this.timers.set(sessionId, timer)
   }

@@ -43,8 +43,8 @@ export class Indexer {
         project: info.project ?? '',
         startTime: info.startTime,
         model: info.model ?? '',
-      }).catch(() => {})
-    }).catch(() => {})
+      }).catch((err) => { this.log?.warn('viking addResource failed', { uri }, err) })
+    }).catch((err) => { this.log?.warn('viking availability check failed', {}, err) })
   }
 
   private async generateTitleIfNeeded(sessionId: string, tier: SessionTier, messages: { role: string; content: string }[]): Promise<void> {
@@ -119,7 +119,7 @@ export class Indexer {
                 acc.fileCounts.set(key, { action, count: 1 })
               }
             }
-          } catch { /* malformed input, skip */ }
+          } catch { /* intentional: malformed tool_call input JSON, skip */ }
         }
       }
     }
@@ -209,7 +209,7 @@ export class Indexer {
             try {
               const fileStat = await stat(filePath)
               fileSize = fileStat.size
-            } catch { /* virtual path */ }
+            } catch { /* intentional: virtual paths (e.g. cursor: dbPath?composer=id) don't have stat */ }
 
             // 快速跳过：文件大小与 DB 记录一致（适用于大多数适配器）
             if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) continue
@@ -258,8 +258,9 @@ export class Indexer {
 
             sessionSpan?.end()
             newCount++
-          } catch {
+          } catch (err) {
             // 跳过无法处理的文件，不中断整体流程
+            this.log?.warn('skipping unprocessable file', { filePath }, err)
           }
         }
       }
@@ -296,7 +297,7 @@ export class Indexer {
             count++
             break
           }
-        } catch { /* try next */ }
+        } catch { /* intentional: try next adapter as fallback */ }
       }
     }
     return count
@@ -328,7 +329,8 @@ export class Indexer {
           }
           this.writeExtractedData(id, session.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
           total++
-        } catch {
+        } catch (err) {
+          this.log?.warn('backfillCosts stream failed, writing zero costs', { sessionId: id }, err)
           this.writeExtractedData(id, session.model || '', 0, 0, 0, 0, new Map())
           total++
         }
@@ -347,7 +349,7 @@ export class Indexer {
     })
     try {
       let fileSize = 0
-      try { fileSize = (await stat(filePath)).size } catch { /* virtual path */ }
+      try { fileSize = (await stat(filePath)).size } catch { /* intentional: virtual paths (e.g. cursor: dbPath?composer=id) don't have stat */ }
 
       const info = await adapter.parseSessionInfo(filePath)
       if (!info) {

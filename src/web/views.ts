@@ -624,7 +624,7 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
         } else {
           el.innerHTML = '<span class="status-dot unavailable"></span>Semantic search unavailable — no embedding provider';
         }
-      }).catch(() => {});
+      }).catch(() => {}); // intentional: client-side fetch, non-critical status display
 
       const input = document.getElementById('search-input');
       let timer, controller;

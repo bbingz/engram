@@ -97,7 +97,7 @@ export function startGitProbeLoop(db: Database.Database, intervalMs = 300000) {
         upsert.run(info.path, info.name, info.branch, info.dirtyCount, info.untrackedCount, info.unpushedCount, info.lastCommitHash, info.lastCommitMsg, info.lastCommitAt, count, info.probedAt)
       }
     } catch (err) {
-      console.error('[git-probe] Error:', err)
+      console.error('[git-probe] Error:', err) // stderr → os_log in daemon mode
     }
   }
 

@@ -203,13 +203,13 @@ indexer.indexAll().then(async (count) => {
   if (count > 0) {
     process.stderr.write(`[engram] Indexed ${count} new sessions\n`)
   }
-  await indexJobRunner.runRecoverableJobs().catch(() => {})
-}).catch(() => {})
+  await indexJobRunner.runRecoverableJobs().catch(() => {}) // intentional: best-effort in MCP server mode
+}).catch(() => {}) // intentional: indexing failure is non-fatal for MCP server
 
 // 启动文件监听
 const watcher = startWatcher(adapters, indexer, {
   onIndexed: () => {
-    indexJobRunner.runRecoverableJobs().catch(() => {})
+    indexJobRunner.runRecoverableJobs().catch(() => {}) // intentional: fire-and-forget background job
   },
 })
 

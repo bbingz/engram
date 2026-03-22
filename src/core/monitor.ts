@@ -30,11 +30,11 @@ export class BackgroundMonitor {
 
   start(intervalMs = 600_000): void {
     if (this.interval) return
-    this.interval = setInterval(() => this.check().catch(() => {}), intervalMs)
+    this.interval = setInterval(() => this.check().catch(() => {}), intervalMs) // intentional: periodic check, errors handled within check()
     // Run initial check after a short delay (don't block startup)
     this.startupTimeout = setTimeout(() => {
       this.startupTimeout = null
-      this.check().catch(() => {})
+      this.check().catch(() => {}) // intentional: startup check, errors handled within check()
     }, 10_000)
   }
 
@@ -111,7 +111,7 @@ export class BackgroundMonitor {
           this.onAlert?.(alert)
         }
       }
-    } catch { /* session_costs table may not exist yet */ }
+    } catch { /* intentional: session_costs table may not exist yet */ }
   }
 
   private async checkCostBudget(): Promise<void> {
@@ -188,7 +188,7 @@ export class BackgroundMonitor {
           }
         }
       }
-    } catch { /* session_costs table may not exist yet */ }
+    } catch { /* intentional: session_costs table may not exist yet */ }
   }
 
   private async checkUnpushedCommits(): Promise<void> {
@@ -216,7 +216,7 @@ export class BackgroundMonitor {
           this.onAlert?.(alert)
         }
       }
-    } catch { /* git_repos table may not exist yet */ }
+    } catch { /* intentional: git_repos table may not exist yet */ }
   }
 
   private checkLongSessions(): void {

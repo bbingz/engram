@@ -128,7 +128,7 @@ export async function handleSearch(
           vecSpan?.end()
         } catch (err) {
           vecSpan?.setError(err)
-          /* vector search unavailable */
+          /* intentional: vector search unavailable, fall back to FTS */
         }
       }
     })(),
@@ -153,7 +153,7 @@ export async function handleSearch(
           vikingSpan?.end()
         } catch (err) {
           vikingSpan?.setError(err)
-          /* Viking search failed, continue with FTS */
+          /* intentional: Viking search failed, continue with FTS */
         }
       }
     })(),
