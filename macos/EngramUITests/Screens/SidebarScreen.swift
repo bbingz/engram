@@ -1,0 +1,41 @@
+import XCTest
+
+struct SidebarScreen {
+    let app: XCUIApplication
+
+    // MARK: - Elements
+
+    var container: XCUIElement { app.otherElements["sidebar"] }
+    var themeToggle: XCUIElement { app.buttons["sidebar_themeToggle"] }
+    var settingsItem: XCUIElement { app.buttons["sidebar_item_settings"] }
+
+    // MARK: - Navigation
+
+    /// All known sidebar screen raw values (matches Screen.rawValue)
+    static let pages = [
+        "home", "search", "sessions", "timeline", "activity",
+        "observability", "projects", "sourcePulse", "repos",
+        "workGraph", "skills", "agents", "memory", "hooks"
+    ]
+
+    func item(for page: String) -> XCUIElement {
+        app.buttons["sidebar_item_\(page)"]
+    }
+
+    func navigateTo(_ page: String) {
+        let button = item(for: page)
+        XCTAssertTrue(button.waitForExistence(timeout: 3),
+                      "Sidebar item '\(page)' not found")
+        button.click()
+    }
+
+    func allItems() -> [XCUIElement] {
+        Self.pages.map { item(for: $0) }
+    }
+
+    // MARK: - Waits
+
+    func waitForLoad(timeout: TimeInterval = 5) {
+        _ = container.waitForExistence(timeout: timeout)
+    }
+}
