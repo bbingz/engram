@@ -5,9 +5,11 @@ import Foundation
 class DaemonClient: ObservableObject {
     private let baseURL: String
     private let bearerToken: String?
+    private let session: URLSession
 
-    init(port: Int = 3457) {
+    init(port: Int = 3457, session: URLSession = .shared) {
         self.baseURL = "http://127.0.0.1:\(port)"
+        self.session = session
         // Read bearer token from settings for authenticated write requests
         self.bearerToken = (readEngramSettings()?["httpBearerToken"] as? String)
     }
@@ -17,21 +19,21 @@ class DaemonClient: ObservableObject {
     func fetch<T: Decodable>(_ path: String) async throws -> T {
         var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Trace-Id")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try validateResponse(response)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
     func post<T: Decodable>(_ path: String, body: (any Encodable)? = nil) async throws -> T {
         let request = try buildRequest(path, method: "POST", body: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try validateResponse(response)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
     func postRaw(_ path: String, body: (any Encodable)? = nil) async throws {
         let request = try buildRequest(path, method: "POST", body: body)
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await session.data(for: request)
         try validateResponse(response)
     }
 
@@ -42,7 +44,7 @@ class DaemonClient: ObservableObject {
         if let token = bearerToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await session.data(for: request)
         try validateResponse(response)
     }
 
