@@ -2,6 +2,7 @@ node_modules/
 dist/
 .worktrees/
 *.sqlite
+!test-fixtures/*.sqlite
 *.db
 
 # Xcode

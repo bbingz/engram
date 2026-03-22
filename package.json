@@ -12,7 +12,8 @@
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "generate:fixtures": "tsx scripts/generate-test-fixtures.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
