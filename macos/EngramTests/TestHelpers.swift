@@ -41,14 +41,20 @@ func createSessionsTable(at path: String) throws {
                 tokenize='trigram case_sensitive 0'
             );
 
-            -- Observability tables
+            -- Observability tables (matches daemon schema: ts, trace_id, error_name, error_message)
             CREATE TABLE IF NOT EXISTS logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
                 level TEXT NOT NULL DEFAULT 'info',
-                module TEXT NOT NULL DEFAULT '',
+                module TEXT NOT NULL,
+                trace_id TEXT,
+                span_id TEXT,
                 message TEXT NOT NULL,
-                source TEXT
+                data TEXT,
+                error_name TEXT,
+                error_message TEXT,
+                error_stack TEXT,
+                source TEXT NOT NULL DEFAULT 'daemon'
             );
             CREATE TABLE IF NOT EXISTS traces (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,13 +133,21 @@ func insertTestLog(at path: String,
                    level: String = "info",
                    module: String = "test",
                    message: String = "Test log message",
-                   source: String? = nil) throws {
+                   source: String = "daemon",
+                   ts: String? = nil) throws {
     let queue = try DatabaseQueue(path: path)
     try queue.write { db in
-        try db.execute(sql: """
-            INSERT INTO logs (level, module, message, source)
-            VALUES (?, ?, ?, ?)
-        """, arguments: [level, module, message, source])
+        if let ts {
+            try db.execute(sql: """
+                INSERT INTO logs (ts, level, module, message, source)
+                VALUES (?, ?, ?, ?, ?)
+            """, arguments: [ts, level, module, message, source])
+        } else {
+            try db.execute(sql: """
+                INSERT INTO logs (level, module, message, source)
+                VALUES (?, ?, ?, ?)
+            """, arguments: [level, module, message, source])
+        }
     }
 }
 
