@@ -26,6 +26,7 @@ import type { UsageCollector } from './core/usage-collector.js'
 import type { TitleGenerator } from './core/title-generator.js'
 import type { LiveSessionMonitor } from './core/live-sessions.js'
 import type { BackgroundMonitor } from './core/monitor.js'
+import type { LogWriter } from './core/logger.js'
 import { populateMockData, clearMockData } from './core/mock-data.js'
 import { handleLintConfig } from './tools/lint_config.js'
 import { filterForViking } from './core/viking-filter.js'
@@ -77,6 +78,7 @@ export function createApp(db: Database, opts?: {
   titleGenerator?: TitleGenerator
   liveMonitor?: LiveSessionMonitor
   backgroundMonitor?: BackgroundMonitor
+  logWriter?: LogWriter
 }) {
   const app = new Hono()
   const settings = opts?.settings ?? readFileSettings()
@@ -1099,6 +1101,22 @@ export function createApp(db: Database, opts?: {
 
     const result = await handleLintConfig({ cwd })
     return c.json(result)
+  })
+
+  // Observability: accept log forwarding from Swift app
+  app.post('/api/log', async (c) => {
+    const body = await c.req.json()
+    if (opts?.logWriter && body.level && body.module && body.message) {
+      opts.logWriter.write({
+        level: body.level,
+        module: body.module,
+        message: body.message,
+        data: body.data,
+        error: body.error,
+        source: 'app',
+      })
+    }
+    return c.json({ ok: true })
   })
 
   return app

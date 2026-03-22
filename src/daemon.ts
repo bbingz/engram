@@ -23,6 +23,9 @@ import { TitleGenerator } from './core/title-generator.js'
 import { LiveSessionMonitor, type WatchDir } from './core/live-sessions.js'
 import { BackgroundMonitor } from './core/monitor.js'
 import { populateMockData } from './core/mock-data.js'
+import { createLogger, LogWriter } from './core/logger.js'
+import { Tracer, TraceWriter } from './core/tracer.js'
+import { MetricsCollector } from './core/metrics.js'
 
 // Power state detection — one-time check at startup (macOS only)
 function isOnACPower(): boolean {
@@ -43,6 +46,19 @@ const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite')
 const db = new Database(dbPath)
 const adapters = createAdapters()
 const settings = readFileSettings()
+
+// Initialize observability
+const logWriter = new LogWriter(db.raw)
+const traceWriter = new TraceWriter(db.raw)
+const metrics = new MetricsCollector(db.raw, {
+  flushIntervalMs: 5000,
+  sampleRates: { 'db.query_duration_ms': 0.1 },
+})
+const tracer = new Tracer(traceWriter)
+const log = createLogger('daemon', { writer: logWriter, level: (settings as any).observability?.logLevel ?? 'info' })
+
+log.info('daemon starting', { powerMode })
+
 const authoritativeNode = settings.syncNodeName ?? 'local'
 
 // Apply tier-based noise filter
@@ -313,6 +329,7 @@ const app = createApp(db, {
   titleGenerator,
   liveMonitor,
   backgroundMonitor,
+  logWriter,
 })
 const { serve } = await import('@hono/node-server')
 const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
@@ -332,11 +349,31 @@ const syncTimer = settings.syncEnabled && syncPeers.length > 0
 // Git repo probe loop — runs once immediately, then every 5 minutes (10 on battery)
 const gitProbeTimer = startGitProbeLoop(db.getRawDb(), 300_000 * POWER_MULTIPLIER)
 
+// Observability: log rotation + metrics rollup
+const logRotationTimer = setInterval(() => {
+  const retentionDays = (settings as any).observability?.logRetentionDays ?? 7
+  logWriter.rotate(retentionDays)
+  logWriter.enforceMaxRows(100_000)
+  db.raw.prepare("DELETE FROM traces WHERE start_ts < ?").run(
+    new Date(Date.now() - retentionDays * 86400000).toISOString()
+  )
+  db.raw.prepare("DELETE FROM metrics WHERE ts < ?").run(
+    new Date(Date.now() - 24 * 3600000).toISOString()
+  )
+}, 3600000)
+
+const metricsRollupTimer = setTimeout(() => {
+  setInterval(() => { metrics.rollup() }, 3600000)
+}, 300000)
+
 // Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
 function shutdown() {
   clearInterval(rescanTimer)
   if (syncTimer) clearInterval(syncTimer)
   clearInterval(gitProbeTimer)
+  clearInterval(logRotationTimer)
+  clearTimeout(metricsRollupTimer)
+  metrics.destroy()
   liveMonitor.stop()
   backgroundMonitor.stop()
   usageCollector.stop()
