@@ -5,9 +5,9 @@ struct MemoryScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.scrollViews["memory_container"] }
-    var searchField: XCUIElement { app.otherElements["memory_search"] }
-    var emptyState: XCUIElement { app.otherElements["memory_emptyState"] }
+    var container: XCUIElement { app.element(id: "memory_container") }
+    var searchField: XCUIElement { app.element(id: "memory_search") }
+    var emptyState: XCUIElement { app.element(id: "memory_emptyState") }
 
     // MARK: - Actions
 

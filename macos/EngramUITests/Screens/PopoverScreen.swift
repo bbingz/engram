@@ -5,15 +5,15 @@ struct PopoverScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["popover_container"] }
-    var statsGrid: XCUIElement { app.otherElements["popover_statsGrid"] }
-    var recentActivity: XCUIElement { app.otherElements["popover_recentActivity"] }
+    var container: XCUIElement { app.element(id: "popover_container") }
+    var statsGrid: XCUIElement { app.element(id: "popover_statsGrid") }
+    var recentActivity: XCUIElement { app.element(id: "popover_recentActivity") }
 
     // MARK: - Status Indicators
 
-    var statusWeb: XCUIElement { app.otherElements["popover_status_web"] }
-    var statusMcp: XCUIElement { app.otherElements["popover_status_mcp"] }
-    var statusEmbedding: XCUIElement { app.otherElements["popover_status_embedding"] }
+    var statusWeb: XCUIElement { app.element(id: "popover_status_web") }
+    var statusMcp: XCUIElement { app.element(id: "popover_status_mcp") }
+    var statusEmbedding: XCUIElement { app.element(id: "popover_status_embedding") }
 
     // MARK: - Waits
 

@@ -5,14 +5,14 @@ struct ProjectsScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["projects_container"] }
-    var projectList: XCUIElement { app.otherElements["projects_list"] }
-    var emptyState: XCUIElement { app.otherElements["projects_emptyState"] }
+    var container: XCUIElement { app.element(id: "projects_container") }
+    var projectList: XCUIElement { app.element(id: "projects_list") }
+    var emptyState: XCUIElement { app.element(id: "projects_emptyState") }
 
     // MARK: - Project Groups
 
     func group(at index: Int) -> XCUIElement {
-        app.otherElements["projects_group_\(index)"]
+        app.element(id: "projects_group_\(index)")
     }
 
     // MARK: - Waits

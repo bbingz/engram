@@ -5,47 +5,49 @@ struct SidebarView: View {
     @Binding var selectedScreen: Screen
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Screen.Section.allCases, id: \.self) { section in
-                        Text(section.rawValue)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(Theme.tertiaryText)
-                            .padding(.horizontal, 12)
-                            .padding(.top, section == .overview ? 8 : 12)
-                            .padding(.bottom, 4)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Screen.Section.allCases, id: \.self) { section in
+                    Text(section.rawValue)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.tertiaryText)
+                        .padding(.horizontal, 12)
+                        .padding(.top, section == .overview ? 8 : 12)
+                        .padding(.bottom, 4)
 
-                        ForEach(section.screens) { screen in
-                            SidebarItem(
-                                screen: screen,
-                                isSelected: selectedScreen == screen,
-                                action: { selectedScreen = screen }
-                            )
-                            .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")
-                        }
+                    ForEach(section.screens) { screen in
+                        SidebarItem(
+                            screen: screen,
+                            isSelected: selectedScreen == screen,
+                            action: { selectedScreen = screen }
+                        )
+                        .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")
                     }
                 }
-                .padding(.bottom, 8)
+
+                Spacer()
+                    .frame(minHeight: 16)
+
+                Divider()
+                    .opacity(0.2)
+                    .padding(.horizontal, 8)
+
+                // Theme toggle
+                ThemeToggleButton()
+                    .padding(.horizontal, 8)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("sidebar_themeToggle")
+
+                // Settings button
+                SidebarItem(
+                    screen: .settings,
+                    isSelected: selectedScreen == .settings,
+                    action: { selectedScreen = .settings }
+                )
+                .accessibilityIdentifier("sidebar_item_settings")
+                .padding(.vertical, 8)
             }
-
-            Divider()
-                .opacity(0.2)
-
-            // Theme toggle
-            ThemeToggleButton()
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
-                .accessibilityIdentifier("sidebar_themeToggle")
-
-            // Pinned Settings button
-            SidebarItem(
-                screen: .settings,
-                isSelected: selectedScreen == .settings,
-                action: { selectedScreen = .settings }
-            )
-            .accessibilityIdentifier("sidebar_item_settings")
-            .padding(.vertical, 8)
+            .padding(.bottom, 8)
         }
         .frame(minWidth: 160, maxWidth: 160)
         .accessibilityIdentifier("sidebar")

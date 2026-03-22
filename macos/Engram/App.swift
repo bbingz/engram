@@ -110,6 +110,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.popoverWindow = window
         } else {
             menuBarController = MenuBarController(db: db, indexer: indexer, daemonClient: daemonClient, windowSize: environment.windowSize)
+
+            // In test mode with a window size, auto-open the main window so UI tests can find the sidebar
+            if environment.windowSize != nil {
+                menuBarController?.openWindow()
+            }
         }
 
         // First-run onboarding (skip in test mode)

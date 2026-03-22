@@ -105,7 +105,13 @@ struct MainWindowView: View {
 
     @ViewBuilder
     private var detailView: some View {
-        switch selectedScreen {
+        pageView(for: selectedScreen)
+            .accessibilityIdentifier("\(selectedScreen.rawValue)_container")
+    }
+
+    @ViewBuilder
+    private func pageView(for screen: Screen) -> some View {
+        switch screen {
         case .home:
             HomeView()
         case .search:

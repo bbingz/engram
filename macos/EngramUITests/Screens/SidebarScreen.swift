@@ -5,9 +5,9 @@ struct SidebarScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["sidebar"] }
-    var themeToggle: XCUIElement { app.buttons["sidebar_themeToggle"] }
-    var settingsItem: XCUIElement { app.buttons["sidebar_item_settings"] }
+    var container: XCUIElement { app.element(id: "sidebar") }
+    var themeToggle: XCUIElement { app.element(id: "sidebar_themeToggle") }
+    var settingsItem: XCUIElement { app.element(id: "sidebar_item_settings") }
 
     // MARK: - Navigation
 
@@ -19,7 +19,7 @@ struct SidebarScreen {
     ]
 
     func item(for page: String) -> XCUIElement {
-        app.buttons["sidebar_item_\(page)"]
+        app.element(id: "sidebar_item_\(page)")
     }
 
     func navigateTo(_ page: String) {

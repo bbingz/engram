@@ -5,9 +5,9 @@ struct ActivityScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["activity_container"] }
-    var dailyChart: XCUIElement { app.otherElements["activity_dailyChart"] }
-    var heatmap: XCUIElement { app.otherElements["activity_heatmap"] }
+    var container: XCUIElement { app.element(id: "activity_container") }
+    var dailyChart: XCUIElement { app.element(id: "activity_dailyChart") }
+    var heatmap: XCUIElement { app.element(id: "activity_heatmap") }
 
     // MARK: - Waits
 

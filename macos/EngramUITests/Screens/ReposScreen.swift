@@ -5,9 +5,9 @@ struct ReposScreen {
 
     // MARK: - Elements
 
-    var repoList: XCUIElement { app.otherElements["repos_list"] }
-    var detail: XCUIElement { app.otherElements["repos_detail"] }
-    var emptyState: XCUIElement { app.otherElements["repos_emptyState"] }
+    var repoList: XCUIElement { app.element(id: "repos_list") }
+    var detail: XCUIElement { app.element(id: "repos_detail") }
+    var emptyState: XCUIElement { app.element(id: "repos_emptyState") }
 
     // MARK: - Waits
 

@@ -1,5 +1,15 @@
 import XCTest
 
+extension XCUIApplication {
+    /// Find an element by accessibility identifier regardless of its type in the accessibility tree.
+    /// SwiftUI maps views to different XCUIElement types depending on the view kind
+    /// (e.g., ScrollView -> scrollViews, VStack -> groups, Button -> buttons).
+    /// This helper avoids guessing the type.
+    func element(id identifier: String) -> XCUIElement {
+        descendants(matching: .any)[identifier].firstMatch
+    }
+}
+
 extension XCUIElement {
     /// Wait for element to exist and be hittable
     @discardableResult

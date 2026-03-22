@@ -5,10 +5,10 @@ struct SessionDetailScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["detail_container"] }
-    var transcript: XCUIElement { app.scrollViews["detail_transcript"] }
-    var toolbar: XCUIElement { app.otherElements["detail_toolbar"] }
-    var findBar: XCUIElement { app.otherElements["detail_findBar"] }
+    var container: XCUIElement { app.element(id: "detail_container") }
+    var transcript: XCUIElement { app.element(id: "detail_transcript") }
+    var toolbar: XCUIElement { app.element(id: "detail_toolbar") }
+    var findBar: XCUIElement { app.element(id: "detail_findBar") }
 
     // MARK: - Waits
 

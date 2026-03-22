@@ -5,10 +5,10 @@ struct SearchScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["search_container"] }
+    var container: XCUIElement { app.element(id: "search_container") }
     var searchInput: XCUIElement { app.textFields["search_input"] }
-    var results: XCUIElement { app.otherElements["search_results"] }
-    var emptyState: XCUIElement { app.otherElements["search_emptyState"] }
+    var results: XCUIElement { app.element(id: "search_results") }
+    var emptyState: XCUIElement { app.element(id: "search_emptyState") }
     var resultCount: XCUIElement { app.staticTexts["search_resultCount"] }
 
     // MARK: - Actions

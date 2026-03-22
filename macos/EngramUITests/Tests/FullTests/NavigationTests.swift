@@ -22,7 +22,7 @@ final class NavigationTests: XCTestCase {
         for page in SidebarScreen.pages {
             sidebar.navigateTo(page)
 
-            let container = app.otherElements["\(page)_container"]
+            let container = app.element(id: "\(page)_container")
             XCTAssertTrue(container.waitForExistence(timeout: 5),
                           "Page '\(page)' container should load after navigation")
         }

@@ -5,7 +5,7 @@ struct WorkGraphScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["workGraph_container"] }
+    var container: XCUIElement { app.element(id: "workGraph_container") }
 
     // MARK: - Waits
 

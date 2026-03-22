@@ -5,9 +5,9 @@ struct SourcePulseScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["sourcePulse_container"] }
-    var statusGrid: XCUIElement { app.otherElements["sourcePulse_statusGrid"] }
-    var emptyState: XCUIElement { app.otherElements["sourcePulse_emptyState"] }
+    var container: XCUIElement { app.element(id: "sourcePulse_container") }
+    var statusGrid: XCUIElement { app.element(id: "sourcePulse_statusGrid") }
+    var emptyState: XCUIElement { app.element(id: "sourcePulse_emptyState") }
 
     // MARK: - Waits
 

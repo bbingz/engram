@@ -5,8 +5,8 @@ struct TimelineScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["timeline_container"] }
-    var emptyState: XCUIElement { app.otherElements["timeline_emptyState"] }
+    var container: XCUIElement { app.element(id: "timeline_container") }
+    var emptyState: XCUIElement { app.element(id: "timeline_emptyState") }
 
     // MARK: - Waits
 

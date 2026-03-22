@@ -5,9 +5,9 @@ struct AgentsScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["agents_container"] }
-    var list: XCUIElement { app.otherElements["agents_list"] }
-    var emptyState: XCUIElement { app.otherElements["agents_emptyState"] }
+    var container: XCUIElement { app.element(id: "agents_container") }
+    var list: XCUIElement { app.element(id: "agents_list") }
+    var emptyState: XCUIElement { app.element(id: "agents_emptyState") }
 
     // MARK: - Waits
 

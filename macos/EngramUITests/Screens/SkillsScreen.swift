@@ -5,9 +5,9 @@ struct SkillsScreen {
 
     // MARK: - Elements
 
-    var list: XCUIElement { app.otherElements["skills_list"] }
-    var searchField: XCUIElement { app.otherElements["skills_search"] }
-    var emptyState: XCUIElement { app.otherElements["skills_emptyState"] }
+    var list: XCUIElement { app.element(id: "skills_list") }
+    var searchField: XCUIElement { app.element(id: "skills_search") }
+    var emptyState: XCUIElement { app.element(id: "skills_emptyState") }
 
     // MARK: - Actions
 

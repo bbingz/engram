@@ -5,22 +5,22 @@ struct ObservabilityScreen {
 
     // MARK: - Container
 
-    var container: XCUIElement { app.otherElements["observability_container"] }
-    var tabPicker: XCUIElement { app.otherElements["observability_tabPicker"] }
+    var container: XCUIElement { app.element(id: "observability_container") }
+    var tabPicker: XCUIElement { app.element(id: "observability_tabPicker") }
 
     // MARK: - Tab Views
 
-    var logStream: XCUIElement { app.otherElements["observability_logStream"] }
-    var errorDashboard: XCUIElement { app.otherElements["observability_errorDashboard"] }
-    var performance: XCUIElement { app.otherElements["observability_performance"] }
-    var traceExplorer: XCUIElement { app.otherElements["observability_traceExplorer"] }
-    var health: XCUIElement { app.otherElements["observability_health"] }
+    var logStream: XCUIElement { app.element(id: "observability_logStream") }
+    var errorDashboard: XCUIElement { app.element(id: "observability_errorDashboard") }
+    var performance: XCUIElement { app.element(id: "observability_performance") }
+    var traceExplorer: XCUIElement { app.element(id: "observability_traceExplorer") }
+    var health: XCUIElement { app.element(id: "observability_health") }
 
     // MARK: - Log Stream Details
 
-    var logLevelPicker: XCUIElement { app.otherElements["observability_logLevelPicker"] }
-    var logModulePicker: XCUIElement { app.otherElements["observability_logModulePicker"] }
-    var logList: XCUIElement { app.otherElements["observability_logList"] }
+    var logLevelPicker: XCUIElement { app.element(id: "observability_logLevelPicker") }
+    var logModulePicker: XCUIElement { app.element(id: "observability_logModulePicker") }
+    var logList: XCUIElement { app.element(id: "observability_logList") }
 
     // MARK: - Tab Names (match ObservabilityView.Tab.rawValue)
 

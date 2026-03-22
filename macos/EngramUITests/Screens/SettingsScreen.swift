@@ -5,20 +5,20 @@ struct SettingsScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.otherElements["settings_container"] }
+    var container: XCUIElement { app.element(id: "settings_container") }
 
     // MARK: - Sections
 
     static let sectionNames = ["general", "ai", "sources", "network", "about"]
 
-    var generalSection: XCUIElement { app.otherElements["settings_section_general"] }
-    var aiSection: XCUIElement { app.otherElements["settings_section_ai"] }
-    var sourcesSection: XCUIElement { app.otherElements["settings_section_sources"] }
-    var networkSection: XCUIElement { app.otherElements["settings_section_network"] }
-    var aboutSection: XCUIElement { app.otherElements["settings_section_about"] }
+    var generalSection: XCUIElement { app.element(id: "settings_section_general") }
+    var aiSection: XCUIElement { app.element(id: "settings_section_ai") }
+    var sourcesSection: XCUIElement { app.element(id: "settings_section_sources") }
+    var networkSection: XCUIElement { app.element(id: "settings_section_network") }
+    var aboutSection: XCUIElement { app.element(id: "settings_section_about") }
 
     func section(named name: String) -> XCUIElement {
-        app.otherElements["settings_section_\(name)"]
+        app.element(id: "settings_section_\(name)")
     }
 
     // MARK: - Waits

@@ -25,7 +25,7 @@ final class NavigationSmokeTests: XCTestCase {
             button.click()
 
             // Verify a container loaded for this page — use the generic page container pattern
-            let container = app.otherElements["\(page)_container"]
+            let container = app.element(id: "\(page)_container")
             let loaded = container.waitForExistence(timeout: 5)
             XCTAssertTrue(loaded,
                           "Container for '\(page)' should appear after sidebar click")
@@ -41,7 +41,7 @@ final class NavigationSmokeTests: XCTestCase {
         app.typeKey("k", modifierFlags: .command)
 
         // Look for a command palette element
-        let palette = app.otherElements["commandPalette"]
+        let palette = app.element(id: "commandPalette")
         let searchField = app.searchFields.firstMatch
 
         if palette.waitForExistence(timeout: 2) || searchField.waitForExistence(timeout: 2) {

@@ -5,8 +5,8 @@ struct HooksScreen {
 
     // MARK: - Elements
 
-    var list: XCUIElement { app.otherElements["hooks_list"] }
-    var emptyState: XCUIElement { app.otherElements["hooks_emptyState"] }
+    var list: XCUIElement { app.element(id: "hooks_list") }
+    var emptyState: XCUIElement { app.element(id: "hooks_emptyState") }
 
     // MARK: - Waits
 
