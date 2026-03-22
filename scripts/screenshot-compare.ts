@@ -26,9 +26,11 @@ interface Config {
 
 interface ManifestEntry {
   name: string;
-  filename: string;
-  page?: string;
-  appearance?: string;
+  screen?: string;
+  test?: string;
+  timestamp?: string;
+  size?: { width: number; height: number };
+  scale?: number;
 }
 
 interface Manifest {
@@ -147,9 +149,9 @@ async function compareOne(
   config: Config,
   environment: Record<string, string>,
 ): Promise<ComparisonResult> {
-  const actualPath = path.join(screenshotsDir, entry.filename);
-  const baselinePath = path.join(config.baselines_dir, entry.filename);
-  const diffPath = path.join(screenshotsDir, `diff-${entry.filename}`);
+  const actualPath = path.join(screenshotsDir, `${entry.name}.png`);
+  const baselinePath = path.join(config.baselines_dir, `${entry.name}.png`);
+  const diffPath = path.join(screenshotsDir, `diff-${`${entry.name}.png`}`);
 
   const emptyMetrics: ComparisonMetrics = {
     ssim: 0,

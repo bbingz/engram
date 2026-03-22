@@ -127,7 +127,13 @@ jobs:
           xcodebuild test \
             -project macos/Engram.xcodeproj \
             -scheme Engram \
-            -only-testing:EngramUITests/SmokeTests \
+            -only-testing:EngramUITests/HomeSmokeTests \
+            -only-testing:EngramUITests/SessionsSmokeTests \
+            -only-testing:EngramUITests/SessionDetailSmokeTests \
+            -only-testing:EngramUITests/SearchSmokeTests \
+            -only-testing:EngramUITests/NavigationSmokeTests \
+            -only-testing:EngramUITests/PopoverSmokeTests \
+            -only-testing:EngramUITests/ActivitySmokeTests \
             -destination 'platform=macOS' \
             -resultBundlePath ${{ runner.temp }}/ui-test-results \
             CODE_SIGN_IDENTITY="-" \
@@ -199,6 +205,7 @@ jobs:
           xcodebuild test \
             -project macos/Engram.xcodeproj \
             -scheme Engram \
+            -only-testing:EngramUITests \
             -destination 'platform=macOS' \
             -resultBundlePath ${{ runner.temp }}/ui-test-results \
             CODE_SIGN_IDENTITY="-" \

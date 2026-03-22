@@ -12,7 +12,7 @@ enum MockDaemonFixtures {
         let json: String
 
         switch path {
-        case _ where path.contains("/api/live"):
+        case _ where path.hasSuffix("/api/live"):
             // Matches LiveSessionsResponse { sessions: [LiveSessionInfo], count: Int }
             // LiveSessionInfo fields: source (String), sessionId (String?), project (String?),
             //   title (String?), cwd (String?), filePath (String), startedAt (String?),
@@ -44,7 +44,7 @@ enum MockDaemonFixtures {
             }
             """
 
-        case _ where path.contains("/api/memory"):
+        case _ where path.hasSuffix("/api/memory"):
             // Matches [MemoryFile] array
             // MemoryFile fields: name (String), project (String), path (String),
             //   sizeBytes (Int), preview (String)
@@ -56,7 +56,7 @@ enum MockDaemonFixtures {
             ]
             """
 
-        case _ where path.contains("/api/skills"):
+        case _ where path.hasSuffix("/api/skills"):
             // Matches [SkillInfo] array
             // SkillInfo fields: name (String), description (String), path (String), scope (String)
             json = """
@@ -66,7 +66,7 @@ enum MockDaemonFixtures {
             ]
             """
 
-        case _ where path.contains("/api/hooks"):
+        case _ where path.hasSuffix("/api/hooks"):
             // Matches [HookInfo] array
             // HookInfo fields: event (String), command (String), scope (String)
             json = """
