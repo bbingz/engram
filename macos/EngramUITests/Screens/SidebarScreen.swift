@@ -26,6 +26,13 @@ struct SidebarScreen {
         let button = item(for: page)
         XCTAssertTrue(button.waitForExistence(timeout: 3),
                       "Sidebar item '\(page)' not found")
+
+        // Bottom sidebar items may be below the visible scroll area in small windows.
+        // Scroll them into view before clicking.
+        if !button.isHittable {
+            button.scrollToVisible(in: container)
+        }
+
         button.click()
     }
 

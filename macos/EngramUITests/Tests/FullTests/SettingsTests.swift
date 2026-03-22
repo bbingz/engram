@@ -58,6 +58,11 @@ final class SettingsTests: XCTestCase {
         // Navigate to network section where OpenViking config lives
         let networkSection = settings.networkSection
         if networkSection.waitForExistence(timeout: 3) {
+            // Scroll into view if needed — network section may be below the fold
+            let scrollView = app.scrollViews.firstMatch
+            if !networkSection.isHittable, scrollView.exists {
+                networkSection.scrollToVisible(in: scrollView)
+            }
             networkSection.click()
         }
 
@@ -82,6 +87,12 @@ final class SettingsTests: XCTestCase {
         let aboutSection = settings.aboutSection
         XCTAssertTrue(aboutSection.waitForExistence(timeout: 3),
                       "About section should exist")
+
+        // About is at the bottom of the settings ScrollView — scroll it into view
+        let scrollView = app.scrollViews.firstMatch
+        if !aboutSection.isHittable, scrollView.exists {
+            aboutSection.scrollToVisible(in: scrollView)
+        }
         aboutSection.click()
 
         ScreenshotCapture.capture(name: "settings_about", app: app, screen: "settings", test: #function)

@@ -25,3 +25,22 @@ extension XCTestCase {
         XCTAssertTrue(exists, "Element \(element.identifier) did not appear within \(timeout)s")
     }
 }
+
+extension XCUIElement {
+    /// Scroll an element into view within its nearest scrollable ancestor.
+    /// - Parameters:
+    ///   - scrollView: The scroll view to scroll within. If nil, uses the app's first scrollView.
+    ///   - maxAttempts: Maximum scroll gestures before giving up.
+    ///   - deltaY: Vertical scroll delta per attempt (negative = scroll down).
+    func scrollToVisible(
+        in scrollView: XCUIElement,
+        maxAttempts: Int = 10,
+        deltaY: CGFloat = -150
+    ) {
+        guard exists else { return }
+        for _ in 0..<maxAttempts {
+            if isHittable { return }
+            scrollView.scroll(byDeltaX: 0, deltaY: deltaY)
+        }
+    }
+}
