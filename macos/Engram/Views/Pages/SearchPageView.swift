@@ -36,6 +36,7 @@ struct SearchPageView: View {
                 .padding(12)
                 .background(Theme.inputBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityIdentifier("search_input")
 
                 // Mode selector + embedding status
                 HStack(spacing: 12) {
@@ -95,10 +96,14 @@ struct SearchPageView: View {
                     }
                 } else if results.isEmpty && !query.isEmpty {
                     EmptyState(icon: "magnifyingglass", title: "No results", message: "Try a different search term or mode")
+                        .accessibilityIdentifier("search_emptyState")
                 } else if results.isEmpty && query.isEmpty {
                     EmptyState(icon: "magnifyingglass", title: "Search sessions", message: "Hybrid search combines keyword (FTS), semantic (embeddings), and Viking")
+                        .accessibilityIdentifier("search_emptyState")
                 } else {
-                    Text("\(results.count) results").font(.caption).foregroundStyle(Theme.tertiaryText)
+                    Text("\(results.count) results")
+                        .font(.caption).foregroundStyle(Theme.tertiaryText)
+                        .accessibilityIdentifier("search_resultCount")
                     LazyVStack(spacing: 4) {
                         ForEach(results) { result in
                             VStack(alignment: .leading, spacing: 4) {
@@ -121,10 +126,12 @@ struct SearchPageView: View {
                             }
                         }
                     }
+                    .accessibilityIdentifier("search_results")
                 }
             }
             .padding(24)
         }
+        .accessibilityIdentifier("search_container")
         .task { await loadEmbeddingStatus() }
         .onChange(of: query) { _ in
             searchTask?.cancel()

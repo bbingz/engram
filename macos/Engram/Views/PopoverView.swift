@@ -28,6 +28,7 @@ struct PopoverView: View {
         }
         .padding(16)
         .frame(width: 400)
+        .accessibilityIdentifier("popover_container")
         .task { await loadData() }
     }
 
@@ -50,11 +51,14 @@ struct PopoverView: View {
                     color: indexer.port != nil ? .green : .red,
                     label: indexer.port.map { "Web :\($0)" } ?? "Web"
                 )
+                .accessibilityIdentifier("popover_status_web")
                 statusDot(
                     color: indexer.status.isRunning ? .green : .red,
                     label: "MCP"
                 )
+                .accessibilityIdentifier("popover_status_mcp")
                 embeddingStatusView
+                    .accessibilityIdentifier("popover_status_embedding")
             }
             .font(.caption2)
         }
@@ -88,6 +92,7 @@ struct PopoverView: View {
         .font(.caption)
         .padding(10)
         .background(Color(.controlBackgroundColor).opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+        .accessibilityIdentifier("popover_statsGrid")
     }
 
     private func statRow(_ label: String, _ value: String) -> some View {
@@ -139,6 +144,7 @@ struct PopoverView: View {
                 }
             }
         }
+        .accessibilityIdentifier("popover_recentActivity")
     }
 
     private func timelineRow(_ session: Session) -> some View {

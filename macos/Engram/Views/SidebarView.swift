@@ -22,6 +22,7 @@ struct SidebarView: View {
                                 isSelected: selectedScreen == screen,
                                 action: { selectedScreen = screen }
                             )
+                            .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")
                         }
                     }
                 }
@@ -35,6 +36,7 @@ struct SidebarView: View {
             ThemeToggleButton()
                 .padding(.horizontal, 8)
                 .padding(.top, 8)
+                .accessibilityIdentifier("sidebar_themeToggle")
 
             // Pinned Settings button
             SidebarItem(
@@ -42,9 +44,11 @@ struct SidebarView: View {
                 isSelected: selectedScreen == .settings,
                 action: { selectedScreen = .settings }
             )
+            .accessibilityIdentifier("sidebar_item_settings")
             .padding(.vertical, 8)
         }
         .frame(minWidth: 160, maxWidth: 160)
+        .accessibilityIdentifier("sidebar")
     }
 }
 

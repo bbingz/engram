@@ -83,6 +83,7 @@ struct SessionDetailView: View {
                 onReplay: { showReplay = true },
                 viewMode: $viewMode
             )
+            .accessibilityIdentifier("detail_toolbar")
 
             // Handoff status toast
             if let status = handoffStatus {
@@ -109,6 +110,7 @@ struct SessionDetailView: View {
                     onPrev: { navigateFind(direction: -1) },
                     onNext: { navigateFind(direction: 1) }
                 )
+                .accessibilityIdentifier("detail_findBar")
                 Divider()
             }
 
@@ -173,6 +175,7 @@ struct SessionDetailView: View {
                             }
                         }
                     }
+                    .accessibilityIdentifier("detail_transcript")
                     .onChange(of: scrollTarget) { _, target in
                         if let target {
                             withAnimation { proxy.scrollTo(target, anchor: .center) }
@@ -181,6 +184,7 @@ struct SessionDetailView: View {
                 }
             }
         }
+        .accessibilityIdentifier("detail_container")
         .background {
             Group {
                 Button("") { showFind.toggle() }
