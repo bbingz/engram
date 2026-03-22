@@ -1,7 +1,16 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { setupProcessLifecycle } from '../../src/core/lifecycle.js'
 
 describe('setupProcessLifecycle', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
   // 1. Signal handlers registered without throwing
   it('registers signal handlers and returns a heartbeat handle', () => {
     // setupProcessLifecycle should not throw and should return a handle
@@ -14,45 +23,48 @@ describe('setupProcessLifecycle', () => {
   })
 
   // 2. Idle timeout calls cleanup callback
-  it('idle timeout triggers onExit callback', async () => {
+  it('idle timeout triggers onExit callback', () => {
     const onExit = vi.fn()
     // Mock process.exit to prevent actual exit
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as any)
 
     setupProcessLifecycle({
-      idleTimeoutMs: 50,  // 50ms for fast test
+      idleTimeoutMs: 5000,
       onExit,
     })
 
-    // Wait for the idle timer to fire
-    await new Promise(resolve => setTimeout(resolve, 150))
+    // Before timeout — not yet called
+    vi.advanceTimersByTime(4999)
+    expect(onExit).not.toHaveBeenCalled()
 
+    // Advance past the timeout
+    vi.advanceTimersByTime(1)
     expect(onExit).toHaveBeenCalled()
     expect(exitSpy).toHaveBeenCalledWith(0)
 
     exitSpy.mockRestore()
   })
 
-  // 3. Parent process check handles missing PID
-  it('heartbeat resets idle timer (does not exit prematurely)', async () => {
+  // 3. Heartbeat resets the idle timer
+  it('heartbeat resets idle timer (does not exit prematurely)', () => {
     const onExit = vi.fn()
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as any)
 
     const handle = setupProcessLifecycle({
-      idleTimeoutMs: 100,
+      idleTimeoutMs: 10_000,
       onExit,
     })
 
-    // Heartbeat before timeout
-    await new Promise(resolve => setTimeout(resolve, 50))
+    // Advance 8s, then heartbeat to reset
+    vi.advanceTimersByTime(8000)
     handle.heartbeat()
 
-    // Wait past the original timeout but not past the reset one
-    await new Promise(resolve => setTimeout(resolve, 70))
+    // Advance 8s more — total 16s from start, but only 8s since heartbeat
+    vi.advanceTimersByTime(8000)
     expect(onExit).not.toHaveBeenCalled()
 
-    // Wait for the reset timer to fire
-    await new Promise(resolve => setTimeout(resolve, 80))
+    // Advance past the reset timeout (2s more = 10s since heartbeat)
+    vi.advanceTimersByTime(2000)
     expect(onExit).toHaveBeenCalled()
 
     exitSpy.mockRestore()

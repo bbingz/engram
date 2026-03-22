@@ -87,9 +87,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: EngramTests
-    resources:
-      - path: ../test-fixtures
+      - path: test-fixtures
         type: folder
+        buildPhase: resources
     dependencies:
       - target: Engram
     settings:

@@ -6,6 +6,8 @@ import Foundation
 class MockURLProtocol: URLProtocol {
     /// Handler called for every intercepted request.
     /// Return the desired (HTTPURLResponse, Data?) tuple, or throw to simulate an error.
+    /// WARNING: Not thread-safe. Only one test class should use MockURLProtocol at a time.
+    /// If parallel test classes need mocking, use per-class URLProtocol subclasses.
     static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data?))?
 
     override class func canInit(with request: URLRequest) -> Bool {

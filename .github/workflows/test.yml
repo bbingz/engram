@@ -18,7 +18,6 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run build
-      - run: npm test
       - run: npm run test:coverage
       - uses: actions/upload-artifact@v4
         if: always()
@@ -73,7 +72,7 @@ jobs:
           grep -q '** TEST SUCCEEDED **' xcodebuild.log
 
   fixture-check:
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4

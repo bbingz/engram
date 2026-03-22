@@ -22,9 +22,12 @@ final class StreamingJSONLReaderTests: XCTestCase {
 
     // MARK: - Helper
 
-    private func fixturePath(_ name: String) -> String {
-        Bundle(for: type(of: self)).path(forResource: "test-fixtures/sessions/\(name)", ofType: nil)
-            ?? "/Users/bing/-Code-/coding-memory/test-fixtures/sessions/\(name)"
+    private func fixturePath(_ name: String) throws -> String {
+        guard let path = Bundle(for: type(of: self)).path(forResource: "test-fixtures/sessions/\(name)", ofType: nil) else {
+            XCTFail("Fixture '\(name)' not found in test bundle. Ensure test-fixtures is configured as a resource in project.yml.")
+            return ""  // unreachable after XCTFail, but satisfies compiler
+        }
+        return path
     }
 
     private func writeTempFile(_ name: String, content: String) -> String {
@@ -43,7 +46,7 @@ final class StreamingJSONLReaderTests: XCTestCase {
 
     /// 1. Read well-formed JSONL — verify line count matches
     func testReadWellFormedJSONL() throws {
-        let path = fixturePath("valid.jsonl")
+        let path = try fixturePath("valid.jsonl")
         guard let reader = StreamingJSONLReader(filePath: path) else {
             XCTFail("Reader should not be nil for existing file")
             return
@@ -61,7 +64,7 @@ final class StreamingJSONLReaderTests: XCTestCase {
 
     /// 2. UTF-8/CJK handling — Chinese, Japanese, Korean characters preserved
     func testCJKHandling() throws {
-        let path = fixturePath("cjk.jsonl")
+        let path = try fixturePath("cjk.jsonl")
         guard let reader = StreamingJSONLReader(filePath: path) else {
             XCTFail("Reader should not be nil for existing file")
             return
@@ -77,7 +80,7 @@ final class StreamingJSONLReaderTests: XCTestCase {
 
     /// 3. Empty file yields 0 lines
     func testEmptyFileYieldsZeroLines() throws {
-        let path = fixturePath("empty.jsonl")
+        let path = try fixturePath("empty.jsonl")
         guard let reader = StreamingJSONLReader(filePath: path) else {
             XCTFail("Reader should not be nil for existing empty file")
             return
@@ -96,7 +99,7 @@ final class StreamingJSONLReaderTests: XCTestCase {
 
     /// 5. Malformed lines are still returned (reader yields raw strings, not parsed JSON)
     func testMalformedLinesStillReturned() throws {
-        let path = fixturePath("mixed.jsonl")
+        let path = try fixturePath("mixed.jsonl")
         guard let reader = StreamingJSONLReader(filePath: path) else {
             XCTFail("Reader should not be nil")
             return
@@ -129,7 +132,7 @@ final class StreamingJSONLReaderTests: XCTestCase {
 
     /// 7. Partial last line (no trailing newline) is still returned
     func testPartialLastLineReturned() throws {
-        let path = fixturePath("no-trailing-newline.jsonl")
+        let path = try fixturePath("no-trailing-newline.jsonl")
         guard let reader = StreamingJSONLReader(filePath: path) else {
             XCTFail("Reader should not be nil")
             return
@@ -143,7 +146,7 @@ final class StreamingJSONLReaderTests: XCTestCase {
 
     /// 8. Breaking mid-sequence and closing does not crash
     func testBreakMidSequenceAndClose() throws {
-        let path = fixturePath("valid.jsonl")
+        let path = try fixturePath("valid.jsonl")
         guard let reader = StreamingJSONLReader(filePath: path) else {
             XCTFail("Reader should not be nil")
             return
@@ -162,7 +165,7 @@ final class StreamingJSONLReaderTests: XCTestCase {
 
     /// 9. close() is idempotent — calling multiple times does not crash
     func testCloseIdempotent() throws {
-        let path = fixturePath("valid.jsonl")
+        let path = try fixturePath("valid.jsonl")
         guard let reader = StreamingJSONLReader(filePath: path) else {
             XCTFail("Reader should not be nil")
             return

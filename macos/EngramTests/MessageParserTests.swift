@@ -14,16 +14,19 @@ final class MessageParserTests: XCTestCase {
 
     // MARK: - Helper
 
-    private func fixturePath(_ name: String) -> String {
-        Bundle(for: type(of: self)).path(forResource: "test-fixtures/sessions/\(name)", ofType: nil)
-            ?? "/Users/bing/-Code-/coding-memory/test-fixtures/sessions/\(name)"
+    private func fixturePath(_ name: String) throws -> String {
+        guard let path = Bundle(for: type(of: self)).path(forResource: "test-fixtures/sessions/\(name)", ofType: nil) else {
+            XCTFail("Fixture '\(name)' not found in test bundle. Ensure test-fixtures is configured as a resource in project.yml.")
+            return ""  // unreachable after XCTFail, but satisfies compiler
+        }
+        return path
     }
 
     // MARK: - claude-code format (type/message)
 
     /// 1. Parse claude-code JSONL with string and array content
     func testParseClaudeCodeFormat() throws {
-        let path = fixturePath("claude-code.jsonl")
+        let path = try fixturePath("claude-code.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "claude-code")
 
         XCTAssertEqual(messages.count, 4)
@@ -38,7 +41,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 2. Parse codex format (response_item/payload)
     func testParseCodexFormat() throws {
-        let path = fixturePath("codex.jsonl")
+        let path = try fixturePath("codex.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "codex")
 
         XCTAssertEqual(messages.count, 2)
@@ -50,7 +53,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 3. Parse gemini-cli format (whole-file JSON with messages array)
     func testParseGeminiFormat() throws {
-        let path = fixturePath("gemini.json")
+        let path = try fixturePath("gemini.json")
         let messages = MessageParser.parse(filePath: path, source: "gemini-cli")
 
         XCTAssertEqual(messages.count, 3)
@@ -64,7 +67,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 4. Malformed JSON lines are silently skipped
     func testMalformedJSONSkipped() throws {
-        let path = fixturePath("malformed.jsonl")
+        let path = try fixturePath("malformed.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "claude-code")
 
         // malformed.jsonl: 1 unparseable, 1 missing message field, 1 empty message content
@@ -73,14 +76,14 @@ final class MessageParserTests: XCTestCase {
 
     /// 5. Empty file returns empty array
     func testEmptyFileReturnsEmpty() throws {
-        let path = fixturePath("empty.jsonl")
+        let path = try fixturePath("empty.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "claude-code")
         XCTAssertTrue(messages.isEmpty)
     }
 
     /// 6. Mixed valid/invalid lines — empty content skipped, whitespace-only content kept
     func testMixedValidInvalid() throws {
-        let path = fixturePath("empty-content.jsonl")
+        let path = try fixturePath("empty-content.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "claude-code")
 
         // empty-content.jsonl: "" is skipped (isEmpty), "valid" kept, "   " kept (not empty, just whitespace)
@@ -91,7 +94,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 7. CJK content preserved in claude-code format
     func testCJKContentPreserved() throws {
-        let path = fixturePath("cjk-claude.jsonl")
+        let path = try fixturePath("cjk-claude.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "claude-code")
 
         XCTAssertEqual(messages.count, 3)
@@ -102,7 +105,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 8. Kimi format (role/content, no skip)
     func testParseKimiFormat() throws {
-        let path = fixturePath("kimi.jsonl")
+        let path = try fixturePath("kimi.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "kimi")
 
         XCTAssertEqual(messages.count, 2)
@@ -113,7 +116,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 9. Antigravity format (role/content, skips first line)
     func testParseAntigravityFormat() throws {
-        let path = fixturePath("antigravity.jsonl")
+        let path = try fixturePath("antigravity.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "antigravity")
 
         // First line is metadata, should be skipped
@@ -124,7 +127,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 10. Copilot format (type-based with data.content)
     func testParseCopilotFormat() throws {
-        let path = fixturePath("copilot.jsonl")
+        let path = try fixturePath("copilot.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "copilot")
 
         XCTAssertEqual(messages.count, 2)
@@ -136,7 +139,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 11. Cline format (whole-file JSON array with say/text)
     func testParseClineFormat() throws {
-        let path = fixturePath("cline.json")
+        let path = try fixturePath("cline.json")
         let messages = MessageParser.parse(filePath: path, source: "cline")
 
         // task → user, text(partial=false) → assistant, user_feedback → user, text(partial=true) → skipped
@@ -151,7 +154,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 12. System prompt detection — systemPrompt category
     func testSystemPromptDetection() throws {
-        let path = fixturePath("system-prompts.jsonl")
+        let path = try fixturePath("system-prompts.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "claude-code")
 
         XCTAssertEqual(messages.count, 4)
@@ -169,7 +172,7 @@ final class MessageParserTests: XCTestCase {
 
     /// 13. Unknown source returns empty array
     func testUnknownSourceReturnsEmpty() throws {
-        let path = fixturePath("valid.jsonl")
+        let path = try fixturePath("valid.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "vscode")
         XCTAssertTrue(messages.isEmpty)
     }
