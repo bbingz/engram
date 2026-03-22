@@ -66,65 +66,74 @@ export async function handleSearch(
     since: params.since,
   }
 
-  // --- FTS keyword search ---
+  // --- Run all search backends in parallel ---
+  // FTS (~33ms), local vector (~instant), Viking find (~237ms) — all concurrent.
+  // Viking grep (~4s P50) is intentionally excluded: FTS covers keyword search 100x faster.
+  const VIKING_RRF_BOOST = 0.002 // ~12% of rank-1 RRF score — slight tiebreaker for Viking's hierarchical context
+
   const ftsScores = new Map<string, { score: number; snippet: string }>()
-
-  if (mode !== 'semantic' && params.query.length >= 3) {
-    searchModes.push('keyword')
-    const ftsResults = db.searchSessions(params.query, limit * 3, filters)
-    const seen = new Set<string>()
-    let rank = 1
-    for (const match of ftsResults) {
-      if (seen.has(match.sessionId)) continue
-      seen.add(match.sessionId)
-      ftsScores.set(match.sessionId, { score: rrfScore(rank), snippet: match.snippet })
-      rank++
-    }
-  }
-
-  // --- Semantic vector search ---
   const vecScores = new Map<string, { score: number; distance: number }>()
+  const vikingScores = new Map<string, { score: number; snippet: string }>()
 
-  if (mode !== 'keyword' && params.query.length >= 2 && deps.vectorStore && deps.embed) {
-    try {
-      const queryVec = await deps.embed(params.query)
-      if (queryVec) {
-        searchModes.push('semantic')
-        const vecResults = deps.vectorStore.search(queryVec, limit * 2)
+  // Check Viking availability before launching parallel work (cached, cheap)
+  const vikingAvailable = deps.viking && params.query.length >= 2
+    ? await deps.viking.checkAvailable()
+    : false
+
+  await Promise.all([
+    // FTS keyword search (synchronous SQLite, resolves immediately)
+    (async () => {
+      if (mode !== 'semantic' && params.query.length >= 3) {
+        searchModes.push('keyword')
+        const ftsResults = db.searchSessions(params.query, limit * 3, filters)
+        const seen = new Set<string>()
         let rank = 1
-        for (const vr of vecResults) {
-          vecScores.set(vr.sessionId, { score: rrfScore(rank), distance: vr.distance })
+        for (const match of ftsResults) {
+          if (seen.has(match.sessionId)) continue
+          seen.add(match.sessionId)
+          ftsScores.set(match.sessionId, { score: rrfScore(rank), snippet: match.snippet })
           rank++
         }
       }
-    } catch { /* vector search unavailable */ }
-  }
+    })(),
 
-  // --- Viking semantic + keyword search ---
-  // ~12% of rank-1 RRF score (1/61 ≈ 0.016) — slight tiebreaker favoring Viking's hierarchical context
-  const VIKING_RRF_BOOST = 0.002
-  const vikingScores = new Map<string, { score: number; snippet: string }>()
-
-  if (deps.viking && params.query.length >= 2 && await deps.viking.checkAvailable()) {
-    try {
-      const [findResults, grepResults] = await Promise.all([
-        deps.viking.find(params.query),
-        params.query.length >= 3 ? deps.viking.grep(params.query) : Promise.resolve([]),
-      ])
-      const allViking = [...findResults, ...grepResults]
-      if (findResults.length > 0) searchModes.push('viking-semantic')
-      if (grepResults.length > 0) searchModes.push('viking-keyword')
-      const seen = new Set<string>()
-      let rank = 1
-      for (const vr of allViking) {
-        const sessionId = sessionIdFromVikingUri(vr.uri)
-        if (!sessionId || seen.has(sessionId)) continue
-        seen.add(sessionId)
-        vikingScores.set(sessionId, { score: rrfScore(rank) + VIKING_RRF_BOOST, snippet: vr.snippet })
-        rank++
+    // Local vector search
+    (async () => {
+      if (mode !== 'keyword' && params.query.length >= 2 && deps.vectorStore && deps.embed) {
+        try {
+          const queryVec = await deps.embed(params.query)
+          if (queryVec) {
+            searchModes.push('semantic')
+            const vecResults = deps.vectorStore.search(queryVec, limit * 2)
+            let rank = 1
+            for (const vr of vecResults) {
+              vecScores.set(vr.sessionId, { score: rrfScore(rank), distance: vr.distance })
+              rank++
+            }
+          }
+        } catch { /* vector search unavailable */ }
       }
-    } catch { /* Viking search failed, continue with FTS */ }
-  }
+    })(),
+
+    // Viking semantic search (find only — grep excluded for latency)
+    (async () => {
+      if (deps.viking && vikingAvailable) {
+        try {
+          const findResults = await deps.viking.find(params.query)
+          if (findResults.length > 0) searchModes.push('viking-semantic')
+          const seen = new Set<string>()
+          let rank = 1
+          for (const vr of findResults) {
+            const sessionId = sessionIdFromVikingUri(vr.uri)
+            if (!sessionId || seen.has(sessionId)) continue
+            seen.add(sessionId)
+            vikingScores.set(sessionId, { score: rrfScore(rank) + VIKING_RRF_BOOST, snippet: vr.snippet })
+            rank++
+          }
+        } catch { /* Viking search failed, continue with FTS */ }
+      }
+    })(),
+  ])
 
   // --- RRF merge ---
   const allSessionIds = new Set([...ftsScores.keys(), ...vecScores.keys(), ...vikingScores.keys()])
