@@ -94,6 +94,7 @@ targets:
       - target: Engram
     settings:
       SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
       BUNDLE_LOADER: "$(TEST_HOST)"
 
@@ -108,3 +109,6 @@ targets:
       - target: Engram
     settings:
       TEST_TARGET_NAME: Engram
+      GENERATE_INFOPLIST_FILE: YES
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
