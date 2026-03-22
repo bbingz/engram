@@ -10,5 +10,8 @@ macos/build/
 macos/Engram.xcodeproj/xcuserdata/
 macos/Engram.xcodeproj/project.xcworkspace/xcuserdata/
 
+# Coverage
+coverage/
+
 # macOS
 .DS_Store

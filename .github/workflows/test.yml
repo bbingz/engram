@@ -1,0 +1,92 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+
+  swift-unit:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Cache Homebrew (xcodegen)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-xcodegen-${{ runner.os }}
+
+      - name: Install xcodegen
+        run: brew install xcodegen || true
+
+      - name: Cache SPM packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ hashFiles('macos/project.yml') }}
+          restore-keys: spm-
+
+      - name: Generate Xcode project
+        run: cd macos && xcodegen generate
+
+      - name: Generate test fixtures
+        run: |
+          npm ci
+          npm run build
+          npm run generate:fixtures
+
+      - name: Run Swift unit tests
+        run: |
+          cd macos && xcodebuild test \
+            -project Engram.xcodeproj \
+            -scheme Engram \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee xcodebuild.log
+          grep -q '** TEST SUCCEEDED **' xcodebuild.log
+
+  fixture-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Check fixture schema version
+        run: npx tsx scripts/check-fixture-schema.ts
+      - name: Verify fixture determinism
+        run: |
+          test -f test-fixtures/test-index.sqlite || (echo "ERROR: fixture not committed" && exit 1)
+          npx tsx scripts/generate-test-fixtures.ts
+          git diff --exit-code test-fixtures/test-index.sqlite
