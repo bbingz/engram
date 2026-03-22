@@ -109,7 +109,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.styleMask.remove(.resizable)
             self.popoverWindow = window
         } else {
-            menuBarController = MenuBarController(db: db, indexer: indexer, daemonClient: daemonClient)
+            menuBarController = MenuBarController(db: db, indexer: indexer, daemonClient: daemonClient, windowSize: environment.windowSize)
         }
 
         // First-run onboarding (skip in test mode)

@@ -377,9 +377,53 @@ insertTag.run('seed-03', 'bug', '2026-01-16T10:35:00.000Z')
 insertTag.run('seed-07', 'premium', '2026-01-18T12:10:00.000Z')
 insertTag.run('seed-09', 'cjk', '2026-01-20T07:05:00.000Z')
 
+// ─── Git repos ──────────────────────────────────────────────────────
+const insertRepo = raw.prepare(`
+  INSERT INTO git_repos (path, name, branch, last_commit_hash, last_commit_at, session_count)
+  VALUES (?, ?, ?, ?, ?, ?)
+`)
+insertRepo.run('/Users/dev/project-alpha', 'project-alpha', 'main', 'abc1234', '2026-01-14T10:00:00Z', 8)
+insertRepo.run('/Users/dev/project-beta', 'project-beta', 'develop', 'def5678', '2026-01-15T08:00:00Z', 5)
+insertRepo.run('/Users/dev/engram', 'engram', 'main', 'ghi9012', '2026-01-15T09:30:00Z', 12)
+
+// ─── Logs (source must be 'daemon' or 'app' — CHECK constraint) ─────
+const insertLog = raw.prepare(`
+  INSERT INTO logs (level, module, message, ts, source)
+  VALUES (?, ?, ?, ?, ?)
+`)
+insertLog.run('info', 'indexer', 'Session started', '2026-01-15T10:00:00Z', 'daemon')
+insertLog.run('debug', 'indexer', 'Indexing 5 files', '2026-01-15T10:00:01Z', 'daemon')
+insertLog.run('warn', 'db', 'Slow query detected', '2026-01-14T09:00:00Z', 'daemon')
+insertLog.run('error', 'daemon', 'Connection refused', '2026-01-13T14:00:00Z', 'daemon')
+insertLog.run('info', 'viking', 'Viking sync complete', '2026-01-12T11:00:00Z', 'daemon')
+
+// ─── Traces (source must be 'daemon' or 'app') ─────────────────────
+const insertTrace = raw.prepare(`
+  INSERT INTO traces (trace_id, span_id, name, module, start_ts, end_ts, duration_ms, status, source)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`)
+insertTrace.run('t1', 's1', 'index_session', 'indexer', '2026-01-15T10:00:00Z', '2026-01-15T10:00:02Z', 2000, 'ok', 'daemon')
+insertTrace.run('t2', 's2', 'fts_search', 'search', '2026-01-14T09:00:01Z', '2026-01-14T09:00:01Z', 150, 'ok', 'daemon')
+insertTrace.run('t3', 's3', 'viking_push', 'viking', '2026-01-13T14:00:00Z', '2026-01-13T14:00:05Z', 5000, 'error', 'daemon')
+
+// ─── Metrics (type must be 'counter', 'gauge', or 'histogram') ─────
+const insertMetric = raw.prepare(`
+  INSERT INTO metrics (name, type, value, tags, ts)
+  VALUES (?, ?, ?, ?, ?)
+`)
+insertMetric.run('index_duration_ms', 'gauge', 2000, '{"source":"claude-code"}', '2026-01-15T10:00:02Z')
+insertMetric.run('messages_indexed', 'counter', 45, '{"source":"claude-code"}', '2026-01-15T10:00:02Z')
+insertMetric.run('search_latency_ms', 'gauge', 150, '{}', '2026-01-14T09:00:01Z')
+insertMetric.run('viking_push_ms', 'gauge', 5000, '{}', '2026-01-13T14:00:05Z')
+insertMetric.run('sessions_synced', 'counter', 3, '{}', '2026-01-12T11:00:00Z')
+
 db.close()
 
 console.log(`Generated fixture DB at ${fixturePath}`)
 console.log(`  Sessions: ${sessions.length}`)
 console.log(`  Favorites: 3`)
 console.log(`  Tags: 5`)
+console.log(`  Git repos: 3`)
+console.log(`  Logs: 5`)
+console.log(`  Traces: 3`)
+console.log(`  Metrics: 5`)
