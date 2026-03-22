@@ -1,0 +1,25 @@
+name: CI Signing Test
+on: workflow_dispatch
+jobs:
+  signing-test:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: brew install xcodegen
+      - run: cd macos && xcodegen generate
+      - run: npm run generate:fixtures
+      - name: Test UI signing
+        run: |
+          xcodebuild test \
+            -project macos/Engram.xcodeproj \
+            -scheme Engram \
+            -only-testing:EngramUITests/SigningVerificationTest \
+            -destination 'platform=macOS' \
+            CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM=""

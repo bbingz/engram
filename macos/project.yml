@@ -97,5 +97,14 @@ targets:
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
       BUNDLE_LOADER: "$(TEST_HOST)"
 
-  # EngramUITests: removed — placeholder target produces damaged Runner.app
-  # Will be re-added in SP2 when real UI tests are implemented.
+  EngramUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: EngramUITests
+        excludes:
+          - "baselines/**"
+    dependencies:
+      - target: Engram
+    settings:
+      TEST_TARGET_NAME: Engram
