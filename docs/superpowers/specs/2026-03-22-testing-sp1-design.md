@@ -128,8 +128,10 @@ EngramTests:
   sources:
     - path: EngramTests
   resources:
-    - path: ../../test-fixtures
+    - path: ../test-fixtures
       type: folder
+      # XcodeGen resolves paths relative to project.yml (macos/), so ../test-fixtures → project root.
+      # Verify with: xcodegen generate && grep test-fixtures Engram.xcodeproj/project.pbxproj
   dependencies:
     - target: Engram
   settings:
@@ -348,6 +350,9 @@ Note: some target files already exist. Where noted, expand with new tests (check
 - Write + read roundtrip for new fields
 
 **`tests/web/api.test.ts`** (10 tests):
+
+Testing approach: Use Hono's built-in `app.request()` method (no real HTTP server needed). Create app via `createApp(db)` with in-memory DB, then call `app.request('/health')` etc. This avoids port conflicts and is faster than starting a real server.
+
 - GET /health returns 200
 - POST /api/log with valid body → 200
 - POST /api/log with invalid level → 400
@@ -429,12 +434,22 @@ Note: `EngramTests` is part of the `Engram` scheme's test plan (XcodeGen default
 - git diff --exit-code test-fixtures/test-index.sqlite
 ```
 
+### Cache Strategy
+
+macOS runners are expensive (~$0.08/min). Aggressive caching saves 1-2 min per run:
+
+- **Node modules**: `actions/setup-node@v4` with `cache: 'npm'` (built-in)
+- **SPM packages**: `actions/cache@v4` on `~/Library/Developer/Xcode/DerivedData/**/SourcePackages`
+  - Key: `spm-${{ hashFiles('macos/Engram.xcodeproj/project.pbxproj') }}`
+- **Homebrew (xcodegen)**: `actions/cache@v4` on `~/Library/Caches/Homebrew`
+  - Key: `brew-xcodegen-${{ runner.os }}`
+
 ### macOS Runner Notes
 
 - `macos-15` has Xcode 16+ pre-installed
-- GRDB resolves via SPM (cached by GitHub Actions)
-- No code signing needed for test-only builds (`CODE_SIGNING_ALLOWED=NO`)
-- `xcodegen` installed via Homebrew (cache `~/Library/Caches/Homebrew`)
+- GRDB resolves via SPM (cached per above)
+- No code signing needed for test-only builds (`CODE_SIGNING_ALLOWED=NO`) — prevents keychain prompts
+- `xcodegen` installed via Homebrew (cached per above)
 
 ---
 
@@ -447,4 +462,4 @@ Note: `EngramTests` is part of the `Engram` scheme's test plan (XcodeGen default
 | TS coverage | lines ≥ 60%, branches ≥ 50%, functions ≥ 55% |
 | CI pipeline | 3 jobs, all green on PR, < 8 min total |
 | Fixture DB | Deterministic, schema-validated, < 100KB |
-| Zero flaky tests | No time-dependent or order-dependent failures |
+| Zero flaky tests | 2-week observation: no random failures across CI runs. Initial validation: 3 consecutive green runs on same commit. |
