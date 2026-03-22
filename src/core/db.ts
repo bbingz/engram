@@ -317,7 +317,7 @@ export class Database {
       CREATE TABLE IF NOT EXISTS traces (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trace_id TEXT NOT NULL,
-        span_id TEXT NOT NULL,
+        span_id TEXT NOT NULL UNIQUE,
         parent_span_id TEXT,
         name TEXT NOT NULL,
         module TEXT NOT NULL,
