@@ -54,6 +54,7 @@ class ScreenshotCapture {
 }
 
 /// Register as principal class to clean screenshots once per test suite.
+@objc(ScreenshotTestObserver)
 class ScreenshotTestObserver: NSObject, XCTestObservation {
     override init() {
         super.init()
