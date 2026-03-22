@@ -50,8 +50,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // One-time: migrate plaintext API keys from settings.json to Keychain
         migrateKeysToKeychainIfNeeded()
 
-        // Hide from Dock — menu bar only
-        NSApp.setActivationPolicy(.accessory)
+        // Hide from Dock — menu bar only (keep .regular for popover standalone so XCUITest can see the window)
+        if environment.popoverStandalone {
+            NSApp.setActivationPolicy(.regular)
+        } else {
+            NSApp.setActivationPolicy(.accessory)
+        }
 
         // Appearance override for screenshot tests
         if let idx = CommandLine.arguments.firstIndex(of: "--appearance"),
