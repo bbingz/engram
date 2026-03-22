@@ -237,20 +237,21 @@ export function readFileSettings(): FileSettings {
       const hasExplicitFalse = migrated.hideUsageSessions === false || migrated.hideEmptySessions === false || migrated.hideAutoSummary === false
       migrated.noiseFilter = hasExplicitFalse ? 'all' : 'hide-skip'
     }
-    // Overlay Keychain values — "@keychain" sentinel in JSON means "read from macOS Keychain"
-    if (migrated.aiApiKey === '@keychain' || !migrated.aiApiKey) {
+    // Overlay Keychain values — only when "@keychain" sentinel is explicitly set in JSON
+    if (migrated.aiApiKey === '@keychain') {
       const kc = readKeychainValue('aiApiKey');
-      if (kc) migrated.aiApiKey = kc;
+      migrated.aiApiKey = kc ?? '';
     }
-    if (migrated.titleApiKey === '@keychain' || !migrated.titleApiKey) {
+    if (migrated.titleApiKey === '@keychain') {
       const kc = readKeychainValue('titleApiKey');
-      if (kc) migrated.titleApiKey = kc;
+      migrated.titleApiKey = kc ?? '';
     }
-    if (migrated.viking?.apiKey === '@keychain' || !migrated.viking?.apiKey) {
+    if (migrated.viking?.apiKey === '@keychain') {
       const kc = readKeychainValue('vikingApiKey');
       if (kc) {
-        if (!migrated.viking) migrated.viking = {} as any;
         migrated.viking!.apiKey = kc;
+      } else {
+        migrated.viking!.apiKey = '';
       }
     }
     return migrated;
