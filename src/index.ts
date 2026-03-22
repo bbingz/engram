@@ -8,6 +8,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { join } from 'path'
 
+import { createLogger } from './core/logger.js'
 import { Database } from './core/db.js'
 import { Indexer } from './core/indexer.js'
 import { IndexJobRunner } from './core/index-job-runner.js'
@@ -33,6 +34,8 @@ import { handoffTool, handleHandoff } from './tools/handoff.js'
 import { liveSessionsTool, handleLiveSessions } from './tools/live_sessions.js'
 import { lintConfigTool, handleLintConfig } from './tools/lint_config.js'
 import { handleFileActivity } from './tools/file_activity.js'
+
+const log = createLogger('mcp')
 
 const DB_DIR = ensureDataDirs()
 const db = new Database(join(DB_DIR, 'index.sqlite'))
@@ -127,25 +130,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let result: unknown
 
     if (name === 'list_sessions') {
-      result = await handleListSessions(db, a)
+      result = await handleListSessions(db, a, { log })
     } else if (name === 'get_session') {
       const session = db.getSession(a.id as string)
       if (!session) return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true }
       const adapter = adapterMap[session.source]
       if (!adapter) return { content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true }
-      result = await handleGetSession(db, adapter, a as { id: string; page?: number; roles?: string[] })
+      result = await handleGetSession(db, adapter, a as { id: string; page?: number; roles?: string[] }, { log })
     } else if (name === 'search') {
       const sDeps: SearchDeps = {
         ...(vecDeps ? { vectorStore: vecDeps.vectorStore, embed: (text: string) => vecDeps.embeddingClient.embed(text) } : {}),
         viking: vikingBridge,
+        log,
       }
       result = await handleSearch(db, a as { query: string; mode?: string }, sDeps)
     } else if (name === 'project_timeline') {
-      result = await handleProjectTimeline(db, a as { project: string })
+      result = await handleProjectTimeline(db, a as { project: string }, { log })
     } else if (name === 'stats') {
-      result = await handleStats(db, a)
+      result = await handleStats(db, a, { log })
     } else if (name === 'get_context') {
-      const ctxDeps: GetContextDeps = { ...vectorDeps, viking: vikingBridge }
+      const ctxDeps: GetContextDeps = { ...vectorDeps, viking: vikingBridge, log }
       const ctx = await handleGetContext(db, a as { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full'; sort_by?: 'recency' | 'score'; include_environment?: boolean }, ctxDeps)
       return { content: [{ type: 'text', text: ctx.contextText }] }
     } else if (name === 'export') {
@@ -153,9 +157,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!session) return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true }
       const adapter = adapterMap[session.source]
       if (!adapter) return { content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true }
-      result = await handleExport(db, adapter, a as { id: string; format?: string })
+      result = await handleExport(db, adapter, a as { id: string; format?: string }, { log })
     } else if (name === 'generate_summary') {
-      return await handleGenerateSummary(db, a as { sessionId: string })
+      return await handleGenerateSummary(db, a as { sessionId: string }, { log })
     } else if (name === 'manage_project_alias') {
       const action = a.action as string
       if (action === 'list') {
@@ -172,22 +176,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true }
       }
     } else if (name === 'link_sessions') {
-      result = await handleLinkSessions(db, a as { targetDir: string })
+      result = await handleLinkSessions(db, a as { targetDir: string }, { log })
     } else if (name === 'get_memory') {
-      result = await handleGetMemory(a as { query: string }, { viking: vikingBridge })
+      result = await handleGetMemory(a as { query: string }, { viking: vikingBridge, log })
     } else if (name === 'get_costs') {
-      result = handleGetCosts(db, a as { group_by?: string; since?: string; until?: string })
+      result = handleGetCosts(db, a as { group_by?: string; since?: string; until?: string }, { log })
     } else if (name === 'tool_analytics') {
-      result = handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string })
+      result = handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string }, { log })
     } else if (name === 'handoff') {
-      result = await handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' }, adapters)
+      result = await handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' }, adapters, { log })
     } else if (name === 'live_sessions') {
-      result = handleLiveSessions(null) // No live monitor in MCP server mode
+      result = handleLiveSessions(null, { log }) // No live monitor in MCP server mode
     } else if (name === 'lint_config') {
       if (!a.cwd) return { content: [{ type: 'text', text: 'cwd parameter required' }], isError: true }
-      result = await handleLintConfig({ cwd: a.cwd as string })
+      result = await handleLintConfig({ cwd: a.cwd as string }, { log })
     } else if (name === 'file_activity') {
-      result = handleFileActivity(db, a as { project?: string; since?: string; limit?: number })
+      result = handleFileActivity(db, a as { project?: string; since?: string; limit?: number }, { log })
     } else {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
     }

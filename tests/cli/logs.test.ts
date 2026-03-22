@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from '../../src/core/db.js'
 import { queryLogs } from '../../src/cli/logs.js'
+import { parseDuration } from '../../src/cli/utils.js'
 
 describe('queryLogs', () => {
   let db: Database
@@ -34,5 +35,33 @@ describe('queryLogs', () => {
   it('respects limit', () => {
     const result = queryLogs(db.raw, { limit: 2 })
     expect(result).toHaveLength(2)
+  })
+})
+
+describe('parseDuration', () => {
+  it('parses minutes', () => {
+    const result = parseDuration('30m')
+    const diff = Date.now() - new Date(result).getTime()
+    expect(diff).toBeGreaterThan(29 * 60000)
+    expect(diff).toBeLessThan(31 * 60000)
+  })
+
+  it('parses hours', () => {
+    const result = parseDuration('1h')
+    const diff = Date.now() - new Date(result).getTime()
+    expect(diff).toBeGreaterThan(59 * 60000)
+    expect(diff).toBeLessThan(61 * 60000)
+  })
+
+  it('parses days', () => {
+    const result = parseDuration('7d')
+    const diff = Date.now() - new Date(result).getTime()
+    expect(diff).toBeGreaterThan(6.9 * 86400000)
+    expect(diff).toBeLessThan(7.1 * 86400000)
+  })
+
+  it('throws on invalid format', () => {
+    expect(() => parseDuration('abc')).toThrow()
+    expect(() => parseDuration('1x')).toThrow()
   })
 })

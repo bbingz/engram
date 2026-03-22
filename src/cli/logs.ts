@@ -4,6 +4,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { Database } from '../core/db.js'
 import { resolve } from 'path'
 import { homedir } from 'os'
+import { parseDuration } from './utils.js'
 
 export interface LogFilters {
   level?: string
@@ -80,6 +81,7 @@ function parseArgs(args: string[]): LogFilters & { json?: boolean } {
     else if (arg === '--module' && next) { filters.module = next; i++ }
     else if (arg === '--trace-id' && next) { filters.traceId = next; i++ }
     else if (arg === '--since' && next) { filters.since = next; i++ }
+    else if (arg === '--last' && next) { filters.since = parseDuration(next); i++ }
     else if (arg === '--limit' && next) { filters.limit = parseInt(next, 10); i++ }
     else if (arg === '--json') { filters.json = true }
   }

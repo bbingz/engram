@@ -4,6 +4,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { Database } from '../core/db.js'
 import { resolve } from 'path'
 import { homedir } from 'os'
+import { parseDuration } from './utils.js'
 
 export interface HealthResult {
   dbSizeBytes: number
@@ -123,6 +124,7 @@ function parseArgs(args: string[]): { since?: string; json?: boolean } {
     const arg = args[i]
     const next = args[i + 1]
     if (arg === '--since' && next) { opts.since = next; i++ }
+    else if (arg === '--last' && next) { opts.since = parseDuration(next); i++ }
     else if (arg === '--json') { opts.json = true }
   }
   return opts

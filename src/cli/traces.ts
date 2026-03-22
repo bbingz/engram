@@ -4,11 +4,13 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { Database } from '../core/db.js'
 import { resolve } from 'path'
 import { homedir } from 'os'
+import { parseDuration } from './utils.js'
 
 export interface TraceFilters {
   slow?: number
   name?: string
   traceId?: string
+  since?: string
   limit?: number
 }
 
@@ -43,6 +45,10 @@ export function queryTraces(db: BetterSqlite3.Database, filters: TraceFilters): 
     conditions.push('trace_id = ?')
     params.push(filters.traceId)
   }
+  if (filters.since) {
+    conditions.push('start_ts >= ?')
+    params.push(filters.since)
+  }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
   const limit = filters.limit ?? 50
@@ -72,6 +78,8 @@ function parseArgs(args: string[]): TraceFilters & { json?: boolean } {
     if (arg === '--slow' && next) { filters.slow = parseInt(next, 10); i++ }
     else if (arg === '--name' && next) { filters.name = next; i++ }
     else if (arg === '--trace-id' && next) { filters.traceId = next; i++ }
+    else if (arg === '--since' && next) { filters.since = next; i++ }
+    else if (arg === '--last' && next) { filters.since = parseDuration(next); i++ }
     else if (arg === '--limit' && next) { filters.limit = parseInt(next, 10); i++ }
     else if (arg === '--json') { filters.json = true }
   }
