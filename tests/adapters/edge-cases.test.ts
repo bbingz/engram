@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { CodexAdapter } from '../../src/adapters/codex.js'
 import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.js'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs'
+import { CopilotAdapter } from '../../src/adapters/copilot.js'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -120,6 +121,91 @@ describe('Adapter edge cases', () => {
       files.push(f)
     }
     expect(files).toHaveLength(0)
+  })
+
+  // 9. Binary content → streamMessages should not crash
+  it('binary content in file does not crash streamMessages', async () => {
+    const sessionRoot = join(tmpDir, 'copilot-binary')
+    const sessionDir = join(sessionRoot, 'session-bin')
+    mkdirSync(sessionDir, { recursive: true })
+    const filePath = join(sessionDir, 'events.jsonl')
+    // Write non-UTF8 bytes (0xFF 0xFE + some garbage)
+    writeFileSync(filePath, Buffer.from([0xff, 0xfe, 0x00, 0x01, 0xab, 0xcd, 0xef]))
+
+    const adapter = new CopilotAdapter(sessionRoot)
+    const messages: unknown[] = []
+    // Should not throw — may yield 0 messages or skip unreadable lines
+    await expect(async () => {
+      for await (const msg of adapter.streamMessages(filePath)) {
+        messages.push(msg)
+      }
+    }).not.toThrow()
+    // Binary content can't be valid JSON events, so 0 messages expected
+    expect(messages.length).toBe(0)
+  })
+
+  // 10. parseSessionInfo returns null for JSONL with no parseable session metadata
+  it('parseSessionInfo returns null when JSONL has no session metadata', async () => {
+    const sessionRoot = join(tmpDir, 'copilot-no-meta')
+    const sessionDir = join(sessionRoot, 'session-no-meta')
+    mkdirSync(sessionDir, { recursive: true })
+    const filePath = join(sessionDir, 'events.jsonl')
+    // Valid JSON lines but no user.message or assistant.message events
+    writeFileSync(filePath, '{"type":"debug.log","data":{"msg":"started"}}\n{"type":"system.event","data":{}}\n')
+
+    const adapter = new CopilotAdapter(sessionRoot)
+    const result = await adapter.parseSessionInfo(filePath)
+    // No user/assistant messages + no id = null
+    expect(result).toBeNull()
+  })
+
+  // 11. File deleted after listing → parseSessionInfo returns null
+  it('file deleted after listing returns null from parseSessionInfo', async () => {
+    const sessionRoot = join(tmpDir, 'copilot-deleted')
+    const sessionDir = join(sessionRoot, 'session-del')
+    mkdirSync(sessionDir, { recursive: true })
+    const filePath = join(sessionDir, 'events.jsonl')
+    writeFileSync(filePath, '{"type":"user.message","timestamp":"2026-01-01T00:00:00Z","data":{"content":"hi"}}\n')
+
+    const adapter = new CopilotAdapter(sessionRoot)
+
+    // Collect the yielded path
+    const listedFiles: string[] = []
+    for await (const f of adapter.listSessionFiles()) {
+      listedFiles.push(f)
+    }
+    expect(listedFiles).toHaveLength(1)
+    expect(listedFiles[0]).toBe(filePath)
+
+    // Delete file before parsing
+    unlinkSync(filePath)
+
+    const result = await adapter.parseSessionInfo(filePath)
+    expect(result).toBeNull()
+  })
+
+  // 12. Truncated JSON line → corrupted line skipped, other lines parsed
+  it('truncated JSON line is skipped and other lines still parsed', async () => {
+    const sessionRoot = join(tmpDir, 'copilot-truncated')
+    const sessionDir = join(sessionRoot, 'session-trunc')
+    mkdirSync(sessionDir, { recursive: true })
+    const filePath = join(sessionDir, 'events.jsonl')
+    // workspace.yaml so we have an id
+    writeFileSync(join(sessionDir, 'workspace.yaml'), 'id: sess-trunc\ncwd: /tmp\ncreated_at: 2026-01-01T00:00:00Z\n')
+    const lines = [
+      '{"type":"user.message","timestamp":"2026-01-01T00:00:00Z","data":{"content":"good line"}}',
+      '{"role":"user","c',  // truncated mid-JSON
+      '{"type":"assistant.message","timestamp":"2026-01-01T00:01:00Z","data":{"content":"response"}}',
+    ]
+    writeFileSync(filePath, lines.join('\n'))
+
+    const adapter = new CopilotAdapter(sessionRoot)
+    const messages: unknown[] = []
+    for await (const msg of adapter.streamMessages(filePath)) {
+      messages.push(msg)
+    }
+    // Truncated line skipped; 2 valid messages parsed
+    expect(messages).toHaveLength(2)
   })
 
   // 8. Mixed valid/invalid session files → valid ones processed
