@@ -36,7 +36,6 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.13.5",
     "@vitest/coverage-v8": "^3.2.4",
-    "blockhash-core": "^0.1.0",
     "pixelmatch": "^6.0.0",
     "sharp": "^0.33.5",
     "ssim.js": "^3.5.0",

@@ -1055,7 +1055,9 @@ class DatabaseManager: ObservableObject {
                     SELECT name FROM sqlite_master WHERE type='table' AND name=?
                 """, arguments: [table])
                 if exists != nil {
-                    let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") ?? 0
+                    // Safe: table names come from the hardcoded `tables` array above, not user input.
+                    // SQLite does not support parameterized table names, so string interpolation is required here.
+                    let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \"\(table)\"") ?? 0
                     results.append((table: table, count: count))
                 }
             }
