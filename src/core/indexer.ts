@@ -219,7 +219,9 @@ export class Indexer {
               // 快速跳过：文件大小与 DB 记录一致（适用于大多数适配器）
               if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) return
 
+              const parseStart = performance.now()
               const info = await adapter.parseSessionInfo(filePath)
+              if (info) this.metrics?.histogram('indexer.adapter_parse_ms', performance.now() - parseStart, { source: adapter.name })
               if (!info) return
 
               // 二段跳过：某些适配器（如 antigravity）的 sizeBytes 与文件本身大小不同
@@ -241,12 +243,14 @@ export class Indexer {
               const messages: { role: string; content: string }[] = []
               const acc = Indexer.newAccumulator()
 
+              const streamStart = performance.now()
               for await (const msg of adapter.streamMessages(filePath)) {
                 if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
                   messages.push({ role: msg.role, content: msg.content })
                 }
                 Indexer.accumulateFromStream(msg, acc)
               }
+              this.metrics?.histogram('indexer.adapter_stream_ms', performance.now() - streamStart, { source: adapter.name })
 
               const current = this.db.getAuthoritativeSnapshot(info.id)
               const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
@@ -361,7 +365,9 @@ export class Indexer {
       let fileSize = 0
       try { fileSize = (await stat(filePath)).size } catch { /* intentional: virtual paths (e.g. cursor: dbPath?composer=id) don't have stat */ }
 
+      const parseStart = performance.now()
       const info = await adapter.parseSessionInfo(filePath)
+      if (info) this.metrics?.histogram('indexer.adapter_parse_ms', performance.now() - parseStart, { source: adapter.name })
       if (!info) {
         span?.end()
         return { indexed: false }
@@ -374,12 +380,14 @@ export class Indexer {
       const messages: { role: string; content: string }[] = []
       const acc = Indexer.newAccumulator()
 
+      const streamStart = performance.now()
       for await (const msg of adapter.streamMessages(filePath)) {
         if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
           messages.push({ role: msg.role, content: msg.content })
         }
         Indexer.accumulateFromStream(msg, acc)
       }
+      this.metrics?.histogram('indexer.adapter_stream_ms', performance.now() - streamStart, { source: adapter.name })
 
       const current = this.db.getAuthoritativeSnapshot(info.id)
       const snapshot = this.buildLocalAuthoritativeSnapshot(current, { ...info, sizeBytes: info.sizeBytes || fileSize }, filePath, messages)
