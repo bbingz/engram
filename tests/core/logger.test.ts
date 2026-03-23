@@ -151,6 +151,7 @@ describe('log rotation', () => {
   })
 })
 
+import { MetricsCollector } from '../../src/core/metrics.js'
 import { runWithContext } from '../../src/core/request-context.js'
 
 describe('logger ALS integration', () => {
@@ -250,6 +251,57 @@ describe('logger stderr JSON', () => {
     const log = createLogger('test', { writer, level: 'info', stderrJson: true })
     log.debug('should be skipped')
     expect(stderrOutput).toHaveLength(0)
+  })
+})
+
+describe('logger error count', () => {
+  let db: Database
+  let writer: LogWriter
+  let metricsDb: Database
+  let collector: MetricsCollector
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    writer = new LogWriter(db.raw)
+    metricsDb = new Database(':memory:')
+    collector = new MetricsCollector(metricsDb.raw, { flushIntervalMs: 0 })
+  })
+  afterEach(() => { db.close(); metricsDb.close() })
+
+  it('increments error.count on log.error()', () => {
+    const log = createLogger('mymod', { writer, level: 'info', stderrJson: false, metrics: collector })
+    log.error('something broke', {}, new Error('boom'))
+    collector.flush()
+    const rows = metricsDb.raw.prepare("SELECT * FROM metrics WHERE name = 'error.count'").all() as any[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].type).toBe('counter')
+    expect(JSON.parse(rows[0].tags).module).toBe('mymod')
+  })
+
+  it('does not increment on info/warn', () => {
+    const log = createLogger('test', { writer, level: 'info', stderrJson: false, metrics: collector })
+    log.info('hello')
+    log.warn('careful')
+    collector.flush()
+    const rows = metricsDb.raw.prepare("SELECT * FROM metrics WHERE name = 'error.count'").all() as any[]
+    expect(rows).toHaveLength(0)
+  })
+
+  it('works without metrics (no error)', () => {
+    const log = createLogger('test', { writer, level: 'info', stderrJson: false })
+    log.error('no collector')
+    const row = db.raw.prepare('SELECT message FROM logs').get() as any
+    expect(row.message).toContain('no collector')
+  })
+
+  it('child logger inherits metrics from parent', () => {
+    const log = createLogger('parent', { writer, level: 'info', stderrJson: false, metrics: collector })
+    const child = log.child({ traceId: 'child-trace' })
+    child.error('child error')
+    collector.flush()
+    const rows = metricsDb.raw.prepare("SELECT * FROM metrics WHERE name = 'error.count'").all() as any[]
+    expect(rows).toHaveLength(1)
+    expect(JSON.parse(rows[0].tags).module).toBe('parent')
   })
 })
 

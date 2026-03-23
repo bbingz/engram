@@ -3,6 +3,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { serializeError, type SerializedError } from './error-serializer.js'
 import { getRequestContext } from './request-context.js'
 import { sanitize, applyPatterns } from './sanitizer.js'
+import type { MetricsCollector } from './metrics.js'
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
@@ -106,6 +107,7 @@ interface LoggerOpts {
   traceId?: string
   spanId?: string
   stderrJson?: boolean
+  metrics?: MetricsCollector
 }
 
 export function createLogger(module: string, opts: LoggerOpts = {}): Logger {
@@ -116,6 +118,7 @@ export function createLogger(module: string, opts: LoggerOpts = {}): Logger {
   let debugWindowStart = Date.now()
   let suppressed = 0
   const stderrJson = opts.stderrJson ?? true
+  const metrics = opts.metrics
 
   function shouldLog(level: LogLevel): boolean {
     if (LEVEL_ORDER[level] < minLevel) return false
@@ -154,6 +157,9 @@ export function createLogger(module: string, opts: LoggerOpts = {}): Logger {
     writer?.write(clean)
     if (stderrJson) {
       emitStderr(clean)
+    }
+    if (level === 'error' && metrics) {
+      metrics.counter('error.count', 1, { module })
     }
   }
 
