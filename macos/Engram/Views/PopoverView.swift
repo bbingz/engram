@@ -28,6 +28,7 @@ struct PopoverView: View {
         }
         .padding(16)
         .frame(width: 400)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("popover_container")
         .task { await loadData() }
     }
@@ -92,6 +93,7 @@ struct PopoverView: View {
         .font(.caption)
         .padding(10)
         .background(Color(.controlBackgroundColor).opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("popover_statsGrid")
     }
 

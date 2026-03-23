@@ -67,8 +67,8 @@ struct ReposView: View {
                 }
             }
             .padding(24)
+            .accessibilityIdentifier("repos_list")
         }
-        .accessibilityIdentifier("repos_list")
         .task { await loadData() }
     }
 

@@ -5,6 +5,7 @@ struct ReposScreen {
 
     // MARK: - Elements
 
+    var container: XCUIElement { app.element(id: "repos_container") }
     var repoList: XCUIElement { app.element(id: "repos_list") }
     var detail: XCUIElement { app.element(id: "repos_detail") }
     var emptyState: XCUIElement { app.element(id: "repos_emptyState") }
@@ -12,6 +13,6 @@ struct ReposScreen {
     // MARK: - Waits
 
     func waitForLoad(timeout: TimeInterval = 5) {
-        _ = repoList.waitForExistence(timeout: timeout)
+        _ = container.waitForExistence(timeout: timeout)
     }
 }

@@ -5,6 +5,7 @@ struct SkillsScreen {
 
     // MARK: - Elements
 
+    var container: XCUIElement { app.element(id: "skills_container") }
     var list: XCUIElement { app.element(id: "skills_list") }
     var searchField: XCUIElement { app.element(id: "skills_search") }
     var emptyState: XCUIElement { app.element(id: "skills_emptyState") }
@@ -26,6 +27,6 @@ struct SkillsScreen {
     // MARK: - Waits
 
     func waitForLoad(timeout: TimeInterval = 5) {
-        _ = list.waitForExistence(timeout: timeout)
+        _ = container.waitForExistence(timeout: timeout)
     }
 }

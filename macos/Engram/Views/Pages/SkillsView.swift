@@ -43,8 +43,8 @@ struct SkillsView: View {
                 }
             }
             .padding(24)
+            .accessibilityIdentifier("skills_list")
         }
-        .accessibilityIdentifier("skills_list")
         .task { await loadData() }
     }
 

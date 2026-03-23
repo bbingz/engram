@@ -28,8 +28,8 @@ struct HooksView: View {
                 }
             }
             .padding(24)
+            .accessibilityIdentifier("hooks_list")
         }
-        .accessibilityIdentifier("hooks_list")
         .task { await loadData() }
     }
 
