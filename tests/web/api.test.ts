@@ -138,3 +138,40 @@ describe('Web API', () => {
     expect(res.status).toBe(404)
   })
 })
+
+describe('Web API — bearer token auth', () => {
+  let db: Database
+  let protectedApp: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    protectedApp = createApp(db, { settings: { httpBearerToken: 'test-secret' } })
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  // 11. POST /api/log without token → 401
+  it('POST /api/log without bearer token returns 401', async () => {
+    const res = await protectedApp.request('/api/log', {
+      method: 'POST',
+      body: JSON.stringify({ level: 'info', module: 'test', message: 'hello' }),
+      headers: { 'Content-Type': 'application/json' },
+    })
+    expect(res.status).toBe(401)
+  })
+
+  // 12. POST /api/log with wrong token → 401
+  it('POST /api/log with wrong bearer token returns 401', async () => {
+    const res = await protectedApp.request('/api/log', {
+      method: 'POST',
+      body: JSON.stringify({ level: 'info', module: 'test', message: 'hello' }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer wrong-token',
+      },
+    })
+    expect(res.status).toBe(401)
+  })
+})
