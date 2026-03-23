@@ -62,6 +62,7 @@ struct SessionsPageView: View {
             }
             .padding(24)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessions_container")
         .task { await loadData() }
         .onChange(of: timeFilter) { _ in Task { await loadData() } }

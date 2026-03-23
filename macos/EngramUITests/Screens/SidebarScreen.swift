@@ -24,7 +24,7 @@ struct SidebarScreen {
 
     func navigateTo(_ page: String) {
         let button = item(for: page)
-        XCTAssertTrue(button.waitForExistence(timeout: 3),
+        XCTAssertTrue(button.waitForExistence(timeout: 10),
                       "Sidebar item '\(page)' not found")
 
         // Bottom sidebar items may be below the visible scroll area in small windows.

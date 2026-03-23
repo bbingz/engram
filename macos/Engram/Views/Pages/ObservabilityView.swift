@@ -37,6 +37,7 @@ struct ObservabilityView: View {
                 SystemHealthView()
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("observability_container")
     }
 }

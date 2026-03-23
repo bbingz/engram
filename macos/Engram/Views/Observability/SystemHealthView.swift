@@ -58,6 +58,7 @@ struct SystemHealthView: View {
             }
             .padding(24)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("observability_health")
         .task { await loadData() }
         .onReceive(timer) { _ in Task { await loadData() } }

@@ -83,6 +83,7 @@ struct SessionDetailView: View {
                 onReplay: { showReplay = true },
                 viewMode: $viewMode
             )
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("detail_toolbar")
 
             // Handoff status toast
@@ -184,6 +185,7 @@ struct SessionDetailView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail_container")
         .background {
             Group {

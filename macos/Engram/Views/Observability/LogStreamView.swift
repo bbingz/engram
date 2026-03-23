@@ -69,6 +69,7 @@ struct LogStreamView: View {
                 .accessibilityIdentifier("observability_logList")
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("observability_logStream")
         .onAppear { startObservation() }
         .onDisappear { cancellable?.cancel(); cancellable = nil }

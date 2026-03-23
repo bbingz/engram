@@ -8,6 +8,7 @@ final class SessionDetailTests: XCTestCase {
         app = XCUIApplication()
         TestLaunchConfig.mainWindow.configure(app)
         app.launch()
+        app.activate()
     }
 
     override func tearDown() {

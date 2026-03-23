@@ -24,8 +24,10 @@ struct SessionsScreen {
     }
 
     func selectSession(at index: Int) {
+        // Wait for session list to be populated before selecting a row
+        _ = sessionList.waitForExistence(timeout: 10)
         let r = row(at: index)
-        XCTAssertTrue(r.waitForExistence(timeout: 3),
+        XCTAssertTrue(r.waitForExistence(timeout: 10),
                       "Session row \(index) not found")
         r.click()
     }

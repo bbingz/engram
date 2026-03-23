@@ -127,6 +127,7 @@ struct TraceExplorerView: View {
                 .listStyle(.plain)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("observability_traceExplorer")
         .task { await loadData() }
         .onReceive(timer) { _ in Task { await loadData() } }
