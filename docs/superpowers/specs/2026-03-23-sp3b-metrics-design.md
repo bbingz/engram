@@ -17,7 +17,7 @@
 
 ## 1. New Metrics
 
-13 new metrics across 6 areas:
+12 new metrics across 6 areas:
 
 ### DB Queries
 | Metric | Type | Tags | Sampling | Description |
@@ -36,9 +36,10 @@ Note: `db.query_count` is NOT needed — the `metrics_hourly` rollup's `count` f
 ### Indexer Adapter Breakdown
 | Metric | Type | Tags | Sampling | Description |
 |--------|------|------|----------|-------------|
-| `indexer.adapter_detect_ms` | histogram | `{source}` | 100% | `adapter.detect()` latency |
 | `indexer.adapter_parse_ms` | histogram | `{source}` | 100% | `parseSessionInfo()` latency |
 | `indexer.adapter_stream_ms` | histogram | `{source}` | 100% | `streamMessages()` full iteration latency |
+
+Note: `adapter.detect()` is excluded — it's just `existsSync()` for most adapters (microsecond-level). Recording it would produce high-volume low-value noise (13 adapters × every indexAll call).
 
 ### HTTP Errors
 | Metric | Type | Tags | Sampling | Description |
@@ -58,7 +59,7 @@ Note: `db.query_count` is NOT needed — the `metrics_hourly` rollup's `count` f
 |--------|------|------|----------|-------------|
 | `error.count` | counter | `{module}` | 100% | Incremented on every `logger.error()` call |
 
-**Total**: 13 new metrics. Existing 12 unchanged (`http.requests`, `http.duration_ms`, `daemon.uptime_s`, `indexer.session_duration_ms`, `indexer.sessions_indexed`, `viking.circuit_breaker_opens`, `viking.push_duration_ms`, `viking.pushes`, `viking.find_duration_ms`, `viking.queries`, `search.duration_ms`, `search.queries`).
+**Total**: 12 new metrics. Existing 12 unchanged (`http.requests`, `http.duration_ms`, `daemon.uptime_s`, `indexer.session_duration_ms`, `indexer.sessions_indexed`, `viking.circuit_breaker_opens`, `viking.push_duration_ms`, `viking.pushes`, `viking.find_duration_ms`, `viking.queries`, `search.duration_ms`, `search.queries`).
 
 ## 2. DB Query Auto-Timing
 
@@ -90,7 +91,7 @@ private wrapStatement(stmt: BetterSqlite3.Statement): BetterSqlite3.Statement {
       if (prop === 'run' || prop === 'get' || prop === 'all') {
         return (...args: any[]) => {
           const start = performance.now()
-          const result = (target as any)[prop](...args)
+          const result = (target as any)[prop].apply(target, args)  // explicit this binding for native C++ methods
           metrics.histogram('db.query_ms', performance.now() - start, { method: prop as string })
           return result
         }
@@ -106,6 +107,10 @@ private wrapStatement(stmt: BetterSqlite3.Statement): BetterSqlite3.Statement {
 - `src/daemon.ts`: call `db.setMetrics(metrics)` after creating both `db` and `metrics`
 - `src/index.ts` (MCP server): no `setMetrics` call — MCP mode has no MetricsCollector, zero overhead
 - Sampling: daemon.ts currently has `sampleRates: { 'db.query_duration_ms': 0.1 }`. Rename the key to `'db.query_ms': 0.1` to match the new metric name
+
+#### `performance.now()` availability
+
+`performance.now()` is globally available in Node 16+ — no import needed. All timing in this spec uses `performance.now()` for sub-ms precision (not `Date.now()`).
 
 #### Why Proxy, not direct assignment
 
@@ -142,6 +147,8 @@ deps.metrics?.histogram('search.viking_ms', performance.now() - vikStart)
 
 These run in `Promise.all` — each timer measures its own branch independently, not wall-clock time.
 
+Use `performance.now()` (not `Date.now()`) for sub-ms precision. Node 16+ provides `performance` globally — no import needed.
+
 Existing `search.duration_ms` (total) and `search.queries` (count) remain unchanged.
 
 ## 4. Indexer Adapter Breakdown
@@ -150,21 +157,15 @@ Existing `search.duration_ms` (total) and `search.queries` (count) remain unchan
 
 `Indexer` already has `this.metrics` field (constructor accepts `metrics?: MetricsCollector`).
 
-Three timing points in `indexAll()` and `indexFile()`:
+Two timing points in `indexAll()` and `indexFile()`:
 
 ```typescript
-// 1) adapter.detect() — in indexAll() adapter loop, timed regardless of result
-const detectStart = performance.now()
-const detected = await adapter.detect()
-this.metrics?.histogram('indexer.adapter_detect_ms', performance.now() - detectStart, { source: adapter.name })
-if (!detected) continue
-
-// 2) adapter.parseSessionInfo() — in per-file processing
+// 1) adapter.parseSessionInfo() — in per-file processing
 const parseStart = performance.now()
 const info = await adapter.parseSessionInfo(filePath)
 this.metrics?.histogram('indexer.adapter_parse_ms', performance.now() - parseStart, { source: adapter.name })
 
-// 3) adapter.streamMessages() — wrapping the for-await loop
+// 2) adapter.streamMessages() — wrapping the for-await loop
 const streamStart = performance.now()
 for await (const msg of adapter.streamMessages(filePath)) {
   // ... existing accumulation unchanged ...
@@ -231,7 +232,7 @@ if (level === 'error' && metrics) {
 
 Where `metrics` is captured from `opts.metrics` in the `createLogger()` closure, like `stderrJson` and `writer`.
 
-`child()` implementation (`createLogger(module, { ...opts, ...extra })`) automatically inherits the `metrics` instance. This is correct — child loggers should also track errors.
+`child()` implementation (`createLogger(module, { ...opts, ...extra })`) automatically inherits the `metrics` instance. This works because `extra` is typed as `{ traceId?: string; spanId?: string }` — it cannot contain `metrics`, so `...opts` (which has `metrics`) is never overridden by `...extra`.
 
 #### Activation
 
@@ -271,7 +272,7 @@ Where `metrics` is captured from `opts.metrics` in the `createLogger()` closure,
 | `src/tools/search.ts` | Add 3 sub-query timing calls (interface already has `metrics`) |
 | `src/core/indexer.ts` | Add detect/parse/stream timing calls (already has `this.metrics`) |
 | `src/web.ts` | Add `http.error_count` counter in metrics middleware |
-| `src/daemon.ts` | Add `db.setMetrics(metrics)`, process health gauges in uptime timer, pass `metrics` to logger |
+| `src/daemon.ts` | Add `db.setMetrics(metrics)`, process health gauges in uptime timer, pass `metrics` to logger, **rename sampleRates key** from `'db.query_duration_ms'` to `'db.query_ms'` |
 | `src/index.ts` | No change — MCP mode has no MetricsCollector; SearchDeps.metrics stays undefined |
 | `tests/core/metrics.test.ts` | DB Proxy wrapper tests |
 | `tests/tools/search.test.ts` | Sub-query timing tests |
