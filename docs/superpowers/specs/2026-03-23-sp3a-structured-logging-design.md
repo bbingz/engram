@@ -1,7 +1,7 @@
 # SP3a: Structured Logging + Request ID + Tracing Expansion
 
 **Date**: 2026-03-23
-**Status**: Draft
+**Status**: Implemented
 **Scope**: Gaps #1 (JSON stdout), #2 (request_id), #4 (tracing incomplete), #8 (PII filtering) from observability gap analysis
 
 ## Decisions
