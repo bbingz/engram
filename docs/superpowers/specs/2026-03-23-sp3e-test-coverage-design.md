@@ -30,18 +30,22 @@ Requires `tests/fixtures/copilot/` directory with:
 
 ### Group B: MCP Tool Error Responses (10 tests)
 
-**`tests/tools/tool-errors.test.ts`** (new):
-Tests at handler function level (not MCP dispatch layer):
-- `handleGetSession` with nonexistent session ID → returns error content
-- `handleGetSession` with nonexistent adapter → error
-- `handleExport` with nonexistent session → error
-- `handleSearch` with empty query → returns empty results (not crash)
-- `handleSearch` with invalid mode → graceful handling
-- `handleGetContext` with nonexistent cwd → returns context (may be empty)
-- `handleStats` with no data → returns zero stats
-- `handleGetCosts` with no cost data → returns empty
-- `handleToolAnalytics` with no data → returns empty
-- `handleLintConfig` with nonexistent cwd → returns error or empty results
+**`tests/tools/tool-errors.test.ts`** (new, 12 tests):
+Tests at handler function level — verifies handlers don't crash on empty/edge-case inputs:
+- `handleListSessions` with empty DB → returns empty array
+- `handleSearch` with empty string query → empty results
+- `handleSearch` with very long query (>10000 chars) → no crash
+- `handleSearch` with no indexed sessions → empty results
+- `handleStats` with empty DB → zero counts
+- `handleStats` with group_by on empty DB → works
+- `handleGetCosts` with no cost data → empty breakdown
+- `handleToolAnalytics` with no data → empty tools list
+- `handleProjectTimeline` with nonexistent project → empty timeline
+- `handleLintConfig` with nonexistent cwd → score=100, no issues
+- `handleFileActivity` with empty DB → empty files
+- `handleFileActivity` with nonexistent project filter → empty files
+
+Note: `handleGetSession`/`handleExport` were not tested at handler level — they require complex adapter injection. The dispatch-layer validation (session not found → isError) is covered by the MCP tracing in SP3a.
 
 ### Group C: Indexer Error Paths (5 tests)
 
