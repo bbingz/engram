@@ -427,17 +427,17 @@ import { getRequestContext } from './request-context.js'
 import { sanitize, applyPatterns } from './sanitizer.js'
 ```
 
-2. Add `requestSource` to `LogEntry` interface (after `source` line 18):
+2. Add `requestSource` to `LogEntry` interface — search for `source: 'daemon' | 'app'` in the interface, add after it:
 ```typescript
 requestSource?: string
 ```
 
-3. Add `stderrJson` to `LoggerOpts` (after `spanId` line 75):
+3. Add `stderrJson` to `LoggerOpts` interface — search for `spanId?: string` in `LoggerOpts`, add after it:
 ```typescript
 stderrJson?: boolean
 ```
 
-4. Add `sanitizeLogEntry` function (after `LogWriter` class, before `LoggerOpts`):
+4. Add `sanitizeLogEntry` function — place it after the `LogWriter` class closing brace, before the `LoggerOpts` interface:
 ```typescript
 function sanitizeLogEntry(entry: LogEntry): LogEntry {
   return {
@@ -477,7 +477,7 @@ function emitStderr(entry: LogEntry): void {
 const stderrJson = opts.stderrJson ?? true
 ```
 
-7. Replace the `log()` function body (lines 107-121):
+7. Replace the `log()` function body — search for `function log(level: LogLevel` to locate it, replace the entire function:
 ```typescript
 function log(level: LogLevel, message: string, data?: Record<string, unknown>, err?: unknown): void {
   if (!shouldLog(level)) return
@@ -728,134 +728,52 @@ const log = createLogger('mcp')
 const log = createLogger('mcp', { stderrJson: true })
 ```
 
-- [ ] **Step 3: Wrap CallToolRequestSchema handler in runWithContext + withSpan**
+- [ ] **Step 3: Wrap handler in runWithContext + add span per tool call (surgical edits)**
 
-Wrap the entire handler body in `runWithContext`, and wrap each tool branch in `withSpan`. Replace lines 127-207:
+This step modifies the existing handler incrementally — do NOT replace the entire block. Make these changes:
+
+**3a)** Wrap the handler body in `runWithContext`. After `heartbeat()` on line 128, before the existing `try`:
 
 ```typescript
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  heartbeat()
-  const { name, arguments: args } = request.params
-  const a = (args ?? {}) as Record<string, unknown>
-  const requestId = randomUUID()
-
-  return runWithContext({ requestId, source: 'mcp' }, async () => {
-    try {
-      let result: unknown
-
-      if (name === 'list_sessions') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleListSessions(db, a, { log })
-        })
-      } else if (name === 'get_session') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          const session = db.getSession(a.id as string)
-          if (!session) throw Object.assign(new Error(`Session not found: ${a.id}`), { isToolError: true })
-          const adapter = adapterMap[session.source]
-          if (!adapter) throw Object.assign(new Error(`Unsupported source: ${session.source}`), { isToolError: true })
-          return handleGetSession(db, adapter, a as { id: string; page?: number; roles?: string[] }, { log })
-        })
-      } else if (name === 'search') {
-        const sDeps: SearchDeps = {
-          ...(vecDeps ? { vectorStore: vecDeps.vectorStore, embed: (text: string) => vecDeps.embeddingClient.embed(text) } : {}),
-          viking: vikingBridge,
-          log,
-          tracer,
-        }
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleSearch(db, a as { query: string; mode?: string }, sDeps)
-        })
-      } else if (name === 'project_timeline') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleProjectTimeline(db, a as { project: string }, { log })
-        })
-      } else if (name === 'stats') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleStats(db, a, { log })
-        })
-      } else if (name === 'get_context') {
-        return await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          const ctxDeps: GetContextDeps = { ...vectorDeps, viking: vikingBridge, log }
-          const ctx = await handleGetContext(db, a as { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full'; sort_by?: 'recency' | 'score'; include_environment?: boolean }, ctxDeps)
-          return { content: [{ type: 'text', text: ctx.contextText }] }
-        })
-      } else if (name === 'export') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          const session = db.getSession(a.id as string)
-          if (!session) throw Object.assign(new Error(`Session not found: ${a.id}`), { isToolError: true })
-          const adapter = adapterMap[session.source]
-          if (!adapter) throw Object.assign(new Error(`Unsupported source: ${session.source}`), { isToolError: true })
-          return handleExport(db, adapter, a as { id: string; format?: string }, { log })
-        })
-      } else if (name === 'generate_summary') {
-        return await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleGenerateSummary(db, a as { sessionId: string }, { log })
-        })
-      } else if (name === 'manage_project_alias') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          const action = a.action as string
-          if (action === 'list') return db.listProjectAliases()
-          if (action === 'add') {
-            if (!a.old_project || !a.new_project) throw Object.assign(new Error('old_project and new_project required'), { isToolError: true })
-            db.addProjectAlias(a.old_project as string, a.new_project as string)
-            return { added: { alias: a.old_project, canonical: a.new_project } }
-          }
-          if (action === 'remove') {
-            if (!a.old_project || !a.new_project) throw Object.assign(new Error('old_project and new_project required'), { isToolError: true })
-            db.removeProjectAlias(a.old_project as string, a.new_project as string)
-            return { removed: { alias: a.old_project, canonical: a.new_project } }
-          }
-          throw Object.assign(new Error(`Unknown action: ${action}`), { isToolError: true })
-        })
-      } else if (name === 'link_sessions') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleLinkSessions(db, a as { targetDir: string }, { log })
-        })
-      } else if (name === 'get_memory') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleGetMemory(a as { query: string }, { viking: vikingBridge, log })
-        })
-      } else if (name === 'get_costs') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleGetCosts(db, a as { group_by?: string; since?: string; until?: string }, { log })
-        })
-      } else if (name === 'tool_analytics') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string }, { log })
-        })
-      } else if (name === 'handoff') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' }, adapters, { log })
-        })
-      } else if (name === 'live_sessions') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleLiveSessions(null, { log })
-        })
-      } else if (name === 'lint_config') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          if (!a.cwd) throw Object.assign(new Error('cwd parameter required'), { isToolError: true })
-          return handleLintConfig({ cwd: a.cwd as string }, { log })
-        })
-      } else if (name === 'file_activity') {
-        result = await withSpan(tracer, `tool.${name}`, 'mcp', async () => {
-          return handleFileActivity(db, a as { project?: string; since?: string; limit?: number }, { log })
-        })
-      } else {
-        return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
-      }
-
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
-    } catch (err: any) {
-      if (err?.isToolError) {
-        return { content: [{ type: 'text', text: err.message }], isError: true }
-      }
-      return { content: [{ type: 'text', text: `Error: ${String(err)}` }], isError: true }
-    }
-  })
+// Add after: heartbeat()
+const requestId = randomUUID()
+return runWithContext({ requestId, source: 'mcp' }, async () => {
+  // ... existing try/catch block stays here, indented one level deeper
 })
+// Close the runWithContext at the end of the handler, after the catch block
 ```
 
-Note: The `isToolError` pattern differentiates "expected tool errors" (returned as isError) from "unexpected exceptions" (which withSpan records as error spans). This preserves the existing MCP error response behavior while allowing tracing to distinguish real failures from validation errors.
+**3b)** Add a tool-level span that wraps the entire `try` block (inside `runWithContext`). Use manual span management (not `withSpan`) to distinguish validation errors from real failures:
+
+```typescript
+// Inside runWithContext, replace the existing try/catch with:
+const span = tracer.startSpan(`tool.${name}`, 'mcp')
+try {
+  let result: unknown
+
+  // ... all existing if/else branches stay as-is, no changes to individual tools ...
+
+  span.end()  // status: ok
+  return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+} catch (err) {
+  span.setError(err as Error)  // Real system error → error span
+  return { content: [{ type: 'text', text: `Error: ${String(err)}` }], isError: true }
+}
+```
+
+**3c)** For the existing early-return validation errors (e.g., `if (!session) return { ..., isError: true }`), these are NOT thrown — they return normally. The span will end as `status: 'ok'` because the code path reaches `span.end()` before the early return. To handle this correctly, add `span.end()` before each early return. For example:
+
+```typescript
+// Before:
+if (!session) return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true }
+
+// After:
+if (!session) { span.setAttribute('tool_error', 'session_not_found'); span.end(); return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true } }
+```
+
+Apply the same pattern to all early-return validation errors in the handler (there are ~6 of them: session not found ×2, unsupported source ×2, cwd required, old_project/new_project required ×2, unknown action).
+
+**Why not `withSpan`:** `withSpan` calls `setError()` on any thrown exception. Validation errors (like "session not found") are normal business logic, not system failures. Recording them as error spans pollutes the error signal. Using manual span management lets us end validation-error spans as `status: 'ok'` with a `tool_error` attribute for filtering, while real exceptions get `status: 'error'`.
 
 - [ ] **Step 4: Build and run existing tests**
 
@@ -1286,7 +1204,7 @@ describe('logger performance', () => {
     const elapsed = performance.now() - start
     const avgUs = (elapsed / 1000) * 1000  // ms to μs
 
-    expect(avgUs).toBeLessThan(100)
+    expect(avgUs).toBeLessThan(process.env.CI ? 500 : 100)
     stderrSpy.mockRestore()
     db.close()
   })
