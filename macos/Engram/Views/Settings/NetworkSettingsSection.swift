@@ -16,6 +16,7 @@ struct NetworkSettingsSection: View {
     @State private var vikingApiKey: String = ""
     @State private var vikingStatus: String = ""
     @State private var isCheckingViking: Bool = false
+    @State private var isLoadingSettings: Bool = false
 
     // Add peer form
     @State private var showAddPeer: Bool = false
@@ -209,6 +210,7 @@ struct NetworkSettingsSection: View {
     // MARK: - Viking
 
     private func saveVikingSettings() {
+        guard !isLoadingSettings else { return }
         // Save Viking API key to Keychain
         if !vikingApiKey.isEmpty {
             let saved = KeychainHelper.set("vikingApiKey", value: vikingApiKey)
@@ -236,6 +238,8 @@ struct NetworkSettingsSection: View {
     }
 
     private func loadVikingSettings() {
+        isLoadingSettings = true
+        defer { isLoadingSettings = false }
         guard let settings = readEngramSettings(),
               let viking = settings["viking"] as? [String: Any] else { return }
         if let enabled = viking["enabled"] as? Bool { vikingEnabled = enabled }
@@ -280,6 +284,7 @@ struct NetworkSettingsSection: View {
     // MARK: - Sync
 
     private func saveSyncSettings() {
+        guard !isLoadingSettings else { return }
         mutateEngramSettings { settings in
             settings["syncEnabled"] = syncEnabled
             settings["syncNodeName"] = syncNodeName
@@ -289,6 +294,8 @@ struct NetworkSettingsSection: View {
     }
 
     private func loadSyncSettings() {
+        isLoadingSettings = true
+        defer { isLoadingSettings = false }
         guard let settings = readEngramSettings() else { return }
         if let enabled = settings["syncEnabled"] as? Bool { syncEnabled = enabled }
         if let name = settings["syncNodeName"] as? String { syncNodeName = name }
