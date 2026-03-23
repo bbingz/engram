@@ -1,6 +1,6 @@
 export const PII_PATTERNS: Array<{ name: string; regex: RegExp; replacement: string }> = [
-  { name: 'openai_key',    regex: /sk-[a-zA-Z0-9]{20,}/g,             replacement: 'sk-***' },
   { name: 'anthropic_key', regex: /sk-ant-[a-zA-Z0-9-]{20,}/g,        replacement: 'sk-ant-***' },
+  { name: 'openai_key',    regex: /sk-[a-zA-Z0-9_-]{20,}/g,            replacement: 'sk-***' },
   { name: 'bearer_token',  regex: /Bearer\s+[a-zA-Z0-9._\-]{10,}/gi,  replacement: 'Bearer ***' },
   { name: 'hex_secret',    regex: /((?:key|token|secret|password|apikey)[:=]\s*)[a-f0-9]{32,128}/gi, replacement: '$1***' },
   { name: 'email',         regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, replacement: '***@***.***' },

@@ -142,6 +142,7 @@ export function createLogger(module: string, opts: LoggerOpts = {}): Logger {
     if (!shouldLog(level)) return
     const ctx = getRequestContext()
     const entry: LogEntry = {
+      ts: new Date().toISOString(),
       level, module, message, source: 'daemon',
       traceId: opts.traceId ?? ctx?.requestId,
       spanId: opts.spanId ?? ctx?.spanId,

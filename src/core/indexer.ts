@@ -227,9 +227,10 @@ export class Indexer {
               if (info.sizeBytes !== fileSize && info.sizeBytes > 0 && this.db.isIndexed(filePath, info.sizeBytes)) return
 
               const sessionStartTime = Date.now()
+              // No parentSpan — inherits traceId from ALS (per-file requestId)
+              // so logs and traces for the same file share the same correlation ID
               const sessionSpan = this.tracer?.startSpan('indexer.indexSession', 'indexer', {
                 attributes: { sessionId: info.id, source: adapter.name },
-                parentSpan: span,
               })
 
               // 解析项目名（如果没有）

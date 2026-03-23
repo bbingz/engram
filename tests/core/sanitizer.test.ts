@@ -6,6 +6,10 @@ describe('applyPatterns', () => {
     expect(applyPatterns('key is sk-abcdefghijklmnopqrstuvwx')).toBe('key is sk-***')
   })
 
+  it('redacts OpenAI sk-proj-* key format', () => {
+    expect(applyPatterns('sk-proj-abc12345678901234567')).toBe('sk-***')
+  })
+
   it('redacts Anthropic API key', () => {
     expect(applyPatterns('sk-ant-api03-abcdefghijklmnopqrstuvwx')).toBe('sk-ant-***')
   })

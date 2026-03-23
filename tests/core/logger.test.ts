@@ -95,7 +95,7 @@ describe('log writing', () => {
   })
 
   it('respects level filtering', () => {
-    const log = createLogger('test', { writer, level: 'warn' })
+    const log = createLogger('test', { writer, level: 'warn', stderrJson: false })
     log.info('should be skipped')
     log.warn('should appear')
     const rows = db.raw.prepare('SELECT * FROM logs').all()
@@ -113,7 +113,7 @@ describe('debug rate limiting', () => {
   afterEach(() => { db.close() })
 
   it('throttles debug logs beyond 100/min per module', () => {
-    const log = createLogger('watcher', { writer, level: 'debug', rateLimitPerMin: 5 })
+    const log = createLogger('watcher', { writer, level: 'debug', rateLimitPerMin: 5, stderrJson: false })
     for (let i = 0; i < 10; i++) log.debug(`msg ${i}`)
     const rows = db.raw.prepare('SELECT * FROM logs').all()
     // Should have 5 regular + 1 suppression summary = 6 max
