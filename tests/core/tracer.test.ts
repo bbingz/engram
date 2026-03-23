@@ -2,6 +2,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from '../../src/core/db.js'
 import { Tracer, TraceWriter } from '../../src/core/tracer.js'
+import { runWithContext } from '../../src/core/request-context.js'
+import { withSpan, withSpanSync } from '../../src/core/tracer.js'
 
 describe('Tracer', () => {
   let db: Database
@@ -69,5 +71,102 @@ describe('Tracer', () => {
     span.end()
     const row = db.raw.prepare('SELECT * FROM traces').get() as any
     expect(JSON.parse(row.attributes).sessionId).toBe('abc')
+  })
+})
+
+describe('Tracer ALS integration', () => {
+  let db: Database
+  let writer: TraceWriter
+  let tracer: Tracer
+  beforeEach(() => { db = new Database(':memory:'); writer = new TraceWriter(db.raw); tracer = new Tracer(writer) })
+  afterEach(() => { db.close() })
+
+  it('inherits traceId from ALS when no explicit opts', () => {
+    runWithContext({ requestId: 'als-trace', source: 'mcp' }, () => {
+      const span = tracer.startSpan('test.op', 'test')
+      expect(span.traceId).toBe('als-trace')
+      span.end()
+    })
+  })
+
+  it('explicit traceId overrides ALS', () => {
+    runWithContext({ requestId: 'als-id', source: 'http' }, () => {
+      const span = tracer.startSpan('test.op', 'test', { traceId: 'explicit' })
+      expect(span.traceId).toBe('explicit')
+      span.end()
+    })
+  })
+
+  it('multiple spans in same ALS context share traceId', () => {
+    runWithContext({ requestId: 'shared', source: 'indexer' }, () => {
+      const s1 = tracer.startSpan('op1', 'test')
+      const s2 = tracer.startSpan('op2', 'test')
+      expect(s1.traceId).toBe('shared')
+      expect(s2.traceId).toBe('shared')
+      s1.end()
+      s2.end()
+    })
+  })
+})
+
+describe('withSpan', () => {
+  let db: Database
+  let writer: TraceWriter
+  let tracer: Tracer
+  beforeEach(() => { db = new Database(':memory:'); writer = new TraceWriter(db.raw); tracer = new Tracer(writer) })
+  afterEach(() => { db.close() })
+
+  it('records successful span with duration', async () => {
+    const result = await withSpan(tracer, 'test.ok', 'test', async (span) => {
+      span.setAttribute('key', 'val')
+      return 42
+    })
+    expect(result).toBe(42)
+    const row = db.raw.prepare('SELECT * FROM traces').get() as any
+    expect(row.status).toBe('ok')
+    expect(row.duration_ms).toBeGreaterThanOrEqual(0)
+    expect(JSON.parse(row.attributes).key).toBe('val')
+  })
+
+  it('records error span and re-throws', async () => {
+    await expect(
+      withSpan(tracer, 'test.fail', 'test', async () => { throw new Error('boom') })
+    ).rejects.toThrow('boom')
+    const row = db.raw.prepare('SELECT * FROM traces').get() as any
+    expect(row.status).toBe('error')
+  })
+
+  it('does not double-write span on error', async () => {
+    await expect(
+      withSpan(tracer, 'test.fail', 'test', async () => { throw new Error('x') })
+    ).rejects.toThrow()
+    const rows = db.raw.prepare('SELECT * FROM traces').all()
+    expect(rows).toHaveLength(1)
+  })
+})
+
+describe('withSpanSync', () => {
+  let db: Database
+  let writer: TraceWriter
+  let tracer: Tracer
+  beforeEach(() => { db = new Database(':memory:'); writer = new TraceWriter(db.raw); tracer = new Tracer(writer) })
+  afterEach(() => { db.close() })
+
+  it('records successful sync span', () => {
+    const result = withSpanSync(tracer, 'sync.ok', 'test', (span) => {
+      span.setAttribute('rows', 10)
+      return 'done'
+    })
+    expect(result).toBe('done')
+    const row = db.raw.prepare('SELECT * FROM traces').get() as any
+    expect(row.status).toBe('ok')
+  })
+
+  it('records error sync span and re-throws', () => {
+    expect(() =>
+      withSpanSync(tracer, 'sync.fail', 'test', () => { throw new Error('sync boom') })
+    ).toThrow('sync boom')
+    const row = db.raw.prepare('SELECT * FROM traces').get() as any
+    expect(row.status).toBe('error')
   })
 })

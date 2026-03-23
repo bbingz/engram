@@ -1,6 +1,7 @@
 // src/core/tracer.ts
 import { randomUUID } from 'crypto'
 import type BetterSqlite3 from 'better-sqlite3'
+import { getRequestContext } from './request-context.js'
 
 export interface SpanData {
   traceId: string
@@ -52,15 +53,18 @@ export interface Span {
   setAttribute(key: string, value: unknown): void
 }
 
+export type SpanOpts = {
+  parentSpan?: Span
+  traceId?: string
+  attributes?: Record<string, unknown>
+}
+
 export class Tracer {
   constructor(private writer: TraceWriter) {}
 
-  startSpan(name: string, module: string, opts?: {
-    parentSpan?: Span
-    traceId?: string
-    attributes?: Record<string, unknown>
-  }): Span {
-    const traceId = opts?.traceId ?? opts?.parentSpan?.traceId ?? randomUUID()
+  startSpan(name: string, module: string, opts?: SpanOpts): Span {
+    const ctx = getRequestContext()
+    const traceId = opts?.traceId ?? opts?.parentSpan?.traceId ?? ctx?.requestId ?? randomUUID()
     const spanId = randomUUID()
     const parentSpanId = opts?.parentSpan?.spanId
     const startTs = new Date().toISOString()
@@ -100,5 +104,35 @@ export class Tracer {
       setAttribute: (key, value) => { attributes[key] = value },
     }
     return span
+  }
+}
+
+export async function withSpan<T>(
+  tracer: Tracer, name: string, module: string,
+  fn: (span: Span) => Promise<T>, opts?: SpanOpts
+): Promise<T> {
+  const span = tracer.startSpan(name, module, opts)
+  try {
+    const result = await fn(span)
+    span.end()
+    return result
+  } catch (err) {
+    span.setError(err as Error)
+    throw err
+  }
+}
+
+export function withSpanSync<T>(
+  tracer: Tracer, name: string, module: string,
+  fn: (span: Span) => T, opts?: SpanOpts
+): T {
+  const span = tracer.startSpan(name, module, opts)
+  try {
+    const result = fn(span)
+    span.end()
+    return result
+  } catch (err) {
+    span.setError(err as Error)
+    throw err
   }
 }
