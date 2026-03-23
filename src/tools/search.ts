@@ -96,6 +96,7 @@ export async function handleSearch(
     // FTS keyword search (synchronous SQLite, resolves immediately)
     (async () => {
       if (mode !== 'semantic' && params.query.length >= 3) {
+        const ftsStart = performance.now()
         const ftsSpan = deps.tracer?.startSpan('search.fts', 'search', { parentSpan: searchSpan })
         searchModes.push('keyword')
         const ftsResults = db.searchSessions(params.query, limit * 3, filters)
@@ -107,6 +108,7 @@ export async function handleSearch(
           ftsScores.set(match.sessionId, { score: rrfScore(rank), snippet: match.snippet })
           rank++
         }
+        deps.metrics?.histogram('search.fts_ms', performance.now() - ftsStart)
         ftsSpan?.setAttribute('resultCount', ftsScores.size)
         ftsSpan?.end()
       }
@@ -115,6 +117,7 @@ export async function handleSearch(
     // Local vector search
     (async () => {
       if (mode !== 'keyword' && params.query.length >= 2 && deps.vectorStore && deps.embed) {
+        const vecStart = performance.now()
         const vecSpan = deps.tracer?.startSpan('search.vector', 'search', { parentSpan: searchSpan })
         try {
           const queryVec = await deps.embed(params.query)
@@ -127,6 +130,7 @@ export async function handleSearch(
               rank++
             }
           }
+          deps.metrics?.histogram('search.vector_ms', performance.now() - vecStart)
           vecSpan?.setAttribute('resultCount', vecScores.size)
           vecSpan?.end()
         } catch (err) {
@@ -139,6 +143,7 @@ export async function handleSearch(
     // Viking semantic search (find only — grep excluded for latency)
     (async () => {
       if (deps.viking && vikingAvailable) {
+        const vikStart = performance.now()
         const vikingSpan = deps.tracer?.startSpan('search.viking', 'search', { parentSpan: searchSpan })
         try {
           const findResults = await deps.viking.find(params.query)
@@ -152,6 +157,7 @@ export async function handleSearch(
             vikingScores.set(sessionId, { score: rrfScore(rank) + VIKING_RRF_BOOST, snippet: vr.snippet })
             rank++
           }
+          deps.metrics?.histogram('search.viking_ms', performance.now() - vikStart)
           vikingSpan?.setAttribute('resultCount', vikingScores.size)
           vikingSpan?.end()
         } catch (err) {
