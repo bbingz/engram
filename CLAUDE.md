@@ -7,7 +7,7 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 278 tests, ~2.5s
+npm test               # vitest: 616 tests, ~6s
 npm run dev            # tsx: run without compile
 
 # macOS (from macos/)
