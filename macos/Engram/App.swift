@@ -63,6 +63,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let name: NSAppearance.Name = CommandLine.arguments[idx + 1] == "dark"
                 ? .darkAqua : .aqua
             NSApp.appearance = NSAppearance(named: name)
+        } else {
+            // Restore saved theme preference on launch
+            let savedTheme = UserDefaults.standard.string(forKey: "appTheme") ?? "system"
+            switch savedTheme {
+            case "light": NSApp.appearance = NSAppearance(named: .aqua)
+            case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+            default: NSApp.appearance = nil  // follow system
+            }
         }
 
         // Open SQLite

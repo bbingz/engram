@@ -5,49 +5,47 @@ struct SidebarView: View {
     @Binding var selectedScreen: Screen
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Screen.Section.allCases, id: \.self) { section in
-                    Text(section.rawValue)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Theme.tertiaryText)
-                        .padding(.horizontal, 12)
-                        .padding(.top, section == .overview ? 8 : 12)
-                        .padding(.bottom, 4)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Screen.Section.allCases, id: \.self) { section in
+                        Text(section.rawValue)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Theme.tertiaryText)
+                            .padding(.horizontal, 12)
+                            .padding(.top, section == .overview ? 8 : 12)
+                            .padding(.bottom, 4)
 
-                    ForEach(section.screens) { screen in
-                        SidebarItem(
-                            screen: screen,
-                            isSelected: selectedScreen == screen,
-                            action: { selectedScreen = screen }
-                        )
-                        .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")
+                        ForEach(section.screens) { screen in
+                            SidebarItem(
+                                screen: screen,
+                                isSelected: selectedScreen == screen,
+                                action: { selectedScreen = screen }
+                            )
+                            .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")
+                        }
                     }
                 }
-
-                Spacer()
-                    .frame(minHeight: 16)
-
-                Divider()
-                    .opacity(0.2)
-                    .padding(.horizontal, 8)
-
-                // Theme toggle
-                ThemeToggleButton()
-                    .padding(.horizontal, 8)
-                    .padding(.top, 8)
-                    .accessibilityIdentifier("sidebar_themeToggle")
-
-                // Settings button
-                SidebarItem(
-                    screen: .settings,
-                    isSelected: selectedScreen == .settings,
-                    action: { selectedScreen = .settings }
-                )
-                .accessibilityIdentifier("sidebar_item_settings")
-                .padding(.vertical, 8)
+                .padding(.bottom, 8)
             }
-            .padding(.bottom, 8)
+
+            Divider()
+                .opacity(0.2)
+
+            // Theme toggle — pinned below scroll area
+            ThemeToggleButton()
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+                .accessibilityIdentifier("sidebar_themeToggle")
+
+            // Settings button — pinned at bottom
+            SidebarItem(
+                screen: .settings,
+                isSelected: selectedScreen == .settings,
+                action: { selectedScreen = .settings }
+            )
+            .accessibilityIdentifier("sidebar_item_settings")
+            .padding(.vertical, 8)
         }
         .frame(minWidth: 160, maxWidth: 160)
         .accessibilityIdentifier("sidebar")
@@ -73,6 +71,17 @@ private struct ThemeToggleButton: View {
         }
     }
 
+    private func applyTheme(_ theme: String) {
+        switch theme {
+        case "light":
+            NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark":
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        default:
+            NSApp.appearance = nil  // nil = follow system
+        }
+    }
+
     var body: some View {
         Button {
             switch appTheme {
@@ -80,6 +89,7 @@ private struct ThemeToggleButton: View {
             case "light": appTheme = "dark"
             default: appTheme = "system"
             }
+            applyTheme(appTheme)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: icon)
