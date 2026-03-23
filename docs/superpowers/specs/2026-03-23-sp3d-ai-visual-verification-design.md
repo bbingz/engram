@@ -1,7 +1,7 @@
 # SP3d: AI Visual Verification for Screenshot Regression
 
 **Date**: 2026-03-23
-**Status**: Draft
+**Status**: Implemented
 **Scope**: Gap #6 — integrate VLM to triage screenshot regression failures
 
 ## Decisions
