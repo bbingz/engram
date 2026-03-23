@@ -82,10 +82,9 @@ describe('DB query auto-timing', () => {
     expect(JSON.parse(rows[0].tags).method).toBe('all')
   })
 
-  it('does not record metrics without setMetrics', () => {
-    db.raw.prepare('SELECT 1').get()
-    // No collector to flush — just verify no error
-    expect(true).toBe(true)
+  it('works normally without setMetrics — no wrapping', () => {
+    const result = db.raw.prepare('SELECT 1 as v').get() as any
+    expect(result.v).toBe(1)
   })
 
   it('forwards non-timed properties unchanged', () => {
@@ -169,7 +168,7 @@ git commit -m "feat(metrics): add Proxy-based DB query auto-timing"
 
 - [ ] **Step 1: Write failing tests**
 
-Append to `tests/core/logger.test.ts`:
+Append to `tests/core/logger.test.ts`. The file already imports `Database`, `LogWriter`, `createLogger`, `vi`. Add `MetricsCollector` import near the top (after existing imports):
 
 ```typescript
 import { MetricsCollector } from '../../src/core/metrics.js'
@@ -278,24 +277,27 @@ git commit -m "feat(metrics): add error.count counter to logger"
 
 - [ ] **Step 1: Write failing test**
 
-Append to `tests/tools/search.test.ts`. The test needs a mock MetricsCollector that captures calls. Check how existing tests set up `SearchDeps` and follow the same pattern:
+Append to `tests/tools/search.test.ts`. Add `MetricsCollector` import at top, then add new describe block. Use `db.upsertSession()` + `db.indexSessionContent()` for FTS seeding (same pattern as existing search tests — raw INSERT to `sessions_fts` doesn't work because it's a content-sync FTS5 table):
 
 ```typescript
+import { MetricsCollector } from '../../src/core/metrics.js'
+
 describe('search sub-query metrics', () => {
   let db: Database
   let metricsDb: Database
   let collector: MetricsCollector
+  let tmpDir: string
 
   beforeEach(() => {
-    db = new Database(':memory:')
+    tmpDir = mkdtempSync(join(tmpdir(), 'search-metrics-'))
+    db = new Database(join(tmpDir, 'test.sqlite'))
     metricsDb = new Database(':memory:')
     collector = new MetricsCollector(metricsDb.raw, { flushIntervalMs: 0 })
-    // Seed a session so FTS has something to search
-    db.raw.prepare(`INSERT INTO sessions (id, source, file_path, start_time, message_count, size_bytes, tier)
-      VALUES ('s1', 'claude-code', '/tmp/test.jsonl', '2026-01-01T00:00:00Z', 1, 100, 'normal')`).run()
-    db.raw.prepare(`INSERT INTO sessions_fts (rowid, content) VALUES (1, 'test search content')`).run()
+    // Seed using the same pattern as existing search tests
+    db.upsertSession({ id: 's1', source: 'codex', startTime: '2026-01-01T10:00:00Z', cwd: '/p', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/f1', sizeBytes: 100 })
+    db.indexSessionContent('s1', [{ role: 'user', content: 'test search content for metrics' }])
   })
-  afterEach(() => { db.close(); metricsDb.close() })
+  afterEach(() => { db.close(); metricsDb.close(); rmSync(tmpDir, { recursive: true }) })
 
   it('records search.fts_ms when FTS runs', async () => {
     await handleSearch(db, { query: 'test search content' }, { metrics: collector })
@@ -402,6 +404,8 @@ this.metrics?.histogram('indexer.adapter_stream_ms', performance.now() - streamS
 
 Run: `npm run build && npm test`
 Expected: Build clean, all tests pass
+
+**No dedicated metrics tests for indexer timing.** Reason: indexer test setup requires adapter fixtures and real file I/O — adding a MetricsCollector verification would require significant test infrastructure changes for minimal value. The timing calls are trivial `performance.now()` wrappers with optional chaining (`this.metrics?.histogram(...)`) that cannot crash. Correctness is verified by: (1) build succeeds (TypeScript catches type errors), (2) existing indexer tests pass (no regressions), (3) end-to-end verification in Task 6.
 
 - [ ] **Step 5: Commit**
 
