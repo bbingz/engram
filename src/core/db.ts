@@ -792,7 +792,7 @@ export class Database {
         source_locator = COALESCE(source_locator, file_path),
         sync_version = COALESCE(sync_version, 0),
         snapshot_hash = COALESCE(snapshot_hash, '')
-      WHERE authoritative_node IS NULL
+      WHERE authoritative_node IS NULL OR authoritative_node = ''
     `).run()
 
     // Only does work when there are unmigrated rows — effectively O(0) on subsequent starts

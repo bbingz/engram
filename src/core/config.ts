@@ -8,14 +8,21 @@ import type { SyncPeer } from './sync.js';
 // ── Keychain integration (macOS) ─────────────────────────────────────
 
 function readKeychainValue(key: string): string | undefined {
+  // When launched by Swift app, Keychain values are passed via environment variables
+  // to avoid `security` CLI prompting for Keychain access authorization dialogs.
+  // Env var format: ENGRAM_KEYCHAIN_<key> (e.g., ENGRAM_KEYCHAIN_vikingApiKey)
+  const envVal = process.env[`ENGRAM_KEYCHAIN_${key}`]
+  if (envVal) return envVal
+
+  // Fallback: direct Keychain access via `security` CLI (works in terminal, may prompt in GUI)
   if (process.platform !== 'darwin') return undefined;
   try {
     const result = execFileSync('security', [
       'find-generic-password', '-s', 'com.engram.app', '-a', key, '-w',
-    ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
+    ], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] });
     return result.trim() || undefined;
   } catch {
-    return undefined;  // key not in Keychain
+    return undefined;
   }
 }
 

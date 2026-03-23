@@ -74,6 +74,16 @@ class IndexerProcess: ObservableObject {
         if let dbPath { args.append(dbPath) }
         proc.arguments = args
 
+        // Pass Keychain values via environment variables so the Node daemon
+        // doesn't need to call `security` CLI (which prompts for authorization)
+        var env = ProcessInfo.processInfo.environment
+        for key in ["vikingApiKey", "aiApiKey", "titleApiKey"] {
+            if let value = KeychainHelper.get(key), !value.isEmpty {
+                env["ENGRAM_KEYCHAIN_\(key)"] = value
+            }
+        }
+        proc.environment = env
+
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe
