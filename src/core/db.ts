@@ -88,6 +88,7 @@ export class Database {
   constructor(dbPath: string) {
     this.db = new BetterSqlite3(dbPath)
     this.db.pragma('journal_mode = WAL')
+    this.db.pragma('busy_timeout = 5000')
     this.db.pragma('foreign_keys = ON')
     this.migrate()
   }
