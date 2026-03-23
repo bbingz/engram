@@ -158,7 +158,7 @@ interface LoggerOpts {
   rateLimitPerMin?: number
   traceId?: string
   spanId?: string
-  stderrJson?: boolean  // NEW: default true
+  stderrJson?: boolean  // NEW: default true (all callers get stderr JSON unless explicitly disabled)
 }
 ```
 
