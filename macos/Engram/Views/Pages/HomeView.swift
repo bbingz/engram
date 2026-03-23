@@ -27,6 +27,7 @@ struct HomeView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("home_container")
         .task { await loadData() }
     }
 
@@ -64,10 +65,15 @@ struct HomeView: View {
         if let kpi {
             HStack(spacing: 12) {
                 KPICard(value: formatNumber(kpi.sessions), label: "Sessions")
+                    .accessibilityIdentifier("home_kpiCard_sessions")
                 KPICard(value: "\(kpi.sources)", label: "Sources")
+                    .accessibilityIdentifier("home_kpiCard_sources")
                 KPICard(value: formatNumber(kpi.messages), label: "Messages")
+                    .accessibilityIdentifier("home_kpiCard_messages")
                 KPICard(value: "\(kpi.projects)", label: "Projects")
+                    .accessibilityIdentifier("home_kpiCard_projects")
             }
+            .accessibilityIdentifier("home_kpiCards")
         } else {
             HStack(spacing: 12) {
                 ForEach(0..<4, id: \.self) { _ in SkeletonRow() }
@@ -85,12 +91,14 @@ struct HomeView: View {
                     .frame(height: 140)
             }
             .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("home_dailyChart")
 
             VStack(alignment: .leading) {
                 SectionHeader(icon: "clock", title: "When You Work")
                 HeatmapGrid(data: hourlyActivity)
             }
             .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("home_heatmap")
         }
     }
 
@@ -109,6 +117,7 @@ struct HomeView: View {
                 })
             }
             .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("home_sourceDistribution")
 
             VStack(alignment: .leading) {
                 SectionHeader(icon: "square.stack.3d.up", title: "Tiers")
@@ -120,6 +129,7 @@ struct HomeView: View {
                 )
             }
             .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("home_tierDistribution")
         }
     }
 
@@ -136,16 +146,18 @@ struct HomeView: View {
                 )
                 .frame(height: 100)
             } else {
-                ForEach(recentSessions) { session in
+                ForEach(Array(recentSessions.enumerated()), id: \.element.id) { index, session in
                     SessionCard(session: session) {
                         NotificationCenter.default.post(
                             name: .openSession,
                             object: SessionBox(session)
                         )
                     }
+                    .accessibilityIdentifier("home_recentSession_\(index)")
                 }
             }
         }
+        .accessibilityIdentifier("home_recentSessions")
     }
 
     // MARK: - Data Loading

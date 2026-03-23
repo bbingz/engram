@@ -167,3 +167,39 @@ describe('getBaseURL', () => {
     expect(getBaseURL({ aiProtocol: 'openai', aiBaseURL: 'http://localhost:11434' })).toBe('http://localhost:11434');
   });
 });
+
+// ── observability config ──────────────────────────────────────────────
+
+describe('observability config', () => {
+  it('observability block parsed correctly via migrateSettings passthrough', () => {
+    const input = {
+      observability: {
+        logLevel: 'debug' as const,
+        logRetentionDays: 14,
+      },
+    };
+    // migrateSettings should pass through observability untouched (no aiProvider → no-op)
+    const result = migrateSettings(input);
+    expect(result.observability).toEqual({ logLevel: 'debug', logRetentionDays: 14 });
+  });
+
+  it('monitor config block preserved through migration', () => {
+    const input = {
+      monitor: {
+        enabled: true,
+        dailyCostBudget: 25,
+        longSessionMinutes: 120,
+        notifyOnCostThreshold: true,
+        notifyOnLongSession: false,
+      },
+    };
+    const result = migrateSettings(input);
+    expect(result.monitor).toEqual({
+      enabled: true,
+      dailyCostBudget: 25,
+      longSessionMinutes: 120,
+      notifyOnCostThreshold: true,
+      notifyOnLongSession: false,
+    });
+  });
+});

@@ -24,6 +24,7 @@ struct AgentsView: View {
                 SectionHeader(icon: "cpu", title: "Agent Sessions")
                 if agentSessions.isEmpty && !isLoading {
                     EmptyState(icon: "cpu", title: "No agent sessions", message: "Agent sessions (subagents, dispatched tasks) will appear here")
+                        .accessibilityIdentifier("agents_emptyState")
                 } else {
                     LazyVStack(spacing: 4) {
                         ForEach(agentSessions) { session in
@@ -32,10 +33,12 @@ struct AgentsView: View {
                             }
                         }
                     }
+                    .accessibilityIdentifier("agents_list")
                 }
             }
             .padding(24)
         }
+        .accessibilityIdentifier("agents_container")
         .task { await loadData() }
     }
 

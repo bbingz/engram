@@ -3,6 +3,9 @@ import { createHash } from 'crypto'
 import { stat } from 'fs/promises'
 import type { SessionAdapter, SessionInfo, Message } from '../adapters/types.js'
 import type { Database } from './db.js'
+import type { Logger } from './logger.js'
+import type { MetricsCollector } from './metrics.js'
+import type { Tracer } from './tracer.js'
 import { computeCost } from './pricing.js'
 import { resolveProjectName } from './project.js'
 import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
@@ -15,13 +18,19 @@ import type { TitleGenerator } from './title-generator.js'
 
 export class Indexer {
   private writer: SessionSnapshotWriter
+  private log?: Logger
+  private tracer?: Tracer
+  private metrics?: MetricsCollector
 
   constructor(
     private db: Database,
     private adapters: SessionAdapter[],
-    private opts?: { viking?: VikingBridge | null; authoritativeNode?: string; writer?: SessionSnapshotWriter; titleGenerator?: TitleGenerator }
+    private opts?: { viking?: VikingBridge | null; authoritativeNode?: string; writer?: SessionSnapshotWriter; titleGenerator?: TitleGenerator; log?: Logger; tracer?: Tracer; metrics?: MetricsCollector }
   ) {
     this.writer = opts?.writer ?? new SessionSnapshotWriter(db)
+    this.log = opts?.log
+    this.tracer = opts?.tracer
+    this.metrics = opts?.metrics
   }
 
   private pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): void {
@@ -37,8 +46,8 @@ export class Indexer {
         project: info.project ?? '',
         startTime: info.startTime,
         model: info.model ?? '',
-      }).catch(() => {})
-    }).catch(() => {})
+      }).catch((err) => { this.log?.warn('viking addResource failed', { uri }, err) })
+    }).catch((err) => { this.log?.warn('viking availability check failed', {}, err) })
   }
 
   private async generateTitleIfNeeded(sessionId: string, tier: SessionTier, messages: { role: string; content: string }[]): Promise<void> {
@@ -113,7 +122,7 @@ export class Indexer {
                 acc.fileCounts.set(key, { action, count: 1 })
               }
             }
-          } catch { /* malformed input, skip */ }
+          } catch { /* intentional: malformed tool_call input JSON, skip */ }
         }
       }
     }
@@ -188,66 +197,86 @@ export class Indexer {
   // 全量扫描所有适配器，返回新增索引数量
   // sources: optional set of source names to scan (defaults to all)
   async indexAll(opts?: { sources?: Set<string> }): Promise<number> {
+    const span = this.tracer?.startSpan('indexer.indexAll', 'indexer')
     let newCount = 0
 
-    for (const adapter of this.adapters) {
-      if (opts?.sources && !opts.sources.has(adapter.name)) continue
-      if (!await adapter.detect()) continue
+    try {
+      for (const adapter of this.adapters) {
+        if (opts?.sources && !opts.sources.has(adapter.name)) continue
+        if (!await adapter.detect()) continue
 
-      for await (const filePath of adapter.listSessionFiles()) {
-        try {
-          // 虚拟路径（如 cursor: dbPath?composer=id）stat 会失败，跳过 dedup 直接尝试索引
-          let fileSize = 0
+        for await (const filePath of adapter.listSessionFiles()) {
           try {
-            const fileStat = await stat(filePath)
-            fileSize = fileStat.size
-          } catch { /* virtual path */ }
+            // 虚拟路径（如 cursor: dbPath?composer=id）stat 会失败，跳过 dedup 直接尝试索引
+            let fileSize = 0
+            try {
+              const fileStat = await stat(filePath)
+              fileSize = fileStat.size
+            } catch { /* intentional: virtual paths (e.g. cursor: dbPath?composer=id) don't have stat */ }
 
-          // 快速跳过：文件大小与 DB 记录一致（适用于大多数适配器）
-          if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) continue
+            // 快速跳过：文件大小与 DB 记录一致（适用于大多数适配器）
+            if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) continue
 
-          const info = await adapter.parseSessionInfo(filePath)
-          if (!info) continue
+            const info = await adapter.parseSessionInfo(filePath)
+            if (!info) continue
 
-          // 二段跳过：某些适配器（如 antigravity）的 sizeBytes 与文件本身大小不同
-          // 例如 antigravity 用 .pb 文件大小，此时用 info.sizeBytes 再做一次 dedup
-          if (info.sizeBytes !== fileSize && info.sizeBytes > 0 && this.db.isIndexed(filePath, info.sizeBytes)) continue
+            // 二段跳过：某些适配器（如 antigravity）的 sizeBytes 与文件本身大小不同
+            // 例如 antigravity 用 .pb 文件大小，此时用 info.sizeBytes 再做一次 dedup
+            if (info.sizeBytes !== fileSize && info.sizeBytes > 0 && this.db.isIndexed(filePath, info.sizeBytes)) continue
 
-          // 解析项目名（如果没有）
-          if (info.cwd && !info.project) {
-            info.project = await resolveProjectName(info.cwd)
-          }
+            const sessionStartTime = Date.now()
+            const sessionSpan = this.tracer?.startSpan('indexer.indexSession', 'indexer', {
+              attributes: { sessionId: info.id, source: adapter.name },
+              parentSpan: span,
+            })
 
-          const messages: { role: string; content: string }[] = []
-          const acc = Indexer.newAccumulator()
-
-          for await (const msg of adapter.streamMessages(filePath)) {
-            if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
-              messages.push({ role: msg.role, content: msg.content })
+            // 解析项目名（如果没有）
+            if (info.cwd && !info.project) {
+              info.project = await resolveProjectName(info.cwd)
             }
-            Indexer.accumulateFromStream(msg, acc)
+
+            const messages: { role: string; content: string }[] = []
+            const acc = Indexer.newAccumulator()
+
+            for await (const msg of adapter.streamMessages(filePath)) {
+              if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
+                messages.push({ role: msg.role, content: msg.content })
+              }
+              Indexer.accumulateFromStream(msg, acc)
+            }
+
+            const current = this.db.getAuthoritativeSnapshot(info.id)
+            const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
+            this.writer.writeAuthoritativeSnapshot(snapshot)
+
+            // Write cost and tool data
+            this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
+
+            if (snapshot.tier === 'premium') {
+              this.pushToViking(info, messages)
+            }
+
+            if (snapshot.tier) {
+              await this.generateTitleIfNeeded(info.id, snapshot.tier, messages)
+            }
+
+            sessionSpan?.end()
+            this.metrics?.histogram('indexer.session_duration_ms', Date.now() - sessionStartTime, { source: adapter.name })
+            newCount++
+          } catch (err) {
+            // 跳过无法处理的文件，不中断整体流程
+            this.log?.warn('skipping unprocessable file', { filePath }, err)
           }
-
-          const current = this.db.getAuthoritativeSnapshot(info.id)
-          const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
-          this.writer.writeAuthoritativeSnapshot(snapshot)
-
-          // Write cost and tool data
-          this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
-
-          if (snapshot.tier === 'premium') {
-            this.pushToViking(info, messages)
-          }
-
-          if (snapshot.tier) {
-            await this.generateTitleIfNeeded(info.id, snapshot.tier, messages)
-          }
-
-          newCount++
-        } catch {
-          // 跳过无法处理的文件，不中断整体流程
         }
       }
+
+      span?.setAttribute('newCount', newCount)
+      span?.end()
+      this.metrics?.counter('indexer.sessions_indexed', newCount)
+    } catch (err) {
+      span?.setError(err)
+      this.log?.error('indexAll failed', {}, err)
+      throw err
     }
 
     return newCount
@@ -274,7 +303,7 @@ export class Indexer {
             count++
             break
           }
-        } catch { /* try next */ }
+        } catch { /* intentional: try next adapter as fallback */ }
       }
     }
     return count
@@ -306,7 +335,8 @@ export class Indexer {
           }
           this.writeExtractedData(id, session.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
           total++
-        } catch {
+        } catch (err) {
+          this.log?.warn('backfillCosts stream failed, writing zero costs', { sessionId: id }, err)
           this.writeExtractedData(id, session.model || '', 0, 0, 0, 0, new Map())
           total++
         }
@@ -320,12 +350,18 @@ export class Indexer {
 
   // 索引单个文件（文件变化时增量更新用）
   async indexFile(adapter: SessionAdapter, filePath: string): Promise<{ indexed: boolean; sessionId?: string; messageCount?: number; tier?: SessionTier }> {
+    const span = this.tracer?.startSpan('indexer.indexFile', 'indexer', {
+      attributes: { filePath, source: adapter.name },
+    })
     try {
       let fileSize = 0
-      try { fileSize = (await stat(filePath)).size } catch { /* virtual path */ }
+      try { fileSize = (await stat(filePath)).size } catch { /* intentional: virtual paths (e.g. cursor: dbPath?composer=id) don't have stat */ }
 
       const info = await adapter.parseSessionInfo(filePath)
-      if (!info) return { indexed: false }
+      if (!info) {
+        span?.end()
+        return { indexed: false }
+      }
 
       if (info.cwd && !info.project) {
         info.project = await resolveProjectName(info.cwd)
@@ -356,8 +392,13 @@ export class Indexer {
         await this.generateTitleIfNeeded(info.id, snapshot.tier, messages)
       }
 
+      span?.setAttribute('sessionId', info.id)
+      span?.setAttribute('tier', snapshot.tier)
+      span?.end()
       return { indexed: true, sessionId: info.id, messageCount: info.messageCount ?? messages.length, tier: snapshot.tier }
-    } catch {
+    } catch (err) {
+      span?.setError(err)
+      this.log?.error('indexFile failed', { filePath }, err)
       return { indexed: false }
     }
   }

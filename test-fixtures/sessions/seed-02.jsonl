@@ -1,0 +1,5 @@
+{"type":"summary","summary":"Fixed authentication flow bug","model":"claude-sonnet-4-20250514"}
+{"type":"user","message":{"content":"There's a bug in the authentication flow. Users are getting logged out randomly."}}
+{"type":"assistant","message":{"content":"I'll investigate the authentication flow. Let me check the token refresh logic."}}
+{"type":"user","message":{"content":"The token refresh seems to fail silently."}}
+{"type":"assistant","message":{"content":"Found it. The refresh token was being compared with strict equality but the server returns it with trailing whitespace. Here's the fix."}}

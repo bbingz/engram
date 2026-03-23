@@ -2,6 +2,9 @@
 // HTTP client for OpenViking API — all paths match the real server routes.
 
 import http from 'node:http';
+import type { Logger } from './logger.js';
+import type { MetricsCollector } from './metrics.js';
+import type { Tracer } from './tracer.js';
 
 /** Proxy-aware fetch: routes through http_proxy when set (Node's native fetch ignores it). */
 function vikingFetch(url: string | URL, init?: RequestInit): Promise<Response> {
@@ -84,16 +87,22 @@ export class VikingBridge {
   private headers: Record<string, string>;
   private circuitOpen = false;
   private lastHealthCheck = 0;
+  private log?: Logger;
+  private metrics?: MetricsCollector;
+  private tracer?: Tracer;
 
   private api: string; // baseUrl + /api/v1
 
-  constructor(url: string, apiKey: string) {
+  constructor(url: string, apiKey: string, opts?: { log?: Logger; metrics?: MetricsCollector; tracer?: Tracer }) {
     this.baseUrl = url.replace(/\/$/, '');
     this.api = `${this.baseUrl}/api/v1`;
     this.headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     };
+    this.log = opts?.log;
+    this.metrics = opts?.metrics;
+    this.tracer = opts?.tracer;
   }
 
   /** Base URL for direct API access (used by health dashboard) */
@@ -117,9 +126,16 @@ export class VikingBridge {
   async checkAvailable(): Promise<boolean> {
     const now = Date.now();
     if (now - this.lastHealthCheck < CIRCUIT_BREAKER_TTL) return !this.circuitOpen;
+    const wasOpen = this.circuitOpen;
     const ok = await this.isAvailable();
     this.circuitOpen = !ok;
     this.lastHealthCheck = now;
+    if (this.circuitOpen && !wasOpen) {
+      this.log?.warn('viking circuit breaker opened');
+      this.metrics?.counter('viking.circuit_breaker_opens', 1);
+    } else if (!this.circuitOpen && wasOpen) {
+      this.log?.info('viking circuit breaker closed (recovered)');
+    }
     return ok;
   }
 
@@ -150,16 +166,29 @@ export class VikingBridge {
    *  Messages sent serially to preserve conversation order (Viking stores by arrival order).
    *  Built-in MD5 dedup: re-pushing same messages is a no-op. */
   async pushSession(sessionId: string, messages: { role: string; content: string }[]): Promise<void> {
-    await this.post(`${this.api}/sessions/custom`, { session_id: sessionId });
+    const pushStart = Date.now();
+    const span = this.tracer?.startSpan('viking.pushSession', 'viking', {
+      attributes: { sessionId, messageCount: messages.length },
+    });
+    try {
+      await this.post(`${this.api}/sessions/custom`, { session_id: sessionId });
 
-    for (const msg of messages) {
-      await this.post(`${this.api}/sessions/${sessionId}/messages/async`, {
-        role: msg.role,
-        content: msg.content,
-      }, 5000);
+      for (const msg of messages) {
+        await this.post(`${this.api}/sessions/${sessionId}/messages/async`, {
+          role: msg.role,
+          content: msg.content,
+        }, 5000);
+      }
+
+      await this.post(`${this.api}/sessions/${sessionId}/commit/async`, {});
+      span?.end();
+      this.metrics?.histogram('viking.push_duration_ms', Date.now() - pushStart);
+      this.metrics?.counter('viking.pushes', 1);
+    } catch (err) {
+      span?.setError(err);
+      this.log?.error('viking pushSession failed', { sessionId }, err);
+      throw err;
     }
-
-    await this.post(`${this.api}/sessions/${sessionId}/commit/async`, {});
   }
 
   /** Delete all old resources data (cleanup after migration) */
@@ -176,51 +205,61 @@ export class VikingBridge {
   // Push content to OpenViking via resources path (triggers embedding pipeline)
   // Flow: temp_upload .md file → import as resource (async, triggers L0/L1 + embedding)
   async addResource(uri: string, content: string, metadata?: Record<string, string>): Promise<void> {
-    // Step 1: upload content as a temp .md file
-    const boundary = `----engram${Date.now()}`;
-    const slug = uri.replace(/[^a-zA-Z0-9-]/g, '_');
-    const header = metadata
-      ? Object.entries(metadata).map(([k, v]) => `${k}: ${v}`).join(' | ') + '\n\n'
-      : '';
-    const body = [
-      `--${boundary}`,
-      `Content-Disposition: form-data; name="file"; filename="${slug}.txt"`,
-      'Content-Type: text/plain',
-      '',
-      header + content,
-      `--${boundary}--`,
-    ].join('\r\n');
+    const span = this.tracer?.startSpan('viking.addResource', 'viking', { attributes: { uri } });
+    try {
+      // Step 1: upload content as a temp .md file
+      const boundary = `----engram${Date.now()}`;
+      const slug = uri.replace(/[^a-zA-Z0-9-]/g, '_');
+      const header = metadata
+        ? Object.entries(metadata).map(([k, v]) => `${k}: ${v}`).join(' | ') + '\n\n'
+        : '';
+      const body = [
+        `--${boundary}`,
+        `Content-Disposition: form-data; name="file"; filename="${slug}.txt"`,
+        'Content-Type: text/plain',
+        '',
+        header + content,
+        `--${boundary}--`,
+      ].join('\r\n');
 
-    const uploadRes = await vikingFetch(`${this.api}/resources/temp_upload`, {
-      method: 'POST',
-      headers: {
-        ...this.headers,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      },
-      body,
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!uploadRes.ok) {
-      throw new Error(`Viking temp_upload failed (${uploadRes.status}): ${await uploadRes.text()}`);
-    }
-    const uploadData = await uploadRes.json();
-    const tempPath = uploadData?.result?.temp_path;
-    if (!tempPath) throw new Error('Viking temp_upload returned no temp_path');
+      const uploadRes = await vikingFetch(`${this.api}/resources/temp_upload`, {
+        method: 'POST',
+        headers: {
+          ...this.headers,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!uploadRes.ok) {
+        throw new Error(`Viking temp_upload failed (${uploadRes.status}): ${await uploadRes.text()}`);
+      }
+      const uploadData = await uploadRes.json();
+      const tempPath = uploadData?.result?.temp_path;
+      if (!tempPath) throw new Error('Viking temp_upload returned no temp_path');
 
-    // Step 2: import as resource (async — triggers L0/L1 generation + embedding)
-    const importRes = await vikingFetch(`${this.api}/resources`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ temp_path: tempPath, wait: false, preserve_structure: true }),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!importRes.ok) {
-      throw new Error(`Viking addResource failed (${importRes.status}): ${await importRes.text()}`);
+      // Step 2: import as resource (async — triggers L0/L1 generation + embedding)
+      const importRes = await vikingFetch(`${this.api}/resources`, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({ temp_path: tempPath, wait: false, preserve_structure: true }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!importRes.ok) {
+        throw new Error(`Viking addResource failed (${importRes.status}): ${await importRes.text()}`);
+      }
+      span?.end();
+    } catch (err) {
+      span?.setError(err);
+      this.log?.error('viking addResource failed', { uri }, err);
+      throw err;
     }
   }
 
   // POST /find — semantic search
   async find(query: string, targetUri?: string): Promise<VikingSearchResult[]> {
+    const findStart = Date.now();
+    const span = this.tracer?.startSpan('viking.find', 'viking', { attributes: { query: query.slice(0, 100) } });
     try {
       const body: Record<string, unknown> = { query, limit: 20 };
       if (targetUri) body.target_uri = targetUri;
@@ -230,7 +269,11 @@ export class VikingBridge {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(10000),
       });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        span?.setAttribute('status', res.status);
+        span?.end();
+        return [];
+      }
       const data = await res.json();
       // OpenViking returns {status, result: { memories: [...], resources: [...] }}
       const r = data?.result ?? {};
@@ -239,8 +282,15 @@ export class VikingBridge {
         ...(Array.isArray(r.resources) ? r.resources : []),
         ...(Array.isArray(r.memories) ? r.memories : []),
       ];
-      return items.map(i => ({ uri: i.uri ?? '', score: i.score ?? 0, snippet: i.abstract ?? '', metadata: i.metadata }));
-    } catch {
+      const results = items.map(i => ({ uri: i.uri ?? '', score: i.score ?? 0, snippet: i.abstract ?? '', metadata: i.metadata }));
+      span?.setAttribute('resultCount', results.length);
+      span?.end();
+      this.metrics?.histogram('viking.find_duration_ms', Date.now() - findStart);
+      this.metrics?.counter('viking.queries', 1);
+      return results;
+    } catch (err) {
+      span?.setError(err);
+      this.log?.error('viking find failed', { query: query.slice(0, 100) }, err);
       return [];
     }
   }

@@ -1,0 +1,4 @@
+{"type":"user","message":{"content":"Set up the initial project structure."}}
+{"type":"assistant","message":{"content":"I'll create the project structure with TypeScript, ESLint, and Vitest configured."}}
+{"type":"user","message":{"content":"Add the adapter pattern for session sources."}}
+{"type":"assistant","message":{"content":"Added the SessionAdapter interface with detect, listSessionFiles, parseSessionInfo, and streamMessages methods."}}

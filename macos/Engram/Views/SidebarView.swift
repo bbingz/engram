@@ -22,6 +22,7 @@ struct SidebarView: View {
                                 isSelected: selectedScreen == screen,
                                 action: { selectedScreen = screen }
                             )
+                            .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")
                         }
                     }
                 }
@@ -31,20 +32,23 @@ struct SidebarView: View {
             Divider()
                 .opacity(0.2)
 
-            // Theme toggle
+            // Theme toggle — pinned below scroll area
             ThemeToggleButton()
                 .padding(.horizontal, 8)
                 .padding(.top, 8)
+                .accessibilityIdentifier("sidebar_themeToggle")
 
-            // Pinned Settings button
+            // Settings button — pinned at bottom
             SidebarItem(
                 screen: .settings,
                 isSelected: selectedScreen == .settings,
                 action: { selectedScreen = .settings }
             )
+            .accessibilityIdentifier("sidebar_item_settings")
             .padding(.vertical, 8)
         }
         .frame(minWidth: 160, maxWidth: 160)
+        .accessibilityIdentifier("sidebar")
     }
 }
 
@@ -67,6 +71,17 @@ private struct ThemeToggleButton: View {
         }
     }
 
+    private func applyTheme(_ theme: String) {
+        switch theme {
+        case "light":
+            NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark":
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        default:
+            NSApp.appearance = nil  // nil = follow system
+        }
+    }
+
     var body: some View {
         Button {
             switch appTheme {
@@ -74,6 +89,7 @@ private struct ThemeToggleButton: View {
             case "light": appTheme = "dark"
             default: appTheme = "system"
             }
+            applyTheme(appTheme)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: icon)

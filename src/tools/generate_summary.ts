@@ -1,5 +1,6 @@
 // src/tools/generate_summary.ts
 import type { Database } from '../core/db.js';
+import type { Logger } from '../core/logger.js';
 import { getAdapter } from '../core/bootstrap.js';
 import { summarizeConversation } from '../core/ai-client.js';
 import { readFileSettings } from '../core/config.js';
@@ -24,8 +25,10 @@ export async function handleGenerateSummary(
   db: Database,
   params: {
     sessionId: string;
-  }
+  },
+  opts?: { log?: Logger }
 ) {
+  opts?.log?.info('generate_summary invoked', { sessionId: params.sessionId })
   const { sessionId } = params;
 
   // Get session info from DB
@@ -102,6 +105,7 @@ export async function handleGenerateSummary(
       },
     };
   } catch (error) {
+    opts?.log?.error('generate_summary failed', { sessionId }, error)
     const errorMessage = error instanceof Error ? error.message : String(error);
     return {
       content: [{ type: 'text' as const, text: `Failed to generate summary: ${errorMessage}` }],

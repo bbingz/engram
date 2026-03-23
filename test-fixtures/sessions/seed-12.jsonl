@@ -1,0 +1,4 @@
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Debug this crash in production"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"The crash is caused by a nil pointer dereference in the session handler. The fix is to add a guard clause."}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Can you also add error logging?"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Added structured error logging with os_log. Errors now include stack traces and context."}]}}

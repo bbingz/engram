@@ -22,7 +22,7 @@ export function setupProcessLifecycle(options?: LifecycleOptions): LifecycleHand
   function exit() {
     if (exiting) return
     exiting = true
-    try { onExit?.() } catch {}
+    try { onExit?.() } catch {} // intentional: best-effort cleanup on exit
     process.exit(0)
   }
 
@@ -42,7 +42,7 @@ export function setupProcessLifecycle(options?: LifecycleOptions): LifecycleHand
       try {
         process.kill(ppid, 0) // signal 0 = existence check, no actual signal
       } catch {
-        // Parent no longer exists
+        // intentional: parent no longer exists (ESRCH), trigger cleanup
         exit()
       }
     }, 2000)

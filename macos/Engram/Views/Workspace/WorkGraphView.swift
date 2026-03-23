@@ -49,6 +49,7 @@ struct WorkGraphView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("workGraph_container")
         .task { await loadData() }
     }
 

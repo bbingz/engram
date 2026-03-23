@@ -17,6 +17,7 @@ struct ReposView: View {
     var body: some View {
         if let repo = selectedRepo {
             RepoDetailView(repo: repo, onBack: { selectedRepo = nil })
+                .accessibilityIdentifier("repos_detail")
         } else {
             repoListView
         }
@@ -62,9 +63,11 @@ struct ReposView: View {
                         title: "No repos discovered",
                         message: "Repos are discovered from session working directories. Start some sessions first."
                     )
+                    .accessibilityIdentifier("repos_emptyState")
                 }
             }
             .padding(24)
+            .accessibilityIdentifier("repos_list")
         }
         .task { await loadData() }
     }

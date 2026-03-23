@@ -1,0 +1,238 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+
+  swift-unit:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Cache Homebrew (xcodegen)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-xcodegen-${{ runner.os }}
+
+      - name: Install xcodegen
+        run: brew install xcodegen || true
+
+      - name: Cache SPM packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ hashFiles('macos/project.yml') }}
+          restore-keys: spm-
+
+      - name: Generate Xcode project
+        run: cd macos && xcodegen generate
+
+      - name: Generate test fixtures
+        run: |
+          npm ci
+          npm run build
+          npm run generate:fixtures
+
+      - name: Run Swift unit tests
+        run: |
+          cd macos && xcodebuild test \
+            -project Engram.xcodeproj \
+            -scheme Engram \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee xcodebuild.log
+          grep -q '** TEST SUCCEEDED **' xcodebuild.log
+
+  fixture-check:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Check fixture schema version
+        run: npx tsx scripts/check-fixture-schema.ts
+      - name: Verify fixture determinism
+        run: |
+          test -f test-fixtures/test-index.sqlite || (echo "ERROR: fixture not committed" && exit 1)
+          npx tsx scripts/generate-test-fixtures.ts
+          git diff --exit-code test-fixtures/test-index.sqlite
+
+  ui-test-smoke:
+    runs-on: macos-15
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    needs: [typescript, swift-unit]
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ hashFiles('macos/project.yml') }}
+      - run: brew install xcodegen
+      - run: cd macos && xcodegen generate
+      - run: npm run generate:fixtures
+      - name: Run UI smoke tests
+        run: |
+          xcodebuild test \
+            -project macos/Engram.xcodeproj \
+            -scheme Engram \
+            -only-testing:EngramUITests/HomeSmokeTests \
+            -only-testing:EngramUITests/SessionsSmokeTests \
+            -only-testing:EngramUITests/SessionDetailSmokeTests \
+            -only-testing:EngramUITests/SearchSmokeTests \
+            -only-testing:EngramUITests/NavigationSmokeTests \
+            -only-testing:EngramUITests/PopoverSmokeTests \
+            -only-testing:EngramUITests/ActivitySmokeTests \
+            -destination 'platform=macOS' \
+            -resultBundlePath ${{ runner.temp }}/ui-test-results \
+            CODE_SIGN_IDENTITY="-" \
+            DEVELOPMENT_TEAM=""
+      - name: Collect screenshots from sandbox
+        if: always()
+        run: |
+          # XCUITest runner writes to sandbox temp dir — find and copy to known location
+          SANDBOX_DIR="$HOME/Library/Containers/com.engram.EngramUITests.xctrunner/Data/tmp/engram-screenshots"
+          mkdir -p $SCREENSHOTS_DIR
+          if [ -d "$SANDBOX_DIR" ]; then
+            cp -R "$SANDBOX_DIR"/* "$SCREENSHOTS_DIR"/ 2>/dev/null || true
+          fi
+      - name: Compare screenshots
+        if: always()
+        run: npx tsx scripts/screenshot-compare.ts
+      - name: Upload diff artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-diffs
+          path: |
+            ${{ runner.temp }}/screenshots/diffs/
+            ${{ runner.temp }}/screenshots/comparison-report.json
+          retention-days: 14
+      - name: Comment on PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = `${process.env.SCREENSHOTS_DIR}/comparison-report.json`;
+            if (!fs.existsSync(reportPath)) return;
+            const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+            const failures = report.results.filter(r => r.status === 'failed');
+            if (failures.length === 0) return;
+            let body = `📸 **Screenshot Regression**: ${failures.length} failure(s)\n\n`;
+            body += `| Screen | SSIM | Pixel Diff | Status |\n|--------|------|------------|--------|\n`;
+            for (const f of failures) {
+              body += `| ${f.name} | ${f.metrics.ssim.toFixed(3)} | ${f.metrics.pixel_diff_percent.toFixed(2)}% | ❌ |\n`;
+            }
+            body += `\nView diff images in [artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+  ui-test-full:
+    runs-on: macos-15
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 20
+    needs: [typescript, swift-unit]
+    env:
+      SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ hashFiles('macos/project.yml') }}
+      - run: brew install xcodegen
+      - run: cd macos && xcodegen generate
+      - run: npm run generate:fixtures
+      - name: Run full UI test suite
+        run: |
+          xcodebuild test \
+            -project macos/Engram.xcodeproj \
+            -scheme Engram \
+            -only-testing:EngramUITests \
+            -destination 'platform=macOS' \
+            -resultBundlePath ${{ runner.temp }}/ui-test-results \
+            CODE_SIGN_IDENTITY="-" \
+            DEVELOPMENT_TEAM=""
+      - name: Collect screenshots from sandbox
+        if: always()
+        run: |
+          SANDBOX_DIR="$HOME/Library/Containers/com.engram.EngramUITests.xctrunner/Data/tmp/engram-screenshots"
+          mkdir -p $SCREENSHOTS_DIR
+          if [ -d "$SANDBOX_DIR" ]; then
+            cp -R "$SANDBOX_DIR"/* "$SCREENSHOTS_DIR"/ 2>/dev/null || true
+          fi
+      - name: Compare screenshots
+        if: always()
+        run: npx tsx scripts/screenshot-compare.ts
+      - name: Upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-diffs-full
+          path: |
+            ${{ runner.temp }}/screenshots/diffs/
+            ${{ runner.temp }}/screenshots/comparison-report.json
+          retention-days: 30

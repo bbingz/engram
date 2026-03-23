@@ -17,8 +17,10 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private var badgeTimer: Timer?
     private var dockIconObserver: NSObjectProtocol?
     private var lastShowDockIcon: Bool?
+    private let windowSize: NSSize
 
-    init(db: DatabaseManager, indexer: IndexerProcess, daemonClient: DaemonClient) {
+    init(db: DatabaseManager, indexer: IndexerProcess, daemonClient: DaemonClient, windowSize: NSSize? = nil) {
+        self.windowSize = windowSize ?? NSSize(width: 900, height: 640)
         self.db = db
         self.indexer = indexer
         self.daemonClient = daemonClient
@@ -232,7 +234,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         let win = NSWindow(contentViewController: hostingController)
         win.title = "Engram"
-        win.setContentSize(NSSize(width: 900, height: 640))
+        win.setContentSize(windowSize)
         win.minSize = NSSize(width: 600, height: 400)
         win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         win.isReleasedWhenClosed = false

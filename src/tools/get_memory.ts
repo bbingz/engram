@@ -1,3 +1,4 @@
+import type { Logger } from '../core/logger.js'
 import type { VikingBridge, VikingMemory } from '../core/viking-bridge.js'
 
 export const getMemoryTool = {
@@ -15,12 +16,14 @@ export const getMemoryTool = {
 
 export interface GetMemoryDeps {
   viking?: VikingBridge | null
+  log?: Logger
 }
 
 export async function handleGetMemory(
   params: { query: string },
   deps: GetMemoryDeps = {}
 ): Promise<{ memories: VikingMemory[]; message?: string }> {
+  deps.log?.info('get_memory invoked', { query: params.query.slice(0, 100) })
   if (!deps.viking || !await deps.viking.checkAvailable()) {
     return {
       memories: [],

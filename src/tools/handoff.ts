@@ -1,5 +1,6 @@
 import { basename } from 'path'
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 import type { SessionAdapter } from '../adapters/types.js'
 
 export const handoffTool = {
@@ -39,8 +40,10 @@ interface SessionWithCost {
 export async function handleHandoff(
   db: Database,
   params: HandoffParams,
-  adapters?: SessionAdapter[]
+  adapters?: SessionAdapter[],
+  opts?: { log?: Logger }
 ): Promise<{ brief: string; sessionCount: number }> {
+  opts?.log?.info('handoff invoked', { cwd: params.cwd, sessionId: params.sessionId })
   const format = params.format ?? 'markdown'
 
   // 1. Resolve project name from cwd (same pattern as get_context.ts)

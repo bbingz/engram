@@ -2,12 +2,16 @@ node_modules/
 dist/
 .worktrees/
 *.sqlite
+!test-fixtures/*.sqlite
 *.db
 
 # Xcode
 macos/build/
 macos/Engram.xcodeproj/xcuserdata/
 macos/Engram.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Coverage
+coverage/
 
 # macOS
 .DS_Store

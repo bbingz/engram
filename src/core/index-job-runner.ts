@@ -89,7 +89,7 @@ export class IndexJobRunner {
       this.store.upsert(job.sessionId, embedding, this.client.model)
       this.db.markIndexJobCompleted(job.id)
     } catch (err) {
-      this.db.markIndexJobRetryableFailure(job.id, String(err))
+      this.db.markIndexJobRetryableFailure(job.id, err instanceof Error ? err.message : String(err))
     }
   }
 }

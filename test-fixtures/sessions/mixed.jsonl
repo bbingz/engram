@@ -1,0 +1,5 @@
+{"role":"user","content":"line one"}
+{this is not valid json
+{"role":"assistant","content":"line three"}
+also not valid {{{
+{"role":"user","content":"line five"}

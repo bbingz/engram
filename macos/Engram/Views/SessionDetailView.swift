@@ -83,6 +83,8 @@ struct SessionDetailView: View {
                 onReplay: { showReplay = true },
                 viewMode: $viewMode
             )
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("detail_toolbar")
 
             // Handoff status toast
             if let status = handoffStatus {
@@ -109,6 +111,7 @@ struct SessionDetailView: View {
                     onPrev: { navigateFind(direction: -1) },
                     onNext: { navigateFind(direction: 1) }
                 )
+                .accessibilityIdentifier("detail_findBar")
                 Divider()
             }
 
@@ -173,6 +176,7 @@ struct SessionDetailView: View {
                             }
                         }
                     }
+                    .accessibilityIdentifier("detail_transcript")
                     .onChange(of: scrollTarget) { _, target in
                         if let target {
                             withAnimation { proxy.scrollTo(target, anchor: .center) }
@@ -181,6 +185,8 @@ struct SessionDetailView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("detail_container")
         .background {
             Group {
                 Button("") { showFind.toggle() }
@@ -228,6 +234,14 @@ struct SessionDetailView: View {
                     }
                 default:
                     break
+                }
+            }
+            // Resolve relative paths against the DB's parent directory (test fixtures)
+            if !effectivePath.isEmpty && !effectivePath.hasPrefix("/") {
+                let dbDir = (db.path as NSString).deletingLastPathComponent
+                let resolved = (dbDir as NSString).appendingPathComponent(effectivePath)
+                if FileManager.default.fileExists(atPath: resolved) {
+                    effectivePath = resolved
                 }
             }
             messages = await Task.detached(priority: .userInitiated) {

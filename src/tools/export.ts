@@ -3,6 +3,7 @@ import { writeFile, mkdir } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 import type { SessionAdapter } from '../adapters/types.js'
 import { toLocalDate, toLocalDateTime } from '../utils/time.js'
 
@@ -23,8 +24,10 @@ export const exportTool = {
 export async function handleExport(
   db: Database,
   adapter: SessionAdapter,
-  params: { id: string; format?: string }
+  params: { id: string; format?: string },
+  opts?: { log?: Logger }
 ) {
+  opts?.log?.info('export invoked', { id: params.id, format: params.format })
   const session = db.getSession(params.id)
   if (!session) throw new Error(`Session not found: ${params.id}`)
 

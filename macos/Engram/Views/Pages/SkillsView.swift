@@ -26,6 +26,7 @@ struct SkillsView: View {
                 .padding(10)
                 .background(Theme.inputBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityIdentifier("skills_search")
 
                 if let error { AlertBanner(message: error) }
                 if !globalSkills.isEmpty {
@@ -38,9 +39,11 @@ struct SkillsView: View {
                 }
                 if filteredSkills.isEmpty && !isLoading {
                     EmptyState(icon: "sparkles", title: "No skills found", message: "Skills from ~/.claude/ will appear here")
+                        .accessibilityIdentifier("skills_emptyState")
                 }
             }
             .padding(24)
+            .accessibilityIdentifier("skills_list")
         }
         .task { await loadData() }
     }

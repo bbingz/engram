@@ -1,0 +1,1 @@
+[{"say":"task","text":"修復認證模組的問題"},{"say":"text","text":"我找到了認證模組的問題。トークンの更新ロジックにバグがありました。","partial":false},{"say":"user_feedback","text":"テストケースを追加してください"},{"say":"text","text":"テストケースを追加しました。すべてのテストが通りました。","partial":false}]

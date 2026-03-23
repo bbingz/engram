@@ -2,6 +2,7 @@
 import { basename, join, isAbsolute } from 'path'
 import { mkdir, symlink, readlink, lstat, unlink } from 'fs/promises'
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 
 export const linkSessionsTool = {
   name: 'link_sessions',
@@ -29,8 +30,10 @@ const QUERY_LIMIT = 10000
 
 export async function handleLinkSessions(
   db: Database,
-  params: { targetDir: string }
+  params: { targetDir: string },
+  opts?: { log?: Logger }
 ): Promise<LinkResult> {
+  opts?.log?.info('link_sessions invoked', { targetDir: params.targetDir })
   const targetDir = params.targetDir.replace(/\/$/, '')
 
   if (!isAbsolute(targetDir)) {

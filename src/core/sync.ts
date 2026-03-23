@@ -130,7 +130,7 @@ export class SyncEngine {
         if (sessions.length < PAGE_LIMIT) break
       }
     } catch (err) {
-      result.error = String(err)
+      result.error = err instanceof Error ? err.message : String(err)
     }
 
     return result

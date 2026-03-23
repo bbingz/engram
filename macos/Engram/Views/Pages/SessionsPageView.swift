@@ -19,12 +19,16 @@ struct SessionsPageView: View {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 12) {
                     KPICard(value: "\(totalCount)", label: "Total Sessions")
+                        .accessibilityIdentifier("sessions_kpiCard_total")
                     KPICard(value: formatNumber(totalMessages), label: "Messages")
+                        .accessibilityIdentifier("sessions_kpiCard_messages")
                     KPICard(value: avgDuration, label: "Avg Duration")
+                        .accessibilityIdentifier("sessions_kpiCard_avgDuration")
                 }
 
                 HStack(spacing: 12) {
                     FilterPills(options: timeOptions, selected: $timeFilter)
+                        .accessibilityIdentifier("sessions_filterPills")
                     Spacer()
                     if !availableSources.isEmpty {
                         Picker("Source", selection: Binding(
@@ -37,23 +41,29 @@ struct SessionsPageView: View {
                             }
                         }
                         .frame(width: 140)
+                        .accessibilityIdentifier("sessions_sourcePicker")
                     }
                 }
 
                 if sessions.isEmpty && !isLoading {
                     EmptyState(icon: "bubble.left.and.bubble.right", title: "No sessions", message: "No sessions match your filters")
+                        .accessibilityIdentifier("sessions_emptyState")
                 } else {
                     LazyVStack(spacing: 4) {
-                        ForEach(sessions) { session in
+                        ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
                             SessionCard(session: session) {
                                 NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
                             }
+                            .accessibilityIdentifier("sessions_row_\(index)")
                         }
                     }
+                    .accessibilityIdentifier("sessions_list")
                 }
             }
             .padding(24)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("sessions_container")
         .task { await loadData() }
         .onChange(of: timeFilter) { _ in Task { await loadData() } }
         .onChange(of: sourceFilter) { _ in Task { await loadData() } }

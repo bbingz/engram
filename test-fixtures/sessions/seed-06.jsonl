@@ -1,0 +1,2 @@
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Update the README with installation instructions"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Updated README.md with installation steps, prerequisites, and quick start guide."}]}}

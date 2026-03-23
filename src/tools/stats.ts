@@ -1,5 +1,6 @@
 // src/tools/stats.ts
 import type { Database } from '../core/db.js'
+import type { Logger } from '../core/logger.js'
 
 export const statsTool = {
   name: 'stats',
@@ -21,8 +22,10 @@ export const statsTool = {
 
 export async function handleStats(
   db: Database,
-  params: { since?: string; until?: string; group_by?: string; exclude_noise?: boolean }
+  params: { since?: string; until?: string; group_by?: string; exclude_noise?: boolean },
+  opts?: { log?: Logger }
 ) {
+  opts?.log?.info('stats invoked', { groupBy: params.group_by, since: params.since })
   const groupBy = params.group_by ?? 'source'
   const groups = db.statsGroupBy(groupBy, params.since, params.until, { excludeNoise: params.exclude_noise })
   const totalSessions = groups.reduce((sum, g) => sum + g.sessionCount, 0)

@@ -80,3 +80,54 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.cli
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+  EngramTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramTests
+      - path: test-fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: Engram
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
+      TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
+      BUNDLE_LOADER: "$(TEST_HOST)"
+
+  EngramUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: EngramUITests
+        excludes:
+          - "baselines/**"
+      - path: ../test-fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: Engram
+    settings:
+      TEST_TARGET_NAME: Engram
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_NSPrincipalClass: ScreenshotTestObserver
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+schemes:
+  Engram:
+    build:
+      targets:
+        Engram: all
+        EngramCLI: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EngramTests
+        - EngramUITests
+      environmentVariables: []

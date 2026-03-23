@@ -18,7 +18,7 @@ export class TitleGenerator {
     try {
       return await this.callLLM(prompt)
     } catch (err) {
-      console.error('[title-gen] Failed:', err)
+      console.error('[title-gen] Failed:', err) // stderr → os_log in daemon mode
       return null
     }
   }

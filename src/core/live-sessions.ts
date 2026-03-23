@@ -54,8 +54,8 @@ export class LiveSessionMonitor {
 
   start(intervalMs = 5000): void {
     if (this.interval) return
-    this.interval = setInterval(() => this.scan().catch(() => {}), intervalMs)
-    this.scan().catch(() => {})
+    this.interval = setInterval(() => this.scan().catch(() => {}), intervalMs) // intentional: periodic scan, file I/O errors are expected
+    this.scan().catch(() => {}) // intentional: initial scan, file I/O errors are expected
   }
 
   stop(): void {
@@ -95,9 +95,9 @@ export class LiveSessionMonitor {
             if (session) {
               this.sessions.set(filePath, session)
             }
-          } catch { /* skip unreadable files */ }
+          } catch { /* intentional: skip unreadable files */ }
         }
-      } catch { /* skip inaccessible directories */ }
+      } catch { /* intentional: skip inaccessible directories */ }
     }
 
     // Remove sessions whose files are no longer active
@@ -113,7 +113,7 @@ export class LiveSessionMonitor {
     const results: string[] = []
     try {
       this.walkDir(dir, results, 0)
-    } catch { /* directory may not exist */ }
+    } catch { /* intentional: directory may not exist */ }
     return results
   }
 
@@ -129,7 +129,7 @@ export class LiveSessionMonitor {
           results.push(full)
         }
       }
-    } catch { /* skip unreadable dirs */ }
+    } catch { /* intentional: skip unreadable dirs */ }
   }
 
   /** Read at most `bytes` from the start of a file. */
@@ -179,7 +179,7 @@ export class LiveSessionMonitor {
           meta.sessionId = first.sessionId ?? first.payload?.id
           meta.cwd = first.cwd ?? first.payload?.cwd ?? ''
           meta.startedAt = first.timestamp ?? first.payload?.timestamp ?? ''
-        } catch { /* skip unparseable first line */ }
+        } catch { /* intentional: skip unparseable first line */ }
 
         // Extract title from first user message in the head
         const headLines = head.split('\n').filter(Boolean)
@@ -202,7 +202,7 @@ export class LiveSessionMonitor {
                 break
               }
             }
-          } catch { /* skip */ }
+          } catch { /* intentional: skip unparseable title lines */ }
         }
 
         this.metadataCache.set(filePath, meta)
@@ -236,7 +236,7 @@ export class LiveSessionMonitor {
             }
           }
           if (model && currentActivity) break
-        } catch { /* skip unparseable lines */ }
+        } catch { /* intentional: skip unparseable tail lines */ }
       }
 
       // Derive project from cwd or file path
@@ -267,7 +267,7 @@ export class LiveSessionMonitor {
         activityLevel,
       }
     } catch {
-      return null
+      return null // intentional: skip files that can't be parsed
     }
   }
 

@@ -24,9 +24,11 @@ struct HooksView: View {
                 }
                 if hooks.isEmpty && !isLoading {
                     EmptyState(icon: "link", title: "No hooks configured", message: "Hooks from ~/.claude/settings.json will appear here")
+                        .accessibilityIdentifier("hooks_emptyState")
                 }
             }
             .padding(24)
+            .accessibilityIdentifier("hooks_list")
         }
         .task { await loadData() }
     }

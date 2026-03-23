@@ -19,9 +19,12 @@ struct ActivityView: View {
                     KPICard(value: "\(weekCount)", label: "This Week")
                 }
                 SectionHeader(icon: "chart.bar", title: "Daily Activity", badge: "30d")
-                ActivityChart(data: dailyActivity).frame(height: 200)
+                ActivityChart(data: dailyActivity)
+                    .frame(height: 200)
+                    .accessibilityIdentifier("activity_dailyChart")
                 SectionHeader(icon: "clock", title: "When You Work")
                 HeatmapGrid(data: hourlyActivity)
+                    .accessibilityIdentifier("activity_heatmap")
                 SectionHeader(icon: "chart.pie", title: "By Source")
                 ForEach(sourceDist.prefix(10), id: \.source) { item in
                     HStack {
@@ -36,6 +39,7 @@ struct ActivityView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("activity_container")
         .task { await loadData() }
     }
 

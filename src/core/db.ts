@@ -11,6 +11,8 @@ import type {
   SyncCursor,
 } from './session-snapshot.js'
 
+export const SCHEMA_VERSION = 1
+
 export interface ListSessionsOptions {
   source?: SourceName
   sources?: string[]
@@ -77,6 +79,9 @@ function buildIndexJobId(sessionId: string, targetSyncVersion: number, jobKind: 
 export class Database {
   private db: BetterSqlite3.Database
   noiseFilter: NoiseFilter = 'hide-skip'
+
+  /** Expose underlying better-sqlite3 instance for observability writers */
+  get raw(): BetterSqlite3.Database { return this.db }
 
   constructor(dbPath: string) {
     this.db = new BetterSqlite3(dbPath)
@@ -215,6 +220,8 @@ export class Database {
       this.setMetadata('fts_version', FTS_VERSION)
     }
 
+    this.setMetadata('schema_version', String(SCHEMA_VERSION))
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS usage_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -288,6 +295,75 @@ export class Database {
     if (!sessionCols.some(c => c.name === 'generated_title')) {
       this.db.exec('ALTER TABLE sessions ADD COLUMN generated_title TEXT')
     }
+
+    // Observability tables
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+        level TEXT NOT NULL CHECK (level IN ('debug', 'info', 'warn', 'error')),
+        module TEXT NOT NULL,
+        trace_id TEXT,
+        span_id TEXT,
+        message TEXT NOT NULL,
+        data TEXT,
+        error_name TEXT,
+        error_message TEXT,
+        error_stack TEXT,
+        source TEXT NOT NULL CHECK (source IN ('daemon', 'app'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
+      CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
+      CREATE INDEX IF NOT EXISTS idx_logs_module ON logs(module);
+      CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON logs(trace_id);
+      CREATE INDEX IF NOT EXISTS idx_logs_source_ts ON logs(source, ts);
+
+      CREATE TABLE IF NOT EXISTS traces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trace_id TEXT NOT NULL,
+        span_id TEXT NOT NULL UNIQUE,
+        parent_span_id TEXT,
+        name TEXT NOT NULL,
+        module TEXT NOT NULL,
+        start_ts TEXT NOT NULL,
+        end_ts TEXT,
+        duration_ms INTEGER,
+        status TEXT NOT NULL DEFAULT 'ok',
+        attributes TEXT,
+        source TEXT NOT NULL CHECK (source IN ('daemon', 'app'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_traces_span_id ON traces(span_id);
+      CREATE INDEX IF NOT EXISTS idx_traces_trace_id ON traces(trace_id);
+      CREATE INDEX IF NOT EXISTS idx_traces_name ON traces(name);
+      CREATE INDEX IF NOT EXISTS idx_traces_start_ts ON traces(start_ts);
+      CREATE INDEX IF NOT EXISTS idx_traces_duration ON traces(duration_ms);
+
+      CREATE TABLE IF NOT EXISTS metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('counter', 'gauge', 'histogram')),
+        value REAL NOT NULL,
+        tags TEXT,
+        ts TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_metrics_name_ts ON metrics(name, ts);
+      CREATE INDEX IF NOT EXISTS idx_metrics_name_type ON metrics(name, type);
+
+      CREATE TABLE IF NOT EXISTS metrics_hourly (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        hour TEXT NOT NULL,
+        count INTEGER NOT NULL,
+        sum REAL NOT NULL,
+        min REAL NOT NULL,
+        max REAL NOT NULL,
+        p95 REAL,
+        tags TEXT,
+        UNIQUE(name, type, hour, tags)
+      );
+      CREATE INDEX IF NOT EXISTS idx_metrics_hourly_name ON metrics_hourly(name, hour);
+    `)
 
     this.runPostMigrationBackfill()
     this.backfillTiers()
