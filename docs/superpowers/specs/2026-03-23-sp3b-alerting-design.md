@@ -70,8 +70,8 @@ export class AlertRuleEngine {
     `)
   }
 
-  check(): Array<{ rule: string; severity: string; message: string }> {
-    const fired: Array<{ rule: string; severity: string; message: string }> = []
+  check(): Array<{ rule: string; severity: string; message: string; value: number; threshold: number }> {
+    const fired: Array<{ rule: string; severity: string; message: string; value: number; threshold: number }> = []
     const now = Date.now()
 
     for (const rule of this.rules) {
@@ -94,7 +94,7 @@ export class AlertRuleEngine {
       // Update cooldown
       this.lastFired.set(rule.name, now)
 
-      fired.push({ rule: rule.name, severity: result.severity, message: result.message })
+      fired.push({ rule: rule.name, severity: result.severity, message: result.message, value: result.value, threshold: result.threshold })
     }
     return fired
   }
@@ -102,6 +102,10 @@ export class AlertRuleEngine {
 ```
 
 Cooldown is in-memory. Daemon restart resets cooldown — acceptable (re-check on restart is correct behavior if condition persists).
+
+`createDefaultRules()` is a module-level function that returns `AlertRule[]` — assembling the 6 rules defined in Section 3.
+
+**Performance note**: Rule `check()` methods call `db.prepare(SQL).get()` each time. Since `db.prepare()` goes through the SP3b Proxy wrapper, these calls generate `db.query_ms` metrics (sampled at 10%). For better performance, rule SQL statements should be pre-compiled in the `AlertRuleEngine` constructor and passed to rules, avoiding repeated `prepare()` calls. Implementation should cache these statements.
 
 ### Known inconsistency with BackgroundMonitor
 
