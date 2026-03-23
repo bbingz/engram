@@ -63,7 +63,7 @@ const log = createLogger('daemon', { writer: logWriter, level: settings.observab
 
 log.info('daemon starting', { powerMode })
 
-const authoritativeNode = settings.syncNodeName ?? 'local'
+const authoritativeNode = settings.syncNodeName || 'local'
 
 // Apply tier-based noise filter
 db.noiseFilter = settings.noiseFilter ?? 'hide-skip'
