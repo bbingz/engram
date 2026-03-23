@@ -26,6 +26,8 @@ import { populateMockData } from './core/mock-data.js'
 import { createLogger, LogWriter } from './core/logger.js'
 import { Tracer, TraceWriter } from './core/tracer.js'
 import { MetricsCollector } from './core/metrics.js'
+import { runWithContext } from './core/request-context.js'
+import { randomUUID } from 'crypto'
 
 // Power state detection — one-time check at startup (macOS only)
 function isOnACPower(): boolean {
@@ -55,7 +57,7 @@ const metrics = new MetricsCollector(db.raw, {
   sampleRates: { 'db.query_duration_ms': 0.1 },
 })
 const tracer = new Tracer(traceWriter)
-const log = createLogger('daemon', { writer: logWriter, level: settings.observability?.logLevel ?? 'info' })
+const log = createLogger('daemon', { writer: logWriter, level: settings.observability?.logLevel ?? 'info', stderrJson: true })
 
 log.info('daemon starting', { powerMode })
 
@@ -283,18 +285,20 @@ const allSourceNames = new Set(adapters.map(a => a.name))
 const nonWatchable = new Set([...allSourceNames].filter(s => !WATCHED_SOURCES.has(s)))
 
 const rescanTimer = setInterval(async () => {
-  try {
-    const indexed = nonWatchable.size > 0
-      ? await indexer.indexAll({ sources: nonWatchable })
-      : 0
-    if (indexed > 0) {
-      const total = db.countSessions()
-      emit({ event: 'rescan', indexed, total })
-      indexJobRunner.runRecoverableJobs().catch(() => {}) // intentional: fire-and-forget background job
+  await runWithContext({ requestId: randomUUID(), source: 'scheduler' }, async () => {
+    try {
+      const indexed = nonWatchable.size > 0
+        ? await indexer.indexAll({ sources: nonWatchable })
+        : 0
+      if (indexed > 0) {
+        const total = db.countSessions()
+        emit({ event: 'rescan', indexed, total })
+        indexJobRunner.runRecoverableJobs().catch(() => {})
+      }
+    } catch (err) {
+      log.warn('periodic rescan failed', {}, err)
     }
-  } catch (err) {
-    log.warn('periodic rescan failed', {}, err)
-  }
+  })
 }, RESCAN_INTERVAL)
 
 // Sync engine
@@ -344,6 +348,7 @@ const app = createApp(db, {
   backgroundMonitor,
   logWriter,
   metrics,
+  tracer,
 })
 const { serve } = await import('@hono/node-server')
 const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
@@ -365,15 +370,17 @@ const gitProbeTimer = startGitProbeLoop(db.getRawDb(), 300_000 * POWER_MULTIPLIE
 
 // Observability: log rotation + metrics rollup
 const logRotationTimer = setInterval(() => {
-  const retentionDays = settings.observability?.logRetentionDays ?? 7
-  logWriter.rotate(retentionDays)
-  logWriter.enforceMaxRows(100_000)
-  db.raw.prepare("DELETE FROM traces WHERE start_ts < ?").run(
-    new Date(Date.now() - retentionDays * 86400000).toISOString()
-  )
-  db.raw.prepare("DELETE FROM metrics WHERE ts < ?").run(
-    new Date(Date.now() - 24 * 3600000).toISOString()
-  )
+  runWithContext({ requestId: randomUUID(), source: 'scheduler' }, () => {
+    const retentionDays = settings.observability?.logRetentionDays ?? 7
+    logWriter.rotate(retentionDays)
+    logWriter.enforceMaxRows(100_000)
+    db.raw.prepare("DELETE FROM traces WHERE start_ts < ?").run(
+      new Date(Date.now() - retentionDays * 86400000).toISOString()
+    )
+    db.raw.prepare("DELETE FROM metrics WHERE ts < ?").run(
+      new Date(Date.now() - 24 * 3600000).toISOString()
+    )
+  })
 }, 3600000)
 
 let rollupInterval: ReturnType<typeof setInterval> | null = null
