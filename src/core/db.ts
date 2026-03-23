@@ -1,5 +1,6 @@
 // src/core/db.ts
 import BetterSqlite3 from 'better-sqlite3'
+import type { MetricsCollector } from './metrics.js'
 import type { SessionInfo, SourceName } from '../adapters/types.js'
 import { computeQualityScore } from './session-scoring.js'
 import type {
@@ -79,6 +80,7 @@ function buildIndexJobId(sessionId: string, targetSyncVersion: number, jobKind: 
 export class Database {
   private db: BetterSqlite3.Database
   noiseFilter: NoiseFilter = 'hide-skip'
+  private metrics?: MetricsCollector
 
   /** Expose underlying better-sqlite3 instance for observability writers */
   get raw(): BetterSqlite3.Database { return this.db }
@@ -88,6 +90,35 @@ export class Database {
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
     this.migrate()
+  }
+
+  setMetrics(metrics: MetricsCollector): void {
+    this.metrics = metrics
+    const self = this
+    const originalPrepare = this.db.prepare.bind(this.db)
+    this.db.prepare = ((sql: string) => {
+      const stmt = originalPrepare(sql)
+      return self.wrapStatement(stmt)
+    }) as typeof this.db.prepare
+  }
+
+  private wrapStatement(stmt: BetterSqlite3.Statement): BetterSqlite3.Statement {
+    if (!this.metrics) return stmt
+    const metrics = this.metrics
+    return new Proxy(stmt, {
+      get(target, prop) {
+        if (prop === 'run' || prop === 'get' || prop === 'all') {
+          return (...args: any[]) => {
+            const start = performance.now()
+            const result = (target as any)[prop].apply(target, args)
+            metrics.histogram('db.query_ms', performance.now() - start, { method: prop as string })
+            return result
+          }
+        }
+        const val = (target as any)[prop]
+        return typeof val === 'function' ? val.bind(target) : val
+      }
+    }) as BetterSqlite3.Statement
   }
 
   private migrate(): void {

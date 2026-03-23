@@ -91,3 +91,56 @@ describe('metrics rollup', () => {
     expect(row.sum).toBe(150)
   })
 })
+
+describe('DB query auto-timing', () => {
+  let db: Database
+  let metricsDb: Database
+  let collector: MetricsCollector
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    metricsDb = new Database(':memory:')
+    collector = new MetricsCollector(metricsDb.raw, { flushIntervalMs: 0 })
+  })
+  afterEach(() => { db.close(); metricsDb.close() })
+
+  it('records db.query_ms histogram after setMetrics', () => {
+    db.setMetrics(collector)
+    db.raw.prepare('SELECT 1').get()
+    collector.flush()
+    const rows = metricsDb.raw.prepare("SELECT * FROM metrics WHERE name = 'db.query_ms'").all() as any[]
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows[0].type).toBe('histogram')
+    expect(JSON.parse(rows[0].tags).method).toBe('get')
+  })
+
+  it('times run() method', () => {
+    db.setMetrics(collector)
+    db.raw.prepare("INSERT INTO logs (level, module, message, source) VALUES ('info', 'test', 'hello', 'daemon')").run()
+    collector.flush()
+    const rows = metricsDb.raw.prepare("SELECT * FROM metrics WHERE name = 'db.query_ms'").all() as any[]
+    expect(rows.length).toBeGreaterThan(0)
+    expect(JSON.parse(rows[0].tags).method).toBe('run')
+  })
+
+  it('times all() method', () => {
+    db.setMetrics(collector)
+    db.raw.prepare('SELECT * FROM sessions LIMIT 1').all()
+    collector.flush()
+    const rows = metricsDb.raw.prepare("SELECT * FROM metrics WHERE name = 'db.query_ms'").all() as any[]
+    expect(rows.length).toBeGreaterThan(0)
+    expect(JSON.parse(rows[0].tags).method).toBe('all')
+  })
+
+  it('works normally without setMetrics — no wrapping', () => {
+    const result = db.raw.prepare('SELECT 1 as v').get() as any
+    expect(result.v).toBe(1)
+  })
+
+  it('forwards non-timed properties unchanged', () => {
+    db.setMetrics(collector)
+    const stmt = db.raw.prepare('SELECT 1 as val')
+    const cols = stmt.columns()
+    expect(cols[0].name).toBe('val')
+  })
+})
