@@ -165,6 +165,12 @@ export function createApp(db: Database, opts?: {
       await next()
       metricsRef.counter('http.requests', 1, { method: c.req.method, path: c.req.path.split('/').slice(0, 3).join('/') })
       metricsRef.histogram('http.duration_ms', Date.now() - start, { method: c.req.method })
+      if (c.res.status >= 400) {
+        metricsRef.counter('http.error_count', 1, {
+          status: String(c.res.status),
+          path: c.req.path.split('/').slice(0, 3).join('/')
+        })
+      }
     })
   }
 

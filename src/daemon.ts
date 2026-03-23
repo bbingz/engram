@@ -54,10 +54,11 @@ const logWriter = new LogWriter(db.raw)
 const traceWriter = new TraceWriter(db.raw)
 const metrics = new MetricsCollector(db.raw, {
   flushIntervalMs: 5000,
-  sampleRates: { 'db.query_duration_ms': 0.1 },
+  sampleRates: { 'db.query_ms': 0.1 },
 })
 const tracer = new Tracer(traceWriter)
-const log = createLogger('daemon', { writer: logWriter, level: settings.observability?.logLevel ?? 'info', stderrJson: true })
+db.setMetrics(metrics)
+const log = createLogger('daemon', { writer: logWriter, level: settings.observability?.logLevel ?? 'info', stderrJson: true, metrics })
 
 log.info('daemon starting', { powerMode })
 
@@ -392,6 +393,13 @@ const metricsRollupTimer = setTimeout(() => {
 const daemonStartTime = Date.now()
 const uptimeTimer = setInterval(() => {
   metrics.gauge('daemon.uptime_s', Math.floor((Date.now() - daemonStartTime) / 1000))
+  // Process health
+  const mem = process.memoryUsage()
+  metrics.gauge('process.heap_mb', Math.round(mem.heapUsed / 1048576 * 10) / 10)
+  metrics.gauge('process.rss_mb', Math.round(mem.rss / 1048576 * 10) / 10)
+  const cpu = process.cpuUsage()
+  metrics.gauge('process.cpu_user_ms', Math.round(cpu.user / 1000))
+  metrics.gauge('process.cpu_system_ms', Math.round(cpu.system / 1000))
 }, 60000)
 
 // Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
