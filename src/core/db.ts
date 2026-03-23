@@ -394,6 +394,20 @@ export class Database {
         UNIQUE(name, type, hour, tags)
       );
       CREATE INDEX IF NOT EXISTS idx_metrics_hourly_name ON metrics_hourly(name, hour);
+
+      CREATE TABLE IF NOT EXISTS alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+        rule TEXT NOT NULL,
+        severity TEXT NOT NULL CHECK (severity IN ('warning','critical')),
+        message TEXT NOT NULL,
+        value REAL,
+        threshold REAL,
+        dismissed_at TEXT,
+        resolved_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
+      CREATE INDEX IF NOT EXISTS idx_alerts_rule ON alerts(rule, ts);
     `)
 
     this.runPostMigrationBackfill()
