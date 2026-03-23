@@ -1,5 +1,5 @@
 // src/core/indexer.ts
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { stat } from 'fs/promises'
 import type { SessionAdapter, SessionInfo, Message } from '../adapters/types.js'
 import type { Database } from './db.js'
@@ -15,6 +15,7 @@ import { SessionSnapshotWriter } from './session-writer.js'
 import { toVikingUri, type VikingBridge } from './viking-bridge.js'
 import { filterForViking } from './viking-filter.js'
 import type { TitleGenerator } from './title-generator.js'
+import { runWithContext } from './request-context.js'
 
 export class Indexer {
   private writer: SessionSnapshotWriter
@@ -206,67 +207,69 @@ export class Indexer {
         if (!await adapter.detect()) continue
 
         for await (const filePath of adapter.listSessionFiles()) {
-          try {
-            // 虚拟路径（如 cursor: dbPath?composer=id）stat 会失败，跳过 dedup 直接尝试索引
-            let fileSize = 0
+          await runWithContext({ requestId: randomUUID(), source: 'indexer' }, async () => {
             try {
-              const fileStat = await stat(filePath)
-              fileSize = fileStat.size
-            } catch { /* intentional: virtual paths (e.g. cursor: dbPath?composer=id) don't have stat */ }
+              // 虚拟路径（如 cursor: dbPath?composer=id）stat 会失败，跳过 dedup 直接尝试索引
+              let fileSize = 0
+              try {
+                const fileStat = await stat(filePath)
+                fileSize = fileStat.size
+              } catch { /* intentional: virtual paths (e.g. cursor: dbPath?composer=id) don't have stat */ }
 
-            // 快速跳过：文件大小与 DB 记录一致（适用于大多数适配器）
-            if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) continue
+              // 快速跳过：文件大小与 DB 记录一致（适用于大多数适配器）
+              if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) return
 
-            const info = await adapter.parseSessionInfo(filePath)
-            if (!info) continue
+              const info = await adapter.parseSessionInfo(filePath)
+              if (!info) return
 
-            // 二段跳过：某些适配器（如 antigravity）的 sizeBytes 与文件本身大小不同
-            // 例如 antigravity 用 .pb 文件大小，此时用 info.sizeBytes 再做一次 dedup
-            if (info.sizeBytes !== fileSize && info.sizeBytes > 0 && this.db.isIndexed(filePath, info.sizeBytes)) continue
+              // 二段跳过：某些适配器（如 antigravity）的 sizeBytes 与文件本身大小不同
+              // 例如 antigravity 用 .pb 文件大小，此时用 info.sizeBytes 再做一次 dedup
+              if (info.sizeBytes !== fileSize && info.sizeBytes > 0 && this.db.isIndexed(filePath, info.sizeBytes)) return
 
-            const sessionStartTime = Date.now()
-            const sessionSpan = this.tracer?.startSpan('indexer.indexSession', 'indexer', {
-              attributes: { sessionId: info.id, source: adapter.name },
-              parentSpan: span,
-            })
+              const sessionStartTime = Date.now()
+              const sessionSpan = this.tracer?.startSpan('indexer.indexSession', 'indexer', {
+                attributes: { sessionId: info.id, source: adapter.name },
+                parentSpan: span,
+              })
 
-            // 解析项目名（如果没有）
-            if (info.cwd && !info.project) {
-              info.project = await resolveProjectName(info.cwd)
-            }
-
-            const messages: { role: string; content: string }[] = []
-            const acc = Indexer.newAccumulator()
-
-            for await (const msg of adapter.streamMessages(filePath)) {
-              if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
-                messages.push({ role: msg.role, content: msg.content })
+              // 解析项目名（如果没有）
+              if (info.cwd && !info.project) {
+                info.project = await resolveProjectName(info.cwd)
               }
-              Indexer.accumulateFromStream(msg, acc)
+
+              const messages: { role: string; content: string }[] = []
+              const acc = Indexer.newAccumulator()
+
+              for await (const msg of adapter.streamMessages(filePath)) {
+                if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
+                  messages.push({ role: msg.role, content: msg.content })
+                }
+                Indexer.accumulateFromStream(msg, acc)
+              }
+
+              const current = this.db.getAuthoritativeSnapshot(info.id)
+              const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
+              this.writer.writeAuthoritativeSnapshot(snapshot)
+
+              // Write cost and tool data
+              this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
+
+              if (snapshot.tier === 'premium') {
+                this.pushToViking(info, messages)
+              }
+
+              if (snapshot.tier) {
+                await this.generateTitleIfNeeded(info.id, snapshot.tier, messages)
+              }
+
+              sessionSpan?.end()
+              this.metrics?.histogram('indexer.session_duration_ms', Date.now() - sessionStartTime, { source: adapter.name })
+              newCount++
+            } catch (err) {
+              // 跳过无法处理的文件，不中断整体流程
+              this.log?.warn('skipping unprocessable file', { filePath }, err)
             }
-
-            const current = this.db.getAuthoritativeSnapshot(info.id)
-            const snapshot = this.buildLocalAuthoritativeSnapshot(current, info, filePath, messages)
-            this.writer.writeAuthoritativeSnapshot(snapshot)
-
-            // Write cost and tool data
-            this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
-
-            if (snapshot.tier === 'premium') {
-              this.pushToViking(info, messages)
-            }
-
-            if (snapshot.tier) {
-              await this.generateTitleIfNeeded(info.id, snapshot.tier, messages)
-            }
-
-            sessionSpan?.end()
-            this.metrics?.histogram('indexer.session_duration_ms', Date.now() - sessionStartTime, { source: adapter.name })
-            newCount++
-          } catch (err) {
-            // 跳过无法处理的文件，不中断整体流程
-            this.log?.warn('skipping unprocessable file', { filePath }, err)
-          }
+          })
         }
       }
 

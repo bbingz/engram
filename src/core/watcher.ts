@@ -1,10 +1,12 @@
 // src/core/watcher.ts
 import chokidar, { type FSWatcher } from 'chokidar'
+import { randomUUID } from 'crypto'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { SessionAdapter, SourceName } from '../adapters/types.js'
 import type { Indexer } from './indexer.js'
 import type { SessionTier } from './session-tier.js'
+import { runWithContext } from './request-context.js'
 
 export interface WatcherOptions {
   onIndexed?: (sessionId: string, messageCount: number, tier: SessionTier) => void
@@ -53,15 +55,17 @@ export function startWatcher(adapters: SessionAdapter[], indexer: Indexer, opts?
   })
 
   const handleChange = async (filePath: string) => {
-    for (const [watchPath, adapter] of Object.entries(watchMap)) {
-      if (filePath.startsWith(watchPath)) {
-        const result = await indexer.indexFile(adapter, filePath)
-        if (result.indexed && result.sessionId) {
-          opts?.onIndexed?.(result.sessionId, result.messageCount ?? 0, result.tier ?? 'normal')
+    await runWithContext({ requestId: randomUUID(), source: 'watcher' }, async () => {
+      for (const [watchPath, adapter] of Object.entries(watchMap)) {
+        if (filePath.startsWith(watchPath)) {
+          const result = await indexer.indexFile(adapter, filePath)
+          if (result.indexed && result.sessionId) {
+            opts?.onIndexed?.(result.sessionId, result.messageCount ?? 0, result.tier ?? 'normal')
+          }
+          break
         }
-        break
       }
-    }
+    })
   }
 
   watcher.on('add', handleChange)
