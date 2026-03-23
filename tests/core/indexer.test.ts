@@ -3,9 +3,27 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Indexer } from '../../src/core/indexer.js'
 import { Database } from '../../src/core/db.js'
 import { CodexAdapter } from '../../src/adapters/codex.js'
+import type { SessionAdapter, SessionInfo, Message } from '../../src/adapters/types.js'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+
+function makeBaseSessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    id: 'mock-session-001',
+    source: 'codex',
+    filePath: '/fake/path.jsonl',
+    startTime: '2026-01-01T00:00:00.000Z',
+    cwd: '/fake/cwd',
+    messageCount: 2,
+    userMessageCount: 1,
+    assistantMessageCount: 1,
+    toolMessageCount: 0,
+    systemMessageCount: 0,
+    sizeBytes: 100,
+    ...overrides,
+  }
+}
 
 describe('Indexer', () => {
   let db: Database
@@ -103,6 +121,139 @@ describe('Indexer', () => {
     // Now with matching source
     const count2 = await indexer.indexAll({ sources: new Set(['codex']) })
     expect(count2).toBe(1)
+  })
+
+  describe('error path tests', () => {
+    it('skips file when parseSessionInfo throws, continues indexing others', async () => {
+      const goodPath = '/fake/good.jsonl'
+      const badPath = '/fake/bad.jsonl'
+
+      const adapter: SessionAdapter = {
+        name: 'codex',
+        async detect() { return true },
+        async *listSessionFiles() {
+          yield badPath
+          yield goodPath
+        },
+        async parseSessionInfo(filePath: string) {
+          if (filePath === badPath) throw new Error('parse error')
+          return makeBaseSessionInfo({ id: 'good-001', filePath })
+        },
+        async *streamMessages(_filePath: string): AsyncGenerator<Message> {
+          yield { role: 'user', content: 'hello' }
+          yield { role: 'assistant', content: 'world' }
+        },
+      }
+
+      const indexer = new Indexer(db, [adapter])
+      const count = await indexer.indexAll()
+
+      // Only the good file should be indexed
+      expect(count).toBe(1)
+      const sessions = db.listSessions()
+      expect(sessions).toHaveLength(1)
+      expect(sessions[0].id).toBe('good-001')
+    })
+
+    it('skips file when streamMessages throws mid-stream', async () => {
+      const filePath = '/fake/stream-error.jsonl'
+
+      const adapter: SessionAdapter = {
+        name: 'codex',
+        async detect() { return true },
+        async *listSessionFiles() { yield filePath },
+        async parseSessionInfo(fp: string) {
+          return makeBaseSessionInfo({ id: 'stream-err-001', filePath: fp })
+        },
+        async *streamMessages(_filePath: string): AsyncGenerator<Message> {
+          yield { role: 'user', content: 'first message' }
+          throw new Error('stream failed mid-way')
+        },
+      }
+
+      const indexer = new Indexer(db, [adapter])
+      const count = await indexer.indexAll()
+
+      // The error during streaming should cause the file to be skipped
+      expect(count).toBe(0)
+    })
+
+    it('skips adapter entirely when detect() returns false', async () => {
+      const adapter: SessionAdapter = {
+        name: 'codex',
+        async detect() { return false },
+        async *listSessionFiles(): AsyncGenerator<string> {
+          yield '/fake/should-not-be-listed.jsonl'
+        },
+        async parseSessionInfo(filePath: string) {
+          return makeBaseSessionInfo({ filePath })
+        },
+        async *streamMessages(_filePath: string): AsyncGenerator<Message> {
+          yield { role: 'user', content: 'hello' }
+        },
+      }
+
+      const indexer = new Indexer(db, [adapter])
+      const count = await indexer.indexAll()
+
+      expect(count).toBe(0)
+      expect(db.listSessions()).toHaveLength(0)
+    })
+
+    it('returns { indexed: false } when indexFile is called with nonexistent file path', async () => {
+      const adapter: SessionAdapter = {
+        name: 'codex',
+        async detect() { return true },
+        async *listSessionFiles(): AsyncGenerator<string> { /* empty */ },
+        async parseSessionInfo(_filePath: string) {
+          // Return null to simulate adapter unable to parse missing file
+          return null
+        },
+        async *streamMessages(_filePath: string): AsyncGenerator<Message> { /* empty */ },
+      }
+
+      const indexer = new Indexer(db, [adapter])
+      const result = await indexer.indexFile(adapter, '/nonexistent/path/fake.jsonl')
+
+      expect(result.indexed).toBe(false)
+      expect(result.sessionId).toBeUndefined()
+    })
+
+    it('indexAll with mix of good and bad files counts only successful indexes', async () => {
+      const paths = [
+        { path: '/fake/good-a.jsonl', id: 'mix-good-a', shouldFail: false },
+        { path: '/fake/bad-b.jsonl',  id: 'mix-bad-b',  shouldFail: true },
+        { path: '/fake/good-c.jsonl', id: 'mix-good-c', shouldFail: false },
+        { path: '/fake/bad-d.jsonl',  id: 'mix-bad-d',  shouldFail: true },
+        { path: '/fake/good-e.jsonl', id: 'mix-good-e', shouldFail: false },
+      ]
+
+      const adapter: SessionAdapter = {
+        name: 'codex',
+        async detect() { return true },
+        async *listSessionFiles() {
+          for (const p of paths) yield p.path
+        },
+        async parseSessionInfo(filePath: string) {
+          const entry = paths.find(p => p.path === filePath)!
+          if (entry.shouldFail) throw new Error(`parse error for ${filePath}`)
+          return makeBaseSessionInfo({ id: entry.id, filePath, sizeBytes: 100 + paths.indexOf(entry) })
+        },
+        async *streamMessages(_filePath: string): AsyncGenerator<Message> {
+          yield { role: 'user', content: 'hello' }
+          yield { role: 'assistant', content: 'world' }
+        },
+      }
+
+      const indexer = new Indexer(db, [adapter])
+      const count = await indexer.indexAll()
+
+      // Only 3 good files indexed, 2 bad files skipped
+      expect(count).toBe(3)
+      const sessions = db.listSessions()
+      const ids = sessions.map(s => s.id).sort()
+      expect(ids).toEqual(['mix-good-a', 'mix-good-c', 'mix-good-e'].sort())
+    })
   })
 
   it('computes tier and upgrades on re-index', async () => {
