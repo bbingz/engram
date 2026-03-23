@@ -191,7 +191,7 @@ AI column format:
 | API error (4xx/5xx) | `verdict: 'uncertain', reason: 'API error: ...'` |
 | Invalid JSON response | `verdict: 'uncertain', reason: 'invalid response'` |
 | Diff image missing (status=new) | Skip triage for this screenshot |
-| Diff buffer null (size_mismatch) | Send only 2 images, adjust prompt: "No diff image available (size mismatch between baseline and actual)" |
+| Size mismatch status | Skip triage — dimension change is almost certainly a real layout regression, AI confirmation unnecessary |
 
 ## 7. Test Strategy
 

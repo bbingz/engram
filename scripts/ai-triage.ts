@@ -90,7 +90,7 @@ class KimiProvider implements VlmProvider {
         signal: AbortSignal.timeout(30_000),
       })
       const elapsed = performance.now() - start
-      if (!resp.ok) return makeUncertain(this.model, `API error: ${resp.status}`, elapsed)
+      if (!resp.ok) return makeUncertain(this.model, `API error: ${resp.status}`, Math.round(elapsed))
       const data = await resp.json()
       const text = data.choices?.[0]?.message?.content ?? ''
       const parsed = parseVlmResponse(text)
@@ -122,11 +122,11 @@ class ClaudeProvider implements VlmProvider {
       const resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': this.apiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: this.model, max_tokens: 200, messages: [{ role: 'user', content }] }),
+        body: JSON.stringify({ model: this.model, max_tokens: 200, temperature: 0, messages: [{ role: 'user', content }] }),
         signal: AbortSignal.timeout(30_000),
       })
       const elapsed = performance.now() - start
-      if (!resp.ok) return makeUncertain(this.model, `API error: ${resp.status}`, elapsed)
+      if (!resp.ok) return makeUncertain(this.model, `API error: ${resp.status}`, Math.round(elapsed))
       const data = await resp.json()
       const text = data.content?.[0]?.text ?? ''
       const parsed = parseVlmResponse(text)

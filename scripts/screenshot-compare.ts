@@ -319,6 +319,7 @@ async function main() {
           const icon = result.ai_triage.verdict === 'acceptable' ? '✅' : result.ai_triage.verdict === 'regression' ? '❌' : '⚠️'
           console.log(`  ${icon} ${result.name}: ${result.ai_triage.verdict} (${result.ai_triage.confidence.toFixed(2)}) — ${result.ai_triage.reason}`)
         } catch (err) {
+          result.ai_triage = { verdict: 'uncertain', confidence: 0, reason: `triage error: ${String(err).slice(0, 200)}`, model: provider.model, duration_ms: 0 }
           console.log(`  ⚠️ ${result.name}: triage error — ${String(err).slice(0, 100)}`)
         }
       }
