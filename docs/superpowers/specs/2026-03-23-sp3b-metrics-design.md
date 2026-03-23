@@ -1,7 +1,7 @@
 # SP3b: Systematic Metrics Collection
 
 **Date**: 2026-03-23
-**Status**: Draft
+**Status**: Implemented
 **Scope**: Gap #5 (metrics not systematic) from observability gap analysis. Alerting deferred to a separate spec.
 
 ## Decisions
