@@ -41,7 +41,7 @@ struct PerformanceView: View {
                                         MetricPill(label: "p95", value: String(format: "%.1f", p95))
                                     }
                                 }
-                                Text(metric.hour)
+                                Text(formatHourBucket(metric.hour))
                                     .font(.system(size: 9, design: .monospaced))
                                     .foregroundStyle(Theme.tertiaryText)
                             }

@@ -87,14 +87,57 @@ enum Theme {
 
 // MARK: - Shared Utilities
 
-/// Extract HH:MM:SS from an ISO-8601 timestamp string.
+/// ISO-8601 parser (thread-safe, reused).
+private let iso8601Formatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+/// Local-time display formatter (HH:mm:ss).
+private let localTimeFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss"
+    f.timeZone = .current
+    return f
+}()
+
+/// Local-time display formatter for hour buckets (MMM d, HH:00).
+private let localHourFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "MMM d, HH:00"
+    f.timeZone = .current
+    return f
+}()
+
+/// Parse an ISO-8601 UTC timestamp and format as local HH:mm:ss.
 /// Used across Observability views (LogStream, ErrorDashboard, TraceExplorer).
 func formatTimestamp(_ ts: String) -> String {
+    if let date = iso8601Formatter.date(from: ts) {
+        return localTimeFormatter.string(from: date)
+    }
+    // Fallback: try without fractional seconds
+    let plain = ISO8601DateFormatter()
+    if let date = plain.date(from: ts) {
+        return localTimeFormatter.string(from: date)
+    }
+    // Last resort: extract raw time substring (already UTC, but better than nothing)
     if let tIndex = ts.firstIndex(of: "T") {
         let time = ts[ts.index(after: tIndex)...]
         return String(time.prefix(8))
     }
     return String(ts.suffix(8))
+}
+
+/// Parse a UTC hour-bucket string (e.g. "2026-03-23T05") and format as local time.
+func formatHourBucket(_ hour: String) -> String {
+    // Hour bucket format: "2026-03-23T05" — append ":00:00Z" to make valid ISO-8601
+    let isoString = hour + ":00:00Z"
+    let plain = ISO8601DateFormatter()
+    if let date = plain.date(from: isoString) {
+        return localHourFormatter.string(from: date)
+    }
+    return hour
 }
 
 // MARK: - NSAppearance helper
