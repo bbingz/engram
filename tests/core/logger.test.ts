@@ -1,5 +1,5 @@
 // tests/core/logger.test.ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import BetterSqlite3 from 'better-sqlite3'
 import { Database } from '../../src/core/db.js'
 import { createLogger, type LogWriter as LogWriterType } from '../../src/core/logger.js'
@@ -148,5 +148,107 @@ describe('log rotation', () => {
     writer.enforceMaxRows(10)
     const rows = db.raw.prepare('SELECT * FROM logs').all()
     expect(rows).toHaveLength(10)
+  })
+})
+
+import { runWithContext } from '../../src/core/request-context.js'
+
+describe('logger ALS integration', () => {
+  let db: Database
+  let writer: LogWriterType
+  beforeEach(() => { db = new Database(':memory:'); writer = new LogWriter(db.raw) })
+  afterEach(() => { db.close() })
+
+  it('auto-fills traceId from ALS request context', () => {
+    const log = createLogger('test', { writer, level: 'info' })
+    runWithContext({ requestId: 'req-abc', source: 'mcp' }, () => {
+      log.info('hello')
+    })
+    const row = db.raw.prepare('SELECT trace_id FROM logs').get() as any
+    expect(row.trace_id).toBe('req-abc')
+  })
+
+  it('child() explicit traceId overrides ALS', () => {
+    const log = createLogger('test', { writer, level: 'info' })
+    runWithContext({ requestId: 'als-id', source: 'http' }, () => {
+      const child = log.child({ traceId: 'explicit-id' })
+      child.info('from child')
+    })
+    const row = db.raw.prepare('SELECT trace_id FROM logs').get() as any
+    expect(row.trace_id).toBe('explicit-id')
+  })
+
+  it('writes nothing to ALS when no context', () => {
+    const log = createLogger('test', { writer, level: 'info' })
+    log.info('no context')
+    const row = db.raw.prepare('SELECT trace_id FROM logs').get() as any
+    expect(row.trace_id).toBeNull()
+  })
+})
+
+describe('logger stderr JSON', () => {
+  let db: Database
+  let writer: LogWriterType
+  let stderrOutput: string[]
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    writer = new LogWriter(db.raw)
+    stderrOutput = []
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: any) => {
+      stderrOutput.push(chunk.toString())
+      return true
+    })
+  })
+  afterEach(() => {
+    db.close()
+    vi.restoreAllMocks()
+  })
+
+  it('emits JSON to stderr when stderrJson is true', () => {
+    const log = createLogger('test', { writer, level: 'info', stderrJson: true })
+    log.info('test message', { count: 42 })
+    expect(stderrOutput).toHaveLength(1)
+    const parsed = JSON.parse(stderrOutput[0])
+    expect(parsed.level).toBe('info')
+    expect(parsed.module).toBe('test')
+    expect(parsed.message).toBe('test message')
+    expect(parsed.data).toEqual({ count: 42 })
+  })
+
+  it('does NOT emit to stderr when stderrJson is false', () => {
+    const log = createLogger('test', { writer, level: 'info', stderrJson: false })
+    log.info('quiet')
+    expect(stderrOutput).toHaveLength(0)
+  })
+
+  it('includes request_id and request_source from ALS', () => {
+    const log = createLogger('test', { writer, level: 'info', stderrJson: true })
+    runWithContext({ requestId: 'req-xyz', source: 'indexer' }, () => {
+      log.info('with context')
+    })
+    const parsed = JSON.parse(stderrOutput[0])
+    expect(parsed.request_id).toBe('req-xyz')
+    expect(parsed.request_source).toBe('indexer')
+  })
+
+  it('sanitizes PII in stderr output', () => {
+    const log = createLogger('test', { writer, level: 'info', stderrJson: true })
+    log.info('key is sk-abcdefghijklmnopqrstuvwx')
+    const parsed = JSON.parse(stderrOutput[0])
+    expect(parsed.message).toBe('key is sk-***')
+  })
+
+  it('sanitizes PII in SQLite output', () => {
+    const log = createLogger('test', { writer, level: 'info' })
+    log.info('email user@example.com')
+    const row = db.raw.prepare('SELECT message FROM logs').get() as any
+    expect(row.message).toBe('email ***@***.***')
+  })
+
+  it('does not emit debug to stderr when level is info', () => {
+    const log = createLogger('test', { writer, level: 'info', stderrJson: true })
+    log.debug('should be skipped')
+    expect(stderrOutput).toHaveLength(0)
   })
 })

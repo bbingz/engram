@@ -1,6 +1,8 @@
 // src/core/logger.ts
 import type BetterSqlite3 from 'better-sqlite3'
 import { serializeError, type SerializedError } from './error-serializer.js'
+import { getRequestContext } from './request-context.js'
+import { sanitize, applyPatterns } from './sanitizer.js'
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
@@ -16,6 +18,7 @@ export interface LogEntry {
   data?: Record<string, unknown>
   error?: SerializedError
   source: 'daemon' | 'app'
+  requestSource?: string
 }
 
 export interface Logger {
@@ -67,12 +70,42 @@ export class LogWriter {
   }
 }
 
+function sanitizeLogEntry(entry: LogEntry): LogEntry {
+  return {
+    ...entry,
+    message: applyPatterns(entry.message),
+    data: entry.data ? sanitize(entry.data) as Record<string, unknown> : undefined,
+    error: entry.error ? {
+      ...entry.error,
+      message: applyPatterns(entry.error.message ?? ''),
+      stack: entry.error.stack ? applyPatterns(entry.error.stack) : undefined,
+    } : undefined,
+  }
+}
+
+function emitStderr(entry: LogEntry): void {
+  const output: Record<string, unknown> = {
+    ts: entry.ts ?? new Date().toISOString(),
+    level: entry.level,
+    module: entry.module,
+    request_id: entry.traceId ?? undefined,
+    request_source: entry.requestSource ?? undefined,
+    span_id: entry.spanId ?? undefined,
+    source: entry.source,
+    message: entry.message,
+  }
+  if (entry.data) output.data = entry.data
+  if (entry.error) output.error = entry.error
+  process.stderr.write(JSON.stringify(output) + '\n')
+}
+
 interface LoggerOpts {
   writer?: LogWriter
   level?: LogLevel
   rateLimitPerMin?: number
   traceId?: string
   spanId?: string
+  stderrJson?: boolean
 }
 
 export function createLogger(module: string, opts: LoggerOpts = {}): Logger {
@@ -82,6 +115,7 @@ export function createLogger(module: string, opts: LoggerOpts = {}): Logger {
   let debugCount = 0
   let debugWindowStart = Date.now()
   let suppressed = 0
+  const stderrJson = opts.stderrJson ?? true
 
   function shouldLog(level: LogLevel): boolean {
     if (LEVEL_ORDER[level] < minLevel) return false
@@ -106,17 +140,19 @@ export function createLogger(module: string, opts: LoggerOpts = {}): Logger {
 
   function log(level: LogLevel, message: string, data?: Record<string, unknown>, err?: unknown): void {
     if (!shouldLog(level)) return
+    const ctx = getRequestContext()
     const entry: LogEntry = {
       level, module, message, source: 'daemon',
-      traceId: opts.traceId,
-      spanId: opts.spanId,
+      traceId: opts.traceId ?? ctx?.requestId,
+      spanId: opts.spanId ?? ctx?.spanId,
+      requestSource: ctx?.source,
       data,
       error: err ? serializeError(err) : undefined,
     }
-    writer?.write(entry)
-    // Also write to stderr in dev mode
-    if (process.env.ENGRAM_LOG_LEVEL) {
-      process.stderr.write(JSON.stringify({ ts: new Date().toISOString(), level, module, message }) + '\n')
+    const clean = sanitizeLogEntry(entry)
+    writer?.write(clean)
+    if (stderrJson) {
+      emitStderr(clean)
     }
   }
 
