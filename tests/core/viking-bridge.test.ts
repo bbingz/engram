@@ -57,6 +57,31 @@ describe('checkAvailable (circuit breaker)', () => {
     expect(await bridge.checkAvailable()).toBe(false);
     expect(mockFetch).toHaveBeenCalledTimes(1); // cached
   });
+
+  it('circuit breaker recovers after TTL expires', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+
+    // First call: server is down → opens circuit breaker
+    const mockFetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', mockFetch);
+    expect(await bridge.checkAvailable()).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Within TTL: cached result, no new network call
+    expect(await bridge.checkAvailable()).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Expire the TTL by backdating lastHealthCheck
+    (bridge as unknown as { lastHealthCheck: number }).lastHealthCheck = 0;
+
+    // Server is now up → circuit breaker closes and returns true
+    mockFetch.mockResolvedValue({ ok: true });
+    expect(await bridge.checkAvailable()).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    // Verify breaker state is closed (circuitOpen = false)
+    expect((bridge as unknown as { circuitOpen: boolean }).circuitOpen).toBe(false);
+  });
 });
 
 describe('addResource', () => {
@@ -271,6 +296,29 @@ describe('post retry logic', () => {
     vi.stubGlobal('fetch', mockFetch);
     await expect(bridge.pushSession('test-no-retry', []))
       .rejects.toThrow(/400/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('exhausts all retries on persistent 500 and throws', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false, status: 500, text: () => Promise.resolve('internal server error'),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    await expect(bridge.pushSession('test-exhaust-500', []))
+      .rejects.toThrow(/after 3 retries/);
+    // Should have attempted exactly MAX_RETRIES (3) times
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('handles network error on push gracefully (throws, does not hang)', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    // Simulate a fetch that rejects (connection refused / socket hang up)
+    const mockFetch = vi.fn().mockRejectedValue(new Error('socket hang up'));
+    vi.stubGlobal('fetch', mockFetch);
+    await expect(bridge.pushSession('test-network-error', []))
+      .rejects.toThrow('socket hang up');
+    // Network errors are not retried by the post() helper (they throw immediately)
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });

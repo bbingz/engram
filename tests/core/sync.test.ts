@@ -271,4 +271,45 @@ describe('SyncEngine', () => {
     const stored = db.getAuthoritativeSnapshot('sess-premium')
     expect(stored?.tier).toBe('premium')
   })
+
+  it('handles malformed JSON from peer gracefully without advancing cursor', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ sessionCount: 1, nodeName: 'peer-a', timestamp: new Date().toISOString() }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => { throw new SyntaxError('Unexpected token < in JSON') },
+      })
+
+    const engine = new SyncEngine(db, mockFetch as unknown as typeof fetch)
+    const result = await engine.pullFromPeer({ name: 'peer-a', url: 'http://peer-a:3457' })
+
+    expect(result.error).toBeTruthy()
+    expect(result.pulled).toBe(0)
+    // Cursor must NOT have advanced — no sessions were safely committed
+    expect(db.getSyncCursor('peer-a')).toBeNull()
+  })
+
+  it('handles HTTP 500 from peer without crashing', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ sessionCount: 1, nodeName: 'peer-a', timestamp: new Date().toISOString() }) })
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => { throw new Error('should not parse') } })
+
+    const engine = new SyncEngine(db, mockFetch as unknown as typeof fetch)
+    const result = await engine.pullFromPeer({ name: 'peer-a', url: 'http://peer-a:3457' })
+
+    expect(result.error).toBeTruthy()
+    expect(result.pulled).toBe(0)
+  })
+
+  it('handles HTTP 401 from peer without crashing', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ sessionCount: 1, nodeName: 'peer-a', timestamp: new Date().toISOString() }) })
+      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => { throw new Error('should not parse') } })
+
+    const engine = new SyncEngine(db, mockFetch as unknown as typeof fetch)
+    const result = await engine.pullFromPeer({ name: 'peer-a', url: 'http://peer-a:3457' })
+
+    expect(result.error).toBeTruthy()
+    expect(result.pulled).toBe(0)
+  })
 })
