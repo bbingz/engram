@@ -240,10 +240,12 @@ export function readFileSettings(): FileSettings {
     // Overlay Keychain values — only when "@keychain" sentinel is explicitly set in JSON
     if (migrated.aiApiKey === '@keychain') {
       const kc = readKeychainValue('aiApiKey');
+      if (!kc) process.stderr.write('[engram] WARNING: aiApiKey set to @keychain but Keychain entry missing\n');
       migrated.aiApiKey = kc ?? '';
     }
     if (migrated.titleApiKey === '@keychain') {
       const kc = readKeychainValue('titleApiKey');
+      if (!kc) process.stderr.write('[engram] WARNING: titleApiKey set to @keychain but Keychain entry missing\n');
       migrated.titleApiKey = kc ?? '';
     }
     if (migrated.viking?.apiKey === '@keychain') {
@@ -251,6 +253,7 @@ export function readFileSettings(): FileSettings {
       if (kc) {
         migrated.viking!.apiKey = kc;
       } else {
+        process.stderr.write('[engram] WARNING: viking.apiKey set to @keychain but Keychain entry missing — Viking will not authenticate\n');
         migrated.viking!.apiKey = '';
       }
     }
