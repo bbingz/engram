@@ -12,6 +12,7 @@ import path from 'path';
 import sharp from 'sharp';
 import pixelmatch from 'pixelmatch';
 import { ssim as computeSSIM } from 'ssim.js';
+import { createTriageProvider, needsTriage, type AiTriage } from './ai-triage.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,7 +53,7 @@ interface ComparisonResult {
   metrics: ComparisonMetrics;
   paths: { baseline: string; actual: string; diff: string | null };
   environment: Record<string, string>;
-  ai_triage: null;
+  ai_triage: AiTriage | null;
 }
 
 interface ComparisonReport {
@@ -301,6 +302,27 @@ async function main() {
     const result = await compareOne(entry, screenshotsDir, config, manifest.environment);
     results.push(result);
     summary[result.status === 'passed' ? 'passed' : result.status]++;
+  }
+
+  // AI triage pass — serial, only for failed or near-threshold results
+  const provider = createTriageProvider()
+  if (provider) {
+    const triageTargets = results.filter(r => needsTriage(r))
+    if (triageTargets.length > 0) {
+      console.log(`\nAI Triage: ${triageTargets.length} screenshot(s) to analyze with ${provider.model}...`)
+      for (const result of triageTargets) {
+        try {
+          const baseline = fs.readFileSync(result.paths.baseline)
+          const actual = fs.readFileSync(result.paths.actual)
+          const diff = result.paths.diff ? fs.readFileSync(result.paths.diff) : null
+          result.ai_triage = await provider.analyze({ baseline, actual, diff }, result.metrics)
+          const icon = result.ai_triage.verdict === 'acceptable' ? '✅' : result.ai_triage.verdict === 'regression' ? '❌' : '⚠️'
+          console.log(`  ${icon} ${result.name}: ${result.ai_triage.verdict} (${result.ai_triage.confidence.toFixed(2)}) — ${result.ai_triage.reason}`)
+        } catch (err) {
+          console.log(`  ⚠️ ${result.name}: triage error — ${String(err).slice(0, 100)}`)
+        }
+      }
+    }
   }
 
   const report: ComparisonReport = {
