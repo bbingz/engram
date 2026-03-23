@@ -29,6 +29,9 @@ import type { LiveSessionMonitor } from './core/live-sessions.js'
 import type { BackgroundMonitor } from './core/monitor.js'
 import type { LogWriter } from './core/logger.js'
 import type { MetricsCollector } from './core/metrics.js'
+import { runWithContext } from './core/request-context.js'
+import { withSpan } from './core/tracer.js'
+import type { Tracer } from './core/tracer.js'
 import { populateMockData, clearMockData } from './core/mock-data.js'
 import { handleLintConfig } from './tools/lint_config.js'
 import { filterForViking } from './core/viking-filter.js'
@@ -82,6 +85,7 @@ export function createApp(db: Database, opts?: {
   backgroundMonitor?: BackgroundMonitor
   logWriter?: LogWriter
   metrics?: MetricsCollector
+  tracer?: Tracer
 }) {
   type Variables = { traceId: string }
   const app = new Hono<{ Variables: Variables }>()
@@ -135,11 +139,23 @@ export function createApp(db: Database, opts?: {
 
   // Trace propagation middleware — extract or generate X-Trace-Id for cross-process correlation
   app.use('*', async (c, next) => {
-    const traceId = c.req.header('x-trace-id') ?? randomUUID()
-    c.set('traceId', traceId)
-    c.header('X-Trace-Id', traceId)
-    await next()
+    const requestId = c.req.header('x-trace-id') ?? randomUUID()
+    c.set('traceId', requestId)
+    c.header('X-Trace-Id', requestId)
+    return runWithContext({ requestId, source: 'http' }, () => next())
   })
+
+  // Request tracing — creates a span for every HTTP request
+  if (opts?.tracer) {
+    const tracerRef = opts.tracer
+    app.use('*', async (c, next) => {
+      const pathPrefix = c.req.path.split('/').slice(0, 3).join('/')
+      await withSpan(tracerRef, `http.${c.req.method}.${pathPrefix}`, 'http', async (span) => {
+        await next()
+        span.setAttribute('status', c.res.status)
+      })
+    })
+  }
 
   // Request metrics middleware
   if (opts?.metrics) {
