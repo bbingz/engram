@@ -49,7 +49,7 @@ export class CodexAdapter implements SessionAdapter {
         const obj = this.parseLine(line)
         if (!obj) continue
 
-        if (obj.type === 'session_meta') {
+        if (obj.type === 'session_meta' && !meta) {
           meta = obj.payload as Record<string, unknown>
         }
 
