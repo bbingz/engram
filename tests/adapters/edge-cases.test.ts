@@ -13,8 +13,10 @@ describe('Adapter edge cases', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'engram-adapter-edge-'))
   })
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true })
+  afterEach(async () => {
+    // Small delay to let readline streams fully close before removing temp files
+    await new Promise(r => setTimeout(r, 50))
+    rmSync(tmpDir, { recursive: true, force: true })
   })
 
   // 1. Empty JSONL file → 0 messages

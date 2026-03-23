@@ -1,7 +1,7 @@
 # SP3e: Test Coverage Expansion
 
 **Date**: 2026-03-23
-**Status**: Draft
+**Status**: Implemented
 **Scope**: Gap #7 — fill test coverage gaps across adapters, MCP tools, web API, indexer, viking, sync
 
 ## Approach
