@@ -63,10 +63,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(networkSection.waitForExistence(timeout: 3),
                       "Network settings section should exist")
 
-        // Verify OpenViking elements exist within the settings tree
-        let vikingLabel = app.staticTexts["OpenViking"]
-        XCTAssertTrue(vikingLabel.waitForExistence(timeout: 3) || networkSection.exists,
-                      "OpenViking config or network section should exist in settings")
+        // Network section already verified above; just capture the screenshot
 
         ScreenshotCapture.capture(name: "settings_network", app: app, screen: "settings", test: #function)
     }

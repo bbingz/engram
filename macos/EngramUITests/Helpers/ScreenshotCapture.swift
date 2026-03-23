@@ -10,9 +10,6 @@ class ScreenshotCapture {
         return NSTemporaryDirectory() + "engram-screenshots"
     }()
 
-    /// The actual resolved output directory — read this after tests to find screenshots
-    static var resolvedOutputDir: String { outputDir }
-
     private static var manifestEntries: [[String: Any]] = []
     private static var hasCleanedUp = false
 

@@ -7,6 +7,7 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import sharp from 'sharp';
 import pixelmatch from 'pixelmatch';
@@ -273,7 +274,7 @@ async function main() {
   let screenshotsDir = process.env.SCREENSHOTS_DIR || '';
   if (!screenshotsDir || !fs.existsSync(path.join(screenshotsDir, 'test-manifest.json'))) {
     const sandboxDir = path.join(
-      require('os').homedir(),
+      os.homedir(),
       'Library/Containers/com.engram.EngramUITests.xctrunner/Data/tmp/engram-screenshots',
     );
     if (fs.existsSync(path.join(sandboxDir, 'test-manifest.json'))) {
