@@ -22,6 +22,7 @@ import { CodexUsageProbe } from './adapters/codex-usage-probe.js'
 import { TitleGenerator } from './core/title-generator.js'
 import { LiveSessionMonitor, type WatchDir } from './core/live-sessions.js'
 import { BackgroundMonitor } from './core/monitor.js'
+import { AlertRuleEngine } from './core/alert-rules.js'
 import { populateMockData } from './core/mock-data.js'
 import { createLogger, LogWriter } from './core/logger.js'
 import { Tracer, TraceWriter } from './core/tracer.js'
@@ -279,6 +280,18 @@ if (monitorConfig.enabled) {
   backgroundMonitor.start(600_000 * POWER_MULTIPLIER) // every 10 minutes (20 on battery)
 }
 
+const alertEngine = new AlertRuleEngine(db.raw)
+
+const alertCheckTimer = setInterval(() => {
+  runWithContext({ requestId: randomUUID(), source: 'scheduler' }, () => {
+    metrics.flush()
+    const alerts = alertEngine.check()
+    for (const alert of alerts) {
+      emit({ event: 'alert', alert })
+    }
+  })
+}, 600_000 * POWER_MULTIPLIER)
+
 // Periodic re-scan every 10 minutes — only for non-watchable sources
 // (SQLite-based: Cursor, OpenCode, VS Code, Windsurf, Copilot)
 const RESCAN_INTERVAL = 10 * 60 * 1000 * POWER_MULTIPLIER
@@ -411,6 +424,7 @@ function shutdown() {
   clearTimeout(metricsRollupTimer)
   if (rollupInterval) clearInterval(rollupInterval)
   clearInterval(uptimeTimer)
+  clearInterval(alertCheckTimer)
   metrics.destroy()
   liveMonitor.stop()
   backgroundMonitor.stop()
