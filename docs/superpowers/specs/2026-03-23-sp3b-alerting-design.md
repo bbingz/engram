@@ -1,7 +1,7 @@
 # SP3b-Alerting: Performance Alert Rules
 
 **Date**: 2026-03-23
-**Status**: Draft
+**Status**: Implemented
 **Scope**: Gap #3 (no alerting rules) from observability gap analysis. Builds on SP3b metrics data.
 
 ## Decisions
