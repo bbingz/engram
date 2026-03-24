@@ -1,6 +1,6 @@
 // src/core/config.ts
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { execFileSync } from 'child_process';
+// execFileSync removed — no longer calling `security` CLI for Keychain access
 import { join } from 'path';
 import { homedir } from 'os';
 import type { SyncPeer } from './sync.js';
@@ -8,27 +8,11 @@ import type { SyncPeer } from './sync.js';
 // ── Keychain integration (macOS) ─────────────────────────────────────
 
 function readKeychainValue(key: string): string | undefined {
-  // When launched by Swift app, Keychain values are passed via environment variables
-  // to avoid `security` CLI prompting for Keychain access authorization dialogs.
-  // Env var format: ENGRAM_KEYCHAIN_<key> (e.g., ENGRAM_KEYCHAIN_vikingApiKey)
-  const envVal = process.env[`ENGRAM_KEYCHAIN_${key}`]
-  if (envVal) return envVal
-
-  // If launched from Swift app (has ENGRAM_DAEMON env), don't fallback to CLI —
-  // Swift already passed all Keychain values via env vars (empty means not set).
-  // This prevents `security` CLI from prompting authorization dialogs in GUI context.
-  if (process.env.ENGRAM_DAEMON) return undefined
-
-  // Fallback: direct Keychain access via `security` CLI (works in terminal, may prompt in GUI)
-  if (process.platform !== 'darwin') return undefined;
-  try {
-    const result = execFileSync('security', [
-      'find-generic-password', '-s', 'com.engram.app', '-a', key, '-w',
-    ], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] });
-    return result.trim() || undefined;
-  } catch {
-    return undefined;
-  }
+  // Keychain values are ONLY read via environment variables passed from the Swift app.
+  // The Swift app reads Keychain and passes values as ENGRAM_KEYCHAIN_<key> env vars.
+  // We NEVER call `security` CLI directly — it prompts for Keychain authorization
+  // dialogs in both MCP server and daemon contexts, which blocks the process.
+  return process.env[`ENGRAM_KEYCHAIN_${key}`] || undefined
 }
 
 // ── Types ────────────────────────────────────────────────────────────
