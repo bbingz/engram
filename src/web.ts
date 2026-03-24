@@ -33,7 +33,7 @@ import { runWithContext } from './core/request-context.js'
 import { withSpan } from './core/tracer.js'
 import type { Tracer } from './core/tracer.js'
 import { populateMockData, clearMockData } from './core/mock-data.js'
-import { handleLintConfig } from './tools/lint_config.js'
+import { handleLintConfig, runAllHealthChecks } from './tools/lint_config.js'
 import { filterForViking } from './core/viking-filter.js'
 
 function createRateLimiter(maxPerMinute: number) {
@@ -980,6 +980,12 @@ export function createApp(db: Database, opts?: {
 
   app.get('/health', async (c) => {
     return c.html(healthPage(await getHealthData()))
+  })
+
+  app.get('/api/hygiene', async (c) => {
+    const force = c.req.query('force') === 'true'
+    const result = await runAllHealthChecks(db, { force, scope: 'global' })
+    return c.json(result)
   })
 
   // UUID lookup redirect

@@ -2,6 +2,8 @@ import { readFileSync, existsSync, readdirSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join, extname, dirname, basename, resolve } from 'path'
 import type { Logger } from '../core/logger.js'
+import { runAllHealthChecks } from '../core/health-rules.js'
+export { runAllHealthChecks }
 
 export const lintConfigTool = {
   name: 'lint_config',
