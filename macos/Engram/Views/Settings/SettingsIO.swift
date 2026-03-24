@@ -10,19 +10,24 @@ let engramSettingsPath = FileManager.default.homeDirectoryForCurrentUser
 enum KeychainHelper {
     private static let service = "com.engram.app"
 
-    /// Debug builds skip Keychain entirely to avoid authorization dialogs
-    /// (each recompile changes binary signature → macOS prompts every time).
-    /// Release builds use real Keychain.
-    private static var isDebugBuild: Bool {
-        #if DEBUG
-        return true
-        #else
-        return false
-        #endif
-    }
+    /// Debug/ad-hoc builds skip Keychain to avoid authorization dialogs.
+    /// Detection: if the binary runs from DerivedData (Xcode build) or is not
+    /// properly code-signed, Keychain access will prompt — so we skip it.
+    private static let isUnsignedBuild: Bool = {
+        // Check if running from Xcode DerivedData (always true for debug builds)
+        let path = Bundle.main.bundlePath
+        if path.contains("DerivedData") { return true }
+
+        // Check if app has a valid code signature with keychain-access-groups entitlement
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess,
+              let staticCode = code else { return true }
+        let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures)
+        return SecStaticCodeCheckValidity(staticCode, flags, nil) != errSecSuccess
+    }()
 
     static func get(_ key: String) -> String? {
-        if isDebugBuild { return nil }  // Skip Keychain in Debug — use plaintext JSON fallback
+        if isUnsignedBuild { return nil }  // Skip Keychain in Debug — use plaintext JSON fallback
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -39,7 +44,7 @@ enum KeychainHelper {
     /// Save a value to the Keychain. Returns true on success.
     @discardableResult
     static func set(_ key: String, value: String) -> Bool {
-        if isDebugBuild { return false }  // Skip Keychain in Debug
+        if isUnsignedBuild { return false }  // Skip Keychain in Debug
         guard let data = value.data(using: .utf8) else { return false }
         delete(key)
         let attrs: [String: Any] = [
@@ -53,7 +58,7 @@ enum KeychainHelper {
     }
 
     static func delete(_ key: String) {
-        if isDebugBuild { return }  // Skip Keychain in Debug
+        if isUnsignedBuild { return }  // Skip Keychain in Debug
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
