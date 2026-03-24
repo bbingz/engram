@@ -328,6 +328,17 @@ export class Database {
       this.db.exec('ALTER TABLE sessions ADD COLUMN generated_title TEXT')
     }
 
+    // Migrate idx_logs_level → idx_logs_level_ts (compound index for level+ts queries)
+    try {
+      const logIndexes = this.db.prepare("PRAGMA index_list(logs)").all() as { name: string }[]
+      const hasOldIndex = logIndexes.some(i => i.name === 'idx_logs_level')
+      const hasNewIndex = logIndexes.some(i => i.name === 'idx_logs_level_ts')
+      if (hasOldIndex && !hasNewIndex) {
+        this.db.exec('DROP INDEX IF EXISTS idx_logs_level')
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_logs_level_ts ON logs(level, ts)')
+      }
+    } catch { /* logs table may not exist yet — handled below */ }
+
     // Observability tables
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS logs (
@@ -345,7 +356,7 @@ export class Database {
         source TEXT NOT NULL CHECK (source IN ('daemon', 'app'))
       );
       CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
-      CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
+      CREATE INDEX IF NOT EXISTS idx_logs_level_ts ON logs(level, ts);
       CREATE INDEX IF NOT EXISTS idx_logs_module ON logs(module);
       CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON logs(trace_id);
       CREATE INDEX IF NOT EXISTS idx_logs_source_ts ON logs(source, ts);

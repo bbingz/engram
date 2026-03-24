@@ -6,6 +6,7 @@ import type { LiveSession } from '../core/live-sessions.js'
 import type { MonitorAlert } from '../core/monitor.js'
 import { sessionIdFromVikingUri, toVikingUri, type VikingBridge } from '../core/viking-bridge.js'
 import { toLocalDate } from '../utils/time.js'
+import { handleLintConfig } from './lint_config.js'
 
 export const getContextTool = {
   name: 'get_context',
@@ -133,7 +134,7 @@ export async function handleGetContext(
     const footer = `\n— ${selectedSessions.length} sessions (${params.detail}), ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`
     parts.push(footer)
 
-    const envSection = (params.include_environment !== false) ? await gatherEnvironmentData(db, deps) : ''
+    const envSection = (params.include_environment !== false) ? await gatherEnvironmentData(db, deps, params, maxTokens) : ''
 
     return {
       contextText: parts.join('') + envSection,
@@ -164,7 +165,7 @@ export async function handleGetContext(
   const footer = `\n— ${selectedSessions.length} sessions, ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`
   contextParts.push(footer)
 
-  const envSection = (params.include_environment !== false) ? await gatherEnvironmentData(db, deps) : ''
+  const envSection = (params.include_environment !== false) ? await gatherEnvironmentData(db, deps, params, maxTokens) : ''
 
   return {
     contextText: contextParts.join('') + envSection,
@@ -173,8 +174,10 @@ export async function handleGetContext(
   }
 }
 
-async function gatherEnvironmentData(db: Database, deps: GetContextDeps): Promise<string> {
+async function gatherEnvironmentData(db: Database, deps: GetContextDeps, params?: Record<string, any>, maxTokens?: number): Promise<string> {
   const sections: string[] = []
+  const detail = (params?.detail as string) || 'full'
+  const itemLimit = detail === 'overview' ? 5 : 10
 
   // Live sessions
   try {
@@ -201,19 +204,6 @@ async function gatherEnvironmentData(db: Database, deps: GetContextDeps): Promis
     if (!isNoSuchTableError(err)) console.error('[get_context] costToday error:', err)
   }
 
-  // Recent tool usage (last 7 days, top 10)
-  try {
-    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-    const tools = db.getToolAnalytics({ since, groupBy: 'tool' })
-    if (tools.length > 0) {
-      const top10 = tools.slice(0, 10)
-      const lines = top10.map((t: any) => `  ${t.key}: ${t.callCount} calls`)
-      sections.push(`Top tools (7d):\n${lines.join('\n')}`)
-    }
-  } catch (err: unknown) {
-    if (!isNoSuchTableError(err)) console.error('[get_context] recentTools error:', err)
-  }
-
   // Active alerts
   try {
     if (deps.backgroundMonitor) {
@@ -227,16 +217,136 @@ async function gatherEnvironmentData(db: Database, deps: GetContextDeps): Promis
     if (!isNoSuchTableError(err)) console.error('[get_context] alerts error:', err)
   }
 
-  // Infrastructure health checks (if cwd is available in params scope)
-  try {
-    const { runHealthChecks } = await import('./lint_config.js')
-    const cwd = process.cwd()
-    const healthIssues = runHealthChecks(cwd)
-    if (healthIssues.length > 0) {
-      const lines = healthIssues.map(h => `  [${h.severity}] ${h.message}`)
-      sections.push(`Health (${healthIssues.length}):\n${lines.join('\n')}`)
+  // abstract mode only shows costToday + alerts — skip all remaining blocks
+  if (detail !== 'abstract') {
+
+    // Recent tool usage (last 7 days, top itemLimit)
+    try {
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      const tools = db.getToolAnalytics({ since, groupBy: 'tool' })
+      if (tools.length > 0) {
+        const topN = tools.slice(0, itemLimit)
+        const lines = topN.map((t: any) => `  ${t.key}: ${t.callCount} calls`)
+        sections.push(`Top tools (7d):\n${lines.join('\n')}`)
+      }
+    } catch (err: unknown) {
+      if (!isNoSuchTableError(err)) console.error('[get_context] recentTools error:', err)
     }
-  } catch { /* health checks are best-effort */ }
+
+    // Infrastructure health checks
+    try {
+      const { runHealthChecks } = await import('./lint_config.js')
+      const cwd = (params?.cwd as string) || process.cwd()
+      const healthIssues = runHealthChecks(cwd)
+      if (healthIssues.length > 0) {
+        const lines = healthIssues.map(h => `  [${h.severity}] ${h.message}`)
+        sections.push(`Health (${healthIssues.length}):\n${lines.join('\n')}`)
+      }
+    } catch { /* health checks are best-effort */ }
+
+    // Git repos with uncommitted/unpushed changes
+    let gitReposSection: string | null = null
+    try {
+      const rows = db.raw.prepare(
+        `SELECT name, branch, dirty_count, unpushed_count FROM git_repos WHERE dirty_count > 0 OR unpushed_count > 0 LIMIT ?`
+      ).all(itemLimit) as { name: string; branch: string | null; dirty_count: number; unpushed_count: number }[]
+      if (rows.length > 0) {
+        const lines = rows.map(r => `  ${r.name}${r.branch ? ` (${r.branch})` : ''}: ${r.dirty_count} dirty, ${r.unpushed_count} unpushed`)
+        gitReposSection = `Git repos with changes (${rows.length}):\n${lines.join('\n')}`
+        sections.push(gitReposSection)
+      }
+    } catch (err: unknown) {
+      if (!isNoSuchTableError(err)) console.error('[get_context] gitRepos error:', err)
+    }
+
+    // File hotspots (last 7 days)
+    let fileHotspotsSection: string | null = null
+    try {
+      const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      const rows = db.raw.prepare(
+        `SELECT file_path, SUM(count) as total, COUNT(DISTINCT session_id) as sessions
+         FROM session_files
+         WHERE action = 'Edit' AND session_id IN (SELECT id FROM sessions WHERE start_time >= ?)
+         GROUP BY file_path ORDER BY total DESC LIMIT ?`
+      ).all(since7d, itemLimit) as { file_path: string; total: number; sessions: number }[]
+      if (rows.length > 0) {
+        const lines = rows.map(r => `  ${r.file_path} (${r.total} edits, ${r.sessions} sessions)`)
+        fileHotspotsSection = `File hotspots (7d):\n${lines.join('\n')}`
+        sections.push(fileHotspotsSection)
+      }
+    } catch (err: unknown) {
+      if (!isNoSuchTableError(err)) console.error('[get_context] fileHotspots error:', err)
+    }
+
+    // Recent errors (last 24h)
+    let recentErrorsSection: string | null = null
+    try {
+      const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      const rows = db.raw.prepare(
+        `SELECT module, message, COUNT(*) as count, MAX(ts) as last_seen
+         FROM logs WHERE level = 'error' AND ts >= ?
+         GROUP BY module, message ORDER BY count DESC LIMIT 5`
+      ).all(since24h) as { module: string; message: string; count: number; last_seen: string }[]
+      if (rows.length > 0) {
+        const lines = rows.map(r => `  [${r.module}] ${r.message} (×${r.count})`)
+        recentErrorsSection = `Recent errors (24h):\n${lines.join('\n')}`
+        sections.push(recentErrorsSection)
+      }
+    } catch (err: unknown) {
+      if (!isNoSuchTableError(err)) console.error('[get_context] recentErrors error:', err)
+    }
+
+    // Config status
+    let configStatusSection: string | null = null
+    try {
+      const cwd = (params?.cwd as string) || process.cwd()
+      const lintResult = await handleLintConfig({ cwd })
+      if (lintResult.score < 100 || lintResult.issues.length > 0) {
+        const errors = lintResult.issues.filter(i => i.severity === 'error')
+        const warnings = lintResult.issues.filter(i => i.severity === 'warning')
+        const parts: string[] = [`score: ${lintResult.score}`]
+        if (errors.length > 0) parts.push(`${errors.length} errors`)
+        if (warnings.length > 0) parts.push(`${warnings.length} warnings`)
+        configStatusSection = `Config status: ${parts.join(', ')}`
+        sections.push(configStatusSection)
+      }
+    } catch { /* config lint is best-effort */ }
+
+    // Phase 2 Task 4: cost suggestions placeholder (wired in Phase 2)
+
+    // Token budget control: progressively drop sections if over budget
+    const maxEnvChars = (maxTokens ?? 4000) * CHARS_PER_TOKEN * 0.3
+    const joined = () => sections.join('\n')
+    if (joined().length > maxEnvChars) {
+      // Drop configStatus first
+      if (configStatusSection !== null) {
+        const idx = sections.indexOf(configStatusSection)
+        if (idx !== -1) sections.splice(idx, 1)
+      }
+    }
+    if (joined().length > maxEnvChars) {
+      // Drop fileHotspots
+      if (fileHotspotsSection !== null) {
+        const idx = sections.indexOf(fileHotspotsSection)
+        if (idx !== -1) sections.splice(idx, 1)
+      }
+    }
+    if (joined().length > maxEnvChars) {
+      // Drop gitRepos
+      if (gitReposSection !== null) {
+        const idx = sections.indexOf(gitReposSection)
+        if (idx !== -1) sections.splice(idx, 1)
+      }
+    }
+    if (joined().length > maxEnvChars) {
+      // Drop recentErrors
+      if (recentErrorsSection !== null) {
+        const idx = sections.indexOf(recentErrorsSection)
+        if (idx !== -1) sections.splice(idx, 1)
+      }
+    }
+
+  } // end detail !== 'abstract'
 
   if (sections.length === 0) return ''
   return `\n\n## Environment\n${sections.join('\n')}`

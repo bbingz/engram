@@ -74,4 +74,59 @@ describe('get_context', () => {
     const result = await handleGetContext(db, { cwd: '/Users/test/myapp', task: 'Fix auth issue' }, { vectorStore: mockVectorStore, embed: mockEmbed })
     expect(result.sessionIds).toContain('s4')
   })
+
+  describe('environment data — new blocks', () => {
+    it('includes git repos with dirty/unpushed changes in environment', async () => {
+      // Seed a dirty git repo
+      db.raw.prepare(
+        `INSERT INTO git_repos (path, name, branch, dirty_count, unpushed_count) VALUES (?, ?, ?, ?, ?)`
+      ).run('/Users/test/myapp', 'myapp', 'main', 3, 1)
+
+      const result = await handleGetContext(db, { cwd: '/Users/test/myapp', include_environment: true })
+      expect(result.contextText).toContain('Git repos with changes')
+      expect(result.contextText).toContain('myapp')
+      expect(result.contextText).toContain('3 dirty')
+    })
+
+    it('does not include clean git repos in environment', async () => {
+      // Seed a clean git repo (dirty_count=0, unpushed_count=0)
+      db.raw.prepare(
+        `INSERT INTO git_repos (path, name, branch, dirty_count, unpushed_count) VALUES (?, ?, ?, ?, ?)`
+      ).run('/Users/test/myapp', 'myapp', 'main', 0, 0)
+
+      const result = await handleGetContext(db, { cwd: '/Users/test/myapp', include_environment: true })
+      expect(result.contextText).not.toContain('Git repos with changes')
+    })
+
+    it('includes file hotspots (7 days) in environment', async () => {
+      // Add a recent session (within last 7 days) and seed session_files with an edit
+      const recentTs = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      db.upsertSession({ id: 'sRecent', source: 'codex', startTime: recentTs, cwd: '/Users/test/myapp', project: 'myapp', summary: 'recent session', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/fRecent', sizeBytes: 50 })
+      db.raw.prepare(
+        `INSERT INTO session_files (session_id, file_path, action, count) VALUES (?, ?, ?, ?)`
+      ).run('sRecent', '/Users/test/myapp/src/auth.ts', 'Edit', 5)
+
+      const result = await handleGetContext(db, { cwd: '/Users/test/myapp', include_environment: true })
+      expect(result.contextText).toContain('File hotspots')
+      expect(result.contextText).toContain('auth.ts')
+    })
+
+    it('abstract detail level excludes new blocks (only costToday + alerts visible)', async () => {
+      // Seed dirty git repo and file hotspots (with recent session so hotspots would appear in non-abstract mode)
+      const recentTs = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      db.upsertSession({ id: 'sAbstractRecent', source: 'codex', startTime: recentTs, cwd: '/Users/test/myapp', project: 'myapp', summary: 'recent', messageCount: 5, userMessageCount: 2, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/fAbsR', sizeBytes: 50 })
+      db.raw.prepare(
+        `INSERT INTO git_repos (path, name, branch, dirty_count, unpushed_count) VALUES (?, ?, ?, ?, ?)`
+      ).run('/Users/test/myapp', 'myapp', 'main', 2, 0)
+      db.raw.prepare(
+        `INSERT INTO session_files (session_id, file_path, action, count) VALUES (?, ?, ?, ?)`
+      ).run('sAbstractRecent', '/Users/test/myapp/src/auth.ts', 'Edit', 3)
+
+      const result = await handleGetContext(db, { cwd: '/Users/test/myapp', detail: 'abstract', include_environment: true })
+      expect(result.contextText).not.toContain('Git repos with changes')
+      expect(result.contextText).not.toContain('File hotspots')
+      expect(result.contextText).not.toContain('Recent errors')
+      expect(result.contextText).not.toContain('Config status')
+    })
+  })
 })
