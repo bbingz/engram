@@ -185,6 +185,15 @@ struct ReplayTimelineResponse: Decodable {
     let hasMore: Bool
 }
 
+// MARK: - Hygiene API
+
+extension DaemonClient {
+    func fetchHygieneChecks(force: Bool = false) async throws -> HygieneCheckResult {
+        let path = force ? "/api/hygiene?force=true" : "/api/hygiene"
+        return try await fetch(path)
+    }
+}
+
 // MARK: - Lint Types
 
 struct LintIssue: Decodable, Identifiable {

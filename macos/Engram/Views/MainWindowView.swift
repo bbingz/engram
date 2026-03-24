@@ -124,6 +124,8 @@ struct MainWindowView: View {
             ActivityView()
         case .observability:
             ObservabilityView()
+        case .hygiene:
+            HygieneView()
         case .projects:
             ProjectsView()
         case .sourcePulse:

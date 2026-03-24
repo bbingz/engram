@@ -10,6 +10,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
     case timeline
     case activity
     case observability
+    case hygiene
     // Workspace
     case projects
     case sourcePulse
@@ -33,6 +34,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .timeline:    return "Timeline"
         case .activity:    return "Activity"
         case .observability: return "Observability"
+        case .hygiene:       return "Hygiene"
         case .projects:    return "Projects"
         case .sourcePulse: return "Sources"
         case .repos:       return "Repos"
@@ -53,6 +55,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .timeline:    return "chart.bar.xaxis"
         case .activity:    return "bolt"
         case .observability: return "gauge.open.with.lines.needle.33percent"
+        case .hygiene:       return "cross.case"
         case .projects:    return "folder"
         case .sourcePulse: return "antenna.radiowaves.left.and.right"
         case .repos:       return "arrow.triangle.branch"
@@ -75,7 +78,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         var screens: [Screen] {
             switch self {
             case .overview:  return [.home, .search]
-            case .monitor:   return [.sessions, .timeline, .activity, .observability]
+            case .monitor:   return [.sessions, .timeline, .activity, .observability, .hygiene]
             case .workspace: return [.projects, .sourcePulse, .repos, .workGraph]
             case .config:    return [.skills, .agents, .memory, .hooks]
             }
