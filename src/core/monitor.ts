@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type { Database } from './db.js'
 import type { MonitorConfig } from './config.js'
+import { runAllHealthChecks } from './health-rules.js'
 
 export interface MonitorAlert {
   id: string
@@ -73,6 +74,7 @@ export class BackgroundMonitor {
     await this.checkCostBudget()
     await this.checkUnpushedCommits()
     this.checkLongSessions()
+    await this.checkHealthRules()
 
     // Cap at 100 most recent AFTER all checks complete,
     // so new alerts from this cycle are included in the cap
@@ -217,6 +219,32 @@ export class BackgroundMonitor {
         }
       }
     } catch { /* intentional: git_repos table may not exist yet */ }
+  }
+
+  private async checkHealthRules(): Promise<void> {
+    try {
+      const healthResult = await runAllHealthChecks(this.db, { scope: 'global' })
+      for (const issue of healthResult.issues) {
+        if (issue.severity === 'error') {
+          const existing = this.alerts.find(
+            a => a.category === 'high_error_rate' && a.title === issue.message && !a.dismissed
+          )
+          if (!existing) {
+            const alert: MonitorAlert = {
+              id: randomUUID(),
+              category: 'high_error_rate',
+              severity: 'warning',
+              title: issue.message,
+              detail: issue.detail ?? issue.action ?? `Health check: ${issue.kind}`,
+              timestamp: new Date().toISOString(),
+              dismissed: false,
+            }
+            this.alerts.push(alert)
+            this.onAlert?.(alert)
+          }
+        }
+      }
+    } catch { /* best-effort */ }
   }
 
   private checkLongSessions(): void {

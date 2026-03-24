@@ -275,11 +275,7 @@ export function checkZombieProcesses(): HealthIssue[] {
   return []
 }
 
-/** Run all health checks for a project directory. */
-export function runHealthChecks(cwd: string): HealthIssue[] {
-  return [
-    ...checkStaleBranches(cwd),
-    ...checkLargeUncommitted(cwd),
-    ...checkZombieProcesses(),
-  ]
+/** @deprecated Use runAllHealthChecks(db) from health-rules.ts instead */
+export function runHealthChecks(_cwd: string): HealthIssue[] {
+  return [] // Superseded by runAllHealthChecks(db)
 }

@@ -111,6 +111,24 @@ describe('get_context', () => {
       expect(result.contextText).toContain('auth.ts')
     })
 
+    it('includes cost suggestions when session_costs has expensive sessions', async () => {
+      // Seed two sessions with high cost (>$5) and many tokens (>200K) to trigger expensive-sessions rule
+      const recentTs = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      db.upsertSession({ id: 'sCost1', source: 'claude-code', startTime: recentTs, cwd: '/Users/test/myapp', project: 'myapp', summary: 'expensive session', messageCount: 50, userMessageCount: 20, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/fCost1', sizeBytes: 1000 })
+      db.upsertSession({ id: 'sCost2', source: 'claude-code', startTime: recentTs, cwd: '/Users/test/myapp', project: 'myapp', summary: 'another expensive session', messageCount: 60, userMessageCount: 25, assistantMessageCount: 0, toolMessageCount: 0, systemMessageCount: 0, filePath: '/fCost2', sizeBytes: 1200 })
+
+      // Insert session_costs rows with cost >$5 and tokens >200K
+      db.raw.prepare(
+        `INSERT OR REPLACE INTO session_costs (session_id, model, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run('sCost1', 'claude-opus-4-5', 6.50, 100000, 150000, 0, 0)
+      db.raw.prepare(
+        `INSERT OR REPLACE INTO session_costs (session_id, model, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run('sCost2', 'claude-opus-4-5', 7.20, 120000, 180000, 0, 0)
+
+      const result = await handleGetContext(db, { cwd: '/Users/test/myapp', include_environment: true })
+      expect(result.contextText).toContain('Cost suggestions')
+    })
+
     it('abstract detail level excludes new blocks (only costToday + alerts visible)', async () => {
       // Seed dirty git repo and file hotspots (with recent session so hotspots would appear in non-abstract mode)
       const recentTs = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()

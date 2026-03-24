@@ -235,12 +235,12 @@ async function gatherEnvironmentData(db: Database, deps: GetContextDeps, params?
 
     // Infrastructure health checks
     try {
-      const { runHealthChecks } = await import('./lint_config.js')
+      const { runAllHealthChecks } = await import('../core/health-rules.js')
       const cwd = (params?.cwd as string) || process.cwd()
-      const healthIssues = runHealthChecks(cwd)
-      if (healthIssues.length > 0) {
-        const lines = healthIssues.map(h => `  [${h.severity}] ${h.message}`)
-        sections.push(`Health (${healthIssues.length}):\n${lines.join('\n')}`)
+      const healthResult = await runAllHealthChecks(db, { scope: 'project', cwd })
+      if (healthResult.issues.length > 0) {
+        const lines = healthResult.issues.map(h => `  [${h.severity}] ${h.message}`)
+        sections.push(`Health (score ${healthResult.score}/100, ${healthResult.issues.length} issues):\n${lines.join('\n')}`)
       }
     } catch { /* health checks are best-effort */ }
 
@@ -312,7 +312,20 @@ async function gatherEnvironmentData(db: Database, deps: GetContextDeps, params?
       }
     } catch { /* config lint is best-effort */ }
 
-    // Phase 2 Task 4: cost suggestions placeholder (wired in Phase 2)
+    // Cost suggestions
+    try {
+      const { getCostSuggestions } = await import('../core/cost-advisor.js')
+      const { readFileSettings } = await import('../core/config.js')
+      const config = readFileSettings()
+      const costResult = getCostSuggestions(db, config, { since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString() })
+      if (costResult.suggestions.length > 0) {
+        const lines = costResult.suggestions.slice(0, 5).map(s => {
+          const savingsText = s.savings ? ` (save ~$${(s.savings.current - s.savings.projected).toFixed(2)}/${s.savings.period})` : ''
+          return `  [${s.severity}] ${s.title}${savingsText}`
+        })
+        sections.push(`Cost suggestions (${costResult.suggestions.length}):\n${lines.join('\n')}`)
+      }
+    } catch { /* cost advisor is best-effort */ }
 
     // Token budget control: progressively drop sections if over budget
     const maxEnvChars = (maxTokens ?? 4000) * CHARS_PER_TOKEN * 0.3
