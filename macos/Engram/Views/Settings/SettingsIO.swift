@@ -10,7 +10,19 @@ let engramSettingsPath = FileManager.default.homeDirectoryForCurrentUser
 enum KeychainHelper {
     private static let service = "com.engram.app"
 
+    /// Debug builds skip Keychain entirely to avoid authorization dialogs
+    /// (each recompile changes binary signature → macOS prompts every time).
+    /// Release builds use real Keychain.
+    private static var isDebugBuild: Bool {
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
+    }
+
     static func get(_ key: String) -> String? {
+        if isDebugBuild { return nil }  // Skip Keychain in Debug — use plaintext JSON fallback
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -27,6 +39,7 @@ enum KeychainHelper {
     /// Save a value to the Keychain. Returns true on success.
     @discardableResult
     static func set(_ key: String, value: String) -> Bool {
+        if isDebugBuild { return false }  // Skip Keychain in Debug
         guard let data = value.data(using: .utf8) else { return false }
         delete(key)
         let attrs: [String: Any] = [
@@ -40,6 +53,7 @@ enum KeychainHelper {
     }
 
     static func delete(_ key: String) {
+        if isDebugBuild { return }  // Skip Keychain in Debug
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

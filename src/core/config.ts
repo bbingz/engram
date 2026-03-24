@@ -14,6 +14,11 @@ function readKeychainValue(key: string): string | undefined {
   const envVal = process.env[`ENGRAM_KEYCHAIN_${key}`]
   if (envVal) return envVal
 
+  // If launched from Swift app (has ENGRAM_DAEMON env), don't fallback to CLI —
+  // Swift already passed all Keychain values via env vars (empty means not set).
+  // This prevents `security` CLI from prompting authorization dialogs in GUI context.
+  if (process.env.ENGRAM_DAEMON) return undefined
+
   // Fallback: direct Keychain access via `security` CLI (works in terminal, may prompt in GUI)
   if (process.platform !== 'darwin') return undefined;
   try {
