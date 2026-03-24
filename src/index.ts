@@ -37,6 +37,7 @@ import { handoffTool, handleHandoff } from './tools/handoff.js'
 import { liveSessionsTool, handleLiveSessions } from './tools/live_sessions.js'
 import { lintConfigTool, handleLintConfig } from './tools/lint_config.js'
 import { handleFileActivity } from './tools/file_activity.js'
+import { getInsightsDefinition, handleGetInsights } from './tools/get_insights.js'
 
 const log = createLogger('mcp', { stderrJson: true })
 
@@ -101,6 +102,7 @@ const allTools = [
   handoffTool,
   liveSessionsTool,
   lintConfigTool,
+  getInsightsDefinition,
   {
     name: 'file_activity',
     description: 'Show most frequently edited/read files across sessions for a project. Helps understand project activity patterns.',
@@ -205,6 +207,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         result = await handleLintConfig({ cwd: a.cwd as string }, { log })
       } else if (name === 'file_activity') {
         result = handleFileActivity(db, a as { project?: string; since?: string; limit?: number }, { log })
+      } else if (name === 'get_insights') {
+        const insightsResult = await handleGetInsights(db, fileSettings, a as { since?: string })
+        span.end()
+        return insightsResult
       } else {
         span.setAttribute('tool_error', 'unknown_tool'); span.end()
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
