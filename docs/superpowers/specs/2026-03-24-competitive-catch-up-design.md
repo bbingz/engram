@@ -87,7 +87,13 @@
 
 **Output**: `AttributedString` consumed by existing `Text` view.
 
-**Modified file**: `ContentSegmentViews.swift` — `CodeBlockView` calls `SyntaxHighlighter.highlight()`. For large code blocks, consider `NSAttributedString` + `NSTextView` wrapper if SwiftUI `Text(AttributedString)` performance is poor (optimization, not blocking).
+**Performance strategy**:
+- Code blocks >200 lines: skip highlighting, render as plain monospaced (avoids RegEx bottleneck on large outputs)
+- Highlighting is lazy: only performed when `CodeBlockView` appears on screen (SwiftUI `LazyVStack` already handles this via `onAppear`)
+- Cache highlighted `AttributedString` in `NSCache` keyed by content hash (same pattern as existing `SegmentedMessageView` cache)
+- If `Text(AttributedString)` causes scroll jank on large blocks, migrate to `NSAttributedString` + `NSTextView` wrapper (deferred optimization)
+
+**Modified file**: `ContentSegmentViews.swift` — `CodeBlockView` calls `SyntaxHighlighter.highlight()` with line count guard.
 
 ### F1C: Image Preview
 
@@ -96,6 +102,16 @@
 **New files**:
 - `Views/Transcript/InlineImageView.swift` — Thumbnail + click-to-expand
 - ContentSegmentParser changes for `.image` segment type
+
+**ImageSource type**:
+```swift
+enum ImageSource {
+    case base64(data: Data, mimeType: String)  // decoded from data:image/... prefix
+    case filePath(String)                       // absolute path to image file
+}
+// ContentSegment addition:
+case image(source: ImageSource)
+```
 
 **Detection strategy**:
 - **base64**: Match `data:image/(png|jpeg|gif|webp);base64,` prefix → detect in ALL message types
@@ -133,7 +149,7 @@
 | 4 | .env security | **new** | error | Scan git_repos cwds for `.env*` files not in `.gitignore`. Covers `.env`, `.env.local`, `.env.production`, etc. |
 | 5 | Zombie processes | **new** | warning | `pgrep -f` headless node/python >2h. **Whitelist exclusions**: engram daemon PID, patterns matching `next dev`, `vite`, `webpack-dev-server`, `nuxt`, `remix dev` |
 | 6 | Worktree health | **new** | warning | `git worktree list`, detect orphan (path not found) and dirty worktrees |
-| 7 | Dependency security | **new** | error/warning | `npm audit --json` on repos with package.json. **Only repos with active sessions in last 7 days.** Results cached 30 min independently. |
+| 7 | Dependency security | **new** | error/warning | `npm audit --json` on repos with package.json. **Only repos with active sessions in last 7 days.** Results cached 30 min independently. Note: `npm audit` is read-only (does NOT execute scripts or install packages), safe to run in untrusted repos. |
 | 8 | Git stash buildup | **new** | info | `git stash list`, report if >5 stashes |
 | 9 | Branch divergence | **new** | warning | `git log --left-right --count HEAD...@{u}`, report if both ahead AND behind >0 |
 | 10 | CLAUDE.md lint | existing (ref only) | error/warning | Stays in `lint_config.ts`. `health-rules.ts` calls `lintConfig()` and merges issues into unified output. |
@@ -158,6 +174,8 @@ type ShellExecutor = (cmd: string, args: string[], options: { timeout: number; c
 
 async function runAllHealthChecks(db: Database, options?: {
   force?: boolean;       // Bypass 5-min cache
+  scope?: 'project' | 'global';  // 'project' = only repos matching cwd; 'global' = all git_repos (default)
+  cwd?: string;          // Required when scope='project'
   exec?: ShellExecutor;  // Inject for testing (default: child_process.execFile wrapper)
 }): Promise<{
   issues: HealthIssue[];
@@ -187,7 +205,7 @@ async function runAllHealthChecks(db: Database, options?: {
 
 **Modified files**:
 - `Models/Screen.swift` — Add `.hygiene` case
-- `Views/SidebarView.swift` — Add "Hygiene" entry under Analytics section
+- `Views/SidebarView.swift` — Add "Hygiene" entry under MONITOR section (alongside sessions, timeline, activity, observability)
 - `Views/ContentView.swift` — Route `.hygiene` → `HygieneView`
 - Note: `project.yml` does NOT need modification — `sources: - path: Engram` auto-discovers all Swift files. Only `xcodegen generate` is needed to regenerate `.xcodeproj`.
 
@@ -239,9 +257,14 @@ async function runAllHealthChecks(db: Database, options?: {
 **Architecture**: Pure functional rule engine. Input = DB query results. Output = suggestion list. No DB writes, no side effects.
 
 **Data dependencies** (all existing):
-- `session_costs` — per-model/day token and cost data
+- `session_costs` — per-session cost data (one row per session, `session_id TEXT PRIMARY KEY`)
 - `session_tools` — tool call counts
 - `sessions` — session metadata
+
+**Schema constraint**: `session_costs` stores ONE model per session (the primary model). Sessions that mix models (e.g., Opus + Sonnet) are attributed entirely to the primary model. This means:
+- Rule 1/2/5 operate on **per-session primary model**, not per-message model breakdown
+- Accuracy is acceptable for typical usage (most sessions use a single model) but imprecise for multi-model sessions
+- No schema change needed — document this limitation in tool output ("costs attributed by session primary model")
 
 **Interface**:
 
@@ -300,7 +323,7 @@ async function getCostSuggestions(db: Database, config: FileSettings, options?: 
 - Aggregate model breakdown: `getCostsSummary({ groupBy: 'model', since })` (existing function)
 - Per-session with message count (for Rule 1 short session filter): `SELECT c.*, s.message_count FROM session_costs c JOIN sessions s ON c.session_id = s.id WHERE c.model LIKE 'claude-%opus%' AND s.message_count < 20`
 - Cache rate (Rule 2): `SELECT SUM(cache_read_tokens) as cache_read, SUM(input_tokens) as input FROM session_costs WHERE model LIKE 'claude-%'`
-- Budget threshold: `config.monitor?.dailyCostBudget ?? config.costAlerts?.dailyBudget` (FileSettings type, both optional paths)
+- Budget threshold: `config.costAlerts?.dailyBudget ?? config.monitor?.dailyCostBudget` (both are valid paths on FileSettings — `costAlerts` is the user-facing field, `monitor` is the background monitor config; prefer costAlerts as primary)
 - Tool call counts (Rule 8): `SELECT tool_name, SUM(call_count) FROM session_tools WHERE session_id = ? GROUP BY tool_name`
 
 ### New MCP tool: `get_insights`
@@ -347,7 +370,7 @@ interface EnvironmentContext {
   activeAlerts: Array<{ rule, severity, message }>;
 
   // === Upgraded ===
-  healthIssues: HealthIssue[];  // Now from health-rules.ts full 10-category output
+  healthIssues: HealthIssue[];  // From health-rules.ts with scope='project' (cwd from request) to avoid global noise in project context
 
   // === New ===
   gitRepos: Array<{
@@ -369,7 +392,8 @@ interface EnvironmentContext {
     count: number;
     lastSeen: string;
   }>;  // From `logs` table, level='error', last 24h, grouped by module+message, top 5.
-      // Note: add compound index `CREATE INDEX IF NOT EXISTS idx_logs_level_ts ON logs(level, ts)` in migration for query efficiency.
+      // Note: add compound index `CREATE INDEX IF NOT EXISTS idx_logs_level_ts ON logs(level, ts)` in migration.
+      // This makes existing `idx_logs_level ON logs(level)` redundant — DROP it in the same migration.
 
   costSuggestions: Array<{
     rule: string;
@@ -389,7 +413,12 @@ interface EnvironmentContext {
 **Key corrections from self-review**:
 - `recentErrors`: Source changed from sessions table (no error flag) to `logs` table `level='error'`. Grouped by module+message to deduplicate, returns count + lastSeen.
 - `configStatus`: Removed `projectAliases` field (noise for context prompt).
-- Token budget: Reserved 30% of `max_tokens` for environment, 70% for session content. Estimated environment size: 2000-2500 tokens with full data.
+
+**Token budget implementation**: The existing code already uses `maxChars = maxTokens * CHARS_PER_TOKEN` (where `CHARS_PER_TOKEN = 4`) for budget control. Environment data is appended to `contextText` which counts against this budget. Implementation:
+- Compute environment text first, measure `envChars = environmentText.length`
+- Cap environment at `maxChars * 0.3` — if exceeded, progressively drop blocks in order: `configStatus` → `fileHotspots` → `gitRepos` → `recentErrors` (keep `costToday`, `activeAlerts`, `costSuggestions` as highest priority)
+- Remaining `maxChars * 0.7` allocated to session content (existing behavior)
+- This leverages the existing character-based budget mechanism, no new token estimator needed
 
 **detail-level gating**:
 
@@ -421,7 +450,7 @@ interface EnvironmentContext {
 | `GET /api/hygiene` | Vitest integration | HTTP endpoint returns correct schema. Test `force` parameter. |
 | Swift views (F1 + F2) | Manual verification | ToolCallView renders tool name + params. SyntaxHighlighter colors keywords. InlineImageView shows thumbnails. HygieneView displays issues. |
 
-**Test count estimate**: ~30-35 new tests (Node side). Swift side manual only (XCUITest optional, non-blocking).
+**Test count estimate**: ~40-45 new tests (Node side: 10 health-rule categories + 8 cost-advisor rules + edge cases for no-data/timeout/cache/injection + integration tests for get_insights, get_context detail levels, /api/hygiene). Swift side manual only (XCUITest optional, non-blocking).
 
 ---
 
@@ -442,7 +471,7 @@ interface EnvironmentContext {
 | `macos/Engram/Views/Pages/HygieneView.swift` | 3 | F2 |
 | `macos/Engram/Models/HygieneModel.swift` | 3 | F2 |
 
-### Modified files (11)
+### Modified files (12)
 
 | File | Phase | Change |
 |------|-------|--------|
@@ -450,13 +479,14 @@ interface EnvironmentContext {
 | `src/core/monitor.ts` | 1 | Call `runAllHealthChecks()` in monitor cycle |
 | `src/web.ts` | 1 | Add `GET /api/hygiene` endpoint |
 | `src/tools/get_context.ts` | 1+2 | Add 5 new environment data blocks |
-| `src/core/db.ts` | 1 | Add compound index `idx_logs_level_ts ON logs(level, ts)` in `migrate()` |
+| `src/core/db.ts` | 1 | Add compound index `idx_logs_level_ts ON logs(level, ts)` + DROP redundant `idx_logs_level` in `migrate()` |
 | `src/index.ts` | 1 | Register `get_insights` tool definition AND add handler clause in `CallToolRequestSchema` handler |
-| `macos/Engram/Views/Transcript/ColorBarMessageView.swift` | 3 | Add `case .toolCall:` and `case .toolResult:` branches before `default` in the switch statement. New views receive `indexed.message.content` for parsing by `ToolCallParser`. |
+| `macos/Engram/Views/Transcript/ColorBarMessageView.swift` | 3 | Add `case .toolCall:` and `case .toolResult:` branches before `default` in the switch statement. These cases already exist in `MessageType` enum (MessageTypeClassifier.swift does NOT need modification — it already classifies toolCall/toolResult). New views receive `indexed.message.content` for parsing by `ToolCallParser`. |
 | `macos/Engram/Views/ContentSegmentViews.swift` | 3 | Add `.image` case + syntax highlighting in CodeBlockView |
 | `macos/Engram/Core/ContentSegmentParser.swift` | 3 | Add `.image` segment detection |
-| `macos/Engram/Models/Screen.swift` | 3 | Add `.hygiene` case |
-| `macos/Engram/Views/SidebarView.swift` + `ContentView.swift` | 3 | Hygiene navigation entry + routing |
+| `macos/Engram/Models/Screen.swift` | 3 | Add `.hygiene` case + add to `Section.monitor.screens` array |
+| `macos/Engram/Views/SidebarView.swift` | 3 | Add Hygiene entry in MONITOR section |
+| `macos/Engram/Views/ContentView.swift` | 3 | Route `.hygiene` → `HygieneView` |
 
 ### Post-change requirements
 - `npm run build` after Phase 1 + 2
