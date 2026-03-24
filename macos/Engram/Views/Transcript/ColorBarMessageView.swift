@@ -54,6 +54,22 @@ struct ColorBarMessageView: View {
                         .textSelection(.enabled)
                         .foregroundStyle(.secondary)
                         .italic()
+                case .toolCall:
+                    if let parsed = ToolCallParser.parseToolCall(indexed.message.content) {
+                        ToolCallView(parsed: parsed)
+                    } else {
+                        Text(highlightedText(indexed.message.content))
+                            .font(.system(size: fontSize))
+                            .textSelection(.enabled)
+                    }
+                case .toolResult:
+                    if let parsed = ToolCallParser.parseToolResult(indexed.message.content) {
+                        ToolResultView(parsed: parsed)
+                    } else {
+                        Text(highlightedText(indexed.message.content))
+                            .font(.system(size: fontSize))
+                            .textSelection(.enabled)
+                    }
                 case .system:
                     CollapsibleSystemBubble(message: indexed.message)
                 default:

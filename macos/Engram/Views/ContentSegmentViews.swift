@@ -168,10 +168,17 @@ struct CodeBlockView: View {
 
             // Code content
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(verbatim: code)
-                    .font(.system(size: max(fontSize - 1, 10), design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(10)
+                if !language.isEmpty {
+                    Text(SyntaxHighlighter.highlight(code, language: language))
+                        .font(.system(size: max(fontSize - 1, 10), design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(10)
+                } else {
+                    Text(verbatim: code)
+                        .font(.system(size: max(fontSize - 1, 10), design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(10)
+                }
             }
         }
         .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
