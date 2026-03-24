@@ -50,6 +50,8 @@
 
 ## Phase 1: Node Data Layer (3 parallel tasks)
 
+**Parallel caveat**: Task 1 and Task 3 both touch `lint_config.ts`. If running in parallel worktrees this is fine (separate copies). If in same worktree, complete Task 1 Step 17 before Task 3 Step 2's configStatus block.
+
 ### Task 1: Health Rules Engine (`src/core/health-rules.ts`)
 
 **Files:**
@@ -214,6 +216,8 @@ Expected: 1 test passes
 
 - [ ] **Step 4: Implement checkStaleBranches**
 
+**Behavior change from original**: Original `lint_config.ts:246` reports any merged branch (≥1). New version reports only when >3 merged branches exist, to reduce noise. This is intentional — most repos have 1-2 merged branches that haven't been cleaned up yet, which is normal.
+
 Replace the stub in `src/core/health-rules.ts`:
 
 ```typescript
@@ -273,6 +277,8 @@ Run: `npm test -- tests/core/health-rules.test.ts`
 
 - [ ] **Step 7: Implement checkLargeUncommitted**
 
+**Behavior change from original**: Original `lint_config.ts:258` reports any uncommitted changes (≥1). New version reports only when >20 uncommitted changes, matching the spec. Small working-set changes are normal and not worth alerting on.
+
 ```typescript
 async function checkLargeUncommitted(repos: Array<{ path: string; name: string }>, exec: ShellExecutor): Promise<HealthIssue[]> {
   const issues: HealthIssue[] = []
@@ -315,6 +321,8 @@ it('warns on large uncommitted changes', async () => {
 Run: `npm test -- tests/core/health-rules.test.ts`
 
 - [ ] **Step 9: Implement checkZombieDaemon**
+
+**Behavior change from original**: Original `lint_config.ts:270` reports when >1 daemon process (expected exactly 1). New version reports when >2 (expected ≤2), because during daemon restart there can legitimately be 2 processes briefly (old exiting + new starting).
 
 ```typescript
 async function checkZombieDaemon(exec: ShellExecutor): Promise<HealthIssue[]> {
@@ -609,6 +617,11 @@ async function checkDependencySecurity(db: Database, repos: Array<{ path: string
 - [ ] **Step 16: Write tests for worktree, stash, divergence, dependency + run**
 
 ```typescript
+// Note: Each test's exec stub is called by ALL 9 checks. Stubs should return '' for
+// unrecognized commands to avoid cross-check interference. The stubs below handle
+// specific commands and fall through to '' for everything else, which is safe because
+// empty output = no issues for all checks.
+
 it('detects orphan worktrees', async () => {
   const exec: ShellExecutor = async (cmd, args) => {
     if (args.includes('--porcelain')) return 'worktree /tmp/test-repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /tmp/nonexistent\nHEAD def456\nbranch refs/heads/feature\n'
@@ -699,23 +712,21 @@ it('handles dependency security check for active repos', async () => {
 
 Run: `npm test -- tests/core/health-rules.test.ts`
 
-- [ ] **Step 17: Wire lint_config.ts to delegate to health-rules**
+- [ ] **Step 17: Export health-rules from lint_config.ts (keep old function working)**
 
-Modify `src/tools/lint_config.ts` — replace the `runHealthChecks` function body:
+Modify `src/tools/lint_config.ts` — add re-export but **keep old function intact for now**:
 
 ```typescript
-import { runAllHealthChecks, type HealthIssue } from '../core/health-rules.js'
+// Add at top of file:
+import { runAllHealthChecks } from '../core/health-rules.js'
 export { runAllHealthChecks }
-export type { HealthIssue }
 
-// Deprecated: old synchronous shim. All callers (get_context, /api/hygiene) now
-// use runAllHealthChecks(db) directly. This returns empty to avoid dual code paths.
-export function runHealthChecks(_cwd: string): HealthIssue[] {
-  return [] // Superseded by runAllHealthChecks(db) — see health-rules.ts
-}
+// Keep existing runHealthChecks() UNCHANGED for now.
+// It will be deprecated in Phase 2 Task 4 when get_context switches to runAllHealthChecks(db).
+// This avoids a gap where health checks return empty between Phase 1 and Phase 2.
 ```
 
-Note: The old `checkStaleBranches`, `checkLargeUncommitted`, `checkZombieProcesses` can be removed from `lint_config.ts` since they are reimplemented in `health-rules.ts`. The `lintConfig()` function (CLAUDE.md validation) stays unchanged.
+Note: The actual deprecation of `runHealthChecks()` happens in Phase 2 Task 4 Step 1, when `get_context.ts` is switched to call `runAllHealthChecks(db)` directly. Until then, the old synchronous function keeps working.
 
 - [ ] **Step 18: Add GET /api/hygiene endpoint to web.ts**
 
@@ -1357,13 +1368,15 @@ try {
 }
 
 // Config status (from lintConfig)
+// Note: handleLintConfig returns { issues: LintIssue[]; score: number }, NOT MCP response format
 try {
   const { handleLintConfig } = await import('./lint_config.js')
   const cwd = (params?.cwd as string) || process.cwd()
   const lintResult = await handleLintConfig({ cwd })
-  const parsed = JSON.parse(lintResult.content[0].text)
-  if (parsed.score < 100) {
-    sections.push(`Config score: ${parsed.score}/100 (${parsed.errors?.length || 0} errors, ${parsed.warnings?.length || 0} warnings)`)
+  if (lintResult.score < 100) {
+    const errors = lintResult.issues.filter((i: any) => i.severity === 'error').length
+    const warnings = lintResult.issues.filter((i: any) => i.severity === 'warning').length
+    sections.push(`Config score: ${lintResult.score}/100 (${errors} errors, ${warnings} warnings)`)
   }
 } catch { /* config lint is best-effort */ }
 
@@ -2076,10 +2089,33 @@ case .image(let source):
     }
 ```
 
-Add image detection in the parser (after code block detection, before text):
+Add image detection in the parser. **Integration point in `parse()`**: In the main parsing loop, after code block detection and before plain text accumulation, add:
 
 ```swift
-// In parse(), add detection for base64 images
+// In parse() main loop, after the code block check:
+// Check for images in text buffer before flushing
+if !textBuf.isEmpty {
+    let combined = textBuf.joined(separator: "\n")
+    // isToolResult is passed as parameter to parse() — thread from ColorBarMessageView
+    // via: ContentSegmentParser.parse(content, isToolResult: indexed.messageType == .toolResult)
+    if let (imgSource, _) = Self.detectImage(in: combined, isToolResult: isToolResult) {
+        flushText()
+        segments.append(.image(source: imgSource))
+        continue // skip adding to textBuf
+    }
+}
+```
+
+**Threading `isToolResult`**: Add `isToolResult: Bool = false` parameter to `static func parse(_ content: String, isToolResult: Bool = false)`. In `SegmentedMessageView`, pass it from the parent view context. In `ColorBarMessageView`, the `indexed.messageType` is available.
+
+Static properties and helper:
+
+```swift
+// In ContentSegmentParser, add as static properties:
+// (The detectImage function handles the actual detection)
+private static let base64Pattern = try! NSRegularExpression(
+    pattern: #"data:image/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/=]+)"#
+)
 private static let base64Pattern = try! NSRegularExpression(
     pattern: #"data:image/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/=]+)"#
 )
@@ -2263,10 +2299,10 @@ struct HygieneView: View {
             VStack(alignment: .leading, spacing: 16) {
                 // KPI row
                 HStack(spacing: 12) {
-                    KPICard(title: "Score", value: "\(score)", subtitle: "/ 100")
-                    KPICard(title: "Errors", value: "\(issues.filter { $0.severity == "error" }.count)", subtitle: "critical")
-                    KPICard(title: "Warnings", value: "\(issues.filter { $0.severity == "warning" }.count)", subtitle: "attention")
-                    KPICard(title: "Info", value: "\(issues.filter { $0.severity == "info" }.count)", subtitle: "notices")
+                    KPICard(value: "\(score)", label: "Score")
+                    KPICard(value: "\(issues.filter { $0.severity == "error" }.count)", label: "Errors")
+                    KPICard(value: "\(issues.filter { $0.severity == "warning" }.count)", label: "Warnings")
+                    KPICard(value: "\(issues.filter { $0.severity == "info" }.count)", label: "Info")
                 }
 
                 // Refresh bar
@@ -2472,19 +2508,12 @@ struct IssueCard: View {
 
 - [ ] **Step 3: Add DaemonClient.fetchHygieneChecks**
 
-In `macos/Engram/Core/DaemonClient.swift`, add:
+In `macos/Engram/Core/DaemonClient.swift`, add using the existing `fetch<T>` pattern (baseURL is String, not URL):
 
 ```swift
 func fetchHygieneChecks(force: Bool = false) async throws -> HygieneCheckResult {
-    let url = baseURL.appendingPathComponent("api/hygiene")
-    var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-    if force { components.queryItems = [URLQueryItem(name: "force", value: "true")] }
-
-    var request = URLRequest(url: components.url!)
-    addAuth(&request)
-
-    let (data, _) = try await URLSession.shared.data(for: request)
-    return try JSONDecoder().decode(HygieneCheckResult.self, from: data)
+    let path = force ? "/api/hygiene?force=true" : "/api/hygiene"
+    return try await fetch(path)
 }
 ```
 
