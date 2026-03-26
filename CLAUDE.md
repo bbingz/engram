@@ -7,7 +7,7 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 616 tests, ~6s
+npm test               # vitest: 684 tests, ~8s
 npm run dev            # tsx: run without compile
 
 # macOS (from macos/)
@@ -24,7 +24,7 @@ xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 src/
   adapters/    # SessionAdapter implementations (15 sources: codex, claude-code, cursor, etc.)
   core/        # db.ts (SQLite), indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, viking-bridge.ts
-  tools/       # MCP tool handlers (10 tools: get_context, search, list_sessions, get_memory, link_sessions, etc.)
+  tools/       # MCP tool handlers (11 tools: get_context, search, list_sessions, get_memory, get_insights, link_sessions, etc.)
   web.ts       # Hono HTTP server + API endpoints
   index.ts     # MCP server entry (stdin/stdout transport)
   daemon.ts    # Daemon entry (indexer + watcher + web server)
