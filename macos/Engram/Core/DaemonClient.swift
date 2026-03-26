@@ -1,7 +1,9 @@
 // macos/Engram/Core/DaemonClient.swift
 import Foundation
+import Observation
 
 @MainActor
+@Observable
 final class DaemonClient {
     private let baseURL: String
     private let bearerToken: String?

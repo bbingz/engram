@@ -1,6 +1,7 @@
 // macos/Engram/Core/Database.swift
 import Foundation
 import GRDB
+import Observation
 
 enum DatabaseError: Error {
     case notOpen
@@ -19,10 +20,11 @@ enum GroupingMode: String, CaseIterable {
 }
 
 @MainActor
+@Observable
 final class DatabaseManager {
-    nonisolated(unsafe) private let dbPath: String
-    nonisolated(unsafe) private var pool: DatabasePool?
-    private var writerPool: DatabasePool?
+    @ObservationIgnored nonisolated(unsafe) private let dbPath: String
+    @ObservationIgnored nonisolated(unsafe) private var pool: DatabasePool?
+    @ObservationIgnored private var writerPool: DatabasePool?
 
     /// File path to the SQLite database (nonisolated for background FileManager access)
     nonisolated var path: String { dbPath }
