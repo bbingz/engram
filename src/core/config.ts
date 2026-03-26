@@ -1,6 +1,5 @@
 // src/core/config.ts
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
-// execFileSync removed — no longer calling `security` CLI for Keychain access
 import { join } from 'path';
 import { homedir } from 'os';
 import type { SyncPeer } from './sync.js';
@@ -8,10 +7,7 @@ import type { SyncPeer } from './sync.js';
 // ── Keychain integration (macOS) ─────────────────────────────────────
 
 function readKeychainValue(key: string): string | undefined {
-  // Keychain values are ONLY read via environment variables passed from the Swift app.
-  // The Swift app reads Keychain and passes values as ENGRAM_KEYCHAIN_<key> env vars.
-  // We NEVER call `security` CLI directly — it prompts for Keychain authorization
-  // dialogs in both MCP server and daemon contexts, which blocks the process.
+  // Never call `security` CLI — it prompts for Keychain auth dialogs in MCP/daemon contexts
   return process.env[`ENGRAM_KEYCHAIN_${key}`] || undefined
 }
 

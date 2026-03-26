@@ -364,16 +364,21 @@ function ruleOutputImbalance(db: Database, since: string): CostSuggestion | null
 
   if (rows.length === 0) return null
 
-  // Filter out sessions with >10 Write/Edit tool calls
-  const filtered = rows.filter(row => {
-    const toolRow = rawDb.prepare(`
-      SELECT COALESCE(SUM(call_count), 0) as cnt
+  // Filter out sessions with >10 Write/Edit tool calls (batch query, not N+1)
+  const sessionIds = rows.map(r => r.session_id)
+  const editCounts = new Map<string, number>()
+  if (sessionIds.length > 0) {
+    const placeholders = sessionIds.map(() => '?').join(',')
+    const toolRows = rawDb.prepare(`
+      SELECT session_id, COALESCE(SUM(call_count), 0) as cnt
       FROM session_tools
-      WHERE session_id = ?
+      WHERE session_id IN (${placeholders})
         AND tool_name IN ('Write', 'Edit', 'MultiEdit')
-    `).get(row.session_id) as { cnt: number } | null
-    return (toolRow?.cnt || 0) <= 10
-  })
+      GROUP BY session_id
+    `).all(...sessionIds) as Array<{ session_id: string; cnt: number }>
+    for (const tr of toolRows) editCounts.set(tr.session_id, tr.cnt)
+  }
+  const filtered = rows.filter(row => (editCounts.get(row.session_id) || 0) <= 10)
 
   if (filtered.length === 0) return null
 

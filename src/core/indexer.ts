@@ -34,7 +34,7 @@ export class Indexer {
     this.metrics = opts?.metrics
   }
 
-  private pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): void {
+  private async pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): Promise<void> {
     if (!this.opts?.viking || messages.length === 0) return
 
     // Skip if already pushed with same message count (no new content)
@@ -42,31 +42,30 @@ export class Indexer {
       const row = this.db.getRawDb().prepare(
         'SELECT viking_pushed_msg_count FROM sessions WHERE id = ?'
       ).get(info.id) as { viking_pushed_msg_count: number | null } | undefined
-      if (row?.viking_pushed_msg_count != null && row.viking_pushed_msg_count >= messages.length) {
-        return // Already pushed with same or more messages — skip
-      }
-    } catch { /* column may not exist yet — proceed with push */ }
+      if (row?.viking_pushed_msg_count != null && row.viking_pushed_msg_count >= messages.length) return
+    } catch { /* column may not exist yet */ }
 
-    this.opts.viking.checkAvailable().then(ok => {
+    try {
+      const ok = await this.opts.viking.checkAvailable()
       if (!ok) return
       const filtered = filterForViking(messages)
       if (filtered.length === 0) return
       const uri = toVikingUri(info.source, info.project, info.id)
       const content = filtered.map(m => `[${m.role}] ${m.content}`).join('\n\n')
-      this.opts!.viking!.addResource(uri, content, {
+      await this.opts.viking.addResource(uri, content, {
         source: info.source,
         project: info.project ?? '',
         startTime: info.startTime,
         model: info.model ?? '',
-      }).then(() => {
-        // Mark as pushed with current message count
-        try {
-          this.db.getRawDb().prepare(
-            'UPDATE sessions SET viking_pushed_at = datetime(\'now\'), viking_pushed_msg_count = ? WHERE id = ?'
-          ).run(messages.length, info.id)
-        } catch { /* best-effort */ }
-      }).catch((err) => { this.log?.warn('viking addResource failed', { uri }, err) })
-    }).catch((err) => { this.log?.warn('viking availability check failed', {}, err) })
+      })
+      try {
+        this.db.getRawDb().prepare(
+          "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?"
+        ).run(messages.length, info.id)
+      } catch { /* best-effort */ }
+    } catch (err) {
+      this.log?.warn('viking push failed', { sessionId: info.id }, err)
+    }
   }
 
   private async generateTitleIfNeeded(sessionId: string, tier: SessionTier, messages: { role: string; content: string }[]): Promise<void> {
