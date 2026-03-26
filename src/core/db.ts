@@ -146,6 +146,10 @@ export class Database {
       if (!colNames.has('quality_score')) {
         this.db.exec('ALTER TABLE sessions ADD COLUMN quality_score INTEGER DEFAULT 0')
       }
+      if (!colNames.has('viking_pushed_at')) {
+        this.db.exec('ALTER TABLE sessions ADD COLUMN viking_pushed_at TEXT')
+        this.db.exec('ALTER TABLE sessions ADD COLUMN viking_pushed_msg_count INTEGER')
+      }
     }
 
     this.db.exec(`
@@ -177,7 +181,9 @@ export class Database {
         snapshot_hash TEXT,
         tier TEXT,
         generated_title TEXT,
-        quality_score INTEGER DEFAULT 0
+        quality_score INTEGER DEFAULT 0,
+        viking_pushed_at TEXT,
+        viking_pushed_msg_count INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);

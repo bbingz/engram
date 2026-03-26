@@ -36,6 +36,17 @@ export class Indexer {
 
   private pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): void {
     if (!this.opts?.viking || messages.length === 0) return
+
+    // Skip if already pushed with same message count (no new content)
+    try {
+      const row = this.db.getRawDb().prepare(
+        'SELECT viking_pushed_msg_count FROM sessions WHERE id = ?'
+      ).get(info.id) as { viking_pushed_msg_count: number | null } | undefined
+      if (row?.viking_pushed_msg_count != null && row.viking_pushed_msg_count >= messages.length) {
+        return // Already pushed with same or more messages — skip
+      }
+    } catch { /* column may not exist yet — proceed with push */ }
+
     this.opts.viking.checkAvailable().then(ok => {
       if (!ok) return
       const filtered = filterForViking(messages)
@@ -47,6 +58,13 @@ export class Indexer {
         project: info.project ?? '',
         startTime: info.startTime,
         model: info.model ?? '',
+      }).then(() => {
+        // Mark as pushed with current message count
+        try {
+          this.db.getRawDb().prepare(
+            'UPDATE sessions SET viking_pushed_at = datetime(\'now\'), viking_pushed_msg_count = ? WHERE id = ?'
+          ).run(messages.length, info.id)
+        } catch { /* best-effort */ }
       }).catch((err) => { this.log?.warn('viking addResource failed', { uri }, err) })
     }).catch((err) => { this.log?.warn('viking availability check failed', {}, err) })
   }
