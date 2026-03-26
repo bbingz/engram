@@ -7,9 +7,9 @@ private let logger = Logger(subsystem: "com.engram.app", category: "SessionDetai
 struct SessionDetailView: View {
     let session: Session
     var onBack: (() -> Void)? = nil
-    @EnvironmentObject var db: DatabaseManager
-    @EnvironmentObject var indexer: IndexerProcess
-    @EnvironmentObject var daemonClient: DaemonClient
+    @Environment(DatabaseManager.self) var db
+    @Environment(IndexerProcess.self) var indexer
+    @Environment(DaemonClient.self) var daemonClient
     @State private var isFavorite = false
     @State private var handoffStatus: String? = nil
     @State private var showReplay = false
@@ -259,7 +259,7 @@ struct SessionDetailView: View {
         .onChange(of: searchText) { _, _ in updateMatchIndices() }
         .sheet(isPresented: $showReplay) {
             SessionReplayView(sessionId: session.id)
-                .environmentObject(daemonClient)
+                .environment(daemonClient)
                 .frame(minWidth: 600, minHeight: 450)
         }
     }

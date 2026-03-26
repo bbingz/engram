@@ -3,7 +3,7 @@ import SwiftUI
 import GRDB
 
 struct SystemHealthView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var dbSize: Int64 = 0
     @State private var tableCounts: [(table: String, count: Int)] = []
     @State private var isLoading = true

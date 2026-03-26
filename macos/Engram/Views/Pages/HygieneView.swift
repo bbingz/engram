@@ -22,7 +22,7 @@ struct HygieneCheckResult: Codable {
 // MARK: - Main View
 
 struct HygieneView: View {
-    @EnvironmentObject private var daemon: DaemonClient
+    @Environment(DaemonClient.self) private var daemon
     @State private var result: HygieneCheckResult? = nil
     @State private var isLoading = true
     @State private var isRefreshing = false

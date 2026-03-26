@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct HomeView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
 
     @State private var kpi: DatabaseManager.KPIStats?
     @State private var dailyActivity: [(date: String, count: Int)] = []

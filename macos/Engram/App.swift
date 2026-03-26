@@ -8,9 +8,9 @@ struct EngramApp: App {
     var body: some Scene {
         Settings {
             SettingsView()
-                .environmentObject(appDelegate.db)
-                .environmentObject(appDelegate.indexer)
-                .environmentObject(appDelegate.daemonClient)
+                .environment(appDelegate.db)
+                .environment(appDelegate.indexer)
+                .environment(appDelegate.daemonClient)
         }
     }
 }
@@ -111,9 +111,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 defer: false
             )
             window.contentView = NSHostingView(rootView: PopoverView()
-                .environmentObject(db)
-                .environmentObject(indexer)
-                .environmentObject(daemonClient))
+                .environment(db)
+                .environment(indexer)
+                .environment(daemonClient))
             window.title = "Popover Preview"
             window.center()
             window.makeKeyAndOrderFront(nil)

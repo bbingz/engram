@@ -1,6 +1,6 @@
 // macos/Engram/Core/IndexerProcess.swift
 import Foundation
-import Combine
+import Observation
 
 struct DaemonEvent: Decodable {
     let event: String        // "ready" | "indexed" | "error" | "web_ready" | "summary_generated" | "db_maintenance"
@@ -16,7 +16,8 @@ struct DaemonEvent: Decodable {
 }
 
 @MainActor
-class IndexerProcess: ObservableObject {
+@Observable
+final class IndexerProcess {
     enum Status {
         case stopped
         case starting
@@ -46,11 +47,11 @@ class IndexerProcess: ObservableObject {
         let resetAt: String?
     }
 
-    @Published var status: Status = .stopped
-    @Published var totalSessions: Int = 0
-    @Published var lastSummarySessionId: String?
-    @Published var port: Int?
-    @Published var usageData: [UsageItem] = []
+    var status: Status = .stopped
+    var totalSessions: Int = 0
+    var lastSummarySessionId: String?
+    var port: Int?
+    var usageData: [UsageItem] = []
 
     private var process: Process?
     private var stdoutPipe: Pipe?

@@ -19,7 +19,7 @@ enum GroupingMode: String, CaseIterable {
 }
 
 @MainActor
-class DatabaseManager: ObservableObject {
+final class DatabaseManager {
     nonisolated(unsafe) private let dbPath: String
     nonisolated(unsafe) private var pool: DatabasePool?
     private var writerPool: DatabasePool?

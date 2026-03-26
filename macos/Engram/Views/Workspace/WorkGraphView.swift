@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct WorkGraphView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var repos: [GitRepo] = []
     @State private var isLoading = true
     @State private var error: String? = nil

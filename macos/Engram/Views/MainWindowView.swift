@@ -9,9 +9,9 @@ struct MainWindowView: View {
     @State private var showPalette: Bool = false
     @State private var paletteItems: [PaletteItem] = []
     @State private var paletteSelection: Int = 0
-    @EnvironmentObject var db: DatabaseManager
-    @EnvironmentObject var indexer: IndexerProcess
-    @EnvironmentObject var daemonClient: DaemonClient
+    @Environment(DatabaseManager.self) var db
+    @Environment(IndexerProcess.self) var indexer
+    @Environment(DaemonClient.self) var daemonClient
 
     var body: some View {
         NavigationSplitView {
@@ -83,7 +83,7 @@ struct MainWindowView: View {
         .sheet(isPresented: $showResume) {
             if let session = selectedSession {
                 ResumeDialog(session: session)
-                    .environmentObject(indexer)
+                    .environment(indexer)
             }
         }
         .sheet(isPresented: $showPalette) {
@@ -97,8 +97,8 @@ struct MainWindowView: View {
                     showPalette = false
                 }
             )
-            .environmentObject(db)
-            .environmentObject(indexer)
+            .environment(db)
+            .environment(indexer)
             .frame(width: 480, height: 360)
         }
     }

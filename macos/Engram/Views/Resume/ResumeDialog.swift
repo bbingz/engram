@@ -3,7 +3,7 @@ import SwiftUI
 
 struct ResumeDialog: View {
     let session: Session
-    @EnvironmentObject var indexer: IndexerProcess
+    @Environment(IndexerProcess.self) var indexer
     @Environment(\.dismiss) var dismiss
     @State private var resumeResult: ResumeInfo?
     @State private var isLoading = true

@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct AgentsView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var agentSessions: [Session] = []
     @State private var isLoading = true
 

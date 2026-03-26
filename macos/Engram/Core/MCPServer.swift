@@ -5,8 +5,9 @@ import NIOCore
 import Logging
 
 @MainActor
-class MCPServer: ObservableObject {
-    @Published var isRunning = false
+@Observable
+final class MCPServer {
+    var isRunning = false
 
     private let tools: MCPTools
     private let port: Int

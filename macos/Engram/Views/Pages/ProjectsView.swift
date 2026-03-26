@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct ProjectsView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
     @State private var selectedProject: DatabaseManager.ProjectGroup? = nil
     @State private var isLoading = true

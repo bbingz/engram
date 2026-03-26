@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct ActivityView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var dailyActivity: [(date: String, count: Int)] = []
     @State private var hourlyActivity: [Int] = Array(repeating: 0, count: 24)
     @State private var sourceDist: [(source: String, count: Int)] = []

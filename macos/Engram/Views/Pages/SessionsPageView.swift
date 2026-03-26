@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct SessionsPageView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
 
     @State private var sessions: [Session] = []
     @State private var totalCount = 0

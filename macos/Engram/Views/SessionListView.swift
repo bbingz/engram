@@ -1,9 +1,8 @@
 // macos/Engram/Views/SessionListView.swift
 import SwiftUI
-import Combine
 
 struct SessionListView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @Binding var deepLinkSession: Session?
 
     // MARK: - Persisted state
@@ -29,7 +28,7 @@ struct SessionListView: View {
     /// Cached session to hold detail panel steady during reloads
     @State private var lastSelectedSession: Session?
 
-    @StateObject private var columnStore = ColumnVisibilityStore()
+    @State private var columnStore = ColumnVisibilityStore()
 
     // MARK: - Derived bindings
 

@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct HooksView: View {
-    @EnvironmentObject var daemonClient: DaemonClient
+    @Environment(DaemonClient.self) var daemonClient
     @State private var hooks: [HookInfo] = []
     @State private var isLoading = true
     @State private var error: String? = nil

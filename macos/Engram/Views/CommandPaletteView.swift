@@ -5,8 +5,8 @@ struct CommandPaletteView: View {
     let onNavigate: (Screen) -> Void
     let onSelectSession: (String) -> Void
 
-    @EnvironmentObject var db: DatabaseManager
-    @EnvironmentObject var indexer: IndexerProcess
+    @Environment(DatabaseManager.self) var db
+    @Environment(IndexerProcess.self) var indexer
 
     @State private var query = ""
     @State private var sessionResults: [SessionHit] = []

@@ -37,8 +37,8 @@ enum AppTab: Int, CaseIterable {
 }
 
 struct ContentView: View {
-    @EnvironmentObject var db: DatabaseManager
-    @EnvironmentObject var indexer: IndexerProcess
+    @Environment(DatabaseManager.self) var db
+    @Environment(IndexerProcess.self) var indexer
     @State private var selectedTab: AppTab = .sessions
     @State private var deepLinkSession: Session?
 

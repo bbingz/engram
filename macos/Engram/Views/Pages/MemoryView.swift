@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct MemoryView: View {
-    @EnvironmentObject var daemonClient: DaemonClient
+    @Environment(DaemonClient.self) var daemonClient
     @State private var memoryFiles: [MemoryFile] = []
     @State private var searchText = ""
     @State private var selectedFile: MemoryFile? = nil

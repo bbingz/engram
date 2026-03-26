@@ -4,7 +4,7 @@ import SwiftUI
 struct RepoDetailView: View {
     let repo: GitRepo
     let onBack: () -> Void
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var claudeMdContent: String?
     @State private var relatedSessions: [Session] = []
 

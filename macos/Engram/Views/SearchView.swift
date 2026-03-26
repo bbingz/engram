@@ -22,7 +22,7 @@ struct SearchResult: Identifiable {
 }
 
 struct SearchView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var query = ""
     @State private var results: [SearchResult] = []
     @State private var searchModes: [String] = []

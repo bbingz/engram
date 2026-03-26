@@ -3,7 +3,7 @@ import SwiftUI
 
 struct GlobalSearchOverlay: View {
     @Binding var isVisible: Bool
-    @EnvironmentObject var indexer: IndexerProcess
+    @Environment(IndexerProcess.self) var indexer
     @State private var query = ""
     @State private var results: [SearchHit] = []
     @State private var isSearching = false

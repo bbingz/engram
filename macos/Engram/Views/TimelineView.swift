@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct TimelineView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var sessions: [Session] = []
     @State private var timeGroups: [(date: String, sessions: [Session])] = []
     @State private var agentFilter: Bool? = false   // default: hide agents

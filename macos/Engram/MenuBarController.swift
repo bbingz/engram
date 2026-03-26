@@ -1,6 +1,7 @@
 // macos/Engram/MenuBarController.swift
 import AppKit
 import SwiftUI
+import Observation
 
 @MainActor
 class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
@@ -32,9 +33,9 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         popover.contentViewController = NSHostingController(
             rootView: PopoverView()
-                .environmentObject(db)
-                .environmentObject(indexer)
-                .environmentObject(daemonClient)
+                .environment(db)
+                .environment(indexer)
+                .environment(daemonClient)
         )
 
         super.init()
@@ -53,14 +54,9 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
 
         // Update badge: total sessions + live count (consolidated, 10s poll)
-        Task { @MainActor in
-            // Initial badge
-            self.updateBadge()
-            // Re-update whenever totalSessions changes
-            for await _ in indexer.$totalSessions.values {
-                self.updateBadge()
-            }
-        }
+        self.updateBadge()
+        // Re-update whenever totalSessions changes (Observation framework)
+        self.observeTotalSessions()
 
         // Poll live sessions every 10s for badge update
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
@@ -172,9 +168,9 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         let hostingController = NSHostingController(
             rootView: SettingsView()
-                .environmentObject(db)
-                .environmentObject(indexer)
-                .environmentObject(daemonClient)
+                .environment(db)
+                .environment(indexer)
+                .environment(daemonClient)
         )
 
         let win = NSWindow(contentViewController: hostingController)
@@ -227,9 +223,9 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         let hostingController = NSHostingController(
             rootView: MainWindowView()
-                .environmentObject(db)
-                .environmentObject(indexer)
-                .environmentObject(daemonClient)
+                .environment(db)
+                .environment(indexer)
+                .environment(daemonClient)
         )
 
         let win = NSWindow(contentViewController: hostingController)
@@ -274,6 +270,19 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 if !keepDock {
                     NSApp.setActivationPolicy(.accessory)
                 }
+            }
+        }
+    }
+
+    // MARK: - Observation
+
+    private func observeTotalSessions() {
+        withObservationTracking {
+            _ = indexer.totalSessions
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.updateBadge()
+                self?.observeTotalSessions()
             }
         }
     }

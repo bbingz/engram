@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct TimelinePageView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var timeline: [(date: String, sessions: [Session])] = []
     @State private var isLoading = true
 

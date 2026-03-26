@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SessionReplayView: View {
     let sessionId: String
-    @EnvironmentObject var daemonClient: DaemonClient
+    @Environment(DaemonClient.self) var daemonClient
     @State private var replayState = ReplayState()
 
     var body: some View {

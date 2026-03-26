@@ -2,8 +2,8 @@
 import SwiftUI
 
 struct SourcePulseView: View {
-    @EnvironmentObject var db: DatabaseManager
-    @EnvironmentObject var daemonClient: DaemonClient
+    @Environment(DatabaseManager.self) var db
+    @Environment(DaemonClient.self) var daemonClient
 
     @State private var sources: [SourceInfo] = []
     @State private var sourceDist: [(source: String, count: Int)] = []

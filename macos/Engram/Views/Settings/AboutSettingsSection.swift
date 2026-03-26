@@ -28,7 +28,7 @@ struct AboutSettingsSection: View {
 // MARK: - Database Info
 
 struct DatabaseInfoView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var dbSize: String = "..."
     @State private var sessionCount: String = "..."
     private let dbPath = FileManager.default.homeDirectoryForCurrentUser

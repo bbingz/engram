@@ -2,8 +2,8 @@
 import SwiftUI
 
 struct PopoverView: View {
-    @EnvironmentObject var db: DatabaseManager
-    @EnvironmentObject var indexer: IndexerProcess
+    @Environment(DatabaseManager.self) var db
+    @Environment(IndexerProcess.self) var indexer
 
     @State private var sourceCount = 0
     @State private var projectCount = 0

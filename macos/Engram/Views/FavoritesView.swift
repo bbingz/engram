@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct FavoritesView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var sessions: [Session] = []
 
     var body: some View {

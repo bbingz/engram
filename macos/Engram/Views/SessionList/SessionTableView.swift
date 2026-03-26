@@ -6,7 +6,7 @@ struct SessionTableView: View {
     let sessions: [Session]
     @Binding var selectedSessionId: String?
     @Binding var sortOrder: [KeyPathComparator<Session>]
-    @ObservedObject var columns: ColumnVisibilityStore
+    var columns: ColumnVisibilityStore
 
     let favoriteIds: Set<String>
     var onToggleFavorite: ((String, Bool) -> Void)?

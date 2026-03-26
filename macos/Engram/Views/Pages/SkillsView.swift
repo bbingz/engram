@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct SkillsView: View {
-    @EnvironmentObject var daemonClient: DaemonClient
+    @Environment(DaemonClient.self) var daemonClient
     @State private var skills: [SkillInfo] = []
     @State private var searchText = ""
     @State private var isLoading = true

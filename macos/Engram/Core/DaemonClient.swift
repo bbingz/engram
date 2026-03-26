@@ -2,7 +2,7 @@
 import Foundation
 
 @MainActor
-class DaemonClient: ObservableObject {
+final class DaemonClient {
     private let baseURL: String
     private let bearerToken: String?
     private let session: URLSession

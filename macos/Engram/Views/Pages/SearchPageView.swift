@@ -2,8 +2,8 @@
 import SwiftUI
 
 struct SearchPageView: View {
-    @EnvironmentObject var db: DatabaseManager
-    @EnvironmentObject var daemonClient: DaemonClient
+    @Environment(DatabaseManager.self) var db
+    @Environment(DaemonClient.self) var daemonClient
 
     @State private var query = ""
     @State private var selectedMode: SearchMode = .hybrid

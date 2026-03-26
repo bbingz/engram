@@ -3,7 +3,7 @@ import SwiftUI
 import GRDB
 
 struct TraceExplorerView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var traces: [TraceEntry] = []
     @State private var nameFilter: String = ""
     @State private var expandedTraceId: Int64? = nil

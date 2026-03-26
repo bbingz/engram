@@ -3,7 +3,7 @@ import SwiftUI
 import GRDB
 
 struct LogStreamView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var logs: [LogEntry] = []
     @State private var selectedLevel: String = "All"
     @State private var selectedModule: String = "All"

@@ -3,7 +3,7 @@ import SwiftUI
 import GRDB
 
 struct PerformanceView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var hourlyMetrics: [HourlyMetric] = []
     @State private var slowTraces: [TraceEntry] = []
     @State private var isLoading = true

@@ -151,7 +151,7 @@ struct CodeBlockView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(code, forType: .string)
                     copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                    Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
                 } label: {
                     HStack(spacing: 3) {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc")

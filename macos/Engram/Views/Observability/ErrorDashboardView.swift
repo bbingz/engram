@@ -3,7 +3,7 @@ import SwiftUI
 import GRDB
 
 struct ErrorDashboardView: View {
-    @EnvironmentObject var db: DatabaseManager
+    @Environment(DatabaseManager.self) var db
     @State private var totalErrors24h = 0
     @State private var errorsByModule: [(module: String, count: Int)] = []
     @State private var recentErrors: [LogEntry] = []

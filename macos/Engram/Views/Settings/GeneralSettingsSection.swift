@@ -9,7 +9,7 @@ struct GeneralSettingsSection: View {
     @AppStorage("httpPort") var httpPort: Int = 3456
     @AppStorage("nodejsPath") var nodejsPath: String = "/usr/local/bin/node"
 
-    @EnvironmentObject var indexer: IndexerProcess
+    @Environment(IndexerProcess.self) var indexer
 
     @State private var noiseFilter: String = "hide-skip"
 
