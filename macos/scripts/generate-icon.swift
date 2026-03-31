@@ -66,8 +66,12 @@ for size in sizes {
             exit(1)
         }
 
-        try! pngData.write(to: URL(fileURLWithPath: path))
-        print("Generated: \(filename)")
+        do {
+            try pngData.write(to: URL(fileURLWithPath: path))
+            print("Generated: \(filename)")
+        } catch {
+            print("Failed to write \(filename): \(error)")
+        }
     }
 }
 

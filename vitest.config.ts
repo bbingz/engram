@@ -4,14 +4,15 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    include: ['tests/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       include: ['src/**'],
-      exclude: ['src/cli/index.ts', 'src/cli/resume.ts', 'src/daemon.ts'],
+      exclude: ['src/cli/index.ts', 'src/cli/resume.ts'],
       thresholds: {
-        lines: 60,
-        branches: 50,
-        functions: 55,
+        lines: 75,
+        branches: 65,
+        functions: 70,
       },
       reporter: ['text', 'lcov'],
     },

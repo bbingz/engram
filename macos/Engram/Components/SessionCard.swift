@@ -1,6 +1,12 @@
 // macos/Engram/Components/SessionCard.swift
 import SwiftUI
 
+private let isoFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
 struct SessionCard: View {
     let session: Session
     var onTap: (() -> Void)? = nil
@@ -48,9 +54,7 @@ struct SessionCard: View {
     }
 
     private func relativeTime(_ iso: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else {
+        guard let date = isoFormatter.date(from: iso) else {
             return ""
         }
         let seconds = Int(-date.timeIntervalSinceNow)

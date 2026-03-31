@@ -120,6 +120,8 @@ export function createApp(db: Database, opts?: {
       try {
         const url = new URL(origin)
         const isLocal = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
+        // SECURITY: Allows any localhost port — acceptable for local dev tool.
+        // For production deployments, bind to specific interface and use bearer auth.
         if (!isLocal) {
           return c.text('CORS rejected', 403)
         }

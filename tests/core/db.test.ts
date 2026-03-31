@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Database, isTierHidden, containsCJK, SCHEMA_VERSION } from '../../src/core/db.js'
 import type { SessionInfo } from '../../src/adapters/types.js'
+import type { AuthoritativeSessionSnapshot } from '../../src/core/session-snapshot.js'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -186,7 +187,7 @@ describe('Database', () => {
   })
 
   it('upserts and reads authoritative snapshots with revision metadata', () => {
-    db.upsertAuthoritativeSnapshot({
+    const snapshot: AuthoritativeSessionSnapshot = {
       id: 'sess-1',
       source: 'codex',
       authoritativeNode: 'node-a',
@@ -201,13 +202,14 @@ describe('Database', () => {
       assistantMessageCount: 2,
       toolMessageCount: 0,
       systemMessageCount: 0,
-    } as any)
+    }
+    db.upsertAuthoritativeSnapshot(snapshot)
 
     expect(db.getAuthoritativeSnapshot('sess-1')?.syncVersion).toBe(2)
   })
 
   it('creates durable jobs from a change set', () => {
-    db.upsertAuthoritativeSnapshot({
+    const snapshot: AuthoritativeSessionSnapshot = {
       id: 'sess-1',
       source: 'codex',
       authoritativeNode: 'node-a',
@@ -222,7 +224,8 @@ describe('Database', () => {
       assistantMessageCount: 2,
       toolMessageCount: 0,
       systemMessageCount: 0,
-    } as any)
+    }
+    db.upsertAuthoritativeSnapshot(snapshot)
 
     db.insertIndexJobs('sess-1', 2, ['fts', 'embedding'])
     expect(db.listIndexJobs('sess-1').map(j => j.jobKind).sort()).toEqual(['embedding', 'fts'])

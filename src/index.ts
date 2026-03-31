@@ -128,6 +128,86 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 let heartbeat = () => {} // assigned after transport connects
 
+// --- Tool Registry Pattern (replaces 95-line if/else chain) ---
+
+type ToolHandler = (args: Record<string, unknown>) => Promise<unknown> | unknown
+
+const toolRegistry = new Map<string, ToolHandler>()
+
+toolRegistry.set('list_sessions', (a) => handleListSessions(db, a, { log }))
+toolRegistry.set('project_timeline', (a) => handleProjectTimeline(db, a as { project: string }, { log }))
+toolRegistry.set('stats', (a) => handleStats(db, a, { log }))
+toolRegistry.set('link_sessions', (a) => handleLinkSessions(db, a as { targetDir: string }, { log }))
+toolRegistry.set('get_costs', (a) => handleGetCosts(db, a as { group_by?: string; since?: string; until?: string }, { log }))
+toolRegistry.set('tool_analytics', (a) => handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string }, { log }))
+toolRegistry.set('live_sessions', () => handleLiveSessions(null, { log }))
+toolRegistry.set('file_activity', (a) => handleFileActivity(db, a as { project?: string; since?: string; limit?: number }, { log }))
+
+toolRegistry.set('get_session', async (a) => {
+  const session = db.getSession(a.id as string)
+  if (!session) return { _early: true, content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true }
+  const adapter = adapterMap[session.source]
+  if (!adapter) return { _early: true, content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true }
+  return handleGetSession(db, adapter, a as { id: string; page?: number; roles?: string[] }, { log })
+})
+
+toolRegistry.set('export', async (a) => {
+  const session = db.getSession(a.id as string)
+  if (!session) return { _early: true, content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true }
+  const adapter = adapterMap[session.source]
+  if (!adapter) return { _early: true, content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true }
+  return handleExport(db, adapter, a as { id: string; format?: string }, { log })
+})
+
+toolRegistry.set('search', async (a) => {
+  const sDeps: SearchDeps = {
+    ...(vecDeps ? { vectorStore: vecDeps.vectorStore, embed: (text: string) => vecDeps.embeddingClient.embed(text) } : {}),
+    viking: vikingBridge,
+    log,
+    tracer,
+  }
+  return handleSearch(db, a as { query: string; mode?: string }, sDeps)
+})
+
+toolRegistry.set('get_context', async (a) => {
+  const ctxDeps: GetContextDeps = { ...vectorDeps, viking: vikingBridge, log }
+  const ctx = await handleGetContext(db, a as { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full'; sort_by?: 'recency' | 'score'; include_environment?: boolean }, ctxDeps)
+  return { _early: true, content: [{ type: 'text', text: ctx.contextText }] }
+})
+
+toolRegistry.set('generate_summary', async (a) => {
+  return { _early: true, ...(await handleGenerateSummary(db, a as { sessionId: string }, { log })) }
+})
+
+toolRegistry.set('manage_project_alias', async (a) => {
+  const action = a.action as string
+  if (action === 'list') return db.listProjectAliases()
+  if (action === 'add') {
+    if (!a.old_project || !a.new_project) return { _early: true, content: [{ type: 'text', text: 'old_project and new_project required' }], isError: true }
+    db.addProjectAlias(a.old_project as string, a.new_project as string)
+    return { added: { alias: a.old_project, canonical: a.new_project } }
+  }
+  if (action === 'remove') {
+    if (!a.old_project || !a.new_project) return { _early: true, content: [{ type: 'text', text: 'old_project and new_project required' }], isError: true }
+    db.removeProjectAlias(a.old_project as string, a.new_project as string)
+    return { removed: { alias: a.old_project, canonical: a.new_project } }
+  }
+  return { _early: true, content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true }
+})
+
+toolRegistry.set('get_memory', async (a) => handleGetMemory(a as { query: string }, { viking: vikingBridge, log }))
+
+toolRegistry.set('handoff', async (a) => handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' }, adapters, { log }))
+
+toolRegistry.set('lint_config', async (a) => {
+  if (!a.cwd) return { _early: true, content: [{ type: 'text', text: 'cwd parameter required' }], isError: true }
+  return handleLintConfig({ cwd: a.cwd as string }, { log })
+})
+
+toolRegistry.set('get_insights', async (a) => {
+  return { _early: true, ...(await handleGetInsights(db, fileSettings, a as { since?: string })) }
+})
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   heartbeat()
   const { name, arguments: args } = request.params
@@ -137,86 +217,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return runWithContext({ requestId, source: 'mcp' }, async () => {
     const span = tracer.startSpan(`tool.${name}`, 'mcp')
     try {
-      let result: unknown
-
-      if (name === 'list_sessions') {
-        result = await handleListSessions(db, a, { log })
-      } else if (name === 'get_session') {
-        const session = db.getSession(a.id as string)
-        if (!session) { span.setAttribute('tool_error', 'session_not_found'); span.end(); return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true } }
-        const adapter = adapterMap[session.source]
-        if (!adapter) { span.setAttribute('tool_error', 'unsupported_source'); span.end(); return { content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true } }
-        result = await handleGetSession(db, adapter, a as { id: string; page?: number; roles?: string[] }, { log })
-      } else if (name === 'search') {
-        const sDeps: SearchDeps = {
-          ...(vecDeps ? { vectorStore: vecDeps.vectorStore, embed: (text: string) => vecDeps.embeddingClient.embed(text) } : {}),
-          viking: vikingBridge,
-          log,
-          tracer,
-        }
-        result = await handleSearch(db, a as { query: string; mode?: string }, sDeps)
-      } else if (name === 'project_timeline') {
-        result = await handleProjectTimeline(db, a as { project: string }, { log })
-      } else if (name === 'stats') {
-        result = await handleStats(db, a, { log })
-      } else if (name === 'get_context') {
-        const ctxDeps: GetContextDeps = { ...vectorDeps, viking: vikingBridge, log }
-        const ctx = await handleGetContext(db, a as { cwd: string; task?: string; max_tokens?: number; detail?: 'abstract' | 'overview' | 'full'; sort_by?: 'recency' | 'score'; include_environment?: boolean }, ctxDeps)
-        span.end()
-        return { content: [{ type: 'text', text: ctx.contextText }] }
-      } else if (name === 'export') {
-        const session = db.getSession(a.id as string)
-        if (!session) { span.setAttribute('tool_error', 'session_not_found'); span.end(); return { content: [{ type: 'text', text: `Session not found: ${a.id}` }], isError: true } }
-        const adapter = adapterMap[session.source]
-        if (!adapter) { span.setAttribute('tool_error', 'unsupported_source'); span.end(); return { content: [{ type: 'text', text: `Unsupported source: ${session.source}` }], isError: true } }
-        result = await handleExport(db, adapter, a as { id: string; format?: string }, { log })
-      } else if (name === 'generate_summary') {
-        const summaryResult = await handleGenerateSummary(db, a as { sessionId: string }, { log })
-        span.end()
-        return summaryResult
-      } else if (name === 'manage_project_alias') {
-        const action = a.action as string
-        if (action === 'list') {
-          result = db.listProjectAliases()
-        } else if (action === 'add') {
-          if (!a.old_project || !a.new_project) { span.setAttribute('tool_error', 'missing_params'); span.end(); return { content: [{ type: 'text', text: 'old_project and new_project required' }], isError: true } }
-          db.addProjectAlias(a.old_project as string, a.new_project as string)
-          result = { added: { alias: a.old_project, canonical: a.new_project } }
-        } else if (action === 'remove') {
-          if (!a.old_project || !a.new_project) { span.setAttribute('tool_error', 'missing_params'); span.end(); return { content: [{ type: 'text', text: 'old_project and new_project required' }], isError: true } }
-          db.removeProjectAlias(a.old_project as string, a.new_project as string)
-          result = { removed: { alias: a.old_project, canonical: a.new_project } }
-        } else {
-          span.setAttribute('tool_error', 'unknown_action'); span.end()
-          return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true }
-        }
-      } else if (name === 'link_sessions') {
-        result = await handleLinkSessions(db, a as { targetDir: string }, { log })
-      } else if (name === 'get_memory') {
-        result = await handleGetMemory(a as { query: string }, { viking: vikingBridge, log })
-      } else if (name === 'get_costs') {
-        result = handleGetCosts(db, a as { group_by?: string; since?: string; until?: string }, { log })
-      } else if (name === 'tool_analytics') {
-        result = handleToolAnalytics(db, a as { project?: string; since?: string; group_by?: string }, { log })
-      } else if (name === 'handoff') {
-        result = await handleHandoff(db, a as { cwd: string; sessionId?: string; format?: 'markdown' | 'plain' }, adapters, { log })
-      } else if (name === 'live_sessions') {
-        result = handleLiveSessions(null, { log }) // No live monitor in MCP server mode
-      } else if (name === 'lint_config') {
-        if (!a.cwd) { span.setAttribute('tool_error', 'missing_cwd'); span.end(); return { content: [{ type: 'text', text: 'cwd parameter required' }], isError: true } }
-        result = await handleLintConfig({ cwd: a.cwd as string }, { log })
-      } else if (name === 'file_activity') {
-        result = handleFileActivity(db, a as { project?: string; since?: string; limit?: number }, { log })
-      } else if (name === 'get_insights') {
-        const insightsResult = await handleGetInsights(db, fileSettings, a as { since?: string })
-        span.end()
-        return insightsResult
-      } else {
+      const handler = toolRegistry.get(name)
+      if (!handler) {
         span.setAttribute('tool_error', 'unknown_tool'); span.end()
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
       }
 
+      const result = await handler(a)
       span.end()
+
+      // Check for early return (tools that already formatted their response)
+      if ((result as { _early?: boolean })._early) {
+        const { _early, ...response } = result as Record<string, unknown> & { _early: boolean }
+        return response
+      }
+
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (err) {
       span.setError(err as Error)

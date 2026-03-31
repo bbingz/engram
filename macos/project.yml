@@ -4,7 +4,7 @@ options:
   bundleIdPrefix: com.engram
   deploymentTarget:
     macOS: "14.0"
-  xcodeVersion: "15.0"
+  xcodeVersion: "16.0"
   createIntermediateGroups: true
   defaultLocalization: en
 
@@ -105,7 +105,7 @@ targets:
       - path: EngramUITests
         excludes:
           - "baselines/**"
-      - path: ../test-fixtures
+      - path: ../tests/fixtures
         type: folder
         buildPhase: resources
     dependencies:
@@ -131,3 +131,9 @@ schemes:
         - EngramTests
         - EngramUITests
       environmentVariables: []
+  EngramCLI:
+    build:
+      targets:
+        EngramCLI: all
+    run:
+      config: Debug

@@ -240,6 +240,7 @@ struct PopoverView: View {
         let now = Date()
         let oneDaySec: TimeInterval = 86400
         let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let active = stats.filter { s in
             guard !s.latestIndexed.isEmpty, let d = fmt.date(from: s.latestIndexed) else { return false }
             return now.timeIntervalSince(d) < oneDaySec

@@ -6,10 +6,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MACOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SCHEME="CodingMemory"
-PROJECT="$MACOS_DIR/CodingMemory.xcodeproj"
-ARCHIVE_PATH="$MACOS_DIR/build/CodingMemory.xcarchive"
-EXPORT_PATH="$MACOS_DIR/build/CodingMemoryExport"
+SCHEME="Engram"
+PROJECT="$MACOS_DIR/Engram.xcodeproj"
+ARCHIVE_PATH="$MACOS_DIR/build/Engram.xcarchive"
+EXPORT_PATH="$MACOS_DIR/build/EngramExport"
 
 echo "======================================"
 echo " CodingMemory Release Build"
@@ -31,9 +31,9 @@ if [[ -z "$TEAM_ID" || "$TEAM_ID" == "REPLACE_TEAM_ID" ]]; then
   exit 1
 fi
 
-# 1. Clean DerivedData for CodingMemory
+# 1. Clean DerivedData for Engram
 echo "[1/4] Cleaning DerivedData..."
-rm -rf ~/Library/Developer/Xcode/DerivedData/CodingMemory-*
+rm -rf ~/Library/Developer/Xcode/DerivedData/Engram-*
 echo "      Done."
 echo ""
 
@@ -66,7 +66,7 @@ echo ""
 
 echo "======================================"
 echo " Build complete!"
-echo " Exported app: $EXPORT_PATH/CodingMemory.app"
+echo " Exported app: $EXPORT_PATH/Engram.app"
 echo "======================================"
 echo ""
 
@@ -75,26 +75,26 @@ echo " Next steps (run manually):"
 echo "--------------------------------------"
 echo ""
 echo "# 1. Notarize the app:"
-echo "ditto -c -k --keepParent \"$EXPORT_PATH/CodingMemory.app\" \\"
-echo "    \"$EXPORT_PATH/CodingMemory.zip\""
-echo "xcrun notarytool submit \"$EXPORT_PATH/CodingMemory.zip\" \\"
+echo "ditto -c -k --keepParent \"$EXPORT_PATH/Engram.app\" \\"
+echo "    \"$EXPORT_PATH/Engram.zip\""
+echo "xcrun notarytool submit \"$EXPORT_PATH/Engram.zip\" \\"
 echo "  --apple-id \"YOUR_APPLE_ID\" \\"
 echo "  --team-id \"YOUR_TEAM_ID\" \\"
 echo "  --password \"YOUR_APP_SPECIFIC_PASSWORD\" \\"
 echo "  --wait"
 echo ""
 echo "# 2. Staple the notarization ticket:"
-echo "xcrun stapler staple \"$EXPORT_PATH/CodingMemory.app\""
+echo "xcrun stapler staple \"$EXPORT_PATH/Engram.app\""
 echo ""
 echo "# 3. Create a DMG for distribution (requires: brew install create-dmg):"
 echo "create-dmg \\"
-echo "  --volname \"CodingMemory\" \\"
+echo "  --volname \"Engram\" \\"
 echo "  --window-pos 200 120 \\"
 echo "  --window-size 800 400 \\"
 echo "  --icon-size 100 \\"
-echo "  --icon \"CodingMemory.app\" 200 190 \\"
-echo "  --hide-extension \"CodingMemory.app\" \\"
+echo "  --icon \"Engram.app\" 200 190 \\"
+echo "  --hide-extension \"Engram.app\" \\"
 echo "  --app-drop-link 600 185 \\"
-echo "  \"CodingMemory.dmg\" \\"
+echo "  \"Engram.dmg\" \\"
 echo "  \"$EXPORT_PATH/\""
 echo ""

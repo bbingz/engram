@@ -1,6 +1,12 @@
 // macos/Engram/Views/Pages/ProjectsView.swift
 import SwiftUI
 
+private let isoFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
 struct ProjectsView: View {
     @Environment(DatabaseManager.self) var db
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
@@ -9,9 +15,8 @@ struct ProjectsView: View {
 
     private var activeCount: Int {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        let formatter = ISO8601DateFormatter()
         return projectGroups.filter { group in
-            guard let date = formatter.date(from: group.lastActive) else { return false }
+            guard let date = isoFormatter.date(from: group.lastActive) else { return false }
             return date > weekAgo
         }.count
     }

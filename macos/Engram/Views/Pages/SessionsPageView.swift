@@ -1,6 +1,12 @@
 // macos/Engram/Views/Pages/SessionsPageView.swift
 import SwiftUI
 
+private let isoFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
 struct SessionsPageView: View {
     @Environment(DatabaseManager.self) var db
 
@@ -99,10 +105,9 @@ struct SessionsPageView: View {
     private var avgDuration: String {
         let sessionsWithEnd = sessions.filter { $0.endTime != nil }
         guard !sessionsWithEnd.isEmpty else { return "—" }
-        let formatter = ISO8601DateFormatter()
         let totalSeconds = sessionsWithEnd.compactMap { s -> TimeInterval? in
-            guard let start = formatter.date(from: s.startTime),
-                  let end = s.endTime.flatMap({ formatter.date(from: $0) }) else { return nil }
+            guard let start = isoFormatter.date(from: s.startTime),
+                  let end = s.endTime.flatMap({ isoFormatter.date(from: $0) }) else { return nil }
             return end.timeIntervalSince(start)
         }.reduce(0, +)
         let avg = totalSeconds / Double(sessionsWithEnd.count)

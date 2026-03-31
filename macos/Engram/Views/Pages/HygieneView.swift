@@ -213,7 +213,7 @@ struct HygieneView: View {
     // MARK: - Helpers
 
     private func formatRelativeTime(_ iso: String) -> String {
-        let formatter = ISO8601DateFormatter()
+        var formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var date = formatter.date(from: iso)
         if date == nil {

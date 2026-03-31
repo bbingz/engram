@@ -104,7 +104,7 @@ export class MetricsCollector {
         tags
       FROM metrics
       GROUP BY name, type, substr(ts, 1, 13), tags
-    `).all() as any[]
+    `).all() as { name: string; type: string; hour: string; count: number; sum: number; min: number; max: number; tags: string | null }[]
 
     if (rows.length === 0) return
 
@@ -113,15 +113,25 @@ export class MetricsCollector {
       VALUES (@name, @type, @hour, @count, @sum, @min, @max, @p95, @tags)
     `)
 
-    const transaction = this.db.transaction((rollupRows: any[]) => {
-      for (const row of rollupRows) {
-        // Compute p95 for this name+hour+tags group
-        const values = this.db.prepare(
-          `SELECT value FROM metrics WHERE name = ? AND substr(ts, 1, 13) = ? AND (tags IS ? OR tags = ?) ORDER BY value`
-        ).all(row.name, row.hour, row.tags, row.tags) as { value: number }[]
+    // Fetch all raw values in a single query, keyed by group for p95 computation
+    const allValues = this.db.prepare(
+      `SELECT name, substr(ts, 1, 13) as hour, tags, value FROM metrics ORDER BY name, hour, tags, value`
+    ).all() as { name: string; hour: string; tags: string | null; value: number }[]
 
+    const valuesByGroup = new Map<string, number[]>()
+    for (const v of allValues) {
+      const key = `${v.name}||${v.hour}||${v.tags ?? 'NULL'}`
+      let arr = valuesByGroup.get(key)
+      if (!arr) { arr = []; valuesByGroup.set(key, arr) }
+      arr.push(v.value)
+    }
+
+    const transaction = this.db.transaction(() => {
+      for (const row of rows) {
+        const key = `${row.name}||${row.hour}||${row.tags ?? 'NULL'}`
+        const values = valuesByGroup.get(key) ?? []
         const p95Index = Math.floor(values.length * 0.95)
-        const p95 = values.length > 0 ? values[Math.min(p95Index, values.length - 1)].value : null
+        const p95 = values.length > 0 ? values[Math.min(p95Index, values.length - 1)] : null
 
         insertRollup.run({
           name: row.name,
@@ -137,7 +147,7 @@ export class MetricsCollector {
       }
     })
 
-    transaction(rows)
+    transaction()
   }
 
   rotate(hours: number): void {

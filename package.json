@@ -7,6 +7,9 @@
   "bin": {
     "engram": "dist/cli/index.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
