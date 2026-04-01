@@ -178,8 +178,24 @@ struct CommandPaletteView: View {
         guard !query.isEmpty, let port = indexer.port else { return }
         isSearching = true
         Task {
-            let hits = await SearchService.shared.searchSessions(query: query, port: port)
-            sessionResults = hits.map { SessionHit(id: $0.id, title: $0.title, snippet: $0.snippet, date: $0.date) }
+            do {
+                let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+                let url = URL(string: "http://127.0.0.1:\(port)/api/search?q=\(encoded)&limit=10")!
+                let (data, _) = try await URLSession.shared.data(from: url)
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let rawResults = json["results"] as? [[String: Any]] {
+                    sessionResults = rawResults.compactMap { r in
+                        guard let session = r["session"] as? [String: Any],
+                              let id = session["id"] as? String else { return nil }
+                        return SessionHit(
+                            id: id,
+                            title: (session["generatedTitle"] as? String) ?? (session["summary"] as? String) ?? (session["project"] as? String) ?? "Untitled",
+                            snippet: (r["snippet"] as? String) ?? "",
+                            date: (session["startTime"] as? String).map { String($0.prefix(10)) } ?? ""
+                        )
+                    }
+                }
+            } catch {}
             isSearching = false
         }
     }

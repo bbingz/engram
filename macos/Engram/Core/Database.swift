@@ -19,13 +19,6 @@ enum GroupingMode: String, CaseIterable {
     case source = "Source"
 }
 
-/// Shared sub-agent filter builder — eliminates 6x duplication across query methods
-private func subAgentFilterClause(_ subAgent: Bool) -> String {
-    subAgent
-        ? "AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')"
-        : "AND (tier IS NULL OR tier != 'skip')"
-}
-
 @MainActor
 @Observable
 final class DatabaseManager {
@@ -104,7 +97,8 @@ final class DatabaseManager {
             }
             if let since { parts.append("AND start_time >= ?"); args.append(since) }
             if let subAgent {
-                parts.append(subAgentFilterClause(subAgent))
+                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
             parts.append("ORDER BY \(sort.rawValue) LIMIT ? OFFSET ?")
             args.append(limit); args.append(offset)
@@ -182,7 +176,8 @@ final class DatabaseManager {
                 args  = []
             }
             if let subAgent {
-                parts.append(subAgentFilterClause(subAgent))
+                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
             parts.append("ORDER BY start_time DESC LIMIT ?")
             args.append(limit)
@@ -218,7 +213,329 @@ final class DatabaseManager {
                 projects.forEach { args.append($0) }
             }
             if let subAgent {
-                parts.append(subAgentFilterClause(subAgent))
+                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
+            }
+            return try Int.fetchOne(db, sql: parts.joined(separator: " "),
+                                    arguments: StatementArguments(args)) ?? 0
+        }
+    }
+
+    // MARK: - search (FTS5 trigram)
+
+    /// SQLite trigram tokenizer uses byte-level 3-byte windows — CJK chars (3 bytes each)
+    /// produce cross-character garbage trigrams. Detect CJK and fall back to LIKE.
+    private static func containsCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { s in
+            (0x2E80...0x9FFF).contains(s.value) ||
+            (0xF900...0xFAFF).contains(s.value) ||
+            (0xFE30...0xFE4F).contains(s.value)
+        }
+    }
+
+    func search(query: String, limit: Int = 10) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        guard query.count >= 2 else { return [] }
+
+        // CJK: use LIKE fallback (trigram MATCH broken for CJK)
+        if Self.containsCJK(query) {
+            return try pool.read { db in
+                try Session.fetchAll(db, sql: """
+                    SELECT DISTINCT s.* FROM sessions_fts f
+                    JOIN sessions s ON s.id = f.session_id
+                    WHERE f.content LIKE ? AND s.hidden_at IS NULL
+                    ORDER BY s.start_time DESC
+                    LIMIT ?
+                """, arguments: ["%\(query)%", limit])
+            }
+        }
+
+        // ASCII/Latin: use fast FTS MATCH
+        guard query.count >= 3 else { return [] }
+        return try pool.read { db in
+            let matches = try FtsMatch.fetchAll(db,
+                sql: "SELECT session_id, content FROM sessions_fts WHERE sessions_fts MATCH ? ORDER BY rank LIMIT ?",
+                arguments: [query, limit * 3])
+            var seen = Set<String>()
+            var results: [Session] = []
+            for match in matches {
+                guard !seen.contains(match.sessionId) else { continue }
+                seen.insert(match.sessionId)
+                if let s = try Session.fetchOne(db,
+                    sql: "SELECT * FROM sessions WHERE id = ? AND hidden_at IS NULL",
+                    arguments: [match.sessionId]) {
+                    results.append(s)
+                    if results.count >= limit { break }
+                }
+            }
+            return results
+        }
+    }
+
+    // MARK: - project_timeline
+    func projectTimeline(project: String? = nil) throws -> [TimelineEntry] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            var sql = """
+                SELECT project, COUNT(*) as session_count, MAX(start_time) as last_updated
+                FROM sessions
+                WHERE hidden_at IS NULL
+                """
+            var args: [DatabaseValueConvertible] = []
+            if let project {
+                sql += " AND project LIKE ?"
+                args.append("%\(project)%")
+            }
+            sql += " GROUP BY project ORDER BY last_updated DESC"
+            return try TimelineEntry.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+        }
+    }
+
+    // MARK: - stats
+    struct StatsResult {
+        let totalSessions: Int
+        let totalMessages: Int
+        let bySource: [String: Int]
+    }
+
+    func stats() throws -> StatsResult {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let total    = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL") ?? 0
+            let messages = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(message_count), 0) FROM sessions WHERE hidden_at IS NULL") ?? 0
+            let counts   = try SourceCount.fetchAll(db,
+                sql: "SELECT source, COUNT(*) as count FROM sessions WHERE hidden_at IS NULL GROUP BY source ORDER BY count DESC")
+            return StatsResult(totalSessions: total, totalMessages: messages,
+                               bySource: Dictionary(uniqueKeysWithValues: counts.map { ($0.source, $0.count) }))
+        }
+    }
+
+    func dbSizeBytes() -> Int64 {
+        (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size] as? Int64) ?? 0
+    }
+
+    // MARK: - get_context
+    func getContext(cwd: String, limit: Int = 5) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let project = URL(fileURLWithPath: cwd).lastPathComponent
+            var results = try Session.fetchAll(db,
+                sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND project LIKE ? AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
+                arguments: ["%\(project)%", limit])
+            if results.isEmpty && !cwd.isEmpty {
+                results = try Session.fetchAll(db,
+                    sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND cwd LIKE ? ORDER BY start_time DESC LIMIT ?",
+                    arguments: ["%\(cwd)%", limit])
+            }
+            return results
+        }
+    }
+
+    // MARK: - Favorites (writable extension table)
+    func addFavorite(sessionId: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO favorites (session_id, created_at)
+                VALUES (?, datetime('now'))
+            """, arguments: [sessionId])
+        }
+    }
+
+    func removeFavorite(sessionId: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM favorites WHERE session_id = ?",
+                           arguments: [sessionId])
+        }
+    }
+
+    func listFavorites() throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Session.fetchAll(db, sql: """
+                SELECT s.* FROM sessions s
+                JOIN favorites f ON f.session_id = s.id
+                WHERE s.hidden_at IS NULL
+                ORDER BY f.created_at DESC
+            """)
+        }
+    }
+
+    func isFavorite(sessionId: String) throws -> Bool {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Favorite.fetchOne(db,
+                sql: "SELECT * FROM favorites WHERE session_id = ?",
+                arguments: [sessionId]) != nil
+        }
+    }
+
+    // MARK: - Hide / Unhide / Rename (writable — sessions table)
+
+    func hideSession(id: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE id = ?",
+                arguments: [id])
+        }
+    }
+
+    func unhideSession(id: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = NULL WHERE id = ?",
+                arguments: [id])
+        }
+    }
+
+    func renameSession(id: String, name: String?) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET custom_name = ? WHERE id = ?",
+                arguments: [name, id])
+        }
+    }
+
+    func moveSessionToProject(id: String, project: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET project = ? WHERE id = ?",
+                arguments: [project, id])
+        }
+    }
+
+    func renameProject(from oldName: String, to newName: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET project = ? WHERE project = ?",
+                arguments: [newName, oldName])
+        }
+    }
+
+    /// Hide truly empty sessions (0 messages AND < 1 KB). Returns count hidden.
+    func hideEmptySessions() throws -> Int {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        return try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE message_count = 0 AND size_bytes < 1024 AND hidden_at IS NULL")
+            return db.changesCount
+        }
+    }
+
+    // MARK: - Hidden sessions (trash)
+
+    func listHiddenSessions(limit: Int = 200, offset: Int = 0) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Session.fetchAll(db,
+                sql: "SELECT * FROM sessions WHERE hidden_at IS NOT NULL ORDER BY hidden_at DESC LIMIT ? OFFSET ?",
+                arguments: [limit, offset])
+        }
+    }
+
+    func countHiddenSessions() throws -> Int {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NOT NULL") ?? 0
+        }
+    }
+
+    // MARK: - Update session summary
+    func updateSessionSummary(id: String, summary: String) throws {
+        guard let writer = writerPool else { throw DatabaseError.notOpen }
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET summary = ? WHERE id = ?",
+                arguments: [summary, id]
+            )
+        }
+    }
+
+    // MARK: - Timeline (chronological list)
+
+    /// Pure chronological list of sessions for Timeline view
+    func listSessionsChronologically(
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        subAgent: Bool? = nil,
+        limit: Int = 50,
+        offset: Int = 0
+    ) throws -> [Session] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
+            var args: [DatabaseValueConvertible] = []
+            if !sources.isEmpty {
+                let ph = sources.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND source IN (\(ph))")
+                sources.forEach { args.append($0) }
+            }
+            if !projects.isEmpty {
+                let ph = projects.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND project IN (\(ph))")
+                projects.forEach { args.append($0) }
+            }
+            if let subAgent {
+                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
+            }
+            parts.append("ORDER BY start_time DESC LIMIT ? OFFSET ?")
+            args.append(limit); args.append(offset)
+            return try Session.fetchAll(db, sql: parts.joined(separator: " "),
+                                        arguments: StatementArguments(args))
+        }
+    }
+
+    // MARK: - Grouped Sessions view
+
+    /// Get all group keys with counts for grouped view (by project or source)
+    func listGroups(
+        by mode: GroupingMode,
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        subAgent: Bool? = nil,
+        sort: SessionSort = .createdDesc
+    ) throws -> [(key: String, count: Int, lastUpdated: String)] {
+        guard let pool else { throw DatabaseError.notOpen }
+        return try pool.read { db in
+            let groupColumn = mode == .project ? "project" : "source"
+
+            // Pick aggregate expression + order matching the sort
+            let (aggExpr, orderDir): (String, String) = switch sort {
+            case .createdDesc: ("MAX(start_time)", "DESC")
+            case .createdAsc:  ("MIN(start_time)", "ASC")
+            case .updatedDesc: ("MAX(COALESCE(end_time, start_time))", "DESC")
+            case .updatedAsc:  ("MIN(COALESCE(end_time, start_time))", "ASC")
+            }
+
+            var parts = ["""
+                SELECT COALESCE(\(groupColumn), '(unknown)') as group_key,
+                       COUNT(*) as count,
+                       \(aggExpr) as sort_value
+                FROM sessions
+                WHERE hidden_at IS NULL
+                """]
+            var args: [DatabaseValueConvertible] = []
+
+            if !sources.isEmpty {
+                let ph = sources.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND source IN (\(ph))")
+                sources.forEach { args.append($0) }
+            }
+            if !projects.isEmpty {
+                let ph = projects.map { _ in "?" }.joined(separator: ", ")
+                parts.append("AND project IN (\(ph))")
+                projects.forEach { args.append($0) }
+            }
+            if let subAgent {
+                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
             parts.append("GROUP BY group_key ORDER BY sort_value \(orderDir)")
 
@@ -268,7 +585,8 @@ final class DatabaseManager {
                 projects.forEach { args.append($0) }
             }
             if let subAgent {
-                parts.append(subAgentFilterClause(subAgent))
+                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
+                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
             }
 
             parts.append("ORDER BY \(sort.rawValue) LIMIT ?")

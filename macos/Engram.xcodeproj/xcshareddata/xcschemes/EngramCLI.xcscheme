@@ -15,20 +15,6 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "CBCDC5ABCED1290D34EC5E45"
-               BuildableName = "Engram.app"
-               BlueprintName = "Engram"
-               ReferencedContainer = "container:Engram.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
                BlueprintIdentifier = "6EFB8FB1AB1AF1754D7D12E2"
                BuildableName = "EngramCLI"
                BlueprintName = "EngramCLI"
@@ -46,38 +32,14 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CBCDC5ABCED1290D34EC5E45"
-            BuildableName = "Engram.app"
-            BlueprintName = "Engram"
+            BlueprintIdentifier = "6EFB8FB1AB1AF1754D7D12E2"
+            BuildableName = "EngramCLI"
+            BlueprintName = "EngramCLI"
             ReferencedContainer = "container:Engram.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "30D8E174D1B1B7E0305A85E7"
-               BuildableName = "EngramTests.xctest"
-               BlueprintName = "EngramTests"
-               ReferencedContainer = "container:Engram.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "3E8B4E524AA151B373A0BC91"
-               BuildableName = "EngramUITests.xctest"
-               BlueprintName = "EngramUITests"
-               ReferencedContainer = "container:Engram.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
-      <CommandLineArguments>
-      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -93,9 +55,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CBCDC5ABCED1290D34EC5E45"
-            BuildableName = "Engram.app"
-            BlueprintName = "Engram"
+            BlueprintIdentifier = "6EFB8FB1AB1AF1754D7D12E2"
+            BuildableName = "EngramCLI"
+            BlueprintName = "EngramCLI"
             ReferencedContainer = "container:Engram.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -112,9 +74,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CBCDC5ABCED1290D34EC5E45"
-            BuildableName = "Engram.app"
-            BlueprintName = "Engram"
+            BlueprintIdentifier = "6EFB8FB1AB1AF1754D7D12E2"
+            BuildableName = "EngramCLI"
+            BlueprintName = "EngramCLI"
             ReferencedContainer = "container:Engram.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

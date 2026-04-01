@@ -94,7 +94,27 @@ struct GlobalSearchOverlay: View {
         guard !query.isEmpty, let port = indexer.port else { return }
         isSearching = true
         Task {
-            results = await SearchService.shared.searchSessions(query: query, port: port)
+            do {
+                let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+                let url = URL(string: "http://127.0.0.1:\(port)/api/search?q=\(encoded)&limit=10")!
+                let (data, _) = try await URLSession.shared.data(from: url)
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let rawResults = json["results"] as? [[String: Any]] {
+                    results = rawResults.compactMap { r in
+                        guard let session = r["session"] as? [String: Any],
+                              let id = session["id"] as? String else { return nil }
+                        return SearchHit(
+                            id: id,
+                            title: (session["summary"] as? String) ?? (session["project"] as? String) ?? "Untitled",
+                            source: (session["source"] as? String) ?? "",
+                            snippet: (r["snippet"] as? String) ?? "",
+                            date: (session["startTime"] as? String).map { String($0.prefix(10)) } ?? ""
+                        )
+                    }
+                }
+            } catch {
+                // silently fail
+            }
             isSearching = false
         }
     }
