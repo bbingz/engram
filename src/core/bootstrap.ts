@@ -67,7 +67,10 @@ export function getAdapter(name: string): SessionAdapter | undefined {
 
 export function initViking(settings: FileSettings, opts?: { log?: Logger; metrics?: MetricsCollector; tracer?: Tracer }): VikingBridge | null {
   if (settings.viking?.enabled && settings.viking.url && settings.viking.apiKey) {
-    return new VikingBridge(settings.viking.url, settings.viking.apiKey, opts)
+    return new VikingBridge(settings.viking.url, settings.viking.apiKey, {
+      agentId: settings.viking.agentId,
+      ...opts,
+    })
   }
   return null
 }
