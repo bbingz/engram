@@ -51,7 +51,7 @@ export async function handleSearch(
   db: Database,
   params: { query: string; source?: SourceName; project?: string; since?: string; limit?: number; mode?: string; agents?: 'hide'; tools?: 'hide' },
   deps: SearchDeps = {}
-): Promise<{ results: SearchResult[]; query: string; searchModes: string[]; warning?: string }> {
+): Promise<{ results: SearchResult[]; query: string; searchModes: string[]; vikingMemories?: string[]; warning?: string }> {
   const searchStart = Date.now()
   const searchSpan = deps.tracer?.startSpan('search', 'search', { attributes: { query: params.query.slice(0, 100), mode: params.mode ?? 'hybrid' } })
   deps.log?.info('search invoked', { query: params.query.slice(0, 100), source: params.source, project: params.project })
@@ -86,6 +86,7 @@ export async function handleSearch(
   const ftsScores = new Map<string, { score: number; snippet: string }>()
   const vecScores = new Map<string, { score: number; distance: number }>()
   const vikingScores = new Map<string, { score: number; snippet: string }>()
+  const vikingMemoryResults: string[] = []
 
   // Check Viking availability before launching parallel work (cached, cheap)
   const vikingAvailable = deps.viking && params.query.length >= 2
@@ -152,10 +153,14 @@ export async function handleSearch(
           let rank = 1
           for (const vr of findResults) {
             const sessionId = sessionIdFromVikingUri(vr.uri)
-            if (!sessionId || seen.has(sessionId)) continue
-            seen.add(sessionId)
-            vikingScores.set(sessionId, { score: rrfScore(rank) + VIKING_RRF_BOOST, snippet: vr.snippet })
-            rank++
+            if (sessionId && !seen.has(sessionId)) {
+              seen.add(sessionId)
+              vikingScores.set(sessionId, { score: rrfScore(rank) + VIKING_RRF_BOOST, snippet: vr.snippet })
+              rank++
+            } else if (!sessionId && vr.snippet) {
+              // Memory/skill results — standalone knowledge entries
+              vikingMemoryResults.push(vr.snippet)
+            }
           }
           deps.metrics?.histogram('search.viking_ms', performance.now() - vikStart)
           vikingSpan?.setAttribute('resultCount', vikingScores.size)
@@ -219,5 +224,5 @@ export async function handleSearch(
   deps.metrics?.histogram('search.duration_ms', Date.now() - searchStart, { mode: params.mode ?? 'hybrid' })
   deps.metrics?.counter('search.queries', 1)
 
-  return { results, query: params.query, searchModes, warning }
+  return { results, query: params.query, searchModes, vikingMemories: vikingMemoryResults.length > 0 ? vikingMemoryResults.slice(0, 5) : undefined, warning }
 }

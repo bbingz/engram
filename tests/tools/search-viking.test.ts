@@ -47,6 +47,26 @@ describe('handleSearch with Viking', () => {
     expect(result.searchModes).toContain('keyword')
   })
 
+  it('returns Viking memory results that cannot map to sessions', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'search-viking-'))
+    db = new Database(join(tmpDir, 'test.sqlite'))
+    db.upsertSession(makeSession({ id: 'session-1', filePath: '/tmp/s1' }))
+    const vikingResults: VikingSearchResult[] = [
+      { uri: 'viking://user/default/memories/pref-1', score: 0.95, snippet: 'User prefers TypeScript strict mode' },
+      { uri: 'viking://session/claude-code/engram/session-1', score: 0.8, snippet: 'Fixed auth bug' },
+    ]
+    const mockViking = {
+      checkAvailable: vi.fn().mockResolvedValue(true),
+      find: vi.fn().mockResolvedValue(vikingResults),
+    } as unknown as VikingBridge
+    const result = await handleSearch(db, { query: 'TypeScript preferences' }, { viking: mockViking })
+    // Session result should be in main results
+    expect(result.results.some(r => r.session.id === 'session-1')).toBe(true)
+    // Memory results should be surfaced via vikingMemories
+    expect(result.vikingMemories).toContain('User prefers TypeScript strict mode')
+    expect(result.searchModes).toContain('viking-semantic')
+  })
+
   it('falls back to FTS when Viking find() throws', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'search-viking-'))
     db = new Database(join(tmpDir, 'test.sqlite'))
