@@ -102,6 +102,7 @@ private async pushToViking(info: SessionInfo, messages: { role: string; content:
 
 ```typescript
 const items = [
+  ...(Array.isArray(r) ? r : []),            // preserve legacy flat-array fallback
   ...(Array.isArray(r.resources) ? r.resources : []),
   ...(Array.isArray(r.memories) ? r.memories : []),
   ...(Array.isArray(r.skills) ? r.skills : []),
@@ -207,7 +208,36 @@ if (deps.viking && params.detail && await deps.viking.checkAvailable()) {
 
 ### 10. Fix `search.ts` Viking result mapping
 
-Same issue as `get_context.ts`: `search.ts:154` calls `sessionIdFromVikingUri(vr.uri)` on memory URIs. After migration, return Viking results as standalone knowledge entries, not mapped to local sessions.
+The current RRF pipeline (`search.ts:153-158`) calls `sessionIdFromVikingUri(vr.uri)` and skips results where `!sessionId`. After migration, `find()` returns memory URIs like `viking://user/default/memories/...` which won't match the regex → all Viking results silently vanish.
+
+**Fix**: Decouple Viking results from the session-based RRF merge. Viking memory matches are **knowledge**, not session matches. Return them as a supplementary section:
+
+```typescript
+// In the Viking search section (search.ts ~lines 144-168):
+const vikingMemories: { snippet: string; score: number }[] = []
+for (const vr of findResults) {
+  const sessionId = sessionIdFromVikingUri(vr.uri)
+  if (sessionId && !seen.has(sessionId)) {
+    // Old resource-style results can still map to sessions
+    seen.add(sessionId)
+    vikingScores.set(sessionId, { score: rrfScore(rank) + VIKING_RRF_BOOST, snippet: vr.snippet })
+    rank++
+  } else if (vr.snippet) {
+    // Memory/skill results — standalone knowledge entries
+    vikingMemories.push({ snippet: vr.snippet, score: vr.score ?? 0 })
+  }
+}
+
+// After assembling session results, append Viking knowledge section:
+if (vikingMemories.length > 0) {
+  resultParts.push('\n## Related Knowledge')
+  for (const mem of vikingMemories.slice(0, 3)) {
+    resultParts.push(`- ${mem.snippet}`)
+  }
+}
+```
+
+This preserves backwards compatibility (old resource URIs still merge into sessions) while adding memory-based knowledge for new Sessions API results.
 
 ### 11. Migration plan for previously-pushed sessions
 
@@ -220,17 +250,36 @@ Sessions already pushed via Resources API have `viking_pushed_msg_count` set. Th
 
 ### 12. Backfill endpoint implementation (web.ts)
 
+The current backfill reads messages via `adapter.streamMessages(session.filePath)`. The updated version uses `pushSession()` instead of `addResource()`:
+
 ```typescript
 // POST /api/viking/backfill — re-push sessions via Sessions API
 app.post('/api/viking/backfill', async (c) => {
   // ... existing validation ...
   for (const session of sessions) {
-    const messages = db.getMessages(session.id)
-    const filtered = filterForViking(messages)
-    if (filtered.length === 0) { skipped++; continue }
-    const sessionId = `${session.source}::${session.project ?? 'unknown'}::${session.id}`
     try {
+      const adapter = opts.adapters.find(a => a.name === session.source)
+      if (!adapter) continue
+
+      const messages: { role: string; content: string }[] = []
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
+          messages.push({ role: msg.role, content: msg.content })
+        }
+      }
+      const filtered = filterForViking(messages)
+      if (filtered.length === 0) { skipped++; continue }
+
+      const sessionId = `${session.source}::${session.project ?? 'unknown'}::${session.id}`
       await viking.pushSession(sessionId, filtered)
+
+      // Track push to prevent duplicate work by indexer
+      try {
+        db.getRawDb().prepare(
+          "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?"
+        ).run(messages.length, session.id)
+      } catch { /* best-effort */ }
+
       pushed++
     } catch (err) {
       errors.push({ id: session.id, error: String(err) })
