@@ -111,6 +111,20 @@ describe('addResource', () => {
 describe('find', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it('includes skills in find results', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: () => Promise.resolve({ result: {
+        resources: [{ uri: 'viking://resource/a', score: 0.9, abstract: 'Resource A' }],
+        memories: [{ uri: 'viking://memory/b', score: 0.8, abstract: 'Memory B' }],
+        skills: [{ uri: 'viking://skill/c', score: 0.7, abstract: 'Skill C' }],
+      }}),
+    }));
+    const results = await bridge.find('test query');
+    expect(results).toHaveLength(3);
+    expect(results.map(r => r.uri)).toContain('viking://skill/c');
+  });
+
   it('returns semantic search results (POST /find)', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -183,6 +197,28 @@ describe('ls', () => {
   });
 });
 
+describe('agentId header', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('includes X-Agent-Id header when agentId is provided', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { agentId: 'ffb1327b18bf' });
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', mockFetch);
+    await bridge.isAvailable();
+    const headers = mockFetch.mock.calls[0][1].headers;
+    expect(headers['X-Agent-Id']).toBe('ffb1327b18bf');
+  });
+
+  it('omits X-Agent-Id header when agentId is not provided', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', mockFetch);
+    await bridge.isAvailable();
+    const headers = mockFetch.mock.calls[0][1].headers;
+    expect(headers).not.toHaveProperty('X-Agent-Id');
+  });
+});
+
 describe('memory', () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -196,17 +232,39 @@ describe('memory', () => {
     expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/resources/temp_upload');
   });
 
-  it('findMemories uses find with memory URI prefix', async () => {
+  it('findMemories searches both user and agent memory scopes', async () => {
     const bridge = new VikingBridge('http://localhost:1933', 'key');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, json: () => Promise.resolve({ result: {
-        memories: [{ uri: 'viking://memory/style', score: 0.9, abstract: 'User prefers TypeScript', metadata: { createdAt: '2026-03-16' } }],
-        resources: [],
-      }}),
-    }));
+    const mockFetch = vi.fn()
+      // First find call (user memories)
+      .mockResolvedValueOnce({
+        ok: true, json: () => Promise.resolve({ result: {
+          memories: [{ uri: 'viking://user/style', score: 0.9, abstract: 'User prefers TypeScript', metadata: { createdAt: '2026-03-16' } }],
+          resources: [],
+        }}),
+      })
+      // Second find call (agent memories)
+      .mockResolvedValueOnce({
+        ok: true, json: () => Promise.resolve({ result: {
+          memories: [{ uri: 'viking://agent/pattern', score: 0.7, abstract: 'Agent learned TDD', metadata: { createdAt: '2026-03-15' } }],
+          resources: [],
+        }}),
+      });
+    vi.stubGlobal('fetch', mockFetch);
     const result = await bridge.findMemories('coding style');
-    expect(result).toHaveLength(1);
+
+    // Should return both results sorted by confidence descending
+    expect(result).toHaveLength(2);
+    expect(result[0].confidence).toBe(0.9);
     expect(result[0].content).toBe('User prefers TypeScript');
+    expect(result[1].confidence).toBe(0.7);
+    expect(result[1].content).toBe('Agent learned TDD');
+
+    // Verify two separate find calls with correct target_uri
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const call1Body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const call2Body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(call1Body.target_uri).toBe('viking://user/');
+    expect(call2Body.target_uri).toBe('viking://agent/');
   });
 
   it('findMemories returns empty array on error', async () => {
@@ -242,6 +300,23 @@ describe('pushSession', () => {
     expect(JSON.parse(mockFetch.mock.calls[2][1].body).role).toBe('assistant');
     // Commit
     expect(mockFetch.mock.calls[3][0]).toContain('/commit/async');
+  });
+
+  it('sends messages with parts format (not flat content)', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await bridge.pushSession('test-parts', [
+      { role: 'user', content: 'Hello world' },
+    ]);
+
+    // Message call is the 2nd fetch call (after session create)
+    const messageBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(messageBody.parts).toEqual([{ type: 'text', text: 'Hello world' }]);
+    expect(messageBody).not.toHaveProperty('content');
   });
 
   it('throws on session creation failure with descriptive error', async () => {

@@ -93,13 +93,14 @@ export class VikingBridge {
 
   private api: string; // baseUrl + /api/v1
 
-  constructor(url: string, apiKey: string, opts?: { log?: Logger; metrics?: MetricsCollector; tracer?: Tracer }) {
+  constructor(url: string, apiKey: string, opts?: { agentId?: string; log?: Logger; metrics?: MetricsCollector; tracer?: Tracer }) {
     this.baseUrl = url.replace(/\/$/, '');
     this.api = `${this.baseUrl}/api/v1`;
     this.headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     };
+    if (opts?.agentId) this.headers['X-Agent-Id'] = opts.agentId;
     this.log = opts?.log;
     this.metrics = opts?.metrics;
     this.tracer = opts?.tracer;
@@ -176,7 +177,7 @@ export class VikingBridge {
       for (const msg of messages) {
         await this.post(`${this.api}/sessions/${sessionId}/messages/async`, {
           role: msg.role,
-          content: msg.content,
+          parts: [{ type: 'text', text: msg.content }],
         }, 5000);
       }
 
@@ -281,6 +282,7 @@ export class VikingBridge {
         ...(Array.isArray(r) ? r : []),
         ...(Array.isArray(r.resources) ? r.resources : []),
         ...(Array.isArray(r.memories) ? r.memories : []),
+        ...(Array.isArray(r.skills) ? r.skills : []),
       ];
       const results = items.map(i => ({ uri: i.uri ?? '', score: i.score ?? 0, snippet: i.abstract ?? '', metadata: i.metadata }));
       span?.setAttribute('resultCount', results.length);
@@ -371,13 +373,18 @@ export class VikingBridge {
 
   async findMemories(query: string): Promise<VikingMemory[]> {
     try {
-      const results = await this.find(query, 'viking://memory/');
-      return results.map(r => ({
-        content: r.snippet,
-        source: r.uri,
-        confidence: r.score,
-        createdAt: r.metadata?.createdAt ?? '',
-      }));
+      const [userResults, agentResults] = await Promise.all([
+        this.find(query, 'viking://user/'),
+        this.find(query, 'viking://agent/'),
+      ]);
+      return [...userResults, ...agentResults]
+        .sort((a, b) => b.score - a.score)
+        .map(r => ({
+          content: r.snippet,
+          source: r.uri,
+          confidence: r.score,
+          createdAt: r.metadata?.createdAt ?? '',
+        }));
     } catch {
       return [];
     }

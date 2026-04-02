@@ -28,6 +28,7 @@ export interface SummaryConfig {
 export interface VikingSettings {
   url?: string;
   apiKey?: string;
+  agentId?: string;
   enabled?: boolean;
 }
 
