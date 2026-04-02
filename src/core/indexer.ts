@@ -54,6 +54,7 @@ export class Indexer {
       await this.opts.viking.pushSession(sessionId, filtered)
       try {
         this.db.getRawDb().prepare(
+          // Store raw message count (not filtered) — dedup check compares against raw count
           "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?"
         ).run(messages.length, info.id)
       } catch { /* best-effort */ }

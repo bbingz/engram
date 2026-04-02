@@ -69,7 +69,7 @@ export interface VikingMemory {
   createdAt: string;
 }
 
-/** Build a viking URI from session components */
+/** @deprecated No longer used after Sessions API migration. Kept for backward compatibility with older test data. */
 export function toVikingUri(source: string, project: string | undefined, id: string): string {
   return `viking://session/${source}/${project ?? 'unknown'}/${id}`;
 }
@@ -366,6 +366,7 @@ export class VikingBridge {
   }
 
   // Memory operations — these use the same find/grep but with memory-specific URIs
+  /** @deprecated Sessions API handles memory extraction server-side. Available for manual memory injection. */
   async extractMemory(sessionContent: string): Promise<void> {
     // Push content as a resource, OpenViking auto-extracts memories
     await this.addResource('viking://memory/extract', sessionContent);
