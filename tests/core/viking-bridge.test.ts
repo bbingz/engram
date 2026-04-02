@@ -294,9 +294,9 @@ describe('pushSession', () => {
     expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/sessions/custom');
     expect(JSON.parse(mockFetch.mock.calls[0][1].body).session_id).toBe('engram-claude-code-myproject-abc123');
     // Messages in order
-    expect(mockFetch.mock.calls[1][0]).toContain('/messages/async');
+    expect(mockFetch.mock.calls[1][0]).toMatch(/\/messages$/);
     expect(JSON.parse(mockFetch.mock.calls[1][1].body).role).toBe('user');
-    expect(mockFetch.mock.calls[2][0]).toContain('/messages/async');
+    expect(mockFetch.mock.calls[2][0]).toMatch(/\/messages$/);
     expect(JSON.parse(mockFetch.mock.calls[2][1].body).role).toBe('assistant');
     // Commit
     expect(mockFetch.mock.calls[3][0]).toContain('/commit/async');

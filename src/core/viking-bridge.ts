@@ -175,7 +175,7 @@ export class VikingBridge {
       await this.post(`${this.api}/sessions/custom`, { session_id: sessionId });
 
       for (const msg of messages) {
-        await this.post(`${this.api}/sessions/${sessionId}/messages/async`, {
+        await this.post(`${this.api}/sessions/${sessionId}/messages`, {
           role: msg.role,
           parts: [{ type: 'text', text: msg.content }],
         }, 5000);
