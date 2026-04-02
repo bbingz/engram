@@ -12,7 +12,7 @@ import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
 import { computeTier, type SessionTier } from './session-tier.js'
 import { isPreambleOnly } from './preamble-detector.js'
 import { SessionSnapshotWriter } from './session-writer.js'
-import { toVikingUri, type VikingBridge } from './viking-bridge.js'
+import type { VikingBridge } from './viking-bridge.js'
 import { filterForViking } from './viking-filter.js'
 import type { TitleGenerator } from './title-generator.js'
 import { runWithContext } from './request-context.js'
@@ -50,14 +50,8 @@ export class Indexer {
       if (!ok) return
       const filtered = filterForViking(messages)
       if (filtered.length === 0) return
-      const uri = toVikingUri(info.source, info.project, info.id)
-      const content = filtered.map(m => `[${m.role}] ${m.content}`).join('\n\n')
-      await this.opts.viking.addResource(uri, content, {
-        source: info.source,
-        project: info.project ?? '',
-        startTime: info.startTime,
-        model: info.model ?? '',
-      })
+      const sessionId = `${info.source}::${info.project ?? 'unknown'}::${info.id}`
+      await this.opts.viking.pushSession(sessionId, filtered)
       try {
         this.db.getRawDb().prepare(
           "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?"

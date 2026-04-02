@@ -21,12 +21,12 @@ describe('Indexer with Viking', () => {
 
   afterEach(() => { db?.close(); if (tmpDir) rmSync(tmpDir, { recursive: true }) })
 
-  it('calls viking.addResource after indexing a session', async () => {
+  it('calls viking.pushSession (not addResource) after indexing a premium session', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'indexer-viking-'))
     db = new Database(join(tmpDir, 'test.sqlite'))
     const mockViking = {
       checkAvailable: vi.fn().mockResolvedValue(true),
-      addResource: vi.fn().mockResolvedValue(undefined),
+      pushSession: vi.fn().mockResolvedValue(undefined),
     } as unknown as VikingBridge
 
     const filePath = join(tmpDir, 'session.jsonl')
@@ -34,7 +34,6 @@ describe('Indexer with Viking', () => {
       name: 'codex',
       detect: () => Promise.resolve(true),
       listSessionFiles: async function* () { yield filePath },
-      // messageCount >= 20 → premium tier, which allows Viking push
       parseSessionInfo: () => Promise.resolve(makeSessionInfo({ id: 'test-session-1', filePath, messageCount: 20, userMessageCount: 10, assistantMessageCount: 10 })),
       streamMessages: async function* () {
         yield { role: 'user', content: 'Hello' }
@@ -44,21 +43,21 @@ describe('Indexer with Viking', () => {
     writeFileSync(filePath, '{}')
     const indexer = new Indexer(db, [adapter as any], { viking: mockViking })
     await indexer.indexAll()
-    // Wait for fire-and-forget promises
     await new Promise(r => setTimeout(r, 50))
-    expect(mockViking.addResource).toHaveBeenCalledWith(
-      expect.stringContaining('viking://session/codex/'),
-      expect.stringContaining('[user] Hello'),
-      expect.objectContaining({ source: 'codex' })
+    expect(mockViking.pushSession).toHaveBeenCalledWith(
+      expect.stringMatching(/^codex::.+::test-session-1$/),
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: 'Hello' }),
+      ])
     )
   })
 
-  it('does not fail if viking.addResource throws', async () => {
+  it('does not fail if viking.pushSession throws', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'indexer-viking-'))
     db = new Database(join(tmpDir, 'test.sqlite'))
     const mockViking = {
       checkAvailable: vi.fn().mockResolvedValue(true),
-      addResource: vi.fn().mockRejectedValue(new Error('server down')),
+      pushSession: vi.fn().mockRejectedValue(new Error('server down')),
     } as unknown as VikingBridge
 
     const filePath = join(tmpDir, 'session.jsonl')
