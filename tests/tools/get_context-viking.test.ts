@@ -20,23 +20,42 @@ describe('handleGetContext with Viking', () => {
   let tmpDir: string
   afterEach(() => { db?.close(); if (tmpDir) rmSync(tmpDir, { recursive: true }) })
 
-  it('uses Viking overview for L1 detail level', async () => {
+  it('uses Viking find() memory snippets directly for context', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ctx-viking-'))
     db = new Database(join(tmpDir, 'test.sqlite'))
     db.upsertSession(makeSession({ id: 'session-1', filePath: '/tmp/s1', project: 'myproject', summary: 'Fixed auth bug' }))
     const mockViking = {
       checkAvailable: vi.fn().mockResolvedValue(true),
       find: vi.fn().mockResolvedValue([
-        { uri: 'viking://session/claude-code/myproject/session-1', score: 0.9, snippet: '' },
+        { uri: 'viking://user/default/memories/pref-1', score: 0.9, snippet: 'User prefers TypeScript strict mode' },
+        { uri: 'viking://agent/default/memories/pattern-1', score: 0.8, snippet: 'Auth module uses JWT with bcrypt' },
       ]),
-      overview: vi.fn().mockResolvedValue('Detailed L1 overview of auth bug fix session...'),
     } as unknown as VikingBridge
     const result = await handleGetContext(db,
-      { cwd: '/projects/myproject', detail: 'overview' },
+      { cwd: '/projects/myproject', task: 'fix auth', detail: 'overview' },
       { viking: mockViking }
     )
-    expect(mockViking.overview).toHaveBeenCalled()
-    expect(result.contextText).toContain('Detailed L1 overview')
+    expect(result.contextText).toContain('User prefers TypeScript strict mode')
+    expect(result.contextText).toContain('Auth module uses JWT with bcrypt')
+    expect(result.contextText).toContain('[memory]')
+  })
+
+  it('includes local session summaries alongside Viking memories', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ctx-viking-'))
+    db = new Database(join(tmpDir, 'test.sqlite'))
+    db.upsertSession(makeSession({ id: 'session-1', filePath: '/tmp/s1', project: 'myproject', summary: 'Migrated auth to JWT' }))
+    const mockViking = {
+      checkAvailable: vi.fn().mockResolvedValue(true),
+      find: vi.fn().mockResolvedValue([
+        { uri: 'viking://user/default/memories/pref-1', score: 0.9, snippet: 'Prefers async/await' },
+      ]),
+    } as unknown as VikingBridge
+    const result = await handleGetContext(db,
+      { cwd: '/projects/myproject', task: 'update auth', detail: 'overview' },
+      { viking: mockViking }
+    )
+    expect(result.contextText).toContain('Prefers async/await')
+    expect(result.contextText).toContain('Migrated auth to JWT')
   })
 
   it('falls back to summary-based context without Viking', async () => {

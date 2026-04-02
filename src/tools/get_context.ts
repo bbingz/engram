@@ -4,7 +4,7 @@ import type { Logger } from '../core/logger.js'
 import type { VectorStore } from '../core/vector-store.js'
 import type { LiveSession } from '../core/live-sessions.js'
 import type { MonitorAlert } from '../core/monitor.js'
-import { sessionIdFromVikingUri, toVikingUri, type VikingBridge } from '../core/viking-bridge.js'
+import type { VikingBridge } from '../core/viking-bridge.js'
 import { toLocalDate } from '../utils/time.js'
 import { handleLintConfig } from './lint_config.js'
 
@@ -87,31 +87,22 @@ export async function handleGetContext(
     } catch { /* vector search failed, fall through */ }
   }
 
-  // Viking-enhanced: use tiered content when available
+  // Viking-enhanced: use find() memory snippets + local session summaries
   if (deps.viking && params.detail && await deps.viking.checkAvailable()) {
-    const readFn = params.detail === 'abstract' ? deps.viking.abstract.bind(deps.viking)
-      : params.detail === 'full' ? deps.viking.read.bind(deps.viking)
-      : deps.viking.overview.bind(deps.viking)
-
-    let targetSessions = sessions.slice(0, 5)
+    let vikingContext: string[] = []
     if (params.task) {
       try {
         const vikingResults = await deps.viking.find(params.task)
-        const vikingSessionIds = vikingResults.map(r => sessionIdFromVikingUri(r.uri))
-        const vikingSessions = vikingSessionIds
-          .map(id => db.getSession(id))
-          .filter((s): s is NonNullable<typeof s> => s !== null)
-        if (vikingSessions.length > 0) targetSessions = vikingSessions.slice(0, 5)
-      } catch { /* fall through to session list */ }
+        vikingContext = vikingResults
+          .filter(r => r.snippet)
+          .slice(0, 5)
+          .map(r => r.snippet)
+      } catch { /* fall through */ }
     }
 
-    // Pre-fetch all in parallel, then apply token budget
-    const uris = targetSessions.map(s => toVikingUri(s.source, s.project, s.id))
-    const fetched = await Promise.allSettled(uris.map(u => readFn(u)))
-
+    const targetSessions = sessions.slice(0, 5)
     const parts: string[] = []
     let totalChars = 0
-    const selectedSessions: typeof sessions = []
 
     if (params.task) {
       const taskLine = `当前任务：${params.task}\n`
@@ -119,19 +110,26 @@ export async function handleGetContext(
       totalChars += taskLine.length
     }
 
-    for (let i = 0; i < targetSessions.length; i++) {
-      const result = fetched[i]
-      const content = result.status === 'fulfilled' ? result.value : ''
-      if (!content) continue
-      const session = targetSessions[i]
-      const line = `[${session.source}] ${toLocalDate(session.startTime)} — ${content}\n`
+    // Viking memories first (cross-session extracted knowledge)
+    for (const mem of vikingContext) {
+      const line = `[memory] ${mem}\n`
+      if (totalChars + line.length > maxChars) break
+      parts.push(line)
+      totalChars += line.length
+    }
+
+    // Then local session summaries
+    const selectedSessions: typeof sessions = []
+    for (const session of targetSessions) {
+      if (!session.summary) continue
+      const line = `[${session.source}] ${toLocalDate(session.startTime)} — ${session.summary}\n`
       if (totalChars + line.length > maxChars) break
       parts.push(line)
       totalChars += line.length
       selectedSessions.push(session)
     }
 
-    const footer = `\n— ${selectedSessions.length} sessions (${params.detail}), ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`
+    const footer = `\n— ${selectedSessions.length} sessions + ${vikingContext.length} memories (${params.detail}), ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`
     parts.push(footer)
 
     const envSection = (params.include_environment !== false) ? await gatherEnvironmentData(db, deps, params, maxTokens) : ''
