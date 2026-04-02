@@ -648,13 +648,16 @@ export function createApp(db: Database, opts?: {
         const filtered = filterForViking(messages)
         if (filtered.length === 0) { skipped++; continue }
 
-        const content = filtered.map(m => `[${m.role}] ${m.content}`).join('\n\n')
-        const uri = `viking://session/${session.source}/${session.project ?? 'unknown'}/${session.id}`
-        await viking.addResource(uri, content, {
-          source: session.source,
-          project: session.project ?? '',
-          startTime: session.startTime,
-        })
+        const sessionId = `${session.source}::${session.project ?? 'unknown'}::${session.id}`
+        await viking.pushSession(sessionId, filtered)
+
+        // Track push to prevent duplicate work by indexer
+        try {
+          db.getRawDb().prepare(
+            "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?"
+          ).run(messages.length, session.id)
+        } catch { /* best-effort */ }
+
         pushed++
       } catch (err) {
         failures.push({ id: session.id, error: err instanceof Error ? err.message : String(err) })
