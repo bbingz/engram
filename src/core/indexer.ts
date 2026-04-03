@@ -12,7 +12,7 @@ import type { AuthoritativeSessionSnapshot } from './session-snapshot.js'
 import { computeTier, type SessionTier } from './session-tier.js'
 import { isPreambleOnly } from './preamble-detector.js'
 import { SessionSnapshotWriter } from './session-writer.js'
-import type { VikingBridge } from './viking-bridge.js'
+import { toVikingSessionId, type VikingBridge } from './viking-bridge.js'
 import { filterForViking } from './viking-filter.js'
 import type { TitleGenerator } from './title-generator.js'
 import { runWithContext } from './request-context.js'
@@ -50,14 +50,9 @@ export class Indexer {
       if (!ok) return
       const filtered = filterForViking(messages)
       if (filtered.length === 0) return
-      const sessionId = `${info.source}::${info.project ?? 'unknown'}::${info.id}`
+      const sessionId = toVikingSessionId(info.source, info.project, info.id)
       await this.opts.viking.pushSession(sessionId, filtered)
-      try {
-        this.db.getRawDb().prepare(
-          // Store raw message count (not filtered) — dedup check compares against raw count
-          "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?"
-        ).run(messages.length, info.id)
-      } catch { /* best-effort */ }
+      this.db.markVikingPushed(info.id, messages.length)
     } catch (err) {
       this.log?.warn('viking push failed', { sessionId: info.id }, err)
     }

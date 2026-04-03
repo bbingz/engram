@@ -529,7 +529,7 @@ export class Database {
 
   /** List premium-tier sessions with proper DB-level pagination (for Viking backfill) */
   listPremiumSessions(opts: { limit?: number; offset?: number; source?: string } = {}): SessionInfo[] {
-    const conditions: string[] = ["s.hidden_at IS NULL", "s.tier = 'premium'", "s.file_path != ''"]
+    const conditions: string[] = ["s.hidden_at IS NULL", "s.tier = 'premium'", "s.file_path != ''", "s.viking_pushed_at IS NULL"]
     const params: Record<string, unknown> = {}
     if (opts.source) { conditions.push('s.source = @source'); params.source = opts.source }
     const limit = opts.limit ?? 100
@@ -543,6 +543,14 @@ export class Database {
       LIMIT @limit OFFSET @offset
     `).all({ ...params, limit, offset }) as Record<string, unknown>[]
     return rows.map(r => this.rowToSession(r))
+  }
+
+  markVikingPushed(sessionId: string, messageCount: number): void {
+    try {
+      this.db.prepare(
+        "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?"
+      ).run(messageCount, sessionId)
+    } catch { /* best-effort */ }
   }
 
   listSessionsSince(since: string, limit = 100): SessionInfo[] {

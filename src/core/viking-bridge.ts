@@ -69,15 +69,28 @@ export interface VikingMemory {
   createdAt: string;
 }
 
-/** @deprecated No longer used after Sessions API migration. Kept for backward compatibility with older test data. */
-export function toVikingUri(source: string, project: string | undefined, id: string): string {
-  return `viking://session/${source}/${project ?? 'unknown'}/${id}`;
+const UNKNOWN_PROJECT = 'unknown';
+
+/** Build composite session ID for Sessions API: source::project::id */
+export function toVikingSessionId(source: string, project: string | undefined, id: string): string {
+  return `${source}::${project ?? UNKNOWN_PROJECT}::${id}`;
 }
 
-/** Extract session ID from viking URI: viking://sessions/{source}/{project}/{session_id} */
+/** @deprecated No longer used after Sessions API migration. Kept for backward compatibility with older test data. */
+export function toVikingUri(source: string, project: string | undefined, id: string): string {
+  return `viking://session/${source}/${project ?? UNKNOWN_PROJECT}/${id}`;
+}
+
+/** Extract session ID (UUID) from viking URI.
+ *  Old format: viking://session/{source}/{project}/{id}
+ *  New format: viking://session/default/{source}::{project}::{id}/... */
 export function sessionIdFromVikingUri(uri: string): string {
-  const match = uri.match(/viking:\/\/session\/[^/]+\/[^/]+\/(.+)$/);
-  return match?.[1] ?? '';
+  // New Sessions API format: composite ID with :: separator
+  const compositeMatch = uri.match(/viking:\/\/session\/[^/]+\/([^/]+::[^/]+::([^/]+))/);
+  if (compositeMatch) return compositeMatch[2];
+  // Old Resources API format: path segments
+  const legacyMatch = uri.match(/viking:\/\/session\/[^/]+\/[^/]+\/([^/]+)/);
+  return legacyMatch?.[1] ?? '';
 }
 
 const CIRCUIT_BREAKER_TTL = 5 * 60 * 1000; // 5 minutes

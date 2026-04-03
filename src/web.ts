@@ -21,7 +21,7 @@ import type { EmbeddingClient } from './core/embeddings.js'
 import { SyncEngine, type SyncPeer } from './core/sync.js'
 import { handleLinkSessions } from './tools/link_sessions.js'
 import { buildResumeCommand } from './core/resume-coordinator.js'
-import type { VikingBridge } from './core/viking-bridge.js'
+import { toVikingSessionId, type VikingBridge } from './core/viking-bridge.js'
 import { WATCHED_SOURCES } from './core/watcher.js'
 import type { UsageCollector } from './core/usage-collector.js'
 import type { TitleGenerator } from './core/title-generator.js'
@@ -619,6 +619,7 @@ export function createApp(db: Database, opts?: {
       return c.json({ error: 'Viking not configured or no adapters' }, 501)
     }
     const viking = opts.viking
+    const adapters = opts.adapters
     const available = await viking.checkAvailable()
     if (!available) {
       return c.json({ error: 'Viking server unreachable' }, 503)
@@ -626,45 +627,47 @@ export function createApp(db: Database, opts?: {
 
     const limit = parseInt(c.req.query('limit') ?? '100', 10)
     const offset = parseInt(c.req.query('offset') ?? '0', 10)
+    const concurrency = Math.min(parseInt(c.req.query('concurrency') ?? '3', 10), 10)
     const source = c.req.query('source')
     const sessions = db.listPremiumSessions({ source: source || undefined, limit, offset })
 
     let pushed = 0
     let skipped = 0
     const failures: { id: string; error: string }[] = []
-    for (const session of sessions) {
-      try {
-        const adapter = opts.adapters.find(a => a.name === session.source)
-        if (!adapter) continue
 
-        const messages: { role: string; content: string }[] = []
-        for await (const msg of adapter.streamMessages(session.filePath)) {
-          if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
-            messages.push({ role: msg.role, content: msg.content })
-          }
+    const pushOne = async (session: (typeof sessions)[0]) => {
+      const adapter = adapters.find(a => a.name === session.source)
+      if (!adapter) return
+
+      const messages: { role: string; content: string }[] = []
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        if ((msg.role === 'user' || msg.role === 'assistant') && msg.content.trim()) {
+          messages.push({ role: msg.role, content: msg.content })
         }
-        if (messages.length === 0) continue
-
-        const filtered = filterForViking(messages)
-        if (filtered.length === 0) { skipped++; continue }
-
-        const sessionId = `${session.source}::${session.project ?? 'unknown'}::${session.id}`
-        await viking.pushSession(sessionId, filtered)
-
-        // Track push to prevent duplicate work by indexer
-        try {
-          db.getRawDb().prepare(
-            "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?"
-          ).run(messages.length, session.id)
-        } catch { /* best-effort */ }
-
-        pushed++
-      } catch (err) {
-        failures.push({ id: session.id, error: err instanceof Error ? err.message : String(err) })
       }
+      if (messages.length === 0) return
+
+      const filtered = filterForViking(messages)
+      if (filtered.length === 0) { skipped++; return }
+
+      const sessionId = toVikingSessionId(session.source, session.project, session.id)
+      await viking.pushSession(sessionId, filtered)
+      db.markVikingPushed(session.id, messages.length)
+      pushed++
     }
 
-    return c.json({ pushed, skipped, errors: failures.length, failures: failures.slice(0, 10), total: sessions.length, offset, limit })
+    // Bounded concurrency: process up to N sessions in parallel
+    const queue = [...sessions]
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (queue.length > 0) {
+        const session = queue.shift()!
+        try { await pushOne(session) }
+        catch (err) { failures.push({ id: session.id, error: err instanceof Error ? err.message : String(err) }) }
+      }
+    })
+    await Promise.all(workers)
+
+    return c.json({ pushed, skipped, errors: failures.length, failures: failures.slice(0, 10), total: sessions.length, offset, limit, concurrency })
   })
 
   // --- Viking cleanup: delete old resources data ---

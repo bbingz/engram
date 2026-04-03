@@ -87,9 +87,7 @@ export async function handleGetContext(
     } catch { /* vector search failed, fall through */ }
   }
 
-  // Viking-enhanced: use find() memory snippets + local session summaries
-  // Note: detail level no longer affects Viking content (memories don't have tiered views).
-  // It still controls environment section depth via gatherEnvironmentData().
+  // Viking-enhanced: detail level controls environment section depth only (Viking memories are not tiered).
   if (deps.viking && params.detail && await deps.viking.checkAvailable()) {
     let vikingContext: string[] = []
     if (params.task) {
