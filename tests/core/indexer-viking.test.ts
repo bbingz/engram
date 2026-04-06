@@ -41,7 +41,7 @@ describe('Indexer with Viking', () => {
       },
     }
     writeFileSync(filePath, '{}')
-    const indexer = new Indexer(db, [adapter as any], { viking: mockViking })
+    const indexer = new Indexer(db, [adapter as any], { viking: mockViking, vikingAutoPush: true })
     await indexer.indexAll()
     await new Promise(r => setTimeout(r, 50))
     expect(mockViking.pushSession).toHaveBeenCalledWith(
@@ -71,7 +71,7 @@ describe('Indexer with Viking', () => {
       streamMessages: async function* () { yield { role: 'user', content: 'test' } },
     }
     writeFileSync(filePath, '{}')
-    const indexer = new Indexer(db, [adapter as any], { viking: mockViking })
+    const indexer = new Indexer(db, [adapter as any], { viking: mockViking, vikingAutoPush: true })
     const count = await indexer.indexAll()
     expect(count).toBe(1)
     expect(db.getSession('test-session-2')).not.toBeNull()

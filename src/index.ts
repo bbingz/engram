@@ -18,7 +18,8 @@ import { IndexJobRunner } from './core/index-job-runner.js'
 import { startWatcher } from './core/watcher.js'
 import { setupProcessLifecycle } from './core/lifecycle.js'
 import { ensureDataDirs, createAdapters, initVectorDeps, initViking } from './core/bootstrap.js'
-import { readFileSettings } from './core/config.js'
+import { readFileSettings, DEFAULT_AI_AUDIT_CONFIG } from './core/config.js'
+import { AiAuditWriter } from './core/ai-audit.js'
 import type { GetContextDeps } from './tools/get_context.js'
 
 import { listSessionsTool, handleListSessions } from './tools/list_sessions.js'
@@ -50,13 +51,15 @@ const adapterMap = Object.fromEntries(adapters.map(a => [a.name, a]))
 
 // Settings + Viking bridge — must come before indexer so it can dual-write
 const fileSettings = readFileSettings()
-const vikingBridge = initViking(fileSettings)
+const auditConfig = { ...DEFAULT_AI_AUDIT_CONFIG, ...fileSettings.aiAudit }
+const audit = new AiAuditWriter(db.getRawDb(), auditConfig)
+const vikingBridge = initViking(fileSettings, { audit })
 const authoritativeNode = fileSettings.syncNodeName || 'local'
 
 // Apply tier-based noise filter
 db.noiseFilter = fileSettings.noiseFilter ?? 'hide-skip'
 
-const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode })
+const indexer = new Indexer(db, adapters, { viking: vikingBridge, vikingAutoPush: fileSettings.viking?.autoPush ?? false, authoritativeNode })
 
 // Vector store — may fail if sqlite-vec can't load
 const vecDeps = initVectorDeps(db, {
@@ -64,6 +67,7 @@ const vecDeps = initVectorDeps(db, {
   ollamaUrl: fileSettings.ollamaUrl,
   ollamaModel: fileSettings.ollamaModel,
   embeddingDimension: fileSettings.embeddingDimension,
+  audit,
 })
 const vectorDeps: GetContextDeps = vecDeps
   ? { vectorStore: vecDeps.vectorStore, embed: (text) => vecDeps.embeddingClient.embed(text) }
