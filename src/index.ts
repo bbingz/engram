@@ -180,7 +180,7 @@ toolRegistry.set('get_context', async (a) => {
 })
 
 toolRegistry.set('generate_summary', async (a) => {
-  return { _early: true, ...(await handleGenerateSummary(db, a as { sessionId: string }, { log })) }
+  return { _early: true, ...(await handleGenerateSummary(db, a as { sessionId: string }, { log, audit })) }
 })
 
 toolRegistry.set('manage_project_alias', async (a) => {

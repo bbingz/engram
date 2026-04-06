@@ -4,6 +4,7 @@ export const PII_PATTERNS: Array<{ name: string; regex: RegExp; replacement: str
   { name: 'bearer_token',  regex: /Bearer\s+[a-zA-Z0-9._\-]{10,}/gi,  replacement: 'Bearer ***' },
   { name: 'hex_secret',    regex: /((?:key|token|secret|password|apikey)[:=]\s*)[a-f0-9]{32,128}/gi, replacement: '$1***' },
   { name: 'email',         regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, replacement: '***@***.***' },
+  { name: 'url_api_key',   regex: /([?&](?:key|apiKey|api_key))=[^&\s]+/gi,          replacement: '$1=***' },
 ]
 
 export function sanitize(obj: Record<string, unknown>): Record<string, unknown> {

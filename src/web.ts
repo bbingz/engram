@@ -194,7 +194,10 @@ export function createApp(db: Database, opts?: {
     })
   }
 
-  // Bearer auth for /api/ai/* GET endpoints (audit data may contain sensitive content)
+  // Bearer auth for /api/ai/* GET endpoints (audit data may contain sensitive content).
+  // When no httpBearerToken is configured (localhost-only), audit endpoints are
+  // accessible without auth — acceptable for a local dev tool. When a token IS
+  // configured (e.g. remote/non-localhost bind), all /api/ai/* requests require it.
   if (bearerToken) {
     app.use('/api/ai/*', async (c, next) => {
       const auth = c.req.header('authorization')
@@ -209,6 +212,8 @@ export function createApp(db: Database, opts?: {
   app.get('/api/ai/audit', (c) => {
     if (!opts?.auditQuery) return c.json({ error: 'Audit not configured' }, 501)
     const q = c.req.query()
+    const limit = q.limit ? parseInt(q.limit, 10) : 50
+    const offset = q.offset ? parseInt(q.offset, 10) : 0
     const result = opts.auditQuery.list({
       caller: q.caller || undefined,
       model: q.model || undefined,
@@ -216,10 +221,10 @@ export function createApp(db: Database, opts?: {
       from: q.from || undefined,
       to: q.to || undefined,
       hasError: q.hasError === 'true' ? true : q.hasError === 'false' ? false : undefined,
-      limit: q.limit ? parseInt(q.limit, 10) : undefined,
-      offset: q.offset ? parseInt(q.offset, 10) : undefined,
+      limit,
+      offset,
     })
-    return c.json(result)
+    return c.json({ ...result, limit, offset })
   })
 
   app.get('/api/ai/audit/:id', (c) => {
@@ -629,7 +634,7 @@ export function createApp(db: Database, opts?: {
     }
 
     try {
-      const summary = await summarizeConversation(messages, currentSettings)
+      const summary = await summarizeConversation(messages, currentSettings, { audit: opts?.audit, sessionId })
       if (!summary) {
         return c.json({ error: 'Empty response from AI' }, 500)
       }

@@ -82,8 +82,10 @@ export class AiAuditWriter extends EventEmitter {
       let requestBody: string | null = null
       let responseBody: string | null = null
       if (this.config.logBodies) {
-        requestBody = truncate(applyPatterns(stringify(entry.requestBody) || ''), this.config.maxBodySize)
-        responseBody = truncate(applyPatterns(stringify(entry.responseBody) || ''), this.config.maxBodySize)
+        const rawReq = stringify(entry.requestBody)
+        const rawRes = stringify(entry.responseBody)
+        requestBody = rawReq != null ? truncate(applyPatterns(rawReq), this.config.maxBodySize) : null
+        responseBody = rawRes != null ? truncate(applyPatterns(rawRes), this.config.maxBodySize) : null
       }
 
       const url = entry.url ? applyPatterns(entry.url) : null

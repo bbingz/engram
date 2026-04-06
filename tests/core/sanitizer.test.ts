@@ -27,6 +27,18 @@ describe('applyPatterns', () => {
     expect(applyPatterns('contact user@example.com for help')).toBe('contact ***@***.*** for help')
   })
 
+  it('redacts Gemini/Google API key in URL query param', () => {
+    expect(applyPatterns('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=AIzaSyB1234567890abcdefg'))
+      .toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=***')
+  })
+
+  it('redacts apiKey and api_key query params', () => {
+    expect(applyPatterns('https://example.com/api?apiKey=secret123&other=ok'))
+      .toBe('https://example.com/api?apiKey=***&other=ok')
+    expect(applyPatterns('https://example.com/api?api_key=secret123'))
+      .toBe('https://example.com/api?api_key=***')
+  })
+
   it('returns unchanged string with no sensitive data', () => {
     const safe = 'indexed 42 sessions in 123ms'
     expect(applyPatterns(safe)).toBe(safe)

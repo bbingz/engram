@@ -1,6 +1,7 @@
 // src/tools/generate_summary.ts
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
+import type { AiAuditWriter } from '../core/ai-audit.js';
 import { getAdapter } from '../core/bootstrap.js';
 import { summarizeConversation } from '../core/ai-client.js';
 import { readFileSettings } from '../core/config.js';
@@ -26,7 +27,7 @@ export async function handleGenerateSummary(
   params: {
     sessionId: string;
   },
-  opts?: { log?: Logger }
+  opts?: { log?: Logger; audit?: AiAuditWriter }
 ) {
   opts?.log?.info('generate_summary invoked', { sessionId: params.sessionId })
   const { sessionId } = params;
@@ -84,7 +85,7 @@ export async function handleGenerateSummary(
 
   // Generate summary
   try {
-    const summary = await summarizeConversation(messages, settings);
+    const summary = await summarizeConversation(messages, settings, { audit: opts?.audit, sessionId });
 
     if (!summary) {
       return {
