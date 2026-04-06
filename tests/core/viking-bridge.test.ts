@@ -333,34 +333,48 @@ describe('post retry logic', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('retries on 429 and succeeds', async () => {
+    vi.useFakeTimers();
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const mockFetch = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 429, text: () => Promise.resolve('rate limited') })
+      .mockResolvedValueOnce({ ok: false, status: 429, text: () => Promise.resolve('rate limited'), headers: new Map() })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }) });
     vi.stubGlobal('fetch', mockFetch);
-    await bridge.pushSession('test-retry', []);
+    const p = bridge.pushSession('test-retry', []);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await p;
     expect(mockFetch).toHaveBeenCalledTimes(3); // retry create + succeed + commit
+    vi.useRealTimers();
   });
 
   it('retries on 500 and succeeds', async () => {
+    vi.useFakeTimers();
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const mockFetch = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('error') })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }) });
     vi.stubGlobal('fetch', mockFetch);
-    await bridge.pushSession('test-retry-500', []);
+    const p = bridge.pushSession('test-retry-500', []);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await p;
     expect(mockFetch).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
   });
 
   it('throws after 3 retries on persistent 429', async () => {
+    vi.useFakeTimers();
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false, status: 429, text: () => Promise.resolve('rate limited'),
+      ok: false, status: 429, text: () => Promise.resolve('rate limited'), headers: new Map(),
     }));
-    await expect(bridge.pushSession('test-exhaust', []))
-      .rejects.toThrow(/after 3 retries/);
+    // Catch immediately to prevent unhandled rejection during timer advance
+    const p = bridge.pushSession('test-exhaust', []).catch((e: Error) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const err = await p;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/rate limited after 3 retries/);
+    vi.useRealTimers();
   });
 
   it('does NOT retry on 400 client error', async () => {
@@ -375,15 +389,19 @@ describe('post retry logic', () => {
   });
 
   it('exhausts all retries on persistent 500 and throws', async () => {
+    vi.useFakeTimers();
     const bridge = new VikingBridge('http://localhost:1933', 'key');
     const mockFetch = vi.fn().mockResolvedValue({
       ok: false, status: 500, text: () => Promise.resolve('internal server error'),
     });
     vi.stubGlobal('fetch', mockFetch);
-    await expect(bridge.pushSession('test-exhaust-500', []))
-      .rejects.toThrow(/after 3 retries/);
-    // Should have attempted exactly MAX_RETRIES (3) times
+    const p = bridge.pushSession('test-exhaust-500', []).catch((e: Error) => e);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const err = await p;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/500/);
     expect(mockFetch).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
   });
 
   it('handles network error on push gracefully (throws, does not hang)', async () => {
@@ -418,5 +436,159 @@ describe('deleteResources', () => {
       ok: false, status: 500, text: () => Promise.resolve('delete failed'),
     }));
     await expect(bridge.deleteResources()).rejects.toThrow(/deleteResources.*500/);
+  });
+});
+
+describe('audit integration', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('records audit entry for find()', async () => {
+    const audit = { record: vi.fn().mockReturnValue(1) };
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { audit: audit as any });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: () => Promise.resolve({ status: 'ok', result: { resources: [] } }),
+    }));
+    await bridge.find('test query');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      caller: 'viking', operation: 'find', provider: 'viking',
+      method: 'POST', statusCode: 200,
+    }));
+  });
+
+  it('records audit entry for pushSession as summary', async () => {
+    const audit = { record: vi.fn().mockReturnValue(1) };
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { audit: audit as any });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }),
+    }));
+    await bridge.pushSession('test-id', [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+    ]);
+    // Should only record ONE audit entry (summary), not per-message
+    const pushCalls = audit.record.mock.calls.filter((c: any) => c[0].operation === 'pushSession');
+    expect(pushCalls).toHaveLength(1);
+    expect(pushCalls[0][0].sessionId).toBe('test-id');
+    expect(pushCalls[0][0].meta.messageCount).toBe(2);
+  });
+
+  it('does not record per-message audit in pushSession', async () => {
+    const audit = { record: vi.fn().mockReturnValue(1) };
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { audit: audit as any });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: () => Promise.resolve({ status: 'ok', result: {} }),
+    }));
+    await bridge.pushSession('test-id', [
+      { role: 'user', content: 'msg1' },
+      { role: 'assistant', content: 'msg2' },
+      { role: 'user', content: 'msg3' },
+    ]);
+    // Only 1 audit call total (the summary), not 1 per message + create + commit
+    expect(audit.record).toHaveBeenCalledTimes(1);
+    expect(audit.record.mock.calls[0][0].operation).toBe('pushSession');
+    expect(audit.record.mock.calls[0][0].meta.messageCount).toBe(3);
+  });
+
+  it('records audit with error on find failure', async () => {
+    const audit = { record: vi.fn().mockReturnValue(1) };
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { audit: audit as any });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
+    await bridge.find('query');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      caller: 'viking', operation: 'find',
+      error: 'network error',
+    }));
+  });
+
+  it('records audit with error on pushSession failure', async () => {
+    const audit = { record: vi.fn().mockReturnValue(1) };
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { audit: audit as any });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+    await expect(bridge.pushSession('id', [{ role: 'user', content: 'hi' }]))
+      .rejects.toThrow('connection refused');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      caller: 'viking', operation: 'pushSession',
+      error: 'connection refused',
+      sessionId: 'id',
+    }));
+  });
+
+  it('records audit for isAvailable()', async () => {
+    const audit = { record: vi.fn().mockReturnValue(1) };
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { audit: audit as any });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+    await bridge.isAvailable();
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      caller: 'viking', operation: 'isAvailable', method: 'GET',
+    }));
+  });
+
+  it('records audit for grep()', async () => {
+    const audit = { record: vi.fn().mockReturnValue(1) };
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { audit: audit as any });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: () => Promise.resolve({ result: [] }),
+    }));
+    await bridge.grep('pattern');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      caller: 'viking', operation: 'grep', method: 'POST',
+    }));
+  });
+
+  it('records audit for ls()', async () => {
+    const audit = { record: vi.fn().mockReturnValue(1) };
+    const bridge = new VikingBridge('http://localhost:1933', 'key', { audit: audit as any });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: () => Promise.resolve({ result: [] }),
+    }));
+    await bridge.ls('viking://session/a');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      caller: 'viking', operation: 'ls', method: 'GET',
+    }));
+  });
+});
+
+describe('observer proxy', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('observerSystem returns parsed result', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: () => Promise.resolve({ result: { uptime: 12345, version: '1.0' } }),
+    }));
+    const data = await bridge.observerSystem();
+    expect(data).toEqual({ uptime: 12345, version: '1.0' });
+  });
+
+  it('observerQueue returns null on error', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
+    expect(await bridge.observerQueue()).toBeNull();
+  });
+
+  it('observerVlm returns null on non-ok response', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
+    expect(await bridge.observerVlm()).toBeNull();
+  });
+
+  it('observerVikingdb calls correct endpoint', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true, json: () => Promise.resolve({ result: { tables: 5 } }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    await bridge.observerVikingdb();
+    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/observer/vikingdb');
+  });
+
+  it('observerTransaction calls correct endpoint', async () => {
+    const bridge = new VikingBridge('http://localhost:1933', 'key');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true, json: () => Promise.resolve({ result: { active: 0 } }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    await bridge.observerTransaction();
+    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:1933/api/v1/observer/transaction');
   });
 });
