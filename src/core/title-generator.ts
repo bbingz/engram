@@ -1,15 +1,22 @@
 // src/core/title-generator.ts
 
+import type { AiAuditWriter } from './ai-audit.js'
+
 export interface TitleGeneratorConfig {
   provider: 'ollama' | 'openai' | 'dashscope' | 'custom'
   baseUrl: string
   model: string
   apiKey?: string
   autoGenerate: boolean
+  audit?: AiAuditWriter
 }
 
 export class TitleGenerator {
-  constructor(private config: TitleGeneratorConfig) {}
+  private audit?: AiAuditWriter
+
+  constructor(private config: TitleGeneratorConfig) {
+    this.audit = config.audit
+  }
 
   async generate(messages: { role: string; content: string }[]): Promise<string | null> {
     if (!this.config.autoGenerate) return null
@@ -41,19 +48,63 @@ export class TitleGenerator {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (this.config.apiKey) headers['Authorization'] = `Bearer ${this.config.apiKey}`
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
-    })
+    const start = Date.now()
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      })
+    } catch (err) {
+      this.audit?.record({
+        caller: 'title',
+        operation: 'generate',
+        method: 'POST',
+        url,
+        model: this.config.model,
+        provider: this.config.provider,
+        durationMs: Date.now() - start,
+        requestBody: { prompt },
+        error: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
+
     const json = (await res.json()) as Record<string, any>
 
     const raw = isOllama
       ? (json.response as string)
       : (json.choices?.[0]?.message?.content as string)
 
-    return parseTitleResponse(raw || '')
+    const result = parseTitleResponse(raw || '')
+
+    // Extract token counts — field names differ by provider
+    const promptTokens: number | undefined = isOllama
+      ? json.prompt_eval_count ?? undefined
+      : json.usage?.prompt_tokens ?? undefined
+    const completionTokens: number | undefined = isOllama
+      ? json.eval_count ?? undefined
+      : json.usage?.completion_tokens ?? undefined
+
+    this.audit?.record({
+      caller: 'title',
+      operation: 'generate',
+      method: 'POST',
+      url,
+      statusCode: res.status,
+      model: this.config.model,
+      provider: this.config.provider,
+      promptTokens,
+      completionTokens,
+      totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0) || undefined,
+      durationMs: Date.now() - start,
+      requestBody: { prompt },
+      responseBody: { text: result },
+    })
+
+    return result
   }
 }
 
