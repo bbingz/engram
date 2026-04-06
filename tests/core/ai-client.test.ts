@@ -1,10 +1,11 @@
 // tests/core/ai-client.test.ts
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const {
   renderPromptTemplate,
   sampleMessages,
   buildRequestBody,
+  summarizeConversation,
 } = await import('../../src/core/ai-client.js');
 
 // ── renderPromptTemplate ─────────────────────────────────────────────
@@ -133,5 +134,210 @@ describe('buildRequestBody', () => {
     // No model or max_tokens at top level
     expect(body.model).toBeUndefined();
     expect(body.max_tokens).toBeUndefined();
+  });
+});
+
+// ── summarizeConversation — audit integration ───────────────────────
+
+describe('summarizeConversation audit', () => {
+  const messages = [
+    { role: 'user', content: 'Hello' },
+    { role: 'assistant', content: 'Hi there' },
+  ];
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function mockAudit() {
+    const calls: any[] = [];
+    return {
+      record: (entry: any) => { calls.push(entry); return calls.length; },
+      calls,
+    };
+  }
+
+  it('openai: records audit with usage.prompt_tokens/completion_tokens', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: 'Summary text' } }],
+        usage: { prompt_tokens: 150, completion_tokens: 50 },
+      }),
+    });
+
+    const audit = mockAudit();
+    const result = await summarizeConversation(messages, {
+      aiProtocol: 'openai',
+      aiApiKey: 'test-key',
+      aiModel: 'gpt-4o-mini',
+      aiBaseURL: 'http://localhost:8080',
+    }, { audit: audit as any, sessionId: 'sess-1' });
+
+    expect(result).toBe('Summary text');
+    expect(audit.calls).toHaveLength(1);
+    const entry = audit.calls[0];
+    expect(entry.caller).toBe('summary');
+    expect(entry.operation).toBe('summarize');
+    expect(entry.method).toBe('POST');
+    expect(entry.statusCode).toBe(200);
+    expect(entry.model).toBe('gpt-4o-mini');
+    expect(entry.provider).toBe('openai');
+    expect(entry.promptTokens).toBe(150);
+    expect(entry.completionTokens).toBe(50);
+    expect(entry.totalTokens).toBe(200);
+    expect(entry.sessionId).toBe('sess-1');
+    expect(entry.durationMs).toBeGreaterThanOrEqual(0);
+    expect(entry.url).toContain('/v1/chat/completions');
+  });
+
+  it('anthropic: records audit with usage.input_tokens/output_tokens', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        content: [{ text: 'Anthropic summary' }],
+        usage: { input_tokens: 200, output_tokens: 80 },
+      }),
+    });
+
+    const audit = mockAudit();
+    const result = await summarizeConversation(messages, {
+      aiProtocol: 'anthropic',
+      aiApiKey: 'test-key',
+      aiModel: 'claude-sonnet-4-20250514',
+      aiBaseURL: 'http://localhost:8080',
+    }, { audit: audit as any });
+
+    expect(result).toBe('Anthropic summary');
+    expect(audit.calls).toHaveLength(1);
+    const entry = audit.calls[0];
+    expect(entry.provider).toBe('anthropic');
+    expect(entry.promptTokens).toBe(200);
+    expect(entry.completionTokens).toBe(80);
+    expect(entry.totalTokens).toBe(280);
+  });
+
+  it('gemini: records audit with usageMetadata.promptTokenCount/candidatesTokenCount', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: 'Gemini summary' }] } }],
+        usageMetadata: { promptTokenCount: 300, candidatesTokenCount: 120 },
+      }),
+    });
+
+    const audit = mockAudit();
+    const result = await summarizeConversation(messages, {
+      aiProtocol: 'gemini',
+      aiApiKey: 'test-key',
+      aiModel: 'gemini-pro',
+      aiBaseURL: 'http://localhost:8080',
+    }, { audit: audit as any });
+
+    expect(result).toBe('Gemini summary');
+    expect(audit.calls).toHaveLength(1);
+    const entry = audit.calls[0];
+    expect(entry.provider).toBe('gemini');
+    expect(entry.promptTokens).toBe(300);
+    expect(entry.completionTokens).toBe(120);
+    expect(entry.totalTokens).toBe(420);
+  });
+
+  it('error response: records audit with error', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => 'Rate limited',
+    });
+
+    const audit = mockAudit();
+    await expect(summarizeConversation(messages, {
+      aiProtocol: 'openai',
+      aiApiKey: 'test-key',
+      aiModel: 'gpt-4o-mini',
+      aiBaseURL: 'http://localhost:8080',
+    }, { audit: audit as any, sessionId: 'sess-err' })).rejects.toThrow('AI request failed (429)');
+
+    expect(audit.calls).toHaveLength(1);
+    const entry = audit.calls[0];
+    expect(entry.caller).toBe('summary');
+    expect(entry.statusCode).toBe(429);
+    expect(entry.error).toContain('429');
+    expect(entry.sessionId).toBe('sess-err');
+  });
+
+  it('fetch failure: records audit with network error', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const audit = mockAudit();
+    await expect(summarizeConversation(messages, {
+      aiProtocol: 'openai',
+      aiApiKey: 'test-key',
+      aiModel: 'gpt-4o-mini',
+      aiBaseURL: 'http://localhost:8080',
+    }, { audit: audit as any })).rejects.toThrow('ECONNREFUSED');
+
+    expect(audit.calls).toHaveLength(1);
+    const entry = audit.calls[0];
+    expect(entry.caller).toBe('summary');
+    expect(entry.error).toBe('ECONNREFUSED');
+    expect(entry.statusCode).toBeUndefined();
+  });
+
+  it('no audit provided: does not crash', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: 'Works fine' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }),
+    });
+
+    // No opts at all
+    const result1 = await summarizeConversation(messages, {
+      aiProtocol: 'openai',
+      aiApiKey: 'test-key',
+      aiModel: 'gpt-4o-mini',
+      aiBaseURL: 'http://localhost:8080',
+    });
+    expect(result1).toBe('Works fine');
+
+    // Empty opts
+    const result2 = await summarizeConversation(messages, {
+      aiProtocol: 'openai',
+      aiApiKey: 'test-key',
+      aiModel: 'gpt-4o-mini',
+      aiBaseURL: 'http://localhost:8080',
+    }, {});
+    expect(result2).toBe('Works fine');
+  });
+
+  it('no usage in response: records audit with undefined tokens', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: 'No usage' } }],
+        // no usage field
+      }),
+    });
+
+    const audit = mockAudit();
+    await summarizeConversation(messages, {
+      aiProtocol: 'openai',
+      aiApiKey: 'test-key',
+      aiModel: 'gpt-4o-mini',
+      aiBaseURL: 'http://localhost:8080',
+    }, { audit: audit as any });
+
+    const entry = audit.calls[0];
+    expect(entry.promptTokens).toBeUndefined();
+    expect(entry.completionTokens).toBeUndefined();
+    expect(entry.totalTokens).toBeUndefined(); // (0 + 0) || undefined = undefined
   });
 });

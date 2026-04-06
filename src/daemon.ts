@@ -11,7 +11,8 @@ import { IndexJobRunner } from './core/index-job-runner.js'
 import { startWatcher, WATCHED_SOURCES, getWatchEntries } from './core/watcher.js'
 import { ensureDataDirs, createAdapters, initVectorDeps, initViking } from './core/bootstrap.js'
 import { createApp } from './web.js'
-import { readFileSettings, type FileSettings } from './core/config.js'
+import { readFileSettings, DEFAULT_AI_AUDIT_CONFIG, type FileSettings } from './core/config.js'
+import { AiAuditWriter, AiAuditQuery } from './core/ai-audit.js'
 import { SyncEngine } from './core/sync.js'
 import { AutoSummaryManager } from './core/auto-summary.js'
 import { summarizeConversation } from './core/ai-client.js'
@@ -68,6 +69,12 @@ const authoritativeNode = settings.syncNodeName || 'local'
 // Apply tier-based noise filter
 db.noiseFilter = settings.noiseFilter ?? 'hide-skip'
 
+// AI Audit
+const auditConfig = { ...DEFAULT_AI_AUDIT_CONFIG, ...settings.aiAudit }
+const audit = new AiAuditWriter(db.getRawDb(), auditConfig)
+const auditQuery = new AiAuditQuery(db.getRawDb())
+audit.cleanup(auditConfig.retentionDays)
+
 // Emit power state
 emit({ event: 'power', mode: powerMode })
 
@@ -75,7 +82,7 @@ emit({ event: 'power', mode: powerMode })
 const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({ path, source }))
 
 // Viking bridge — optional external context engine
-const vikingBridge = initViking(settings, { log, metrics, tracer })
+const vikingBridge = initViking(settings, { audit, log, metrics, tracer })
 
 const usageCollector = new UsageCollector(db.getRawDb(), (event, data) => emit({ event, ...(typeof data === 'object' && data !== null ? data : { data }) }))
 usageCollector.register(new ClaudeUsageProbe())
@@ -88,13 +95,25 @@ const titleConfig = {
   apiKey: settings.titleApiKey,
   autoGenerate: settings.titleAutoGenerate ?? false,
 }
-const titleGenerator = new TitleGenerator(titleConfig)
+const titleGenerator = new TitleGenerator({ ...titleConfig, audit })
 
-const indexer = new Indexer(db, adapters, { viking: vikingBridge, authoritativeNode, titleGenerator, log, tracer, metrics })
+const indexer = new Indexer(db, adapters, { viking: vikingBridge, vikingAutoPush: settings.viking?.autoPush ?? false, authoritativeNode, titleGenerator, log, tracer, metrics })
 
 function emit(obj: object): void {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
+
+audit.on('entry', (entry: { id: number; caller: string; operation: string; model?: string; durationMs: number; promptTokens?: number }) => {
+  emit({
+    event: 'ai_audit',
+    id: entry.id,
+    caller: entry.caller,
+    operation: entry.operation,
+    model: entry.model,
+    durationMs: entry.durationMs,
+    promptTokens: entry.promptTokens,
+  })
+})
 
 if (vikingBridge) {
   vikingBridge.isAvailable().then(available => {
@@ -110,6 +129,7 @@ const vecDeps = initVectorDeps(db, {
   ollamaUrl: settings.ollamaUrl,
   ollamaModel: settings.ollamaModel,
   embeddingDimension: settings.embeddingDimension,
+  audit,
 })
 if (!vecDeps) {
   emit({ event: 'warning', message: 'Vector store unavailable' })
@@ -235,7 +255,7 @@ function getAutoSummary(): AutoSummaryManager | undefined {
         try {
           // Fresh read for AI call (need latest API key/model)
           const currentSettings = readFileSettings()
-          const summary = await summarizeConversation(messages, currentSettings)
+          const summary = await summarizeConversation(messages, currentSettings, { audit, sessionId })
           if (summary) {
             db.updateSessionSummary(sessionId, summary, messages.length)
             emit({ event: 'summary_generated', sessionId, summary, total: db.countSessions() })
@@ -363,6 +383,8 @@ const app = createApp(db, {
   logWriter,
   metrics,
   tracer,
+  audit,
+  auditQuery,
 })
 const { serve } = await import('@hono/node-server')
 const webServer = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
@@ -394,6 +416,7 @@ const logRotationTimer = setInterval(() => {
     db.raw.prepare("DELETE FROM metrics WHERE ts < ?").run(
       new Date(Date.now() - 24 * 3600000).toISOString()
     )
+    audit.cleanup(auditConfig.retentionDays)
   })
 }, 3600000)
 

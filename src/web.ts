@@ -35,6 +35,7 @@ import type { Tracer } from './core/tracer.js'
 import { populateMockData, clearMockData } from './core/mock-data.js'
 import { handleLintConfig, runAllHealthChecks } from './tools/lint_config.js'
 import { filterForViking } from './core/viking-filter.js'
+import type { AiAuditWriter, AiAuditQuery } from './core/ai-audit.js'
 
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = []
@@ -86,6 +87,8 @@ export function createApp(db: Database, opts?: {
   logWriter?: LogWriter
   metrics?: MetricsCollector
   tracer?: Tracer
+  audit?: AiAuditWriter
+  auditQuery?: AiAuditQuery
 }) {
   type Variables = { traceId: string }
   const app = new Hono<{ Variables: Variables }>()
@@ -190,6 +193,72 @@ export function createApp(db: Database, opts?: {
       await next()
     })
   }
+
+  // Bearer auth for /api/ai/* GET endpoints (audit data may contain sensitive content)
+  if (bearerToken) {
+    app.use('/api/ai/*', async (c, next) => {
+      const auth = c.req.header('authorization')
+      if (auth !== `Bearer ${bearerToken}`) {
+        return c.json({ error: 'Unauthorized' }, 401)
+      }
+      await next()
+    })
+  }
+
+  // --- AI Audit API ---
+  app.get('/api/ai/audit', (c) => {
+    if (!opts?.auditQuery) return c.json({ error: 'Audit not configured' }, 501)
+    const q = c.req.query()
+    const result = opts.auditQuery.list({
+      caller: q.caller || undefined,
+      model: q.model || undefined,
+      sessionId: q.sessionId || undefined,
+      from: q.from || undefined,
+      to: q.to || undefined,
+      hasError: q.hasError === 'true' ? true : q.hasError === 'false' ? false : undefined,
+      limit: q.limit ? parseInt(q.limit, 10) : undefined,
+      offset: q.offset ? parseInt(q.offset, 10) : undefined,
+    })
+    return c.json(result)
+  })
+
+  app.get('/api/ai/audit/:id', (c) => {
+    if (!opts?.auditQuery) return c.json({ error: 'Audit not configured' }, 501)
+    const record = opts.auditQuery.get(parseInt(c.req.param('id'), 10))
+    if (!record) return c.json({ error: 'not found' }, 404)
+    return c.json(record)
+  })
+
+  app.get('/api/ai/stats', (c) => {
+    if (!opts?.auditQuery) return c.json({ error: 'Audit not configured' }, 501)
+    const q = c.req.query()
+    return c.json(opts.auditQuery.stats({
+      from: q.from || undefined,
+      to: q.to || undefined,
+    }))
+  })
+
+  // --- Viking Observer Proxy ---
+  app.get('/api/viking/observer', async (c) => {
+    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501)
+    return c.json(await opts.viking.observerSystem())
+  })
+  app.get('/api/viking/observer/queue', async (c) => {
+    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501)
+    return c.json(await opts.viking.observerQueue())
+  })
+  app.get('/api/viking/observer/vlm', async (c) => {
+    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501)
+    return c.json(await opts.viking.observerVlm())
+  })
+  app.get('/api/viking/observer/vikingdb', async (c) => {
+    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501)
+    return c.json(await opts.viking.observerVikingdb())
+  })
+  app.get('/api/viking/observer/transaction', async (c) => {
+    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501)
+    return c.json(await opts.viking.observerTransaction())
+  })
 
   app.get('/api/sync/status', (c) => {
     return c.json({
@@ -816,23 +885,15 @@ export function createApp(db: Database, opts?: {
       }
     })
 
-    // Viking status (if configured)
+    // Viking status (if configured) — uses VikingBridge observer methods
     let viking: Record<string, unknown> | null = null
     if (opts?.viking) {
       try {
         const available = await opts.viking.checkAvailable()
         if (available) {
-          const vikingUrl = opts.viking.url
-          const vikingHeaders = opts.viking.apiHeaders
-          const queueRes = await fetch(`${vikingUrl}/api/v1/observer/queue`, {
-            headers: vikingHeaders,
-            signal: AbortSignal.timeout(5000),
-          }).then(r => r.json()).catch(() => null)
-          const vlmRes = await fetch(`${vikingUrl}/api/v1/observer/vlm`, {
-            headers: vikingHeaders,
-            signal: AbortSignal.timeout(5000),
-          }).then(r => r.json()).catch(() => null)
-          viking = { available: true, queue: queueRes?.result?.status ?? null, vlm: vlmRes?.result?.status ?? null }
+          const queueData = await opts.viking.observerQueue()
+          const vlmData = await opts.viking.observerVlm()
+          viking = { available: true, queue: queueData, vlm: vlmData }
         } else {
           viking = { available: false }
         }

@@ -1,6 +1,7 @@
 // src/core/ai-client.ts
 import type { AiProtocol, FileSettings } from './config.js';
 import { resolveSummaryConfig, getBaseURL } from './config.js';
+import type { AiAuditWriter } from './ai-audit.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -110,7 +111,9 @@ export function buildRequestBody(
 export async function summarizeConversation(
   messages: ConversationMessage[],
   settings: FileSettings,
+  opts?: { audit?: AiAuditWriter; sessionId?: string },
 ): Promise<string> {
+  const start = Date.now();
   const protocol = settings.aiProtocol || 'openai';
   const apiKey = settings.aiApiKey || '';
   const model = settings.aiModel || 'gpt-4o-mini';
@@ -173,28 +176,98 @@ export async function summarizeConversation(
   });
 
   // Make request
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    opts?.audit?.record({
+      caller: 'summary',
+      operation: 'summarize',
+      method: 'POST',
+      url,
+      model,
+      provider: protocol,
+      durationMs: Date.now() - start,
+      requestBody: body,
+      error: err instanceof Error ? err.message : String(err),
+      sessionId: opts?.sessionId,
+    });
+    throw err;
+  }
 
   if (!response.ok) {
     const text = await response.text();
+    opts?.audit?.record({
+      caller: 'summary',
+      operation: 'summarize',
+      method: 'POST',
+      url,
+      statusCode: response.status,
+      model,
+      provider: protocol,
+      durationMs: Date.now() - start,
+      requestBody: body,
+      responseBody: text,
+      error: `AI request failed (${response.status})`,
+      sessionId: opts?.sessionId,
+    });
     throw new Error(`AI request failed (${response.status}): ${text}`);
   }
 
   const data = await response.json();
 
+  // Extract token usage per protocol
+  let promptTokens: number | undefined;
+  let completionTokens: number | undefined;
+
+  if (protocol === 'openai') {
+    promptTokens = data.usage?.prompt_tokens;
+    completionTokens = data.usage?.completion_tokens;
+  } else if (protocol === 'anthropic') {
+    promptTokens = data.usage?.input_tokens;
+    completionTokens = data.usage?.output_tokens;
+  } else if (protocol === 'gemini') {
+    promptTokens = data.usageMetadata?.promptTokenCount;
+    completionTokens = data.usageMetadata?.candidatesTokenCount;
+  }
+
   // Extract response text
+  let result: string;
   switch (protocol) {
     case 'openai':
-      return (data.choices?.[0]?.message?.content ?? '').trim();
+      result = (data.choices?.[0]?.message?.content ?? '').trim();
+      break;
     case 'anthropic':
-      return (data.content?.[0]?.text ?? '').trim();
+      result = (data.content?.[0]?.text ?? '').trim();
+      break;
     case 'gemini':
-      return (data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
+      result = (data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
+      break;
     default:
       throw new Error(`Unsupported protocol: ${protocol as string}`);
   }
+
+  // Record audit entry
+  opts?.audit?.record({
+    caller: 'summary',
+    operation: 'summarize',
+    method: 'POST',
+    url,
+    statusCode: response.status,
+    model,
+    provider: protocol,
+    promptTokens,
+    completionTokens,
+    totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0) || undefined,
+    durationMs: Date.now() - start,
+    requestBody: body,
+    responseBody: data,
+    sessionId: opts?.sessionId,
+  });
+
+  return result;
 }

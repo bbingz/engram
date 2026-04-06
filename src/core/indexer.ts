@@ -26,7 +26,7 @@ export class Indexer {
   constructor(
     private db: Database,
     private adapters: SessionAdapter[],
-    private opts?: { viking?: VikingBridge | null; authoritativeNode?: string; writer?: SessionSnapshotWriter; titleGenerator?: TitleGenerator; log?: Logger; tracer?: Tracer; metrics?: MetricsCollector }
+    private opts?: { viking?: VikingBridge | null; vikingAutoPush?: boolean; authoritativeNode?: string; writer?: SessionSnapshotWriter; titleGenerator?: TitleGenerator; log?: Logger; tracer?: Tracer; metrics?: MetricsCollector }
   ) {
     this.writer = opts?.writer ?? new SessionSnapshotWriter(db)
     this.log = opts?.log
@@ -34,15 +34,24 @@ export class Indexer {
     this.metrics = opts?.metrics
   }
 
-  private async pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): Promise<void> {
-    if (!this.opts?.viking || messages.length === 0) return
+  /** Cooldown: don't re-push a session if pushed within this window */
+  private static readonly VIKING_PUSH_COOLDOWN_MS = 5 * 60 * 1000 // 5 minutes
 
-    // Skip if already pushed with same message count (no new content)
+  private async pushToViking(info: SessionInfo, messages: { role: string; content: string }[]): Promise<void> {
+    if (!this.opts?.viking || !this.opts.vikingAutoPush || messages.length === 0) return
+
+    // Skip if already pushed with same message count, or pushed recently (cooldown)
     try {
       const row = this.db.getRawDb().prepare(
-        'SELECT viking_pushed_msg_count FROM sessions WHERE id = ?'
-      ).get(info.id) as { viking_pushed_msg_count: number | null } | undefined
+        'SELECT viking_pushed_at, viking_pushed_msg_count FROM sessions WHERE id = ?'
+      ).get(info.id) as { viking_pushed_at: string | null; viking_pushed_msg_count: number | null } | undefined
+      // No new messages since last push
       if (row?.viking_pushed_msg_count != null && row.viking_pushed_msg_count >= messages.length) return
+      // Cooldown: avoid re-pushing active sessions on every watcher event
+      if (row?.viking_pushed_at) {
+        const pushedAt = new Date(row.viking_pushed_at + 'Z').getTime()
+        if (Date.now() - pushedAt < Indexer.VIKING_PUSH_COOLDOWN_MS) return
+      }
     } catch { /* column may not exist yet */ }
 
     try {
@@ -267,7 +276,7 @@ export class Indexer {
               this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
 
               if (snapshot.tier === 'premium') {
-                this.pushToViking(info, messages)
+                await this.pushToViking(info, messages)
               }
 
               if (snapshot.tier) {
@@ -404,7 +413,7 @@ export class Indexer {
       this.writeExtractedData(info.id, info.model || '', acc.inputTokens, acc.outputTokens, acc.cacheReadTokens, acc.cacheCreationTokens, acc.toolCounts, acc.fileCounts)
 
       if (snapshot.tier === 'premium') {
-        this.pushToViking(info, messages)
+        await this.pushToViking(info, messages)
       }
 
       if (snapshot.tier) {
