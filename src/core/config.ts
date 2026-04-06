@@ -30,6 +30,25 @@ export interface VikingSettings {
   apiKey?: string;
   agentId?: string;
   enabled?: boolean;
+  /** Auto-push premium sessions to Viking during indexing. Default: false.
+   *  When false, Viking is available for search/backfill but won't auto-push. */
+  autoPush?: boolean;
+  /** Max API requests per hour. Hard cap — exceeding silently skips pushes. Default: 1000. */
+  maxRequestsPerHour?: number;
+}
+
+export interface AiAuditConfig {
+  enabled: boolean
+  retentionDays: number
+  maxBodySize: number
+  logBodies: boolean
+}
+
+export const DEFAULT_AI_AUDIT_CONFIG: AiAuditConfig = {
+  enabled: true,
+  retentionDays: 30,
+  maxBodySize: 10000,
+  logBodies: false,
 }
 
 export interface MonitorConfig {
@@ -111,6 +130,9 @@ export interface FileSettings {
     logLevel?: 'debug' | 'info' | 'warn' | 'error'
     logRetentionDays?: number
   }
+
+  // ── AI Audit ──────────────────────────────────────────────────────
+  aiAudit?: Partial<AiAuditConfig>
 
   // ── Dev mode ──────────────────────────────────────────────────────
   devMode?: boolean;

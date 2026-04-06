@@ -428,6 +428,37 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_alerts_rule ON alerts(rule, ts);
     `)
 
+    // ── AI Audit Log ────────────────────────────────────────────────
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS ai_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+        trace_id TEXT,
+        caller TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        request_source TEXT,
+        method TEXT,
+        url TEXT,
+        status_code INTEGER,
+        duration_ms INTEGER,
+        model TEXT,
+        provider TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        request_body TEXT,
+        response_body TEXT,
+        error TEXT,
+        session_id TEXT,
+        meta TEXT
+      )
+    `)
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_ai_audit_ts ON ai_audit_log(ts)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_ai_audit_caller ON ai_audit_log(caller, ts)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_ai_audit_model ON ai_audit_log(model, ts)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_ai_audit_session ON ai_audit_log(session_id)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_ai_audit_trace ON ai_audit_log(trace_id)')
+
     this.runPostMigrationBackfill()
     this.backfillTiers()
     this.backfillScores()
