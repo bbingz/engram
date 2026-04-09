@@ -71,17 +71,21 @@ struct SessionsPageView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessions_container")
         .task { await loadData() }
-        .onChange(of: timeFilter) { _ in Task { await loadData() } }
-        .onChange(of: sourceFilter) { _ in Task { await loadData() } }
+        .onChange(of: timeFilter) { _, _ in Task { await loadData() } }
+        .onChange(of: sourceFilter) { _, _ in Task { await loadData() } }
     }
 
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
         do {
+            let db = self.db
             let sources: Set<String> = sourceFilter.map { [$0] } ?? []
             let since = sinceDate(for: timeFilter)
-            sessions = try db.listSessions(sources: sources, since: since, subAgent: false, limit: 200)
+            let loaded = try await Task.detached {
+                try db.listSessions(sources: sources, since: since, subAgent: false, limit: 200)
+            }.value
+            sessions = loaded
             totalCount = sessions.count
             totalMessages = sessions.reduce(0) { $0 + $1.messageCount }
             availableSources = Array(Set(sessions.map(\.source))).sorted()

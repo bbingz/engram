@@ -166,14 +166,24 @@ struct HomeView: View {
         isLoading = true
         defer { isLoading = false }
 
+        let db = self.db
         do {
-            kpi = try db.kpiStats()
-            dailyActivity = try db.dailyActivity(days: 30)
-            hourlyActivity = try db.hourlyActivity()
-            sourceDist = try db.sourceDistribution()
-            tiers = try db.tierDistribution()
-            recentSessions = try db.recentSessions(limit: 8)
-            alertMessage = nil  // Alerts populated when health issues detected
+            let data = try await Task.detached {
+                let kpi = try db.kpiStats()
+                let daily = try db.dailyActivity(days: 30)
+                let hourly = try db.hourlyActivity()
+                let source = try db.sourceDistribution()
+                let tiers = try db.tierDistribution()
+                let recent = try db.recentSessions(limit: 8)
+                return (kpi, daily, hourly, source, tiers, recent)
+            }.value
+            kpi = data.0
+            dailyActivity = data.1
+            hourlyActivity = data.2
+            sourceDist = data.3
+            tiers = data.4
+            recentSessions = data.5
+            alertMessage = nil
         } catch {
             print("HomeView load error:", error)
         }

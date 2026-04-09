@@ -355,9 +355,8 @@ struct SessionDetailView: View {
                 NSPasteboard.general.setString(response.brief, forType: .string)
                 handoffStatus = "Handoff copied! (\(response.sessionCount) sessions)"
                 // Clear status after 3s
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    if handoffStatus?.hasPrefix("Handoff") == true { handoffStatus = nil }
-                }
+                try? await Task.sleep(for: .seconds(3))
+                if handoffStatus?.hasPrefix("Handoff") == true { handoffStatus = nil }
             } catch {
                 handoffStatus = "Handoff failed: \(error.localizedDescription)"
             }

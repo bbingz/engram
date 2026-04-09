@@ -1270,6 +1270,11 @@ if (isMain) {
   const host = settings.httpHost ?? '127.0.0.1'
   const app = createApp(db, { settings })
 
+  if (host !== '127.0.0.1' && !settings.httpBearerToken) {
+    process.stderr.write('[engram-web] WARNING: Binding to ' + host + ' without bearer token. All GET endpoints are unauthenticated.\n')
+    process.stderr.write('[engram-web] Set httpBearerToken in ~/.engram/settings.json to protect your data.\n')
+  }
+
   serve({ fetch: app.fetch, port, hostname: host }, (info) => {
     process.stderr.write(`[engram-web] Listening on http://${host}:${info.port}\n`)
   })

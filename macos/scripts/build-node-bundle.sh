@@ -17,7 +17,7 @@ mkdir -p "$DEST"
 # Copy the full dist/ tree (daemon.js needs all its sibling modules)
 if ! rsync -a --delete dist/ "$DEST/"; then
   echo "[CodingMemory] WARNING: rsync failed, falling back to cp" >&2
-  rm -rf "$DEST"/*
+  rm -rf "${DEST:?}"/*
   cp -r dist/* "$DEST/"
 fi
 

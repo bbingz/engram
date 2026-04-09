@@ -9,10 +9,14 @@ struct MarkdownText: View {
     let fontSize: Double
 
     // Cache AttributedString results to avoid re-parsing markdown every render
-    private static let attrCache = NSCache<NSString, CachedAttributedString>()
+    private static let attrCache: NSCache<NSString, CachedAttributedString> = {
+        let cache = NSCache<NSString, CachedAttributedString>()
+        cache.countLimit = 500
+        return cache
+    }()
 
     private var attributed: AttributedString? {
-        let key = NSString(string: String(text.hashValue))
+        let key = NSString(string: text)
         if let cached = Self.attrCache.object(forKey: key) { return cached.value }
         let result = try? AttributedString(
             markdown: text,
@@ -53,17 +57,20 @@ struct SegmentedMessageView: View {
     let content: String
     @AppStorage("contentFontSize") var fontSize: Double = 14
 
-    // Cache parsed segments keyed by content hash — avoids re-parsing on every render
-    private static let segmentCache = NSCache<NSString, SegmentCacheEntry>()
+    // Cache parsed segments keyed by content — avoids re-parsing on every render
+    private static let segmentCache: NSCache<NSString, SegmentCacheEntry> = {
+        let cache = NSCache<NSString, SegmentCacheEntry>()
+        cache.countLimit = 200
+        return cache
+    }()
 
     private var segments: [ContentSegment] {
-        let key = NSString(string: String(content.hashValue))
+        let key = NSString(string: content)
         if let cached = Self.segmentCache.object(forKey: key) {
             return cached.segments
         }
         let parsed = ContentSegmentParser.parse(content)
         let entry = SegmentCacheEntry(segments: parsed)
-        Self.segmentCache.object(forKey: key)  // check again (race)
         Self.segmentCache.setObject(entry, forKey: key)
         return parsed
     }

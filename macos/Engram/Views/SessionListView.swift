@@ -46,28 +46,22 @@ struct SessionListView: View {
         agentFilterMode == 0 ? nil : agentFilterMode == 1 ? true : false
     }
 
-    // MARK: - Computed
+    // MARK: - Cached derived state
 
-    /// Source counts derived from loaded sessions
-    private var sourceCounts: [(source: String, count: Int)] {
-        let counts = Dictionary(grouping: sessions, by: \.source)
-            .mapValues(\.count)
-        return counts.sorted { $0.value > $1.value }
-            .map { (source: $0.key, count: $0.value) }
-    }
-
-    /// Project list with counts derived from loaded sessions
-    private var projectList: [(name: String, count: Int)] {
-        let counts = Dictionary(grouping: sessions.compactMap(\.project), by: { $0 })
-            .mapValues(\.count)
-        return counts.sorted { $0.key < $1.key }
-            .map { (name: $0.key, count: $0.value) }
-    }
-
+    @State private var sourceCounts: [(source: String, count: Int)] = []
+    @State private var projectList: [(name: String, count: Int)] = []
     @State private var filteredSessions: [Session] = []
 
-    /// Recompute filtered sessions from current state
+    /// Recompute filtered sessions and derived counts from current state
     private func updateFilteredSessions() {
+        // Recompute source counts and project list from full sessions
+        let countsBySource = Dictionary(grouping: sessions, by: \.source).mapValues(\.count)
+        sourceCounts = countsBySource.sorted { $0.value > $1.value }
+            .map { (source: $0.key, count: $0.value) }
+        let countsByProject = Dictionary(grouping: sessions.compactMap(\.project), by: { $0 }).mapValues(\.count)
+        projectList = countsByProject.sorted { $0.key < $1.key }
+            .map { (name: $0.key, count: $0.value) }
+
         var result = sessions
         if !selectedSources.isEmpty {
             result = result.filter { selectedSources.contains($0.source) }

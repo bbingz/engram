@@ -14,10 +14,6 @@ struct SearchPageView: View {
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var embeddingStatus: EmbeddingStatus? = nil
 
-    enum SearchMode: String, CaseIterable {
-        case hybrid, keyword, semantic
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -133,7 +129,7 @@ struct SearchPageView: View {
         }
         .accessibilityIdentifier("search_container")
         .task { await loadEmbeddingStatus() }
-        .onChange(of: query) { _ in
+        .onChange(of: query) { _, _ in
             searchTask?.cancel()
             searchTask = Task {
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -171,32 +167,7 @@ struct SearchPageView: View {
             warning = response.warning
             results = (response.results ?? []).compactMap { r in
                 guard let sess = r.session else { return nil }
-                let session = Session(
-                    id: sess.id,
-                    source: sess.source ?? "unknown",
-                    startTime: sess.startTime ?? "",
-                    endTime: sess.endTime,
-                    cwd: sess.cwd ?? "",
-                    project: sess.project,
-                    model: sess.model,
-                    messageCount: sess.messageCount ?? 0,
-                    userMessageCount: sess.userMessageCount ?? 0,
-                    assistantMessageCount: sess.assistantMessageCount ?? 0,
-                    systemMessageCount: sess.systemMessageCount ?? 0,
-                    summary: sess.summary,
-                    filePath: sess.filePath ?? "",
-                    sizeBytes: sess.sizeBytes ?? 0,
-                    indexedAt: sess.indexedAt ?? "",
-                    agentRole: sess.agentRole,
-                    hiddenAt: nil,
-                    customName: nil,
-                    tier: nil,
-                    toolMessageCount: 0,
-                    generatedTitle: nil
-                )
-                return SearchResult(
-                    id: sess.id,
-                    session: session,
+                return sess.toSearchResult(
                     snippet: r.snippet ?? "",
                     matchType: r.matchType ?? "keyword",
                     score: r.score ?? 0

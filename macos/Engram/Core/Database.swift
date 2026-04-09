@@ -72,7 +72,7 @@ final class DatabaseManager {
     }
 
     // MARK: - list_sessions
-    func listSessions(
+    nonisolated func listSessions(
         sources: Set<String> = [],   // empty = all
         projects: Set<String> = [],  // empty = all
         since: String? = nil,
@@ -81,8 +81,7 @@ final class DatabaseManager {
         limit: Int = 200,
         offset: Int = 0
     ) throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+        try readInBackground { db in
             var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
             var args: [DatabaseValueConvertible] = []
             if !sources.isEmpty {
@@ -108,9 +107,8 @@ final class DatabaseManager {
     }
 
     // MARK: - list projects
-    func listProjects() throws -> [String] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func listProjects() throws -> [String] {
+        try readInBackground { db in
             try String.fetchAll(db, sql: """
                 SELECT DISTINCT project FROM sessions
                 WHERE project IS NOT NULL AND hidden_at IS NULL
@@ -119,9 +117,8 @@ final class DatabaseManager {
         }
     }
 
-    func countsBySource() throws -> [String: Int] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func countsBySource() throws -> [String: Int] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) as n FROM sessions WHERE hidden_at IS NULL GROUP BY source
             """)
@@ -617,9 +614,8 @@ final class DatabaseManager {
         }
     }
 
-    func kpiStats() throws -> KPIStats {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func kpiStats() throws -> KPIStats {
+        try readInBackground { db in
             let row = try Row.fetchOne(db, sql: """
                 SELECT
                     COUNT(*) as sessions,
@@ -637,9 +633,8 @@ final class DatabaseManager {
         }
     }
 
-    func dailyActivity(days: Int = 30) throws -> [(date: String, count: Int)] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func dailyActivity(days: Int = 30) throws -> [(date: String, count: Int)] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT DATE(start_time) as day, COUNT(*) as count
                 FROM sessions
@@ -651,9 +646,8 @@ final class DatabaseManager {
         }
     }
 
-    func hourlyActivity() throws -> [Int] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func hourlyActivity() throws -> [Int] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT CAST(strftime('%H', start_time, 'localtime') AS INTEGER) as hour,
                        COUNT(*) as count
@@ -671,9 +665,8 @@ final class DatabaseManager {
         }
     }
 
-    func sourceDistribution() throws -> [(source: String, count: Int)] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func sourceDistribution() throws -> [(source: String, count: Int)] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) as count
                 FROM sessions WHERE hidden_at IS NULL
@@ -683,9 +676,8 @@ final class DatabaseManager {
         }
     }
 
-    func tierDistribution() throws -> (premium: Int, normal: Int, lite: Int, skip: Int) {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func tierDistribution() throws -> (premium: Int, normal: Int, lite: Int, skip: Int) {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT COALESCE(tier, 'normal') as t, COUNT(*) as count
                 FROM sessions WHERE hidden_at IS NULL
@@ -707,9 +699,8 @@ final class DatabaseManager {
         }
     }
 
-    func recentSessions(limit: Int = 8) throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func recentSessions(limit: Int = 8) throws -> [Session] {
+        try readInBackground { db in
             try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE hidden_at IS NULL AND (tier IS NULL OR tier != 'skip')

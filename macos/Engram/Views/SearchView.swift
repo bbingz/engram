@@ -259,32 +259,7 @@ struct SearchView: View {
                     warning = response.warning
                     results = (response.results ?? []).compactMap { r in
                         guard let sess = r.session else { return nil }
-                        let session = Session(
-                            id: sess.id,
-                            source: sess.source ?? "unknown",
-                            startTime: sess.startTime ?? "",
-                            endTime: sess.endTime,
-                            cwd: sess.cwd ?? "",
-                            project: sess.project,
-                            model: sess.model,
-                            messageCount: sess.messageCount ?? 0,
-                            userMessageCount: sess.userMessageCount ?? 0,
-                            assistantMessageCount: sess.assistantMessageCount ?? 0,
-                            systemMessageCount: sess.systemMessageCount ?? 0,
-                            summary: sess.summary,
-                            filePath: sess.filePath ?? "",
-                            sizeBytes: sess.sizeBytes ?? 0,
-                            indexedAt: sess.indexedAt ?? "",
-                            agentRole: sess.agentRole,
-                            hiddenAt: nil,
-                            customName: nil,
-                            tier: nil,
-                            toolMessageCount: 0,
-                            generatedTitle: nil
-                        )
-                        return SearchResult(
-                            id: sess.id,
-                            session: session,
+                        return sess.toSearchResult(
                             snippet: r.snippet ?? "",
                             matchType: r.matchType ?? "keyword",
                             score: r.score ?? 0
@@ -395,6 +370,39 @@ struct SearchAPISession: Decodable {
     let sizeBytes: Int?
     let indexedAt: String?
     let agentRole: String?
+
+    func toSearchResult(snippet: String, matchType: String, score: Double) -> SearchResult {
+        let session = Session(
+            id: id,
+            source: source ?? "unknown",
+            startTime: startTime ?? "",
+            endTime: endTime,
+            cwd: cwd ?? "",
+            project: project,
+            model: model,
+            messageCount: messageCount ?? 0,
+            userMessageCount: userMessageCount ?? 0,
+            assistantMessageCount: assistantMessageCount ?? 0,
+            systemMessageCount: systemMessageCount ?? 0,
+            summary: summary,
+            filePath: filePath ?? "",
+            sizeBytes: sizeBytes ?? 0,
+            indexedAt: indexedAt ?? "",
+            agentRole: agentRole,
+            hiddenAt: nil,
+            customName: nil,
+            tier: nil,
+            toolMessageCount: 0,
+            generatedTitle: nil
+        )
+        return SearchResult(
+            id: id,
+            session: session,
+            snippet: snippet,
+            matchType: matchType,
+            score: score
+        )
+    }
 }
 
 // MARK: - Source badge

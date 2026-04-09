@@ -84,8 +84,9 @@ if [ "$grep3_count" -eq 0 ]; then ok "grep impossible string: 0 matches (correct
 section "3. Semantic Search (find)"
 
 run_find() {
-  local query="$1" label="$2" min_score="$3"
-  local result=$(post "$API/search/find" -d "{\"query\":\"$query\",\"limit\":10}")
+  local query="$1" label="$2"
+  local result
+  result=$(post "$API/search/find" -d "{\"query\":\"$query\",\"limit\":10}")
   python3 -c "
 import sys, json
 r = json.load(sys.stdin).get('result', {})
@@ -283,12 +284,12 @@ fi
 # ─── Summary ─────────────────────────────────────────────────────
 section "Summary"
 total=$((PASS+FAIL+SKIP))
-printf "  Passed: \033[32m$PASS\033[0m  Failed: \033[31m$FAIL\033[0m  Skipped: \033[33m$SKIP\033[0m  Total: $total\n"
-printf "  Semantic progress: $sem_done/$sem_total ($sem_pct%%)\n"
+printf '  Passed: \033[32m%d\033[0m  Failed: \033[31m%d\033[0m  Skipped: \033[33m%d\033[0m  Total: %d\n' "$PASS" "$FAIL" "$SKIP" "$total"
+printf '  Semantic progress: %s/%s (%s%%)\n' "$sem_done" "$sem_total" "$sem_pct"
 if [ "$FAIL" -eq 0 ]; then
-  printf "  \033[32m>>> ALL CHECKS PASSED <<<\033[0m\n"
+  printf '  \033[32m>>> ALL CHECKS PASSED <<<\033[0m\n'
 elif [ "$FAIL" -le 2 ] && [ "$sem_pct" -lt 50 ]; then
-  printf "  \033[33m>>> PARTIAL — re-run after Semantic queue completes <<<\033[0m\n"
+  printf '  \033[33m>>> PARTIAL — re-run after Semantic queue completes <<<\033[0m\n'
 else
-  printf "  \033[31m>>> ISSUES FOUND — investigate failures <<<\033[0m\n"
+  printf '  \033[31m>>> ISSUES FOUND — investigate failures <<<\033[0m\n'
 fi

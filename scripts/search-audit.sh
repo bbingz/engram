@@ -26,8 +26,8 @@ CYAN="\033[36m"
 RESET="\033[0m"
 
 hr() { printf '%*s\n' 78 '' | tr ' ' '─'; }
-section() { echo ""; hr; printf "${BOLD}${CYAN}  %s${RESET}\n" "$1"; hr; }
-subsection() { printf "\n${BOLD}  %s${RESET}\n" "$1"; }
+section() { echo ""; hr; printf '%s\n' "${BOLD}${CYAN}  $1${RESET}"; hr; }
+subsection() { printf '\n%s\n' "${BOLD}  $1${RESET}"; }
 
 # --- Timing helper (ms) ---
 now_ms() { python3 -c "import time; print(int(time.time()*1000))"; }
@@ -40,12 +40,16 @@ median() {
 # --- Percentile helper: p50 and p95 from an array ---
 percentiles() {
   local vals="$1"
-  local sorted=$(echo "$vals" | tr ' ' '\n' | sort -n)
-  local count=$(echo "$sorted" | wc -l | tr -d ' ')
+  local sorted
+  sorted=$(echo "$vals" | tr ' ' '\n' | sort -n)
+  local count
+  count=$(echo "$sorted" | wc -l | tr -d ' ')
   local p50_idx=$(( (count + 1) / 2 ))
   local p95_idx=$count  # with small N, p95 = max
-  local p50=$(echo "$sorted" | sed -n "${p50_idx}p")
-  local p95=$(echo "$sorted" | sed -n "${p95_idx}p")
+  local p50
+  p50=$(echo "$sorted" | sed -n "${p50_idx}p")
+  local p95
+  p95=$(echo "$sorted" | sed -n "${p95_idx}p")
   echo "$p50 $p95"
 }
 
@@ -79,12 +83,12 @@ for q in "${QUERIES[@]}"; do
     elapsed=$((t2 - t1))
     times="$times $elapsed"
   done
-  read p50 p95 <<< $(percentiles "$times")
+  read -r p50 p95 <<< "$(percentiles "$times")"
   fts_all_times="$fts_all_times $times"
   printf "  %-22s %8d %8d\n" "\"$q\"" "$p50" "$p95"
 done
-read fts_p50 fts_p95 <<< $(percentiles "$fts_all_times")
-printf "  ${BOLD}%-22s %8d %8d${RESET}\n" "OVERALL" "$fts_p50" "$fts_p95"
+read -r fts_p50 fts_p95 <<< "$(percentiles "$fts_all_times")"
+printf "  %s%-22s %8d %8d%s\n" "${BOLD}" "OVERALL" "$fts_p50" "$fts_p95" "${RESET}"
 
 # --- Viking Grep Latency ---
 subsection "1b. Viking Grep Latency"
@@ -103,12 +107,12 @@ for q in "${QUERIES[@]}"; do
     elapsed=$((t2 - t1))
     times="$times $elapsed"
   done
-  read p50 p95 <<< $(percentiles "$times")
+  read -r p50 p95 <<< "$(percentiles "$times")"
   grep_all_times="$grep_all_times $times"
   printf "  %-22s %8d %8d\n" "\"$q\"" "$p50" "$p95"
 done
-read grep_p50 grep_p95 <<< $(percentiles "$grep_all_times")
-printf "  ${BOLD}%-22s %8d %8d${RESET}\n" "OVERALL" "$grep_p50" "$grep_p95"
+read -r grep_p50 grep_p95 <<< "$(percentiles "$grep_all_times")"
+printf "  %s%-22s %8d %8d%s\n" "${BOLD}" "OVERALL" "$grep_p50" "$grep_p95" "${RESET}"
 
 # --- Viking Find (Semantic) Latency ---
 subsection "1c. Viking Find (Semantic) Latency"
@@ -127,12 +131,12 @@ for q in "${QUERIES[@]}"; do
     elapsed=$((t2 - t1))
     times="$times $elapsed"
   done
-  read p50 p95 <<< $(percentiles "$times")
+  read -r p50 p95 <<< "$(percentiles "$times")"
   find_all_times="$find_all_times $times"
   printf "  %-22s %8d %8d\n" "\"$q\"" "$p50" "$p95"
 done
-read find_p50 find_p95 <<< $(percentiles "$find_all_times")
-printf "  ${BOLD}%-22s %8d %8d${RESET}\n" "OVERALL" "$find_p50" "$find_p95"
+read -r find_p50 find_p95 <<< "$(percentiles "$find_all_times")"
+printf "  %s%-22s %8d %8d%s\n" "${BOLD}" "OVERALL" "$find_p50" "$find_p95" "${RESET}"
 
 # --- Chinese queries ---
 subsection "1d. Chinese Query Latency (FTS vs Viking)"
@@ -187,12 +191,12 @@ printf "  Viking resources:           %6d\n" "$viking_resources"
 echo ""
 if [ "$premium_sessions" -gt 0 ]; then
   coverage_pct=$(python3 -c "print(f'{$viking_resources / $premium_sessions * 100:.1f}')")
-  printf "  Viking coverage of premium: ${BOLD}%s%%${RESET}\n" "$coverage_pct"
+  printf "  Viking coverage of premium: %s%s%%%s\n" "${BOLD}" "$coverage_pct" "${RESET}"
 else
   printf "  Viking coverage of premium: N/A (no premium sessions)\n"
 fi
 fts_coverage_pct=$(python3 -c "print(f'{$fts_sessions / $total_sessions * 100:.1f}')")
-printf "  FTS coverage of all:        ${BOLD}%s%%${RESET}\n" "$fts_coverage_pct"
+printf "  FTS coverage of all:        %s%s%%%s\n" "${BOLD}" "$fts_coverage_pct" "${RESET}"
 
 subsection "2b. Keyword Match Counts — FTS vs Viking Grep"
 printf "  %-22s %10s %10s %10s\n" "Keyword" "FTS" "Viking" "Ratio"
@@ -227,13 +231,13 @@ for ((i=1; i<=5; i++)); do
     | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['count'])")
   grep_counts="$grep_counts $count"
 done
-unique_counts=$(echo $grep_counts | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')
+unique_counts=$(echo "$grep_counts" | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')
 printf "  Query: \"%s\"\n" "$CONSIST_QUERY"
 printf "  Counts: %s\n" "$grep_counts"
 if [ "$unique_counts" -eq 1 ]; then
-  printf "  Result: ${GREEN}PASS${RESET} — all 5 runs returned identical count\n"
+  printf '%s\n' "  Result: ${GREEN}PASS${RESET} — all 5 runs returned identical count"
 else
-  printf "  Result: ${RED}FAIL${RESET} — %d distinct counts observed\n" "$unique_counts"
+  printf "  Result: %sFAIL%s — %d distinct counts observed\n" "${RED}" "${RESET}" "$unique_counts"
 fi
 
 subsection "3b. Semantic Find Consistency — Same query 5 times, compare top-3 URIs"
@@ -265,9 +269,9 @@ printf "  Query: \"%s\"\n" "$FIND_QUERY"
 printf "  Top-3 URIs (run 1):\n"
 echo "$ref" | while read -r line; do printf "    - %s\n" "$line"; done
 if [ "$all_match" = true ]; then
-  printf "  Result: ${GREEN}PASS${RESET} — all 5 runs returned identical top-3\n"
+  printf '%s\n' "  Result: ${GREEN}PASS${RESET} — all 5 runs returned identical top-3"
 else
-  printf "  Result: ${YELLOW}WARN${RESET} — top-3 varied across runs (expected for semantic)\n"
+  printf '%s\n' "  Result: ${YELLOW}WARN${RESET} — top-3 varied across runs (expected for semantic)"
   # Show which differed
   for ((i=1; i<5; i++)); do
     if [ "${find_runs[$i]}" != "$ref" ]; then
@@ -284,18 +288,18 @@ printf "  Empty query (grep):  "
 empty_resp=$($CURL -s -o /dev/null -w "%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"pattern":"","uri":"viking://","limit":5}' "$VIKING_BASE/search/grep")
 if [ "$empty_resp" = "200" ]; then
-  printf "${GREEN}200 OK${RESET}\n"
+  printf '%s\n' "${GREEN}200 OK${RESET}"
 else
-  printf "${YELLOW}HTTP %s${RESET}\n" "$empty_resp"
+  printf '%s\n' "${YELLOW}HTTP ${empty_resp}${RESET}"
 fi
 
 printf "  Empty query (find):  "
 empty_resp=$($CURL -s -o /dev/null -w "%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"query":"","limit":5}' "$VIKING_BASE/search/find")
 if [ "$empty_resp" = "200" ]; then
-  printf "${GREEN}200 OK${RESET}\n"
+  printf '%s\n' "${GREEN}200 OK${RESET}"
 else
-  printf "${YELLOW}HTTP %s${RESET}\n" "$empty_resp"
+  printf '%s\n' "${YELLOW}HTTP ${empty_resp}${RESET}"
 fi
 
 # Long query
@@ -304,9 +308,9 @@ long_q=$(python3 -c "print('database migration ' * 12)")
 long_resp=$($CURL -s -o /dev/null -w "%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
   -d "{\"query\":\"$long_q\",\"limit\":5}" "$VIKING_BASE/search/find")
 if [ "$long_resp" = "200" ]; then
-  printf "${GREEN}200 OK${RESET}\n"
+  printf '%s\n' "${GREEN}200 OK${RESET}"
 else
-  printf "${YELLOW}HTTP %s${RESET}\n" "$long_resp"
+  printf '%s\n' "${YELLOW}HTTP ${long_resp}${RESET}"
 fi
 
 # Chinese query
@@ -321,9 +325,9 @@ printf "  Regex chars '[.*+?]': "
 regex_resp=$($CURL -s -o /dev/null -w "%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"pattern":"[.*+?]","uri":"viking://","limit":5}' "$VIKING_BASE/search/grep")
 if [ "$regex_resp" = "200" ]; then
-  printf "${GREEN}200 OK${RESET}\n"
+  printf '%s\n' "${GREEN}200 OK${RESET}"
 else
-  printf "${YELLOW}HTTP %s${RESET}\n" "$regex_resp"
+  printf '%s\n' "${YELLOW}HTTP ${regex_resp}${RESET}"
 fi
 
 
@@ -421,7 +425,7 @@ vlm_anthropic=$(python3 -c "print(f'\${$prompt_tokens / 1_000_000 * 0.25 + $comp
 printf "  │ Anthropic         │ N/A (no embed API)  │ %-21s│\n" "$vlm_anthropic (Haiku)"
 
 # Current setup
-printf "  │ ${GREEN}Current (Engram)${RESET}  │ \$0.00 (Ollama)      │ \$%-20s│\n" "$total_cost_usd (kimi)"
+printf "  │ %sCurrent (Engram)%s  │ \$0.00 (Ollama)      │ \$%-20s│\n" "${GREEN}" "${RESET}" "$total_cost_usd (kimi)"
 printf "  └───────────────────┴─────────────────────┴──────────────────────┘\n"
 
 
@@ -437,17 +441,17 @@ printf "  │ Dimension    │ Grade     │ Details                            
 printf "  ├──────────────┼───────────┼────────────────────────────────────────┤\n"
 
 # Speed grade
-if [ "$fts_p50" -lt 50 ]; then fts_grade="${GREEN}A${RESET}"; fts_note="<50ms P50"
-elif [ "$fts_p50" -lt 200 ]; then fts_grade="${YELLOW}B${RESET}"; fts_note="<200ms P50"
-else fts_grade="${RED}C${RESET}"; fts_note=">200ms P50"; fi
+if [ "$fts_p50" -lt 50 ]; then fts_grade="${GREEN}A${RESET}"
+elif [ "$fts_p50" -lt 200 ]; then fts_grade="${YELLOW}B${RESET}"
+else fts_grade="${RED}C${RESET}"; fi
 
-if [ "$grep_p50" -lt 200 ]; then grep_grade="${GREEN}A${RESET}"; grep_note="<200ms P50"
-elif [ "$grep_p50" -lt 500 ]; then grep_grade="${YELLOW}B${RESET}"; grep_note="<500ms P50"
-else grep_grade="${RED}C${RESET}"; grep_note=">500ms P50"; fi
+if [ "$grep_p50" -lt 200 ]; then grep_grade="${GREEN}A${RESET}"
+elif [ "$grep_p50" -lt 500 ]; then grep_grade="${YELLOW}B${RESET}"
+else grep_grade="${RED}C${RESET}"; fi
 
-if [ "$find_p50" -lt 500 ]; then find_grade="${GREEN}A${RESET}"; find_note="<500ms P50"
-elif [ "$find_p50" -lt 1000 ]; then find_grade="${YELLOW}B${RESET}"; find_note="<1s P50"
-else find_grade="${RED}C${RESET}"; find_note=">1s P50"; fi
+if [ "$find_p50" -lt 500 ]; then find_grade="${GREEN}A${RESET}"
+elif [ "$find_p50" -lt 1000 ]; then find_grade="${YELLOW}B${RESET}"
+else find_grade="${RED}C${RESET}"; fi
 
 fts_detail=$(printf "P50=%dms P95=%dms" "$fts_p50" "$fts_p95")
 grep_detail=$(printf "P50=%dms P95=%dms" "$grep_p50" "$grep_p95")
@@ -476,12 +480,12 @@ printf "  │ Reliability  │     %b     │ %-39s│\n" "$rel_grade" "$rel_det
 
 # Cost grade
 cost_detail=$(printf "\$%s total VLM, embed free (Ollama)" "$total_cost_usd")
-printf "  │ Cost         │     ${GREEN}A${RESET}     │ %-39s│\n" "$cost_detail"
+printf "  │ Cost         │     %sA%s     │ %-39s│\n" "${GREEN}" "${RESET}" "$cost_detail"
 
 printf "  └──────────────┴───────────┴────────────────────────────────────────┘\n"
 
 AUDIT_END=$(python3 -c "import time; print(int(time.time()))")
 DURATION=$((AUDIT_END - AUDIT_START))
 echo ""
-printf "  ${DIM}Audit completed in %ds${RESET}\n" "$DURATION"
+printf "  %sAudit completed in %ds%s\n" "${DIM}" "$DURATION" "${RESET}"
 echo ""
