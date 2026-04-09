@@ -7,8 +7,11 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 684 tests, ~8s
+npm test               # vitest: 753 tests, ~5s
 npm run dev            # tsx: run without compile
+npm run lint           # biome check (must pass — pre-commit enforced)
+npm run lint:fix       # biome auto-fix
+npm run knip           # dead code detection
 
 # macOS (from macos/)
 xcodegen generate      # regenerate .xcodeproj from project.yml
@@ -24,7 +27,7 @@ xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 src/
   adapters/    # SessionAdapter implementations (15 sources: codex, claude-code, cursor, etc.)
   core/        # db.ts (SQLite), indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, viking-bridge.ts
-  tools/       # MCP tool handlers (11 tools: get_context, search, list_sessions, get_memory, get_insights, link_sessions, etc.)
+  tools/       # MCP tool handlers (18 tools: get_context, search, list_sessions, get_session, get_memory, get_insights, get_costs, stats, tool_analytics, file_activity, etc.)
   web.ts       # Hono HTTP server + API endpoints
   index.ts     # MCP server entry (stdin/stdout transport)
   daemon.ts    # Daemon entry (indexer + watcher + web server)
@@ -85,10 +88,13 @@ External context engine at `src/core/viking-bridge.ts`. Factory `initViking()` i
 ## Conventions
 
 - **Language**: TypeScript (strict, ES2022, Node16 modules) + Swift 5.9 (macOS 14+)
+- **Linting**: Biome (enforced via pre-commit hook: husky + lint-staged). `npm run lint` must pass.
+- **Imports**: Use `node:` prefix for Node.js builtins (`node:fs`, `node:path`, etc.)
 - **Constants**: UPPER_SNAKE_CASE (`WATCHED_SOURCES`, `NOISE_FILTER_SQL`)
 - **Error handling**: Adapters silently skip failures; DB errors propagate; tools return `isError: true`
 - **Tests**: Vitest with real fixtures in `tests/fixtures/<adapter>/`. No mocking — real file I/O.
 - **Comments**: Chinese comments are intentional, keep them as-is
+- **Swift DB reads**: Use `nonisolated` + `readInBackground` for all DatabaseManager read methods. Views call via `Task.detached { ... }.value` (see PopoverView.loadData as pattern).
 
 ## Build Output
 
@@ -108,3 +114,6 @@ External context engine at `src/core/viking-bridge.ts`. Factory `initViking()` i
 - Don't commit `.sqlite` files, `node_modules/`, or `dist/`
 - Don't add `summary_message_count` column — it already exists (migration is idempotent)
 - Don't use `String(value)` for potentially undefined values in TS — use `(value as string) || ''`
+- Don't add new DatabaseManager read methods without `nonisolated` — they'll block the main thread
+- Don't use `hashValue` for cache keys — use the value itself (hash collisions are real)
+- Don't skip `npm run lint` — pre-commit hook enforces it; CI will too eventually
