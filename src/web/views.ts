@@ -1,39 +1,71 @@
-import type { SessionInfo } from '../adapters/types.js'
+import type { SessionInfo } from '../adapters/types.js';
 
-const CDN_HTMX = 'https://unpkg.com/htmx.org@2.0.4'
-const CDN_HTMX_SRI = 'sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+'
+const CDN_HTMX = 'https://unpkg.com/htmx.org@2.0.4';
+const CDN_HTMX_SRI =
+  'sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+';
 
 // ---------------------------------------------------------------------------
 // Source display info — keep in sync with macos/Engram/Views/SessionDetailView.swift SourceDisplay
 // ---------------------------------------------------------------------------
 
 const SOURCE_LABELS: Record<string, string> = {
-  'claude-code': 'Claude', codex: 'Codex', copilot: 'Copilot',
-  'gemini-cli': 'Gemini', kimi: 'Kimi', qwen: 'Qwen',
-  minimax: 'MiniMax', lobsterai: 'Lobster AI', cline: 'Cline',
-  cursor: 'Cursor', windsurf: 'Windsurf', antigravity: 'Antigravity',
-  opencode: 'OpenCode', iflow: 'iFlow', vscode: 'VS Code',
-}
+  'claude-code': 'Claude',
+  codex: 'Codex',
+  copilot: 'Copilot',
+  'gemini-cli': 'Gemini',
+  kimi: 'Kimi',
+  qwen: 'Qwen',
+  minimax: 'MiniMax',
+  lobsterai: 'Lobster AI',
+  cline: 'Cline',
+  cursor: 'Cursor',
+  windsurf: 'Windsurf',
+  antigravity: 'Antigravity',
+  opencode: 'OpenCode',
+  iflow: 'iFlow',
+  vscode: 'VS Code',
+};
 
 const SOURCE_COLORS: Record<string, string> = {
-  'claude-code': '#e67e22', codex: '#27ae60', copilot: '#888',
-  'gemini-cli': '#00bcd4', kimi: '#e91e8a', qwen: '#009688',
-  minimax: '#e74c3c', lobsterai: '#f1c40f', cline: '#00c7b7',
-  cursor: '#3498db', windsurf: '#8d6e63', antigravity: '#00bcd4',
-  opencode: '#5c6bc0', iflow: '#9b59b6', vscode: '#888',
+  'claude-code': '#e67e22',
+  codex: '#27ae60',
+  copilot: '#888',
+  'gemini-cli': '#00bcd4',
+  kimi: '#e91e8a',
+  qwen: '#009688',
+  minimax: '#e74c3c',
+  lobsterai: '#f1c40f',
+  cline: '#00c7b7',
+  cursor: '#3498db',
+  windsurf: '#8d6e63',
+  antigravity: '#00bcd4',
+  opencode: '#5c6bc0',
+  iflow: '#9b59b6',
+  vscode: '#888',
+};
+
+function msgCounts(s: {
+  userMessageCount: number;
+  assistantMessageCount: number;
+  systemMessageCount: number;
+}): string {
+  const parts = [
+    `${s.userMessageCount} user`,
+    `${s.assistantMessageCount} asst`,
+  ];
+  if (s.systemMessageCount > 0) parts.push(`${s.systemMessageCount} sys`);
+  return parts.join(' &middot; ');
 }
 
-function msgCounts(s: { userMessageCount: number; assistantMessageCount: number; systemMessageCount: number }): string {
-  const parts = [`${s.userMessageCount} user`, `${s.assistantMessageCount} asst`]
-  if (s.systemMessageCount > 0) parts.push(`${s.systemMessageCount} sys`)
-  return parts.join(' &middot; ')
+function sourceLabel(source: string): string {
+  return SOURCE_LABELS[source] ?? source;
 }
-
-function sourceLabel(source: string): string { return SOURCE_LABELS[source] ?? source }
-function sourceColor(source: string): string { return SOURCE_COLORS[source] ?? '#64748B' }
+function sourceColor(source: string): string {
+  return SOURCE_COLORS[source] ?? '#64748B';
+}
 function sourceBadge(source: string): string {
-  const c = sourceColor(source)
-  return `<span class="badge" style="background:${c};color:#fff">${escapeHtml(sourceLabel(source))}</span>`
+  const c = sourceColor(source);
+  return `<span class="badge" style="background:${c};color:#fff">${escapeHtml(sourceLabel(source))}</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,11 +79,13 @@ export function layout(title: string, body: string, currentPath = '/'): string {
     { href: '/stats', label: 'Stats' },
     { href: '/health', label: 'Health' },
     { href: '/settings', label: 'Settings' },
-  ]
-  const navHtml = navItems.map(item => {
-    const active = currentPath === item.href ? ' class="nav-active"' : ''
-    return `<a href="${item.href}"${active}>${item.label}</a>`
-  }).join('')
+  ];
+  const navHtml = navItems
+    .map((item) => {
+      const active = currentPath === item.href ? ' class="nav-active"' : '';
+      return `<a href="${item.href}"${active}>${item.label}</a>`;
+    })
+    .join('');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -334,7 +368,7 @@ export function layout(title: string, body: string, currentPath = '/'): string {
     }
   </script>
 </body>
-</html>`
+</html>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,69 +376,103 @@ export function layout(title: string, body: string, currentPath = '/'): string {
 // ---------------------------------------------------------------------------
 
 interface SessionListOpts {
-  offset: number
-  limit: number
-  hasMore: boolean
-  total: number
-  selectedSources: string[]
-  sources: string[]
-  selectedProjects: string[]
-  projects: string[]
-  agents?: 'hide' | 'only'
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  total: number;
+  selectedSources: string[];
+  sources: string[];
+  selectedProjects: string[];
+  projects: string[];
+  agents?: 'hide' | 'only';
 }
 
-export function sessionListPage(sessions: SessionInfo[], opts: SessionListOpts): string {
-  const { offset, limit, total, selectedSources, sources, selectedProjects, projects, agents } = opts
+export function sessionListPage(
+  sessions: SessionInfo[],
+  opts: SessionListOpts,
+): string {
+  const {
+    offset,
+    limit,
+    total,
+    selectedSources,
+    sources,
+    selectedProjects,
+    projects,
+    agents,
+  } = opts;
 
   // Helper: build URL with current filters, overriding specific params
-  function filterUrl(overrides: Record<string, string[] | string | undefined> = {}): string {
-    const p = new URLSearchParams()
-    const srcs = overrides.sources !== undefined
-      ? (Array.isArray(overrides.sources) ? overrides.sources : [overrides.sources]).filter(Boolean)
-      : selectedSources
-    const prjs = overrides.projects !== undefined
-      ? (Array.isArray(overrides.projects) ? overrides.projects : [overrides.projects]).filter(Boolean)
-      : selectedProjects
-    const ag = (overrides.agents !== undefined ? overrides.agents : (agents ?? 'hide')) as string
-    if (srcs.length) p.set('source', srcs.join(','))
-    if (prjs.length) p.set('project', prjs.join(','))
-    if (ag && ag !== 'hide') p.set('agents', ag)
-    const qs = p.toString()
-    return qs ? `/?${qs}` : '/'
+  function filterUrl(
+    overrides: Record<string, string[] | string | undefined> = {},
+  ): string {
+    const p = new URLSearchParams();
+    const srcs =
+      overrides.sources !== undefined
+        ? (Array.isArray(overrides.sources)
+            ? overrides.sources
+            : [overrides.sources]
+          ).filter(Boolean)
+        : selectedSources;
+    const prjs =
+      overrides.projects !== undefined
+        ? (Array.isArray(overrides.projects)
+            ? overrides.projects
+            : [overrides.projects]
+          ).filter(Boolean)
+        : selectedProjects;
+    const ag = (
+      overrides.agents !== undefined ? overrides.agents : (agents ?? 'hide')
+    ) as string;
+    if (srcs.length) p.set('source', srcs.join(','));
+    if (prjs.length) p.set('project', prjs.join(','));
+    if (ag && ag !== 'hide') p.set('agents', ag);
+    const qs = p.toString();
+    return qs ? `/?${qs}` : '/';
   }
 
   // Source multi-select dropdown
-  const sourceCheckboxes = sources.map(s => {
-    const checked = selectedSources.includes(s) ? ' checked' : ''
-    const color = sourceColor(s)
-    return `<label class="ms-option" data-value="${escapeHtml(s)}">
+  const sourceCheckboxes = sources
+    .map((s) => {
+      const checked = selectedSources.includes(s) ? ' checked' : '';
+      const color = sourceColor(s);
+      return `<label class="ms-option" data-value="${escapeHtml(s)}">
       <input type="checkbox"${checked} onchange="updateMultiFilter('source')">
       <span class="ms-dot" style="background:${color}"></span>
       ${escapeHtml(sourceLabel(s))}
-    </label>`
-  }).join('')
+    </label>`;
+    })
+    .join('');
 
-  const sourceTriggerLabel = selectedSources.length === 0 ? 'All sources'
-    : selectedSources.length === 1 ? sourceLabel(selectedSources[0])
-    : `${selectedSources.length} sources`
+  const sourceTriggerLabel =
+    selectedSources.length === 0
+      ? 'All sources'
+      : selectedSources.length === 1
+        ? sourceLabel(selectedSources[0])
+        : `${selectedSources.length} sources`;
 
   // Project multi-select dropdown (with search)
-  const projectCheckboxes = projects.map(p => {
-    const checked = selectedProjects.includes(p) ? ' checked' : ''
-    return `<label class="ms-option" data-value="${escapeHtml(p)}">
+  const projectCheckboxes = projects
+    .map((p) => {
+      const checked = selectedProjects.includes(p) ? ' checked' : '';
+      return `<label class="ms-option" data-value="${escapeHtml(p)}">
       <input type="checkbox"${checked} onchange="updateMultiFilter('project')">
       ${escapeHtml(p)}
-    </label>`
-  }).join('')
+    </label>`;
+    })
+    .join('');
 
-  const projectTriggerLabel = selectedProjects.length === 0 ? 'All projects'
-    : selectedProjects.length === 1 ? selectedProjects[0]
-    : `${selectedProjects.length} projects`
+  const projectTriggerLabel =
+    selectedProjects.length === 0
+      ? 'All projects'
+      : selectedProjects.length === 1
+        ? selectedProjects[0]
+        : `${selectedProjects.length} projects`;
 
   // Agent filter chips
-  const chipAll = `<a href="${filterUrl({ agents: 'all' })}" class="chip${!agents ? ' active' : ''}" title="Show all sessions">All</a>`
-  const chipHide = `<a href="${filterUrl({ agents: '' })}" class="chip${agents === 'hide' ? ' active' : ''}" title="Hide agent/subagent sessions">Hide Agents</a>`
-  const chipOnly = `<a href="${filterUrl({ agents: 'only' })}" class="chip${agents === 'only' ? ' active' : ''}" title="Show only agent sessions">Agents Only</a>`
+  const chipAll = `<a href="${filterUrl({ agents: 'all' })}" class="chip${!agents ? ' active' : ''}" title="Show all sessions">All</a>`;
+  const chipHide = `<a href="${filterUrl({ agents: '' })}" class="chip${agents === 'hide' ? ' active' : ''}" title="Hide agent/subagent sessions">Hide Agents</a>`;
+  const chipOnly = `<a href="${filterUrl({ agents: 'only' })}" class="chip${agents === 'only' ? ' active' : ''}" title="Show only agent sessions">Agents Only</a>`;
 
   const filterHtml = `
     <div class="filter-bar">
@@ -434,17 +502,22 @@ export function sessionListPage(sessions: SessionInfo[], opts: SessionListOpts):
         <input type="text" name="id" class="goto-input" placeholder="Session ID…" title="Paste a session UUID to jump to it">
       </form>
       <span class="count">${total} sessions</span>
-    </div>`
+    </div>`;
 
   // Session cards
-  const rows = sessions.map(s => {
-    const title = escapeHtml(truncate(s.summary ?? s.id, 120))
-    const date = relativeDate(s.startTime)
-    const fullDate = formatDate(s.startTime)
-    const isAgent = s.agentRole || s.filePath?.includes('/subagents/')
-    const agentTag = isAgent ? '<span style="font-size:0.72em;color:#A855F7;font-weight:600">agent</span>' : ''
-    const proj = s.project ? `<span>${escapeHtml(s.project)}</span><span class="sep">&middot;</span>` : ''
-    return `<a href="/session/${encodeURIComponent(s.id)}" class="session-card">
+  const rows = sessions
+    .map((s) => {
+      const title = escapeHtml(truncate(s.summary ?? s.id, 120));
+      const date = relativeDate(s.startTime);
+      const fullDate = formatDate(s.startTime);
+      const isAgent = s.agentRole || s.filePath?.includes('/subagents/');
+      const agentTag = isAgent
+        ? '<span style="font-size:0.72em;color:#A855F7;font-weight:600">agent</span>'
+        : '';
+      const proj = s.project
+        ? `<span>${escapeHtml(s.project)}</span><span class="sep">&middot;</span>`
+        : '';
+      return `<a href="/session/${encodeURIComponent(s.id)}" class="session-card">
       <div class="title">${title}</div>
       <div class="meta">
         ${sourceBadge(s.source)} ${agentTag}
@@ -454,54 +527,67 @@ export function sessionListPage(sessions: SessionInfo[], opts: SessionListOpts):
         <span class="sep">&middot;</span>
         <span>${msgCounts(s)}</span>
       </div>
-    </a>`
-  }).join('\n')
+    </a>`;
+    })
+    .join('\n');
 
   // Pagination
   function pageUrl(off: number): string {
-    const p = new URLSearchParams()
-    p.set('offset', String(off))
-    p.set('limit', String(limit))
-    if (selectedSources.length) p.set('source', selectedSources.join(','))
-    if (selectedProjects.length) p.set('project', selectedProjects.join(','))
-    if (agents && agents !== 'hide') p.set('agents', agents)
-    return `/?${p.toString()}`
+    const p = new URLSearchParams();
+    p.set('offset', String(off));
+    p.set('limit', String(limit));
+    if (selectedSources.length) p.set('source', selectedSources.join(','));
+    if (selectedProjects.length) p.set('project', selectedProjects.join(','));
+    if (agents && agents !== 'hide') p.set('agents', agents);
+    return `/?${p.toString()}`;
   }
-  const showing = total > 0 ? `${offset + 1}\u2013${Math.min(offset + limit, total)} of ${total}` : '0'
-  let paginationHtml = ''
+  const showing =
+    total > 0
+      ? `${offset + 1}\u2013${Math.min(offset + limit, total)} of ${total}`
+      : '0';
+  let paginationHtml = '';
   if (total > limit) {
-    const prevOffset = Math.max(0, offset - limit)
-    const nextOffset = offset + limit
+    const prevOffset = Math.max(0, offset - limit);
+    const nextOffset = offset + limit;
     paginationHtml = `<div class="pagination">
       ${offset > 0 ? `<a href="${pageUrl(prevOffset)}">&larr; Prev</a>` : ''}
       <span class="current">${showing}</span>
       ${nextOffset < total ? `<a href="${pageUrl(nextOffset)}">Next &rarr;</a>` : ''}
-    </div>`
+    </div>`;
   }
 
-  return layout('Sessions', `
+  return layout(
+    'Sessions',
+    `
     <div class="page-header"><h2>Sessions</h2></div>
     ${filterHtml}
     ${rows || '<div class="empty-state"><div class="icon">&#128196;</div><p>No sessions found.</p></div>'}
-    ${paginationHtml}`, '/')
+    ${paginationHtml}`,
+    '/',
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Session detail page
 // ---------------------------------------------------------------------------
 
-export function sessionDetailPage(session: SessionInfo, messages: { role: string; content: string }[]): string {
-  const msgHtml = messages.filter(m => m.content.trim()).map(m => {
-    const isUser = m.role === 'user'
-    const category = isUser ? classifySystem(m.content) : 'none'
+export function sessionDetailPage(
+  session: SessionInfo,
+  messages: { role: string; content: string }[],
+): string {
+  const msgHtml = messages
+    .filter((m) => m.content.trim())
+    .map((m) => {
+      const isUser = m.role === 'user';
+      const category = isUser ? classifySystem(m.content) : 'none';
 
-    if (category !== 'none') {
-      const isAgent = category === 'agentComm'
-      const icon = isAgent ? '&#8644;' : '&#9881;'
-      const label = isAgent ? 'Agent Communication' : 'System Prompt'
-      const cls = isAgent ? 'sys-agent' : 'sys-prompt'
-      const preview = escapeHtml(m.content.substring(0, 100))
-      return `
+      if (category !== 'none') {
+        const isAgent = category === 'agentComm';
+        const icon = isAgent ? '&#8644;' : '&#9881;';
+        const label = isAgent ? 'Agent Communication' : 'System Prompt';
+        const cls = isAgent ? 'sys-agent' : 'sys-prompt';
+        const preview = escapeHtml(m.content.substring(0, 100));
+        return `
       <div class="msg system">
         <div class="bubble ${cls}" onclick="toggleSystem(this)">
           <span class="system-icon">${icon}</span>
@@ -509,22 +595,25 @@ export function sessionDetailPage(session: SessionInfo, messages: { role: string
           <span style="margin-left:0.4em;color:var(--text-faint);font-weight:400">${preview}…</span>
           <div class="system-content">${escapeHtml(m.content)}</div>
         </div>
-      </div>`
-    }
+      </div>`;
+      }
 
-    const label = isUser ? 'You' : sourceLabel(session.source)
-    const color = isUser ? 'var(--text-dim)' : sourceColor(session.source)
-    const rendered = renderMarkdown(m.content)
-    return `
+      const label = isUser ? 'You' : sourceLabel(session.source);
+      const color = isUser ? 'var(--text-dim)' : sourceColor(session.source);
+      const rendered = renderMarkdown(m.content);
+      return `
     <div class="msg ${isUser ? 'user' : 'assistant'}">
       <div class="role" style="color:${color}">${escapeHtml(label)}</div>
       <div class="bubble">${rendered}</div>
-    </div>`
-  }).join('\n')
+    </div>`;
+    })
+    .join('\n');
 
-  const sessionTitle = session.summary ?? truncate(session.id, 80)
+  const sessionTitle = session.summary ?? truncate(session.id, 80);
 
-  return layout(sessionTitle, `
+  return layout(
+    sessionTitle,
+    `
     <a href="/" class="back-link">&larr; Back to sessions</a>
     <div class="session-header">
       <h2>${escapeHtml(sessionTitle)}</h2>
@@ -538,7 +627,9 @@ export function sessionDetailPage(session: SessionInfo, messages: { role: string
         ${session.model ? `<span class="sep">&middot;</span><code>${escapeHtml(session.model)}</code>` : ''}
       </div>
     </div>
-    <div class="chat">${msgHtml}</div>`, '/')
+    <div class="chat">${msgHtml}</div>`,
+    '/',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -546,9 +637,13 @@ export function sessionDetailPage(session: SessionInfo, messages: { role: string
 // ---------------------------------------------------------------------------
 
 export function searchPage(recentSessions?: SessionInfo[]): string {
-  let recentHtml = ''
+  let recentHtml = '';
   if (recentSessions && recentSessions.length > 0) {
-    const cards = recentSessions.map(s => `<a href="/session/${encodeURIComponent(s.id)}" class="session-card">
+    const cards = recentSessions
+      .map(
+        (
+          s,
+        ) => `<a href="/session/${encodeURIComponent(s.id)}" class="session-card">
       <div class="title">${escapeHtml(truncate(s.summary ?? s.id, 100))}</div>
       <div class="meta">
         ${sourceBadge(s.source)}
@@ -557,11 +652,15 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
         <span class="sep">&middot;</span>
         <span>${msgCounts(s)}</span>
       </div>
-    </a>`).join('\n')
-    recentHtml = `<div class="recent-label">Recent sessions</div>${cards}`
+    </a>`,
+      )
+      .join('\n');
+    recentHtml = `<div class="recent-label">Recent sessions</div>${cards}`;
   }
 
-  return layout('Search', `
+  return layout(
+    'Search',
+    `
     <div class="page-header"><h2>Search</h2></div>
     <div id="embedding-status" class="embedding-status"></div>
     <input type="search" name="q" id="search-input" class="search-input" placeholder="Search sessions…" autofocus>
@@ -665,23 +764,40 @@ export function searchPage(recentSessions?: SessionInfo[]): string {
           doSearch(q);
         }, 300);
       });
-    </script>`, '/search')
+    </script>`,
+    '/search',
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Stats page
 // ---------------------------------------------------------------------------
 
-interface StatsGroup { key: string; sessionCount: number; messageCount: number; userMessageCount: number; assistantMessageCount: number; toolMessageCount: number }
+interface StatsGroup {
+  key: string;
+  sessionCount: number;
+  messageCount: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+  toolMessageCount: number;
+}
 
-export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy = 'source', excludeNoise = true): string {
-  const maxSessions = Math.max(...groups.map(g => g.sessionCount), 1)
+export function statsPage(
+  groups: StatsGroup[],
+  totalSessions: number,
+  groupBy = 'source',
+  excludeNoise = true,
+): string {
+  const maxSessions = Math.max(...groups.map((g) => g.sessionCount), 1);
 
-  const cards = groups.map(g => {
-    const pct = Math.round((g.sessionCount / maxSessions) * 100)
-    const color = SOURCE_COLORS[g.key] ?? '#64748B'
-    const label = SOURCE_LABELS[g.key] ? sourceBadge(g.key) : `<span style="font-weight:600">${escapeHtml(g.key)}</span>`
-    return `<div class="stat-card">
+  const cards = groups
+    .map((g) => {
+      const pct = Math.round((g.sessionCount / maxSessions) * 100);
+      const color = SOURCE_COLORS[g.key] ?? '#64748B';
+      const label = SOURCE_LABELS[g.key]
+        ? sourceBadge(g.key)
+        : `<span style="font-weight:600">${escapeHtml(g.key)}</span>`;
+      return `<div class="stat-card">
       <div class="stat-header">${label}</div>
       <div class="stat-bar-bg"><div class="stat-bar" style="width:${pct}%;background:${color}"></div></div>
       <div class="stat-values">
@@ -690,21 +806,33 @@ export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy =
         <span>${g.assistantMessageCount} asst</span>
         ${g.toolMessageCount > 0 ? `<span>${g.toolMessageCount} tools</span>` : ''}
       </div>
-    </div>`
-  }).join('\n')
+    </div>`;
+    })
+    .join('\n');
 
-  const tabs = ['source', 'project', 'day'].map(g => {
-    const active = g === groupBy ? ' active' : ''
-    const label = g === 'source' ? 'By Source' : g === 'project' ? 'By Project' : 'By Day'
-    return `<a href="/stats?group_by=${g}&exclude_noise=${excludeNoise ? '1' : '0'}" class="stat-tabs-item${active}">${label}</a>`
-  }).join('')
+  const tabs = ['source', 'project', 'day']
+    .map((g) => {
+      const active = g === groupBy ? ' active' : '';
+      const label =
+        g === 'source'
+          ? 'By Source'
+          : g === 'project'
+            ? 'By Project'
+            : 'By Day';
+      return `<a href="/stats?group_by=${g}&exclude_noise=${excludeNoise ? '1' : '0'}" class="stat-tabs-item${active}">${label}</a>`;
+    })
+    .join('');
 
-  const noiseToggle = `<a href="/stats?group_by=${groupBy}&exclude_noise=${excludeNoise ? '0' : '1'}" class="mode-btn${excludeNoise ? ' active' : ''}" style="margin-left:auto;font-size:0.85em">${excludeNoise ? '✓ Hide noise' : 'Show all'}</a>`
+  const noiseToggle = `<a href="/stats?group_by=${groupBy}&exclude_noise=${excludeNoise ? '0' : '1'}" class="mode-btn${excludeNoise ? ' active' : ''}" style="margin-left:auto;font-size:0.85em">${excludeNoise ? '✓ Hide noise' : 'Show all'}</a>`;
 
-  return layout('Stats', `
+  return layout(
+    'Stats',
+    `
     <div class="page-header"><h2>Stats</h2><p>${totalSessions} total sessions</p></div>
     <div class="stat-tabs">${tabs}${noiseToggle}</div>
-    ${cards || '<div class="empty-state"><p>No data available.</p></div>'}`, '/stats')
+    ${cards || '<div class="empty-state"><p>No data available.</p></div>'}`,
+    '/stats',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -712,34 +840,47 @@ export function statsPage(groups: StatsGroup[], totalSessions: number, groupBy =
 // ---------------------------------------------------------------------------
 
 interface SettingsData {
-  nodeName: string
-  peers: { name: string; url: string }[]
-  totalSessions?: number
-  sources?: string[]
-  port?: number
-  aliases?: { alias: string; canonical: string }[]
+  nodeName: string;
+  peers: { name: string; url: string }[];
+  totalSessions?: number;
+  sources?: string[];
+  port?: number;
+  aliases?: { alias: string; canonical: string }[];
 }
 
 export function settingsPage(config: SettingsData): string {
   // Database section
   const dbRows = [
-    config.totalSessions != null ? `<div class="settings-row"><span class="label">Total sessions</span><span class="value">${config.totalSessions}</span></div>` : '',
-    config.port ? `<div class="settings-row"><span class="label">Web server</span><span class="value">http://localhost:${config.port}</span></div>` : '',
-  ].filter(Boolean).join('')
+    config.totalSessions != null
+      ? `<div class="settings-row"><span class="label">Total sessions</span><span class="value">${config.totalSessions}</span></div>`
+      : '',
+    config.port
+      ? `<div class="settings-row"><span class="label">Web server</span><span class="value">http://localhost:${config.port}</span></div>`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('');
 
   // Sources section
-  const sourcesHtml = config.sources && config.sources.length > 0
-    ? config.sources.map(s => sourceBadge(s)).join(' ')
-    : '<span style="color:var(--text-dim)">No sources detected</span>'
+  const sourcesHtml =
+    config.sources && config.sources.length > 0
+      ? config.sources.map((s) => sourceBadge(s)).join(' ')
+      : '<span style="color:var(--text-dim)">No sources detected</span>';
 
   // Sync section
-  const peerRows = config.peers.length > 0
-    ? `<table><thead><tr><th>Peer</th><th>URL</th></tr></thead><tbody>${
-        config.peers.map(p => `<tr><td>${escapeHtml(p.name)}</td><td style="font-family:var(--mono);font-size:0.88em">${escapeHtml(p.url)}</td></tr>`).join('')
-      }</tbody></table>`
-    : '<p style="color:var(--text-dim);font-size:0.88em">No peers configured</p>'
+  const peerRows =
+    config.peers.length > 0
+      ? `<table><thead><tr><th>Peer</th><th>URL</th></tr></thead><tbody>${config.peers
+          .map(
+            (p) =>
+              `<tr><td>${escapeHtml(p.name)}</td><td style="font-family:var(--mono);font-size:0.88em">${escapeHtml(p.url)}</td></tr>`,
+          )
+          .join('')}</tbody></table>`
+      : '<p style="color:var(--text-dim);font-size:0.88em">No peers configured</p>';
 
-  return layout('Settings', `
+  return layout(
+    'Settings',
+    `
     <div class="page-header"><h2>Settings</h2></div>
 
     <div class="settings-section">
@@ -763,13 +904,15 @@ export function settingsPage(config: SettingsData): string {
       <p style="font-size:0.82em;color:var(--text-dim);margin-bottom:0.75em">Link project names so sessions from moved/renamed directories appear together.</p>
       <div id="alias-list">${
         config.aliases && config.aliases.length > 0
-          ? `<table><thead><tr><th>Old Project</th><th>New Project</th><th></th></tr></thead><tbody>${
-              config.aliases.map(a => `<tr>
+          ? `<table><thead><tr><th>Old Project</th><th>New Project</th><th></th></tr></thead><tbody>${config.aliases
+              .map(
+                (a) => `<tr>
                 <td>${escapeHtml(a.alias)}</td>
                 <td>${escapeHtml(a.canonical)}</td>
                 <td><button class="alias-del" data-alias="${escapeHtml(a.alias)}" data-canonical="${escapeHtml(a.canonical)}" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:1em">✕</button></td>
-              </tr>`).join('')
-            }</tbody></table>`
+              </tr>`,
+              )
+              .join('')}</tbody></table>`
           : '<p style="color:var(--text-dim);font-size:0.88em">No aliases configured</p>'
       }</div>
       <div style="display:flex;gap:8px;margin-top:0.75em;align-items:center">
@@ -801,7 +944,9 @@ export function settingsPage(config: SettingsData): string {
           });
         });
       </script>
-    </div>`, '/settings')
+    </div>`,
+    '/settings',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -809,174 +954,199 @@ export function settingsPage(config: SettingsData): string {
 // ---------------------------------------------------------------------------
 
 function renderMarkdown(raw: string): string {
-  const lines = raw.split('\n')
-  const out: string[] = []
-  let i = 0
+  const lines = raw.split('\n');
+  const out: string[] = [];
+  let i = 0;
 
   while (i < lines.length) {
-    const line = lines[i]
-    const trimmed = line.trimStart()
+    const line = lines[i];
+    const trimmed = line.trimStart();
 
     // Fenced code block
     if (trimmed.startsWith('```')) {
-      const lang = escapeHtml(trimmed.slice(3).trim())
-      const codeLines: string[] = []
-      i++
+      const lang = escapeHtml(trimmed.slice(3).trim());
+      const codeLines: string[] = [];
+      i++;
       while (i < lines.length && !lines[i].trimStart().startsWith('```')) {
-        codeLines.push(lines[i])
-        i++
+        codeLines.push(lines[i]);
+        i++;
       }
-      i++ // skip closing fence
-      const code = escapeHtml(codeLines.join('\n'))
+      i++; // skip closing fence
+      const code = escapeHtml(codeLines.join('\n'));
       out.push(`<div class="code-block">
         <div class="code-header"><span>${lang}</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
         <pre><code>${code}</code></pre>
-      </div>`)
-      continue
+      </div>`);
+      continue;
     }
 
     // Horizontal rule
-    const stripped = trimmed.replace(/ /g, '')
-    if (stripped.length >= 3 && (
-      /^-{3,}$/.test(stripped) || /^\*{3,}$/.test(stripped) || /^_{3,}$/.test(stripped)
-    )) {
-      flushParagraph(out)
-      out.push('<hr>')
-      i++
-      continue
+    const stripped = trimmed.replace(/ /g, '');
+    if (
+      stripped.length >= 3 &&
+      (/^-{3,}$/.test(stripped) ||
+        /^\*{3,}$/.test(stripped) ||
+        /^_{3,}$/.test(stripped))
+    ) {
+      flushParagraph(out);
+      out.push('<hr>');
+      i++;
+      continue;
     }
 
     // Heading
-    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/)
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
-      flushParagraph(out)
-      const level = headingMatch[1].length
-      out.push(`<h${level}>${inlineMarkdown(headingMatch[2])}</h${level}>`)
-      i++
-      continue
+      flushParagraph(out);
+      const level = headingMatch[1].length;
+      out.push(`<h${level}>${inlineMarkdown(headingMatch[2])}</h${level}>`);
+      i++;
+      continue;
     }
 
     // Table (detect header + separator)
-    if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length) {
-      const nextTrimmed = lines[i + 1].trim()
+    if (
+      trimmed.startsWith('|') &&
+      trimmed.endsWith('|') &&
+      i + 1 < lines.length
+    ) {
+      const nextTrimmed = lines[i + 1].trim();
       if (nextTrimmed.startsWith('|') && /^[\s|:-]+$/.test(nextTrimmed)) {
-        flushParagraph(out)
-        out.push(renderTable(lines, i))
-        while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) i++
-        continue
+        flushParagraph(out);
+        out.push(renderTable(lines, i));
+        while (
+          i < lines.length &&
+          lines[i].trim().startsWith('|') &&
+          lines[i].trim().endsWith('|')
+        )
+          i++;
+        continue;
       }
     }
 
     // Task list item
-    const taskMatch = trimmed.match(/^[-*]\s+\[([ xX])\]\s+(.*)$/)
+    const taskMatch = trimmed.match(/^[-*]\s+\[([ xX])\]\s+(.*)$/);
     if (taskMatch) {
-      flushParagraph(out)
-      const items: string[] = []
+      flushParagraph(out);
+      const items: string[] = [];
       while (i < lines.length) {
-        const tm = lines[i].trimStart().match(/^[-*]\s+\[([ xX])\]\s+(.*)$/)
-        if (!tm) break
-        const done = tm[1] !== ' '
-        const icon = done ? '&#9745;' : '&#9744;'
-        const cls = done ? ' class="task-done"' : ''
-        items.push(`<li>${icon} <span${cls}>${inlineMarkdown(tm[2])}</span></li>`)
-        i++
+        const tm = lines[i].trimStart().match(/^[-*]\s+\[([ xX])\]\s+(.*)$/);
+        if (!tm) break;
+        const done = tm[1] !== ' ';
+        const icon = done ? '&#9745;' : '&#9744;';
+        const cls = done ? ' class="task-done"' : '';
+        items.push(
+          `<li>${icon} <span${cls}>${inlineMarkdown(tm[2])}</span></li>`,
+        );
+        i++;
       }
-      out.push(`<ul class="task-list">${items.join('')}</ul>`)
-      continue
+      out.push(`<ul class="task-list">${items.join('')}</ul>`);
+      continue;
     }
 
     // Unordered list item
-    const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/)
+    const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/);
     if (bulletMatch && !trimmed.match(/^[-*]\s+\[/)) {
-      flushParagraph(out)
-      const items: string[] = []
+      flushParagraph(out);
+      const items: string[] = [];
       while (i < lines.length) {
-        const bm = lines[i].trimStart().match(/^[-*]\s+(.+)$/)
-        if (!bm || lines[i].trimStart().match(/^[-*]\s+\[/)) break
-        items.push(`<li>${inlineMarkdown(bm[1])}</li>`)
-        i++
+        const bm = lines[i].trimStart().match(/^[-*]\s+(.+)$/);
+        if (!bm || lines[i].trimStart().match(/^[-*]\s+\[/)) break;
+        items.push(`<li>${inlineMarkdown(bm[1])}</li>`);
+        i++;
       }
-      out.push(`<ul>${items.join('')}</ul>`)
-      continue
+      out.push(`<ul>${items.join('')}</ul>`);
+      continue;
     }
 
     // Ordered list item
-    const olMatch = trimmed.match(/^\d+\.\s+(.+)$/)
+    const olMatch = trimmed.match(/^\d+\.\s+(.+)$/);
     if (olMatch) {
-      flushParagraph(out)
-      const items: string[] = []
+      flushParagraph(out);
+      const items: string[] = [];
       while (i < lines.length) {
-        const om = lines[i].trimStart().match(/^\d+\.\s+(.+)$/)
-        if (!om) break
-        items.push(`<li>${inlineMarkdown(om[1])}</li>`)
-        i++
+        const om = lines[i].trimStart().match(/^\d+\.\s+(.+)$/);
+        if (!om) break;
+        items.push(`<li>${inlineMarkdown(om[1])}</li>`);
+        i++;
       }
-      out.push(`<ol>${items.join('')}</ol>`)
-      continue
+      out.push(`<ol>${items.join('')}</ol>`);
+      continue;
     }
 
     // Blank line → close paragraph
     if (trimmed === '') {
-      flushParagraph(out)
-      i++
-      continue
+      flushParagraph(out);
+      i++;
+      continue;
     }
 
     // Regular text → accumulate for paragraph
-    out.push(`<!--p-->${inlineMarkdown(trimmed)}`)
-    i++
+    out.push(`<!--p-->${inlineMarkdown(trimmed)}`);
+    i++;
   }
-  flushParagraph(out)
-  return out.join('\n')
+  flushParagraph(out);
+  return out.join('\n');
 }
 
 /** Collect consecutive <!--p--> lines into <p> */
 function flushParagraph(out: string[]): void {
-  const pLines: string[] = []
+  const pLines: string[] = [];
   while (out.length > 0 && out[out.length - 1].startsWith('<!--p-->')) {
-    pLines.unshift(out.pop()!.slice(7))
+    pLines.unshift(out.pop()!.slice(7));
   }
   if (pLines.length > 0) {
-    out.push(`<p>${pLines.join('<br>')}</p>`)
+    out.push(`<p>${pLines.join('<br>')}</p>`);
   }
 }
 
 /** Inline markdown: bold, italic, strikethrough, inline code, links */
 function inlineMarkdown(text: string): string {
-  let s = escapeHtml(text)
-  s = s.replace(/`([^`]+)`/g, '<code>$1</code>')
-  s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  s = s.replace(/__(.+?)__/g, '<strong>$1</strong>')
-  s = s.replace(/\*(.+?)\*/g, '<em>$1</em>')
-  s = s.replace(/_(.+?)_/g, '<em>$1</em>')
-  s = s.replace(/~~(.+?)~~/g, '<del>$1</del>')
+  let s = escapeHtml(text);
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  s = s.replace(/_(.+?)_/g, '<em>$1</em>');
+  s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text, url) => {
-    const decoded = url.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-    if (!/^https?:\/\//i.test(decoded)) return text
-    return `<a href="${url}" target="_blank" rel="noopener">${text}</a>`
-  })
-  return s
+    const decoded = url
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"');
+    if (!/^https?:\/\//i.test(decoded)) return text;
+    return `<a href="${url}" target="_blank" rel="noopener">${text}</a>`;
+  });
+  return s;
 }
 
 function renderTable(lines: string[], start: number): string {
   const parseRow = (line: string) =>
-    line.trim().slice(1, -1).split('|').map(c => c.trim())
+    line
+      .trim()
+      .slice(1, -1)
+      .split('|')
+      .map((c) => c.trim());
 
-  const headers = parseRow(lines[start])
-  const rows: string[][] = []
+  const headers = parseRow(lines[start]);
+  const rows: string[][] = [];
   for (let j = start + 2; j < lines.length; j++) {
-    const t = lines[j].trim()
-    if (!t.startsWith('|') || !t.endsWith('|')) break
-    rows.push(parseRow(lines[j]))
+    const t = lines[j].trim();
+    if (!t.startsWith('|') || !t.endsWith('|')) break;
+    rows.push(parseRow(lines[j]));
   }
 
-  const ths = headers.map(h => `<th>${inlineMarkdown(h)}</th>`).join('')
-  const trs = rows.map(r =>
-    `<tr>${r.map(c => `<td>${inlineMarkdown(c)}</td>`).join('')}</tr>`
-  ).join('')
+  const ths = headers.map((h) => `<th>${inlineMarkdown(h)}</th>`).join('');
+  const trs = rows
+    .map(
+      (r) =>
+        `<tr>${r.map((c) => `<td>${inlineMarkdown(c)}</td>`).join('')}</tr>`,
+    )
+    .join('');
 
-  return `<table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`
+  return `<table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -986,68 +1156,105 @@ function renderTable(lines: string[], start: number): string {
 /** Format timestamp to local readable string: "2026-03-17 10:23"
  *  Handles both ISO (with Z/+offset) and SQLite UTC (without timezone suffix). */
 function formatLocalTime(ts: string): string {
-  if (!ts) return '—'
+  if (!ts) return '—';
   // SQLite datetime('now') produces "YYYY-MM-DD HH:MM:SS" in UTC without Z — append Z so JS parses as UTC
-  const iso = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(ts) && !ts.includes('Z') && !ts.includes('+') ? ts.replace(' ', 'T') + 'Z' : ts
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return ts
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const iso =
+    /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(ts) &&
+    !ts.includes('Z') &&
+    !ts.includes('+')
+      ? `${ts.replace(' ', 'T')}Z`
+      : ts;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return ts;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** Add thousand separators to numbers in a string: "1234567" → "1,234,567" */
 function formatNumbersInString(s: string): string {
-  return s.replace(/\b(\d{4,})\b/g, (_, n) => Number(n).toLocaleString('en-US'))
+  return s.replace(/\b(\d{4,})\b/g, (_, n) =>
+    Number(n).toLocaleString('en-US'),
+  );
 }
 
 /** Convert ASCII table (with +---+ borders and | cols |) to HTML table */
 function formatAsciiTable(ascii: string): string {
-  if (!ascii || !ascii.includes('|')) return ascii ? `<pre style="font-size:12px;">${escapeHtml(ascii)}</pre>` : ''
-  const lines = ascii.split('\n').filter(l => l.trim())
-  const dataLines = lines.filter(l => l.includes('|') && !l.match(/^[+\-|]+$/))
-  if (dataLines.length === 0) return ''
+  if (!ascii?.includes('|'))
+    return ascii
+      ? `<pre style="font-size:12px;">${escapeHtml(ascii)}</pre>`
+      : '';
+  const lines = ascii.split('\n').filter((l) => l.trim());
+  const dataLines = lines.filter(
+    (l) => l.includes('|') && !l.match(/^[+\-|]+$/),
+  );
+  if (dataLines.length === 0) return '';
 
-  const parseRow = (line: string) => line.split('|').slice(1, -1).map(c => c.trim())
-  const headers = parseRow(dataLines[0])
-  const bodyRows = dataLines.slice(1)
+  const parseRow = (line: string) =>
+    line
+      .split('|')
+      .slice(1, -1)
+      .map((c) => c.trim());
+  const headers = parseRow(dataLines[0]);
+  const bodyRows = dataLines.slice(1);
 
-  const ths = headers.map(h => `<th style="padding:6px 12px;text-align:left;border-bottom:1px solid #333;">${escapeHtml(h)}</th>`).join('')
-  const trs = bodyRows.map(line => {
-    const cells = parseRow(line)
-    const tds = cells.map(c => {
-      // Convert ISO timestamps to local time
-      const formatted = /^\d{4}-\d{2}-\d{2}T/.test(c.trim()) ? formatLocalTime(c.trim()) : formatNumbersInString(c)
-      return `<td style="padding:4px 12px;font-size:12px;">${escapeHtml(formatted)}</td>`
-    }).join('')
-    return `<tr>${tds}</tr>`
-  }).join('\n')
+  const ths = headers
+    .map(
+      (h) =>
+        `<th style="padding:6px 12px;text-align:left;border-bottom:1px solid #333;">${escapeHtml(h)}</th>`,
+    )
+    .join('');
+  const trs = bodyRows
+    .map((line) => {
+      const cells = parseRow(line);
+      const tds = cells
+        .map((c) => {
+          // Convert ISO timestamps to local time
+          const formatted = /^\d{4}-\d{2}-\d{2}T/.test(c.trim())
+            ? formatLocalTime(c.trim())
+            : formatNumbersInString(c);
+          return `<td style="padding:4px 12px;font-size:12px;">${escapeHtml(formatted)}</td>`;
+        })
+        .join('');
+      return `<tr>${tds}</tr>`;
+    })
+    .join('\n');
 
-  return `<table style="width:100%;border-collapse:collapse;margin:10px 0;"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`
+  return `<table style="width:100%;border-collapse:collapse;margin:10px 0;"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
 }
 
 export function healthPage(data: any): string {
-  const { sources, viking, summary } = data
+  const { sources, viking, summary } = data;
 
-  const rows = sources.map((s: any) => {
-    const latestDate = new Date(s.latestIndexed)
-    const ageMs = Date.now() - latestDate.getTime()
-    const ageHours = ageMs / 3600000
-    const status = ageHours < 24 ? '&#x1F7E2;' : ageHours < 168 ? '&#x1F7E1;' : '&#x26AA;'
-    const statusLabel = ageHours < 24 ? 'Active' : ageHours < 168 ? 'Stale' : 'Inactive'
-    const ago = ageHours < 1 ? `${Math.round(ageMs / 60000)}m ago`
-      : ageHours < 24 ? `${Math.round(ageHours)}h ago`
-      : `${Math.round(ageHours / 24)}d ago`
+  const rows = sources
+    .map((s: any) => {
+      const latestDate = new Date(s.latestIndexed);
+      const ageMs = Date.now() - latestDate.getTime();
+      const ageHours = ageMs / 3600000;
+      const status =
+        ageHours < 24 ? '&#x1F7E2;' : ageHours < 168 ? '&#x1F7E1;' : '&#x26AA;';
+      const statusLabel =
+        ageHours < 24 ? 'Active' : ageHours < 168 ? 'Stale' : 'Inactive';
+      const ago =
+        ageHours < 1
+          ? `${Math.round(ageMs / 60000)}m ago`
+          : ageHours < 24
+            ? `${Math.round(ageHours)}h ago`
+            : `${Math.round(ageHours / 24)}d ago`;
 
-    const maxDaily = Math.max(...s.dailyCounts, 1)
-    const sparkline = s.dailyCounts.map((c: number) => {
-      const h = Math.round((c / maxDaily) * 20)
-      return `<div style="width:8px;height:${h}px;background:var(--accent);border-radius:1px;"></div>`
-    }).join('')
+      const maxDaily = Math.max(...s.dailyCounts, 1);
+      const sparkline = s.dailyCounts
+        .map((c: number) => {
+          const h = Math.round((c / maxDaily) * 20);
+          return `<div style="width:8px;height:${h}px;background:var(--accent);border-radius:1px;"></div>`;
+        })
+        .join('');
 
-    const derived = s.derived ? `<span style="color:#888;font-size:11px;">(via ${escapeHtml(s.derivedFrom)})</span>` : ''
-    const pathCheck = s.path ? (s.pathExists ? '&#x2705;' : '&#x274C;') : ''
+      const derived = s.derived
+        ? `<span style="color:#888;font-size:11px;">(via ${escapeHtml(s.derivedFrom)})</span>`
+        : '';
+      const pathCheck = s.path ? (s.pathExists ? '&#x2705;' : '&#x274C;') : '';
 
-    return `<tr>
+      return `<tr>
       <td><strong>${escapeHtml(s.name)}</strong> ${derived}</td>
       <td>${s.sessionCount}</td>
       <td>${ago}</td>
@@ -1055,21 +1262,26 @@ export function healthPage(data: any): string {
       <td style="white-space:nowrap;">${status} ${statusLabel}</td>
       <td style="font-size:11px;color:#888;">${escapeHtml(s.path || '\u2014')} ${pathCheck}</td>
       <td style="font-size:11px;color:#888;">${escapeHtml(s.watcherType)}</td>
-    </tr>`
-  }).join('\n')
+    </tr>`;
+    })
+    .join('\n');
 
-  const vikingSection = viking ? `
+  const vikingSection = viking
+    ? `
     <h3>OpenViking</h3>
     <p>${viking.available ? '&#x1F7E2; Connected' : '&#x1F534; Unreachable'}</p>
     ${viking.queue ? formatAsciiTable(typeof viking.queue === 'string' ? viking.queue : '') : ''}
     ${viking.vlm ? formatAsciiTable(typeof viking.vlm === 'string' ? viking.vlm : '') : ''}
-  ` : '<h3>OpenViking</h3><p>&#x26AA; Not configured</p>'
+  `
+    : '<h3>OpenViking</h3><p>&#x26AA; Not configured</p>';
 
   const lastIndexedStr = summary.lastIndexed
     ? formatLocalTime(summary.lastIndexed)
-    : 'never'
+    : 'never';
 
-  return layout('Index Health', `
+  return layout(
+    'Index Health',
+    `
     <h2>Index Health Dashboard</h2>
     <p style="color:#888;">${summary.activeSources}/${summary.totalSources} sources active &middot; last indexed ${escapeHtml(lastIndexedStr)}</p>
 
@@ -1083,35 +1295,37 @@ export function healthPage(data: any): string {
     </table>
 
     ${vikingSection}
-  `, '/health')
+  `,
+    '/health',
+  );
 }
 
 // ---------------------------------------------------------------------------
 // System injection detection — keep in sync with macos/Engram/Core/MessageParser.swift classifySystem
 // ---------------------------------------------------------------------------
 
-type SystemCategory = 'none' | 'systemPrompt' | 'agentComm'
+type SystemCategory = 'none' | 'systemPrompt' | 'agentComm';
 
 function classifySystem(content: string): SystemCategory {
   // Agent communication
-  if (content.startsWith('# AGENTS.md instructions for ')) return 'agentComm'
-  if (content.includes('<command-name>')) return 'agentComm'
-  if (content.includes('<command-message>')) return 'agentComm'
-  if (content.startsWith('<local-command-caveat>')) return 'agentComm'
-  if (content.startsWith('<local-command-stdout>')) return 'agentComm'
-  if (content.startsWith('Unknown skill: ')) return 'agentComm'
-  if (content.startsWith('Invoke the superpowers:')) return 'agentComm'
-  if (content.startsWith('Base directory for this skill:')) return 'agentComm'
+  if (content.startsWith('# AGENTS.md instructions for ')) return 'agentComm';
+  if (content.includes('<command-name>')) return 'agentComm';
+  if (content.includes('<command-message>')) return 'agentComm';
+  if (content.startsWith('<local-command-caveat>')) return 'agentComm';
+  if (content.startsWith('<local-command-stdout>')) return 'agentComm';
+  if (content.startsWith('Unknown skill: ')) return 'agentComm';
+  if (content.startsWith('Invoke the superpowers:')) return 'agentComm';
+  if (content.startsWith('Base directory for this skill:')) return 'agentComm';
 
   // System prompts
-  if (content.includes('<INSTRUCTIONS>')) return 'systemPrompt'
-  if (content.startsWith('<system-reminder>')) return 'systemPrompt'
-  if (content.startsWith('<environment_context>')) return 'systemPrompt'
-  if (content.startsWith('<EXTREMELY_IMPORTANT>')) return 'systemPrompt'
-  if (content.startsWith('\nYou are Qwen Code')) return 'systemPrompt'
-  if (content.startsWith('You are Qwen Code')) return 'systemPrompt'
+  if (content.includes('<INSTRUCTIONS>')) return 'systemPrompt';
+  if (content.startsWith('<system-reminder>')) return 'systemPrompt';
+  if (content.startsWith('<environment_context>')) return 'systemPrompt';
+  if (content.startsWith('<EXTREMELY_IMPORTANT>')) return 'systemPrompt';
+  if (content.startsWith('\nYou are Qwen Code')) return 'systemPrompt';
+  if (content.startsWith('You are Qwen Code')) return 'systemPrompt';
 
-  return 'none'
+  return 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,36 +1333,46 @@ function classifySystem(content: string): SystemCategory {
 // ---------------------------------------------------------------------------
 
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function formatDate(iso: string): string {
   try {
-    const d = new Date(iso)
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   } catch {
-    return iso.slice(0, 16)
+    return iso.slice(0, 16);
   }
 }
 
 function relativeDate(iso: string): string {
   try {
-    const now = Date.now()
-    const then = new Date(iso).getTime()
-    const diff = now - then
-    if (diff < 0) return formatDate(iso)
-    if (diff < 60_000) return 'just now'
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
-    if (diff < 172_800_000) return 'yesterday'
-    if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`
-    return formatDate(iso)
+    const now = Date.now();
+    const then = new Date(iso).getTime();
+    const diff = now - then;
+    if (diff < 0) return formatDate(iso);
+    if (diff < 60_000) return 'just now';
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+    if (diff < 172_800_000) return 'yesterday';
+    if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+    return formatDate(iso);
   } catch {
-    return iso.slice(0, 16)
+    return iso.slice(0, 16);
   }
 }
 
 function truncate(s: string, max: number): string {
-  if (s.length <= max) return s
-  return s.slice(0, max) + '…'
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…`;
 }

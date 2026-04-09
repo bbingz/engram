@@ -2,10 +2,10 @@
 // HTTP client for OpenViking API — all paths match the real server routes.
 
 import http from 'node:http';
+import type { AiAuditWriter } from './ai-audit.js';
 import type { Logger } from './logger.js';
 import type { MetricsCollector } from './metrics.js';
 import type { Tracer } from './tracer.js';
-import type { AiAuditWriter } from './ai-audit.js';
 
 /** Proxy-aware fetch: routes through http_proxy when set (Node's native fetch ignores it). */
 function vikingFetch(url: string | URL, init?: RequestInit): Promise<Response> {
@@ -14,36 +14,45 @@ function vikingFetch(url: string | URL, init?: RequestInit): Promise<Response> {
 
   const target = new URL(String(url));
   // Skip proxy for localhost
-  if (target.hostname === 'localhost' || target.hostname === '127.0.0.1') return fetch(url, init);
+  if (target.hostname === 'localhost' || target.hostname === '127.0.0.1')
+    return fetch(url, init);
 
   const proxyUrl = new URL(proxy);
   const signal = init?.signal as AbortSignal | undefined;
 
   return new Promise((resolve, reject) => {
-    const req = http.request({
-      hostname: proxyUrl.hostname,
-      port: Number(proxyUrl.port),
-      path: String(url),
-      method: init?.method ?? 'GET',
-      headers: {
-        ...(init?.headers as Record<string, string>),
-        Host: target.host,
+    const req = http.request(
+      {
+        hostname: proxyUrl.hostname,
+        port: Number(proxyUrl.port),
+        path: String(url),
+        method: init?.method ?? 'GET',
+        headers: {
+          ...(init?.headers as Record<string, string>),
+          Host: target.host,
+        },
       },
-    }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (c: Buffer) => chunks.push(c));
-      res.on('end', () => {
-        const body = Buffer.concat(chunks);
-        resolve(new Response(body, {
-          status: res.statusCode ?? 500,
-          statusText: res.statusMessage ?? '',
-          headers: res.headers as Record<string, string>,
-        }));
-      });
-    });
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks);
+          resolve(
+            new Response(body, {
+              status: res.statusCode ?? 500,
+              statusText: res.statusMessage ?? '',
+              headers: res.headers as Record<string, string>,
+            }),
+          );
+        });
+      },
+    );
 
     req.on('error', reject);
-    signal?.addEventListener('abort', () => { req.destroy(); reject(new DOMException('Aborted', 'AbortError')); });
+    signal?.addEventListener('abort', () => {
+      req.destroy();
+      reject(new DOMException('Aborted', 'AbortError'));
+    });
 
     if (init?.body) req.write(init.body);
     req.end();
@@ -73,12 +82,20 @@ export interface VikingMemory {
 const UNKNOWN_PROJECT = 'unknown';
 
 /** Build composite session ID for Sessions API: source::project::id */
-export function toVikingSessionId(source: string, project: string | undefined, id: string): string {
+export function toVikingSessionId(
+  source: string,
+  project: string | undefined,
+  id: string,
+): string {
   return `${source}::${project ?? UNKNOWN_PROJECT}::${id}`;
 }
 
 /** @deprecated No longer used after Sessions API migration. Kept for backward compatibility with older test data. */
-export function toVikingUri(source: string, project: string | undefined, id: string): string {
+export function toVikingUri(
+  source: string,
+  project: string | undefined,
+  id: string,
+): string {
   return `viking://session/${source}/${project ?? UNKNOWN_PROJECT}/${id}`;
 }
 
@@ -87,7 +104,9 @@ export function toVikingUri(source: string, project: string | undefined, id: str
  *  New format: viking://session/default/{source}::{project}::{id}/... */
 export function sessionIdFromVikingUri(uri: string): string {
   // New Sessions API format: composite ID with :: separator
-  const compositeMatch = uri.match(/viking:\/\/session\/[^/]+\/([^/]+::[^/]+::([^/]+))/);
+  const compositeMatch = uri.match(
+    /viking:\/\/session\/[^/]+\/([^/]+::[^/]+::([^/]+))/,
+  );
   if (compositeMatch) return compositeMatch[2];
   // Old Resources API format: path segments
   const legacyMatch = uri.match(/viking:\/\/session\/[^/]+\/[^/]+\/([^/]+)/);
@@ -123,15 +142,27 @@ export class VikingBridge {
   private activePushes = 0;
   private pushWaiters: (() => void)[] = [];
 
-  constructor(url: string, apiKey: string, opts?: { agentId?: string; maxRequestsPerHour?: number; audit?: AiAuditWriter; log?: Logger; metrics?: MetricsCollector; tracer?: Tracer }) {
+  constructor(
+    url: string,
+    apiKey: string,
+    opts?: {
+      agentId?: string;
+      maxRequestsPerHour?: number;
+      audit?: AiAuditWriter;
+      log?: Logger;
+      metrics?: MetricsCollector;
+      tracer?: Tracer;
+    },
+  ) {
     this.baseUrl = url.replace(/\/$/, '');
     this.api = `${this.baseUrl}/api/v1`;
     this.headers = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
     };
     if (opts?.agentId) this.headers['X-Agent-Id'] = opts.agentId;
-    this.maxRequestsPerHour = opts?.maxRequestsPerHour ?? DEFAULT_MAX_REQUESTS_PER_HOUR;
+    this.maxRequestsPerHour =
+      opts?.maxRequestsPerHour ?? DEFAULT_MAX_REQUESTS_PER_HOUR;
     this.audit = opts?.audit;
     this.log = opts?.log;
     this.metrics = opts?.metrics;
@@ -149,13 +180,19 @@ export class VikingBridge {
     }
     if (this.hourlyRequestCount >= this.maxRequestsPerHour) {
       const remainingMs = 3_600_000 - (now - this.hourlyWindowStart);
-      this.log?.warn('viking hourly budget exhausted', { count: this.hourlyRequestCount, max: this.maxRequestsPerHour, resumeInMs: remainingMs });
+      this.log?.warn('viking hourly budget exhausted', {
+        count: this.hourlyRequestCount,
+        max: this.maxRequestsPerHour,
+        resumeInMs: remainingMs,
+      });
       this.metrics?.counter('viking.budget_exhausted', 1);
-      throw new Error(`Viking hourly request budget exhausted (${this.maxRequestsPerHour}/hr). Resets in ${Math.ceil(remainingMs / 60000)}min`);
+      throw new Error(
+        `Viking hourly request budget exhausted (${this.maxRequestsPerHour}/hr). Resets in ${Math.ceil(remainingMs / 60000)}min`,
+      );
     }
     // Throttle interval
     const wait = MIN_REQUEST_INTERVAL_MS - (now - this.lastRequestAt);
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     this.lastRequestAt = Date.now();
     this.hourlyRequestCount++;
   }
@@ -165,8 +202,11 @@ export class VikingBridge {
       this.activePushes++;
       return;
     }
-    return new Promise<void>(resolve => {
-      this.pushWaiters.push(() => { this.activePushes++; resolve(); });
+    return new Promise<void>((resolve) => {
+      this.pushWaiters.push(() => {
+        this.activePushes++;
+        resolve();
+      });
     });
   }
 
@@ -177,8 +217,12 @@ export class VikingBridge {
   }
 
   /** Base URL for direct API access (used by health dashboard) */
-  get url(): string { return this.baseUrl; }
-  get apiHeaders(): Record<string, string> { return this.headers; }
+  get url(): string {
+    return this.baseUrl;
+  }
+  get apiHeaders(): Record<string, string> {
+    return this.headers;
+  }
 
   async isAvailable(): Promise<boolean> {
     const start = Date.now();
@@ -189,15 +233,22 @@ export class VikingBridge {
         signal: AbortSignal.timeout(3000),
       });
       this.audit?.record({
-        caller: 'viking', operation: 'isAvailable', provider: 'viking',
-        method: 'GET', url: `${this.api}/debug/health`,
-        statusCode: res.status, durationMs: Date.now() - start,
+        caller: 'viking',
+        operation: 'isAvailable',
+        provider: 'viking',
+        method: 'GET',
+        url: `${this.api}/debug/health`,
+        statusCode: res.status,
+        durationMs: Date.now() - start,
       });
       return res.ok;
     } catch (err) {
       this.audit?.record({
-        caller: 'viking', operation: 'isAvailable', provider: 'viking',
-        method: 'GET', url: `${this.api}/debug/health`,
+        caller: 'viking',
+        operation: 'isAvailable',
+        provider: 'viking',
+        method: 'GET',
+        url: `${this.api}/debug/health`,
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -208,7 +259,8 @@ export class VikingBridge {
   /** Cached health check — caches both positive and negative results for CIRCUIT_BREAKER_TTL */
   async checkAvailable(): Promise<boolean> {
     const now = Date.now();
-    if (now - this.lastHealthCheck < CIRCUIT_BREAKER_TTL) return !this.circuitOpen;
+    if (now - this.lastHealthCheck < CIRCUIT_BREAKER_TTL)
+      return !this.circuitOpen;
     const wasOpen = this.circuitOpen;
     const ok = await this.isAvailable();
     this.circuitOpen = !ok;
@@ -223,7 +275,11 @@ export class VikingBridge {
   }
 
   /** Generic POST helper with retry on 5xx. Exponential backoff on 429 with Retry-After. */
-  private async post(url: string, body: Record<string, unknown>, timeout = 10000): Promise<unknown> {
+  private async post(
+    url: string,
+    body: Record<string, unknown>,
+    timeout = 10000,
+  ): Promise<unknown> {
     const MAX_RETRIES = 3;
     const path = url.replace(this.api, '');
     await this.throttle();
@@ -238,22 +294,27 @@ export class VikingBridge {
       if (res.status === 429) {
         // Respect Retry-After header; default to aggressive exponential backoff
         const retryAfter = parseInt(res.headers.get('retry-after') || '', 10);
-        const delay = (retryAfter > 0 ? retryAfter * 1000 : 5000) * Math.pow(2, attempt);
+        const delay =
+          (retryAfter > 0 ? retryAfter * 1000 : 5000) * 2 ** attempt;
         this.log?.warn('viking 429 rate limited', { path, delay, attempt });
         this.metrics?.counter('viking.rate_limited', 1);
         if (attempt < MAX_RETRIES - 1) {
-          await new Promise(r => setTimeout(r, delay));
+          await new Promise((r) => setTimeout(r, delay));
           continue;
         }
-        throw new Error(`Viking ${path} rate limited after ${MAX_RETRIES} retries`);
+        throw new Error(
+          `Viking ${path} rate limited after ${MAX_RETRIES} retries`,
+        );
       }
       if (res.status >= 500) {
         if (attempt < MAX_RETRIES - 1) {
-          await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
           continue;
         }
       }
-      throw new Error(`Viking ${path} failed (${res.status}): ${await res.text()}`);
+      throw new Error(
+        `Viking ${path} failed (${res.status}): ${await res.text()}`,
+      );
     }
     throw new Error(`Viking ${path} failed after ${MAX_RETRIES} retries`);
   }
@@ -262,7 +323,10 @@ export class VikingBridge {
    *  Messages sent serially to preserve conversation order (Viking stores by arrival order).
    *  Built-in MD5 dedup: re-pushing same messages is a no-op.
    *  Concurrency-limited: max MAX_CONCURRENT_PUSHES in parallel. */
-  async pushSession(sessionId: string, messages: { role: string; content: string }[]): Promise<void> {
+  async pushSession(
+    sessionId: string,
+    messages: { role: string; content: string }[],
+  ): Promise<void> {
     await this.acquirePushSlot();
     const pushStart = Date.now();
     const span = this.tracer?.startSpan('viking.pushSession', 'viking', {
@@ -272,19 +336,28 @@ export class VikingBridge {
       await this.post(`${this.api}/sessions/custom`, { session_id: sessionId });
 
       for (const msg of messages) {
-        await this.post(`${this.api}/sessions/${sessionId}/messages`, {
-          role: msg.role,
-          parts: [{ type: 'text', text: msg.content }],
-        }, 5000);
+        await this.post(
+          `${this.api}/sessions/${sessionId}/messages`,
+          {
+            role: msg.role,
+            parts: [{ type: 'text', text: msg.content }],
+          },
+          5000,
+        );
       }
 
       await this.post(`${this.api}/sessions/${sessionId}/commit/async`, {});
       span?.end();
-      this.metrics?.histogram('viking.push_duration_ms', Date.now() - pushStart);
+      this.metrics?.histogram(
+        'viking.push_duration_ms',
+        Date.now() - pushStart,
+      );
       this.metrics?.counter('viking.pushes', 1);
       this.metrics?.counter('viking.messages_pushed', messages.length);
       this.audit?.record({
-        caller: 'viking', operation: 'pushSession', provider: 'viking',
+        caller: 'viking',
+        operation: 'pushSession',
+        provider: 'viking',
         durationMs: Date.now() - pushStart,
         sessionId,
         meta: { messageCount: messages.length },
@@ -293,7 +366,9 @@ export class VikingBridge {
       span?.setError(err);
       this.log?.error('viking pushSession failed', { sessionId }, err);
       this.audit?.record({
-        caller: 'viking', operation: 'pushSession', provider: 'viking',
+        caller: 'viking',
+        operation: 'pushSession',
+        provider: 'viking',
         durationMs: Date.now() - pushStart,
         sessionId,
         error: err instanceof Error ? err.message : String(err),
@@ -309,38 +384,57 @@ export class VikingBridge {
   async deleteResources(): Promise<void> {
     const start = Date.now();
     const url = `${this.api}/fs?uri=${encodeURIComponent('viking://resources/')}&recursive=true`;
-    const res = await vikingFetch(
-      url,
-      { method: 'DELETE', headers: this.headers, signal: AbortSignal.timeout(60000) } as RequestInit,
-    );
+    const res = await vikingFetch(url, {
+      method: 'DELETE',
+      headers: this.headers,
+      signal: AbortSignal.timeout(60000),
+    } as RequestInit);
     if (!res.ok) {
       const errText = await res.text();
       this.audit?.record({
-        caller: 'viking', operation: 'deleteResources', provider: 'viking',
-        method: 'DELETE', url,
-        statusCode: res.status, durationMs: Date.now() - start,
+        caller: 'viking',
+        operation: 'deleteResources',
+        provider: 'viking',
+        method: 'DELETE',
+        url,
+        statusCode: res.status,
+        durationMs: Date.now() - start,
         error: `${res.status}: ${errText}`,
       });
-      throw new Error(`Viking deleteResources failed (${res.status}): ${errText}`);
+      throw new Error(
+        `Viking deleteResources failed (${res.status}): ${errText}`,
+      );
     }
     this.audit?.record({
-      caller: 'viking', operation: 'deleteResources', provider: 'viking',
-      method: 'DELETE', url,
-      statusCode: res.status, durationMs: Date.now() - start,
+      caller: 'viking',
+      operation: 'deleteResources',
+      provider: 'viking',
+      method: 'DELETE',
+      url,
+      statusCode: res.status,
+      durationMs: Date.now() - start,
     });
   }
 
   // Push content to OpenViking via resources path (triggers embedding pipeline)
   // Flow: temp_upload .md file → import as resource (async, triggers L0/L1 + embedding)
-  async addResource(uri: string, content: string, metadata?: Record<string, string>): Promise<void> {
+  async addResource(
+    uri: string,
+    content: string,
+    metadata?: Record<string, string>,
+  ): Promise<void> {
     const start = Date.now();
-    const span = this.tracer?.startSpan('viking.addResource', 'viking', { attributes: { uri } });
+    const span = this.tracer?.startSpan('viking.addResource', 'viking', {
+      attributes: { uri },
+    });
     try {
       // Step 1: upload content as a temp .md file
       const boundary = `----engram${Date.now()}`;
       const slug = uri.replace(/[^a-zA-Z0-9-]/g, '_');
       const header = metadata
-        ? Object.entries(metadata).map(([k, v]) => `${k}: ${v}`).join(' | ') + '\n\n'
+        ? `${Object.entries(metadata)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(' | ')}\n\n`
         : '';
       const body = [
         `--${boundary}`,
@@ -361,34 +455,50 @@ export class VikingBridge {
         signal: AbortSignal.timeout(30000),
       });
       if (!uploadRes.ok) {
-        throw new Error(`Viking temp_upload failed (${uploadRes.status}): ${await uploadRes.text()}`);
+        throw new Error(
+          `Viking temp_upload failed (${uploadRes.status}): ${await uploadRes.text()}`,
+        );
       }
       const uploadData = await uploadRes.json();
       const tempPath = uploadData?.result?.temp_path;
-      if (!tempPath) throw new Error('Viking temp_upload returned no temp_path');
+      if (!tempPath)
+        throw new Error('Viking temp_upload returned no temp_path');
 
       // Step 2: import as resource (async — triggers L0/L1 generation + embedding)
       const importRes = await vikingFetch(`${this.api}/resources`, {
         method: 'POST',
         headers: this.headers,
-        body: JSON.stringify({ temp_path: tempPath, wait: false, preserve_structure: true }),
+        body: JSON.stringify({
+          temp_path: tempPath,
+          wait: false,
+          preserve_structure: true,
+        }),
         signal: AbortSignal.timeout(10000),
       });
       if (!importRes.ok) {
-        throw new Error(`Viking addResource failed (${importRes.status}): ${await importRes.text()}`);
+        throw new Error(
+          `Viking addResource failed (${importRes.status}): ${await importRes.text()}`,
+        );
       }
       span?.end();
       this.audit?.record({
-        caller: 'viking', operation: 'addResource', provider: 'viking',
-        method: 'POST', url: `${this.api}/resources`,
-        statusCode: importRes.status, durationMs: Date.now() - start,
+        caller: 'viking',
+        operation: 'addResource',
+        provider: 'viking',
+        method: 'POST',
+        url: `${this.api}/resources`,
+        statusCode: importRes.status,
+        durationMs: Date.now() - start,
       });
     } catch (err) {
       span?.setError(err);
       this.log?.error('viking addResource failed', { uri }, err);
       this.audit?.record({
-        caller: 'viking', operation: 'addResource', provider: 'viking',
-        method: 'POST', url: `${this.api}/resources`,
+        caller: 'viking',
+        operation: 'addResource',
+        provider: 'viking',
+        method: 'POST',
+        url: `${this.api}/resources`,
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -399,7 +509,9 @@ export class VikingBridge {
   // POST /find — semantic search
   async find(query: string, targetUri?: string): Promise<VikingSearchResult[]> {
     const findStart = Date.now();
-    const span = this.tracer?.startSpan('viking.find', 'viking', { attributes: { query: query.slice(0, 100) } });
+    const span = this.tracer?.startSpan('viking.find', 'viking', {
+      attributes: { query: query.slice(0, 100) },
+    });
     try {
       const body: Record<string, unknown> = { query, limit: 20 };
       if (targetUri) body.target_uri = targetUri;
@@ -413,10 +525,15 @@ export class VikingBridge {
         span?.setAttribute('status', res.status);
         span?.end();
         this.audit?.record({
-          caller: 'viking', operation: 'find', provider: 'viking',
-          method: 'POST', url: `${this.api}/search/find`,
-          statusCode: res.status, durationMs: Date.now() - findStart,
-          requestBody: body, error: `${res.status}`,
+          caller: 'viking',
+          operation: 'find',
+          provider: 'viking',
+          method: 'POST',
+          url: `${this.api}/search/find`,
+          statusCode: res.status,
+          durationMs: Date.now() - findStart,
+          requestBody: body,
+          error: `${res.status}`,
         });
         return [];
       }
@@ -429,24 +546,44 @@ export class VikingBridge {
         ...(Array.isArray(r.memories) ? r.memories : []),
         ...(Array.isArray(r.skills) ? r.skills : []),
       ];
-      const results = items.map(i => ({ uri: i.uri ?? '', score: i.score ?? 0, snippet: i.abstract ?? '', metadata: i.metadata }));
+      const results = items.map((i) => ({
+        uri: i.uri ?? '',
+        score: i.score ?? 0,
+        snippet: i.abstract ?? '',
+        metadata: i.metadata,
+      }));
       span?.setAttribute('resultCount', results.length);
       span?.end();
-      this.metrics?.histogram('viking.find_duration_ms', Date.now() - findStart);
+      this.metrics?.histogram(
+        'viking.find_duration_ms',
+        Date.now() - findStart,
+      );
       this.metrics?.counter('viking.queries', 1);
       this.audit?.record({
-        caller: 'viking', operation: 'find', provider: 'viking',
-        method: 'POST', url: `${this.api}/search/find`,
-        statusCode: res.status, durationMs: Date.now() - findStart,
-        requestBody: body, responseBody: data,
+        caller: 'viking',
+        operation: 'find',
+        provider: 'viking',
+        method: 'POST',
+        url: `${this.api}/search/find`,
+        statusCode: res.status,
+        durationMs: Date.now() - findStart,
+        requestBody: body,
+        responseBody: data,
       });
       return results;
     } catch (err) {
       span?.setError(err);
-      this.log?.error('viking find failed', { query: query.slice(0, 100) }, err);
+      this.log?.error(
+        'viking find failed',
+        { query: query.slice(0, 100) },
+        err,
+      );
       this.audit?.record({
-        caller: 'viking', operation: 'find', provider: 'viking',
-        method: 'POST', url: `${this.api}/search/find`,
+        caller: 'viking',
+        operation: 'find',
+        provider: 'viking',
+        method: 'POST',
+        url: `${this.api}/search/find`,
         durationMs: Date.now() - findStart,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -455,10 +592,16 @@ export class VikingBridge {
   }
 
   // POST /grep — pattern search
-  async grep(pattern: string, targetUri?: string): Promise<VikingSearchResult[]> {
+  async grep(
+    pattern: string,
+    targetUri?: string,
+  ): Promise<VikingSearchResult[]> {
     const start = Date.now();
     try {
-      const body: Record<string, unknown> = { pattern, uri: targetUri ?? 'viking://' };
+      const body: Record<string, unknown> = {
+        pattern,
+        uri: targetUri ?? 'viking://',
+      };
       const res = await vikingFetch(`${this.api}/search/grep`, {
         method: 'POST',
         headers: this.headers,
@@ -467,26 +610,39 @@ export class VikingBridge {
       });
       if (!res.ok) {
         this.audit?.record({
-          caller: 'viking', operation: 'grep', provider: 'viking',
-          method: 'POST', url: `${this.api}/search/grep`,
-          statusCode: res.status, durationMs: Date.now() - start,
-          requestBody: body, error: `${res.status}`,
+          caller: 'viking',
+          operation: 'grep',
+          provider: 'viking',
+          method: 'POST',
+          url: `${this.api}/search/grep`,
+          statusCode: res.status,
+          durationMs: Date.now() - start,
+          requestBody: body,
+          error: `${res.status}`,
         });
         return [];
       }
       const data = await res.json();
       const results = data?.result ?? data?.results ?? [];
       this.audit?.record({
-        caller: 'viking', operation: 'grep', provider: 'viking',
-        method: 'POST', url: `${this.api}/search/grep`,
-        statusCode: res.status, durationMs: Date.now() - start,
-        requestBody: body, responseBody: data,
+        caller: 'viking',
+        operation: 'grep',
+        provider: 'viking',
+        method: 'POST',
+        url: `${this.api}/search/grep`,
+        statusCode: res.status,
+        durationMs: Date.now() - start,
+        requestBody: body,
+        responseBody: data,
       });
       return Array.isArray(results) ? results : [];
     } catch (err) {
       this.audit?.record({
-        caller: 'viking', operation: 'grep', provider: 'viking',
-        method: 'POST', url: `${this.api}/search/grep`,
+        caller: 'viking',
+        operation: 'grep',
+        provider: 'viking',
+        method: 'POST',
+        url: `${this.api}/search/grep`,
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -496,17 +652,26 @@ export class VikingBridge {
 
   // GET /abstract?uri= — L0 (~100 tokens)
   async abstract(uri: string): Promise<string> {
-    return this.getContent(`${this.api}/content/abstract?uri=${encodeURIComponent(uri)}`, 'abstract');
+    return this.getContent(
+      `${this.api}/content/abstract?uri=${encodeURIComponent(uri)}`,
+      'abstract',
+    );
   }
 
   // GET /overview?uri= — L1 (~2K tokens)
   async overview(uri: string): Promise<string> {
-    return this.getContent(`${this.api}/content/overview?uri=${encodeURIComponent(uri)}`, 'overview');
+    return this.getContent(
+      `${this.api}/content/overview?uri=${encodeURIComponent(uri)}`,
+      'overview',
+    );
   }
 
   // GET /read?uri= — L2 (full content)
   async read(uri: string): Promise<string> {
-    return this.getContent(`${this.api}/content/read?uri=${encodeURIComponent(uri)}`, 'read');
+    return this.getContent(
+      `${this.api}/content/read?uri=${encodeURIComponent(uri)}`,
+      'read',
+    );
   }
 
   private async getContent(url: string, operation: string): Promise<string> {
@@ -519,9 +684,13 @@ export class VikingBridge {
       });
       if (!res.ok) {
         this.audit?.record({
-          caller: 'viking', operation, provider: 'viking',
-          method: 'GET', url,
-          statusCode: res.status, durationMs: Date.now() - start,
+          caller: 'viking',
+          operation,
+          provider: 'viking',
+          method: 'GET',
+          url,
+          statusCode: res.status,
+          durationMs: Date.now() - start,
           error: `${res.status}`,
         });
         return '';
@@ -530,16 +699,23 @@ export class VikingBridge {
       // OpenViking returns {status, result: "content"} or {content: "..."}
       const content = data?.result ?? data?.content ?? '';
       this.audit?.record({
-        caller: 'viking', operation, provider: 'viking',
-        method: 'GET', url,
-        statusCode: res.status, durationMs: Date.now() - start,
+        caller: 'viking',
+        operation,
+        provider: 'viking',
+        method: 'GET',
+        url,
+        statusCode: res.status,
+        durationMs: Date.now() - start,
         responseBody: data,
       });
       return typeof content === 'string' ? content : '';
     } catch (err) {
       this.audit?.record({
-        caller: 'viking', operation, provider: 'viking',
-        method: 'GET', url,
+        caller: 'viking',
+        operation,
+        provider: 'viking',
+        method: 'GET',
+        url,
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -559,9 +735,13 @@ export class VikingBridge {
       });
       if (!res.ok) {
         this.audit?.record({
-          caller: 'viking', operation: 'ls', provider: 'viking',
-          method: 'GET', url,
-          statusCode: res.status, durationMs: Date.now() - start,
+          caller: 'viking',
+          operation: 'ls',
+          provider: 'viking',
+          method: 'GET',
+          url,
+          statusCode: res.status,
+          durationMs: Date.now() - start,
           error: `${res.status}`,
         });
         return [];
@@ -569,16 +749,23 @@ export class VikingBridge {
       const data = await res.json();
       const entries = data?.result ?? data?.entries ?? [];
       this.audit?.record({
-        caller: 'viking', operation: 'ls', provider: 'viking',
-        method: 'GET', url,
-        statusCode: res.status, durationMs: Date.now() - start,
+        caller: 'viking',
+        operation: 'ls',
+        provider: 'viking',
+        method: 'GET',
+        url,
+        statusCode: res.status,
+        durationMs: Date.now() - start,
         responseBody: data,
       });
       return Array.isArray(entries) ? entries : [];
     } catch (err) {
       this.audit?.record({
-        caller: 'viking', operation: 'ls', provider: 'viking',
-        method: 'GET', url,
+        caller: 'viking',
+        operation: 'ls',
+        provider: 'viking',
+        method: 'GET',
+        url,
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -602,21 +789,25 @@ export class VikingBridge {
       ]);
       const results = [...userResults, ...agentResults]
         .sort((a, b) => b.score - a.score)
-        .map(r => ({
+        .map((r) => ({
           content: r.snippet,
           source: r.uri,
           confidence: r.score,
           createdAt: r.metadata?.createdAt ?? '',
         }));
       this.audit?.record({
-        caller: 'viking', operation: 'findMemories', provider: 'viking',
+        caller: 'viking',
+        operation: 'findMemories',
+        provider: 'viking',
         durationMs: Date.now() - start,
         meta: { resultCount: results.length },
       });
       return results;
     } catch (err) {
       this.audit?.record({
-        caller: 'viking', operation: 'findMemories', provider: 'viking',
+        caller: 'viking',
+        operation: 'findMemories',
+        provider: 'viking',
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -625,20 +816,36 @@ export class VikingBridge {
   }
 
   // ── Observer proxy methods ─────────────────────────────────────────
-  private async getObserver(path: string): Promise<Record<string, unknown> | null> {
+  private async getObserver(
+    path: string,
+  ): Promise<Record<string, unknown> | null> {
     try {
       const res = await vikingFetch(`${this.api}/observer/${path}`, {
-        method: 'GET', headers: this.headers, signal: AbortSignal.timeout(5000),
+        method: 'GET',
+        headers: this.headers,
+        signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) return null;
       const data = await res.json();
       return (data?.result ?? data) as Record<string, unknown>;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
-  async observerSystem(): Promise<Record<string, unknown> | null> { return this.getObserver('system'); }
-  async observerQueue(): Promise<Record<string, unknown> | null> { return this.getObserver('queue'); }
-  async observerVlm(): Promise<Record<string, unknown> | null> { return this.getObserver('vlm'); }
-  async observerVikingdb(): Promise<Record<string, unknown> | null> { return this.getObserver('vikingdb'); }
-  async observerTransaction(): Promise<Record<string, unknown> | null> { return this.getObserver('transaction'); }
+  async observerSystem(): Promise<Record<string, unknown> | null> {
+    return this.getObserver('system');
+  }
+  async observerQueue(): Promise<Record<string, unknown> | null> {
+    return this.getObserver('queue');
+  }
+  async observerVlm(): Promise<Record<string, unknown> | null> {
+    return this.getObserver('vlm');
+  }
+  async observerVikingdb(): Promise<Record<string, unknown> | null> {
+    return this.getObserver('vikingdb');
+  }
+  async observerTransaction(): Promise<Record<string, unknown> | null> {
+    return this.getObserver('transaction');
+  }
 }

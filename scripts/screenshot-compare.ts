@@ -6,13 +6,17 @@
  * writes diff PNGs and a comparison-report.json, then exits 0/1.
  */
 
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import sharp from 'sharp';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import pixelmatch from 'pixelmatch';
+import sharp from 'sharp';
 import { ssim as computeSSIM } from 'ssim.js';
-import { createTriageProvider, needsTriage, type AiTriage } from './ai-triage.js';
+import {
+  type AiTriage,
+  createTriageProvider,
+  needsTriage,
+} from './ai-triage.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,7 +27,10 @@ interface Config {
   phash_max_distance: number;
   pixel_diff_max_percent: number;
   baselines_dir: string;
-  ignore_regions: Record<string, { x: number; y: number; w: number; h: number }[]>;
+  ignore_regions: Record<
+    string,
+    { x: number; y: number; w: number; h: number }[]
+  >;
 }
 
 interface ManifestEntry {
@@ -57,9 +64,18 @@ interface ComparisonResult {
 }
 
 interface ComparisonReport {
-  summary: { total: number; passed: number; failed: number; new: number; size_mismatch: number };
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    new: number;
+    size_mismatch: number;
+  };
   results: ComparisonResult[];
-  thresholds: Pick<Config, 'ssim_threshold' | 'phash_max_distance' | 'pixel_diff_max_percent'>;
+  thresholds: Pick<
+    Config,
+    'ssim_threshold' | 'phash_max_distance' | 'pixel_diff_max_percent'
+  >;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +146,11 @@ function hammingDistance(a: bigint, b: bigint): number {
  * Convert RGBA buffer to grayscale number[] for ssim.js Matrix format.
  * Uses ITU-R BT.601 luma coefficients.
  */
-function rgbaToGrayscale(rgba: Buffer, width: number, height: number): number[] {
+function rgbaToGrayscale(
+  rgba: Buffer,
+  width: number,
+  height: number,
+): number[] {
   const gray: number[] = new Array(width * height);
   for (let i = 0; i < width * height; i++) {
     const r = rgba[i * 4];
@@ -209,7 +229,11 @@ async function compareOne(
   const diffBuf = Buffer.alloc(aw * ah * 4);
   const pixelDiffCount = pixelmatch(
     new Uint8Array(actualBuf.buffer, actualBuf.byteOffset, actualBuf.length),
-    new Uint8Array(baselineBuf.buffer, baselineBuf.byteOffset, baselineBuf.length),
+    new Uint8Array(
+      baselineBuf.buffer,
+      baselineBuf.byteOffset,
+      baselineBuf.length,
+    ),
     new Uint8Array(diffBuf.buffer, diffBuf.byteOffset, diffBuf.length),
     aw,
     ah,
@@ -273,7 +297,10 @@ async function main() {
   const config = loadConfig();
   // Check SCREENSHOTS_DIR env, then sandbox fallback, then /tmp
   let screenshotsDir = process.env.SCREENSHOTS_DIR || '';
-  if (!screenshotsDir || !fs.existsSync(path.join(screenshotsDir, 'test-manifest.json'))) {
+  if (
+    !screenshotsDir ||
+    !fs.existsSync(path.join(screenshotsDir, 'test-manifest.json'))
+  ) {
     const sandboxDir = path.join(
       os.homedir(),
       'Library/Containers/com.engram.EngramUITests.xctrunner/Data/tmp/engram-screenshots',
@@ -287,7 +314,9 @@ async function main() {
 
   const manifestPath = path.join(screenshotsDir, 'test-manifest.json');
   if (!fs.existsSync(manifestPath)) {
-    console.log(`No test-manifest.json found at ${manifestPath}. No screenshots to compare.`);
+    console.log(
+      `No test-manifest.json found at ${manifestPath}. No screenshots to compare.`,
+    );
     process.exit(0);
   }
   console.log(`Using screenshots from: ${screenshotsDir}`);
@@ -295,32 +324,65 @@ async function main() {
   const manifest: Manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   const entries = manifest.screenshots;
 
-  const summary = { total: entries.length, passed: 0, failed: 0, new: 0, size_mismatch: 0 };
+  const summary = {
+    total: entries.length,
+    passed: 0,
+    failed: 0,
+    new: 0,
+    size_mismatch: 0,
+  };
   const results: ComparisonResult[] = [];
 
   for (const entry of entries) {
-    const result = await compareOne(entry, screenshotsDir, config, manifest.environment);
+    const result = await compareOne(
+      entry,
+      screenshotsDir,
+      config,
+      manifest.environment,
+    );
     results.push(result);
     summary[result.status === 'passed' ? 'passed' : result.status]++;
   }
 
   // AI triage pass — serial, only for failed or near-threshold results
-  const provider = createTriageProvider()
+  const provider = createTriageProvider();
   if (provider) {
-    const triageTargets = results.filter(r => needsTriage(r))
+    const triageTargets = results.filter((r) => needsTriage(r));
     if (triageTargets.length > 0) {
-      console.log(`\nAI Triage: ${triageTargets.length} screenshot(s) to analyze with ${provider.model}...`)
+      console.log(
+        `\nAI Triage: ${triageTargets.length} screenshot(s) to analyze with ${provider.model}...`,
+      );
       for (const result of triageTargets) {
         try {
-          const baseline = fs.readFileSync(result.paths.baseline)
-          const actual = fs.readFileSync(result.paths.actual)
-          const diff = result.paths.diff ? fs.readFileSync(result.paths.diff) : null
-          result.ai_triage = await provider.analyze({ baseline, actual, diff }, result.metrics)
-          const icon = result.ai_triage.verdict === 'acceptable' ? '✅' : result.ai_triage.verdict === 'regression' ? '❌' : '⚠️'
-          console.log(`  ${icon} ${result.name}: ${result.ai_triage.verdict} (${result.ai_triage.confidence.toFixed(2)}) — ${result.ai_triage.reason}`)
+          const baseline = fs.readFileSync(result.paths.baseline);
+          const actual = fs.readFileSync(result.paths.actual);
+          const diff = result.paths.diff
+            ? fs.readFileSync(result.paths.diff)
+            : null;
+          result.ai_triage = await provider.analyze(
+            { baseline, actual, diff },
+            result.metrics,
+          );
+          const icon =
+            result.ai_triage.verdict === 'acceptable'
+              ? '✅'
+              : result.ai_triage.verdict === 'regression'
+                ? '❌'
+                : '⚠️';
+          console.log(
+            `  ${icon} ${result.name}: ${result.ai_triage.verdict} (${result.ai_triage.confidence.toFixed(2)}) — ${result.ai_triage.reason}`,
+          );
         } catch (err) {
-          result.ai_triage = { verdict: 'uncertain', confidence: 0, reason: `triage error: ${String(err).slice(0, 200)}`, model: provider.model, duration_ms: 0 }
-          console.log(`  ⚠️ ${result.name}: triage error — ${String(err).slice(0, 100)}`)
+          result.ai_triage = {
+            verdict: 'uncertain',
+            confidence: 0,
+            reason: `triage error: ${String(err).slice(0, 200)}`,
+            model: provider.model,
+            duration_ms: 0,
+          };
+          console.log(
+            `  ⚠️ ${result.name}: triage error — ${String(err).slice(0, 100)}`,
+          );
         }
       }
     }
@@ -337,17 +399,20 @@ async function main() {
   };
 
   const reportPath = path.join(screenshotsDir, 'comparison-report.json');
-  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 
   // Print summary
   console.log('');
   console.log('Screenshot Comparison Report');
   console.log('============================');
-  console.log(`Total: ${summary.total} | Passed: ${summary.passed} | Failed: ${summary.failed} | New: ${summary.new} | Size Mismatch: ${summary.size_mismatch}`);
+  console.log(
+    `Total: ${summary.total} | Passed: ${summary.passed} | Failed: ${summary.failed} | New: ${summary.new} | Size Mismatch: ${summary.size_mismatch}`,
+  );
   console.log(`Report: ${reportPath}`);
 
   for (const r of results) {
-    const icon = r.status === 'passed' ? 'OK' : r.status === 'new' ? 'NEW' : 'FAIL';
+    const icon =
+      r.status === 'passed' ? 'OK' : r.status === 'new' ? 'NEW' : 'FAIL';
     const detail =
       r.status === 'new'
         ? '(no baseline)'

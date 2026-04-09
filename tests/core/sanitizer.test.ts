@@ -1,96 +1,117 @@
-import { describe, it, expect } from 'vitest'
-import { sanitize, applyPatterns } from '../../src/core/sanitizer.js'
+import { describe, expect, it } from 'vitest';
+import { applyPatterns, sanitize } from '../../src/core/sanitizer.js';
 
 describe('applyPatterns', () => {
   it('redacts OpenAI API key', () => {
-    expect(applyPatterns('key is sk-abcdefghijklmnopqrstuvwx')).toBe('key is sk-***')
-  })
+    expect(applyPatterns('key is sk-abcdefghijklmnopqrstuvwx')).toBe(
+      'key is sk-***',
+    );
+  });
 
   it('redacts OpenAI sk-proj-* key format', () => {
-    expect(applyPatterns('sk-proj-abc12345678901234567')).toBe('sk-***')
-  })
+    expect(applyPatterns('sk-proj-abc12345678901234567')).toBe('sk-***');
+  });
 
   it('redacts Anthropic API key', () => {
-    expect(applyPatterns('sk-ant-api03-abcdefghijklmnopqrstuvwx')).toBe('sk-ant-***')
-  })
+    expect(applyPatterns('sk-ant-api03-abcdefghijklmnopqrstuvwx')).toBe(
+      'sk-ant-***',
+    );
+  });
 
   it('redacts Bearer token', () => {
-    expect(applyPatterns('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc')).toBe('Authorization: Bearer ***')
-  })
+    expect(
+      applyPatterns('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc'),
+    ).toBe('Authorization: Bearer ***');
+  });
 
   it('redacts hex secret after key= separator', () => {
-    const hex32 = 'a'.repeat(32)
-    expect(applyPatterns(`apikey=${hex32}`)).toBe('apikey=***')
-  })
+    const hex32 = 'a'.repeat(32);
+    expect(applyPatterns(`apikey=${hex32}`)).toBe('apikey=***');
+  });
 
   it('redacts email addresses', () => {
-    expect(applyPatterns('contact user@example.com for help')).toBe('contact ***@***.*** for help')
-  })
+    expect(applyPatterns('contact user@example.com for help')).toBe(
+      'contact ***@***.*** for help',
+    );
+  });
 
   it('redacts Gemini/Google API key in URL query param', () => {
-    expect(applyPatterns('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=AIzaSyB1234567890abcdefg'))
-      .toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=***')
-  })
+    expect(
+      applyPatterns(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=AIzaSyB1234567890abcdefg',
+      ),
+    ).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=***',
+    );
+  });
 
   it('redacts apiKey and api_key query params', () => {
-    expect(applyPatterns('https://example.com/api?apiKey=secret123&other=ok'))
-      .toBe('https://example.com/api?apiKey=***&other=ok')
-    expect(applyPatterns('https://example.com/api?api_key=secret123'))
-      .toBe('https://example.com/api?api_key=***')
-  })
+    expect(
+      applyPatterns('https://example.com/api?apiKey=secret123&other=ok'),
+    ).toBe('https://example.com/api?apiKey=***&other=ok');
+    expect(applyPatterns('https://example.com/api?api_key=secret123')).toBe(
+      'https://example.com/api?api_key=***',
+    );
+  });
 
   it('returns unchanged string with no sensitive data', () => {
-    const safe = 'indexed 42 sessions in 123ms'
-    expect(applyPatterns(safe)).toBe(safe)
-  })
+    const safe = 'indexed 42 sessions in 123ms';
+    expect(applyPatterns(safe)).toBe(safe);
+  });
 
   // False positive checks
   it('does NOT redact npm scopes like @types/node', () => {
-    expect(applyPatterns('import @types/node')).toBe('import @types/node')
-  })
+    expect(applyPatterns('import @types/node')).toBe('import @types/node');
+  });
 
   it('does NOT redact short hex strings (< 32 chars)', () => {
-    expect(applyPatterns('key=abcdef1234')).toBe('key=abcdef1234')
-  })
+    expect(applyPatterns('key=abcdef1234')).toBe('key=abcdef1234');
+  });
 
   it('does NOT redact git commit hash after space separator', () => {
-    const hash = 'a1b2c3d4e5f6'.repeat(3) // 36 hex chars
-    expect(applyPatterns(`cache key ${hash}`)).toBe(`cache key ${hash}`)
-  })
+    const hash = 'a1b2c3d4e5f6'.repeat(3); // 36 hex chars
+    expect(applyPatterns(`cache key ${hash}`)).toBe(`cache key ${hash}`);
+  });
 
   it('handles multiple sensitive values in one string', () => {
-    const input = 'key=aaaa' + 'a'.repeat(28) + ' user@test.com sk-abcdefghijklmnopqrstuvwx'
-    const result = applyPatterns(input)
-    expect(result).toContain('key=***')
-    expect(result).toContain('***@***.***')
-    expect(result).toContain('sk-***')
-  })
-})
+    const input =
+      'key=aaaa' +
+      'a'.repeat(28) +
+      ' user@test.com sk-abcdefghijklmnopqrstuvwx';
+    const result = applyPatterns(input);
+    expect(result).toContain('key=***');
+    expect(result).toContain('***@***.***');
+    expect(result).toContain('sk-***');
+  });
+});
 
 describe('sanitize', () => {
   it('recursively sanitizes nested objects', () => {
     const obj = {
       message: 'hello',
-      data: { secret: 'key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', nested: { email: 'a@b.com' } },
-    }
-    const result = sanitize(obj)
-    expect((result.data as any).secret).toBe('key=***')
-    expect((result.data as any).nested.email).toBe('***@***.***')
-  })
+      data: {
+        secret: 'key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        nested: { email: 'a@b.com' },
+      },
+    };
+    const result = sanitize(obj);
+    expect((result.data as any).secret).toBe('key=***');
+    expect((result.data as any).nested.email).toBe('***@***.***');
+  });
 
   it('sanitizes arrays', () => {
-    const obj = { list: ['sk-abcdefghijklmnopqrstuvwx', 'safe'] }
-    const result = sanitize(obj)
-    expect((result.list as string[])[0]).toBe('sk-***')
-    expect((result.list as string[])[1]).toBe('safe')
-  })
+    const obj = { list: ['sk-abcdefghijklmnopqrstuvwx', 'safe'] };
+    const result = sanitize(obj);
+    expect((result.list as string[])[0]).toBe('sk-***');
+    expect((result.list as string[])[1]).toBe('safe');
+  });
 
   it('preserves non-string values', () => {
-    const obj = { count: 42, flag: true, nil: null }
-    expect(sanitize(obj)).toEqual({ count: 42, flag: true, nil: null })
-  })
+    const obj = { count: 42, flag: true, nil: null };
+    expect(sanitize(obj)).toEqual({ count: 42, flag: true, nil: null });
+  });
 
   it('returns empty object unchanged', () => {
-    expect(sanitize({})).toEqual({})
-  })
-})
+    expect(sanitize({})).toEqual({});
+  });
+});

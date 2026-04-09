@@ -1,39 +1,45 @@
 // src/adapters/copilot.ts
 // GitHub Copilot CLI adapter
 // Sessions stored in ~/.copilot/session-state/<uuid>/events.jsonl
-import { createReadStream } from 'fs'
-import { stat, readdir, readFile } from 'fs/promises'
-import { createInterface } from 'readline'
-import { homedir } from 'os'
-import { join } from 'path'
-import type { SessionAdapter, SessionInfo, Message, StreamMessagesOptions } from './types.js'
+import { createReadStream } from 'node:fs';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import type {
+  Message,
+  SessionAdapter,
+  SessionInfo,
+  StreamMessagesOptions,
+} from './types.js';
 
 export class CopilotAdapter implements SessionAdapter {
-  readonly name = 'copilot' as const
-  private sessionRoot: string
+  readonly name = 'copilot' as const;
+  private sessionRoot: string;
 
   constructor(sessionRoot?: string) {
-    this.sessionRoot = sessionRoot ?? join(homedir(), '.copilot', 'session-state')
+    this.sessionRoot =
+      sessionRoot ?? join(homedir(), '.copilot', 'session-state');
   }
 
   async detect(): Promise<boolean> {
     try {
-      await stat(this.sessionRoot)
-      return true
+      await stat(this.sessionRoot);
+      return true;
     } catch {
-      return false
+      return false;
     }
   }
 
   async *listSessionFiles(): AsyncGenerator<string> {
     try {
-      const dirs = await readdir(this.sessionRoot, { withFileTypes: true })
+      const dirs = await readdir(this.sessionRoot, { withFileTypes: true });
       for (const dir of dirs) {
-        if (!dir.isDirectory()) continue
-        const eventsPath = join(this.sessionRoot, dir.name, 'events.jsonl')
+        if (!dir.isDirectory()) continue;
+        const eventsPath = join(this.sessionRoot, dir.name, 'events.jsonl');
         try {
-          await stat(eventsPath)
-          yield eventsPath
+          await stat(eventsPath);
+          yield eventsPath;
         } catch {
           // no events.jsonl, skip
         }
@@ -45,58 +51,64 @@ export class CopilotAdapter implements SessionAdapter {
 
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
     try {
-      const fileStat = await stat(filePath)
-      const sessionDir = join(filePath, '..')
+      const fileStat = await stat(filePath);
+      const sessionDir = join(filePath, '..');
 
       // Try to read workspace.yaml for metadata (simple key: value parsing)
-      let workspace: Record<string, string> = {}
+      const workspace: Record<string, string> = {};
       try {
-        const yamlContent = await readFile(join(sessionDir, 'workspace.yaml'), 'utf8')
+        const yamlContent = await readFile(
+          join(sessionDir, 'workspace.yaml'),
+          'utf8',
+        );
         for (const line of yamlContent.split('\n')) {
-          const m = line.match(/^(\w+):\s*(.+)$/)
-          if (m) workspace[m[1]] = m[2].trim()
+          const m = line.match(/^(\w+):\s*(.+)$/);
+          if (m) workspace[m[1]] = m[2].trim();
         }
-      } catch { /* no workspace.yaml */ }
+      } catch {
+        /* no workspace.yaml */
+      }
 
-      const sessionId = workspace['id'] || sessionDir.split('/').pop() || ''
-      let startTime = workspace['created_at'] || ''
-      let endTime = workspace['updated_at'] || ''
-      let cwd = workspace['cwd'] || ''
-      let userCount = 0
-      let assistantCount = 0
-      let firstUserText = ''
+      const sessionId = workspace.id || sessionDir.split('/').pop() || '';
+      let startTime = workspace.created_at || '';
+      let endTime = workspace.updated_at || '';
+      let cwd = workspace.cwd || '';
+      let userCount = 0;
+      let assistantCount = 0;
+      let firstUserText = '';
 
       for await (const line of this.readLines(filePath)) {
-        const obj = this.parseLine(line)
-        if (!obj) continue
+        const obj = this.parseLine(line);
+        if (!obj) continue;
 
-        const type = obj.type as string
-        const data = obj.data as Record<string, unknown> | undefined
-        const ts = obj.timestamp as string | undefined
+        const type = obj.type as string;
+        const data = obj.data as Record<string, unknown> | undefined;
+        const ts = obj.timestamp as string | undefined;
 
         if (type === 'session.start') {
-          const ctx = (data?.context as Record<string, unknown>) ?? {}
-          if (!startTime && data?.startTime) startTime = data.startTime as string
-          if (!cwd && ctx.cwd) cwd = ctx.cwd as string
+          const ctx = (data?.context as Record<string, unknown>) ?? {};
+          if (!startTime && data?.startTime)
+            startTime = data.startTime as string;
+          if (!cwd && ctx.cwd) cwd = ctx.cwd as string;
         }
 
         if (type === 'user.message') {
-          userCount++
+          userCount++;
           if (!firstUserText && data?.content) {
-            firstUserText = (data.content as string).slice(0, 200)
+            firstUserText = (data.content as string).slice(0, 200);
           }
-          if (ts && (!startTime || ts < startTime)) startTime = ts
-          if (ts && ts > endTime) endTime = ts
+          if (ts && (!startTime || ts < startTime)) startTime = ts;
+          if (ts && ts > endTime) endTime = ts;
         }
 
         if (type === 'assistant.message') {
-          assistantCount++
-          if (ts && ts > endTime) endTime = ts
+          assistantCount++;
+          if (ts && ts > endTime) endTime = ts;
         }
       }
 
-      const totalCount = userCount + assistantCount
-      if (!sessionId || totalCount === 0) return null
+      const totalCount = userCount + assistantCount;
+      if (!sessionId || totalCount === 0) return null;
 
       return {
         id: sessionId,
@@ -109,57 +121,64 @@ export class CopilotAdapter implements SessionAdapter {
         assistantMessageCount: assistantCount,
         toolMessageCount: 0,
         systemMessageCount: 0,
-        summary: workspace['summary'] || firstUserText || undefined,
+        summary: workspace.summary || firstUserText || undefined,
         filePath,
         sizeBytes: fileStat.size,
-      }
+      };
     } catch {
-      return null
+      return null;
     }
   }
 
-  async *streamMessages(filePath: string, opts: StreamMessagesOptions = {}): AsyncGenerator<Message> {
-    const offset = opts.offset ?? 0
-    const limit = opts.limit ?? Infinity
-    let count = 0
-    let yielded = 0
+  async *streamMessages(
+    filePath: string,
+    opts: StreamMessagesOptions = {},
+  ): AsyncGenerator<Message> {
+    const offset = opts.offset ?? 0;
+    const limit = opts.limit ?? Infinity;
+    let count = 0;
+    let yielded = 0;
 
     for await (const line of this.readLines(filePath)) {
-      if (yielded >= limit) break
-      const obj = this.parseLine(line)
-      if (!obj) continue
+      if (yielded >= limit) break;
+      const obj = this.parseLine(line);
+      if (!obj) continue;
 
-      const type = obj.type as string
-      const data = obj.data as Record<string, unknown> | undefined
-      if (type !== 'user.message' && type !== 'assistant.message') continue
+      const type = obj.type as string;
+      const data = obj.data as Record<string, unknown> | undefined;
+      if (type !== 'user.message' && type !== 'assistant.message') continue;
 
-      if (count < offset) { count++; continue }
-      count++
+      if (count < offset) {
+        count++;
+        continue;
+      }
+      count++;
 
-      const role = type === 'user.message' ? 'user' as const : 'assistant' as const
-      const content = (data?.content as string) || ''
+      const role =
+        type === 'user.message' ? ('user' as const) : ('assistant' as const);
+      const content = (data?.content as string) || '';
       yield {
         role,
         content,
         timestamp: obj.timestamp as string | undefined,
-      }
-      yielded++
+      };
+      yielded++;
     }
   }
 
   private async *readLines(filePath: string): AsyncGenerator<string> {
-    const stream = createReadStream(filePath, { encoding: 'utf8' })
-    const rl = createInterface({ input: stream, crlfDelay: Infinity })
+    const stream = createReadStream(filePath, { encoding: 'utf8' });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
     for await (const line of rl) {
-      if (line.trim()) yield line
+      if (line.trim()) yield line;
     }
   }
 
   private parseLine(line: string): Record<string, unknown> | null {
     try {
-      return JSON.parse(line) as Record<string, unknown>
+      return JSON.parse(line) as Record<string, unknown>;
     } catch {
-      return null
+      return null;
     }
   }
 }

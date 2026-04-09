@@ -1,38 +1,43 @@
 // src/adapters/qwen.ts
-import { createReadStream } from 'fs'
-import { stat, readdir } from 'fs/promises'
-import { createInterface } from 'readline'
-import { homedir } from 'os'
-import { join } from 'path'
-import type { SessionAdapter, SessionInfo, Message, StreamMessagesOptions } from './types.js'
+import { createReadStream } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import type {
+  Message,
+  SessionAdapter,
+  SessionInfo,
+  StreamMessagesOptions,
+} from './types.js';
 
 export class QwenAdapter implements SessionAdapter {
-  readonly name = 'qwen' as const
-  private projectsRoot: string
+  readonly name = 'qwen' as const;
+  private projectsRoot: string;
 
   constructor(projectsRoot?: string) {
-    this.projectsRoot = projectsRoot ?? join(homedir(), '.qwen', 'projects')
+    this.projectsRoot = projectsRoot ?? join(homedir(), '.qwen', 'projects');
   }
 
   async detect(): Promise<boolean> {
     try {
-      await stat(this.projectsRoot)
-      return true
+      await stat(this.projectsRoot);
+      return true;
     } catch {
-      return false
+      return false;
     }
   }
 
   async *listSessionFiles(): AsyncGenerator<string> {
     try {
-      const projectDirs = await readdir(this.projectsRoot)
+      const projectDirs = await readdir(this.projectsRoot);
       for (const dir of projectDirs) {
-        const chatsPath = join(this.projectsRoot, dir, 'chats')
+        const chatsPath = join(this.projectsRoot, dir, 'chats');
         try {
-          const files = await readdir(chatsPath)
+          const files = await readdir(chatsPath);
           for (const file of files) {
             if (file.endsWith('.jsonl')) {
-              yield join(chatsPath, file)
+              yield join(chatsPath, file);
             }
           }
         } catch {
@@ -46,47 +51,47 @@ export class QwenAdapter implements SessionAdapter {
 
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
     try {
-      const fileStat = await stat(filePath)
-      let sessionId = ''
-      let cwd = ''
-      let model: string | undefined
-      let startTime = ''
-      let endTime = ''
-      let userCount = 0
-      let assistantCount = 0
-      let systemCount = 0
-      let firstUserText = ''
+      const fileStat = await stat(filePath);
+      let sessionId = '';
+      let cwd = '';
+      let model: string | undefined;
+      let startTime = '';
+      let endTime = '';
+      let userCount = 0;
+      let assistantCount = 0;
+      let systemCount = 0;
+      let firstUserText = '';
 
       for await (const line of this.readLines(filePath)) {
-        const obj = this.parseLine(line)
-        if (!obj) continue
+        const obj = this.parseLine(line);
+        if (!obj) continue;
 
-        const type = obj.type as string
-        if (type !== 'user' && type !== 'assistant') continue
+        const type = obj.type as string;
+        if (type !== 'user' && type !== 'assistant') continue;
 
-        if (!sessionId && obj.sessionId) sessionId = obj.sessionId as string
-        if (!cwd && obj.cwd) cwd = obj.cwd as string
-        if (!model && obj.model) model = obj.model as string
-        if (!startTime && obj.timestamp) startTime = obj.timestamp as string
-        if (obj.timestamp) endTime = obj.timestamp as string
+        if (!sessionId && obj.sessionId) sessionId = obj.sessionId as string;
+        if (!cwd && obj.cwd) cwd = obj.cwd as string;
+        if (!model && obj.model) model = obj.model as string;
+        if (!startTime && obj.timestamp) startTime = obj.timestamp as string;
+        if (obj.timestamp) endTime = obj.timestamp as string;
 
         if (type === 'assistant') {
-          assistantCount++
+          assistantCount++;
         } else if (type === 'user') {
-          const msg = obj.message as Record<string, unknown>
-          const text = this.extractContent(msg)
+          const msg = obj.message as Record<string, unknown>;
+          const text = this.extractContent(msg);
           if (this.isSystemInjection(text)) {
-            systemCount++
+            systemCount++;
           } else {
-            userCount++
+            userCount++;
             if (!firstUserText) {
-              firstUserText = text
+              firstUserText = text;
             }
           }
         }
       }
 
-      if (!sessionId) return null
+      if (!sessionId) return null;
 
       return {
         id: sessionId,
@@ -103,38 +108,44 @@ export class QwenAdapter implements SessionAdapter {
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
-      }
+      };
     } catch {
-      return null
+      return null;
     }
   }
 
-  async *streamMessages(filePath: string, opts: StreamMessagesOptions = {}): AsyncGenerator<Message> {
-    const offset = opts.offset ?? 0
-    const limit = opts.limit ?? Infinity
-    let count = 0
-    let yielded = 0
+  async *streamMessages(
+    filePath: string,
+    opts: StreamMessagesOptions = {},
+  ): AsyncGenerator<Message> {
+    const offset = opts.offset ?? 0;
+    const limit = opts.limit ?? Infinity;
+    let count = 0;
+    let yielded = 0;
 
     for await (const line of this.readLines(filePath)) {
-      if (yielded >= limit) break
-      const obj = this.parseLine(line)
-      if (!obj) continue
+      if (yielded >= limit) break;
+      const obj = this.parseLine(line);
+      if (!obj) continue;
 
-      const type = obj.type as string
-      if (type !== 'user' && type !== 'assistant') continue
+      const type = obj.type as string;
+      if (type !== 'user' && type !== 'assistant') continue;
 
-      if (count < offset) { count++; continue }
-      count++
+      if (count < offset) {
+        count++;
+        continue;
+      }
+      count++;
 
-      const msg = obj.message as Record<string, unknown>
-      const role = type === 'assistant' ? 'assistant' : 'user'
+      const msg = obj.message as Record<string, unknown>;
+      const role = type === 'assistant' ? 'assistant' : 'user';
 
       yield {
         role: role as 'user' | 'assistant',
         content: this.extractContent(msg),
         timestamp: obj.timestamp as string | undefined,
-      }
-      yielded++
+      };
+      yielded++;
     }
   }
 
@@ -143,36 +154,36 @@ export class QwenAdapter implements SessionAdapter {
       text.startsWith('\nYou are Qwen Code') ||
       text.startsWith('You are Qwen Code') ||
       text.includes('<INSTRUCTIONS>')
-    )
+    );
   }
 
   private async *readLines(filePath: string): AsyncGenerator<string> {
-    const stream = createReadStream(filePath, { encoding: 'utf8' })
-    const rl = createInterface({ input: stream, crlfDelay: Infinity })
+    const stream = createReadStream(filePath, { encoding: 'utf8' });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
     for await (const line of rl) {
-      if (line.trim()) yield line
+      if (line.trim()) yield line;
     }
   }
 
   private parseLine(line: string): Record<string, unknown> | null {
     try {
-      return JSON.parse(line) as Record<string, unknown>
+      return JSON.parse(line) as Record<string, unknown>;
     } catch {
-      return null
+      return null;
     }
   }
 
   // Extract text content from Qwen message object
   // Qwen format: message.parts[].text (not message.content)
   private extractContent(message: Record<string, unknown>): string {
-    if (!message) return ''
-    const parts = message.parts
+    if (!message) return '';
+    const parts = message.parts;
     if (Array.isArray(parts)) {
       for (const part of parts) {
-        const p = part as Record<string, unknown>
-        if (typeof p.text === 'string' && p.text) return p.text
+        const p = part as Record<string, unknown>;
+        if (typeof p.text === 'string' && p.text) return p.text;
       }
     }
-    return ''
+    return '';
   }
 }

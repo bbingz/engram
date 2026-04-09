@@ -1,9 +1,10 @@
 // src/tools/get_session.ts
-import type { Database } from '../core/db.js'
-import type { Logger } from '../core/logger.js'
-import type { SessionAdapter } from '../adapters/types.js'
 
-const PAGE_SIZE = 50
+import type { SessionAdapter } from '../adapters/types.js';
+import type { Database } from '../core/db.js';
+import type { Logger } from '../core/logger.js';
+
+const PAGE_SIZE = 50;
 
 export const getSessionTool = {
   name: 'get_session',
@@ -22,30 +23,35 @@ export const getSessionTool = {
     },
     additionalProperties: false,
   },
-}
+};
 
 export async function handleGetSession(
   db: Database,
   adapter: SessionAdapter,
   params: { id: string; page?: number; roles?: string[] },
-  opts?: { log?: Logger }
+  opts?: { log?: Logger },
 ) {
-  opts?.log?.info('get_session invoked', { id: params.id, page: params.page })
-  const session = db.getSession(params.id)
-  if (!session) throw new Error(`Session not found: ${params.id}`)
+  opts?.log?.info('get_session invoked', { id: params.id, page: params.page });
+  const session = db.getSession(params.id);
+  if (!session) throw new Error(`Session not found: ${params.id}`);
 
-  const page = params.page ?? 1
-  const offset = (page - 1) * PAGE_SIZE
+  const page = params.page ?? 1;
+  const offset = (page - 1) * PAGE_SIZE;
 
-  const allMessages: { role: string; content: string; timestamp?: string }[] = []
+  const allMessages: { role: string; content: string; timestamp?: string }[] =
+    [];
   for await (const msg of adapter.streamMessages(session.filePath)) {
     if (!params.roles || params.roles.includes(msg.role)) {
-      allMessages.push({ role: msg.role, content: msg.content, timestamp: msg.timestamp })
+      allMessages.push({
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp,
+      });
     }
   }
 
-  const totalPages = Math.max(1, Math.ceil(allMessages.length / PAGE_SIZE))
-  const messages = allMessages.slice(offset, offset + PAGE_SIZE)
+  const totalPages = Math.max(1, Math.ceil(allMessages.length / PAGE_SIZE));
+  const messages = allMessages.slice(offset, offset + PAGE_SIZE);
 
-  return { session, messages, totalPages, currentPage: page }
+  return { session, messages, totalPages, currentPage: page };
 }

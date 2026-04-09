@@ -1,17 +1,17 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { OpenCodeAdapter } from '../../src/adapters/opencode.js'
-import Database from 'better-sqlite3'
-import { join, dirname } from 'path'
-import { fileURLToPath } from 'url'
-import { mkdirSync, rmSync } from 'fs'
+import { mkdirSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { OpenCodeAdapter } from '../../src/adapters/opencode.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const FIXTURE_DIR = join(__dirname, '../fixtures/opencode')
-const FIXTURE_DB = join(FIXTURE_DIR, 'sample.db')
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_DIR = join(__dirname, '../fixtures/opencode');
+const FIXTURE_DB = join(FIXTURE_DIR, 'sample.db');
 
 beforeAll(() => {
-  mkdirSync(FIXTURE_DIR, { recursive: true })
-  const db = new Database(FIXTURE_DB)
+  mkdirSync(FIXTURE_DIR, { recursive: true });
+  const db = new Database(FIXTURE_DB);
   db.exec(`
     CREATE TABLE session (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT,
@@ -53,45 +53,50 @@ beforeAll(() => {
       'part_002', 'msg_002', 1770000010000, 1770000010000,
       '{"type":"text","text":"好的，我来实现登录功能。"}'
     );
-  `)
-  db.close()
-})
+  `);
+  db.close();
+});
 
 afterAll(() => {
-  try { rmSync(FIXTURE_DB) } catch { /* ignore */ }
-})
+  try {
+    rmSync(FIXTURE_DB);
+  } catch {
+    /* ignore */
+  }
+});
 
 describe('OpenCodeAdapter', () => {
-  const adapter = new OpenCodeAdapter(FIXTURE_DB)
+  const adapter = new OpenCodeAdapter(FIXTURE_DB);
 
   it('name is opencode', () => {
-    expect(adapter.name).toBe('opencode')
-  })
+    expect(adapter.name).toBe('opencode');
+  });
 
   it('listSessionFiles yields virtual paths', async () => {
-    const files: string[] = []
-    for await (const f of adapter.listSessionFiles()) files.push(f)
-    expect(files).toHaveLength(1)
-    expect(files[0]).toContain('ses_test001')
-  })
+    const files: string[] = [];
+    for await (const f of adapter.listSessionFiles()) files.push(f);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toContain('ses_test001');
+  });
 
   it('parseSessionInfo extracts metadata from virtual path', async () => {
-    const files: string[] = []
-    for await (const f of adapter.listSessionFiles()) files.push(f)
-    const info = await adapter.parseSessionInfo(files[0])
-    expect(info).not.toBeNull()
-    expect(info!.id).toBe('ses_test001')
-    expect(info!.source).toBe('opencode')
-    expect(info!.cwd).toBe('/Users/test/my-project')
-    expect(info!.summary).toBe('实现用户登录功能')
-    expect(info!.messageCount).toBe(2)
-  })
+    const files: string[] = [];
+    for await (const f of adapter.listSessionFiles()) files.push(f);
+    const info = await adapter.parseSessionInfo(files[0]);
+    expect(info).not.toBeNull();
+    expect(info?.id).toBe('ses_test001');
+    expect(info?.source).toBe('opencode');
+    expect(info?.cwd).toBe('/Users/test/my-project');
+    expect(info?.summary).toBe('实现用户登录功能');
+    expect(info?.messageCount).toBe(2);
+  });
 
   it('streamMessages yields messages', async () => {
-    const files: string[] = []
-    for await (const f of adapter.listSessionFiles()) files.push(f)
-    const messages = []
-    for await (const msg of adapter.streamMessages(files[0])) messages.push(msg)
-    expect(messages.length).toBeGreaterThanOrEqual(1)
-  })
-})
+    const files: string[] = [];
+    for await (const f of adapter.listSessionFiles()) files.push(f);
+    const messages = [];
+    for await (const msg of adapter.streamMessages(files[0]))
+      messages.push(msg);
+    expect(messages.length).toBeGreaterThanOrEqual(1);
+  });
+});

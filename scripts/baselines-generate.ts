@@ -6,10 +6,10 @@
  * After the test run, we copy them out to the baselines directory.
  */
 
-import { execSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const baselinesDir = 'macos/EngramUITests/baselines';
 
@@ -34,7 +34,9 @@ try {
     { stdio: 'inherit' },
   );
 } catch {
-  console.log('Some tests failed — continuing to collect screenshots from passing tests');
+  console.log(
+    'Some tests failed — continuing to collect screenshots from passing tests',
+  );
 }
 
 // Copy screenshots from sandbox to baselines
@@ -52,7 +54,10 @@ for (const png of pngs) {
 // Also copy manifest
 const manifestSrc = path.join(sandboxDir, 'test-manifest.json');
 if (fs.existsSync(manifestSrc)) {
-  fs.copyFileSync(manifestSrc, path.join(baselinesDir, '..', 'test-manifest.json'));
+  fs.copyFileSync(
+    manifestSrc,
+    path.join(baselinesDir, '..', 'test-manifest.json'),
+  );
 }
 
 console.log(`Copied ${pngs.length} baselines to ${baselinesDir}/`);

@@ -1,14 +1,14 @@
 // src/core/config.ts
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { SyncPeer } from './sync.js';
 
 // ── Keychain integration (macOS) ─────────────────────────────────────
 
 function readKeychainValue(key: string): string | undefined {
   // Never call `security` CLI — it prompts for Keychain auth dialogs in MCP/daemon contexts
-  return process.env[`ENGRAM_KEYCHAIN_${key}`] || undefined
+  return process.env[`ENGRAM_KEYCHAIN_${key}`] || undefined;
 }
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -38,10 +38,10 @@ export interface VikingSettings {
 }
 
 export interface AiAuditConfig {
-  enabled: boolean
-  retentionDays: number
-  maxBodySize: number
-  logBodies: boolean
+  enabled: boolean;
+  retentionDays: number;
+  maxBodySize: number;
+  logBodies: boolean;
 }
 
 export const DEFAULT_AI_AUDIT_CONFIG: AiAuditConfig = {
@@ -49,15 +49,15 @@ export const DEFAULT_AI_AUDIT_CONFIG: AiAuditConfig = {
   retentionDays: 30,
   maxBodySize: 10000,
   logBodies: false,
-}
+};
 
 export interface MonitorConfig {
-  enabled: boolean
-  dailyCostBudget?: number        // USD, default 20
-  monthlyCostBudget?: number      // USD, no default (disabled if unset)
-  longSessionMinutes?: number     // default 180
-  notifyOnCostThreshold?: boolean // default true
-  notifyOnLongSession?: boolean   // default true
+  enabled: boolean;
+  dailyCostBudget?: number; // USD, default 20
+  monthlyCostBudget?: number; // USD, no default (disabled if unset)
+  longSessionMinutes?: number; // default 180
+  notifyOnCostThreshold?: boolean; // default true
+  notifyOnLongSession?: boolean; // default true
 }
 
 export interface FileSettings {
@@ -102,7 +102,7 @@ export interface FileSettings {
   // ── Infrastructure ────────────────────────────────────────────────
   nodejsPath?: string;
   httpPort?: number;
-  httpHost?: string;        // '127.0.0.1' (default) | '0.0.0.0' | specific IP
+  httpHost?: string; // '127.0.0.1' (default) | '0.0.0.0' | specific IP
   httpAllowCIDR?: string[]; // e.g. ['10.0.0.0/8', '192.168.1.0/24']
   httpBearerToken?: string; // auto-generated bearer token for write API auth
   syncNodeName?: string;
@@ -112,9 +112,9 @@ export interface FileSettings {
 
   // ── Noise filtering ──────────────────────────────────────────────
   noiseFilter?: 'all' | 'hide-skip' | 'hide-noise';
-  hideUsageSessions?: boolean;    // hide /usage check sessions (default: true)
-  hideEmptySessions?: boolean;    // hide summary < 10 chars && <= 3 messages (default: true)
-  hideAutoSummary?: boolean;      // hide auto-summary prompt leaks (default: true)
+  hideUsageSessions?: boolean; // hide /usage check sessions (default: true)
+  hideEmptySessions?: boolean; // hide summary < 10 chars && <= 3 messages (default: true)
+  hideAutoSummary?: boolean; // hide auto-summary prompt leaks (default: true)
 
   // ── OpenViking ──────────────────────────────────────────────────
   viking?: VikingSettings;
@@ -127,12 +127,12 @@ export interface FileSettings {
 
   // ── Observability ──────────────────────────────────────────────────
   observability?: {
-    logLevel?: 'debug' | 'info' | 'warn' | 'error'
-    logRetentionDays?: number
-  }
+    logLevel?: 'debug' | 'info' | 'warn' | 'error';
+    logRetentionDays?: number;
+  };
 
   // ── AI Audit ──────────────────────────────────────────────────────
-  aiAudit?: Partial<AiAuditConfig>
+  aiAudit?: Partial<AiAuditConfig>;
 
   // ── Dev mode ──────────────────────────────────────────────────────
   devMode?: boolean;
@@ -148,17 +148,35 @@ export interface FileSettings {
 // ── Preset defaults ──────────────────────────────────────────────────
 
 const PRESETS: Record<SummaryPreset, SummaryConfig> = {
-  concise:  { maxTokens: 100, temperature: 0.2, sampleFirst: 10, sampleLast: 15, truncateChars: 300 },
-  standard: { maxTokens: 200, temperature: 0.3, sampleFirst: 20, sampleLast: 30, truncateChars: 500 },
-  detailed: { maxTokens: 400, temperature: 0.4, sampleFirst: 30, sampleLast: 50, truncateChars: 800 },
+  concise: {
+    maxTokens: 100,
+    temperature: 0.2,
+    sampleFirst: 10,
+    sampleLast: 15,
+    truncateChars: 300,
+  },
+  standard: {
+    maxTokens: 200,
+    temperature: 0.3,
+    sampleFirst: 20,
+    sampleLast: 30,
+    truncateChars: 500,
+  },
+  detailed: {
+    maxTokens: 400,
+    temperature: 0.4,
+    sampleFirst: 30,
+    sampleLast: 50,
+    truncateChars: 800,
+  },
 };
 
 // ── Protocol → default base URL ──────────────────────────────────────
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
-  openai:    'https://api.openai.com',
+  openai: 'https://api.openai.com',
   anthropic: 'https://api.anthropic.com',
-  gemini:    'https://generativelanguage.googleapis.com',
+  gemini: 'https://generativelanguage.googleapis.com',
 };
 
 // ── Paths ────────────────────────────────────────────────────────────
@@ -212,11 +230,16 @@ export function resolveSummaryConfig(settings: FileSettings): SummaryConfig {
   const preset = settings.summaryPreset ?? 'standard';
   const base = { ...PRESETS[preset] };
 
-  if (settings.summaryMaxTokens != null) base.maxTokens = settings.summaryMaxTokens;
-  if (settings.summaryTemperature != null) base.temperature = settings.summaryTemperature;
-  if (settings.summarySampleFirst != null) base.sampleFirst = settings.summarySampleFirst;
-  if (settings.summarySampleLast != null) base.sampleLast = settings.summarySampleLast;
-  if (settings.summaryTruncateChars != null) base.truncateChars = settings.summaryTruncateChars;
+  if (settings.summaryMaxTokens != null)
+    base.maxTokens = settings.summaryMaxTokens;
+  if (settings.summaryTemperature != null)
+    base.temperature = settings.summaryTemperature;
+  if (settings.summarySampleFirst != null)
+    base.sampleFirst = settings.summarySampleFirst;
+  if (settings.summarySampleLast != null)
+    base.sampleLast = settings.summarySampleLast;
+  if (settings.summaryTruncateChars != null)
+    base.truncateChars = settings.summaryTruncateChars;
 
   return base;
 }
@@ -245,18 +268,25 @@ export function readFileSettings(): FileSettings {
       try {
         mkdirSync(CONFIG_DIR, { recursive: true });
         writeFileSync(CONFIG_FILE, JSON.stringify(migrated, null, 2), 'utf-8');
-      } catch { /* best-effort */ }
+      } catch {
+        /* best-effort */
+      }
     }
     // Migrate legacy noise toggles → unified noiseFilter
     if (migrated.noiseFilter === undefined) {
-      const hasExplicitFalse = migrated.hideUsageSessions === false || migrated.hideEmptySessions === false || migrated.hideAutoSummary === false
-      migrated.noiseFilter = hasExplicitFalse ? 'all' : 'hide-skip'
+      const hasExplicitFalse =
+        migrated.hideUsageSessions === false ||
+        migrated.hideEmptySessions === false ||
+        migrated.hideAutoSummary === false;
+      migrated.noiseFilter = hasExplicitFalse ? 'all' : 'hide-skip';
     }
     // Overlay Keychain values — only when "@keychain" sentinel is explicitly set in JSON
     if (migrated.aiApiKey === '@keychain') {
       const kc = readKeychainValue('aiApiKey');
       if (!kc) {
-        process.stderr.write('[engram] WARNING: aiApiKey set to @keychain but Keychain entry missing — AI features disabled\n');
+        process.stderr.write(
+          '[engram] WARNING: aiApiKey set to @keychain but Keychain entry missing — AI features disabled\n',
+        );
         delete migrated.aiApiKey;
       } else {
         migrated.aiApiKey = kc;
@@ -265,7 +295,9 @@ export function readFileSettings(): FileSettings {
     if (migrated.titleApiKey === '@keychain') {
       const kc = readKeychainValue('titleApiKey');
       if (!kc) {
-        process.stderr.write('[engram] WARNING: titleApiKey set to @keychain but Keychain entry missing — title generation disabled\n');
+        process.stderr.write(
+          '[engram] WARNING: titleApiKey set to @keychain but Keychain entry missing — title generation disabled\n',
+        );
         delete migrated.titleApiKey;
       } else {
         migrated.titleApiKey = kc;
@@ -276,8 +308,10 @@ export function readFileSettings(): FileSettings {
       if (kc) {
         migrated.viking!.apiKey = kc;
       } else {
-        process.stderr.write('[engram] WARNING: viking.apiKey set to @keychain but Keychain entry missing — Viking will not authenticate\n');
-        delete migrated.viking!.apiKey;
+        process.stderr.write(
+          '[engram] WARNING: viking.apiKey set to @keychain but Keychain entry missing — Viking will not authenticate\n',
+        );
+        delete migrated.viking?.apiKey;
       }
     }
     return migrated;

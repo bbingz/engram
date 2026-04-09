@@ -1,42 +1,52 @@
+import type { Database } from './db.js';
+import { mergeSessionSnapshot } from './session-merge.js';
 import type {
   AuthoritativeSessionSnapshot,
   IndexJobKind,
   SessionWriteResult,
-} from './session-snapshot.js'
-import type { Database } from './db.js'
-import { mergeSessionSnapshot } from './session-merge.js'
+} from './session-snapshot.js';
 
 export class SessionSnapshotWriter {
   constructor(private db: Database) {}
 
-  writeAuthoritativeSnapshot(snapshot: AuthoritativeSessionSnapshot): SessionWriteResult {
+  writeAuthoritativeSnapshot(
+    snapshot: AuthoritativeSessionSnapshot,
+  ): SessionWriteResult {
     const tx = this.db.getRawDb().transaction(() => {
-      const current = this.db.getAuthoritativeSnapshot(snapshot.id)
-      const mergeResult = mergeSessionSnapshot(current, snapshot)
+      const current = this.db.getAuthoritativeSnapshot(snapshot.id);
+      const mergeResult = mergeSessionSnapshot(current, snapshot);
 
       if (mergeResult.action === 'noop') {
         return {
           action: 'noop' as const,
           changeSet: mergeResult.changeSet,
-        }
+        };
       }
 
-      this.db.upsertAuthoritativeSnapshot(mergeResult.merged)
+      this.db.upsertAuthoritativeSnapshot(mergeResult.merged);
 
-      const tier = mergeResult.merged.tier ?? 'normal'
-      const jobKinds: IndexJobKind[] = []
-      if (tier !== 'skip' && mergeResult.changeSet.flags.has('search_text_changed')) jobKinds.push('fts')
-      if ((tier === 'normal' || tier === 'premium') && mergeResult.changeSet.flags.has('embedding_text_changed')) jobKinds.push('embedding')
+      const tier = mergeResult.merged.tier ?? 'normal';
+      const jobKinds: IndexJobKind[] = [];
+      if (
+        tier !== 'skip' &&
+        mergeResult.changeSet.flags.has('search_text_changed')
+      )
+        jobKinds.push('fts');
+      if (
+        (tier === 'normal' || tier === 'premium') &&
+        mergeResult.changeSet.flags.has('embedding_text_changed')
+      )
+        jobKinds.push('embedding');
       if (jobKinds.length > 0) {
-        this.db.insertIndexJobs(snapshot.id, snapshot.syncVersion, jobKinds)
+        this.db.insertIndexJobs(snapshot.id, snapshot.syncVersion, jobKinds);
       }
 
       return {
         action: 'merge' as const,
         changeSet: mergeResult.changeSet,
-      }
-    })
+      };
+    });
 
-    return tx()
+    return tx();
   }
 }

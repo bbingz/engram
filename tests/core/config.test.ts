@@ -1,12 +1,10 @@
 // tests/core/config.test.ts
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 // Dynamic import to match the project's ES module setup
-const {
-  migrateSettings,
-  resolveSummaryConfig,
-  getBaseURL,
-} = await import('../../src/core/config.js');
+const { migrateSettings, resolveSummaryConfig, getBaseURL } = await import(
+  '../../src/core/config.js'
+);
 
 // ── migrateSettings ──────────────────────────────────────────────────
 
@@ -145,18 +143,24 @@ describe('getBaseURL', () => {
   });
 
   it('returns anthropic default URL', () => {
-    expect(getBaseURL({ aiProtocol: 'anthropic' })).toBe('https://api.anthropic.com');
+    expect(getBaseURL({ aiProtocol: 'anthropic' })).toBe(
+      'https://api.anthropic.com',
+    );
   });
 
   it('returns gemini default URL', () => {
-    expect(getBaseURL({ aiProtocol: 'gemini' })).toBe('https://generativelanguage.googleapis.com');
+    expect(getBaseURL({ aiProtocol: 'gemini' })).toBe(
+      'https://generativelanguage.googleapis.com',
+    );
   });
 
   it('returns custom URL when aiBaseURL is set', () => {
-    expect(getBaseURL({
-      aiProtocol: 'openai',
-      aiBaseURL: 'http://localhost:11434',
-    })).toBe('http://localhost:11434');
+    expect(
+      getBaseURL({
+        aiProtocol: 'openai',
+        aiBaseURL: 'http://localhost:11434',
+      }),
+    ).toBe('http://localhost:11434');
   });
 
   it('returns undefined when no protocol and no base URL', () => {
@@ -164,7 +168,9 @@ describe('getBaseURL', () => {
   });
 
   it('custom base URL overrides protocol default (e.g. Ollama via OpenAI)', () => {
-    expect(getBaseURL({ aiProtocol: 'openai', aiBaseURL: 'http://localhost:11434' })).toBe('http://localhost:11434');
+    expect(
+      getBaseURL({ aiProtocol: 'openai', aiBaseURL: 'http://localhost:11434' }),
+    ).toBe('http://localhost:11434');
   });
 });
 
@@ -180,7 +186,10 @@ describe('observability config', () => {
     };
     // migrateSettings should pass through observability untouched (no aiProvider → no-op)
     const result = migrateSettings(input);
-    expect(result.observability).toEqual({ logLevel: 'debug', logRetentionDays: 14 });
+    expect(result.observability).toEqual({
+      logLevel: 'debug',
+      logRetentionDays: 14,
+    });
   });
 
   it('monitor config block preserved through migration', () => {

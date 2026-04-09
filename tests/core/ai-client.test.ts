@@ -1,5 +1,5 @@
 // tests/core/ai-client.test.ts
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const {
   renderPromptTemplate,
@@ -42,12 +42,15 @@ describe('renderPromptTemplate', () => {
 
   it('custom prompt template with variables', () => {
     const result = renderPromptTemplate({
-      summaryPrompt: 'Summarize in {{language}} using {{maxSentences}} sentences. {{style}}',
+      summaryPrompt:
+        'Summarize in {{language}} using {{maxSentences}} sentences. {{style}}',
       summaryLanguage: 'Japanese',
       summaryMaxSentences: 7,
       summaryStyle: 'prose',
     });
-    expect(result).toBe('Summarize in Japanese using 7 sentences. 风格要求：prose');
+    expect(result).toBe(
+      'Summarize in Japanese using 7 sentences. 风格要求：prose',
+    );
   });
 });
 
@@ -97,7 +100,12 @@ describe('buildRequestBody', () => {
   const conversation = '[user] hello\n\n[assistant] hi';
 
   it('openai: has model, 2 messages (system+user), max_tokens', () => {
-    const body = buildRequestBody('openai', system, conversation, opts) as Record<string, unknown>;
+    const body = buildRequestBody(
+      'openai',
+      system,
+      conversation,
+      opts,
+    ) as Record<string, unknown>;
     expect(body.model).toBe('test-model');
     expect(body.max_tokens).toBe(100);
     expect(body.temperature).toBe(0.3);
@@ -110,7 +118,12 @@ describe('buildRequestBody', () => {
   });
 
   it('anthropic: has model, system field, 1 message, max_tokens', () => {
-    const body = buildRequestBody('anthropic', system, conversation, opts) as Record<string, unknown>;
+    const body = buildRequestBody(
+      'anthropic',
+      system,
+      conversation,
+      opts,
+    ) as Record<string, unknown>;
     expect(body.model).toBe('test-model');
     expect(body.system).toBe(system);
     expect(body.max_tokens).toBe(100);
@@ -121,14 +134,27 @@ describe('buildRequestBody', () => {
   });
 
   it('gemini: has systemInstruction, contents, generationConfig.maxOutputTokens', () => {
-    const body = buildRequestBody('gemini', system, conversation, opts) as Record<string, unknown>;
-    const sysInstr = body.systemInstruction as { parts: Array<{ text: string }> };
+    const body = buildRequestBody(
+      'gemini',
+      system,
+      conversation,
+      opts,
+    ) as Record<string, unknown>;
+    const sysInstr = body.systemInstruction as {
+      parts: Array<{ text: string }>;
+    };
     expect(sysInstr.parts[0].text).toBe(system);
-    const contents = body.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    const contents = body.contents as Array<{
+      role: string;
+      parts: Array<{ text: string }>;
+    }>;
     expect(contents).toHaveLength(1);
     expect(contents[0].role).toBe('user');
     expect(contents[0].parts[0].text).toContain(conversation);
-    const genConfig = body.generationConfig as { maxOutputTokens: number; temperature: number };
+    const genConfig = body.generationConfig as {
+      maxOutputTokens: number;
+      temperature: number;
+    };
     expect(genConfig.maxOutputTokens).toBe(100);
     expect(genConfig.temperature).toBe(0.3);
     // No model or max_tokens at top level
@@ -153,7 +179,10 @@ describe('summarizeConversation audit', () => {
   function mockAudit() {
     const calls: any[] = [];
     return {
-      record: (entry: any) => { calls.push(entry); return calls.length; },
+      record: (entry: any) => {
+        calls.push(entry);
+        return calls.length;
+      },
       calls,
     };
   }
@@ -169,12 +198,16 @@ describe('summarizeConversation audit', () => {
     });
 
     const audit = mockAudit();
-    const result = await summarizeConversation(messages, {
-      aiProtocol: 'openai',
-      aiApiKey: 'test-key',
-      aiModel: 'gpt-4o-mini',
-      aiBaseURL: 'http://localhost:8080',
-    }, { audit: audit as any, sessionId: 'sess-1' });
+    const result = await summarizeConversation(
+      messages,
+      {
+        aiProtocol: 'openai',
+        aiApiKey: 'test-key',
+        aiModel: 'gpt-4o-mini',
+        aiBaseURL: 'http://localhost:8080',
+      },
+      { audit: audit as any, sessionId: 'sess-1' },
+    );
 
     expect(result).toBe('Summary text');
     expect(audit.calls).toHaveLength(1);
@@ -204,12 +237,16 @@ describe('summarizeConversation audit', () => {
     });
 
     const audit = mockAudit();
-    const result = await summarizeConversation(messages, {
-      aiProtocol: 'anthropic',
-      aiApiKey: 'test-key',
-      aiModel: 'claude-sonnet-4-20250514',
-      aiBaseURL: 'http://localhost:8080',
-    }, { audit: audit as any });
+    const result = await summarizeConversation(
+      messages,
+      {
+        aiProtocol: 'anthropic',
+        aiApiKey: 'test-key',
+        aiModel: 'claude-sonnet-4-20250514',
+        aiBaseURL: 'http://localhost:8080',
+      },
+      { audit: audit as any },
+    );
 
     expect(result).toBe('Anthropic summary');
     expect(audit.calls).toHaveLength(1);
@@ -231,12 +268,16 @@ describe('summarizeConversation audit', () => {
     });
 
     const audit = mockAudit();
-    const result = await summarizeConversation(messages, {
-      aiProtocol: 'gemini',
-      aiApiKey: 'test-key',
-      aiModel: 'gemini-pro',
-      aiBaseURL: 'http://localhost:8080',
-    }, { audit: audit as any });
+    const result = await summarizeConversation(
+      messages,
+      {
+        aiProtocol: 'gemini',
+        aiApiKey: 'test-key',
+        aiModel: 'gemini-pro',
+        aiBaseURL: 'http://localhost:8080',
+      },
+      { audit: audit as any },
+    );
 
     expect(result).toBe('Gemini summary');
     expect(audit.calls).toHaveLength(1);
@@ -255,12 +296,18 @@ describe('summarizeConversation audit', () => {
     });
 
     const audit = mockAudit();
-    await expect(summarizeConversation(messages, {
-      aiProtocol: 'openai',
-      aiApiKey: 'test-key',
-      aiModel: 'gpt-4o-mini',
-      aiBaseURL: 'http://localhost:8080',
-    }, { audit: audit as any, sessionId: 'sess-err' })).rejects.toThrow('AI request failed (429)');
+    await expect(
+      summarizeConversation(
+        messages,
+        {
+          aiProtocol: 'openai',
+          aiApiKey: 'test-key',
+          aiModel: 'gpt-4o-mini',
+          aiBaseURL: 'http://localhost:8080',
+        },
+        { audit: audit as any, sessionId: 'sess-err' },
+      ),
+    ).rejects.toThrow('AI request failed (429)');
 
     expect(audit.calls).toHaveLength(1);
     const entry = audit.calls[0];
@@ -274,12 +321,18 @@ describe('summarizeConversation audit', () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
 
     const audit = mockAudit();
-    await expect(summarizeConversation(messages, {
-      aiProtocol: 'openai',
-      aiApiKey: 'test-key',
-      aiModel: 'gpt-4o-mini',
-      aiBaseURL: 'http://localhost:8080',
-    }, { audit: audit as any })).rejects.toThrow('ECONNREFUSED');
+    await expect(
+      summarizeConversation(
+        messages,
+        {
+          aiProtocol: 'openai',
+          aiApiKey: 'test-key',
+          aiModel: 'gpt-4o-mini',
+          aiBaseURL: 'http://localhost:8080',
+        },
+        { audit: audit as any },
+      ),
+    ).rejects.toThrow('ECONNREFUSED');
 
     expect(audit.calls).toHaveLength(1);
     const entry = audit.calls[0];
@@ -308,12 +361,16 @@ describe('summarizeConversation audit', () => {
     expect(result1).toBe('Works fine');
 
     // Empty opts
-    const result2 = await summarizeConversation(messages, {
-      aiProtocol: 'openai',
-      aiApiKey: 'test-key',
-      aiModel: 'gpt-4o-mini',
-      aiBaseURL: 'http://localhost:8080',
-    }, {});
+    const result2 = await summarizeConversation(
+      messages,
+      {
+        aiProtocol: 'openai',
+        aiApiKey: 'test-key',
+        aiModel: 'gpt-4o-mini',
+        aiBaseURL: 'http://localhost:8080',
+      },
+      {},
+    );
     expect(result2).toBe('Works fine');
   });
 
@@ -328,12 +385,16 @@ describe('summarizeConversation audit', () => {
     });
 
     const audit = mockAudit();
-    await summarizeConversation(messages, {
-      aiProtocol: 'openai',
-      aiApiKey: 'test-key',
-      aiModel: 'gpt-4o-mini',
-      aiBaseURL: 'http://localhost:8080',
-    }, { audit: audit as any });
+    await summarizeConversation(
+      messages,
+      {
+        aiProtocol: 'openai',
+        aiApiKey: 'test-key',
+        aiModel: 'gpt-4o-mini',
+        aiBaseURL: 'http://localhost:8080',
+      },
+      { audit: audit as any },
+    );
 
     const entry = audit.calls[0];
     expect(entry.promptTokens).toBeUndefined();

@@ -1,40 +1,40 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import type { EmbeddingClient } from '../../src/core/embeddings.js'
-import { Database } from '../../src/core/db.js'
-import { IndexJobRunner } from '../../src/core/index-job-runner.js'
-import type { VectorStore } from '../../src/core/vector-store.js'
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Database } from '../../src/core/db.js';
+import type { EmbeddingClient } from '../../src/core/embeddings.js';
+import { IndexJobRunner } from '../../src/core/index-job-runner.js';
+import type { VectorStore } from '../../src/core/vector-store.js';
 
 describe('IndexJobRunner', () => {
-  let db: Database
-  let tmpDir: string
-  let mockStore: VectorStore
-  let mockClient: EmbeddingClient
+  let db: Database;
+  let tmpDir: string;
+  let mockStore: VectorStore;
+  let mockClient: EmbeddingClient;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'index-job-runner-test-'))
-    db = new Database(join(tmpDir, 'test.sqlite'))
+    tmpDir = mkdtempSync(join(tmpdir(), 'index-job-runner-test-'));
+    db = new Database(join(tmpDir, 'test.sqlite'));
 
     mockStore = {
       upsert: vi.fn(),
       search: vi.fn().mockReturnValue([]),
       delete: vi.fn(),
       count: vi.fn().mockReturnValue(0),
-    }
+    };
 
     mockClient = {
       embed: vi.fn().mockResolvedValue(new Float32Array(768).fill(0.1)),
       dimension: 768,
       model: 'mock',
-    }
-  })
+    };
+  });
 
   afterEach(() => {
-    db.close()
-    rmSync(tmpDir, { recursive: true })
-  })
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
 
   it('marks embedding jobs completed after successful vector upsert', async () => {
     db.upsertAuthoritativeSnapshot({
@@ -53,16 +53,18 @@ describe('IndexJobRunner', () => {
       toolMessageCount: 0,
       systemMessageCount: 0,
       summary: 'hello',
-    })
-    db.setLocalReadablePath('sess-1', '/tmp/rollout.jsonl')
-    db.insertIndexJobs('sess-1', 1, ['fts', 'embedding'])
+    });
+    db.setLocalReadablePath('sess-1', '/tmp/rollout.jsonl');
+    db.insertIndexJobs('sess-1', 1, ['fts', 'embedding']);
 
-    const runner = new IndexJobRunner(db, mockStore, mockClient)
-    await runner.runRecoverableJobs()
+    const runner = new IndexJobRunner(db, mockStore, mockClient);
+    await runner.runRecoverableJobs();
 
-    expect(db.listIndexJobs('sess-1').every(j => j.status === 'completed')).toBe(true)
-    expect(mockStore.upsert).toHaveBeenCalledOnce()
-  })
+    expect(
+      db.listIndexJobs('sess-1').every((j) => j.status === 'completed'),
+    ).toBe(true);
+    expect(mockStore.upsert).toHaveBeenCalledOnce();
+  });
 
   it('marks embedding jobs not_applicable for metadata-only replicas', async () => {
     db.upsertAuthoritativeSnapshot({
@@ -81,14 +83,16 @@ describe('IndexJobRunner', () => {
       toolMessageCount: 0,
       systemMessageCount: 0,
       summary: 'remote summary',
-    })
-    db.insertIndexJobs('sess-2', 1, ['fts', 'embedding'])
+    });
+    db.insertIndexJobs('sess-2', 1, ['fts', 'embedding']);
 
-    const runner = new IndexJobRunner(db, mockStore, mockClient)
-    await runner.runRecoverableJobs()
+    const runner = new IndexJobRunner(db, mockStore, mockClient);
+    await runner.runRecoverableJobs();
 
-    const jobs = db.listIndexJobs('sess-2')
-    expect(jobs.find(j => j.jobKind === 'fts')?.status).toBe('completed')
-    expect(jobs.find(j => j.jobKind === 'embedding')?.status).toBe('not_applicable')
-  })
-})
+    const jobs = db.listIndexJobs('sess-2');
+    expect(jobs.find((j) => j.jobKind === 'fts')?.status).toBe('completed');
+    expect(jobs.find((j) => j.jobKind === 'embedding')?.status).toBe(
+      'not_applicable',
+    );
+  });
+});

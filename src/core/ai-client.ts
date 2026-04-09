@@ -1,7 +1,8 @@
 // src/core/ai-client.ts
-import type { AiProtocol, FileSettings } from './config.js';
-import { resolveSummaryConfig, getBaseURL } from './config.js';
+
 import type { AiAuditWriter } from './ai-audit.js';
+import type { AiProtocol, FileSettings } from './config.js';
+import { getBaseURL, resolveSummaryConfig } from './config.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -34,7 +35,7 @@ export function renderPromptTemplate(settings: FileSettings): string {
   // Remove lines that are blank after substitution
   return rendered
     .split('\n')
-    .filter(line => line.trim() !== '')
+    .filter((line) => line.trim() !== '')
     .join('\n');
 }
 
@@ -47,15 +48,17 @@ export function sampleMessages(
   truncateChars: number,
 ): ConversationMessage[] {
   const total = sampleFirst + sampleLast;
-  const selected = messages.length <= total
-    ? messages
-    : [...messages.slice(0, sampleFirst), ...messages.slice(-sampleLast)];
+  const selected =
+    messages.length <= total
+      ? messages
+      : [...messages.slice(0, sampleFirst), ...messages.slice(-sampleLast)];
 
-  return selected.map(m => ({
+  return selected.map((m) => ({
     role: m.role,
-    content: m.content.length > truncateChars
-      ? m.content.slice(0, truncateChars) + '...'
-      : m.content,
+    content:
+      m.content.length > truncateChars
+        ? `${m.content.slice(0, truncateChars)}...`
+        : m.content,
   }));
 }
 
@@ -84,18 +87,14 @@ export function buildRequestBody(
       return {
         model: opts.model,
         system: systemPrompt,
-        messages: [
-          { role: 'user', content: userContent },
-        ],
+        messages: [{ role: 'user', content: userContent }],
         max_tokens: opts.maxTokens,
         temperature: opts.temperature,
       };
     case 'gemini':
       return {
         systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [
-          { role: 'user', parts: [{ text: userContent }] },
-        ],
+        contents: [{ role: 'user', parts: [{ text: userContent }] }],
         generationConfig: {
           maxOutputTokens: opts.maxTokens,
           temperature: opts.temperature,
@@ -134,7 +133,7 @@ export async function summarizeConversation(
     summaryConfig.truncateChars,
   );
   const conversationText = sampled
-    .map(m => `[${m.role}] ${m.content}`)
+    .map((m) => `[${m.role}] ${m.content}`)
     .join('\n\n');
 
   // Build URL
@@ -159,7 +158,7 @@ export async function summarizeConversation(
   };
   switch (protocol) {
     case 'openai':
-      headers['Authorization'] = `Bearer ${apiKey}`;
+      headers.Authorization = `Bearer ${apiKey}`;
       break;
     case 'anthropic':
       headers['x-api-key'] = apiKey;

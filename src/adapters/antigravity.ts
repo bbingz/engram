@@ -1,83 +1,110 @@
 // src/adapters/antigravity.ts
-import { createReadStream } from 'fs'
-import { stat, readdir, mkdir, writeFile, readFile } from 'fs/promises'
-import { createInterface } from 'readline'
-import { homedir } from 'os'
-import { join } from 'path'
-import type { SessionAdapter, SessionInfo, Message, StreamMessagesOptions } from './types.js'
-import { CascadeGrpcClient } from './grpc/cascade-client.js'
+import { createReadStream } from 'node:fs';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import { CascadeGrpcClient } from './grpc/cascade-client.js';
+import type {
+  Message,
+  SessionAdapter,
+  SessionInfo,
+  StreamMessagesOptions,
+} from './types.js';
 
 interface CacheMetaLine {
-  id: string
-  title: string
-  summary?: string  // AI-generated summary from GetAllCascadeTrajectories
-  createdAt: string
-  updatedAt: string
-  cwd?: string       // workspace folder path from GetAllCascadeTrajectories
-  pbSizeBytes?: number  // .pb file size stored for dedup consistency
+  id: string;
+  title: string;
+  summary?: string; // AI-generated summary from GetAllCascadeTrajectories
+  createdAt: string;
+  updatedAt: string;
+  cwd?: string; // workspace folder path from GetAllCascadeTrajectories
+  pbSizeBytes?: number; // .pb file size stored for dedup consistency
 }
 
 export class AntigravityAdapter implements SessionAdapter {
-  readonly name = 'antigravity' as const
-  private daemonDir: string
-  private cacheDir: string
-  private conversationsDir: string
+  readonly name = 'antigravity' as const;
+  private daemonDir: string;
+  private cacheDir: string;
+  private conversationsDir: string;
 
-  constructor(daemonDir?: string, cacheDir?: string, conversationsDir?: string) {
-    const home = homedir()
-    this.daemonDir = daemonDir ?? join(home, '.gemini', 'antigravity', 'daemon')
-    this.cacheDir = cacheDir ?? join(home, '.engram', 'cache', 'antigravity')
-    this.conversationsDir = conversationsDir ?? join(home, '.gemini', 'antigravity', 'conversations')
+  constructor(
+    daemonDir?: string,
+    cacheDir?: string,
+    conversationsDir?: string,
+  ) {
+    const home = homedir();
+    this.daemonDir =
+      daemonDir ?? join(home, '.gemini', 'antigravity', 'daemon');
+    this.cacheDir = cacheDir ?? join(home, '.engram', 'cache', 'antigravity');
+    this.conversationsDir =
+      conversationsDir ?? join(home, '.gemini', 'antigravity', 'conversations');
   }
 
   async detect(): Promise<boolean> {
     try {
-      await stat(this.daemonDir)
-      return true
+      await stat(this.daemonDir);
+      return true;
     } catch {
-      try { await stat(this.cacheDir); return true } catch { return false }
+      try {
+        await stat(this.cacheDir);
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
 
   // Sync runs before listing — fetches new/updated conversations from gRPC, saves to cache
   async sync(): Promise<void> {
-    await mkdir(this.cacheDir, { recursive: true })
+    await mkdir(this.cacheDir, { recursive: true });
     // Try new process-based discovery first (Antigravity 1.18+), then old JSON file method
-    const client = await CascadeGrpcClient.fromProcess()
-               ?? await CascadeGrpcClient.fromDaemonDir(this.daemonDir)
-    if (!client) return  // app not running, use existing cache
+    const client =
+      (await CascadeGrpcClient.fromProcess()) ??
+      (await CascadeGrpcClient.fromDaemonDir(this.daemonDir));
+    if (!client) return; // app not running, use existing cache
 
     try {
-      const conversations = await client.listConversations()
-      const syncedIds = new Set<string>()
+      const conversations = await client.listConversations();
+      const syncedIds = new Set<string>();
 
       for (const conv of conversations) {
-        if (!conv.cascadeId) continue
-        syncedIds.add(conv.cascadeId)
-        const cachePath = join(this.cacheDir, `${conv.cascadeId}.jsonl`)
-        const pbPath = join(this.conversationsDir, `${conv.cascadeId}.pb`)
+        if (!conv.cascadeId) continue;
+        syncedIds.add(conv.cascadeId);
+        const cachePath = join(this.cacheDir, `${conv.cascadeId}.jsonl`);
+        const pbPath = join(this.conversationsDir, `${conv.cascadeId}.pb`);
 
         // Check if cache is fresh (pb mtime <= cache mtime) AND has actual content (> meta-only)
         try {
-          const [pbStat, cacheStat] = await Promise.all([stat(pbPath), stat(cachePath)])
-          if (cacheStat.mtimeMs >= pbStat.mtimeMs && cacheStat.size > 200) continue  // cache is fresh with content
-        } catch { /* pb or cache doesn't exist — proceed with fetch */ }
+          const [pbStat, cacheStat] = await Promise.all([
+            stat(pbPath),
+            stat(cachePath),
+          ]);
+          if (cacheStat.mtimeMs >= pbStat.mtimeMs && cacheStat.size > 200)
+            continue; // cache is fresh with content
+        } catch {
+          /* pb or cache doesn't exist — proceed with fetch */
+        }
 
         try {
           // Primary: use ConnectRPC GetCascadeTrajectory for full conversation steps
-          let messages = await client.getTrajectoryMessages(conv.cascadeId)
+          let messages = await client.getTrajectoryMessages(conv.cascadeId);
           // Fallback: try ConvertTrajectoryToMarkdown (older servers)
           if (messages.length === 0) {
-            const markdown = await client.getMarkdown(conv.cascadeId)
-            messages = parseMarkdownToMessages(markdown)
+            const markdown = await client.getMarkdown(conv.cascadeId);
+            messages = parseMarkdownToMessages(markdown);
           }
           // Last resort: use the summary from GetAllCascadeTrajectories
           if (messages.length === 0 && conv.summary) {
-            messages = [{ role: 'assistant', content: conv.summary }]
+            messages = [{ role: 'assistant', content: conv.summary }];
           }
 
-          let pbSizeBytes: number | undefined
-          try { pbSizeBytes = (await stat(pbPath)).size } catch { /* pb may not exist */ }
+          let pbSizeBytes: number | undefined;
+          try {
+            pbSizeBytes = (await stat(pbPath)).size;
+          } catch {
+            /* pb may not exist */
+          }
 
           const metaLine: CacheMetaLine = {
             id: conv.cascadeId,
@@ -87,19 +114,21 @@ export class AntigravityAdapter implements SessionAdapter {
             updatedAt: conv.updatedAt,
             cwd: conv.cwd || undefined,
             pbSizeBytes,
-          }
+          };
           const lines = [
             JSON.stringify(metaLine),
-            ...messages.map(m => JSON.stringify(m)),
-          ]
-          await writeFile(cachePath, lines.join('\n') + '\n', 'utf8')
-        } catch { /* skip if fetch fails */ }
+            ...messages.map((m) => JSON.stringify(m)),
+          ];
+          await writeFile(cachePath, `${lines.join('\n')}\n`, 'utf8');
+        } catch {
+          /* skip if fetch fails */
+        }
       }
 
       // Scan .pb directory for sessions not returned by API (API only returns ~10 recent)
-      await this.syncFromPbFiles(client, syncedIds)
+      await this.syncFromPbFiles(client, syncedIds);
     } finally {
-      client.close()
+      client.close();
     }
   }
 
@@ -107,116 +136,138 @@ export class AntigravityAdapter implements SessionAdapter {
    * Sync .pb files not covered by GetAllCascadeTrajectories (which only returns ~10 recent).
    * For each uncached .pb, fetches content via GetCascadeTrajectory and creates a cache entry.
    */
-  private async syncFromPbFiles(client: CascadeGrpcClient, syncedIds: Set<string>): Promise<void> {
-    let pbFiles: string[]
+  private async syncFromPbFiles(
+    client: CascadeGrpcClient,
+    syncedIds: Set<string>,
+  ): Promise<void> {
+    let pbFiles: string[];
     try {
-      pbFiles = (await readdir(this.conversationsDir)).filter(f => f.endsWith('.pb'))
-    } catch { return }
+      pbFiles = (await readdir(this.conversationsDir)).filter((f) =>
+        f.endsWith('.pb'),
+      );
+    } catch {
+      return;
+    }
 
     for (const file of pbFiles) {
-      const cascadeId = file.replace(/\.pb$/, '')
-      if (syncedIds.has(cascadeId)) continue
+      const cascadeId = file.replace(/\.pb$/, '');
+      if (syncedIds.has(cascadeId)) continue;
 
-      const cachePath = join(this.cacheDir, `${cascadeId}.jsonl`)
-      const pbPath = join(this.conversationsDir, file)
+      const cachePath = join(this.cacheDir, `${cascadeId}.jsonl`);
+      const pbPath = join(this.conversationsDir, file);
 
       // Skip if cache already exists with content
       try {
-        const cacheStat = await stat(cachePath)
-        if (cacheStat.size > 200) continue
-      } catch { /* no cache yet */ }
+        const cacheStat = await stat(cachePath);
+        if (cacheStat.size > 200) continue;
+      } catch {
+        /* no cache yet */
+      }
 
       try {
-        let messages = await client.getTrajectoryMessages(cascadeId)
+        let messages = await client.getTrajectoryMessages(cascadeId);
         if (messages.length === 0) {
-          const markdown = await client.getMarkdown(cascadeId)
-          messages = parseMarkdownToMessages(markdown)
+          const markdown = await client.getMarkdown(cascadeId);
+          messages = parseMarkdownToMessages(markdown);
         }
 
-        const pbStat = await stat(pbPath)
+        const pbStat = await stat(pbPath);
         const metaLine: CacheMetaLine = {
           id: cascadeId,
-          title: '',  // no title available from .pb scan
+          title: '', // no title available from .pb scan
           createdAt: pbStat.birthtime.toISOString(),
           updatedAt: pbStat.mtime.toISOString(),
           pbSizeBytes: pbStat.size,
-        }
+        };
         const lines = [
           JSON.stringify(metaLine),
-          ...messages.map(m => JSON.stringify(m)),
-        ]
-        await writeFile(cachePath, lines.join('\n') + '\n', 'utf8')
-      } catch { /* skip on error */ }
+          ...messages.map((m) => JSON.stringify(m)),
+        ];
+        await writeFile(cachePath, `${lines.join('\n')}\n`, 'utf8');
+      } catch {
+        /* skip on error */
+      }
     }
   }
 
   async *listSessionFiles(): AsyncGenerator<string> {
-    await this.sync()
+    await this.sync();
     try {
-      const files = await readdir(this.cacheDir)
+      const files = await readdir(this.cacheDir);
       for (const file of files) {
         if (file.endsWith('.jsonl')) {
-          yield join(this.cacheDir, file)
+          yield join(this.cacheDir, file);
         }
       }
-    } catch { /* cache dir not created yet */ }
+    } catch {
+      /* cache dir not created yet */
+    }
   }
 
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
     try {
-      const firstLine = await readFirstLine(filePath)
-      if (!firstLine) return null
+      const firstLine = await readFirstLine(filePath);
+      if (!firstLine) return null;
 
-      const meta = JSON.parse(firstLine) as CacheMetaLine
-      if (!meta.id) return null
+      const meta = JSON.parse(firstLine) as CacheMetaLine;
+      if (!meta.id) return null;
 
       // Use .pb file size (the real conversation).
       // Prefer value embedded in meta (written during sync), else stat the .pb directly.
-      let sizeBytes: number
+      let sizeBytes: number;
       if (meta.pbSizeBytes && meta.pbSizeBytes > 0) {
-        sizeBytes = meta.pbSizeBytes
+        sizeBytes = meta.pbSizeBytes;
       } else {
-        const pbPath = join(this.conversationsDir, `${meta.id}.pb`)
+        const pbPath = join(this.conversationsDir, `${meta.id}.pb`);
         try {
-          sizeBytes = (await stat(pbPath)).size
+          sizeBytes = (await stat(pbPath)).size;
         } catch {
-          sizeBytes = (await stat(filePath)).size
+          sizeBytes = (await stat(filePath)).size;
         }
       }
 
       // Count messages (skip first meta line)
-      let userCount = 0
-      let assistantCount = 0
-      let firstUserText = ''
-      let isFirst = true
+      let userCount = 0;
+      let assistantCount = 0;
+      let firstUserText = '';
+      let isFirst = true;
 
       for await (const line of this.readLines(filePath)) {
-        if (isFirst) { isFirst = false; continue }  // skip meta line
+        if (isFirst) {
+          isFirst = false;
+          continue;
+        } // skip meta line
         try {
-          const msg = JSON.parse(line) as { role: string; content: string }
+          const msg = JSON.parse(line) as { role: string; content: string };
           if (msg.role === 'user') {
-            userCount++
-            if (!firstUserText) firstUserText = msg.content
+            userCount++;
+            if (!firstUserText) firstUserText = msg.content;
           } else if (msg.role === 'assistant') {
-            assistantCount++
+            assistantCount++;
           }
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
 
       // If no cwd from gRPC, try to infer from file paths mentioned in messages
-      let cwd = meta.cwd || ''
+      let cwd = meta.cwd || '';
       if (!cwd) {
-        const content = (await readFile(filePath, 'utf8')).slice(0, 50000) // scan first 50KB
-        const pathMatches = content.match(/\/Users\/[^/]+\/-Code-\/([^\/\s"'`\)]+)/g) || []
+        const content = (await readFile(filePath, 'utf8')).slice(0, 50000); // scan first 50KB
+        const pathMatches =
+          content.match(/\/Users\/[^/]+\/-Code-\/([^/\s"'`)]+)/g) || [];
         if (pathMatches.length > 0) {
           // Count occurrences of each project name, pick the most frequent
-          const counts = new Map<string, number>()
+          const counts = new Map<string, number>();
           for (const p of pathMatches) {
-            const m = p.match(/\/-Code-\/([^\/\s"'`\)]+)/)
-            if (m) counts.set(m[1], (counts.get(m[1]) || 0) + 1)
+            const m = p.match(/\/-Code-\/([^/\s"'`)]+)/);
+            if (m) counts.set(m[1], (counts.get(m[1]) || 0) + 1);
           }
-          const topProject = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
-          if (topProject) cwd = `/Users/${homedir().split('/').pop()}/-Code-/${topProject[0]}`
+          const topProject = [...counts.entries()].sort(
+            (a, b) => b[1] - a[1],
+          )[0];
+          if (topProject)
+            cwd = `/Users/${homedir().split('/').pop()}/-Code-/${topProject[0]}`;
         }
       }
 
@@ -231,66 +282,91 @@ export class AntigravityAdapter implements SessionAdapter {
         assistantMessageCount: assistantCount,
         toolMessageCount: 0,
         systemMessageCount: 0,
-        summary: (meta.title || meta.summary || firstUserText).slice(0, 200) || undefined,
+        summary:
+          (meta.title || meta.summary || firstUserText).slice(0, 200) ||
+          undefined,
         filePath,
         sizeBytes,
-      }
-    } catch { return null }
+      };
+    } catch {
+      return null;
+    }
   }
 
-  async *streamMessages(filePath: string, opts: StreamMessagesOptions = {}): AsyncGenerator<Message> {
-    const offset = opts.offset ?? 0
-    const limit = opts.limit ?? Infinity
-    let count = 0
-    let yielded = 0
-    let isFirst = true
+  async *streamMessages(
+    filePath: string,
+    opts: StreamMessagesOptions = {},
+  ): AsyncGenerator<Message> {
+    const offset = opts.offset ?? 0;
+    const limit = opts.limit ?? Infinity;
+    let count = 0;
+    let yielded = 0;
+    let isFirst = true;
 
     for await (const line of this.readLines(filePath)) {
-      if (isFirst) { isFirst = false; continue }  // skip meta line
-      if (yielded >= limit) break
+      if (isFirst) {
+        isFirst = false;
+        continue;
+      } // skip meta line
+      if (yielded >= limit) break;
 
       try {
-        const msg = JSON.parse(line) as { role: string; content: string; timestamp?: string }
-        if (msg.role !== 'user' && msg.role !== 'assistant') continue
-        if (count < offset) { count++; continue }
-        count++
-        yield { role: msg.role as 'user' | 'assistant', content: msg.content, timestamp: msg.timestamp }
-        yielded++
-      } catch { /* skip malformed */ }
+        const msg = JSON.parse(line) as {
+          role: string;
+          content: string;
+          timestamp?: string;
+        };
+        if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+        if (count < offset) {
+          count++;
+          continue;
+        }
+        count++;
+        yield {
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content,
+          timestamp: msg.timestamp,
+        };
+        yielded++;
+      } catch {
+        /* skip malformed */
+      }
     }
   }
 
   private async *readLines(filePath: string): AsyncGenerator<string> {
-    const stream = createReadStream(filePath, { encoding: 'utf8' })
-    const rl = createInterface({ input: stream, crlfDelay: Infinity })
+    const stream = createReadStream(filePath, { encoding: 'utf8' });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
     for await (const line of rl) {
-      if (line.trim()) yield line
+      if (line.trim()) yield line;
     }
   }
 }
 
 // Parse the Markdown output of ConvertTrajectoryToMarkdown into {role, content} pairs.
 // Format: ## User\n\ntext...\n\n## Cascade\n\ntext...
-export function parseMarkdownToMessages(markdown: string): { role: 'user' | 'assistant'; content: string; timestamp?: string }[] {
-  const messages: { role: 'user' | 'assistant'; content: string }[] = []
-  const sections = markdown.split(/^##\s+/m).filter(Boolean)
+export function parseMarkdownToMessages(
+  markdown: string,
+): { role: 'user' | 'assistant'; content: string; timestamp?: string }[] {
+  const messages: { role: 'user' | 'assistant'; content: string }[] = [];
+  const sections = markdown.split(/^##\s+/m).filter(Boolean);
   for (const section of sections) {
-    const newline = section.indexOf('\n')
-    if (newline === -1) continue
-    const header = section.slice(0, newline).trim().toLowerCase()
-    const content = section.slice(newline + 1).trim()
-    if (!content) continue
+    const newline = section.indexOf('\n');
+    if (newline === -1) continue;
+    const header = section.slice(0, newline).trim().toLowerCase();
+    const content = section.slice(newline + 1).trim();
+    if (!content) continue;
     if (header.startsWith('user')) {
-      messages.push({ role: 'user', content })
+      messages.push({ role: 'user', content });
     } else if (header.startsWith('assistant') || header.startsWith('cascade')) {
-      messages.push({ role: 'assistant', content })
+      messages.push({ role: 'assistant', content });
     }
   }
-  return messages
+  return messages;
 }
 
 async function readFirstLine(filePath: string): Promise<string | null> {
-  const content = await readFile(filePath, 'utf8')
-  const line = content.split('\n')[0]?.trim()
-  return line || null
+  const content = await readFile(filePath, 'utf8');
+  const line = content.split('\n')[0]?.trim();
+  return line || null;
 }

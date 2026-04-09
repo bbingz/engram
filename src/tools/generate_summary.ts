@@ -1,10 +1,11 @@
 // src/tools/generate_summary.ts
+
+import type { AiAuditWriter } from '../core/ai-audit.js';
+import { summarizeConversation } from '../core/ai-client.js';
+import { getAdapter } from '../core/bootstrap.js';
+import { readFileSettings } from '../core/config.js';
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
-import type { AiAuditWriter } from '../core/ai-audit.js';
-import { getAdapter } from '../core/bootstrap.js';
-import { summarizeConversation } from '../core/ai-client.js';
-import { readFileSettings } from '../core/config.js';
 
 export const generateSummaryTool = {
   name: 'generate_summary',
@@ -27,16 +28,18 @@ export async function handleGenerateSummary(
   params: {
     sessionId: string;
   },
-  opts?: { log?: Logger; audit?: AiAuditWriter }
+  opts?: { log?: Logger; audit?: AiAuditWriter },
 ) {
-  opts?.log?.info('generate_summary invoked', { sessionId: params.sessionId })
+  opts?.log?.info('generate_summary invoked', { sessionId: params.sessionId });
   const { sessionId } = params;
 
   // Get session info from DB
   const session = db.getSession(sessionId);
   if (!session) {
     return {
-      content: [{ type: 'text' as const, text: `Session not found: ${sessionId}` }],
+      content: [
+        { type: 'text' as const, text: `Session not found: ${sessionId}` },
+      ],
       isError: true,
     };
   }
@@ -46,7 +49,12 @@ export async function handleGenerateSummary(
 
   if (!settings.aiApiKey) {
     return {
-      content: [{ type: 'text' as const, text: 'API key not configured. Please set aiApiKey in Settings.' }],
+      content: [
+        {
+          type: 'text' as const,
+          text: 'API key not configured. Please set aiApiKey in Settings.',
+        },
+      ],
       isError: true,
     };
   }
@@ -55,7 +63,12 @@ export async function handleGenerateSummary(
   const adapter = getAdapter(session.source);
   if (!adapter) {
     return {
-      content: [{ type: 'text' as const, text: `No adapter available for source: ${session.source}` }],
+      content: [
+        {
+          type: 'text' as const,
+          text: `No adapter available for source: ${session.source}`,
+        },
+      ],
       isError: true,
     };
   }
@@ -71,25 +84,40 @@ export async function handleGenerateSummary(
     }
   } catch (error) {
     return {
-      content: [{ type: 'text' as const, text: `Failed to read session messages: ${error}` }],
+      content: [
+        {
+          type: 'text' as const,
+          text: `Failed to read session messages: ${error}`,
+        },
+      ],
       isError: true,
     };
   }
 
   if (messages.length === 0) {
     return {
-      content: [{ type: 'text' as const, text: 'No messages found in session' }],
+      content: [
+        { type: 'text' as const, text: 'No messages found in session' },
+      ],
       isError: true,
     };
   }
 
   // Generate summary
   try {
-    const summary = await summarizeConversation(messages, settings, { audit: opts?.audit, sessionId });
+    const summary = await summarizeConversation(messages, settings, {
+      audit: opts?.audit,
+      sessionId,
+    });
 
     if (!summary) {
       return {
-        content: [{ type: 'text' as const, text: 'Failed to generate summary: empty response from AI' }],
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Failed to generate summary: empty response from AI',
+          },
+        ],
         isError: true,
       };
     }
@@ -106,10 +134,15 @@ export async function handleGenerateSummary(
       },
     };
   } catch (error) {
-    opts?.log?.error('generate_summary failed', { sessionId }, error)
+    opts?.log?.error('generate_summary failed', { sessionId }, error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     return {
-      content: [{ type: 'text' as const, text: `Failed to generate summary: ${errorMessage}` }],
+      content: [
+        {
+          type: 'text' as const,
+          text: `Failed to generate summary: ${errorMessage}`,
+        },
+      ],
       isError: true,
     };
   }

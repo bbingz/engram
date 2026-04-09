@@ -1,46 +1,53 @@
 // src/adapters/claude-code.ts
-import { createReadStream } from 'fs'
-import { stat, readdir } from 'fs/promises'
-import { createInterface } from 'readline'
-import { homedir } from 'os'
-import { join } from 'path'
-import type { SessionAdapter, SessionInfo, Message, StreamMessagesOptions, TokenUsage, ToolCall } from './types.js'
+import { createReadStream } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import type {
+  Message,
+  SessionAdapter,
+  SessionInfo,
+  StreamMessagesOptions,
+  TokenUsage,
+  ToolCall,
+} from './types.js';
 
 export class ClaudeCodeAdapter implements SessionAdapter {
-  readonly name = 'claude-code' as const
-  private projectsRoot: string
+  readonly name = 'claude-code' as const;
+  private projectsRoot: string;
 
   constructor(projectsRoot?: string) {
-    this.projectsRoot = projectsRoot ?? join(homedir(), '.claude', 'projects')
+    this.projectsRoot = projectsRoot ?? join(homedir(), '.claude', 'projects');
   }
 
   async detect(): Promise<boolean> {
     try {
-      await stat(this.projectsRoot)
-      return true
+      await stat(this.projectsRoot);
+      return true;
     } catch {
-      return false
+      return false;
     }
   }
 
   async *listSessionFiles(): AsyncGenerator<string> {
     try {
-      const projectDirs = await readdir(this.projectsRoot)
+      const projectDirs = await readdir(this.projectsRoot);
       for (const dir of projectDirs) {
-        const projectPath = join(this.projectsRoot, dir)
+        const projectPath = join(this.projectsRoot, dir);
         try {
-          const entries = await readdir(projectPath, { withFileTypes: true })
+          const entries = await readdir(projectPath, { withFileTypes: true });
           for (const entry of entries) {
             if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-              yield join(projectPath, entry.name)
+              yield join(projectPath, entry.name);
             } else if (entry.isDirectory()) {
               // UUID subdirectory — look for subagents/ inside it
-              const subagentsPath = join(projectPath, entry.name, 'subagents')
+              const subagentsPath = join(projectPath, entry.name, 'subagents');
               try {
-                const subFiles = await readdir(subagentsPath)
+                const subFiles = await readdir(subagentsPath);
                 for (const file of subFiles) {
                   if (file.endsWith('.jsonl')) {
-                    yield join(subagentsPath, file)
+                    yield join(subagentsPath, file);
                   }
                 }
               } catch {
@@ -59,62 +66,62 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
     try {
-      const fileStat = await stat(filePath)
-      let sessionId = ''
-      let agentId = ''
-      let cwd = ''
-      let startTime = ''
-      let endTime = ''
-      let userCount = 0
-      let assistantCount = 0
-      let toolCount = 0
-      let systemCount = 0
-      let firstUserText = ''
-      let detectedModel = ''
+      const fileStat = await stat(filePath);
+      let sessionId = '';
+      let agentId = '';
+      let cwd = '';
+      let startTime = '';
+      let endTime = '';
+      let userCount = 0;
+      let assistantCount = 0;
+      let toolCount = 0;
+      let systemCount = 0;
+      let firstUserText = '';
+      let detectedModel = '';
 
       for await (const line of this.readLines(filePath)) {
-        const obj = this.parseLine(line)
-        if (!obj) continue
+        const obj = this.parseLine(line);
+        if (!obj) continue;
 
-        const type = obj.type as string
-        if (type !== 'user' && type !== 'assistant') continue
+        const type = obj.type as string;
+        if (type !== 'user' && type !== 'assistant') continue;
 
-        if (!sessionId && obj.sessionId) sessionId = obj.sessionId as string
-        if (!agentId && obj.agentId) agentId = obj.agentId as string
-        if (!cwd && obj.cwd) cwd = obj.cwd as string
-        if (!startTime && obj.timestamp) startTime = obj.timestamp as string
-        if (obj.timestamp) endTime = obj.timestamp as string
+        if (!sessionId && obj.sessionId) sessionId = obj.sessionId as string;
+        if (!agentId && obj.agentId) agentId = obj.agentId as string;
+        if (!cwd && obj.cwd) cwd = obj.cwd as string;
+        if (!startTime && obj.timestamp) startTime = obj.timestamp as string;
+        if (obj.timestamp) endTime = obj.timestamp as string;
 
-        const msg = obj.message as Record<string, unknown> | undefined
+        const msg = obj.message as Record<string, unknown> | undefined;
         if (!detectedModel && msg?.model) {
-          detectedModel = msg.model as string
+          detectedModel = msg.model as string;
         }
 
         if (type === 'assistant') {
-          assistantCount++
+          assistantCount++;
         } else if (type === 'user') {
           if (this.isToolResult(msg?.content)) {
-            toolCount++
+            toolCount++;
           } else {
-            const text = this.extractContent(msg?.content)
+            const text = this.extractContent(msg?.content);
             if (this.isSystemInjection(text)) {
-              systemCount++
+              systemCount++;
             } else {
-              userCount++
+              userCount++;
               if (!firstUserText) {
-                firstUserText = text
+                firstUserText = text;
               }
             }
           }
         }
       }
 
-      if (!sessionId) return null
+      if (!sessionId) return null;
 
-      const isSubagent = filePath.includes('/subagents/')
+      const isSubagent = filePath.includes('/subagents/');
       // Subagent files share sessionId with the parent — use agentId as the unique DB key
-      const id = isSubagent && agentId ? agentId : sessionId
-      const source = ClaudeCodeAdapter.detectSource(detectedModel, filePath)
+      const id = isSubagent && agentId ? agentId : sessionId;
+      const source = ClaudeCodeAdapter.detectSource(detectedModel, filePath);
 
       return {
         id,
@@ -132,79 +139,88 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         filePath,
         sizeBytes: fileStat.size,
         agentRole: isSubagent ? 'subagent' : undefined,
-      }
+      };
     } catch {
-      return null
+      return null;
     }
   }
 
   /** Map model string + file path to source name. Non-Claude models get their own source. */
   static detectSource(model: string, filePath?: string): SessionInfo['source'] {
     // Lobster AI writes to ~/.claude/projects/ with its own project dirs
-    if (filePath && filePath.includes('lobsterai')) return 'lobsterai'
-    if (!model || model.startsWith('claude') || model.startsWith('<')) return 'claude-code'
-    const m = model.toLowerCase()
-    if (m.includes('qwen')) return 'qwen'
-    if (m.includes('kimi')) return 'kimi'
-    if (m.includes('gemini')) return 'gemini-cli'
-    if (m.includes('minimax')) return 'minimax'
+    if (filePath?.includes('lobsterai')) return 'lobsterai';
+    if (!model || model.startsWith('claude') || model.startsWith('<'))
+      return 'claude-code';
+    const m = model.toLowerCase();
+    if (m.includes('qwen')) return 'qwen';
+    if (m.includes('kimi')) return 'kimi';
+    if (m.includes('gemini')) return 'gemini-cli';
+    if (m.includes('minimax')) return 'minimax';
     // Unknown non-Claude model — still file is in ~/.claude, keep as claude-code
-    return 'claude-code'
+    return 'claude-code';
   }
 
-  async *streamMessages(filePath: string, opts: StreamMessagesOptions = {}): AsyncGenerator<Message> {
-    const offset = opts.offset ?? 0
-    const limit = opts.limit ?? Infinity
-    let count = 0
-    let yielded = 0
+  async *streamMessages(
+    filePath: string,
+    opts: StreamMessagesOptions = {},
+  ): AsyncGenerator<Message> {
+    const offset = opts.offset ?? 0;
+    const limit = opts.limit ?? Infinity;
+    let count = 0;
+    let yielded = 0;
 
     for await (const line of this.readLines(filePath)) {
-      if (yielded >= limit) break
-      const obj = this.parseLine(line)
-      if (!obj) continue
+      if (yielded >= limit) break;
+      const obj = this.parseLine(line);
+      if (!obj) continue;
 
-      const type = obj.type as string
-      if (type !== 'user' && type !== 'assistant') continue
+      const type = obj.type as string;
+      if (type !== 'user' && type !== 'assistant') continue;
 
-      if (count < offset) { count++; continue }
-      count++
+      if (count < offset) {
+        count++;
+        continue;
+      }
+      count++;
 
-      const msg = obj.message as Record<string, unknown>
-      const role = type as 'user' | 'assistant'
-      const content = this.extractContent(msg?.content)
-      const timestamp = obj.timestamp as string | undefined
+      const msg = obj.message as Record<string, unknown>;
+      const role = type as 'user' | 'assistant';
+      const content = this.extractContent(msg?.content);
+      const timestamp = obj.timestamp as string | undefined;
 
       // Extract usage from message object
-      let usage: TokenUsage | undefined
-      let toolCalls: ToolCall[] | undefined
+      let usage: TokenUsage | undefined;
+      let toolCalls: ToolCall[] | undefined;
 
       if (msg && typeof msg === 'object') {
         // Extract usage
-        const rawUsage = (msg as any).usage
+        const rawUsage = (msg as any).usage;
         if (rawUsage && typeof rawUsage === 'object') {
           usage = {
             inputTokens: rawUsage.input_tokens ?? 0,
             outputTokens: rawUsage.output_tokens ?? 0,
             cacheReadTokens: rawUsage.cache_read_input_tokens,
             cacheCreationTokens: rawUsage.cache_creation_input_tokens,
-          }
+          };
         }
 
         // Extract toolCalls from content array
-        const rawContent = (msg as any).content
+        const rawContent = (msg as any).content;
         if (Array.isArray(rawContent)) {
           const calls = rawContent
             .filter((c: any) => c.type === 'tool_use' && c.name)
             .map((c: any) => ({
               name: c.name as string,
-              input: c.input ? JSON.stringify(c.input).slice(0, 500) : undefined,
-            }))
-          if (calls.length > 0) toolCalls = calls
+              input: c.input
+                ? JSON.stringify(c.input).slice(0, 500)
+                : undefined,
+            }));
+          if (calls.length > 0) toolCalls = calls;
         }
       }
 
-      yield { role, content, timestamp, usage, toolCalls }
-      yielded++
+      yield { role, content, timestamp, usage, toolCalls };
+      yielded++;
     }
   }
 
@@ -219,127 +235,159 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       text.startsWith('Unknown skill: ') ||
       text.startsWith('Invoke the superpowers:') ||
       text.startsWith('Base directory for this skill:')
-    )
+    );
   }
 
   // 解码 Claude Code 目录名：-Users-bing--Code--project → /Users/bing/-Code-/project
   static decodeCwd(encoded: string): string {
-    return encoded.replace(/--/g, '\x00').replace(/-/g, '/').replace(/\x00/g, '-')
+    return encoded
+      .replace(/--/g, '\x00')
+      .replace(/-/g, '/')
+      .replace(/\x00/g, '-');
   }
 
   private async *readLines(filePath: string): AsyncGenerator<string> {
-    const stream = createReadStream(filePath, { encoding: 'utf8' })
-    const rl = createInterface({ input: stream, crlfDelay: Infinity })
+    const stream = createReadStream(filePath, { encoding: 'utf8' });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
     for await (const line of rl) {
-      if (line.trim()) yield line
+      if (line.trim()) yield line;
     }
   }
 
   private parseLine(line: string): Record<string, unknown> | null {
     try {
-      return JSON.parse(line) as Record<string, unknown>
+      return JSON.parse(line) as Record<string, unknown>;
     } catch {
-      return null
+      return null;
     }
   }
 
   private isToolResult(content: unknown): boolean {
-    if (!Array.isArray(content)) return false
-    return content.some((c: Record<string, unknown>) => c.type === 'tool_result')
+    if (!Array.isArray(content)) return false;
+    return content.some(
+      (c: Record<string, unknown>) => c.type === 'tool_result',
+    );
   }
 
   private extractContent(content: unknown): string {
-    if (typeof content === 'string') return content
+    if (typeof content === 'string') return content;
     if (Array.isArray(content)) {
-      const parts: string[] = []
-      let thinkingFallback = ''
+      const parts: string[] = [];
+      let thinkingFallback = '';
       for (const item of content) {
-        const c = item as Record<string, unknown>
+        const c = item as Record<string, unknown>;
         if (c.type === 'text' && c.text) {
-          const text = (c.text as string).trim()
-          if (text && text !== 'Tool loaded.') parts.push(c.text as string)
+          const text = (c.text as string).trim();
+          if (text && text !== 'Tool loaded.') parts.push(c.text as string);
         } else if (c.type === 'thinking' && c.thinking && !thinkingFallback) {
-          thinkingFallback = c.thinking as string
+          thinkingFallback = c.thinking as string;
         } else if (c.type === 'tool_use') {
-          parts.push(this.formatToolUse(c))
+          parts.push(this.formatToolUse(c));
         } else if (c.type === 'tool_result') {
-          const formatted = this.formatToolResult(c)
-          if (formatted) parts.push(formatted)
+          const formatted = this.formatToolResult(c);
+          if (formatted) parts.push(formatted);
         } else if (c.type === 'image') {
-          const mediaType = (c.source as Record<string, unknown>)?.media_type ?? 'image/unknown'
-          const dataLen = ((c.source as Record<string, unknown>)?.data as string)?.length ?? 0
-          const sizeKB = Math.round(dataLen * 0.75 / 1024)
-          parts.push(`[Image: ${mediaType}, ~${sizeKB} KB]`)
+          const mediaType =
+            (c.source as Record<string, unknown>)?.media_type ??
+            'image/unknown';
+          const dataLen =
+            ((c.source as Record<string, unknown>)?.data as string)?.length ??
+            0;
+          const sizeKB = Math.round((dataLen * 0.75) / 1024);
+          parts.push(`[Image: ${mediaType}, ~${sizeKB} KB]`);
         }
       }
-      const nonEmpty = parts.filter(p => p)
-      if (nonEmpty.length > 0) return nonEmpty.join('\n\n')
-      if (thinkingFallback) return thinkingFallback
+      const nonEmpty = parts.filter((p) => p);
+      if (nonEmpty.length > 0) return nonEmpty.join('\n\n');
+      if (thinkingFallback) return thinkingFallback;
     }
-    return ''
+    return '';
   }
 
   // Internal tools that add no conversational value
   private static NOISE_TOOLS = new Set([
-    'ToolSearch', 'ExitPlanMode', 'EnterPlanMode', 'Skill',
-    'TodoWrite', 'TodoRead', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
-  ])
+    'ToolSearch',
+    'ExitPlanMode',
+    'EnterPlanMode',
+    'Skill',
+    'TodoWrite',
+    'TodoRead',
+    'TaskCreate',
+    'TaskUpdate',
+    'TaskGet',
+    'TaskList',
+  ]);
 
   private formatToolUse(c: Record<string, unknown>): string {
-    const name = c.name as string
-    if (ClaudeCodeAdapter.NOISE_TOOLS.has(name)) return ''
-    const input = c.input as Record<string, unknown> | undefined
+    const name = c.name as string;
+    if (ClaudeCodeAdapter.NOISE_TOOLS.has(name)) return '';
+    const input = c.input as Record<string, unknown> | undefined;
     if (name === 'AskUserQuestion' && input?.questions) {
-      return this.formatAskUserQuestion(input.questions as Record<string, unknown>[])
+      return this.formatAskUserQuestion(
+        input.questions as Record<string, unknown>[],
+      );
     }
     // For other tools, show a brief summary
-    if (!input) return `\`${name}\``
-    const summary = typeof input === 'object' ? this.summarizeToolInput(name, input) : ''
-    return summary ? `\`${name}\`: ${summary}` : `\`${name}\``
+    if (!input) return `\`${name}\``;
+    const summary =
+      typeof input === 'object' ? this.summarizeToolInput(name, input) : '';
+    return summary ? `\`${name}\`: ${summary}` : `\`${name}\``;
   }
 
   private formatAskUserQuestion(questions: Record<string, unknown>[]): string {
-    return questions.map(q => {
-      const header = q.header ? `**${q.header}**\n` : ''
-      const question = q.question as string
-      const options = q.options as Record<string, unknown>[] | undefined
-      let text = `${header}${question}`
-      if (options?.length) {
-        text += '\n' + options.map((o, i) => {
-          const desc = o.description ? ` — ${o.description}` : ''
-          return `  ${i + 1}. ${o.label}${desc}`
-        }).join('\n')
-      }
-      return text
-    }).join('\n\n')
+    return questions
+      .map((q) => {
+        const header = q.header ? `**${q.header}**\n` : '';
+        const question = q.question as string;
+        const options = q.options as Record<string, unknown>[] | undefined;
+        let text = `${header}${question}`;
+        if (options?.length) {
+          text +=
+            '\n' +
+            options
+              .map((o, i) => {
+                const desc = o.description ? ` — ${o.description}` : '';
+                return `  ${i + 1}. ${o.label}${desc}`;
+              })
+              .join('\n');
+        }
+        return text;
+      })
+      .join('\n\n');
   }
 
   private formatToolResult(c: Record<string, unknown>): string {
-    const content = c.content
+    const content = c.content;
     if (typeof content === 'string') {
-      if (content.startsWith('User has answered')) return content
-      return ''
+      if (content.startsWith('User has answered')) return content;
+      return '';
     }
     if (Array.isArray(content)) {
       // Skip tool_reference items ("Tool loaded" responses)
       const texts = content
-        .filter((item: Record<string, unknown>) => item.type === 'text' && item.text)
-        .map((item: Record<string, unknown>) => item.text as string)
+        .filter(
+          (item: Record<string, unknown>) => item.type === 'text' && item.text,
+        )
+        .map((item: Record<string, unknown>) => item.text as string);
       if (texts.length > 0) {
-        const joined = texts.join('\n')
-        if (joined.startsWith('User has answered')) return joined
+        const joined = texts.join('\n');
+        if (joined.startsWith('User has answered')) return joined;
       }
     }
-    return ''
+    return '';
   }
 
-  private summarizeToolInput(name: string, input: Record<string, unknown>): string {
+  private summarizeToolInput(
+    name: string,
+    input: Record<string, unknown>,
+  ): string {
     // Show meaningful context for common tools
-    if (name === 'Read' || name === 'Write' || name === 'Edit') return (input.file_path as string) || ''
-    if (name === 'Bash') return ((input.command as string) || '').slice(0, 120)
-    if (name === 'Glob') return (input.pattern as string) || ''
-    if (name === 'Grep') return (input.pattern as string) || ''
-    if (name === 'Agent') return (input.description as string) || ''
-    return ''
+    if (name === 'Read' || name === 'Write' || name === 'Edit')
+      return (input.file_path as string) || '';
+    if (name === 'Bash') return ((input.command as string) || '').slice(0, 120);
+    if (name === 'Glob') return (input.pattern as string) || '';
+    if (name === 'Grep') return (input.pattern as string) || '';
+    if (name === 'Agent') return (input.description as string) || '';
+    return '';
   }
 }

@@ -1,9 +1,9 @@
 // src/core/error-serializer.ts
 export interface SerializedError {
-  name: string
-  message: string
-  stack?: string
-  code?: string
+  name: string;
+  message: string;
+  stack?: string;
+  code?: string;
 }
 
 export function serializeError(err: unknown): SerializedError {
@@ -13,7 +13,7 @@ export function serializeError(err: unknown): SerializedError {
       message: err.message,
       stack: err.stack,
       code: (err as any).code,
-    }
+    };
   }
-  return { name: 'UnknownError', message: String(err) }
+  return { name: 'UnknownError', message: String(err) };
 }

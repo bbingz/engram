@@ -1,6 +1,32 @@
 [
-  {"ts": 1770000000000, "type": "say", "say": "task", "text": "帮我写单元测试", "modelInfo": {"providerId": "cline", "modelId": "glm-5", "mode": "act"}, "conversationHistoryIndex": -1},
-  {"ts": 1770000001000, "type": "say", "say": "api_req_started", "text": "{\"request\":\"<task>\\n帮我写单元测试\\n</task>\\n\\nCurrent Working Directory (/Users/test/my-project) Files\\n\",\"tokensIn\":100,\"tokensOut\":0}", "conversationHistoryIndex": 0},
-  {"ts": 1770000005000, "type": "say", "say": "text", "text": "好的，我来帮你写单元测试。", "partial": false, "conversationHistoryIndex": 1},
-  {"ts": 1770000060000, "type": "say", "say": "user_feedback", "text": "谢谢", "conversationHistoryIndex": 5}
+  {
+    "ts": 1770000000000,
+    "type": "say",
+    "say": "task",
+    "text": "帮我写单元测试",
+    "modelInfo": { "providerId": "cline", "modelId": "glm-5", "mode": "act" },
+    "conversationHistoryIndex": -1
+  },
+  {
+    "ts": 1770000001000,
+    "type": "say",
+    "say": "api_req_started",
+    "text": "{\"request\":\"<task>\\n帮我写单元测试\\n</task>\\n\\nCurrent Working Directory (/Users/test/my-project) Files\\n\",\"tokensIn\":100,\"tokensOut\":0}",
+    "conversationHistoryIndex": 0
+  },
+  {
+    "ts": 1770000005000,
+    "type": "say",
+    "say": "text",
+    "text": "好的，我来帮你写单元测试。",
+    "partial": false,
+    "conversationHistoryIndex": 1
+  },
+  {
+    "ts": 1770000060000,
+    "type": "say",
+    "say": "user_feedback",
+    "text": "谢谢",
+    "conversationHistoryIndex": 5
+  }
 ]
