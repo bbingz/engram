@@ -88,6 +88,13 @@ export interface FileSettings {
   autoSummaryRefresh?: boolean;
   autoSummaryRefreshThreshold?: number;
 
+  // ── Embedding ─────────────────────────────────────────────────────
+  embedding?: {
+    provider?: 'ollama' | 'openai' | 'transformers';
+    model?: string;
+    dimension?: number;
+  };
+
   // ── Legacy per-provider keys (kept for embeddings) ────────────────
   /** @deprecated Use aiProtocol instead */
   aiProvider?: 'openai' | 'anthropic';
@@ -97,6 +104,7 @@ export interface FileSettings {
   anthropicModel?: string;
   ollamaUrl?: string;
   ollamaModel?: string;
+  /** @deprecated Use embedding.dimension instead */
   embeddingDimension?: number;
 
   // ── Infrastructure ────────────────────────────────────────────────
