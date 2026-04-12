@@ -7,7 +7,7 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 753 tests, ~5s
+npm test               # vitest: 690 tests, ~5s
 npm run dev            # tsx: run without compile
 npm run lint           # biome check (must pass — pre-commit enforced)
 npm run lint:fix       # biome auto-fix
@@ -26,8 +26,8 @@ xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 ```
 src/
   adapters/    # SessionAdapter implementations (15 sources: codex, claude-code, cursor, etc.)
-  core/        # db.ts (SQLite), indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, viking-bridge.ts
-  tools/       # MCP tool handlers (18 tools: get_context, search, list_sessions, get_session, get_memory, get_insights, get_costs, stats, tool_analytics, file_activity, etc.)
+  core/        # db.ts (SQLite), indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, chunker.ts, vector-store.ts, embeddings.ts
+  tools/       # MCP tool handlers (19 tools: get_context, search, save_insight, list_sessions, get_session, get_memory, get_insights, get_costs, stats, tool_analytics, file_activity, etc.)
   web.ts       # Hono HTTP server + API endpoints
   index.ts     # MCP server entry (stdin/stdout transport)
   daemon.ts    # Daemon entry (indexer + watcher + web server)
@@ -71,14 +71,16 @@ New adapters: create `src/adapters/<name>.ts`, register in `src/core/bootstrap.t
 - skip = DB only (noise, preamble, agent subprocesses)
 - lite = +FTS indexing
 - normal = +embedding
-- premium = +Viking push + auto-summary
+- premium = +auto-summary
 UI noise filter uses `buildTierFilter()` / `isTierHidden()`. Swift filters via `tier != 'skip'`.
 
-### OpenViking (Optional)
-External context engine at `src/core/viking-bridge.ts`. Factory `initViking()` in `bootstrap.ts`.
-- Dual-write via resources path — only resources triggers embedding
-- Graceful degradation: Viking down = FTS fallback, circuit breaker 5min
-- Config: `viking.url` + `viking.apiKey` in `~/.engram/settings.json`
+### Local Semantic Search
+Hybrid search: FTS5 (trigram) + sqlite-vec (vector embeddings) + RRF fusion. All local, no external services.
+- `src/core/vector-store.ts`: session-level + chunk-level + insight vectors via sqlite-vec
+- `src/core/chunker.ts`: message-boundary-first chunking for fine-grained retrieval
+- `src/core/embeddings.ts`: provider strategy — Ollama (default) | OpenAI | Transformers.js (opt-in)
+- `src/tools/save_insight.ts`: active memory write (agents save curated knowledge)
+- Model tracking: dimension/model changes trigger automatic rebuild of vector tables
 
 ### Daemon ↔ Swift Communication
 - Daemon writes JSON lines to stdout: `{ event: "ready", indexed: N, total: M }`
@@ -116,4 +118,6 @@ External context engine at `src/core/viking-bridge.ts`. Factory `initViking()` i
 - Don't use `String(value)` for potentially undefined values in TS — use `(value as string) || ''`
 - Don't add new DatabaseManager read methods without `nonisolated` — they'll block the main thread
 - Don't use `hashValue` for cache keys — use the value itself (hash collisions are real)
-- Don't skip `npm run lint` — pre-commit hook enforces it; CI will too eventually
+- Don't skip `npm run lint` — pre-commit hook enforces it; CI enforces it too
+- Don't mix vectors from different embedding models in the same vector space — use explicit provider selection
+- Don't add Viking/OpenViking code — it was removed (2026-04-13). Use local sqlite-vec + FTS5 instead

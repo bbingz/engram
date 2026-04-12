@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { type Chunk, chunkMessages } from './chunker.js';
+import { chunkMessages } from './chunker.js';
 import type { Database } from './db.js';
 import type { EmbeddingClient } from './embeddings.js';
 import type { PersistedIndexJob } from './session-snapshot.js';
