@@ -6,10 +6,7 @@ import type { Logger } from '../core/logger.js';
 import type { MetricsCollector } from '../core/metrics.js';
 import type { Tracer } from '../core/tracer.js';
 import type { VectorStore } from '../core/vector-store.js';
-import {
-  sessionIdFromVikingUri,
-  type VikingBridge,
-} from '../core/viking-bridge.js';
+import type { VikingBridge } from '../core/viking-bridge.js';
 
 export interface SearchDeps {
   vectorStore?: VectorStore;
@@ -93,7 +90,7 @@ export async function handleSearch(
   results: SearchResult[];
   query: string;
   searchModes: string[];
-  vikingMemories?: string[];
+  insightResults?: string[];
   warning?: string;
 }> {
   const searchStart = Date.now();
@@ -141,21 +138,13 @@ export async function handleSearch(
     since: params.since,
   };
 
-  // --- Run all search backends in parallel ---
-  // FTS (~33ms), local vector (~instant), Viking find (~237ms) — all concurrent.
-  // Viking grep (~4s P50) is intentionally excluded: FTS covers keyword search 100x faster.
-  const VIKING_RRF_BOOST = 0.002; // ~12% of rank-1 RRF score — slight tiebreaker for Viking's hierarchical context
-
+  // --- Run search backends in parallel ---
+  // FTS (~33ms), local vector chunks (~instant), local insights (~instant)
   const ftsScores = new Map<string, { score: number; snippet: string }>();
-  const vecScores = new Map<string, { score: number; distance: number }>();
-  const vikingScores = new Map<string, { score: number; snippet: string }>();
-  const vikingMemoryResults: string[] = [];
+  const vecScores = new Map<string, { score: number; snippet: string }>();
+  const insightResults: string[] = [];
 
-  // Check Viking availability before launching parallel work (cached, cheap)
-  const vikingAvailable =
-    deps.viking && params.query.length >= 2
-      ? await deps.viking.checkAvailable()
-      : false;
+  let queryVec: Float32Array | null = null;
 
   await Promise.all([
     // FTS keyword search (synchronous SQLite, resolves immediately)
@@ -184,7 +173,7 @@ export async function handleSearch(
       }
     })(),
 
-    // Local vector search
+    // Local vector search (chunks + session-level + insights)
     (async () => {
       if (
         mode !== 'keyword' &&
@@ -197,78 +186,64 @@ export async function handleSearch(
           parentSpan: searchSpan,
         });
         try {
-          const queryVec = await deps.embed(params.query);
+          queryVec = await deps.embed(params.query);
           if (queryVec) {
             searchModes.push('semantic');
-            const vecResults = deps.vectorStore.search(queryVec, limit * 2);
-            let rank = 1;
-            for (const vr of vecResults) {
-              vecScores.set(vr.sessionId, {
-                score: rrfScore(rank),
-                distance: vr.distance,
-              });
-              rank++;
+
+            // Search chunks first (finer-grained), fall back to session-level
+            const chunkResults = deps.vectorStore.searchChunks(
+              queryVec,
+              limit * 3,
+            );
+            if (chunkResults.length > 0) {
+              // Deduplicate by session, keep best chunk per session
+              const seen = new Set<string>();
+              let rank = 1;
+              for (const cr of chunkResults) {
+                if (seen.has(cr.sessionId)) continue;
+                seen.add(cr.sessionId);
+                vecScores.set(cr.sessionId, {
+                  score: rrfScore(rank),
+                  snippet: cr.text.slice(0, 200),
+                });
+                rank++;
+              }
+            } else {
+              // Fallback: session-level vectors (legacy, pre-chunk)
+              const vecResults = deps.vectorStore.search(queryVec, limit * 2);
+              let rank = 1;
+              for (const vr of vecResults) {
+                vecScores.set(vr.sessionId, {
+                  score: rrfScore(rank),
+                  snippet: '',
+                });
+                rank++;
+              }
             }
+
+            // Also search insights
+            const insights = deps.vectorStore.searchInsights(queryVec, 5);
+            for (const ins of insights) {
+              insightResults.push(ins.content);
+            }
+
+            deps.metrics?.histogram(
+              'search.vector_ms',
+              performance.now() - vecStart,
+            );
+            vecSpan?.setAttribute('resultCount', vecScores.size);
+            vecSpan?.end();
           }
-          deps.metrics?.histogram(
-            'search.vector_ms',
-            performance.now() - vecStart,
-          );
-          vecSpan?.setAttribute('resultCount', vecScores.size);
-          vecSpan?.end();
         } catch (err) {
           vecSpan?.setError(err);
           /* intentional: vector search unavailable, fall back to FTS */
         }
       }
     })(),
-
-    // Viking semantic search (find only — grep excluded for latency)
-    (async () => {
-      if (deps.viking && vikingAvailable) {
-        const vikStart = performance.now();
-        const vikingSpan = deps.tracer?.startSpan('search.viking', 'search', {
-          parentSpan: searchSpan,
-        });
-        try {
-          const findResults = await deps.viking.find(params.query);
-          if (findResults.length > 0) searchModes.push('viking-semantic');
-          const seen = new Set<string>();
-          let rank = 1;
-          for (const vr of findResults) {
-            const sessionId = sessionIdFromVikingUri(vr.uri);
-            if (sessionId && !seen.has(sessionId)) {
-              seen.add(sessionId);
-              vikingScores.set(sessionId, {
-                score: rrfScore(rank) + VIKING_RRF_BOOST,
-                snippet: vr.snippet,
-              });
-              rank++;
-            } else if (!sessionId && vr.snippet) {
-              // Memory/skill results — standalone knowledge entries
-              vikingMemoryResults.push(vr.snippet);
-            }
-          }
-          deps.metrics?.histogram(
-            'search.viking_ms',
-            performance.now() - vikStart,
-          );
-          vikingSpan?.setAttribute('resultCount', vikingScores.size);
-          vikingSpan?.end();
-        } catch (err) {
-          vikingSpan?.setError(err);
-          /* intentional: Viking search failed, continue with FTS */
-        }
-      }
-    })(),
   ]);
 
   // --- RRF merge ---
-  const allSessionIds = new Set([
-    ...ftsScores.keys(),
-    ...vecScores.keys(),
-    ...vikingScores.keys(),
-  ]);
+  const allSessionIds = new Set([...ftsScores.keys(), ...vecScores.keys()]);
   const merged: {
     sessionId: string;
     score: number;
@@ -279,14 +254,12 @@ export async function handleSearch(
   for (const sessionId of allSessionIds) {
     const fts = ftsScores.get(sessionId);
     const vec = vecScores.get(sessionId);
-    const viking = vikingScores.get(sessionId);
-    const score = (fts?.score ?? 0) + (vec?.score ?? 0) + (viking?.score ?? 0);
-    const matchType =
-      fts && vec ? 'both' : fts ? 'keyword' : viking ? 'semantic' : 'semantic';
+    const score = (fts?.score ?? 0) + (vec?.score ?? 0);
+    const matchType = fts && vec ? 'both' : fts ? 'keyword' : 'semantic';
     merged.push({
       sessionId,
       score,
-      snippet: viking?.snippet ?? fts?.snippet ?? '',
+      snippet: vec?.snippet || fts?.snippet || '',
       matchType,
     });
   }
@@ -344,10 +317,8 @@ export async function handleSearch(
     results,
     query: params.query,
     searchModes,
-    vikingMemories:
-      vikingMemoryResults.length > 0
-        ? vikingMemoryResults.slice(0, 5)
-        : undefined,
+    insightResults:
+      insightResults.length > 0 ? insightResults.slice(0, 5) : undefined,
     warning,
   };
 }
