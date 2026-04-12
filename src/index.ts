@@ -272,7 +272,7 @@ toolRegistry.set('search', async (a) => {
 });
 
 toolRegistry.set('get_context', async (a) => {
-  const ctxDeps: GetContextDeps = { ...vectorDeps, viking: vikingBridge, log };
+  const ctxDeps: GetContextDeps = { ...vectorDeps, log };
   const ctx = await handleGetContext(
     db,
     a as {

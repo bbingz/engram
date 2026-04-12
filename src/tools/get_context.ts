@@ -4,7 +4,6 @@ import type { LiveSession } from '../core/live-sessions.js';
 import type { Logger } from '../core/logger.js';
 import type { MonitorAlert } from '../core/monitor.js';
 import type { VectorStore } from '../core/vector-store.js';
-import type { VikingBridge } from '../core/viking-bridge.js';
 import { toLocalDate } from '../utils/time.js';
 import { handleLintConfig } from './lint_config.js';
 
@@ -29,7 +28,7 @@ export const getContextTool = {
         type: 'string',
         enum: ['abstract', 'overview', 'full'],
         description:
-          '详情级别 (需要 OpenViking): abstract (~100 tokens), overview (~2K tokens), full',
+          '详情级别: abstract (~100 tokens, cost+alerts only), overview (~2K tokens), full (default)',
       },
       sort_by: {
         type: 'string',
@@ -52,7 +51,6 @@ const CHARS_PER_TOKEN = 4;
 export interface GetContextDeps {
   vectorStore?: VectorStore;
   embed?: (text: string) => Promise<Float32Array | null>;
-  viking?: VikingBridge | null;
   liveMonitor?: { getSessions(): LiveSession[] };
   backgroundMonitor?: { getAlerts(): MonitorAlert[] };
   log?: Logger;
@@ -121,63 +119,18 @@ export async function handleGetContext(
     }
   }
 
-  // Viking-enhanced: detail level controls environment section depth only (Viking memories are not tiered).
-  if (deps.viking && params.detail && (await deps.viking.checkAvailable())) {
-    let vikingContext: string[] = [];
-    if (params.task) {
-      try {
-        const vikingResults = await deps.viking.find(params.task);
-        vikingContext = vikingResults
-          .filter((r) => r.snippet)
-          .slice(0, 5)
-          .map((r) => r.snippet);
-      } catch {
-        /* fall through */
+  // Inject local insights (cross-session curated knowledge)
+  let insightLines: string[] = [];
+  if (params.task && deps.vectorStore && deps.embed) {
+    try {
+      const queryVec = await deps.embed(params.task);
+      if (queryVec) {
+        const insights = deps.vectorStore.searchInsights(queryVec, 5);
+        insightLines = insights.map((ins) => ins.content);
       }
+    } catch {
+      /* insights search failed, continue without */
     }
-
-    const targetSessions = sessions.slice(0, 5);
-    const parts: string[] = [];
-    let totalChars = 0;
-
-    if (params.task) {
-      const taskLine = `当前任务：${params.task}\n`;
-      parts.push(taskLine);
-      totalChars += taskLine.length;
-    }
-
-    // Viking memories first (cross-session extracted knowledge)
-    for (const mem of vikingContext) {
-      const line = `[memory] ${mem}\n`;
-      if (totalChars + line.length > maxChars) break;
-      parts.push(line);
-      totalChars += line.length;
-    }
-
-    // Then local session summaries
-    const selectedSessions: typeof sessions = [];
-    for (const session of targetSessions) {
-      if (!session.summary) continue;
-      const line = `[${session.source}] ${toLocalDate(session.startTime)} — ${session.summary}\n`;
-      if (totalChars + line.length > maxChars) break;
-      parts.push(line);
-      totalChars += line.length;
-      selectedSessions.push(session);
-    }
-
-    const footer = `\n— ${selectedSessions.length} sessions + ${vikingContext.length} memories (${params.detail}), ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`;
-    parts.push(footer);
-
-    const envSection =
-      params.include_environment !== false
-        ? await gatherEnvironmentData(db, deps, params, maxTokens)
-        : '';
-
-    return {
-      contextText: parts.join('') + envSection,
-      sessionCount: selectedSessions.length,
-      sessionIds: selectedSessions.map((s) => s.id),
-    };
   }
 
   const contextParts: string[] = [];
@@ -190,6 +143,14 @@ export async function handleGetContext(
     totalChars += taskLine.length;
   }
 
+  // Insights first (high-signal curated knowledge)
+  for (const mem of insightLines) {
+    const line = `[memory] ${mem}\n`;
+    if (totalChars + line.length > maxChars) break;
+    contextParts.push(line);
+    totalChars += line.length;
+  }
+
   for (const session of sessions) {
     if (!session.summary) continue;
     const line = `[${session.source}] ${toLocalDate(session.startTime)} — ${session.summary}\n`;
@@ -199,7 +160,9 @@ export async function handleGetContext(
     selectedSessions.push(session);
   }
 
-  const footer = `\n— ${selectedSessions.length} sessions, ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`;
+  const memoryNote =
+    insightLines.length > 0 ? ` + ${insightLines.length} memories` : '';
+  const footer = `\n— ${selectedSessions.length} sessions${memoryNote}, ~${Math.ceil(totalChars / CHARS_PER_TOKEN)} tokens`;
   contextParts.push(footer);
 
   const envSection =
