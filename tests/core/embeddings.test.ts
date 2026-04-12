@@ -200,14 +200,13 @@ describe('EmbeddingClient audit', () => {
       '../../src/core/embeddings.js'
     );
     const client = create({
-      ollamaUrl: 'http://localhost:99999',
+      provider: 'openai',
       openaiApiKey: 'sk-test',
       audit,
     });
     const result = await client.embed('hello');
     expect(result).toBeInstanceOf(Float32Array);
 
-    // audit.record is called twice: once for Ollama error, once for OpenAI success
     const openaiCall = audit.record.mock.calls.find(
       (c: any) => c[0].provider === 'openai',
     );

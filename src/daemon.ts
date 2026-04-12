@@ -160,8 +160,10 @@ audit.on(
 const vecDeps = initVectorDeps(db, {
   openaiApiKey: settings.openaiApiKey,
   ollamaUrl: settings.ollamaUrl,
-  ollamaModel: settings.ollamaModel,
-  embeddingDimension: settings.embeddingDimension,
+  ollamaModel: settings.embedding?.model ?? settings.ollamaModel,
+  embeddingDimension:
+    settings.embedding?.dimension ?? settings.embeddingDimension,
+  embeddingProvider: settings.embedding?.provider,
   audit,
 });
 if (!vecDeps) {

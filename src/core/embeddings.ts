@@ -226,10 +226,9 @@ export function createEmbeddingClient(
       if (provider === 'openai') {
         return embedWithOpenAI(text);
       }
-      // Default: Ollama → OpenAI fallback (same model family, safe to mix)
-      const ollamaResult = await embedWithOllama(text);
-      if (ollamaResult) return ollamaResult;
-      return embedWithOpenAI(text);
+      // Default: Ollama only — no cross-model fallback to avoid
+      // mixing incompatible embedding spaces in the same vector index
+      return embedWithOllama(text);
     },
   };
 }

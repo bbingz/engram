@@ -10,7 +10,7 @@ Engram runs as two local processes:
 
 ## Credential Storage
 
-API keys (AI provider, Viking, title generation) are stored in the **macOS Keychain** (service: `com.engram.app`). The `settings.json` file contains a `"@keychain"` sentinel — never the actual key value.
+API keys (AI provider, title generation) are stored in the **macOS Keychain** (service: `com.engram.app`). The `settings.json` file contains a `"@keychain"` sentinel — never the actual key value.
 
 Legacy plaintext keys are automatically migrated to Keychain on first launch after upgrade, with read-back verification before the plaintext value is removed.
 
@@ -29,7 +29,7 @@ When configured with `httpHost: "0.0.0.0"`:
 - Origin validation uses `URL` parsing (not prefix matching) to prevent bypass
 
 ### Content Filtering
-Before transmitting data to external services (Viking, AI providers), content is filtered:
+Before transmitting data to external AI providers, content is filtered:
 - System injections (`<INSTRUCTIONS>`, `<system-reminder>`, etc.) are stripped
 - Secrets are redacted: `PGPASSWORD`, `MYSQL_PWD`, `sk-` API keys, Bearer tokens
 - Session content is capped at 2MB with head-heavy truncation

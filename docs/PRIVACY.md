@@ -42,7 +42,6 @@ Engram never modifies your AI tool session files.
 
 By default, Engram listens on `127.0.0.1:3457` (localhost only). No external network connections are made unless you explicitly configure:
 
-- **OpenViking** (optional): Pushes session summaries to your self-hosted Viking server. Content is filtered to remove tokens, API keys, and system injections before transmission.
 - **Peer Sync** (optional): Pulls session metadata (not message content) from configured peer Engram instances on your network.
 - **AI Summary** (optional): Sends session excerpts to your configured AI provider (OpenAI/Anthropic/Gemini/Ollama) for summary generation.
 
@@ -55,7 +54,7 @@ If you configure `httpHost: "0.0.0.0"` to expose the API beyond localhost:
 
 ## Third-party Services
 
-Engram does not integrate with any advertising, analytics, or tracking services. The only third-party network calls are those you explicitly configure (AI providers, Viking server, sync peers).
+Engram does not integrate with any advertising, analytics, or tracking services. The only third-party network calls are those you explicitly configure (AI providers, sync peers).
 
 ## Data Deletion
 
@@ -64,5 +63,4 @@ To remove all Engram data:
 rm -rf ~/.engram/
 security delete-generic-password -s "com.engram.app" -a "aiApiKey" 2>/dev/null
 security delete-generic-password -s "com.engram.app" -a "titleApiKey" 2>/dev/null
-security delete-generic-password -s "com.engram.app" -a "vikingApiKey" 2>/dev/null
 ```

@@ -71,6 +71,7 @@ export interface VectorDepsOptions {
   ollamaUrl?: string;
   ollamaModel?: string;
   embeddingDimension?: number;
+  embeddingProvider?: 'ollama' | 'openai' | 'transformers';
   audit?: AiAuditWriter;
 }
 
@@ -82,6 +83,7 @@ export function initVectorDeps(
     const dimension = opts.embeddingDimension ?? 768;
     const vectorStore = new SqliteVecStore(db.getRawDb(), dimension);
     const embeddingClient = createEmbeddingClient({
+      provider: opts.embeddingProvider,
       ollamaUrl: opts.ollamaUrl,
       ollamaModel: opts.ollamaModel,
       openaiApiKey: opts.openaiApiKey,

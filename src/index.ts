@@ -47,6 +47,7 @@ import {
   handleProjectTimeline,
   projectTimelineTool,
 } from './tools/project_timeline.js';
+import { handleSaveInsight, saveInsightTool } from './tools/save_insight.js';
 import { handleSearch, type SearchDeps, searchTool } from './tools/search.js';
 import { handleStats, statsTool } from './tools/stats.js';
 import {
@@ -79,8 +80,10 @@ const indexer = new Indexer(db, adapters, {
 const vecDeps = initVectorDeps(db, {
   openaiApiKey: fileSettings.openaiApiKey,
   ollamaUrl: fileSettings.ollamaUrl,
-  ollamaModel: fileSettings.ollamaModel,
-  embeddingDimension: fileSettings.embeddingDimension,
+  ollamaModel: fileSettings.embedding?.model ?? fileSettings.ollamaModel,
+  embeddingDimension:
+    fileSettings.embedding?.dimension ?? fileSettings.embeddingDimension,
+  embeddingProvider: fileSettings.embedding?.provider,
   audit,
 });
 const vectorDeps: GetContextDeps = vecDeps
@@ -133,6 +136,7 @@ const allTools = [
   manageProjectAliasTool,
   linkSessionsTool,
   getMemoryTool,
+  saveInsightTool,
   getCostsTool,
   toolAnalyticsTool,
   handoffTool,
@@ -346,6 +350,17 @@ toolRegistry.set('get_memory', async (a) =>
     embedder: vecDeps?.embeddingClient ?? null,
     log,
   }),
+);
+
+toolRegistry.set('save_insight', async (a) =>
+  handleSaveInsight(
+    a as { content: string; wing?: string; room?: string; importance?: number },
+    {
+      vecStore: vecDeps?.vectorStore,
+      embedder: vecDeps?.embeddingClient ?? null,
+      log,
+    },
+  ),
 );
 
 toolRegistry.set('handoff', async (a) =>
