@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { type Chunk, chunkMessages } from './chunker.js';
 import type { Database } from './db.js';
 import type { EmbeddingClient } from './embeddings.js';
 import type { PersistedIndexJob } from './session-snapshot.js';
@@ -99,13 +101,58 @@ export class IndexJobRunner {
       }
       const embedding = await this.client.embed(text);
       if (!embedding) throw new Error('embedding unavailable');
+      // Session-level embedding (legacy, kept for fast session ranking)
       this.store.upsert(job.sessionId, embedding, this.client.model);
+
+      // Chunk-level embeddings (fine-grained retrieval)
+      await this.indexChunks(job.sessionId, text);
+
       this.db.markIndexJobCompleted(job.id);
     } catch (err) {
       this.db.markIndexJobRetryableFailure(
         job.id,
         err instanceof Error ? err.message : String(err),
       );
+    }
+  }
+
+  private async indexChunks(sessionId: string, ftsText: string): Promise<void> {
+    if (!this.store || !this.client) return;
+
+    // Build pseudo-messages from FTS text lines for chunking
+    const lines = ftsText.split('\n').filter(Boolean);
+    const messages = lines.map((line) => ({
+      role: 'assistant' as const,
+      content: line,
+    }));
+
+    const chunks = chunkMessages(sessionId, messages);
+    if (chunks.length === 0) return;
+
+    // Embed each chunk
+    const embeddings: Float32Array[] = [];
+    const validChunks: {
+      chunkId: string;
+      sessionId: string;
+      chunkIndex: number;
+      text: string;
+    }[] = [];
+
+    for (const chunk of chunks) {
+      const emb = await this.client.embed(chunk.text);
+      if (emb) {
+        embeddings.push(emb);
+        validChunks.push({
+          chunkId: `${sessionId}-c${chunk.chunkIndex}-${randomUUID().slice(0, 8)}`,
+          sessionId: chunk.sessionId,
+          chunkIndex: chunk.chunkIndex,
+          text: chunk.text,
+        });
+      }
+    }
+
+    if (validChunks.length > 0) {
+      this.store.upsertChunks(validChunks, embeddings, this.client.model);
     }
   }
 }
