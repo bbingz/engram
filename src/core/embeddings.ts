@@ -70,10 +70,16 @@ export function createEmbeddingClient(
                 durationMs: Date.now() - start,
                 meta: { dimension },
               });
-              // Truncate or use as-is to match configured dimension
-              return new Float32Array(
-                raw.length > dimension ? raw.slice(0, dimension) : raw,
-              );
+              // Truncate and L2-normalize to match configured dimension
+              const vec =
+                raw.length > dimension ? raw.slice(0, dimension) : raw;
+              const arr = new Float32Array(vec);
+              if (raw.length > dimension) {
+                const norm = Math.sqrt(arr.reduce((sum, v) => sum + v * v, 0));
+                if (norm > 0)
+                  for (let i = 0; i < arr.length; i++) arr[i] /= norm;
+              }
+              return arr;
             }
           } else {
             audit?.record({

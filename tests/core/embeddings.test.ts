@@ -27,6 +27,61 @@ describe('EmbeddingClient', () => {
   });
 });
 
+describe('L2 normalization after truncation', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('L2-normalizes vectors when truncating to smaller dimension', async () => {
+    // Simulate Ollama returning 1024-dim vector, truncated to 768
+    const raw1024 = Array.from({ length: 1024 }, (_, i) => Math.sin(i));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ embeddings: [raw1024], prompt_eval_count: 5 }),
+      }),
+    );
+
+    const client = createEmbeddingClient({
+      ollamaUrl: 'http://localhost:11434',
+      dimension: 768,
+    });
+    const result = await client.embed('test');
+    expect(result).toBeInstanceOf(Float32Array);
+    expect(result!.length).toBe(768);
+
+    // Verify L2 norm ≈ 1.0
+    const norm = Math.sqrt(result!.reduce((sum, v) => sum + v * v, 0));
+    expect(norm).toBeCloseTo(1.0, 4);
+  });
+
+  it('does not re-normalize when dimensions already match', async () => {
+    const raw768 = Array.from({ length: 768 }, (_, i) => Math.sin(i) * 0.5);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ embeddings: [raw768], prompt_eval_count: 5 }),
+      }),
+    );
+
+    const client = createEmbeddingClient({
+      ollamaUrl: 'http://localhost:11434',
+      dimension: 768,
+    });
+    const result = await client.embed('test');
+    expect(result).toBeInstanceOf(Float32Array);
+    expect(result!.length).toBe(768);
+
+    // Values should be unchanged (not normalized)
+    expect(result![0]).toBeCloseTo(raw768[0], 5);
+    expect(result![1]).toBeCloseTo(raw768[1], 5);
+  });
+});
+
 describe('EmbeddingClient audit', () => {
   function makeAudit() {
     return {
