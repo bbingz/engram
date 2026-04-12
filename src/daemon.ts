@@ -16,7 +16,6 @@ import {
   createAdapters,
   ensureDataDirs,
   initVectorDeps,
-  initViking,
 } from './core/bootstrap.js';
 import {
   DEFAULT_AI_AUDIT_CONFIG,
@@ -106,9 +105,6 @@ const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({
   source,
 }));
 
-// Viking bridge — optional external context engine
-const vikingBridge = initViking(settings, { audit, log, metrics, tracer });
-
 const usageCollector = new UsageCollector(db.getRawDb(), (event, data) =>
   emit({
     event,
@@ -128,8 +124,6 @@ const titleConfig = {
 const titleGenerator = new TitleGenerator({ ...titleConfig, audit });
 
 const indexer = new Indexer(db, adapters, {
-  viking: vikingBridge,
-  vikingAutoPush: settings.viking?.autoPush ?? false,
   authoritativeNode,
   titleGenerator,
   log,
@@ -162,18 +156,6 @@ audit.on(
     });
   },
 );
-
-if (vikingBridge) {
-  vikingBridge
-    .isAvailable()
-    .then((available) => {
-      emit({ event: 'viking_status', available });
-    })
-    .catch((err) => {
-      log.warn('viking availability check failed', {}, err);
-      emit({ event: 'viking_status', available: false });
-    });
-}
 
 const vecDeps = initVectorDeps(db, {
   openaiApiKey: settings.openaiApiKey,
@@ -479,7 +461,6 @@ const app = createApp(db, {
   syncPeers,
   settings,
   adapters,
-  viking: vikingBridge,
   usageCollector,
   titleGenerator,
   liveMonitor,

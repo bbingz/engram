@@ -18,8 +18,6 @@ import { computeTier, type SessionTier } from './session-tier.js';
 import { SessionSnapshotWriter } from './session-writer.js';
 import type { TitleGenerator } from './title-generator.js';
 import type { Tracer } from './tracer.js';
-import { toVikingSessionId, type VikingBridge } from './viking-bridge.js';
-import { filterForViking } from './viking-filter.js';
 
 export class Indexer {
   private writer: SessionSnapshotWriter;
@@ -31,8 +29,6 @@ export class Indexer {
     private db: Database,
     private adapters: SessionAdapter[],
     private opts?: {
-      viking?: VikingBridge | null;
-      vikingAutoPush?: boolean;
       authoritativeNode?: string;
       writer?: SessionSnapshotWriter;
       titleGenerator?: TitleGenerator;
@@ -45,61 +41,6 @@ export class Indexer {
     this.log = opts?.log;
     this.tracer = opts?.tracer;
     this.metrics = opts?.metrics;
-  }
-
-  /** Cooldown: don't re-push a session if pushed within this window */
-  private static readonly VIKING_PUSH_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
-
-  private async pushToViking(
-    info: SessionInfo,
-    messages: { role: string; content: string }[],
-  ): Promise<void> {
-    if (
-      !this.opts?.viking ||
-      !this.opts.vikingAutoPush ||
-      messages.length === 0
-    )
-      return;
-
-    // Skip if already pushed with same message count, or pushed recently (cooldown)
-    try {
-      const row = this.db
-        .getRawDb()
-        .prepare(
-          'SELECT viking_pushed_at, viking_pushed_msg_count FROM sessions WHERE id = ?',
-        )
-        .get(info.id) as
-        | {
-            viking_pushed_at: string | null;
-            viking_pushed_msg_count: number | null;
-          }
-        | undefined;
-      // No new messages since last push
-      if (
-        row?.viking_pushed_msg_count != null &&
-        row.viking_pushed_msg_count >= messages.length
-      )
-        return;
-      // Cooldown: avoid re-pushing active sessions on every watcher event
-      if (row?.viking_pushed_at) {
-        const pushedAt = new Date(`${row.viking_pushed_at}Z`).getTime();
-        if (Date.now() - pushedAt < Indexer.VIKING_PUSH_COOLDOWN_MS) return;
-      }
-    } catch {
-      /* column may not exist yet */
-    }
-
-    try {
-      const ok = await this.opts.viking.checkAvailable();
-      if (!ok) return;
-      const filtered = filterForViking(messages);
-      if (filtered.length === 0) return;
-      const sessionId = toVikingSessionId(info.source, info.project, info.id);
-      await this.opts.viking.pushSession(sessionId, filtered);
-      this.db.markVikingPushed(info.id, messages.length);
-    } catch (err) {
-      this.log?.warn('viking push failed', { sessionId: info.id }, err);
-    }
   }
 
   private async generateTitleIfNeeded(
@@ -411,10 +352,6 @@ export class Indexer {
                   acc.fileCounts,
                 );
 
-                if (snapshot.tier === 'premium') {
-                  await this.pushToViking(info, messages);
-                }
-
                 if (snapshot.tier) {
                   await this.generateTitleIfNeeded(
                     info.id,
@@ -634,10 +571,6 @@ export class Indexer {
         acc.toolCounts,
         acc.fileCounts,
       );
-
-      if (snapshot.tier === 'premium') {
-        await this.pushToViking(info, messages);
-      }
 
       if (snapshot.tier) {
         await this.generateTitleIfNeeded(info.id, snapshot.tier, messages);

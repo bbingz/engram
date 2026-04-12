@@ -13,7 +13,6 @@ import {
   createAdapters,
   ensureDataDirs,
   initVectorDeps,
-  initViking,
 } from './core/bootstrap.js';
 import { DEFAULT_AI_AUDIT_CONFIG, readFileSettings } from './core/config.js';
 import { Database } from './core/db.js';
@@ -64,19 +63,15 @@ const tracer = new Tracer(traceWriter);
 const adapters = createAdapters();
 const adapterMap = Object.fromEntries(adapters.map((a) => [a.name, a]));
 
-// Settings + Viking bridge — must come before indexer so it can dual-write
 const fileSettings = readFileSettings();
 const auditConfig = { ...DEFAULT_AI_AUDIT_CONFIG, ...fileSettings.aiAudit };
 const audit = new AiAuditWriter(db.getRawDb(), auditConfig);
-const vikingBridge = initViking(fileSettings, { audit });
 const authoritativeNode = fileSettings.syncNodeName || 'local';
 
 // Apply tier-based noise filter
 db.noiseFilter = fileSettings.noiseFilter ?? 'hide-skip';
 
 const indexer = new Indexer(db, adapters, {
-  viking: vikingBridge,
-  vikingAutoPush: fileSettings.viking?.autoPush ?? false,
   authoritativeNode,
 });
 
@@ -278,7 +273,6 @@ toolRegistry.set('search', async (a) => {
           embed: (text: string) => vecDeps.embeddingClient.embed(text),
         }
       : {}),
-    viking: vikingBridge,
     log,
     tracer,
   };

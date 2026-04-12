@@ -190,11 +190,11 @@ export class Database {
           'ALTER TABLE sessions ADD COLUMN quality_score INTEGER DEFAULT 0',
         );
       }
-      if (!colNames.has('viking_pushed_at')) {
-        this.db.exec('ALTER TABLE sessions ADD COLUMN viking_pushed_at TEXT');
-        this.db.exec(
-          'ALTER TABLE sessions ADD COLUMN viking_pushed_msg_count INTEGER',
-        );
+      // Drop Viking columns if they exist (removed in local-semantic-search migration)
+      if (colNames.has('viking_pushed_at')) {
+        // SQLite doesn't support DROP COLUMN before 3.35.0; re-creating the table
+        // is too risky for a migration. Just leave the columns — they're harmless
+        // and will be ignored by all queries going forward.
       }
     }
 
@@ -227,9 +227,7 @@ export class Database {
         snapshot_hash TEXT,
         tier TEXT,
         generated_title TEXT,
-        quality_score INTEGER DEFAULT 0,
-        viking_pushed_at TEXT,
-        viking_pushed_msg_count INTEGER
+        quality_score INTEGER DEFAULT 0
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -648,48 +646,6 @@ export class Database {
       .all({ ...params, limit, offset }) as Record<string, unknown>[];
 
     return rows.map((r) => this.rowToSession(r));
-  }
-
-  /** List premium-tier sessions with proper DB-level pagination (for Viking backfill) */
-  listPremiumSessions(
-    opts: { limit?: number; offset?: number; source?: string } = {},
-  ): SessionInfo[] {
-    const conditions: string[] = [
-      's.hidden_at IS NULL',
-      "s.tier = 'premium'",
-      "s.file_path != ''",
-      's.viking_pushed_at IS NULL',
-    ];
-    const params: Record<string, unknown> = {};
-    if (opts.source) {
-      conditions.push('s.source = @source');
-      params.source = opts.source;
-    }
-    const limit = opts.limit ?? 100;
-    const offset = opts.offset ?? 0;
-    const rows = this.db
-      .prepare(`
-      SELECT s.*, ls.local_readable_path
-      FROM sessions s
-      LEFT JOIN session_local_state ls ON ls.session_id = s.id
-      WHERE ${conditions.join(' AND ')}
-      ORDER BY s.start_time DESC
-      LIMIT @limit OFFSET @offset
-    `)
-      .all({ ...params, limit, offset }) as Record<string, unknown>[];
-    return rows.map((r) => this.rowToSession(r));
-  }
-
-  markVikingPushed(sessionId: string, messageCount: number): void {
-    try {
-      this.db
-        .prepare(
-          "UPDATE sessions SET viking_pushed_at = datetime('now'), viking_pushed_msg_count = ? WHERE id = ?",
-        )
-        .run(messageCount, sessionId);
-    } catch {
-      /* best-effort */
-    }
   }
 
   listSessionsSince(since: string, limit = 100): SessionInfo[] {

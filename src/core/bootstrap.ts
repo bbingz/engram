@@ -19,17 +19,12 @@ import type { SessionAdapter, SourceName } from '../adapters/types.js';
 import { VsCodeAdapter } from '../adapters/vscode.js';
 import { WindsurfAdapter } from '../adapters/windsurf.js';
 import type { AiAuditWriter } from './ai-audit.js';
-import type { FileSettings } from './config.js';
 import type { Database } from './db.js';
 import { EmbeddingIndexer } from './embedding-indexer.js';
 import type { EmbeddingClient } from './embeddings.js';
 import { createEmbeddingClient } from './embeddings.js';
-import type { Logger } from './logger.js';
-import type { MetricsCollector } from './metrics.js';
 import { migrateDataDir } from './migrate.js';
-import type { Tracer } from './tracer.js';
 import { SqliteVecStore } from './vector-store.js';
-import { VikingBridge } from './viking-bridge.js';
 
 export const ENGRAM_DIR = join(homedir(), '.engram');
 
@@ -63,31 +58,6 @@ const adapterMap = new Map(adapters.map((a) => [a.name, a]));
 
 export function getAdapter(name: string): SessionAdapter | undefined {
   return adapterMap.get(name as SourceName);
-}
-
-// --- Viking bridge factory ---
-
-export function initViking(
-  settings: FileSettings,
-  opts?: {
-    audit?: AiAuditWriter;
-    log?: Logger;
-    metrics?: MetricsCollector;
-    tracer?: Tracer;
-  },
-): VikingBridge | null {
-  if (
-    settings.viking?.enabled &&
-    settings.viking.url &&
-    settings.viking.apiKey
-  ) {
-    return new VikingBridge(settings.viking.url, settings.viking.apiKey, {
-      agentId: settings.viking.agentId,
-      maxRequestsPerHour: settings.viking.maxRequestsPerHour,
-      ...opts,
-    });
-  }
-  return null;
 }
 
 export interface VectorDeps {

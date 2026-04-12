@@ -25,18 +25,6 @@ export interface SummaryConfig {
   truncateChars: number;
 }
 
-export interface VikingSettings {
-  url?: string;
-  apiKey?: string;
-  agentId?: string;
-  enabled?: boolean;
-  /** Auto-push premium sessions to Viking during indexing. Default: false.
-   *  When false, Viking is available for search/backfill but won't auto-push. */
-  autoPush?: boolean;
-  /** Max API requests per hour. Hard cap — exceeding silently skips pushes. Default: 1000. */
-  maxRequestsPerHour?: number;
-}
-
 export interface AiAuditConfig {
   enabled: boolean;
   retentionDays: number;
@@ -123,9 +111,6 @@ export interface FileSettings {
   hideUsageSessions?: boolean; // hide /usage check sessions (default: true)
   hideEmptySessions?: boolean; // hide summary < 10 chars && <= 3 messages (default: true)
   hideAutoSummary?: boolean; // hide auto-summary prompt leaks (default: true)
-
-  // ── OpenViking ──────────────────────────────────────────────────
-  viking?: VikingSettings;
 
   // ── Cost budget alerts ───────────────────────────────────────────
   costAlerts?: { dailyBudget?: number; monthlyBudget?: number };
@@ -309,17 +294,6 @@ export function readFileSettings(): FileSettings {
         delete migrated.titleApiKey;
       } else {
         migrated.titleApiKey = kc;
-      }
-    }
-    if (migrated.viking?.apiKey === '@keychain') {
-      const kc = readKeychainValue('vikingApiKey');
-      if (kc) {
-        migrated.viking!.apiKey = kc;
-      } else {
-        process.stderr.write(
-          '[engram] WARNING: viking.apiKey set to @keychain but Keychain entry missing — Viking will not authenticate\n',
-        );
-        delete migrated.viking?.apiKey;
       }
     }
     return migrated;

@@ -38,8 +38,8 @@ describe('AI Audit API', () => {
         model: 'qwen2.5:3b',
       });
       writer.record({
-        caller: 'viking',
-        operation: 'pushSession',
+        caller: 'summary',
+        operation: 'summarize',
         durationMs: 200,
       });
 
@@ -58,8 +58,8 @@ describe('AI Audit API', () => {
         durationMs: 100,
       });
       writer.record({
-        caller: 'viking',
-        operation: 'pushSession',
+        caller: 'summary',
+        operation: 'summarize',
         durationMs: 200,
       });
 
@@ -164,8 +164,8 @@ describe('AI Audit API', () => {
         completionTokens: 80,
       });
       writer.record({
-        caller: 'viking',
-        operation: 'pushSession',
+        caller: 'summary',
+        operation: 'summarize',
         durationMs: 200,
       });
 
@@ -179,40 +179,6 @@ describe('AI Audit API', () => {
       expect(body).toHaveProperty('byModel');
       expect(body).toHaveProperty('hourly');
       expect(body.totals.requests).toBe(2);
-    });
-  });
-
-  describe('Viking Observer Proxy', () => {
-    it('GET /api/viking/observer returns 501 when Viking not configured', async () => {
-      const app = createApp(db);
-      const res = await app.request('/api/viking/observer');
-      expect(res.status).toBe(501);
-      const body = await res.json();
-      expect(body.error).toBe('Viking not configured');
-    });
-
-    it('GET /api/viking/observer/queue returns 501 when Viking not configured', async () => {
-      const app = createApp(db);
-      const res = await app.request('/api/viking/observer/queue');
-      expect(res.status).toBe(501);
-    });
-
-    it('GET /api/viking/observer/vlm returns 501 when Viking not configured', async () => {
-      const app = createApp(db);
-      const res = await app.request('/api/viking/observer/vlm');
-      expect(res.status).toBe(501);
-    });
-
-    it('GET /api/viking/observer/vikingdb returns 501 when Viking not configured', async () => {
-      const app = createApp(db);
-      const res = await app.request('/api/viking/observer/vikingdb');
-      expect(res.status).toBe(501);
-    });
-
-    it('GET /api/viking/observer/transaction returns 501 when Viking not configured', async () => {
-      const app = createApp(db);
-      const res = await app.request('/api/viking/observer/transaction');
-      expect(res.status).toBe(501);
     });
   });
 });

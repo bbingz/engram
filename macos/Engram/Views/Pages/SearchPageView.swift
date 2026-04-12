@@ -94,7 +94,7 @@ struct SearchPageView: View {
                     EmptyState(icon: "magnifyingglass", title: "No results", message: "Try a different search term or mode")
                         .accessibilityIdentifier("search_emptyState")
                 } else if results.isEmpty && query.isEmpty {
-                    EmptyState(icon: "magnifyingglass", title: "Search sessions", message: "Hybrid search combines keyword (FTS), semantic (embeddings), and Viking")
+                    EmptyState(icon: "magnifyingglass", title: "Search sessions", message: "Hybrid search combines keyword (FTS) and semantic (embeddings)")
                         .accessibilityIdentifier("search_emptyState")
                 } else {
                     Text("\(results.count) results")

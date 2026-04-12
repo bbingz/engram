@@ -6,12 +6,10 @@ import type { Logger } from '../core/logger.js';
 import type { MetricsCollector } from '../core/metrics.js';
 import type { Tracer } from '../core/tracer.js';
 import type { VectorStore } from '../core/vector-store.js';
-import type { VikingBridge } from '../core/viking-bridge.js';
 
 export interface SearchDeps {
   vectorStore?: VectorStore;
   embed?: (text: string) => Promise<Float32Array | null>;
-  viking?: VikingBridge | null;
   log?: Logger;
   metrics?: MetricsCollector;
   tracer?: Tracer;

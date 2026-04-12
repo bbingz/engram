@@ -49,21 +49,18 @@ final class SettingsTests: XCTestCase {
         ScreenshotCapture.capture(name: "settings_general", app: app, screen: "settings", test: #function)
     }
 
-    func testOpenVikingConfig() {
+    func testNetworkSettings() {
         openSettings()
 
         let settings = SettingsScreen(app: app)
         settings.waitForLoad()
 
-        // Verify all settings sections are present in the view hierarchy.
-        // The network section containing OpenViking config may be below the fold;
+        // Verify network settings section is present in the view hierarchy.
         // SwiftUI ScrollView inside NavigationSplitView doesn't respond to XCUITest
         // scroll events on macOS, so we verify existence without requiring hittability.
         let networkSection = settings.networkSection
         XCTAssertTrue(networkSection.waitForExistence(timeout: 3),
                       "Network settings section should exist")
-
-        // Network section already verified above; just capture the screenshot
 
         ScreenshotCapture.capture(name: "settings_network", app: app, screen: "settings", test: #function)
     }

@@ -25,8 +25,6 @@ import type { Tracer } from './core/tracer.js';
 import { withSpan } from './core/tracer.js';
 import type { UsageCollector } from './core/usage-collector.js';
 import type { VectorStore } from './core/vector-store.js';
-import { toVikingSessionId, type VikingBridge } from './core/viking-bridge.js';
-import { filterForViking } from './core/viking-filter.js';
 import { WATCHED_SOURCES } from './core/watcher.js';
 import { handleGetCosts } from './tools/get_costs.js';
 import { handleHandoff } from './tools/handoff.js';
@@ -96,7 +94,6 @@ export function createApp(
     syncPeers?: SyncPeer[];
     settings?: FileSettings;
     adapters?: SessionAdapter[];
-    viking?: VikingBridge | null;
     usageCollector?: UsageCollector;
     titleGenerator?: TitleGenerator;
     liveMonitor?: LiveSessionMonitor;
@@ -290,28 +287,6 @@ export function createApp(
     );
   });
 
-  // --- Viking Observer Proxy ---
-  app.get('/api/viking/observer', async (c) => {
-    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501);
-    return c.json(await opts.viking.observerSystem());
-  });
-  app.get('/api/viking/observer/queue', async (c) => {
-    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501);
-    return c.json(await opts.viking.observerQueue());
-  });
-  app.get('/api/viking/observer/vlm', async (c) => {
-    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501);
-    return c.json(await opts.viking.observerVlm());
-  });
-  app.get('/api/viking/observer/vikingdb', async (c) => {
-    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501);
-    return c.json(await opts.viking.observerVikingdb());
-  });
-  app.get('/api/viking/observer/transaction', async (c) => {
-    if (!opts?.viking) return c.json({ error: 'Viking not configured' }, 501);
-    return c.json(await opts.viking.observerTransaction());
-  });
-
   app.get('/api/sync/status', (c) => {
     return c.json({
       nodeName: settings.syncNodeName ?? 'unnamed',
@@ -369,9 +344,6 @@ export function createApp(
     const projects = db.listProjects();
     const embeddedCount = opts?.vectorStore?.count() ?? 0;
     const embeddingAvailable = !!(opts?.vectorStore && opts?.embeddingClient);
-    const vikingAvailable = opts?.viking
-      ? await opts.viking.checkAvailable()
-      : false;
     return c.json({
       totalSessions,
       sourceCount: sources.length,
@@ -380,7 +352,6 @@ export function createApp(
       projects,
       embeddingAvailable,
       embeddedCount,
-      vikingAvailable,
     });
   });
 
@@ -554,7 +525,7 @@ export function createApp(
     });
   });
 
-  // Hybrid search (FTS + semantic + Viking)
+  // Hybrid search (FTS + semantic)
   const searchDeps: SearchDeps = {
     ...(opts?.vectorStore && opts?.embeddingClient
       ? {
@@ -562,7 +533,6 @@ export function createApp(
           embed: (text: string) => opts!.embeddingClient!.embed(text),
         }
       : {}),
-    viking: opts?.viking ?? null,
     metrics: opts?.metrics,
   };
 
@@ -847,111 +817,6 @@ export function createApp(
     }
   });
 
-  // --- Viking backfill: push premium sessions to OpenViking via Sessions API ---
-  app.post('/api/viking/backfill', async (c) => {
-    if (!opts?.viking || !opts?.adapters) {
-      return c.json({ error: 'Viking not configured or no adapters' }, 501);
-    }
-    const viking = opts.viking;
-    const adapters = opts.adapters;
-    const available = await viking.checkAvailable();
-    if (!available) {
-      return c.json({ error: 'Viking server unreachable' }, 503);
-    }
-
-    const limit = parseInt(c.req.query('limit') ?? '100', 10);
-    const offset = parseInt(c.req.query('offset') ?? '0', 10);
-    const concurrency = Math.min(
-      parseInt(c.req.query('concurrency') ?? '3', 10),
-      10,
-    );
-    const source = c.req.query('source');
-    const sessions = db.listPremiumSessions({
-      source: source || undefined,
-      limit,
-      offset,
-    });
-
-    let pushed = 0;
-    let skipped = 0;
-    const failures: { id: string; error: string }[] = [];
-
-    const pushOne = async (session: (typeof sessions)[0]) => {
-      const adapter = adapters.find((a) => a.name === session.source);
-      if (!adapter) return;
-
-      const messages: { role: string; content: string }[] = [];
-      for await (const msg of adapter.streamMessages(session.filePath)) {
-        if (
-          (msg.role === 'user' || msg.role === 'assistant') &&
-          msg.content.trim()
-        ) {
-          messages.push({ role: msg.role, content: msg.content });
-        }
-      }
-      if (messages.length === 0) return;
-
-      const filtered = filterForViking(messages);
-      if (filtered.length === 0) {
-        skipped++;
-        return;
-      }
-
-      const sessionId = toVikingSessionId(
-        session.source,
-        session.project,
-        session.id,
-      );
-      await viking.pushSession(sessionId, filtered);
-      db.markVikingPushed(session.id, messages.length);
-      pushed++;
-    };
-
-    // Bounded concurrency: process up to N sessions in parallel
-    const queue = [...sessions];
-    const workers = Array.from({ length: concurrency }, async () => {
-      while (queue.length > 0) {
-        const session = queue.shift()!;
-        try {
-          await pushOne(session);
-        } catch (err) {
-          failures.push({
-            id: session.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-    });
-    await Promise.all(workers);
-
-    return c.json({
-      pushed,
-      skipped,
-      errors: failures.length,
-      failures: failures.slice(0, 10),
-      total: sessions.length,
-      offset,
-      limit,
-      concurrency,
-    });
-  });
-
-  // --- Viking cleanup: delete old resources data ---
-  app.post('/api/viking/cleanup', async (c) => {
-    if (!opts?.viking) {
-      return c.json({ error: 'Viking not configured' }, 501);
-    }
-    try {
-      await opts.viking.deleteResources();
-      return c.json({ status: 'ok', message: 'Resources data deleted' });
-    } catch (err) {
-      return c.json(
-        { error: err instanceof Error ? err.message : String(err) },
-        500,
-      );
-    }
-  });
-
   // --- Title generation ---
   app.post('/api/session/:id/generate-title', async (c) => {
     if (!opts?.titleGenerator)
@@ -1117,23 +982,6 @@ export function createApp(
       };
     });
 
-    // Viking status (if configured) — uses VikingBridge observer methods
-    let viking: Record<string, unknown> | null = null;
-    if (opts?.viking) {
-      try {
-        const available = await opts.viking.checkAvailable();
-        if (available) {
-          const queueData = await opts.viking.observerQueue();
-          const vlmData = await opts.viking.observerVlm();
-          viking = { available: true, queue: queueData, vlm: vlmData };
-        } else {
-          viking = { available: false };
-        }
-      } catch {
-        viking = { available: false };
-      }
-    }
-
     const now = Date.now();
     const oneDayMs = 24 * 60 * 60 * 1000;
     const activeSources = sourceStats.filter((s) => {
@@ -1143,7 +991,6 @@ export function createApp(
 
     return {
       sources,
-      viking,
       summary: {
         totalSources: sourceStats.length,
         activeSources,

@@ -88,17 +88,6 @@ func migrateKeysToKeychainIfNeeded() {
         mutable[entry.jsonKey] = "@keychain"
         needsSave = true
     }
-    // Viking API key is nested
-    if var viking = mutable["viking"] as? [String: Any],
-       let vKey = viking["apiKey"] as? String, !vKey.isEmpty, vKey != "@keychain" {
-        if KeychainHelper.get("vikingApiKey") == nil {
-            KeychainHelper.set("vikingApiKey", value: vKey)
-            guard KeychainHelper.get("vikingApiKey") == vKey else { return }
-        }
-        viking["apiKey"] = "@keychain"
-        mutable["viking"] = viking
-        needsSave = true
-    }
     if needsSave {
         if let data = try? JSONSerialization.data(withJSONObject: mutable, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: engramSettingsPath)

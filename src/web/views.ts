@@ -1170,60 +1170,8 @@ function formatLocalTime(ts: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Add thousand separators to numbers in a string: "1234567" → "1,234,567" */
-function formatNumbersInString(s: string): string {
-  return s.replace(/\b(\d{4,})\b/g, (_, n) =>
-    Number(n).toLocaleString('en-US'),
-  );
-}
-
-/** Convert ASCII table (with +---+ borders and | cols |) to HTML table */
-function formatAsciiTable(ascii: string): string {
-  if (!ascii?.includes('|'))
-    return ascii
-      ? `<pre style="font-size:12px;">${escapeHtml(ascii)}</pre>`
-      : '';
-  const lines = ascii.split('\n').filter((l) => l.trim());
-  const dataLines = lines.filter(
-    (l) => l.includes('|') && !l.match(/^[+\-|]+$/),
-  );
-  if (dataLines.length === 0) return '';
-
-  const parseRow = (line: string) =>
-    line
-      .split('|')
-      .slice(1, -1)
-      .map((c) => c.trim());
-  const headers = parseRow(dataLines[0]);
-  const bodyRows = dataLines.slice(1);
-
-  const ths = headers
-    .map(
-      (h) =>
-        `<th style="padding:6px 12px;text-align:left;border-bottom:1px solid #333;">${escapeHtml(h)}</th>`,
-    )
-    .join('');
-  const trs = bodyRows
-    .map((line) => {
-      const cells = parseRow(line);
-      const tds = cells
-        .map((c) => {
-          // Convert ISO timestamps to local time
-          const formatted = /^\d{4}-\d{2}-\d{2}T/.test(c.trim())
-            ? formatLocalTime(c.trim())
-            : formatNumbersInString(c);
-          return `<td style="padding:4px 12px;font-size:12px;">${escapeHtml(formatted)}</td>`;
-        })
-        .join('');
-      return `<tr>${tds}</tr>`;
-    })
-    .join('\n');
-
-  return `<table style="width:100%;border-collapse:collapse;margin:10px 0;"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
-}
-
 export function healthPage(data: any): string {
-  const { sources, viking, summary } = data;
+  const { sources, summary } = data;
 
   const rows = sources
     .map((s: any) => {
@@ -1266,15 +1214,6 @@ export function healthPage(data: any): string {
     })
     .join('\n');
 
-  const vikingSection = viking
-    ? `
-    <h3>OpenViking</h3>
-    <p>${viking.available ? '&#x1F7E2; Connected' : '&#x1F534; Unreachable'}</p>
-    ${viking.queue ? formatAsciiTable(typeof viking.queue === 'string' ? viking.queue : '') : ''}
-    ${viking.vlm ? formatAsciiTable(typeof viking.vlm === 'string' ? viking.vlm : '') : ''}
-  `
-    : '<h3>OpenViking</h3><p>&#x26AA; Not configured</p>';
-
   const lastIndexedStr = summary.lastIndexed
     ? formatLocalTime(summary.lastIndexed)
     : 'never';
@@ -1293,8 +1232,6 @@ export function healthPage(data: any): string {
       </thead>
       <tbody>${rows}</tbody>
     </table>
-
-    ${vikingSection}
   `,
     '/health',
   );
