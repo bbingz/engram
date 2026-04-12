@@ -1,10 +1,11 @@
+import type { EmbeddingClient } from '../core/embeddings.js';
 import type { Logger } from '../core/logger.js';
-import type { VikingBridge, VikingMemory } from '../core/viking-bridge.js';
+import type { InsightSearchResult, VectorStore } from '../core/vector-store.js';
 
 export const getMemoryTool = {
   name: 'get_memory',
   description:
-    'Retrieve memories extracted from past sessions. Requires OpenViking.',
+    'Retrieve curated insights and memories from past sessions. Use save_insight to add new memories.',
   inputSchema: {
     type: 'object' as const,
     required: ['query'],
@@ -18,23 +19,61 @@ export const getMemoryTool = {
   },
 };
 
+export interface MemoryInsight {
+  id: string;
+  content: string;
+  wing: string | null;
+  room: string | null;
+  importance: number;
+  distance: number;
+}
+
 export interface GetMemoryDeps {
-  viking?: VikingBridge | null;
+  vecStore?: VectorStore | null;
+  embedder?: EmbeddingClient | null;
   log?: Logger;
 }
 
 export async function handleGetMemory(
   params: { query: string },
   deps: GetMemoryDeps = {},
-): Promise<{ memories: VikingMemory[]; message?: string }> {
+): Promise<{ memories: MemoryInsight[]; message?: string }> {
   deps.log?.info('get_memory invoked', { query: params.query.slice(0, 100) });
-  if (!deps.viking || !(await deps.viking.checkAvailable())) {
+
+  if (!deps.vecStore || !deps.embedder) {
     return {
       memories: [],
       message:
-        'Memory features require OpenViking. See docs for setup: configure viking.url and viking.apiKey in ~/.engram/settings.json',
+        'Memory features require embedding support. Configure an embedding provider in ~/.engram/settings.json. Use save_insight to add memories.',
     };
   }
-  const memories = await deps.viking.findMemories(params.query);
-  return { memories };
+
+  const embedding = await deps.embedder.embed(params.query);
+  if (!embedding) {
+    return {
+      memories: [],
+      message:
+        'Failed to generate query embedding. Check embedding provider configuration.',
+    };
+  }
+
+  const results = deps.vecStore.searchInsights(embedding, 10);
+  if (results.length === 0) {
+    return {
+      memories: [],
+      message:
+        'No memories found. Use save_insight to add knowledge that persists across sessions.',
+    };
+  }
+
+  return {
+    memories: results.map((r: InsightSearchResult) => ({
+      id: r.id,
+      content: r.content,
+      wing: r.wing,
+      room: r.room,
+      importance: r.importance,
+      distance: r.distance,
+    })),
+  };
 }

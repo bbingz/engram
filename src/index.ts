@@ -333,7 +333,11 @@ toolRegistry.set('manage_project_alias', async (a) => {
 });
 
 toolRegistry.set('get_memory', async (a) =>
-  handleGetMemory(a as { query: string }, { viking: vikingBridge, log }),
+  handleGetMemory(a as { query: string }, {
+    vecStore: vecDeps?.vectorStore,
+    embedder: vecDeps?.embeddingClient ?? null,
+    log,
+  }),
 );
 
 toolRegistry.set('handoff', async (a) =>
