@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-04-13-review-shortcomings-design.md` (v3)
 
+**Plan reviewed by:** Codex + Gemini (round 1 found 6 BLOCKERs, all fixed in this version)
+
 ---
 
 ## Phase 1: Dead Code Cleanup + Type Safety
@@ -288,11 +290,13 @@ git commit -m "chore: temporarily lower coverage thresholds (will restore in Pha
 
 ## Phase 2: db.ts Module Split
 
-### Task 6: Create db/ directory with types.ts and migration.ts
+### Task 6: Atomic db.ts split — all modules + facade + shim in one task
+
+**IMPORTANT**: Tasks 6-9 from plan v1 are merged into a single atomic task. Creating modules one-by-one would break the build between steps because db.ts callers wouldn't find extracted methods until the facade is complete.
 
 **Files:**
-- Create: `src/core/db/types.ts`
-- Create: `src/core/db/migration.ts`
+- Create: `src/core/db/types.ts`, `src/core/db/migration.ts`, `src/core/db/session-repo.ts`, `src/core/db/fts-repo.ts`, `src/core/db/metrics-repo.ts`, `src/core/db/index-job-repo.ts`, `src/core/db/sync-repo.ts`, `src/core/db/maintenance.ts`, `src/core/db/alias-repo.ts`, `src/core/db/database.ts`
+- Modify: `src/core/db.ts` → replace with ~30-line shim
 
 - [ ] **Step 1: Create `src/core/db/types.ts`**
 
@@ -303,115 +307,53 @@ Extract all interfaces and type aliases from `src/core/db.ts` lines 17-72:
 
 Extract:
 - `SCHEMA_VERSION` constant
-- The entire `private migrate()` method body from the `Database` class (lines 139-539)
-- `FTS_VERSION` constant
-- Convert to a standalone function: `export function runMigrations(db: BetterSqlite3.Database, getMetadata: ..., setMetadata: ...)`
+- `FTS_VERSION` constant (currently at line 299 inside `migrate()`)
+- The entire `private migrate()` method body (lines 139-539)
+- Convert to: `export function runMigrations(db: BetterSqlite3.Database, getMetadata: (key: string) => string | null, setMetadata: (key: string, value: string) => void): void`
 
-- [ ] **Step 3: Verify build**
-
-```bash
-npm run build
-```
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/core/db/
-git commit -m "refactor(db): extract types.ts and migration.ts"
-```
-
----
-
-### Task 7: Extract session-repo.ts and fts-repo.ts
-
-**Files:**
-- Create: `src/core/db/session-repo.ts`
-- Create: `src/core/db/fts-repo.ts`
-
-- [ ] **Step 1: Create `src/core/db/session-repo.ts`**
+- [ ] **Step 3: Create `src/core/db/session-repo.ts`**
 
 Extract from Database class:
 - `upsertSession`, `getSession`, `getSessionByFilePath`, `listSessions`, `listSessionsSince`, `listSessionsAfterCursor`, `deleteSession`, `isIndexed`, `countSessions`, `listSources`, `getSourceStats`, `listProjects`, `updateSessionSummary`, `getFtsContent`
-- Standalone functions: `buildTierFilter`, `isTierHidden`, `containsCJK`
+- Standalone functions: `buildTierFilter`, `isTierHidden`
+- Private helpers that these methods depend on: `rowToSession`, any filter-building helpers
 
 All methods become functions receiving `db: BetterSqlite3.Database` as first param.
 
-- [ ] **Step 2: Create `src/core/db/fts-repo.ts`**
+- [ ] **Step 4: Create `src/core/db/fts-repo.ts`**
 
 Extract:
 - `indexSessionContent`, `searchSessions` (the complex FTS query), `replaceFtsContent`
-- The CJK-aware search logic
+- `containsCJK` (CJK detection is FTS-specific, not session-specific)
+- The CJK-aware LIKE fallback search logic
 
-- [ ] **Step 3: Verify build**
-
-```bash
-npm run build
-```
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/core/db/
-git commit -m "refactor(db): extract session-repo.ts and fts-repo.ts"
-```
-
----
-
-### Task 8: Extract remaining repos (metrics, jobs, sync, maintenance, aliases)
-
-**Files:**
-- Create: `src/core/db/metrics-repo.ts`
-- Create: `src/core/db/index-job-repo.ts`
-- Create: `src/core/db/sync-repo.ts`
-- Create: `src/core/db/maintenance.ts`
-- Create: `src/core/db/alias-repo.ts`
-
-- [ ] **Step 1: Create `src/core/db/metrics-repo.ts`**
+- [ ] **Step 5: Create `src/core/db/metrics-repo.ts`**
 
 Extract: `statsGroupBy`, `needsCountBackfill`, `upsertSessionCost`, `getCostsSummary`, `sessionsWithoutCosts`, `upsertSessionFiles`, `getFileActivity`, `upsertSessionTools`, `getToolAnalytics`
 
-- [ ] **Step 2: Create `src/core/db/index-job-repo.ts`**
+- [ ] **Step 6: Create `src/core/db/index-job-repo.ts`**
 
 Extract: `insertIndexJobs`, `takeRecoverableIndexJobs`, `listIndexJobs`, `markIndexJobCompleted`, `markIndexJobNotApplicable`, `markIndexJobRetryableFailure`
 
 Also extract the helper: `buildIndexJobId`
 
-- [ ] **Step 3: Create `src/core/db/sync-repo.ts`**
+- [ ] **Step 7: Create `src/core/db/sync-repo.ts`**
 
 Extract: `getSyncTime`, `setSyncTime`, `getSyncCursor`, `setSyncCursor`, `getAuthoritativeSnapshot`, `upsertAuthoritativeSnapshot`, `getLocalState`, `setLocalReadablePath`
 
-- [ ] **Step 4: Create `src/core/db/maintenance.ts`**
+Include private helpers: `rowToAuthoritativeSnapshot`
+
+- [ ] **Step 8: Create `src/core/db/maintenance.ts`**
 
 Extract: `runPostMigrationBackfill`, `backfillTiers`, `backfillScores`, `optimizeFts`, `vacuumIfNeeded`, `deduplicateFilePaths`
 
-- [ ] **Step 5: Create `src/core/db/alias-repo.ts`**
+- [ ] **Step 9: Create `src/core/db/alias-repo.ts`**
 
 Extract: `resolveProjectAliases`, `addProjectAlias`, `removeProjectAlias`, `listProjectAliases`
 
-- [ ] **Step 6: Verify build**
+- [ ] **Step 10: Create `src/core/db/database.ts`**
 
-```bash
-npm run build
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src/core/db/
-git commit -m "refactor(db): extract metrics, jobs, sync, maintenance, alias repos"
-```
-
----
-
-### Task 9: Create Database facade and db.ts shim
-
-**Files:**
-- Create: `src/core/db/database.ts`
-- Modify: `src/core/db.ts` → replace 1845 lines with ~30-line shim
-
-- [ ] **Step 1: Create `src/core/db/database.ts`**
-
-The `Database` class keeps its constructor, `raw` getter, `setMetrics`, `wrapStatement`, `getMetadata`, `setMetadata`, `close`, and `noiseFilter` property. All other methods delegate to the extracted repo functions:
+The `Database` class keeps: constructor, `raw` getter, `getRawDb()` method, `setMetrics`, `wrapStatement` (private), `getMetadata`, `setMetadata`, `close`, `noiseFilter` property. All other methods delegate to repo functions:
 
 ```ts
 import BetterSqlite3 from 'better-sqlite3';
@@ -419,7 +361,11 @@ import type { MetricsCollector } from '../metrics.js';
 import { runMigrations } from './migration.js';
 import * as sessions from './session-repo.js';
 import * as fts from './fts-repo.js';
-// ... other repo imports
+import * as metrics from './metrics-repo.js';
+import * as jobs from './index-job-repo.js';
+import * as sync from './sync-repo.js';
+import * as maint from './maintenance.js';
+import * as aliases from './alias-repo.js';
 
 export class Database {
   private db: BetterSqlite3.Database;
@@ -427,6 +373,7 @@ export class Database {
   private metrics?: MetricsCollector;
 
   get raw(): BetterSqlite3.Database { return this.db; }
+  getRawDb(): BetterSqlite3.Database { return this.db; }
 
   constructor(dbPath: string) {
     this.db = new BetterSqlite3(dbPath);
@@ -436,14 +383,29 @@ export class Database {
     runMigrations(this.db, (k) => this.getMetadata(k), (k, v) => this.setMetadata(k, v));
   }
 
-  // Delegate methods
+  setMetrics(m: MetricsCollector): void { /* keep existing Proxy-based implementation */ }
+  private wrapStatement(stmt: BetterSqlite3.Statement): BetterSqlite3.Statement { /* keep */ }
+  getMetadata(key: string): string | null { /* keep */ }
+  setMetadata(key: string, value: string): void { /* keep */ }
+  close(): void { this.db.close(); }
+
+  // --- Delegate to session-repo ---
   upsertSession(session: SessionInfo) { return sessions.upsertSession(this.db, session); }
   getSession(id: string) { return sessions.getSession(this.db, id); }
-  // ... all other delegations
+  // ... all other session methods
+
+  // --- Delegate to fts-repo ---
+  indexSessionContent(...args: any[]) { return fts.indexSessionContent(this.db, ...args); }
+  searchSessions(...args: any[]) { return fts.searchSessions(this.db, ...args); }
+  // ... all other FTS methods
+
+  // --- Delegate to all other repos similarly ---
 }
 ```
 
-- [ ] **Step 2: Replace `src/core/db.ts` with shim**
+**Preserve the FULL public API surface**: every public method and getter that exists on `Database` today must exist on the new facade. Verify by comparing `grep -c` of method names before and after.
+
+- [ ] **Step 11: Replace `src/core/db.ts` with shim**
 
 ```ts
 // src/core/db.ts — ESM compatibility shim
@@ -451,8 +413,9 @@ export class Database {
 // so that `import { Database } from '../core/db.js'` continues to work.
 
 export { Database } from './db/database.js';
-export { SCHEMA_VERSION } from './db/migration.js';
-export { buildTierFilter, isTierHidden, containsCJK } from './db/session-repo.js';
+export { SCHEMA_VERSION, FTS_VERSION, runMigrations } from './db/migration.js';
+export { buildTierFilter, isTierHidden } from './db/session-repo.js';
+export { containsCJK } from './db/fts-repo.js';
 export type {
   ListSessionsOptions,
   FtsMatch,
@@ -463,7 +426,9 @@ export type {
 } from './db/types.js';
 ```
 
-- [ ] **Step 3: Verify everything works**
+**Note**: shim must re-export ALL values AND types that are currently exported from `db.ts`, including `SCHEMA_VERSION`, `FTS_VERSION`, `runMigrations`, `buildTierFilter`, `isTierHidden`, `containsCJK`.
+
+- [ ] **Step 12: Verify everything works**
 
 ```bash
 npm run build
@@ -475,7 +440,7 @@ wc -l src/core/db/*.ts | sort -n
 
 Expected: build clean, 690 tests pass, 0 lint issues, db.ts ~30 lines, no file > 500 lines.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
 git add src/core/db.ts src/core/db/
@@ -564,11 +529,22 @@ Expected: FAIL (currently throws Error).
 - [ ] **Step 3: Implement dual-mode save**
 
 Modify `handleSaveInsight` in `src/tools/save_insight.ts`:
-- Add `db: Database` to `SaveInsightDeps`
-- If no `vecStore`/`embedder`: save to `insights` table via `db.saveInsightText()`, return `{ saved: true, warning: '...' }`
+- Add `db?: Database` to `SaveInsightDeps` interface
+- If no `vecStore`/`embedder`: save to `insights` table via `deps.db!.saveInsightText()`, return `{ saved: true, warning: '...' }`
 - If `vecStore`/`embedder` available: existing vector save + ALSO save to `insights` table with `has_embedding = 1`
+- Update `SaveInsightResult` to include `saved?: boolean` and `warning?: string`
 
-- [ ] **Step 4: Run test — verify it passes**
+- [ ] **Step 4: Wire DB into save_insight handler in index.ts**
+
+In `src/index.ts`, find the `toolRegistry.set('save_insight', ...)` line and add `db` to the deps passed:
+
+```ts
+toolRegistry.set('save_insight', (a) =>
+  handleSaveInsight(a as any, { vecStore, embedder: embeddingClient, log, db }),
+);
+```
+
+- [ ] **Step 5: Run test — verify it passes**
 
 ```bash
 npm test tests/tools/save_insight.test.ts
@@ -576,30 +552,65 @@ npm test tests/tools/save_insight.test.ts
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/tools/save_insight.ts tests/tools/save_insight.test.ts
+git add src/tools/save_insight.ts src/index.ts tests/tools/save_insight.test.ts
 git commit -m "feat(save_insight): graceful degradation — text-only save when no embedding"
 ```
 
 ---
 
-### Task 12: Update read paths (get_memory, search, get_context) + warnings
+### Task 12: Update read paths (get_memory, search, get_context) + warnings + wiring
 
 **Files:**
-- Modify: `src/tools/get_memory.ts`, `src/tools/search.ts`, `src/tools/get_context.ts`
+- Modify: `src/tools/get_memory.ts`, `src/tools/search.ts`, `src/tools/get_context.ts`, `src/index.ts`
 
-- [ ] **Step 1: Update get_memory.ts — SQL fallback for text-only insights**
+- [ ] **Step 1: Add `db` to deps interfaces**
+
+In `src/tools/get_memory.ts`, add to `GetMemoryDeps`:
+```ts
+export interface GetMemoryDeps {
+  vecStore?: VectorStore | null;
+  embedder?: EmbeddingClient | null;
+  db?: Database;  // NEW — for text-only insight fallback
+  log?: Logger;
+}
+```
+
+In `src/tools/search.ts`, add to `SearchDeps`:
+```ts
+export interface SearchDeps {
+  vectorStore?: VectorStore;
+  embed?: (text: string) => Promise<Float32Array | null>;
+  db?: Database;  // NEW — for FTS insight search
+  log?: Logger;
+  metrics?: MetricsCollector;
+  tracer?: Tracer;
+}
+```
+
+In `src/tools/get_context.ts`, add to `GetContextDeps`:
+```ts
+export interface GetContextDeps {
+  vectorStore?: VectorStore;
+  embed?: (text: string) => Promise<Float32Array | null>;
+  db?: Database;  // NEW — for SQL insight fallback
+  liveMonitor?: { getSessions(): LiveSession[] };
+  backgroundMonitor?: { getAlerts(): MonitorAlert[] };
+  log?: Logger;
+}
+```
+
+- [ ] **Step 2: Update get_memory.ts — SQL fallback for text-only insights**
 
 When no embedder: instead of returning empty, query `insights` table:
 ```ts
 if (!deps.vecStore || !deps.embedder) {
-  // Fallback: SQL query on insights table
   const textInsights = deps.db?.listInsightsByWing(undefined, 10) ?? [];
   return {
     memories: textInsights.map(r => ({ id: r.id, content: r.content, wing: r.wing, room: r.room, importance: r.importance, distance: 0 })),
-    message: textInsights.length > 0 ? undefined : 'No memories found...',
+    message: textInsights.length > 0 ? undefined : 'No memories found. Use save_insight to add knowledge.',
     warning: 'No embedding provider — showing recent insights only',
   };
 }
@@ -607,7 +618,7 @@ if (!deps.vecStore || !deps.embedder) {
 
 Also: after vector search, merge in any text-only insights (has_embedding = 0).
 
-- [ ] **Step 2: Update search.ts — add warning on degradation + FTS insight search**
+- [ ] **Step 3: Update search.ts — add warning on degradation + FTS insight search**
 
 When embed function unavailable and mode is hybrid/semantic:
 ```ts
@@ -616,7 +627,7 @@ warning = 'Embedding provider unavailable — results are keyword-only (FTS)';
 
 Additionally, search `insights_fts` for keyword matches on insight content and merge into `insightResults[]`.
 
-- [ ] **Step 3: Update get_context.ts — add warning field**
+- [ ] **Step 4: Update get_context.ts — add warning field**
 
 Add `warning?: string` to return type. When no embedding provider:
 ```ts
@@ -628,11 +639,25 @@ When embedding available but insight injection skipped, include SQL fallback:
 const insights = deps.db?.listInsightsByWing(projectName, 5) ?? [];
 ```
 
-- [ ] **Step 4: Update index.ts tool handler to pass warning through**
+- [ ] **Step 5: Wire DB into all handlers in index.ts**
 
-Ensure the MCP `CallToolResult` includes warning in the text content when present.
+Update `src/index.ts` tool handler registrations to pass `db`:
 
-- [ ] **Step 5: Update ServerInfo.instructions with embedding status**
+```ts
+toolRegistry.set('search', (a) =>
+  handleSearch(db, a as any, { vectorStore: vecStore, embed: embedFn, db, log, metrics, tracer }),
+);
+toolRegistry.set('get_memory', (a) =>
+  handleGetMemory(a as any, { vecStore, embedder: embeddingClient, db, log }),
+);
+toolRegistry.set('get_context', (a) =>
+  handleGetContext(db, a as any, { vectorStore: vecStore, embed: embedFn, db, log, ...otherDeps }),
+);
+```
+
+Also update the MCP `CallToolResult` handler to include `warning` in the text content when present in tool results.
+
+- [ ] **Step 6: Update ServerInfo.instructions with embedding status**
 
 In `src/index.ts`, modify `ENGRAM_INSTRUCTIONS` to be dynamic:
 ```ts
@@ -641,9 +666,9 @@ const embeddingStatus = embeddingClient
   : 'Embedding: not configured — semantic search disabled';
 ```
 
-Include in `instructions` field.
+Include in `instructions` field passed to `new Server(...)`.
 
-- [ ] **Step 6: Verify**
+- [ ] **Step 7: Verify**
 
 ```bash
 npm run build
@@ -651,24 +676,74 @@ npm test
 npm run lint
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/tools/ src/index.ts
-git commit -m "feat: add degradation warnings to search/get_memory/get_context + dynamic embedding status"
+git commit -m "feat: add degradation warnings to search/get_memory/get_context + wire DB + dynamic embedding status"
 ```
 
 ---
 
-### Task 13: Fix flaky hygiene test
+### Task 13: Add insight backfill job to IndexJobRunner
 
 **Files:**
-- Modify: `tests/core/hygiene.test.ts` (or wherever the flaky test is)
+- Modify: `src/core/index-job-runner.ts`
+
+- [ ] **Step 1: Add backfill logic**
+
+In `IndexJobRunner`, add a method to promote text-only insights:
+
+```ts
+async backfillInsightEmbeddings(): Promise<number> {
+  if (!this.embeddingClient) return 0;
+  const unembedded = this.db.listUnembeddedInsights(20); // new DB method
+  let count = 0;
+  for (const insight of unembedded) {
+    const embedding = await this.embeddingClient.embed(insight.content);
+    if (embedding) {
+      this.vecStore.upsertInsight(insight.id, insight.content, embedding, this.embeddingClient.model, {
+        wing: insight.wing, room: insight.room, importance: insight.importance,
+      });
+      this.db.markInsightEmbedded(insight.id);
+      count++;
+    }
+  }
+  return count;
+}
+```
+
+Add `listUnembeddedInsights(limit)` to Database facade (queries `SELECT * FROM insights WHERE has_embedding = 0 LIMIT ?`).
+
+- [ ] **Step 2: Wire into daemon index loop**
+
+Call `backfillInsightEmbeddings()` after each indexing pass in the daemon's periodic loop.
+
+- [ ] **Step 3: Verify**
+
+```bash
+npm run build
+npm test
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/core/index-job-runner.ts src/core/db/
+git commit -m "feat(indexer): backfill text-only insights with embeddings when provider available"
+```
+
+---
+
+### Task 14: Fix flaky hygiene test
+
+**Files:**
+- Modify: `tests/web/hygiene.test.ts`
 
 - [ ] **Step 1: Identify the flaky test**
 
 ```bash
-grep -n "timestamp\|Date.now\|setTimeout" tests/core/hygiene.test.ts | head -20
+grep -n "timestamp\|Date.now\|setTimeout\|cache" tests/web/hygiene.test.ts | head -20
 ```
 
 - [ ] **Step 2: Fix with fake timers or relaxed precision**
@@ -678,9 +753,9 @@ Use `vi.useFakeTimers()` in the test setup, or relax timestamp assertion to ±2 
 - [ ] **Step 3: Run test 3 times to confirm stability**
 
 ```bash
-npm test tests/core/hygiene.test.ts
-npm test tests/core/hygiene.test.ts
-npm test tests/core/hygiene.test.ts
+npm test tests/web/hygiene.test.ts
+npm test tests/web/hygiene.test.ts
+npm test tests/web/hygiene.test.ts
 ```
 
 Expected: 3/3 pass.
@@ -688,7 +763,7 @@ Expected: 3/3 pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tests/core/hygiene.test.ts
+git add tests/web/hygiene.test.ts
 git commit -m "fix: stabilize flaky hygiene test (timestamp race)"
 ```
 
@@ -696,7 +771,7 @@ git commit -m "fix: stabilize flaky hygiene test (timestamp race)"
 
 ## Phase 3: Test Coverage 67% → 75%+
 
-### Task 14: Extract testable factories from daemon.ts and index.ts
+### Task 15: Extract testable factories from daemon.ts and index.ts
 
 **Files:**
 - Modify: `src/daemon.ts`
@@ -748,7 +823,7 @@ git commit -m "refactor: extract createDaemon/createMcpServer factories for test
 
 ---
 
-### Task 15: Write coverage tests
+### Task 16: Write coverage tests
 
 **Files:**
 - Create/Modify: `tests/tools/search.test.ts` (expand)
@@ -777,10 +852,26 @@ import { createDaemon } from '../src/daemon.js';
 
 describe('createDaemon', () => {
   it('returns handle with start/stop methods', () => {
-    // Use temp DB path
     const handle = createDaemon({ dbPath: tmpDbPath, settings: defaultSettings });
     expect(handle.start).toBeTypeOf('function');
     expect(handle.stop).toBeTypeOf('function');
+  });
+
+  it('start() emits ready event', async () => {
+    const handle = createDaemon({ dbPath: tmpDbPath, settings: defaultSettings });
+    // Capture stdout JSON lines
+    const events: any[] = [];
+    handle.on('event', (e: any) => events.push(e));
+    await handle.start();
+    expect(events.some(e => e.event === 'ready')).toBe(true);
+    await handle.stop();
+  });
+
+  it('stop() cleans up watcher', async () => {
+    const handle = createDaemon({ dbPath: tmpDbPath, settings: defaultSettings });
+    await handle.start();
+    await handle.stop();
+    // Verify no open handles (vitest --detectOpenHandles)
   });
 });
 ```
@@ -796,16 +887,21 @@ describe('createMcpServer', () => {
     expect(allTools).toHaveLength(19);
   });
 
-  it('toolRegistry has no unknown tool', () => {
+  it('toolRegistry returns undefined for unknown tool', () => {
     const { toolRegistry } = createMcpServer({ dbPath: tmpDbPath, settings: defaultSettings });
     expect(toolRegistry.get('nonexistent')).toBeUndefined();
+  });
+
+  it('ServerInfo.instructions contains embedding status', () => {
+    const { instructions } = createMcpServer({ dbPath: tmpDbPath, settings: defaultSettings });
+    expect(instructions).toContain('Embedding:');
   });
 });
 ```
 
 - [ ] **Step 4: Expand save_insight tests**
 
-Add: text-only save, duplicate dedup, importance boundary (0, 5), long text handling.
+Add: text-only save (no embedding), duplicate dedup, importance boundary values (0, 1, 3, 5), long text truncation handling.
 
 - [ ] **Step 5: Expand chunker tests**
 
@@ -826,7 +922,7 @@ git commit -m "test: expand coverage — search modes, daemon/index factories, i
 
 ---
 
-### Task 16: Raise coverage thresholds back
+### Task 17: Raise coverage thresholds back
 
 **Files:**
 - Modify: `vitest.config.ts`
@@ -860,7 +956,7 @@ git commit -m "chore: restore coverage thresholds — 75% lines, 70% branches, 8
 
 ## Phase 4: Documentation (parallel with above)
 
-### Task 17: Fix README, SECURITY, PRIVACY + add CONTRIBUTING
+### Task 18: Fix README, SECURITY, PRIVACY + add CONTRIBUTING
 
 **Files:**
 - Modify: `README.md`
@@ -896,7 +992,7 @@ npm install && npm run build
 
 ## Development
 npm run dev          # run without compile (tsx)
-npm test             # vitest (690+ tests, ~5s)
+npm test             # vitest (run `npm test` for current count)
 npm run lint         # biome check
 npm run lint:fix     # biome auto-fix
 
@@ -930,14 +1026,14 @@ git commit -m "docs: fix README drift, update security/privacy, add CONTRIBUTING
 
 ---
 
-### Task 18: Generate MCP Tool API Reference
+### Task 19: Generate MCP Tool API Reference
 
 **Files:**
 - Create: `docs/mcp-tools.md`
 
 - [ ] **Step 1: Generate tool reference from code**
 
-Read `src/index.ts` `allTools` array and each tool's `inputSchema`. For each of 19 tools, document: name, description, parameters, example usage.
+Read `src/index.ts` `allTools` array and each tool's `inputSchema`. For each of 19 tools, document: name, description, parameters, example response shape, and usage notes (defaults, limits, edge cases).
 
 - [ ] **Step 2: Write `docs/mcp-tools.md`**
 
@@ -955,6 +1051,13 @@ Full-text and semantic search across all session content.
 | source | string | no | Filter by source (e.g., claude-code, cursor) |
 | ... | | | |
 
+**Example Response:**
+```json
+{ "results": [...], "query": "auth bug", "searchModes": ["keyword", "semantic"], "insightResults": ["..."] }
+```
+
+**Notes:** Default limit 10, max 50. CJK queries use LIKE fallback instead of FTS trigram.
+
 ---
 ## get_context
 ...
@@ -971,7 +1074,7 @@ git commit -m "docs: add MCP tool API reference (19 tools)"
 
 ## Final Verification
 
-### Task 19: Full verification pass
+### Task 20: Full verification pass
 
 - [ ] **Step 1: Run all checks**
 
