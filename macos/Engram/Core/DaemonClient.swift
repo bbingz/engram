@@ -187,6 +187,35 @@ struct ReplayTimelineResponse: Decodable {
     let hasMore: Bool
 }
 
+// MARK: - Parent Link Management
+
+extension DaemonClient {
+    struct LinkResponse: Decodable {
+        let ok: Bool
+        let error: String?
+    }
+
+    func linkSession(sessionId: String, parentId: String) async throws -> LinkResponse {
+        struct Body: Encodable { let parentId: String }
+        return try await post("/api/sessions/\(sessionId)/link", body: Body(parentId: parentId))
+    }
+
+    func unlinkSession(sessionId: String) async throws {
+        try await delete("/api/sessions/\(sessionId)/link")
+    }
+
+    func confirmSuggestion(sessionId: String) async throws -> LinkResponse {
+        return try await post("/api/sessions/\(sessionId)/confirm-suggestion")
+    }
+
+    func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws {
+        struct Body: Encodable { let suggestedParentId: String }
+        let request = try buildRequest("/api/sessions/\(sessionId)/suggestion", method: "DELETE", body: Body(suggestedParentId: suggestedParentId))
+        let (_, response) = try await session.data(for: request)
+        try validateResponse(response)
+    }
+}
+
 // MARK: - Hygiene API
 
 extension DaemonClient {
