@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SessionInfo } from '../../../src/adapters/types.js';
+import { backfillParentLinks } from '../../../src/core/db/maintenance.js';
 import {
   childCount,
   childSessions,
@@ -735,6 +736,90 @@ describe('parent-link-repo', () => {
         .prepare('SELECT suggested_parent_id FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
       expect(row.suggested_parent_id).toBeNull();
+    });
+  });
+
+  // ── backfillParentLinks ─────────────────────────────────────────
+
+  describe('backfillParentLinks', () => {
+    it('links subagent sessions to parent via agent_role', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'sess-abc',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          filePath: '/home/.claude/projects/myproj/sess-abc.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.raw
+        .prepare(
+          `
+        INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes, agent_role, message_count, user_message_count)
+        VALUES ('agent-xyz', 'claude-code', '2026-04-13T10:05:00Z', '/test',
+                '/home/.claude/projects/myproj/sess-abc/subagents/agent-xyz.jsonl', 50, 'subagent', 5, 2)
+      `,
+        )
+        .run();
+
+      const result = backfillParentLinks(db.raw);
+      expect(result.linked).toBe(1);
+      const row = db.raw
+        .prepare(
+          'SELECT parent_session_id, link_source FROM sessions WHERE id = ?',
+        )
+        .get('agent-xyz') as Record<string, unknown>;
+      expect(row.parent_session_id).toBe('sess-abc');
+      expect(row.link_source).toBe('path');
+    });
+
+    it('skips manually unlinked sessions', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'sess-abc',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          filePath: '/home/.claude/projects/myproj/sess-abc.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.raw
+        .prepare(
+          `
+        INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes, agent_role, link_source, message_count, user_message_count)
+        VALUES ('agent-manual', 'claude-code', '2026-04-13T10:05:00Z', '/test',
+                '/home/.claude/projects/myproj/sess-abc/subagents/agent-manual.jsonl', 50, 'subagent', 'manual', 5, 2)
+      `,
+        )
+        .run();
+      const result = backfillParentLinks(db.raw);
+      expect(result.linked).toBe(0);
+    });
+
+    it('upgrades tier from skip to lite for linked sessions', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'sess-p',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          filePath: '/home/.claude/projects/myproj/sess-p.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.raw
+        .prepare(
+          `
+        INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes, agent_role, tier, message_count, user_message_count)
+        VALUES ('agent-t', 'claude-code', '2026-04-13T10:05:00Z', '/test',
+                '/home/.claude/projects/myproj/sess-p/subagents/agent-t.jsonl', 50, 'subagent', 'skip', 5, 2)
+      `,
+        )
+        .run();
+      backfillParentLinks(db.raw);
+      const row = db.raw
+        .prepare('SELECT tier FROM sessions WHERE id = ?')
+        .get('agent-t') as Record<string, unknown>;
+      expect(row.tier).toBe('lite');
     });
   });
 

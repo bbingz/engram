@@ -17,6 +17,7 @@ import * as insights from './insight-repo.js';
 import * as maint from './maintenance.js';
 import * as metricsRepo from './metrics-repo.js';
 import { runMigrations } from './migration.js';
+import * as parentLinks from './parent-link-repo.js';
 import * as sessions from './session-repo.js';
 import * as sync from './sync-repo.js';
 import type {
@@ -350,6 +351,52 @@ export class Database {
     info: (message: string, data?: Record<string, unknown>) => void;
   }): { resetEmbedding: number; orphanedVector: number } {
     return maint.reconcileInsights(this.db, log);
+  }
+
+  // --- Parent link repo ---
+  validateParentLink(sessionId: string, parentId: string) {
+    return parentLinks.validateParentLink(this.db, sessionId, parentId);
+  }
+  setParentSession(
+    sessionId: string,
+    parentId: string,
+    linkSource: 'path' | 'manual' | 'suggested',
+  ) {
+    parentLinks.setParentSession(this.db, sessionId, parentId, linkSource);
+  }
+  clearParentSession(sessionId: string) {
+    parentLinks.clearParentSession(this.db, sessionId);
+  }
+  confirmSuggestion(sessionId: string) {
+    return parentLinks.confirmSuggestion(this.db, sessionId);
+  }
+  setSuggestedParent(sessionId: string, suggestedParentId: string) {
+    parentLinks.setSuggestedParent(this.db, sessionId, suggestedParentId);
+  }
+  clearSuggestedParent(sessionId: string, expectedParentId: string) {
+    return parentLinks.clearSuggestedParent(
+      this.db,
+      sessionId,
+      expectedParentId,
+    );
+  }
+  childSessions(parentId: string, limit = 20, offset = 0) {
+    return parentLinks.childSessions(this.db, parentId, limit, offset);
+  }
+  childCount(parentIds: string[]) {
+    return parentLinks.childCount(this.db, parentIds);
+  }
+  suggestedChildSessions(parentId: string) {
+    return parentLinks.suggestedChildSessions(this.db, parentId);
+  }
+  suggestedChildCount(parentIds: string[]) {
+    return parentLinks.suggestedChildCount(this.db, parentIds);
+  }
+  backfillParentLinks() {
+    return maint.backfillParentLinks(this.db);
+  }
+  backfillSuggestedParents() {
+    return maint.backfillSuggestedParents(this.db);
   }
 
   // --- Insight repo ---

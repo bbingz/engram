@@ -1,6 +1,7 @@
 // src/core/db/maintenance.ts — post-migration backfills and DB maintenance
 import type BetterSqlite3 from 'better-sqlite3';
 import { computeQualityScore } from '../session-scoring.js';
+import { setParentSession, validateParentLink } from './parent-link-repo.js';
 
 export function runPostMigrationBackfill(db: BetterSqlite3.Database): void {
   // Incremental: only backfill sessions not yet in session_local_state
@@ -168,4 +169,65 @@ export function reconcileInsights(
   }
 
   return { resetEmbedding, orphanedVector };
+}
+
+/**
+ * Backfill parent links for subagent sessions that have no parent set.
+ * Parses the file_path to extract the parent session ID from the directory structure.
+ * Also upgrades tier from 'skip' to 'lite' for any linked sessions.
+ */
+export function backfillParentLinks(db: BetterSqlite3.Database): {
+  linked: number;
+  tierUpgraded: number;
+} {
+  let linked = 0;
+
+  // Pass 1: Link subagent sessions to parent via path parsing
+  const candidates = db
+    .prepare(
+      `
+    SELECT id, file_path FROM sessions
+    WHERE agent_role = 'subagent'
+      AND parent_session_id IS NULL
+      AND (link_source IS NULL OR link_source != 'manual')
+    LIMIT 500
+  `,
+    )
+    .all() as { id: string; file_path: string }[];
+
+  for (const { id, file_path } of candidates) {
+    const match = file_path.match(/\/([^/]+)\/subagents\/[^/]+\.jsonl$/);
+    if (!match) continue;
+
+    const parentId = match[1];
+    const validation = validateParentLink(db, id, parentId);
+    if (validation !== 'ok') continue;
+
+    setParentSession(db, id, parentId, 'path');
+    linked++;
+  }
+
+  // Tier upgrade pass
+  const tierUpgraded = db
+    .prepare(
+      `
+    UPDATE sessions SET tier = 'lite'
+    WHERE parent_session_id IS NOT NULL AND tier = 'skip'
+  `,
+    )
+    .run().changes;
+
+  return { linked, tierUpgraded };
+}
+
+/**
+ * Backfill suggested parent links using heuristics.
+ * Stub — full implementation in Task 6.
+ */
+export function backfillSuggestedParents(_db: BetterSqlite3.Database): {
+  checked: number;
+  suggested: number;
+} {
+  // Stub — full implementation in Task 6
+  return { checked: 0, suggested: 0 };
 }
