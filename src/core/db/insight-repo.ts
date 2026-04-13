@@ -21,7 +21,7 @@ export function saveInsightText(
   importance?: number,
   sourceSessionId?: string,
 ): void {
-  db.prepare(`
+  const upsertStmt = db.prepare(`
     INSERT INTO insights (id, content, wing, room, importance, source_session_id)
     VALUES (@id, @content, @wing, @room, @importance, @sourceSessionId)
     ON CONFLICT(id) DO UPDATE SET
@@ -29,20 +29,24 @@ export function saveInsightText(
       wing = excluded.wing,
       room = excluded.room,
       importance = excluded.importance
-  `).run({
-    id,
-    content,
-    wing: wing ?? null,
-    room: room ?? null,
-    importance: importance ?? 5,
-    sourceSessionId: sourceSessionId ?? null,
-  });
-
-  // Upsert FTS content
-  db.prepare('DELETE FROM insights_fts WHERE insight_id = ?').run(id);
-  db.prepare(
+  `);
+  const deleteFts = db.prepare('DELETE FROM insights_fts WHERE insight_id = ?');
+  const insertFts = db.prepare(
     'INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)',
-  ).run(id, content);
+  );
+  const tx = db.transaction(() => {
+    upsertStmt.run({
+      id,
+      content,
+      wing: wing ?? null,
+      room: room ?? null,
+      importance: importance ?? 5,
+      sourceSessionId: sourceSessionId ?? null,
+    });
+    deleteFts.run(id);
+    insertFts.run(id, content);
+  });
+  tx();
 }
 
 export function searchInsightsFts(
@@ -50,16 +54,25 @@ export function searchInsightsFts(
   query: string,
   limit = 10,
 ): InsightRow[] {
-  return db
-    .prepare(`
-    SELECT i.*
-    FROM insights_fts f
-    JOIN insights i ON i.id = f.insight_id
-    WHERE insights_fts MATCH @query
-    ORDER BY f.rank
-    LIMIT @limit
-  `)
-    .all({ query, limit }) as InsightRow[];
+  const doSearch = (q: string): InsightRow[] =>
+    db
+      .prepare(`
+      SELECT i.*
+      FROM insights_fts f
+      JOIN insights i ON i.id = f.insight_id
+      WHERE insights_fts MATCH @query
+      ORDER BY f.rank
+      LIMIT @limit
+    `)
+      .all({ query: q, limit }) as InsightRow[];
+
+  try {
+    return doSearch(query);
+  } catch {
+    // Escape FTS5 operators and retry with quoted query
+    const escaped = `"${query.replace(/"/g, '""')}"`;
+    return doSearch(escaped);
+  }
 }
 
 export function listInsightsByWing(
