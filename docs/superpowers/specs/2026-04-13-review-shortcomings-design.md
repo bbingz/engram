@@ -1,17 +1,20 @@
-# Three-Way Review Shortcomings — Design Spec (v2)
+# Three-Way Review Shortcomings — Design Spec (v3)
 
 **Date**: 2026-04-13
 **Branch**: TBD (will be created from `main`)
-**Reviewers**: Claude + Codex + Gemini (3-way, 2 rounds)
+**Reviewers**: Claude + Codex + Gemini (3-way, 3 rounds)
 **Origin**: Independent 10-dimension project evaluation (consensus score: 7.9/10)
 
 ---
 
 ## Context
 
-Three independent AI reviewers evaluated the Engram codebase. The design spec v1 was then reviewed by all three and received **2 FAIL** verdicts with multiple BLOCKERs. This v2 incorporates all corrections.
+Three independent AI reviewers evaluated the Engram codebase. The spec has been through 3 review rounds:
+- **v1**: 2 FAIL — ESM resolution blocker, incomplete db.ts split, wrong knip counts
+- **v2**: 1 PASS (Gemini), 1 FAIL (Codex) — missing insight read paths, 14 unused exports omitted
+- **v3**: Incorporates all findings from both rounds
 
-### Key v1 → v2 Changes
+### Key Changes Across Rounds
 
 | Issue | v1 (wrong) | v2 (corrected) |
 |-------|-----------|----------------|
@@ -24,6 +27,10 @@ Three independent AI reviewers evaluated the Engram codebase. The design spec v1
 | index.ts toolRegistry | "Leave to next round" | **Already exists** at line 192 |
 | save_insight without embedding | Graceful save | **Currently hard-fails** with thrown Error — needs contract change |
 | Phase 3/5 ordering | Test fallback, then add warnings | **Warning logic must exist before tests target it** |
+| Knip unused exports | Only mentioned 54 types | **68 total**: 14 functions/constants + 54 types (v3) |
+| Text-only insights | Write-only, no read path | **Full write+read design** with FTS fallback + SQL queries (v3) |
+| Phase 2 observability | Missing getRawDb/setMetrics | **Added** to responsibility map (v3) |
+| README Node version | Not mentioned | **Node 18+ → >=20** correction added (v3) |
 
 ---
 
@@ -32,18 +39,25 @@ Three independent AI reviewers evaluated the Engram codebase. The design spec v1
 ### Goal
 Eliminate knip findings, tighten Biome rules, clean start for Phase 2.
 
-### 1.1 Unused Exported Types (54)
+### 1.1 Unused Exports: 14 Functions/Constants + 54 Types (68 total)
 
-Three buckets:
+Knip reports **two categories**: 14 unused exports (functions/constants) AND 54 unused exported types. Both must be resolved.
+
+Three buckets (apply to both categories):
 
 **Bucket A — Delete** (truly dead, no test/runtime reference):
-- Grep each type across `src/` and `tests/`; if zero hits outside its own definition, delete
+- Grep each export across `src/` and `tests/`; if zero hits outside its own definition, delete
+- Known candidates: `formatDuration`, `formatRelativeTime`, `toLocalWeekStart`, `parseMarkdownToMessages`
 
-**Bucket B — Test-only exports** (knip doesn't scan `tests/`):
-- Types referenced in test files → keep, add to knip `ignoreExportsUsedInFile` or `entry` config
+**Bucket B — Test-only / cross-file internal usage** (knip doesn't scan `tests/`):
+- Exports referenced in test files or in files knip can't trace → keep, add to knip config
+- Known candidates: `buildTierFilter` (used in Swift-facing queries), `PII_PATTERNS` (used in tests), `ENGRAM_DIR` (used by daemon entrypoint)
 
 **Bucket C — Public API surface** (intentional exports for MCP consumers):
 - Types like `SearchResult`, `NoiseFilter`, `EmbeddingProvider` → keep, add knip ignore annotation
+- Functions like `getWatchEntries`, `writeFileSettings` → verify if part of public API, otherwise delete
+
+Lint config functions (`checkStaleBranches`, `checkLargeUncommitted`, `checkZombieProcesses`, `runHealthChecks`) — these are exported sub-functions of `lint_config` tool. Verify if called externally; if only used internally within the tool handler, un-export them (make module-private).
 
 ### 1.2 Unused Files (4) — Entrypoint False Positives
 
@@ -153,6 +167,8 @@ src/core/
 | Sync cursors + snapshots + local state | **Missing** | `sync-repo.ts` |
 | VACUUM, FTS optimize, dedup, score backfills | **Missing** | `maintenance.ts` |
 | Project alias CRUD | **Missing** | `alias-repo.ts` |
+| Observability (`getRawDb`, `setMetrics`, metrics proxy) | **Missing** | `database.ts` (facade internals) |
+| Metadata store (`getMetadata`, `setMetadata`) | **Missing** | `database.ts` (facade) |
 | Shared types/interfaces | Implicit | `types.ts` |
 | Database facade | Yes | `database.ts` |
 
@@ -241,7 +257,7 @@ New test cases:
 ### 3.4 Existing Test Expansion
 
 **save_insight.ts** additions:
-- No embedding deps provided → error (current behavior) OR graceful save (if Phase 5 changes contract)
+- No embedding deps provided → graceful text-only save + warning (Phase 5 runs first)
 - Duplicate insight → semantic dedup
 - Text exceeding max length → truncation
 - `importance` boundary values (0, 1, 5, 10)
@@ -289,6 +305,7 @@ Fix drift, fill gaps.
 ### 4.1 README.md Corrections
 
 - Test count: "278 tests" → current count (from `npm test` output)
+- Node version: README says "Node 18+" but `package.json` requires `>=20` — fix to match
 - Verify adapter count, tool count, source count match code
 - Cross-check all metrics with live codebase
 
@@ -358,20 +375,74 @@ When insight injection skipped: `warning: 'No embedding provider configured — 
 
 Note: `index.ts` tool handler serializes this to MCP text content — ensure `warning` is included in output.
 
-### 5.3 save_insight.ts — Contract Decision
+### 5.3 save_insight.ts — Full Write + Read Contract Redesign
 
-**Current behavior**: `handleSaveInsight` throws `Error('Insight storage requires embedding support...')` when no `vecStore` or `embedder`.
+**Current behavior**: `handleSaveInsight` throws `Error('Insight storage requires embedding support...')` when no `vecStore` or `embedder`. Insights are ONLY stored in `vec_insights` (vector table) — no text-only storage exists.
 
-**Design decision**: Change to graceful degradation.
-- Save insight text + metadata to a new `insights` table in SQLite (not `vec_insights` which requires embeddings)
-- FTS-index the text so keyword search finds it
-- Return `{ saved: true, warning: 'Insight saved without embedding — semantic search will not find it until an embedding provider is configured' }`
-- When embedding becomes available, background job can backfill vectors
+**Problem**: If we save text-only insights without a read path, they become write-only data. Current consumers:
+- `get_memory.ts:60` — `vecStore.searchInsights(embedding, 10)` (vector-only)
+- `search.ts:223` — `vecStore.searchInsights(queryVec, 5)` (vector-only)
+- `get_context.ts` — injects insights via same vector search
 
-This requires:
-1. New `insights` table in `migration.ts` (text, wing, room, importance, created_at)
-2. FTS entry for insight content
-3. `save_insight.ts` dual path: with embedding → full save; without → text-only save
+**Design decision**: Graceful degradation with **both write AND read paths**.
+
+#### Write path (save_insight.ts)
+
+Dual-mode save:
+- **With embedding**: save to `insights` table + `vec_insights` (vector) — same as today but with text backup
+- **Without embedding**: save to `insights` table only (text + metadata)
+- Return `{ saved: true, warning?: '...' }`
+
+#### Storage (migration.ts)
+
+New `insights` table as **primary text store** (currently insights only live in vector table):
+```sql
+CREATE TABLE IF NOT EXISTS insights (
+  id TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  wing TEXT,           -- project/topic grouping
+  room TEXT,           -- sub-topic
+  source_session_id TEXT,
+  importance INTEGER DEFAULT 5,
+  has_embedding INTEGER DEFAULT 0,  -- tracks whether vec_insights has a vector
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_insights_wing ON insights(wing);
+```
+
+FTS entry: add insight content to `sessions_fts` or create a dedicated `insights_fts` (simpler: dedicated, avoids mixing session content with curated insights).
+
+#### Read paths (3 consumers updated)
+
+**get_memory.ts**:
+```
+if (embedding available) → vector search vec_insights (existing)
+else → SQL query insights table, ordered by importance DESC, created_at DESC
+Always: merge results from both paths (vector hits + text-only insights)
+```
+
+**search.ts**:
+```
+if (embedding available) → vector search vec_insights for insight results (existing)
+Additionally: FTS search insights_fts for keyword matches on insight content
+Merge both into insightResults[] via same RRF pattern
+```
+
+**get_context.ts**:
+```
+if (embedding available) → vector search for relevant insights (existing)
+else → SQL query insights table filtered by wing = current project
+Inject matched insights into context text
+```
+
+#### Backfill
+
+When embedding provider becomes available, background job in IndexJobRunner:
+- Query `SELECT * FROM insights WHERE has_embedding = 0`
+- Generate embedding, upsert into `vec_insights`
+- Update `has_embedding = 1`
+
+This ensures text-only insights are eventually promoted to full vector-searchable insights.
 
 ### 5.4 ServerInfo.instructions Dynamic Status
 
