@@ -600,7 +600,7 @@ describe('parent-link-repo', () => {
         .get('child') as Record<string, unknown>;
       expect(row.parent_session_id).toBe('parent');
       expect(row.suggested_parent_id).toBeNull();
-      expect(row.link_source).toBe('suggested');
+      expect(row.link_source).toBe('manual');
     });
 
     it('rejects when no suggestion exists', () => {

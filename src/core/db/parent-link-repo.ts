@@ -41,7 +41,7 @@ export function setParentSession(
   db: BetterSqlite3.Database,
   sessionId: string,
   parentId: string,
-  linkSource: 'path' | 'manual' | 'suggested',
+  linkSource: 'path' | 'manual',
 ): void {
   const tx = db.transaction(() => {
     db.prepare(`
@@ -108,7 +108,7 @@ export function clearSuggestedParent(
   const result = db
     .prepare(`
       UPDATE sessions
-      SET suggested_parent_id = NULL
+      SET suggested_parent_id = NULL, link_checked_at = datetime('now')
       WHERE id = @sessionId AND suggested_parent_id = @expectedParentId
     `)
     .run({ sessionId, expectedParentId });
@@ -137,7 +137,7 @@ export function confirmSuggestion(
     return { ok: false, error: validation };
   }
 
-  setParentSession(db, sessionId, suggestedParentId, 'suggested');
+  setParentSession(db, sessionId, suggestedParentId, 'manual');
   return { ok: true };
 }
 
