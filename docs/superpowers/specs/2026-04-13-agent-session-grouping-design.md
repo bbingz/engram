@@ -32,8 +32,13 @@ link_checked_at TEXT        -- ISO8601, prevents repeated backfill scans
   END;
   ```
   Parent deletion auto-restores children to top-level.
-- Max depth = 1 enforced at write time: a session whose own `parent_session_id IS NOT NULL` cannot be set as a parent. Prevents circular references and arbitrary nesting.
+- Max depth = 1 enforced at **all** write paths (Layer 1 adapter, backfill, manual API). Validation before every write:
+  1. `parentId != sessionId` (no self-link)
+  2. Parent session exists in DB
+  3. Parent's own `parent_session_id IS NULL` (no depth > 1)
+  Reject with error if any check fails.
 - Base `CREATE TABLE` schema AND `ALTER TABLE` migration both updated (fresh DB + existing DB).
+- Migration uses `PRAGMA table_info(sessions)` guard before each `ALTER TABLE ADD COLUMN` (project's existing idempotent pattern).
 
 ### Indexes
 
@@ -81,9 +86,22 @@ Detection conditions (all must match):
 
 `link_source` only tracks confirmed links (`parent_session_id`). When Layer 2 writes only `suggested_parent_id`, `link_source` stays NULL. Set `link_checked_at = now()` to prevent re-scanning. When user later confirms a suggestion, set `link_source = 'manual'`.
 
+**Scoring criteria** for candidate parents (when multiple match):
+1. Time proximity (60% weight): `1 / (1 + abs(agent.start_time - parent.start_time))` — closer start times score higher.
+2. Project match (30% weight): exact project match = 1.0, normalized cwd match = 0.7, no match = 0.
+3. Active session bonus (10% weight): parent `end_time IS NULL` (still running) = 1.0, ended = 0.5.
+- **Ambiguity rejection**: if top 2 candidates' final scores differ by < 15%, refuse to link — write `link_checked_at` only.
+
 **Performance**: use FTS index to find candidate sessions with dispatch keywords, not raw LIKE scans on message content.
 
 **Execution**: post-processing after each index cycle. Only scans sessions where `link_checked_at IS NULL AND parent_session_id IS NULL AND link_source IS NULL`. Previously checked sessions are skipped.
+
+**Race condition protection**: suggestion dismissal and confirmation use conditional updates:
+```sql
+UPDATE sessions SET suggested_parent_id = NULL, link_checked_at = ?
+WHERE id = ? AND suggested_parent_id = ?  -- only if suggestion hasn't changed
+```
+Stale scanner writes are harmless — they only set `suggested_parent_id` which can be dismissed again.
 
 ### Layer 3: Manual override — authoritative
 
@@ -93,12 +111,17 @@ Detection conditions (all must match):
 - Manual unlink: set `parent_session_id = NULL, link_source = 'manual'`. Backfill sees `link_source = 'manual'` and skips — no infinite loop.
 - Manual takes highest priority, overrides both Layer 1 and Layer 2.
 
-### Tier upgrade for linked children
+### Tier lifecycle for linked children
 
-`parent_session_id` replaces the UI-hiding function previously served by `tier = 'skip'` for agent sessions. When a session gets linked as a child:
+`parent_session_id` replaces the UI-hiding function previously served by `tier = 'skip'` for agent sessions.
+
+**On link (auto or manual):**
 - If `tier = 'skip'`, upgrade to `'lite'` (enables FTS indexing).
 - This ensures agent work content is searchable even though it's hidden from the main timeline.
-- Tier upgrade happens at link time (both auto and manual).
+
+**On unlink (manual unlink or parent deletion via trigger):**
+- Re-evaluate tier via `computeTier()`. If the session still qualifies for `'skip'` (e.g. `agent_role IS NOT NULL` or `/subagents/` path), revert to `'skip'`.
+- This prevents unlinked subagents from permanently polluting the main timeline as `'lite'` sessions.
 
 ## 3. Swift UI Changes
 
@@ -110,8 +133,13 @@ Detection conditions (all must match):
 - Default state: collapsed
 
 **Parent session card (has only suggested children):**
-- Same layout but with dashed/dimmed triangle and badge
+- Same layout but with dashed/dimmed triangle and badge, e.g. "~2 suggested"
 - Visual distinction from confirmed children
+
+**Suggested children display rule:**
+- Sessions with only `suggested_parent_id` (no confirmed `parent_session_id`) **remain in the top-level list** — the link isn't confirmed yet, so they shouldn't disappear.
+- The suggested parent also shows a dimmed badge so the user can discover the suggestion from either direction.
+- User can confirm from the parent's expanded view or from the child's detail view. Confirming removes the child from top-level and nests it under the parent.
 
 **Expanded child rows (compact mode):**
 - Indented, visually subordinate to parent
@@ -184,13 +212,14 @@ Runs during daemon startup maintenance, after existing `backfillTiers()`:
 
 **Pass 1 (Layer 1):**
 ```sql
--- Scan subagent sessions without a parent link
+-- Use agent_role index instead of LIKE '%/subagents/%' (avoids full table scan)
 SELECT id, file_path FROM sessions
-WHERE file_path LIKE '%/subagents/%'
+WHERE agent_role = 'subagent'
   AND parent_session_id IS NULL
   AND (link_source IS NULL OR link_source != 'manual')
+LIMIT 500  -- bounded batch, resume on next maintenance cycle
 ```
-Parse parent session ID from path, write `parent_session_id` + `link_source = 'path'`.
+Parse parent session ID from path. Validate parent exists and depth=1 before writing `parent_session_id` + `link_source = 'path'`.
 
 **Pass 2 (Layer 2):**
 ```sql
@@ -229,8 +258,10 @@ Both passes idempotent. Bounded batch size with resume cursor to avoid blocking 
 - GRDB row mapping updated to include new fields.
 - No Swift-side writes — all parent links managed by Node via daemon API.
 - New `DatabaseManager` read methods:
-  - `childSessions(parentId:limit:offset:)` — paginated child fetch
-  - `childCount(parentIds:)` — batch count for visible parents
+  - `childSessions(parentId:limit:offset:)` — paginated confirmed child fetch
+  - `suggestedChildSessions(parentId:)` — suggested (unconfirmed) children for a parent
+  - `childCount(parentIds:)` — batch count of confirmed children for visible parents
+  - `suggestedChildCount(parentIds:)` — batch count of suggested children for visible parents
   - Both `nonisolated` + `readInBackground` per project convention.
 
 ## 5. Write Path for Manual Override (Swift → Node)
@@ -239,8 +270,16 @@ Swift UI does not write `parent_session_id` directly. Instead:
 - Daemon exposes HTTP endpoints:
   - `POST /api/sessions/:id/link` — body: `{ parentId: string }` → sets confirmed parent
   - `DELETE /api/sessions/:id/link` → manual unlink (`link_source = 'manual'`, `parent_session_id = NULL`)
-  - `POST /api/sessions/:id/confirm-suggestion` → promotes `suggested_parent_id` to `parent_session_id`
-  - `DELETE /api/sessions/:id/suggestion` → dismisses suggestion (`link_checked_at = now()`, clears `suggested_parent_id`)
+  - `POST /api/sessions/:id/confirm-suggestion` → promotes `suggested_parent_id` to `parent_session_id`:
+    1. Re-validate parent exists and depth=1
+    2. Set `parent_session_id = suggested_parent_id`
+    3. Clear `suggested_parent_id = NULL`
+    4. Set `link_source = 'manual'`, update `link_checked_at`
+    5. Upgrade tier if needed (`skip` → `lite`)
+  - `DELETE /api/sessions/:id/suggestion` → dismisses suggestion:
+    1. Conditional update: `WHERE suggested_parent_id = :expected` (prevents race with scanner)
+    2. Clear `suggested_parent_id = NULL`
+    3. Set `link_checked_at = now()` (prevents re-suggestion of same pair)
 - Swift `DaemonClient` calls these endpoints.
 - Write-time validation: reject if target parent's `parent_session_id IS NOT NULL` (depth > 1).
 
