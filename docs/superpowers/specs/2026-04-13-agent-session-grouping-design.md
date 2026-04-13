@@ -11,13 +11,13 @@
 ```sql
 parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL
 suggested_parent_id TEXT    -- Layer 2 heuristic suggestion, not confirmed
-link_source TEXT            -- 'path' | 'heuristic' | 'manual' | NULL
+link_source TEXT            -- 'path' | 'manual' | NULL
 link_checked_at TEXT        -- ISO8601, prevents repeated backfill scans
 ```
 
 - `parent_session_id`: confirmed parent link. NULL = top-level session.
 - `suggested_parent_id`: Layer 2 heuristic match, displayed as weak/dashed association in UI. User confirmation promotes to `parent_session_id`.
-- `link_source`: provenance of the link. `'manual'` with `parent_session_id = NULL` means user explicitly unlinked — backfill must skip.
+- `link_source`: provenance of confirmed link. `'path'` = Layer 1 deterministic, `'manual'` = user set/confirmed. `'manual'` with `parent_session_id = NULL` means user explicitly unlinked — all auto-detection must skip. (Note: `'heuristic'` removed — Layer 2 only writes `suggested_parent_id`, never confirms directly.)
 - `link_checked_at`: timestamp of last heuristic evaluation. Backfill skips sessions already checked.
 
 ### Constraints
@@ -27,11 +27,11 @@ link_checked_at TEXT        -- ISO8601, prevents repeated backfill scans
   CREATE TRIGGER IF NOT EXISTS trg_sessions_parent_cascade
   AFTER DELETE ON sessions
   BEGIN
-    UPDATE sessions SET parent_session_id = NULL, link_source = NULL WHERE parent_session_id = OLD.id;
+    UPDATE sessions SET parent_session_id = NULL, link_source = NULL, tier = NULL WHERE parent_session_id = OLD.id;
     UPDATE sessions SET suggested_parent_id = NULL WHERE suggested_parent_id = OLD.id;
   END;
   ```
-  Parent deletion auto-restores children to top-level.
+  Parent deletion auto-restores children to top-level. Also sets `tier = NULL` so `backfillTiers()` re-evaluates on next maintenance cycle (SQLite triggers can't call TypeScript `computeTier()`).
 - Max depth = 1 enforced at **all** write paths (Layer 1 adapter, backfill, manual API). Validation before every write:
   1. `parentId != sessionId` (no self-link)
   2. Parent session exists in DB
@@ -44,7 +44,7 @@ link_checked_at TEXT        -- ISO8601, prevents repeated backfill scans
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
 ```
 
 Composite index covers both `childSessions(parentId) ORDER BY start_time DESC` and `WHERE parent_session_id IS NULL` filtering.
@@ -66,7 +66,8 @@ Claude Code subagent path structure:
 
 - Extract `sessionId` from path as `parent_session_id`.
 - Set `link_source = 'path'`.
-- Executes in Claude Code adapter `parseSessionInfo()` at index time.
+- **Must check `link_source != 'manual'` before writing** — manual decisions are authoritative and must not be overwritten by reindex.
+- Executes in Claude Code adapter `parseSessionInfo()` at index time. If parent doesn't exist yet (child indexed before parent), skip — Pass 1 backfill catches it after all sessions are indexed.
 - Zero false positives. Deterministic.
 
 ### Layer 2: Content heuristic + temporal correlation — advisory
@@ -193,7 +194,7 @@ ALTER TABLE sessions ADD COLUMN link_checked_at TEXT
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC)
-CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id)
+CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC)
 
 -- Orphan protection trigger (SQLite ALTER TABLE doesn't support FK)
 CREATE TRIGGER IF NOT EXISTS trg_sessions_parent_cascade
@@ -230,6 +231,7 @@ WHERE parent_session_id IS NULL
   AND link_checked_at IS NULL
   AND link_source IS NULL
   AND source IN ('gemini', 'codex')
+LIMIT 500  -- bounded batch, same as Pass 1
 ```
 For each candidate:
 1. Read first user message via adapter.
@@ -277,7 +279,8 @@ Swift UI does not write `parent_session_id` directly. Instead:
     4. Set `link_source = 'manual'`, update `link_checked_at`
     5. Upgrade tier if needed (`skip` → `lite`)
   - `DELETE /api/sessions/:id/suggestion` → dismisses suggestion:
-    1. Conditional update: `WHERE suggested_parent_id = :expected` (prevents race with scanner)
+    - Request body: `{ suggestedParentId: string }` (the `:expected` value for conditional update)
+    1. Conditional update: `WHERE suggested_parent_id = :suggestedParentId` (prevents race with scanner)
     2. Clear `suggested_parent_id = NULL`
     3. Set `link_checked_at = now()` (prevents re-suggestion of same pair)
 - Swift `DaemonClient` calls these endpoints.
