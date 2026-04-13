@@ -59,11 +59,14 @@ async function main() {
   try {
     const url = `${baseUrl}/api/sessions?limit=10`;
     const res = await fetch(url);
+    // biome-ignore lint/suspicious/noExplicitAny: API response shape is loosely typed
     const json = (await res.json()) as any;
     // Filter sessions matching current directory
     sessions = (json.sessions || [])
+      // biome-ignore lint/suspicious/noExplicitAny: API session objects have dynamic shape
       .filter((s: any) => s.cwd === cwd || s.project === project)
       .slice(0, 10)
+      // biome-ignore lint/suspicious/noExplicitAny: API session objects have dynamic shape
       .map((s: any) => ({
         id: s.id,
         source: s.source,

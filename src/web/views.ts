@@ -1170,11 +1170,32 @@ function formatLocalTime(ts: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function healthPage(data: any): string {
+interface HealthSource {
+  name: string;
+  sessionCount: number;
+  latestIndexed: string;
+  dailyCounts: number[];
+  derived?: boolean;
+  derivedFrom?: string | null;
+  path?: string;
+  pathExists?: boolean;
+  watcherType: string;
+}
+
+interface HealthData {
+  sources: HealthSource[];
+  summary: {
+    activeSources: number;
+    totalSources: number;
+    lastIndexed?: string | null;
+  };
+}
+
+export function healthPage(data: HealthData): string {
   const { sources, summary } = data;
 
   const rows = sources
-    .map((s: any) => {
+    .map((s) => {
       const latestDate = new Date(s.latestIndexed);
       const ageMs = Date.now() - latestDate.getTime();
       const ageHours = ageMs / 3600000;
@@ -1198,7 +1219,7 @@ export function healthPage(data: any): string {
         .join('');
 
       const derived = s.derived
-        ? `<span style="color:#888;font-size:11px;">(via ${escapeHtml(s.derivedFrom)})</span>`
+        ? `<span style="color:#888;font-size:11px;">(via ${escapeHtml(s.derivedFrom ?? '')})</span>`
         : '';
       const pathCheck = s.path ? (s.pathExists ? '&#x2705;' : '&#x274C;') : '';
 

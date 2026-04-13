@@ -70,7 +70,9 @@ export class LogWriter {
 
   enforceMaxRows(maxRows: number): void {
     const count = (
-      this.db.prepare('SELECT COUNT(*) as c FROM logs').get() as any
+      this.db.prepare('SELECT COUNT(*) as c FROM logs').get() as {
+        c: number;
+      }
     ).c;
     if (count > maxRows) {
       this.db

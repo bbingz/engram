@@ -881,7 +881,9 @@ export function createApp(
     // Run in background (don't await)
     (async () => {
       let generated = 0;
-      const isOllama = (titleGenerator as any).config?.provider === 'ollama';
+      const isOllama =
+        (titleGenerator as unknown as { config?: { provider?: string } }).config
+          ?.provider === 'ollama';
 
       for (const session of sessions) {
         try {
@@ -1415,7 +1417,14 @@ export function createApp(
 
   // Observability: accept log forwarding from Swift app
   app.post('/api/log', async (c) => {
-    let body: any;
+    let body: {
+      level?: string;
+      module?: string;
+      message?: string;
+      data?: Record<string, unknown>;
+      traceId?: string;
+      error?: string;
+    };
     try {
       body = await c.req.json();
     } catch {
@@ -1432,14 +1441,16 @@ export function createApp(
       // Use traceId from body (Swift-provided) or fall back to the request header trace ID
       const traceId = body.traceId ?? c.get('traceId');
       opts.logWriter.write({
-        level: body.level,
+        level: body.level as 'debug' | 'info' | 'warn' | 'error',
         module: body.module,
         message:
           typeof body.message === 'string'
             ? body.message.slice(0, 10000)
             : String(body.message),
         data: body.data,
-        error: body.error,
+        error: body.error
+          ? { name: 'AppError', message: body.error }
+          : undefined,
         traceId,
         source: 'app',
       });

@@ -77,6 +77,7 @@ export class TitleGenerator {
       throw err;
     }
 
+    // biome-ignore lint/suspicious/noExplicitAny: LLM API response shape varies by provider (Ollama vs OpenAI)
     const json = (await res.json()) as Record<string, any>;
 
     const raw = isOllama

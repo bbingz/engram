@@ -265,7 +265,13 @@ export class LiveSessionMonitor {
             if (Array.isArray(content)) {
               const toolUse = [...content]
                 .reverse()
-                .find((c: any) => c.type === 'tool_use');
+                .find(
+                  (c: {
+                    type: string;
+                    name?: string;
+                    input?: Record<string, string>;
+                  }) => c.type === 'tool_use',
+                );
               if (toolUse) {
                 const input = toolUse.input;
                 const target =

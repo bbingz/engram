@@ -91,19 +91,19 @@ interface TrajectoryMessage {
 }
 
 export class CascadeGrpcClient {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: gRPC client generated dynamically from proto definition
   private client: any;
   private csrfToken: string;
   private port: number;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: gRPC client generated dynamically from proto definition
   private constructor(client: any, csrfToken: string, port: number) {
     this.client = client;
     this.csrfToken = csrfToken;
     this.port = port;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: gRPC client generated dynamically from proto definition
   private static buildGrpcClient(address: string): any {
     const tmpProtoPath = join('/tmp', `cascade-${Date.now()}.proto`);
     writeFileSync(tmpProtoPath, PROTO_DEFINITION);
@@ -113,7 +113,7 @@ export class CascadeGrpcClient {
         defaults: true,
         oneofs: true,
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: gRPC proto package definition is dynamically typed
       const proto = grpc.loadPackageDefinition(pkgDef) as any;
       const ServiceClass =
         proto?.exa?.language_server_pb?.LanguageServerService;
@@ -184,11 +184,11 @@ export class CascadeGrpcClient {
         meta.add('x-codeium-csrf-token', csrfToken);
 
         const works = await new Promise<boolean>((resolve) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           client.getAllCascadeTrajectories(
             {},
             meta,
             { deadline: Date.now() + 2000 },
+            // biome-ignore lint/suspicious/noExplicitAny: gRPC callback error type is untyped
             (err: any) => {
               // code 14 = UNAVAILABLE (no TCP connection established) → TLS or not gRPC
               resolve(!err || err.code !== 14);
@@ -263,14 +263,13 @@ export class CascadeGrpcClient {
       );
       if (!resp.ok) return this.listConversationsGrpc();
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: ConnectRPC JSON response is dynamically typed
       const data = (await resp.json()) as any;
       const summaries = data?.trajectorySummaries ?? {};
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: ConnectRPC trajectory summary structure is dynamic
       return Object.entries(summaries).map(([cascadeId, s]: [string, any]) => {
-        // Extract workspace folder path from workspaces array
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // biome-ignore lint/suspicious/noExplicitAny: workspace entry structure is dynamic
         const ws = (s?.workspaces as any[])?.[0];
         let cwd = '';
         if (ws?.workspaceFolderAbsoluteUri) {
@@ -377,9 +376,9 @@ export class CascadeGrpcClient {
       );
       if (!resp.ok) return [];
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: ConnectRPC JSON response is dynamically typed
       const data = (await resp.json()) as any;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: trajectory step structure is dynamic proto-generated
       const steps: any[] = data?.trajectory?.steps ?? [];
 
       const messages: TrajectoryMessage[] = [];

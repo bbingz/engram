@@ -72,7 +72,7 @@ function ruleOpusOveruse(
 
   const byModel = db.getCostsSummary({ groupBy: 'model', since });
   const opusRow = byModel.find(
-    (r: any) => typeof r.key === 'string' && r.key.includes('opus'),
+    (r) => typeof r.key === 'string' && r.key.includes('opus'),
   );
   if (!opusRow) return null;
 
@@ -191,8 +191,11 @@ function ruleOverBudget(
   totalCost: number,
   periodDays: number,
 ): CostSuggestion | null {
-  const dailyBudget =
-    config.costAlerts?.dailyBudget ?? (config.monitor as any)?.dailyCostBudget;
+  const dailyBudget: number | undefined =
+    config.costAlerts?.dailyBudget ??
+    ((config.monitor as Record<string, unknown> | undefined)?.dailyCostBudget as
+      | number
+      | undefined);
   if (dailyBudget == null) return null;
 
   const dailyAvg = totalCost / periodDays;
@@ -242,7 +245,7 @@ function ruleProjectHotspot(
     severity: 'medium',
     title: 'Single project dominates spending',
     detail: `Project "${top.key}" accounts for ${sharePercent}% of total cost (${fmt(top.costUsd || 0)}).`,
-    topItems: byProject.slice(0, 3).map((r: any) => ({
+    topItems: byProject.slice(0, 3).map((r) => ({
       label: r.key || '(unknown)',
       value: fmt(r.costUsd || 0),
     })),
@@ -258,8 +261,8 @@ function ruleModelEfficiency(
   if (byModel.length < 2) return null;
 
   const ranked = byModel
-    .filter((r: any) => (r.sessionCount || 0) > 0)
-    .map((r: any) => ({
+    .filter((r) => (r.sessionCount || 0) > 0)
+    .map((r) => ({
       model: r.key as string,
       costPerSession: (r.costUsd || 0) / r.sessionCount,
       sessionCount: r.sessionCount as number,

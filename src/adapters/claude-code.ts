@@ -194,22 +194,28 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
       if (msg && typeof msg === 'object') {
         // Extract usage
-        const rawUsage = (msg as any).usage;
+        const rawUsage = msg.usage as Record<string, unknown> | undefined;
         if (rawUsage && typeof rawUsage === 'object') {
           usage = {
-            inputTokens: rawUsage.input_tokens ?? 0,
-            outputTokens: rawUsage.output_tokens ?? 0,
-            cacheReadTokens: rawUsage.cache_read_input_tokens,
-            cacheCreationTokens: rawUsage.cache_creation_input_tokens,
+            inputTokens: (rawUsage.input_tokens as number) ?? 0,
+            outputTokens: (rawUsage.output_tokens as number) ?? 0,
+            cacheReadTokens: rawUsage.cache_read_input_tokens as
+              | number
+              | undefined,
+            cacheCreationTokens: rawUsage.cache_creation_input_tokens as
+              | number
+              | undefined,
           };
         }
 
         // Extract toolCalls from content array
-        const rawContent = (msg as any).content;
+        const rawContent = msg.content;
         if (Array.isArray(rawContent)) {
           const calls = rawContent
-            .filter((c: any) => c.type === 'tool_use' && c.name)
-            .map((c: any) => ({
+            .filter(
+              (c: Record<string, unknown>) => c.type === 'tool_use' && c.name,
+            )
+            .map((c: Record<string, unknown>) => ({
               name: c.name as string,
               input: c.input
                 ? JSON.stringify(c.input).slice(0, 500)

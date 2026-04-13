@@ -65,6 +65,33 @@ export interface SearchFilters {
   since?: string;
 }
 
+export interface FileActivityRow {
+  file_path: string;
+  action: string;
+  total_count: number;
+  session_count: number;
+}
+
+/** @public used in return types of exported tool handlers */
+export interface CostSummaryRow {
+  key: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  sessionCount: number;
+}
+
+/** @public used in return types of exported tool handlers */
+export interface ToolAnalyticsRow {
+  key: string;
+  callCount: number;
+  label?: string;
+  toolCount?: number;
+  sessionCount?: number;
+}
+
 /** Detect CJK characters that break SQLite's byte-level trigram tokenizer */
 const CJK_REGEX = /[\u2E80-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F]/;
 export function containsCJK(text: string): boolean {
@@ -115,8 +142,10 @@ export class Database {
     return new Proxy(stmt, {
       get(target, prop) {
         if (prop === 'run' || prop === 'get' || prop === 'all') {
+          // biome-ignore lint/suspicious/noExplicitAny: Proxy handler forwarding arbitrary statement arguments
           return (...args: any[]) => {
             const start = performance.now();
+            // biome-ignore lint/suspicious/noExplicitAny: dynamic property access on Proxy target
             const result = (target as any)[prop].apply(target, args);
             metrics.histogram('db.query_ms', performance.now() - start, {
               method: prop as string,
@@ -124,6 +153,7 @@ export class Database {
             return result;
           };
         }
+        // biome-ignore lint/suspicious/noExplicitAny: dynamic property access on Proxy target
         const val = (target as any)[prop];
         return typeof val === 'function' ? val.bind(target) : val;
       },
@@ -1490,9 +1520,9 @@ export class Database {
     project?: string;
     since?: string;
     limit?: number;
-  }): any[] {
+  }): FileActivityRow[] {
     const conditions: string[] = [];
-    const binds: any[] = [];
+    const binds: (string | number)[] = [];
     if (params.project) {
       conditions.push('s.project = ?');
       binds.push(params.project);
@@ -1515,7 +1545,7 @@ export class Database {
       ORDER BY total_count DESC
       LIMIT ?
     `)
-      .all(...binds, limit);
+      .all(...binds, limit) as FileActivityRow[];
   }
 
   upsertSessionTools(sessionId: string, tools: Map<string, number>): void {
@@ -1534,7 +1564,7 @@ export class Database {
     groupBy?: string;
     since?: string;
     until?: string;
-  }): any[] {
+  }): CostSummaryRow[] {
     let groupCol: string;
     switch (params.groupBy) {
       case 'source':
@@ -1551,7 +1581,7 @@ export class Database {
         break;
     }
     let sql = `SELECT ${groupCol} as key, SUM(c.input_tokens) as inputTokens, SUM(c.output_tokens) as outputTokens, SUM(c.cache_read_tokens) as cacheReadTokens, SUM(c.cache_creation_tokens) as cacheCreationTokens, SUM(c.cost_usd) as costUsd, COUNT(*) as sessionCount FROM session_costs c JOIN sessions s ON c.session_id = s.id WHERE 1=1`;
-    const binds: any[] = [];
+    const binds: string[] = [];
     if (params.since) {
       sql += ' AND s.start_time >= ?';
       binds.push(params.since);
@@ -1561,14 +1591,14 @@ export class Database {
       binds.push(params.until);
     }
     sql += ` GROUP BY ${groupCol} ORDER BY costUsd DESC`;
-    return this.db.prepare(sql).all(...binds) as any[];
+    return this.db.prepare(sql).all(...binds) as CostSummaryRow[];
   }
 
   getToolAnalytics(params: {
     project?: string;
     since?: string;
     groupBy?: string;
-  }): any[] {
+  }): ToolAnalyticsRow[] {
     let selectCols: string;
     let groupCol: string;
     switch (params.groupBy) {
@@ -1589,7 +1619,7 @@ export class Database {
         break;
     }
     let sql = `SELECT ${selectCols} FROM session_tools t JOIN sessions s ON t.session_id = s.id WHERE 1=1`;
-    const binds: any[] = [];
+    const binds: string[] = [];
     if (params.project) {
       const escaped = params.project.replace(/[%_\\]/g, '\\$&');
       sql += " AND s.project LIKE ? ESCAPE '\\'";
@@ -1600,7 +1630,7 @@ export class Database {
       binds.push(params.since);
     }
     sql += ` GROUP BY ${groupCol} ORDER BY callCount DESC`;
-    return this.db.prepare(sql).all(...binds) as any[];
+    return this.db.prepare(sql).all(...binds) as ToolAnalyticsRow[];
   }
 
   sessionsWithoutCosts(limit = 100): string[] {

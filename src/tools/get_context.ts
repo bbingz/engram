@@ -180,7 +180,7 @@ export async function handleGetContext(
 async function gatherEnvironmentData(
   db: Database,
   deps: GetContextDeps,
-  params?: Record<string, any>,
+  params?: Record<string, unknown>,
   maxTokens?: number,
 ): Promise<string> {
   const sections: string[] = [];
@@ -207,10 +207,7 @@ async function gatherEnvironmentData(
   try {
     const today = new Date().toISOString().slice(0, 10);
     const breakdown = db.getCostsSummary({ since: `${today}T00:00:00Z` });
-    const totalCost = breakdown.reduce(
-      (sum: number, r: any) => sum + (r.costUsd || 0),
-      0,
-    );
+    const totalCost = breakdown.reduce((sum, r) => sum + (r.costUsd || 0), 0);
     if (totalCost > 0) {
       sections.push(
         `Cost today: $${(Math.round(totalCost * 100) / 100).toFixed(2)}`,
@@ -247,7 +244,7 @@ async function gatherEnvironmentData(
       const tools = db.getToolAnalytics({ since, groupBy: 'tool' });
       if (tools.length > 0) {
         const topN = tools.slice(0, itemLimit);
-        const lines = topN.map((t: any) => `  ${t.key}: ${t.callCount} calls`);
+        const lines = topN.map((t) => `  ${t.key}: ${t.callCount} calls`);
         sections.push(`Top tools (7d):\n${lines.join('\n')}`);
       }
     } catch (err: unknown) {

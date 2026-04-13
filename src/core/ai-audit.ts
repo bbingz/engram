@@ -210,10 +210,12 @@ export class AiAuditQuery {
       .prepare(
         `SELECT * FROM ai_audit_log ${where} ORDER BY ts DESC LIMIT @limit OFFSET @offset`,
       )
+      // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 returns untyped rows
       .all({ ...params, limit, offset }) as any[];
 
     const countRow = this.db
       .prepare(`SELECT COUNT(*) as c FROM ai_audit_log ${where}`)
+      // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 returns untyped rows
       .get(params) as any;
 
     return {
@@ -225,6 +227,7 @@ export class AiAuditQuery {
   get(id: number): AiAuditRecord | null {
     const row = this.db
       .prepare('SELECT * FROM ai_audit_log WHERE id = ?')
+      // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 returns untyped rows
       .get(id) as any;
     return row ? this.rowToRecord(row) : null;
   }
@@ -245,6 +248,7 @@ export class AiAuditQuery {
         COALESCE(AVG(duration_ms), 0) as avgDurationMs
       FROM ai_audit_log ${where}
     `)
+      // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 returns untyped rows
       .get(params) as any;
 
     const callerRows = this.db
@@ -256,6 +260,7 @@ export class AiAuditQuery {
         COALESCE(SUM(completion_tokens), 0) as completionTokens
       FROM ai_audit_log ${where} GROUP BY caller
     `)
+      // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 returns untyped rows
       .all(params) as any[];
 
     const modelRows = this.db
@@ -266,6 +271,7 @@ export class AiAuditQuery {
         COALESCE(SUM(completion_tokens), 0) as completionTokens
       FROM ai_audit_log ${where} AND model IS NOT NULL GROUP BY model
     `)
+      // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 returns untyped rows
       .all(params) as any[];
 
     const hourlyRows = this.db
@@ -275,6 +281,7 @@ export class AiAuditQuery {
         COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0) as tokens
       FROM ai_audit_log ${where} GROUP BY hour ORDER BY hour
     `)
+      // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 returns untyped rows
       .all(params) as any[];
 
     const byCaller: Record<
@@ -317,6 +324,7 @@ export class AiAuditQuery {
       },
       byCaller,
       byModel,
+      // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 untyped row
       hourly: hourlyRows.map((r: any) => ({
         hour: r.hour,
         requests: r.requests,
@@ -325,6 +333,7 @@ export class AiAuditQuery {
     };
   }
 
+  // biome-ignore lint/suspicious/noExplicitAny: better-sqlite3 returns untyped rows
   private rowToRecord(r: any): AiAuditRecord {
     return {
       id: r.id,
