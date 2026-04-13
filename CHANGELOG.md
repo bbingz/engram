@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.0.1.0] - 2026-04-13
+
+### Added
+- **Insights 文本存储 + FTS 搜索**：新增 `insights` 表和 `insights_fts`（trigram），即使没有 embedding provider 也能保存和搜索知识
+- **save_insight 优雅降级**：无 embedding 时自动保存为纯文本，有 embedding 时双写（向量 + 文本）
+- **get_memory / search / get_context FTS 回退**：无 embedding provider 时通过 FTS 关键词搜索 insights，附带降级警告
+- **Insight embedding 回填**：daemon 启动时自动将纯文本 insights 升级为向量（当 embedding provider 可用时）
+- **MCP 工具 API 参考文档**：`docs/mcp-tools.md` 记录全部 19 个 MCP 工具
+- **CONTRIBUTING.md**：新增贡献者指南
+
+### Changed
+- **db.ts God Object 拆分**：1869 行的 `src/core/db.ts` 拆分为 10 个领域模块 + facade 类 + ESM re-export shim（`src/core/db/`）
+- **测试覆盖率提升**：691 → 767 tests，67% → 75% lines，覆盖率阈值恢复为 75/70/80
+
+### Fixed
+- **Flaky hygiene test**：时间戳竞态条件修复（1ms → 50ms delay）
+- **CJK insight 搜索**：insight FTS 搜索增加 CJK LIKE 回退（与 session 搜索一致）
+- **Insight FTS 原子性**：`saveInsightText` 包裹在事务中
+- **importance 默认值对齐**：repo 默认值从 5 改为 3（与工具文档一致）
+
+### Removed
+- 移除未使用依赖 `js-yaml`
+- 清理 14 个未使用导出、53 个未使用导出类型
+
+---
+
 ## [未发布]
 
 ### 新功能

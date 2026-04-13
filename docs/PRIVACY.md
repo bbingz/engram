@@ -1,6 +1,6 @@
 # Engram Privacy Policy
 
-**Last updated**: 2026-03-22
+**Last updated**: 2026-04-13
 
 ## Overview
 
@@ -40,10 +40,14 @@ Engram never modifies your AI tool session files.
 
 ## Network Activity
 
+Data is local by default. Network calls are made by: peer sync, AI summaries, title generation, and embedding providers — all optional and user-configured.
+
 By default, Engram listens on `127.0.0.1:3457` (localhost only). No external network connections are made unless you explicitly configure:
 
 - **Peer Sync** (optional): Pulls session metadata (not message content) from configured peer Engram instances on your network.
 - **AI Summary** (optional): Sends session excerpts to your configured AI provider (OpenAI/Anthropic/Gemini/Ollama) for summary generation.
+- **Title Generation** (optional): Sends session excerpts to your configured AI provider for automatic title generation.
+- **Embedding Providers** (optional): Sends message content to Ollama (local or remote) or OpenAI for vector embedding generation used in semantic search.
 
 ## Non-localhost Binding
 

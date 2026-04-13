@@ -12,7 +12,7 @@ export interface SyncPeer {
   url: string;
 }
 
-export interface SyncResult {
+interface SyncResult {
   peer: string;
   pulled: number;
   skipped: number;
@@ -78,6 +78,7 @@ export class SyncEngine {
       summaryMessageCount:
         'summaryMessageCount' in raw ? raw.summaryMessageCount : undefined,
       origin: peerName,
+      // biome-ignore lint/suspicious/noExplicitAny: agentRole may exist on peer response but not in local type
       agentRole: 'agentRole' in raw ? ((raw as any).agentRole ?? null) : null,
     };
   }

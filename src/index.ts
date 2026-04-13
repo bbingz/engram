@@ -348,6 +348,7 @@ toolRegistry.set('get_memory', async (a) =>
   handleGetMemory(a as { query: string }, {
     vecStore: vecDeps?.vectorStore,
     embedder: vecDeps?.embeddingClient ?? null,
+    db,
     log,
   }),
 );
@@ -358,6 +359,7 @@ toolRegistry.set('save_insight', async (a) =>
     {
       vecStore: vecDeps?.vectorStore,
       embedder: vecDeps?.embeddingClient ?? null,
+      db,
       log,
     },
   ),

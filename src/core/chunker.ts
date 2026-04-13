@@ -1,6 +1,6 @@
 import type { Message } from '../adapters/types.js';
 
-export interface Chunk {
+interface Chunk {
   text: string;
   sessionId: string;
   chunkIndex: number;

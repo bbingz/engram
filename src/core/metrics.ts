@@ -1,7 +1,7 @@
 // src/core/metrics.ts
 import type BetterSqlite3 from 'better-sqlite3';
 
-export type MetricType = 'counter' | 'gauge' | 'histogram';
+type MetricType = 'counter' | 'gauge' | 'histogram';
 
 interface MetricEntry {
   name: string;

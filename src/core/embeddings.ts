@@ -7,9 +7,9 @@ export interface EmbeddingClient {
   model: string;
 }
 
-export type EmbeddingProvider = 'ollama' | 'openai' | 'transformers';
+type EmbeddingProvider = 'ollama' | 'openai' | 'transformers';
 
-export interface EmbeddingClientOptions {
+interface EmbeddingClientOptions {
   provider?: EmbeddingProvider;
   ollamaUrl?: string;
   ollamaModel?: string;
@@ -30,7 +30,9 @@ function l2Normalize(arr: Float32Array): void {
 /**
  * Lazy-load Transformers.js pipeline. Returns null if package not installed.
  */
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import of optional @huggingface/transformers pipeline
 let transformersPipeline: any = null;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import of optional @huggingface/transformers pipeline
 async function getTransformersPipeline(): Promise<any> {
   if (transformersPipeline) return transformersPipeline;
   try {

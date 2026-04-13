@@ -62,8 +62,8 @@ describe('runAllHealthChecks', () => {
     });
     const firstCheckedAt = first.checkedAt;
 
-    // Wait 1ms to ensure different timestamp
-    await new Promise((r) => setTimeout(r, 1));
+    // Wait long enough for Date.now() to advance (timer resolution varies by OS)
+    await new Promise((r) => setTimeout(r, 50));
 
     // Second forced call should return new checkedAt
     const second = await runAllHealthChecks(db, {

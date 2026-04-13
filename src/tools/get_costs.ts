@@ -35,16 +35,13 @@ export function handleGetCosts(
     until: params.until,
   });
 
-  const totalCostUsd = breakdown.reduce(
-    (sum: number, r: any) => sum + (r.costUsd || 0),
-    0,
-  );
+  const totalCostUsd = breakdown.reduce((sum, r) => sum + (r.costUsd || 0), 0);
   const totalInputTokens = breakdown.reduce(
-    (sum: number, r: any) => sum + (r.inputTokens || 0),
+    (sum, r) => sum + (r.inputTokens || 0),
     0,
   );
   const totalOutputTokens = breakdown.reduce(
-    (sum: number, r: any) => sum + (r.outputTokens || 0),
+    (sum, r) => sum + (r.outputTokens || 0),
     0,
   );
 

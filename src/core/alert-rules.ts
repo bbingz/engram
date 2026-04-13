@@ -1,20 +1,20 @@
 // src/core/alert-rules.ts
 import type BetterSqlite3 from 'better-sqlite3';
 
-export interface AlertResult {
+interface AlertResult {
   severity: 'warning' | 'critical';
   message: string;
   value: number;
   threshold: number;
 }
 
-export interface AlertRule {
+interface AlertRule {
   name: string;
   cooldownMs: number;
   check(): AlertResult | null;
 }
 
-export interface FiredAlert extends AlertResult {
+interface FiredAlert extends AlertResult {
   rule: string;
 }
 

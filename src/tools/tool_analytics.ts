@@ -38,10 +38,7 @@ export function handleToolAnalytics(
     groupBy: params.group_by,
   });
 
-  const totalCalls = tools.reduce(
-    (sum: number, t: any) => sum + (t.callCount || 0),
-    0,
-  );
+  const totalCalls = tools.reduce((sum, t) => sum + (t.callCount || 0), 0);
   const groupCount = tools.length;
 
   return { tools, totalCalls, groupCount };

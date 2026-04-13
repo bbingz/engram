@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-export interface RequestContext {
+interface RequestContext {
   requestId: string;
   spanId?: string;
   source: 'mcp' | 'http' | 'indexer' | 'watcher' | 'scheduler';

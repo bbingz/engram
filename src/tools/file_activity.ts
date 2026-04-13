@@ -1,5 +1,5 @@
 // src/tools/file_activity.ts
-import type { Database } from '../core/db.js';
+import type { Database, FileActivityRow } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 
 export function handleFileActivity(
@@ -10,7 +10,7 @@ export function handleFileActivity(
     limit?: number;
   },
   opts?: { log?: Logger },
-): { files: any[]; totalFiles: number } {
+): { files: FileActivityRow[]; totalFiles: number } {
   opts?.log?.info('file_activity invoked', {
     project: params.project,
     since: params.since,

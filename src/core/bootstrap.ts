@@ -26,7 +26,7 @@ import { createEmbeddingClient } from './embeddings.js';
 import { migrateDataDir } from './migrate.js';
 import { SqliteVecStore } from './vector-store.js';
 
-export const ENGRAM_DIR = join(homedir(), '.engram');
+const ENGRAM_DIR = join(homedir(), '.engram');
 
 export function ensureDataDirs(): string {
   migrateDataDir();
@@ -60,13 +60,13 @@ export function getAdapter(name: string): SessionAdapter | undefined {
   return adapterMap.get(name as SourceName);
 }
 
-export interface VectorDeps {
+interface VectorDeps {
   vectorStore: SqliteVecStore;
   embeddingClient: EmbeddingClient;
   embeddingIndexer: EmbeddingIndexer;
 }
 
-export interface VectorDepsOptions {
+interface VectorDepsOptions {
   openaiApiKey?: string;
   ollamaUrl?: string;
   ollamaModel?: string;

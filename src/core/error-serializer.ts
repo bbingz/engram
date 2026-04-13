@@ -12,7 +12,7 @@ export function serializeError(err: unknown): SerializedError {
       name: err.name,
       message: err.message,
       stack: err.stack,
-      code: (err as any).code,
+      code: (err as NodeJS.ErrnoException).code,
     };
   }
   return { name: 'UnknownError', message: String(err) };

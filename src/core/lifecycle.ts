@@ -2,14 +2,14 @@
 // Multi-layer process lifecycle manager.
 // Ensures Node.js processes exit cleanly when their parent/client disappears.
 
-export interface LifecycleOptions {
+interface LifecycleOptions {
   /** Idle timeout in ms. Default 300_000 (5 min). Set 0 to disable. */
   idleTimeoutMs?: number;
   /** Cleanup callback — close watchers, db connections, etc. */
   onExit?: () => void;
 }
 
-export interface LifecycleHandle {
+interface LifecycleHandle {
   /** Call on each MCP request / meaningful activity to reset idle timer. */
   heartbeat: () => void;
 }

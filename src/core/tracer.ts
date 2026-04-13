@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type BetterSqlite3 from 'better-sqlite3';
 import { getRequestContext } from './request-context.js';
 
-export interface SpanData {
+interface SpanData {
   traceId: string;
   spanId: string;
   parentSpanId?: string;
@@ -45,7 +45,7 @@ export class TraceWriter {
   }
 }
 
-export interface Span {
+interface Span {
   traceId: string;
   spanId: string;
   name: string;
@@ -54,7 +54,7 @@ export interface Span {
   setAttribute(key: string, value: unknown): void;
 }
 
-export type SpanOpts = {
+type SpanOpts = {
   parentSpan?: Span;
   traceId?: string;
   attributes?: Record<string, unknown>;

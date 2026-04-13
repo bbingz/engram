@@ -240,6 +240,11 @@ indexer
       if (jobSummary.completed > 0 || jobSummary.notApplicable > 0) {
         emit({ event: 'index_jobs_recovered', ...jobSummary });
       }
+      // Promote text-only insights to embedded when provider is available
+      const promoted = await indexJobRunner.backfillInsightEmbeddings();
+      if (promoted > 0) {
+        emit({ event: 'insights_promoted', count: promoted });
+      }
     } catch (err) {
       log.warn('index job recovery failed', {}, err);
     }

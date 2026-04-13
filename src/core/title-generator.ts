@@ -2,7 +2,7 @@
 
 import type { AiAuditWriter } from './ai-audit.js';
 
-export interface TitleGeneratorConfig {
+interface TitleGeneratorConfig {
   provider: 'ollama' | 'openai' | 'dashscope' | 'custom';
   baseUrl: string;
   model: string;
@@ -77,6 +77,7 @@ export class TitleGenerator {
       throw err;
     }
 
+    // biome-ignore lint/suspicious/noExplicitAny: LLM API response shape varies by provider (Ollama vs OpenAI)
     const json = (await res.json()) as Record<string, any>;
 
     const raw = isOllama

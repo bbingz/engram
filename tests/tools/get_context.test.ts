@@ -144,6 +144,26 @@ describe('get_context', () => {
     expect(result.sessionIds).toContain('s4');
   });
 
+  it('injects FTS insights when no vector store is available', async () => {
+    // Save a text-only insight
+    db.saveInsightText(
+      'ins-fts-1',
+      'Always run migrations before deploying',
+      'myapp',
+      undefined,
+      4,
+    );
+
+    const result = await handleGetContext(
+      db,
+      { cwd: '/Users/test/myapp', task: 'migrations deploying' },
+      {}, // no vectorStore, no embed
+    );
+
+    expect(result.contextText).toContain('[memory]');
+    expect(result.contextText).toContain('migrations');
+  });
+
   describe('environment data — new blocks', () => {
     it('includes git repos with dirty/unpushed changes in environment', async () => {
       // Seed a dirty git repo

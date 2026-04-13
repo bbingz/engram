@@ -5,7 +5,7 @@ import type { MetricsCollector } from './metrics.js';
 import { getRequestContext } from './request-context.js';
 import { applyPatterns, sanitize } from './sanitizer.js';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,
@@ -14,7 +14,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
   error: 3,
 };
 
-export interface LogEntry {
+interface LogEntry {
   ts?: string;
   level: LogLevel;
   module: string;
@@ -70,7 +70,9 @@ export class LogWriter {
 
   enforceMaxRows(maxRows: number): void {
     const count = (
-      this.db.prepare('SELECT COUNT(*) as c FROM logs').get() as any
+      this.db.prepare('SELECT COUNT(*) as c FROM logs').get() as {
+        c: number;
+      }
     ).c;
     if (count > maxRows) {
       this.db

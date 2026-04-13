@@ -1,4 +1,4 @@
-export interface ModelPrice {
+interface ModelPrice {
   input: number; // USD per 1M input tokens
   output: number; // USD per 1M output tokens
   cacheRead: number; // USD per 1M cache-read tokens

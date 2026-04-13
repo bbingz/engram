@@ -115,3 +115,126 @@ describe('search sub-query metrics', () => {
     expect(rows[0].type).toBe('histogram');
   });
 });
+
+describe('search modes', () => {
+  let db: Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'search-modes-'));
+    db = new Database(join(tmpDir, 'test.sqlite'));
+    db.upsertSession({
+      id: 's1',
+      source: 'codex',
+      startTime: '2026-01-01T10:00:00Z',
+      cwd: '/p',
+      messageCount: 5,
+      userMessageCount: 2,
+      assistantMessageCount: 0,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      filePath: '/f1',
+      sizeBytes: 100,
+    });
+    db.indexSessionContent('s1', [
+      {
+        role: 'user',
+        content: 'Fix the SSL certificate error in nginx config',
+      },
+    ]);
+    // Save an insight for FTS insight fallback tests
+    db.saveInsightText(
+      'ins1',
+      'Always use HTTPS for production deployments',
+      'devops',
+      'ssl',
+    );
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it('mode=keyword uses only FTS, not vector', async () => {
+    const result = await handleSearch(db, {
+      query: 'SSL certificate',
+      mode: 'keyword',
+    });
+    expect(result.searchModes).toContain('keyword');
+    expect(result.searchModes).not.toContain('semantic');
+    expect(result.results.length).toBeGreaterThan(0);
+    expect(result.results[0].matchType).toBe('keyword');
+  });
+
+  it('mode=semantic with no vectorStore returns empty results', async () => {
+    const result = await handleSearch(
+      db,
+      { query: 'SSL certificate', mode: 'semantic' },
+      {},
+    );
+    // No vectorStore/embed provided → semantic search skipped entirely
+    expect(result.searchModes).not.toContain('semantic');
+    expect(result.searchModes).not.toContain('keyword');
+    expect(result.results).toHaveLength(0);
+  });
+
+  it('FTS insight fallback when no vectorStore', async () => {
+    const result = await handleSearch(db, { query: 'HTTPS production' }, {});
+    // No vectorStore → insights should be found via FTS fallback
+    expect(result.insightResults).toBeDefined();
+    expect(result.insightResults!.length).toBeGreaterThan(0);
+    expect(result.insightResults![0]).toContain('HTTPS');
+  });
+
+  it('warning when embedding unavailable in hybrid mode', async () => {
+    const result = await handleSearch(db, { query: 'SSL certificate' }, {});
+    // Default mode is hybrid, no vectorStore provided
+    expect(result.warning).toContain('Embedding provider unavailable');
+    expect(result.warning).toContain('keyword-only');
+  });
+
+  it('short query < 3 chars skips keyword search', async () => {
+    const result = await handleSearch(db, { query: 'SS' }, {});
+    expect(result.searchModes).not.toContain('keyword');
+    expect(result.results).toHaveLength(0);
+  });
+
+  it('short query < 2 chars skips both keyword and semantic', async () => {
+    const result = await handleSearch(db, { query: 'S' }, {});
+    expect(result.searchModes).toHaveLength(0);
+    expect(result.results).toHaveLength(0);
+    expect(result.warning).toContain('at least 3 characters');
+  });
+
+  it('UUID direct lookup finds matching session', async () => {
+    const uuid = '12345678-1234-1234-1234-123456789abc';
+    db.upsertSession({
+      id: uuid,
+      source: 'claude-code',
+      startTime: '2026-01-03T10:00:00Z',
+      cwd: '/projects/test',
+      messageCount: 10,
+      userMessageCount: 5,
+      assistantMessageCount: 3,
+      toolMessageCount: 2,
+      systemMessageCount: 0,
+      filePath: '/f-uuid',
+      sizeBytes: 200,
+    });
+
+    const result = await handleSearch(db, { query: uuid });
+    expect(result.searchModes).toEqual(['id']);
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].session.id).toBe(uuid);
+    expect(result.results[0].score).toBe(1);
+  });
+
+  it('UUID direct lookup returns warning for non-existent session', async () => {
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const result = await handleSearch(db, { query: uuid });
+    expect(result.searchModes).toEqual(['id']);
+    expect(result.results).toHaveLength(0);
+    expect(result.warning).toContain('No session found');
+  });
+});
