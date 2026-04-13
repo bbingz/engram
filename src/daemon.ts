@@ -5,37 +5,23 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { ClaudeUsageProbe } from './adapters/claude-usage-probe.js';
 import { CodexUsageProbe } from './adapters/codex-usage-probe.js';
-import { AiAuditQuery, AiAuditWriter } from './core/ai-audit.js';
 import { summarizeConversation } from './core/ai-client.js';
 import { AlertRuleEngine } from './core/alert-rules.js';
 import { AutoSummaryManager } from './core/auto-summary.js';
-import {
-  createAdapters,
-  ensureDataDirs,
-  initVectorDeps,
-} from './core/bootstrap.js';
+import { createDaemonDeps, createShutdownHandler } from './core/bootstrap.js';
 import {
   DEFAULT_AI_AUDIT_CONFIG,
   type FileSettings,
   readFileSettings,
 } from './core/config.js';
-// os/homedir no longer needed — getWatchEntries() handles it internally
-import { Database } from './core/db.js';
 import { startGitProbeLoop } from './core/git-probe.js';
-import { IndexJobRunner } from './core/index-job-runner.js';
-import { Indexer } from './core/indexer.js';
 import { LiveSessionMonitor, type WatchDir } from './core/live-sessions.js';
-import { createLogger, LogWriter } from './core/logger.js';
-import { MetricsCollector } from './core/metrics.js';
 import { populateMockData } from './core/mock-data.js';
 import { BackgroundMonitor } from './core/monitor.js';
 import { runWithContext } from './core/request-context.js';
 import { SyncEngine } from './core/sync.js';
-import { TitleGenerator } from './core/title-generator.js';
-import { Tracer, TraceWriter } from './core/tracer.js';
 import { UsageCollector } from './core/usage-collector.js';
 import {
   getWatchEntries,
@@ -61,79 +47,31 @@ const onACPower = isOnACPower();
 const powerMode = onACPower ? 'ac' : 'battery';
 const POWER_MULTIPLIER = onACPower ? 1 : 2;
 
-const DB_DIR = ensureDataDirs();
-const dbPath = process.argv[2] || join(DB_DIR, 'index.sqlite');
-const db = new Database(dbPath);
-const adapters = createAdapters();
-const settings = readFileSettings();
-
-// Initialize observability
-const logWriter = new LogWriter(db.raw);
-const traceWriter = new TraceWriter(db.raw);
-const metrics = new MetricsCollector(db.raw, {
-  flushIntervalMs: 5000,
-  sampleRates: { 'db.query_ms': 0.1 },
-});
-const tracer = new Tracer(traceWriter);
-db.setMetrics(metrics);
-const log = createLogger('daemon', {
-  writer: logWriter,
-  level: settings.observability?.logLevel ?? 'info',
-  stderrJson: true,
-  metrics,
-});
-
-log.info('daemon starting', { powerMode });
-
-const authoritativeNode = settings.syncNodeName || 'local';
-
-// Apply tier-based noise filter
-db.noiseFilter = settings.noiseFilter ?? 'hide-skip';
-
-// AI Audit
-const auditConfig = { ...DEFAULT_AI_AUDIT_CONFIG, ...settings.aiAudit };
-const audit = new AiAuditWriter(db.getRawDb(), auditConfig);
-const auditQuery = new AiAuditQuery(db.getRawDb());
-audit.cleanup(auditConfig.retentionDays);
-
-// Emit power state
-emit({ event: 'power', mode: powerMode });
-
-// Build watch directories for live session detection (reuse canonical entries from watcher)
-const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({
-  path,
-  source,
-}));
-
-const usageCollector = new UsageCollector(db.getRawDb(), (event, data) =>
-  emit({
-    event,
-    ...(typeof data === 'object' && data !== null ? data : { data }),
-  }),
-);
-usageCollector.register(new ClaudeUsageProbe());
-usageCollector.register(new CodexUsageProbe());
-
-const titleConfig = {
-  provider: settings.titleProvider ?? 'ollama',
-  baseUrl: settings.titleBaseUrl ?? 'http://localhost:11434',
-  model: settings.titleModel ?? 'qwen2.5:3b',
-  apiKey: settings.titleApiKey,
-  autoGenerate: settings.titleAutoGenerate ?? false,
-};
-const titleGenerator = new TitleGenerator({ ...titleConfig, audit });
-
-const indexer = new Indexer(db, adapters, {
-  authoritativeNode,
-  titleGenerator,
-  log,
-  tracer,
-  metrics,
-});
-
 function emit(obj: object): void {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }
+
+const dbPath = process.argv[2] || undefined;
+const {
+  db,
+  adapters,
+  settings,
+  audit,
+  auditQuery,
+  tracer,
+  indexer,
+  indexJobRunner,
+  vecDeps,
+  log,
+  logWriter,
+  metrics,
+  titleGenerator,
+} = createDaemonDeps({ dbPath });
+
+log.info('daemon starting', { powerMode });
+
+// Emit power state
+emit({ event: 'power', mode: powerMode });
 
 audit.on(
   'entry',
@@ -157,23 +95,24 @@ audit.on(
   },
 );
 
-const vecDeps = initVectorDeps(db, {
-  openaiApiKey: settings.openaiApiKey,
-  ollamaUrl: settings.ollamaUrl,
-  ollamaModel: settings.embedding?.model ?? settings.ollamaModel,
-  embeddingDimension:
-    settings.embedding?.dimension ?? settings.embeddingDimension,
-  embeddingProvider: settings.embedding?.provider,
-  audit,
-});
 if (!vecDeps) {
   emit({ event: 'warning', message: 'Vector store unavailable' });
 }
-const indexJobRunner = new IndexJobRunner(
-  db,
-  vecDeps?.vectorStore,
-  vecDeps?.embeddingClient,
+
+// Build watch directories for live session detection (reuse canonical entries from watcher)
+const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({
+  path,
+  source,
+}));
+
+const usageCollector = new UsageCollector(db.getRawDb(), (event, data) =>
+  emit({
+    event,
+    ...(typeof data === 'object' && data !== null ? data : { data }),
+  }),
 );
+usageCollector.register(new ClaudeUsageProbe());
+usageCollector.register(new CodexUsageProbe());
 
 // Handle --mock flag for development
 if (process.argv.includes('--mock')) {
@@ -223,7 +162,7 @@ indexer
       log.warn('backfill scores failed', {}, err);
     }
 
-    // DB maintenance: dedup, optimize FTS, VACUUM if fragmented
+    // DB maintenance: dedup, optimize FTS, VACUUM if fragmented, reconcile insights
     try {
       const deduped = db.deduplicateFilePaths();
       if (deduped > 0)
@@ -231,6 +170,14 @@ indexer
       db.optimizeFts();
       const vacuumed = db.vacuumIfNeeded(15); // VACUUM if >15% fragmentation
       if (vacuumed) emit({ event: 'db_maintenance', action: 'vacuum' });
+      const reconciled = db.reconcileInsights(log);
+      if (reconciled.resetEmbedding > 0 || reconciled.orphanedVector > 0) {
+        emit({
+          event: 'db_maintenance',
+          action: 'reconcile_insights',
+          ...reconciled,
+        });
+      }
     } catch (err) {
       log.warn('db maintenance failed', {}, err);
     }
@@ -518,7 +465,9 @@ const logRotationTimer = setInterval(() => {
     db.raw
       .prepare('DELETE FROM metrics WHERE ts < ?')
       .run(new Date(Date.now() - 24 * 3600000).toISOString());
-    audit.cleanup(auditConfig.retentionDays);
+    const auditRetention =
+      settings.aiAudit?.retentionDays ?? DEFAULT_AI_AUDIT_CONFIG.retentionDays;
+    audit.cleanup(auditRetention);
   });
 }, 3600000);
 
@@ -549,24 +498,33 @@ const uptimeTimer = setInterval(() => {
 }, 60000);
 
 // Lifecycle: signal handlers only (no stdin/parent checks — daemon runs standalone)
-function shutdown() {
-  clearInterval(rescanTimer);
-  if (syncTimer) clearInterval(syncTimer);
-  clearInterval(gitProbeTimer);
-  clearInterval(logRotationTimer);
-  clearTimeout(metricsRollupTimer);
-  if (rollupInterval) clearInterval(rollupInterval);
-  clearInterval(uptimeTimer);
-  clearInterval(alertCheckTimer);
-  metrics.destroy();
-  liveMonitor.stop();
-  backgroundMonitor.stop();
-  usageCollector.stop();
-  autoSummary?.cleanup();
-  watcher?.close();
-  webServer.close();
-  db.close();
+const shutdown = createShutdownHandler(
+  {
+    timers: [
+      rescanTimer,
+      syncTimer,
+      gitProbeTimer,
+      logRotationTimer,
+      metricsRollupTimer,
+      rollupInterval,
+      uptimeTimer,
+      alertCheckTimer,
+    ],
+    watcher,
+    webServer,
+    db,
+    metrics,
+    liveMonitor,
+    backgroundMonitor,
+    usageCollector,
+    autoSummary,
+  },
+  log,
+);
+
+const wrappedShutdown = () => {
+  shutdown();
   process.exit(0);
-}
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+};
+process.on('SIGTERM', wrappedShutdown);
+process.on('SIGINT', wrappedShutdown);

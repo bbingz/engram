@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_IMPORTANCE } from '../core/db/insight-repo.js';
 import type { Database } from '../core/db.js';
 import type { EmbeddingClient } from '../core/embeddings.js';
 import type { Logger } from '../core/logger.js';
@@ -27,9 +28,13 @@ export const saveInsightTool = {
       },
       importance: {
         type: 'number',
-        description: 'Importance level 0-5 (default: 3)',
+        description: 'Importance level 0-5 (default: 5)',
         minimum: 0,
         maximum: 5,
+      },
+      source_session_id: {
+        type: 'string',
+        description: 'Session ID that generated this insight (optional)',
       },
     },
     additionalProperties: false,
@@ -55,12 +60,32 @@ interface SaveInsightResult {
 
 const DEDUP_THRESHOLD = 0.85;
 
+/**
+ * Delete an insight from both text (insights+FTS) and vector (memory_insights+vec_insights) stores.
+ * Callers don't need to remember to delete from both — this is the single entry point.
+ */
+export function deleteInsight(
+  id: string,
+  deps: { db?: Database; vecStore?: VectorStore | null },
+): boolean {
+  let deleted = false;
+  if (deps.db) {
+    deleted = deps.db.deleteInsightText(id) || deleted;
+  }
+  if (deps.vecStore) {
+    deps.vecStore.deleteInsight(id);
+    deleted = true;
+  }
+  return deleted;
+}
+
 export async function handleSaveInsight(
   params: {
     content: string;
     wing?: string;
     room?: string;
     importance?: number;
+    source_session_id?: string;
   },
   deps: SaveInsightDeps = {},
 ): Promise<SaveInsightResult> {
@@ -69,8 +94,28 @@ export async function handleSaveInsight(
     wing: params.wing,
   });
 
+  // Input validation
+  const trimmedContent = params.content.trim();
+  if (!trimmedContent) {
+    throw new Error('Content cannot be empty.');
+  }
+  if (trimmedContent.length < 10) {
+    throw new Error(
+      `Content too short (${trimmedContent.length} chars, minimum 10).`,
+    );
+  }
+  if (trimmedContent.length > 50_000) {
+    throw new Error(
+      `Content too long (${trimmedContent.length} chars, maximum 50,000).`,
+    );
+  }
+  params.content = trimmedContent;
+
+  if (params.wing) params.wing = params.wing.trim().slice(0, 200);
+  if (params.room) params.room = params.room.trim().slice(0, 200);
+
   const id = randomUUID();
-  const importance = params.importance ?? 3;
+  const importance = params.importance ?? DEFAULT_IMPORTANCE;
 
   // Text-only fallback: save to insights table when no embedding support
   if (!deps.vecStore || !deps.embedder) {
@@ -79,12 +124,26 @@ export async function handleSaveInsight(
         'Insight storage requires either embedding support or a database connection.',
       );
     }
+    // Text-only dedup check
+    const existing = deps.db.findDuplicateInsight(params.content, params.wing);
+    if (existing) {
+      return {
+        id: existing.id,
+        content: existing.content,
+        wing: existing.wing ?? undefined,
+        room: existing.room ?? undefined,
+        importance: existing.importance,
+        duplicateWarning: `Duplicate insight already exists (id: ${existing.id}), skipping save.`,
+      };
+    }
+
     deps.db.saveInsightText(
       id,
       params.content,
       params.wing,
       params.room,
       importance,
+      params.source_session_id,
     );
     return {
       id,
@@ -101,12 +160,29 @@ export async function handleSaveInsight(
   if (!embedding) {
     // Embedding failed — fall back to text-only if DB available
     if (deps.db) {
+      // Text-only dedup check
+      const existing = deps.db.findDuplicateInsight(
+        params.content,
+        params.wing,
+      );
+      if (existing) {
+        return {
+          id: existing.id,
+          content: existing.content,
+          wing: existing.wing ?? undefined,
+          room: existing.room ?? undefined,
+          importance: existing.importance,
+          duplicateWarning: `Duplicate insight already exists (id: ${existing.id}), skipping save.`,
+        };
+      }
+
       deps.db.saveInsightText(
         id,
         params.content,
         params.wing,
         params.room,
         importance,
+        params.source_session_id,
       );
       return {
         id,
@@ -142,6 +218,7 @@ export async function handleSaveInsight(
       wing: params.wing,
       room: params.room,
       importance,
+      sourceSessionId: params.source_session_id,
     },
   );
 
@@ -153,6 +230,7 @@ export async function handleSaveInsight(
       params.wing,
       params.room,
       importance,
+      params.source_session_id,
     );
     deps.db.markInsightEmbedded(id);
   }

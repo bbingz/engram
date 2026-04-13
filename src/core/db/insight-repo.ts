@@ -2,6 +2,8 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import { containsCJK } from './fts-repo.js';
 
+export const DEFAULT_IMPORTANCE = 5;
+
 export interface InsightRow {
   id: string;
   content: string;
@@ -41,13 +43,43 @@ export function saveInsightText(
       content,
       wing: wing ?? null,
       room: room ?? null,
-      importance: importance ?? 3,
+      importance: importance ?? DEFAULT_IMPORTANCE,
       sourceSessionId: sourceSessionId ?? null,
     });
     deleteFts.run(id);
     insertFts.run(id, content);
   });
   tx();
+}
+
+function normalizeForDedup(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+export function findDuplicateInsight(
+  db: BetterSqlite3.Database,
+  content: string,
+  wing?: string,
+): InsightRow | null {
+  const normalized = normalizeForDedup(content);
+  const rows = wing
+    ? (db
+        .prepare(
+          'SELECT * FROM insights WHERE wing = ? ORDER BY created_at DESC LIMIT 200',
+        )
+        .all(wing) as InsightRow[])
+    : (db
+        .prepare(
+          'SELECT * FROM insights WHERE wing IS NULL ORDER BY created_at DESC LIMIT 200',
+        )
+        .all() as InsightRow[]);
+
+  for (const row of rows) {
+    if (normalizeForDedup(row.content) === normalized) {
+      return row;
+    }
+  }
+  return null;
 }
 
 export function searchInsightsFts(
@@ -117,4 +149,18 @@ export function listUnembeddedInsights(
       'SELECT * FROM insights WHERE has_embedding = 0 ORDER BY created_at ASC LIMIT ?',
     )
     .all(limit) as InsightRow[];
+}
+
+export function deleteInsightText(
+  db: BetterSqlite3.Database,
+  id: string,
+): boolean {
+  const deleteFts = db.prepare('DELETE FROM insights_fts WHERE insight_id = ?');
+  const deleteInsight = db.prepare('DELETE FROM insights WHERE id = ?');
+  const tx = db.transaction(() => {
+    deleteFts.run(id);
+    const result = deleteInsight.run(id);
+    return result.changes > 0;
+  });
+  return tx();
 }

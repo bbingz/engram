@@ -119,3 +119,53 @@ export function deduplicateFilePaths(db: BetterSqlite3.Database): number {
     .run();
   return result.changes;
 }
+
+/**
+ * Reconcile `insights` (text+FTS) and `memory_insights` (vector) tables.
+ * Fixes divergence caused by crashes, provider changes, etc.
+ *
+ * 1. insights with has_embedding=1 but no live memory_insights row → reset has_embedding=0
+ * 2. memory_insights rows with no matching insights row → soft-delete
+ *
+ * memory_insights may not exist if sqlite-vec was never loaded — gracefully returns zeros.
+ */
+export function reconcileInsights(
+  db: BetterSqlite3.Database,
+  log?: { info: (message: string, data?: Record<string, unknown>) => void },
+): { resetEmbedding: number; orphanedVector: number } {
+  let resetEmbedding = 0;
+  let orphanedVector = 0;
+
+  try {
+    // Step 1: insights claiming has_embedding=1 but no live memory_insights row
+    resetEmbedding = db
+      .prepare(
+        `UPDATE insights SET has_embedding = 0
+       WHERE has_embedding = 1
+       AND id NOT IN (SELECT id FROM memory_insights WHERE deleted_at IS NULL)`,
+      )
+      .run().changes;
+
+    // Step 2: orphaned memory_insights rows with no matching insights row
+    orphanedVector = db
+      .prepare(
+        `UPDATE memory_insights SET deleted_at = datetime('now')
+       WHERE deleted_at IS NULL
+       AND id NOT IN (SELECT id FROM insights)`,
+      )
+      .run().changes;
+  } catch (err: unknown) {
+    // memory_insights table does not exist (sqlite-vec never loaded) — skip
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('no such table')) {
+      return { resetEmbedding: 0, orphanedVector: 0 };
+    }
+    throw err; // re-throw unexpected errors
+  }
+
+  if (resetEmbedding > 0 || orphanedVector > 0) {
+    log?.info('Insight reconciliation', { resetEmbedding, orphanedVector });
+  }
+
+  return { resetEmbedding, orphanedVector };
+}
