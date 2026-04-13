@@ -6,6 +6,7 @@ import type {
   AuthoritativeSessionSnapshot,
   SyncCursor,
 } from '../session-snapshot.js';
+import { setParentSession, validateParentLink } from './parent-link-repo.js';
 import type { ListSessionsOptions, NoiseFilter } from './types.js';
 
 export function buildTierFilter(filter: NoiseFilter = 'hide-skip'): string[] {
@@ -200,6 +201,29 @@ export function upsertSession(
     authoritativeNode: session.origin ?? 'local',
     sourceLocator: session.filePath,
   });
+}
+
+export function applyParentLink(
+  db: BetterSqlite3.Database,
+  session: SessionInfo,
+): void {
+  if (!session.parentSessionId) return;
+
+  // Don't overwrite manual decisions
+  const existing = db
+    .prepare('SELECT link_source FROM sessions WHERE id = ?')
+    .get(session.id) as { link_source: string | null } | undefined;
+  if (existing?.link_source === 'manual') return;
+
+  const validation = validateParentLink(
+    db,
+    session.id,
+    session.parentSessionId,
+  );
+  if (validation === 'ok') {
+    setParentSession(db, session.id, session.parentSessionId, 'path');
+  }
+  // If parent-not-found, silently skip — Pass 1 backfill will retry
 }
 
 export function getSessionByFilePath(

@@ -1,8 +1,10 @@
 // tests/adapters/claude-code.test.ts
 
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.js';
 import type { Message } from '../../src/adapters/types.js';
 
@@ -143,6 +145,62 @@ describe('ClaudeCodeAdapter', () => {
       const second = assistantMsgs[1];
       expect(second.toolCalls).toBeDefined();
       expect(second.toolCalls?.[0].name).toBe('Edit');
+    });
+  });
+
+  describe('parentSessionId extraction from subagent paths', () => {
+    const tmpRoot = join(tmpdir(), `engram-test-subagent-${Date.now()}`);
+    const parentId = 'parent-session-uuid-123';
+    const agentId = 'subagent-uuid-456';
+    const subagentDir = join(tmpRoot, 'project-dir', parentId, 'subagents');
+    const subagentFile = join(subagentDir, `${agentId}.jsonl`);
+
+    beforeAll(() => {
+      mkdirSync(subagentDir, { recursive: true });
+      const lines = [
+        JSON.stringify({
+          type: 'user',
+          cwd: '/Users/test/project',
+          sessionId: parentId,
+          agentId,
+          message: { role: 'user', content: 'Do the task' },
+          uuid: 'msg-001',
+          timestamp: '2026-04-13T10:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          cwd: '/Users/test/project',
+          sessionId: parentId,
+          agentId,
+          message: {
+            id: 'resp-001',
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Done.' }],
+          },
+          uuid: 'msg-002',
+          timestamp: '2026-04-13T10:00:05.000Z',
+        }),
+      ];
+      writeFileSync(subagentFile, `${lines.join('\n')}\n`);
+    });
+
+    afterAll(() => {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    });
+
+    it('extracts parentSessionId for subagent files', async () => {
+      const info = await adapter.parseSessionInfo(subagentFile);
+      expect(info).not.toBeNull();
+      expect(info?.id).toBe(agentId);
+      expect(info?.agentRole).toBe('subagent');
+      expect(info?.parentSessionId).toBe(parentId);
+    });
+
+    it('returns undefined parentSessionId for regular sessions', async () => {
+      const info = await adapter.parseSessionInfo(FIXTURE);
+      expect(info).not.toBeNull();
+      expect(info?.parentSessionId).toBeUndefined();
     });
   });
 });

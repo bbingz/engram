@@ -118,6 +118,9 @@ export class Database {
   upsertSession(session: SessionInfo): void {
     sessions.upsertSession(this.db, session);
   }
+  applyParentLink(session: SessionInfo): void {
+    sessions.applyParentLink(this.db, session);
+  }
   getSessionByFilePath(filePath: string): SessionInfo | null {
     return sessions.getSessionByFilePath(this.db, filePath);
   }

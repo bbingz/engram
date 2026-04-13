@@ -339,6 +339,7 @@ export class Indexer {
                   messages,
                 );
                 this.writer.writeAuthoritativeSnapshot(snapshot);
+                this.db.applyParentLink(info);
 
                 // Write cost and tool data
                 this.writeExtractedData(
@@ -559,6 +560,7 @@ export class Indexer {
         messages,
       );
       this.writer.writeAuthoritativeSnapshot(snapshot);
+      this.db.applyParentLink(info);
 
       // Write cost and tool data
       this.writeExtractedData(

@@ -123,6 +123,13 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       const id = isSubagent && agentId ? agentId : sessionId;
       const source = ClaudeCodeAdapter.detectSource(detectedModel, filePath);
 
+      // Extract parent session ID from subagent path
+      let parentSessionId: string | undefined;
+      if (isSubagent) {
+        const match = filePath.match(/\/([^/]+)\/subagents\/[^/]+\.jsonl$/);
+        if (match) parentSessionId = match[1];
+      }
+
       return {
         id,
         source,
@@ -139,6 +146,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         filePath,
         sizeBytes: fileStat.size,
         agentRole: isSubagent ? 'subagent' : undefined,
+        parentSessionId,
       };
     } catch {
       return null;
