@@ -182,8 +182,21 @@ struct SessionListView: View {
                     Spacer()
                 }
                 .padding(.horizontal, 10)
-            } else if agentFilterMode == 0 {
-                // All mode: expandable grouped view with agent children
+            } else if agentFilterMode == 1 {
+                // Agents only: flat table view (dedicated agent browsing)
+                SessionTableView(
+                    sessions: filteredSessions,
+                    selectedSessionId: $selectedSessionId,
+                    sortOrder: $sortOrder,
+                    columns: columnStore,
+                    favoriteIds: favoriteIds,
+                    onToggleFavorite: { id, isFav in toggleFavorite(id: id, current: isFav) },
+                    onDelete: { id in deleteSession(id) },
+                    onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" },
+                    onFilterProject: { project in selectedProject = project }
+                )
+            } else {
+                // All (0) and Hide (2): expandable grouped view
                 ScrollView {
                     LazyVStack(spacing: 4) {
                         ForEach(filteredSessions) { session in
@@ -201,19 +214,6 @@ struct SessionListView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                 }
-            } else {
-                // Agents only (1) or Hide (2): flat table view
-                SessionTableView(
-                    sessions: filteredSessions,
-                    selectedSessionId: $selectedSessionId,
-                    sortOrder: $sortOrder,
-                    columns: columnStore,
-                    favoriteIds: favoriteIds,
-                    onToggleFavorite: { id, isFav in toggleFavorite(id: id, current: isFav) },
-                    onDelete: { id in deleteSession(id) },
-                    onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" },
-                    onFilterProject: { project in selectedProject = project }
-                )
             }
 
             // Footer

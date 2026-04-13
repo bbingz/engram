@@ -3,7 +3,10 @@ import SwiftUI
 
 struct TimelinePageView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(DaemonClient.self) var daemonClient
     @State private var timeline: [(date: String, sessions: [Session])] = []
+    @State private var confirmedCounts: [String: Int] = [:]
+    @State private var suggestedCounts: [String: Int] = [:]
     @State private var isLoading = true
 
     var body: some View {
@@ -28,9 +31,31 @@ struct TimelinePageView: View {
                                 }
                                 .padding(.top, 4)
                                 ForEach(group.sessions) { session in
-                                    SessionCard(session: session) {
-                                        NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
-                                    }
+                                    ExpandableSessionCard(
+                                        session: session,
+                                        confirmedChildCount: confirmedCounts[session.id] ?? 0,
+                                        suggestedChildCount: suggestedCounts[session.id] ?? 0,
+                                        onTap: {
+                                            NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                                        },
+                                        onChildTap: { child in
+                                            NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
+                                        },
+                                        onConfirmSuggestion: { child in
+                                            Task {
+                                                try? await daemonClient.confirmSuggestion(sessionId: child.id)
+                                                await loadData()
+                                            }
+                                        },
+                                        onDismissSuggestion: { child in
+                                            Task {
+                                                if let suggestedId = child.suggestedParentId {
+                                                    try? await daemonClient.dismissSuggestion(sessionId: child.id, suggestedParentId: suggestedId)
+                                                }
+                                                await loadData()
+                                            }
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -46,7 +71,21 @@ struct TimelinePageView: View {
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
-        do { timeline = try db.sessionTimeline(days: 30) } catch { print("TimelinePage error:", error) }
+        do {
+            let data = try await Task.detached {
+                let tl = try db.sessionTimeline(days: 30)
+                let allSessions = tl.flatMap(\.sessions)
+                let parentIds = allSessions.map(\.id)
+                let confirmed = try db.childCount(parentIds: parentIds)
+                let suggested = try db.suggestedChildCount(parentIds: parentIds)
+                return (tl, confirmed, suggested)
+            }.value
+            timeline = data.0
+            confirmedCounts = data.1
+            suggestedCounts = data.2
+        } catch {
+            print("TimelinePage error:", error)
+        }
     }
 
     private func formatDateLabel(_ dateStr: String) -> String {

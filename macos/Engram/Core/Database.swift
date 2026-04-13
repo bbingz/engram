@@ -722,6 +722,8 @@ final class DatabaseManager {
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE hidden_at IS NULL
+                  AND parent_session_id IS NULL
+                  AND suggested_parent_id IS NULL
                   AND start_time >= DATE('now', '-\(days) days')
                   AND (tier IS NULL OR tier != 'skip')
                 ORDER BY start_time DESC
