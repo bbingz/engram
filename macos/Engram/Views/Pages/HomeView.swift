@@ -3,6 +3,7 @@ import SwiftUI
 
 struct HomeView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(DaemonClient.self) var daemonClient
 
     @State private var kpi: DatabaseManager.KPIStats?
     @State private var dailyActivity: [(date: String, count: Int)] = []
@@ -10,6 +11,8 @@ struct HomeView: View {
     @State private var sourceDist: [(source: String, count: Int)] = []
     @State private var tiers: (premium: Int, normal: Int, lite: Int, skip: Int) = (0, 0, 0, 0)
     @State private var recentSessions: [Session] = []
+    @State private var confirmedCounts: [String: Int] = [:]
+    @State private var suggestedCounts: [String: Int] = [:]
     @State private var isLoading = true
     @State private var alertMessage: String? = nil
 
@@ -147,12 +150,40 @@ struct HomeView: View {
                 .frame(height: 100)
             } else {
                 ForEach(Array(recentSessions.enumerated()), id: \.element.id) { index, session in
-                    SessionCard(session: session) {
-                        NotificationCenter.default.post(
-                            name: .openSession,
-                            object: SessionBox(session)
-                        )
-                    }
+                    ExpandableSessionCard(
+                        session: session,
+                        confirmedChildCount: confirmedCounts[session.id] ?? 0,
+                        suggestedChildCount: suggestedCounts[session.id] ?? 0,
+                        onTap: {
+                            NotificationCenter.default.post(
+                                name: .openSession,
+                                object: SessionBox(session)
+                            )
+                        },
+                        onChildTap: { child in
+                            NotificationCenter.default.post(
+                                name: .openSession,
+                                object: SessionBox(child)
+                            )
+                        },
+                        onConfirmSuggestion: { child in
+                            Task {
+                                try? await daemonClient.confirmSuggestion(sessionId: child.id)
+                                await loadData()
+                            }
+                        },
+                        onDismissSuggestion: { child in
+                            Task {
+                                if let suggestedId = child.suggestedParentId {
+                                    try? await daemonClient.dismissSuggestion(
+                                        sessionId: child.id,
+                                        suggestedParentId: suggestedId
+                                    )
+                                }
+                                await loadData()
+                            }
+                        }
+                    )
                     .accessibilityIdentifier("home_recentSession_\(index)")
                 }
             }
@@ -175,7 +206,10 @@ struct HomeView: View {
                 let source = try db.sourceDistribution()
                 let tiers = try db.tierDistribution()
                 let recent = try db.recentSessions(limit: 8)
-                return (kpi, daily, hourly, source, tiers, recent)
+                let parentIds = recent.map(\.id)
+                let confirmed = try db.childCount(parentIds: parentIds)
+                let suggested = try db.suggestedChildCount(parentIds: parentIds)
+                return (kpi, daily, hourly, source, tiers, recent, confirmed, suggested)
             }.value
             kpi = data.0
             dailyActivity = data.1
@@ -183,6 +217,8 @@ struct HomeView: View {
             sourceDist = data.3
             tiers = data.4
             recentSessions = data.5
+            confirmedCounts = data.6
+            suggestedCounts = data.7
             alertMessage = nil
         } catch {
             print("HomeView load error:", error)
