@@ -19,6 +19,11 @@ struct SessionDetailView: View {
     @State private var summaryError: String? = nil
     @State private var currentSummary: String?
 
+    // Parent/child hierarchy
+    @State private var confirmedParent: Session?
+    @State private var suggestedParent: Session?
+    @State private var childrenSessions: [Session] = []
+
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
 
@@ -135,6 +140,57 @@ struct SessionDetailView: View {
                 )
             }
 
+            // Confirmed parent breadcrumb
+            if let parent = confirmedParent {
+                Button(action: { navigateToSession(parent) }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.left")
+                            .font(.caption2)
+                        Text("Parent: \(parent.displayTitle)")
+                            .font(.caption)
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Suggested parent breadcrumb (only when no confirmed parent)
+            if confirmedParent == nil, let suggested = suggestedParent {
+                HStack(spacing: 8) {
+                    Text("← Suggested parent: \(suggested.displayTitle)")
+                        .font(.caption)
+                        .lineLimit(1)
+                        .foregroundStyle(Theme.tertiaryText)
+
+                    Button("Confirm") {
+                        Task {
+                            try? await daemonClient.confirmSuggestion(sessionId: session.id)
+                            loadParentInfo()
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(Theme.accent)
+                    .buttonStyle(.plain)
+
+                    Button("Dismiss") {
+                        Task {
+                            if let suggestedId = session.suggestedParentId {
+                                try? await daemonClient.dismissSuggestion(sessionId: session.id, suggestedParentId: suggestedId)
+                            }
+                            loadParentInfo()
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText)
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+            }
+
             if isLoadingMessages {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -183,6 +239,27 @@ struct SessionDetailView: View {
                         }
                     }
                 }
+            }
+
+            // Child session list
+            if !childrenSessions.isEmpty {
+                Divider().padding(.horizontal, 16)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Agent Sessions (\(childrenSessions.count))")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                        .padding(.horizontal, 16)
+
+                    ForEach(childrenSessions, id: \.id) { child in
+                        CompactChildRow(
+                            session: child,
+                            isConfirmed: true,
+                            onTap: { navigateToSession(child) }
+                        )
+                        .padding(.horizontal, 12)
+                    }
+                }
+                .padding(.vertical, 8)
             }
         }
         .accessibilityElement(children: .contain)
@@ -252,6 +329,7 @@ struct SessionDetailView: View {
             typeCounts = result.counts
             updateDisplayIndexed()
             isLoadingMessages = false
+            loadParentInfo()
         }
         .onChange(of: typeVisibility) { _, _ in updateDisplayIndexed() }
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
@@ -262,6 +340,42 @@ struct SessionDetailView: View {
                 .environment(daemonClient)
                 .frame(minWidth: 600, minHeight: 450)
         }
+    }
+
+    // MARK: - Parent/Child Helpers
+
+    private func loadParentInfo() {
+        let sessionId = session.id
+        let parentId = session.parentSessionId
+        let suggestedId = session.suggestedParentId
+
+        // Re-fetch session to get latest state (e.g. after confirm/dismiss)
+        let freshSession = try? db.getSession(id: sessionId)
+        let effectiveParentId = freshSession?.parentSessionId ?? parentId
+        let effectiveSuggestedId = freshSession?.suggestedParentId ?? suggestedId
+
+        var confirmed: Session?
+        var suggested: Session?
+        if let pid = effectiveParentId {
+            confirmed = try? db.getSession(id: pid)
+        } else if let spid = effectiveSuggestedId {
+            suggested = try? db.getSession(id: spid)
+        }
+
+        // childSessions is nonisolated — fetch in background
+        let dbRef = db
+        Task.detached {
+            let children = try? dbRef.childSessions(parentId: sessionId)
+            await MainActor.run {
+                confirmedParent = confirmed
+                suggestedParent = suggested
+                childrenSessions = children ?? []
+            }
+        }
+    }
+
+    private func navigateToSession(_ target: Session) {
+        NotificationCenter.default.post(name: .openSession, object: SessionBox(target))
     }
 
     // MARK: - Helpers
@@ -349,7 +463,7 @@ struct SessionDetailView: View {
                 }
                 let response: HandoffResponse = try await daemonClient.post(
                     "/api/handoff",
-                    body: HandoffRequest(cwd: session.cwd ?? "")
+                    body: HandoffRequest(cwd: session.cwd)
                 )
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(response.brief, forType: .string)
