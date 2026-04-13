@@ -1,5 +1,6 @@
 // src/core/db/insight-repo.ts — text-only insight storage with FTS
 import type BetterSqlite3 from 'better-sqlite3';
+import { containsCJK } from './fts-repo.js';
 
 export interface InsightRow {
   id: string;
@@ -40,7 +41,7 @@ export function saveInsightText(
       content,
       wing: wing ?? null,
       room: room ?? null,
-      importance: importance ?? 5,
+      importance: importance ?? 3,
       sourceSessionId: sourceSessionId ?? null,
     });
     deleteFts.run(id);
@@ -54,6 +55,15 @@ export function searchInsightsFts(
   query: string,
   limit = 10,
 ): InsightRow[] {
+  // CJK characters break trigram tokenizer — fall back to LIKE
+  if (containsCJK(query)) {
+    return db
+      .prepare(
+        'SELECT * FROM insights WHERE content LIKE @pattern ORDER BY created_at DESC LIMIT @limit',
+      )
+      .all({ pattern: `%${query}%`, limit }) as InsightRow[];
+  }
+
   const doSearch = (q: string): InsightRow[] =>
     db
       .prepare(`
@@ -69,7 +79,6 @@ export function searchInsightsFts(
   try {
     return doSearch(query);
   } catch {
-    // Escape FTS5 operators and retry with quoted query
     const escaped = `"${query.replace(/"/g, '""')}"`;
     return doSearch(escaped);
   }

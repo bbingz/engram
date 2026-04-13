@@ -133,7 +133,7 @@ export async function handleGetContext(
     }
   }
   // FTS fallback: when no embedding, search insights by keyword
-  if (insightLines.length === 0 && params.task) {
+  if (insightLines.length === 0 && params.task && params.task.length >= 3) {
     try {
       const ftsInsights = db.searchInsightsFts(params.task, 5);
       insightLines = ftsInsights.map((r) => r.content);

@@ -88,6 +88,7 @@ export function backfillScores(db: BetterSqlite3.Database): number {
 
 export function optimizeFts(db: BetterSqlite3.Database): void {
   db.exec("INSERT INTO sessions_fts(sessions_fts) VALUES('optimize')");
+  db.exec("INSERT INTO insights_fts(insights_fts) VALUES('optimize')");
 }
 
 export function vacuumIfNeeded(
