@@ -182,6 +182,30 @@ indexer
       log.warn('db maintenance failed', {}, err);
     }
 
+    // Backfill parent session links
+    try {
+      const parentLinks = db.backfillParentLinks();
+      if (parentLinks.linked > 0 || parentLinks.tierUpgraded > 0) {
+        emit({
+          event: 'backfill',
+          type: 'parent_links',
+          linked: parentLinks.linked,
+          tierUpgraded: parentLinks.tierUpgraded,
+        });
+      }
+      const suggestions = db.backfillSuggestedParents();
+      if (suggestions.suggested > 0) {
+        emit({
+          event: 'backfill',
+          type: 'suggested_parents',
+          checked: suggestions.checked,
+          suggested: suggestions.suggested,
+        });
+      }
+    } catch (err) {
+      log.warn('parent link backfill failed', {}, err);
+    }
+
     try {
       const jobSummary = await indexJobRunner.runRecoverableJobs();
       if (jobSummary.completed > 0 || jobSummary.notApplicable > 0) {

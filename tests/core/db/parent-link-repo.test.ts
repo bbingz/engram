@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SessionInfo } from '../../../src/adapters/types.js';
-import { backfillParentLinks } from '../../../src/core/db/maintenance.js';
+import {
+  backfillParentLinks,
+  backfillSuggestedParents,
+} from '../../../src/core/db/maintenance.js';
 import {
   childCount,
   childSessions,
@@ -820,6 +823,157 @@ describe('parent-link-repo', () => {
         .prepare('SELECT tier FROM sessions WHERE id = ?')
         .get('agent-t') as Record<string, unknown>;
       expect(row.tier).toBe('lite');
+    });
+  });
+
+  // ── backfillSuggestedParents ────────────────────────────────────
+
+  describe('backfillSuggestedParents', () => {
+    it('suggests parent for gemini session with dispatch pattern', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'cc-parent',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          endTime: '2026-04-13T12:00:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/cc.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.upsertSession(
+        makeSession({
+          id: 'gem-agent',
+          source: 'gemini-cli',
+          startTime: '2026-04-13T10:05:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/gem.json',
+          sizeBytes: 50,
+          summary: '<task> Review the insight-hardening branch...',
+        }),
+      );
+
+      const result = backfillSuggestedParents(db.raw);
+      expect(result.checked).toBe(1);
+      expect(result.suggested).toBeGreaterThanOrEqual(1);
+
+      const row = db.raw
+        .prepare(
+          'SELECT suggested_parent_id, link_checked_at FROM sessions WHERE id = ?',
+        )
+        .get('gem-agent') as Record<string, unknown>;
+      expect(row.suggested_parent_id).toBe('cc-parent');
+      expect(row.link_checked_at).toBeTruthy();
+    });
+
+    it('marks link_checked_at even when no parent found', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'gem-orphan',
+          source: 'gemini-cli',
+          startTime: '2026-04-13T10:05:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/gem-orphan.json',
+          sizeBytes: 50,
+          summary: '<task> Something with no parent...',
+        }),
+      );
+
+      backfillSuggestedParents(db.raw);
+
+      const row = db.raw
+        .prepare('SELECT link_checked_at FROM sessions WHERE id = ?')
+        .get('gem-orphan') as Record<string, unknown>;
+      expect(row.link_checked_at).toBeTruthy();
+    });
+
+    it('skips sessions without dispatch pattern summary', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'gem-normal',
+          source: 'gemini-cli',
+          startTime: '2026-04-13T10:05:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/gem-normal.json',
+          sizeBytes: 50,
+          summary: 'Just a regular conversation about code',
+        }),
+      );
+
+      const result = backfillSuggestedParents(db.raw);
+      expect(result.checked).toBe(1);
+      expect(result.suggested).toBe(0);
+
+      const row = db.raw
+        .prepare(
+          'SELECT suggested_parent_id, link_checked_at FROM sessions WHERE id = ?',
+        )
+        .get('gem-normal') as Record<string, unknown>;
+      expect(row.suggested_parent_id).toBeNull();
+      expect(row.link_checked_at).toBeTruthy();
+    });
+
+    it('skips sessions that already have link_checked_at', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'gem-checked',
+          source: 'gemini-cli',
+          startTime: '2026-04-13T10:05:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/gem-checked.json',
+          sizeBytes: 50,
+          summary: '<task> Already checked...',
+        }),
+      );
+      // Manually set link_checked_at
+      db.raw
+        .prepare(
+          "UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?",
+        )
+        .run('gem-checked');
+
+      const result = backfillSuggestedParents(db.raw);
+      expect(result.checked).toBe(0);
+    });
+
+    it('suggests parent for codex sessions too', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'cc-parent2',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          endTime: '2026-04-13T12:00:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/cc2.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.upsertSession(
+        makeSession({
+          id: 'codex-agent',
+          source: 'codex',
+          startTime: '2026-04-13T10:02:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/codex.json',
+          sizeBytes: 50,
+          summary: 'Your task is to fix the login flow...',
+        }),
+      );
+
+      const result = backfillSuggestedParents(db.raw);
+      expect(result.suggested).toBe(1);
+
+      const row = db.raw
+        .prepare('SELECT suggested_parent_id FROM sessions WHERE id = ?')
+        .get('codex-agent') as Record<string, unknown>;
+      expect(row.suggested_parent_id).toBe('cc-parent2');
     });
   });
 

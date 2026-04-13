@@ -1,7 +1,16 @@
 // src/core/db/maintenance.ts — post-migration backfills and DB maintenance
 import type BetterSqlite3 from 'better-sqlite3';
+import {
+  isDispatchPattern,
+  pickBestCandidate,
+  scoreCandidate,
+} from '../parent-detection.js';
 import { computeQualityScore } from '../session-scoring.js';
-import { setParentSession, validateParentLink } from './parent-link-repo.js';
+import {
+  setParentSession,
+  setSuggestedParent,
+  validateParentLink,
+} from './parent-link-repo.js';
 
 export function runPostMigrationBackfill(db: BetterSqlite3.Database): void {
   // Incremental: only backfill sessions not yet in session_local_state
@@ -221,13 +230,86 @@ export function backfillParentLinks(db: BetterSqlite3.Database): {
 }
 
 /**
- * Backfill suggested parent links using heuristics.
- * Stub — full implementation in Task 6.
+ * Backfill suggested parent links using content heuristics.
+ * Scans gemini-cli and codex sessions whose first message matches a dispatch pattern
+ * (e.g. `<task>`, "Your task is to...") and scores overlapping claude-code sessions
+ * to find the most likely parent.
  */
-export function backfillSuggestedParents(_db: BetterSqlite3.Database): {
+export function backfillSuggestedParents(db: BetterSqlite3.Database): {
   checked: number;
   suggested: number;
 } {
-  // Stub — full implementation in Task 6
-  return { checked: 0, suggested: 0 };
+  let checked = 0;
+  let suggested = 0;
+
+  const candidates = db
+    .prepare(
+      `
+    SELECT id, start_time, project, cwd, summary FROM sessions
+    WHERE parent_session_id IS NULL
+      AND suggested_parent_id IS NULL
+      AND link_checked_at IS NULL
+      AND link_source IS NULL
+      AND source IN ('gemini-cli', 'codex')
+    LIMIT 500
+  `,
+    )
+    .all() as {
+    id: string;
+    start_time: string;
+    project: string | null;
+    cwd: string;
+    summary: string | null;
+  }[];
+
+  const markChecked = db.prepare(
+    `UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?`,
+  );
+
+  for (const candidate of candidates) {
+    checked++;
+    if (!candidate.summary || !isDispatchPattern(candidate.summary)) {
+      markChecked.run(candidate.id);
+      continue;
+    }
+
+    const parents = db
+      .prepare(
+        `
+      SELECT id, start_time, end_time, project FROM sessions
+      WHERE source IN ('claude-code', 'claude')
+        AND start_time <= ?
+        AND (end_time IS NULL OR end_time >= ?)
+        AND parent_session_id IS NULL
+        AND hidden_at IS NULL
+    `,
+      )
+      .all(candidate.start_time, candidate.start_time) as {
+      id: string;
+      start_time: string;
+      end_time: string | null;
+      project: string | null;
+    }[];
+
+    const scored = parents.map((p) => ({
+      parentId: p.id,
+      score: scoreCandidate(
+        candidate.start_time,
+        p.start_time,
+        p.end_time,
+        candidate.project,
+        p.project,
+      ),
+    }));
+
+    const bestParent = pickBestCandidate(scored);
+    if (bestParent) {
+      setSuggestedParent(db, candidate.id, bestParent);
+      suggested++;
+    } else {
+      markChecked.run(candidate.id);
+    }
+  }
+
+  return { checked, suggested };
 }
