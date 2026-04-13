@@ -276,19 +276,25 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
     const parents = db
       .prepare(
         `
-      SELECT id, start_time, end_time, project FROM sessions
+      SELECT id, start_time, end_time, project, cwd FROM sessions
       WHERE source IN ('claude-code', 'claude')
         AND start_time <= ?
+        AND start_time >= datetime(?, '-24 hours')
         AND (end_time IS NULL OR end_time >= ?)
         AND parent_session_id IS NULL
         AND hidden_at IS NULL
     `,
       )
-      .all(candidate.start_time, candidate.start_time) as {
+      .all(
+        candidate.start_time,
+        candidate.start_time,
+        candidate.start_time,
+      ) as {
       id: string;
       start_time: string;
       end_time: string | null;
       project: string | null;
+      cwd: string;
     }[];
 
     const scored = parents.map((p) => ({
@@ -299,6 +305,8 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
         p.end_time,
         candidate.project,
         p.project,
+        candidate.cwd,
+        p.cwd,
       ),
     }));
 

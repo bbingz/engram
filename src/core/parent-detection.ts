@@ -35,6 +35,8 @@ export function scoreCandidate(
   parentEndTime: string | null,
   agentProject: string | null,
   parentProject: string | null,
+  agentCwd?: string,
+  parentCwd?: string,
 ): number {
   const agentStart = new Date(agentStartTime).getTime();
   const parentStart = new Date(parentStartTime).getTime();
@@ -48,15 +50,28 @@ export function scoreCandidate(
     if (agentStart > parentEnd) return 0;
   }
 
-  // Time proximity: 1 / (1 + diffSeconds) * 0.6
+  // Time proximity: exponential decay with 30min half-life
+  // 5 min → 0.51, 30 min → 0.22, 2 hours → 0.005
   const diffSeconds = (agentStart - parentStart) / 1000;
-  const timeScore = (1 / (1 + diffSeconds)) * 0.6;
+  const timeScore = Math.exp(-diffSeconds / 1800) * 0.6;
 
-  // Project match: exact match = 1.0 * 0.3, no match = 0
-  const projectScore =
-    agentProject && parentProject && agentProject === parentProject
-      ? 1.0 * 0.3
-      : 0;
+  // Project/cwd match: exact project = 1.0 * 0.3, cwd overlap = 0.7 * 0.3, no match = 0
+  let projectScore = 0;
+  if (agentProject && parentProject && agentProject === parentProject) {
+    projectScore = 1.0 * 0.3;
+  } else if (agentCwd && parentCwd) {
+    // cwd fallback: one is subdirectory of the other
+    // Require at least 2 path components (exclude bare '/' matching everything)
+    const normAgent = agentCwd.replace(/\/$/, '');
+    const normParent = parentCwd.replace(/\/$/, '');
+    const minLen = Math.min(normAgent.length, normParent.length);
+    if (
+      minLen > 1 &&
+      (normAgent.startsWith(normParent) || normParent.startsWith(normAgent))
+    ) {
+      projectScore = 0.7 * 0.3;
+    }
+  }
 
   // Active bonus: no end_time = 1.0 * 0.1, ended = 0.5 * 0.1
   const activeScore = parentEndTime ? 0.5 * 0.1 : 1.0 * 0.1;
