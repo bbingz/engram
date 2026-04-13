@@ -7,7 +7,7 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 804 tests, ~5s
+npm test               # vitest: 893 tests, ~5s
 npm run dev            # tsx: run without compile
 npm run lint           # biome check (must pass — pre-commit enforced)
 npm run lint:fix       # biome auto-fix
@@ -26,8 +26,8 @@ xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 ```
 src/
   adapters/    # SessionAdapter implementations (15 sources: codex, claude-code, cursor, etc.)
-  core/        # indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, chunker.ts, vector-store.ts, embeddings.ts, bootstrap.ts (factories)
-    db/        # Database modules: database.ts (facade), migration.ts, session-repo.ts, fts-repo.ts, metrics-repo.ts, index-job-repo.ts, sync-repo.ts, maintenance.ts, alias-repo.ts, insight-repo.ts
+  core/        # indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, parent-detection.ts, chunker.ts, vector-store.ts, embeddings.ts, bootstrap.ts (factories)
+    db/        # Database modules: database.ts (facade), migration.ts, session-repo.ts, fts-repo.ts, metrics-repo.ts, index-job-repo.ts, sync-repo.ts, maintenance.ts, alias-repo.ts, insight-repo.ts, parent-link-repo.ts
     db.ts      # ESM re-export shim (preserves `import { Database } from '../core/db.js'`)
   tools/       # MCP tool handlers (19 tools: get_context, search, save_insight, list_sessions, get_session, get_memory, get_insights, get_costs, stats, tool_analytics, file_activity, etc.)
   web.ts       # Hono HTTP server + API endpoints
@@ -42,7 +42,7 @@ macos/
       Settings/  # GeneralSettingsSection, AISettingsSection, NetworkSettingsSection, SourcesSettingsSection
       Transcript/  # ColorBarMessageView, TranscriptToolbar, TranscriptFindBar
       Workspace/   # ReposView, RepoDetailView, SparklineView, WorkGraphView
-    Components/  # Theme, SourceColors, SessionCard, FilterPills, KPICard, HeatmapGrid, etc.
+    Components/  # Theme, SourceColors, SessionCard, ExpandableSessionCard, FilterPills, KPICard, HeatmapGrid, etc.
     Models/    # Session, GitRepo, IndexedMessage, MessageTypeClassifier, Screen
   project.yml  # xcodegen config → generates Engram.xcodeproj
   scripts/build-node-bundle.sh  # Xcode prebuild: npm build → copy dist/ into app bundle
@@ -103,6 +103,22 @@ Two storage layers for insights: `insights` table (text+FTS, always available) a
 - Daemon backfills: promotes text-only insights to embedded when provider becomes available
 - Daemon maintenance: `reconcileInsights()` fixes has_embedding/memory_insights divergence on startup
 - CJK queries use LIKE fallback (same as session FTS)
+
+### Agent Session Grouping
+Parent-child session linking: agent sessions (dispatched by Claude Code to Gemini/Codex) are grouped under their parent.
+- `parent_session_id`: confirmed link. `suggested_parent_id`: Layer 2 heuristic (advisory).
+- `link_source`: `'path'` (Layer 1) or `'manual'` (user-confirmed). `'manual'` with NULL parent = explicitly unlinked.
+- Three detection layers:
+  1. **Layer 1 (path)**: Claude Code subagents — parse parent ID from `/subagents/` file path. Deterministic.
+  2. **Layer 2 (heuristic)**: Gemini/Codex dispatched sessions — dispatch pattern matching + temporal/cwd scoring. Advisory only → `suggested_parent_id`.
+  3. **Layer 3 (manual)**: HTTP API endpoints at `POST/DELETE /api/sessions/:id/link`, `POST /api/sessions/:id/confirm-suggestion`, `DELETE /api/sessions/:id/suggestion`.
+- Orphan trigger: `trg_sessions_parent_cascade` nullifies children on parent deletion + resets tier for re-evaluation.
+- Tier lifecycle: linked children upgrade `skip` → `lite` (FTS searchable); unlinked children get tier reset to NULL for re-evaluation.
+- Dispatch-pattern sessions without a parent get `agent_role = 'dispatched'` → `tier = 'skip'`.
+- `src/core/parent-detection.ts`: pure functions for dispatch pattern matching + candidate scoring (exponential time decay, cwd subdirectory fallback, 24h candidate window, 15% ambiguity rejection).
+- `src/core/db/parent-link-repo.ts`: validation (self-link, existence, depth=1), CRUD, child queries.
+- Swift UI: `ExpandableSessionCard` with disclosure triangle + `CompactChildRow`. Used in HomeView, SessionListView, TimelinePageView.
+- All three views filter `parent_session_id IS NULL AND suggested_parent_id IS NULL` for top-level display.
 
 ### Daemon ↔ Swift Communication
 - Daemon writes JSON lines to stdout: `{ event: "ready", indexed: N, total: M }`
