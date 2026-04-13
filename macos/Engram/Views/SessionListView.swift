@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SessionListView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(DaemonClient.self) var daemonClient
     @Binding var deepLinkSession: Session?
 
     // MARK: - Persisted state
@@ -13,6 +14,8 @@ struct SessionListView: View {
     // MARK: - Local state
     @State private var sessions: [Session] = []
     @State private var selectedSessionId: String?
+    @State private var confirmedCounts: [String: Int] = [:]
+    @State private var suggestedCounts: [String: Int] = [:]
     @State private var sortOrder: [KeyPathComparator<Session>] = [
         .init(\.startTime, order: .reverse)
     ]
@@ -170,7 +173,7 @@ struct SessionListView: View {
 
             Divider()
 
-            // Table
+            // Session list
             if filteredSessions.isEmpty && !sessions.isEmpty {
                 EmptyState(icon: "line.3.horizontal.decrease.circle", title: "No matches", message: "No sessions match your current filters")
             } else if sessions.isEmpty && !isChurning {
@@ -179,7 +182,27 @@ struct SessionListView: View {
                     Spacer()
                 }
                 .padding(.horizontal, 10)
+            } else if agentFilterMode == 0 {
+                // All mode: expandable grouped view with agent children
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(filteredSessions) { session in
+                            ExpandableSessionCard(
+                                session: session,
+                                confirmedChildCount: confirmedCounts[session.id] ?? 0,
+                                suggestedChildCount: suggestedCounts[session.id] ?? 0,
+                                onTap: { selectSession(session) },
+                                onChildTap: { child in selectSession(child) },
+                                onConfirmSuggestion: { child in confirmSuggestion(child) },
+                                onDismissSuggestion: { child in dismissSuggestion(child) }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
             } else {
+                // Agents only (1) or Hide (2): flat table view
                 SessionTableView(
                     sessions: filteredSessions,
                     selectedSessionId: $selectedSessionId,
@@ -287,9 +310,11 @@ struct SessionListView: View {
         if showingTrash {
             sessions = (try? db.listHiddenSessions(limit: 500)) ?? []
         } else {
+            let useTopLevel = agentFilterMode != 1 // top-level only except "agents only" mode
             do {
                 sessions = try db.listSessions(
                     subAgent: agentFilter,
+                    topLevelOnly: useTopLevel,
                     limit: 2000
                 )
             } catch {
@@ -297,6 +322,11 @@ struct SessionListView: View {
                 sessions = []
             }
         }
+
+        // Load child counts for expandable grouped view
+        let parentIds = sessions.map(\.id)
+        confirmedCounts = (try? db.childCount(parentIds: parentIds)) ?? [:]
+        suggestedCounts = (try? db.suggestedChildCount(parentIds: parentIds)) ?? [:]
 
         // Refresh cached selection after reload
         if let id = selectedSessionId,
@@ -344,6 +374,28 @@ struct SessionListView: View {
         Task {
             await loadSessions()
             selectedSessionId = session.id
+        }
+    }
+
+    private func selectSession(_ session: Session) {
+        selectedSessionId = session.id
+    }
+
+    private func confirmSuggestion(_ child: Session) {
+        Task {
+            _ = try? await daemonClient.confirmSuggestion(sessionId: child.id)
+            await loadSessions()
+            updateFilteredSessions()
+        }
+    }
+
+    private func dismissSuggestion(_ child: Session) {
+        Task {
+            if let suggestedId = child.suggestedParentId {
+                try? await daemonClient.dismissSuggestion(sessionId: child.id, suggestedParentId: suggestedId)
+            }
+            await loadSessions()
+            updateFilteredSessions()
         }
     }
 }
