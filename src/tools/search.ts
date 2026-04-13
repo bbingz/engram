@@ -240,6 +240,18 @@ export async function handleSearch(
     })(),
   ]);
 
+  // FTS fallback for insights when no vector search available
+  if (insightResults.length === 0 && params.query.length >= 3) {
+    try {
+      const ftsInsights = db.searchInsightsFts(params.query, 5);
+      for (const ins of ftsInsights) {
+        insightResults.push(ins.content);
+      }
+    } catch {
+      /* FTS query failed, continue without insights */
+    }
+  }
+
   // --- RRF merge ---
   const allSessionIds = new Set([...ftsScores.keys(), ...vecScores.keys()]);
   const merged: {
@@ -295,12 +307,19 @@ export async function handleSearch(
     });
   }
 
-  const warning =
-    searchModes.length === 0
-      ? params.query.length < 3
+  let warning: string | undefined;
+  if (searchModes.length === 0) {
+    warning =
+      params.query.length < 3
         ? 'Search query needs at least 3 characters for keyword search (2 for semantic)'
-        : undefined
-      : undefined;
+        : undefined;
+  } else if (
+    !deps.vectorStore &&
+    (params.mode === 'semantic' || params.mode === 'hybrid' || !params.mode)
+  ) {
+    warning =
+      'Embedding provider unavailable — results are keyword-only (FTS).';
+  }
 
   searchSpan?.setAttribute('resultCount', results.length);
   searchSpan?.setAttribute('searchModes', searchModes.join(','));

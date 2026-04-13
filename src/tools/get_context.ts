@@ -132,6 +132,15 @@ export async function handleGetContext(
       /* insights search failed, continue without */
     }
   }
+  // FTS fallback: when no embedding, search insights by keyword
+  if (insightLines.length === 0 && params.task) {
+    try {
+      const ftsInsights = db.searchInsightsFts(params.task, 5);
+      insightLines = ftsInsights.map((r) => r.content);
+    } catch {
+      /* FTS search failed, continue without */
+    }
+  }
 
   const contextParts: string[] = [];
   let totalChars = 0;

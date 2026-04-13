@@ -53,7 +53,8 @@ describe('handleGetMemory', () => {
 
   it('returns helpful message when no embedder available', async () => {
     const result = await handleGetMemory({ query: 'coding style' }, {});
-    expect(result.message).toContain('embedding support');
+    expect(result.memories).toHaveLength(0);
+    expect(result.warning).toContain('No embedding provider');
   });
 
   it('returns helpful message when no memories exist', async () => {
