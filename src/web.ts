@@ -392,6 +392,52 @@ export function createApp(
     return c.json(session);
   });
 
+  // --- Parent link management ---
+
+  app.post('/api/sessions/:id/link', async (c) => {
+    const sessionId = c.req.param('id');
+    const body = await c.req.json<{ parentId: string }>();
+    if (!body?.parentId) return c.json({ error: 'parentId required' }, 400);
+    const validation = db.validateParentLink(sessionId, body.parentId);
+    if (validation !== 'ok') return c.json({ error: validation }, 400);
+    db.setParentSession(sessionId, body.parentId, 'manual');
+    return c.json({ ok: true });
+  });
+
+  app.delete('/api/sessions/:id/link', (c) => {
+    const sessionId = c.req.param('id');
+    db.clearParentSession(sessionId);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/sessions/:id/confirm-suggestion', (c) => {
+    const sessionId = c.req.param('id');
+    const result = db.confirmSuggestion(sessionId);
+    if (!result.ok) return c.json({ error: result.error }, 400);
+    return c.json({ ok: true });
+  });
+
+  app.delete('/api/sessions/:id/suggestion', async (c) => {
+    const sessionId = c.req.param('id');
+    const body = await c.req.json<{ suggestedParentId: string }>();
+    if (!body?.suggestedParentId)
+      return c.json({ error: 'suggestedParentId required' }, 400);
+    const cleared = db.clearSuggestedParent(sessionId, body.suggestedParentId);
+    if (!cleared) return c.json({ error: 'stale-suggestion' }, 409);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/sessions/:id/children', (c) => {
+    const parentId = c.req.param('id');
+    const limitParam = c.req.query('limit');
+    const offsetParam = c.req.query('offset');
+    const limit = Math.min(limitParam ? parseInt(limitParam, 10) : 20, 100);
+    const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
+    const confirmed = db.childSessions(parentId, limit, offset);
+    const suggested = db.suggestedChildSessions(parentId);
+    return c.json({ confirmed, suggested });
+  });
+
   // Session timeline for replay
   app.get('/api/sessions/:id/timeline', async (c) => {
     const session = db.getSession(c.req.param('id'));
