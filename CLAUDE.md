@@ -7,7 +7,7 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 690 tests, ~5s
+npm test               # vitest: 767 tests, ~5s
 npm run dev            # tsx: run without compile
 npm run lint           # biome check (must pass — pre-commit enforced)
 npm run lint:fix       # biome auto-fix
@@ -26,7 +26,9 @@ xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 ```
 src/
   adapters/    # SessionAdapter implementations (15 sources: codex, claude-code, cursor, etc.)
-  core/        # db.ts (SQLite), indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, chunker.ts, vector-store.ts, embeddings.ts
+  core/        # indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, chunker.ts, vector-store.ts, embeddings.ts
+    db/        # Database modules: database.ts (facade), migration.ts, session-repo.ts, fts-repo.ts, metrics-repo.ts, index-job-repo.ts, sync-repo.ts, maintenance.ts, alias-repo.ts, insight-repo.ts
+    db.ts      # ESM re-export shim (preserves `import { Database } from '../core/db.js'`)
   tools/       # MCP tool handlers (19 tools: get_context, search, save_insight, list_sessions, get_session, get_memory, get_insights, get_costs, stats, tool_analytics, file_activity, etc.)
   web.ts       # Hono HTTP server + API endpoints
   index.ts     # MCP server entry (stdin/stdout transport)
@@ -65,6 +67,8 @@ New adapters: create `src/adapters/<name>.ts`, register in `src/core/bootstrap.t
 
 ### Process Lifecycle
 `setupProcessLifecycle()` MUST be called AFTER `server.connect(transport)` — stdin race with StdioServerTransport.
+- MCP server: `idleTimeoutMs: 0` — Claude Code manages lifecycle via stdin close. Do NOT re-enable idle timeout (causes premature disconnect).
+- Daemon: has its own signal-based shutdown, does NOT use `setupProcessLifecycle`.
 
 ### Session Tiering
 4 tiers in `src/core/session-tier.ts`: `skip` / `lite` / `normal` / `premium`.
@@ -80,7 +84,15 @@ Hybrid search: FTS5 (trigram) + sqlite-vec (vector embeddings) + RRF fusion. All
 - `src/core/chunker.ts`: message-boundary-first chunking for fine-grained retrieval
 - `src/core/embeddings.ts`: provider strategy — Ollama (default) | OpenAI | Transformers.js (opt-in)
 - `src/tools/save_insight.ts`: active memory write (agents save curated knowledge)
+- `src/core/db/insight-repo.ts`: text-only insight storage with FTS (works without embedding provider)
 - Model tracking: dimension/model changes trigger automatic rebuild of vector tables
+
+### Insight Degradation UX
+Two storage layers for insights: `insights` table (text+FTS, always available) and `memory_insights` (vector, requires sqlite-vec).
+- save_insight: no embedding → text-only save with warning; with embedding → dual-write (vector + text)
+- get_memory/search/get_context: no embedding → FTS keyword fallback from `insights` table
+- Daemon backfills: promotes text-only insights to embedded when provider becomes available
+- CJK queries use LIKE fallback (same as session FTS)
 
 ### Daemon ↔ Swift Communication
 - Daemon writes JSON lines to stdout: `{ event: "ready", indexed: N, total: M }`
@@ -121,6 +133,8 @@ Hybrid search: FTS5 (trigram) + sqlite-vec (vector embeddings) + RRF fusion. All
 - Don't skip `npm run lint` — pre-commit hook enforces it; CI enforces it too
 - Don't mix vectors from different embedding models in the same vector space — use explicit provider selection
 - Don't add Viking/OpenViking code — it was removed (2026-04-13). Use local sqlite-vec + FTS5 instead
+- Don't re-enable idle timeout for MCP server (`idleTimeoutMs` in index.ts) — causes premature disconnect
+- Don't add db methods directly to db.ts — add to the appropriate module in `src/core/db/`, facade in `database.ts` delegates
 
 ## Skill routing
 
