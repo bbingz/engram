@@ -174,6 +174,7 @@ import {
   validateParentLink,
   setParentSession,
   clearParentSession,
+  confirmSuggestion,
   setSuggestedParent,
   clearSuggestedParent,
   childSessions,
@@ -302,6 +303,40 @@ describe('parent-link-repo', () => {
       const suggested = suggestedChildSessions(db.raw, 'parent-1');
       expect(suggested).toHaveLength(1);
       expect(suggested[0].id).toBe('child-2');
+    });
+  });
+
+  describe('confirmSuggestion', () => {
+    it('promotes suggested parent to confirmed', () => {
+      setSuggestedParent(db.raw, 'child-2', 'parent-1');
+      const result = confirmSuggestion(db.raw, 'child-2');
+      expect(result.ok).toBe(true);
+      const row = db.raw.prepare('SELECT parent_session_id, suggested_parent_id, link_source FROM sessions WHERE id = ?')
+        .get('child-2') as Record<string, unknown>;
+      expect(row.parent_session_id).toBe('parent-1');
+      expect(row.suggested_parent_id).toBeNull();
+      expect(row.link_source).toBe('manual');
+    });
+
+    it('rejects when no suggestion exists', () => {
+      const result = confirmSuggestion(db.raw, 'child-2');
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('no-suggestion');
+    });
+
+    it('rejects when suggested parent no longer exists', () => {
+      setSuggestedParent(db.raw, 'child-2', 'parent-1');
+      db.raw.prepare('DELETE FROM sessions WHERE id = ?').run('parent-1');
+      const result = confirmSuggestion(db.raw, 'child-2');
+      expect(result.ok).toBe(false);
+    });
+
+    it('upgrades tier from skip to lite on confirm', () => {
+      db.raw.prepare('UPDATE sessions SET tier = ? WHERE id = ?').run('skip', 'child-2');
+      setSuggestedParent(db.raw, 'child-2', 'parent-1');
+      confirmSuggestion(db.raw, 'child-2');
+      const row = db.raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('child-2') as Record<string, unknown>;
+      expect(row.tier).toBe('lite');
     });
   });
 
@@ -796,40 +831,9 @@ In `src/adapters/claude-code.ts`, modify the return block starting at line 126:
       };
 ```
 
-- [ ] **Step 4: Update upsertSession to handle parentSessionId**
-
-In `src/core/db/session-repo.ts`, in `upsertSession()`, the INSERT does not need to set `parent_session_id` directly — it's managed by the parent-link-repo. But we need to handle the case where the adapter provides it at index time.
-
-After `upsertSession()` runs (in the indexer or wherever sessions are upserted), if `session.parentSessionId` is set, we should call `setParentSession`. This is better handled at the indexer level. For now, add a post-upsert hook.
-
-In `src/core/db/session-repo.ts`, modify `upsertSession()` to accept the raw db and call the parent link logic:
-
-Actually, the cleaner approach: leave `upsertSession` as-is, and handle parent linking in the indexer after upsert. The adapter provides `parentSessionId` in SessionInfo, and the indexer calls `setParentSession` if the field is present and valid.
+- [ ] **Step 4: Add applyParentLink function**
 
 Add to `src/core/db/session-repo.ts` after `upsertSession` (around line 201):
-
-```typescript
-export function applyParentLink(
-  db: BetterSqlite3.Database,
-  session: SessionInfo,
-): void {
-  if (!session.parentSessionId) return;
-
-  // Don't overwrite manual decisions
-  const existing = db.prepare('SELECT link_source FROM sessions WHERE id = ?')
-    .get(session.id) as { link_source: string | null } | undefined;
-  if (existing?.link_source === 'manual') return;
-
-  // Import inline to avoid circular deps
-  const { validateParentLink, setParentSession } = require('./parent-link-repo.js');
-  const validation = validateParentLink(db, session.id, session.parentSessionId);
-  if (validation === 'ok') {
-    setParentSession(db, session.id, session.parentSessionId, 'path');
-  }
-}
-```
-
-Wait — ES modules can't use `require`. Let me restructure. The validation logic should be in parent-link-repo, and called from session-repo using a direct import.
 
 ```typescript
 import { validateParentLink, setParentSession } from './parent-link-repo.js';
@@ -860,6 +864,16 @@ Add facade method in `database.ts`:
     sessions.applyParentLink(this.db, session);
   }
 ```
+
+- [ ] **Step 5: Wire applyParentLink into the indexer**
+
+In `src/core/indexer.ts`, find the `indexFile()` method where `db.upsertSession(info)` is called. Immediately after the upsert, add:
+
+```typescript
+    db.applyParentLink(info);
+```
+
+This ensures Layer 1 parent linking happens incrementally at index time for every new session, not just during backfill. If the parent isn't indexed yet (child-before-parent ordering), the call silently skips — Pass 1 backfill catches it on the next maintenance cycle.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -895,6 +909,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isDispatchPattern,
   scoreCandidate,
+  pickBestCandidate,
   DISPATCH_PATTERNS,
 } from '../../src/core/parent-detection.js';
 
@@ -951,6 +966,36 @@ describe('parent-detection', () => {
     it('returns 0 if agent started after parent ended', () => {
       const score = scoreCandidate(agentStart, '2026-04-13T09:00:00Z', '2026-04-13T10:00:00Z', 'myproj', 'myproj');
       expect(score).toBe(0);
+    });
+  });
+
+  describe('pickBestCandidate', () => {
+    it('returns null for empty list', () => {
+      expect(pickBestCandidate([])).toBeNull();
+    });
+
+    it('returns the single candidate', () => {
+      expect(pickBestCandidate([{ parentId: 'p1', score: 0.5 }])).toBe('p1');
+    });
+
+    it('returns best candidate when gap > 15%', () => {
+      const result = pickBestCandidate([
+        { parentId: 'p1', score: 0.8 },
+        { parentId: 'p2', score: 0.3 },
+      ]);
+      expect(result).toBe('p1');
+    });
+
+    it('returns null when top 2 candidates within 15% (ambiguity rejection)', () => {
+      const result = pickBestCandidate([
+        { parentId: 'p1', score: 0.50 },
+        { parentId: 'p2', score: 0.48 }, // 4% gap < 15% threshold
+      ]);
+      expect(result).toBeNull();
+    });
+
+    it('returns null when best score is 0', () => {
+      expect(pickBestCandidate([{ parentId: 'p1', score: 0 }])).toBeNull();
     });
   });
 });
@@ -1619,18 +1664,32 @@ In `macos/Engram/Core/Database.swift`, add:
     }
 ```
 
-- [ ] **Step 4: Update listSessions to filter top-level only**
+- [ ] **Step 4: Add topLevelOnly parameter to listSessions (do NOT change default)**
 
-In `macos/Engram/Core/Database.swift`, modify `listSessions()` to add `AND parent_session_id IS NULL` to the WHERE clause when not in agent-only mode.
-
-In the existing `listSessions` method, add before the `ORDER BY`:
+In `macos/Engram/Core/Database.swift`, add a new parameter to `listSessions()`:
 
 ```swift
-// For non-agent-only queries, filter to top-level sessions
-if subAgent != true {
-    conditions.append("parent_session_id IS NULL")
-}
+    nonisolated func listSessions(
+        sources: [String]? = nil,
+        projects: [String]? = nil,
+        since: String? = nil,
+        subAgent: Bool? = nil,
+        topLevelOnly: Bool = false,  // NEW — only HomeView and SessionListView pass true
+        sort: [KeyPathComparator<Session>]? = nil,
+        limit: Int = 2000,
+        offset: Int = 0
+    ) throws -> [Session] {
 ```
+
+Inside the method, add the filter conditionally:
+
+```swift
+        if topLevelOnly {
+            conditions.append("parent_session_id IS NULL")
+        }
+```
+
+**IMPORTANT:** Do NOT change the default behavior of `listSessions()`. Stats, timeline, activity, and other views must continue seeing all sessions (including children). Only HomeView and SessionListView pass `topLevelOnly: true` at their call sites.
 
 - [ ] **Step 5: Build to verify compilation**
 
@@ -1837,7 +1896,25 @@ struct ExpandableSessionCard: View {
             }
         }
     }
+
+    // Reset cached children when parent view reloads data (e.g. after confirm/dismiss)
+    private func resetIfCountsChanged() {
+        children = []
+        suggestedChildren = []
+        if isExpanded { loadChildren() }
+    }
 }
+```
+
+**IMPORTANT:** The parent view (HomeView/SessionListView) reloads data after confirm/dismiss, causing `confirmedChildCount` and `suggestedChildCount` to change. But the card's internal `@State` (children, suggestedChildren) won't update automatically. Add this modifier on the `ExpandableSessionCard` in the parent ForEach:
+
+```swift
+    .onChange(of: confirmedChildCount + suggestedChildCount) { resetIfCountsChanged() }
+```
+
+Alternatively, make `resetIfCountsChanged()` an instance method and call it via `.onChange`. The key point: **stale @State after parent reload is a real bug — the card must invalidate its cached children when counts change.**
+
+```swift (continued from above)
 
 struct CompactChildRow: View {
     let session: Session
@@ -1847,45 +1924,46 @@ struct CompactChildRow: View {
     var onDismiss: (() -> Void)? = nil
 
     var body: some View {
-        Button(action: { onTap?() }) {
-            HStack(spacing: 8) {
-                SourcePill(source: session.source)
-                    .scaleEffect(0.85)
+        // NOTE: Do NOT nest Buttons inside a Button — SwiftUI swallows inner tap events.
+        // Use HStack with onTapGesture on the row, and separate Buttons for actions.
+        HStack(spacing: 8) {
+            SourcePill(source: session.source)
+                .scaleEffect(0.85)
 
-                Text(session.displayTitle)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(isConfirmed ? Theme.primaryText : Theme.tertiaryText)
+            Text(session.displayTitle)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(isConfirmed ? Theme.primaryText : Theme.tertiaryText)
 
-                Spacer()
+            Spacer()
 
-                if !isConfirmed {
-                    Button("Confirm") { onConfirm?() }
-                        .font(.caption2)
-                        .foregroundStyle(Theme.accentColor)
-                        .buttonStyle(.plain)
-                    Button("×") { onDismiss?() }
-                        .font(.caption)
-                        .foregroundStyle(Theme.tertiaryText)
-                        .buttonStyle(.plain)
-                }
-
-                Text(relativeTime(session.startTime))
+            if !isConfirmed {
+                Button("Confirm") { onConfirm?() }
                     .font(.caption2)
+                    .foregroundStyle(Theme.accentColor)
+                    .buttonStyle(.plain)
+                Button("×") { onDismiss?() }
+                    .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)
-                    .frame(width: 36, alignment: .trailing)
+                    .buttonStyle(.plain)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(isConfirmed ? Color.clear : Theme.surface.opacity(0.5))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isConfirmed ? Color.clear : Theme.border.opacity(0.5), lineWidth: 0.5)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            Text(SessionCard.relativeTime(session.startTime))
+                .font(.caption2)
+                .foregroundStyle(Theme.tertiaryText)
+                .frame(width: 36, alignment: .trailing)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(isConfirmed ? Color.clear : Theme.surface.opacity(0.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isConfirmed ? Color.clear : Theme.border.opacity(0.5), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle()) // make entire row tappable
+        .onTapGesture { onTap?() }
     }
 }
 ```
@@ -1918,19 +1996,30 @@ In `HomeView.swift`, add state properties:
     @State private var suggestedCounts: [String: Int] = [:]
 ```
 
-In `loadData()`, after loading `recent`, add:
+In `loadData()`, replace the `Task.detached` block to include child counts. The full updated block:
 
 ```swift
+        let data = try await Task.detached {
+            let kpi = try db.kpiStats()
+            let daily = try db.dailyActivity(days: 30)
+            let hourly = try db.hourlyActivity()
+            let source = try db.sourceDistribution()
+            let tiers = try db.tierDistribution()
+            let recent = try db.recentSessions(limit: 8)
+            // Load child counts for recent sessions
             let parentIds = recent.map(\.id)
             let confirmed = try db.childCount(parentIds: parentIds)
             let suggested = try db.suggestedChildCount(parentIds: parentIds)
-```
-
-Update the tuple to include these, and assign:
-
-```swift
-        confirmedCounts = data.confirmed  // adjust tuple index
-        suggestedCounts = data.suggested
+            return (kpi, daily, hourly, source, tiers, recent, confirmed, suggested)
+        }.value
+        kpi = data.0
+        dailyActivity = data.1
+        hourlyActivity = data.2
+        sourceDist = data.3
+        tiers = data.4
+        recentSessions = data.5
+        confirmedCounts = data.6
+        suggestedCounts = data.7
 ```
 
 - [ ] **Step 2: Replace SessionCard with ExpandableSessionCard in recentSessionsSection**
@@ -2084,18 +2173,19 @@ git commit -m "feat: SessionListView grouped list with agent filter interaction"
 
 - [ ] **Step 1: Add parent breadcrumb at top of detail view**
 
-In `SessionDetailView.swift`, add state:
+In `SessionDetailView.swift`, add state — **use separate vars for confirmed vs suggested parent** to avoid mixing their UI:
 
 ```swift
-    @State private var parentSession: Session?
+    @State private var confirmedParent: Session?   // from parent_session_id
+    @State private var suggestedParent: Session?   // from suggested_parent_id (only when no confirmed parent)
     @State private var childrenSessions: [Session] = []
 ```
 
 After the toolbar section, before the transcript, add:
 
 ```swift
-    // Parent breadcrumb
-    if let parent = parentSession {
+    // Confirmed parent breadcrumb
+    if let parent = confirmedParent {
         Button(action: { navigateToSession(parent) }) {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.left")
@@ -2109,10 +2199,14 @@ After the toolbar section, before the transcript, add:
             .padding(.vertical, 6)
         }
         .buttonStyle(.plain)
-    } else if session.hasSuggestedParent {
+    }
+
+    // Suggested parent breadcrumb (only shown when no confirmed parent)
+    if confirmedParent == nil, let suggested = suggestedParent {
         HStack(spacing: 8) {
-            Text("← Suggested parent")
+            Text("← Suggested parent: \(suggested.displayTitle)")
                 .font(.caption)
+                .lineLimit(1)
                 .foregroundStyle(Theme.tertiaryText)
 
             Button("Confirm") {
@@ -2130,6 +2224,7 @@ After the toolbar section, before the transcript, add:
                     if let suggestedId = session.suggestedParentId {
                         try? await daemonClient.dismissSuggestion(sessionId: session.id, suggestedParentId: suggestedId)
                     }
+                    loadParentInfo()  // refresh UI after dismiss
                 }
             }
             .font(.caption2)
@@ -2173,15 +2268,20 @@ Add loading methods:
 ```swift
     private func loadParentInfo() {
         Task.detached {
-            var parent: Session?
-            if let pid = session.parentSessionId {
-                parent = try? db.getSession(id: pid)
-            } else if let spid = session.suggestedParentId {
-                parent = try? db.getSession(id: spid)
+            // Re-fetch session from DB to get latest state (Session is a value type)
+            let freshSession = try? db.getSession(id: session.id)
+
+            var confirmed: Session?
+            var suggested: Session?
+            if let pid = (freshSession ?? session).parentSessionId {
+                confirmed = try? db.getSession(id: pid)
+            } else if let spid = (freshSession ?? session).suggestedParentId {
+                suggested = try? db.getSession(id: spid)
             }
             let children = try? db.childSessions(parentId: session.id)
             await MainActor.run {
-                parentSession = parent
+                confirmedParent = confirmed
+                suggestedParent = suggested
                 childrenSessions = children ?? []
             }
         }
