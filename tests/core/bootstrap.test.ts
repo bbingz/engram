@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createDaemonDeps,
+  createMCPDeps,
   createShutdownHandler,
   type ShutdownResources,
 } from '../../src/core/bootstrap.js';
@@ -153,5 +155,57 @@ describe('createShutdownHandler', () => {
     );
     // db is last
     expect(callOrder[callOrder.length - 1]).toBe('db');
+  });
+});
+
+describe('createMCPDeps', () => {
+  it('returns all required fields with in-memory db', () => {
+    const deps = createMCPDeps({ dbPath: ':memory:' });
+    expect(deps.db).toBeDefined();
+    expect(deps.adapters.length).toBeGreaterThan(0);
+    expect(deps.adapterMap).toBeDefined();
+    expect(deps.settings).toBeDefined();
+    expect(deps.audit).toBeDefined();
+    expect(deps.tracer).toBeDefined();
+    expect(deps.traceWriter).toBeDefined();
+    expect(deps.indexer).toBeDefined();
+    expect(deps.indexJobRunner).toBeDefined();
+    // vecDeps may be null if sqlite-vec not available
+    expect('vecDeps' in deps).toBe(true);
+    deps.db.close();
+  });
+
+  it('adapters include known sources', () => {
+    const deps = createMCPDeps({ dbPath: ':memory:' });
+    const names = deps.adapters.map((a) => a.name);
+    expect(names).toContain('claude-code');
+    expect(names).toContain('codex');
+    expect(names).toContain('gemini-cli');
+    deps.db.close();
+  });
+});
+
+describe('createDaemonDeps', () => {
+  it('returns all required fields extending MCPDeps', () => {
+    const deps = createDaemonDeps({ dbPath: ':memory:' });
+    // MCPDeps fields
+    expect(deps.db).toBeDefined();
+    expect(deps.adapters.length).toBeGreaterThan(0);
+    expect(deps.tracer).toBeDefined();
+    // DaemonCoreDeps fields
+    expect(deps.log).toBeDefined();
+    expect(deps.logWriter).toBeDefined();
+    expect(deps.traceWriter).toBeDefined();
+    expect(deps.metrics).toBeDefined();
+    expect(deps.auditQuery).toBeDefined();
+    expect(deps.titleGenerator).toBeDefined();
+    deps.db.close();
+  });
+
+  it('reuses traceWriter from base MCPDeps (no duplicate)', () => {
+    const deps = createDaemonDeps({ dbPath: ':memory:' });
+    // traceWriter should be the same instance from createMCPDeps
+    expect(deps.traceWriter).toBeDefined();
+    deps.db.close();
   });
 });

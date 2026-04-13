@@ -119,6 +119,7 @@ export interface MCPDeps {
   settings: FileSettings;
   audit: AiAuditWriter;
   tracer: Tracer;
+  traceWriter: TraceWriter;
   indexer: Indexer;
   indexJobRunner: IndexJobRunner;
   vecDeps: VectorDeps | null;
@@ -171,6 +172,7 @@ export function createMCPDeps(opts?: { dbPath?: string }): MCPDeps {
     settings,
     audit,
     tracer,
+    traceWriter,
     indexer,
     indexJobRunner,
     vecDeps,
@@ -197,9 +199,9 @@ export function createDaemonDeps(opts?: { dbPath?: string }): DaemonCoreDeps {
   const base = createMCPDeps(opts);
   const { db, settings, audit } = base;
 
-  // Observability stack
+  // Observability stack (reuse traceWriter from base MCP deps)
   const logWriter = new LogWriter(db.raw);
-  const traceWriter = new TraceWriter(db.raw);
+  const { traceWriter } = base;
   const metrics = new MetricsCollector(db.raw, {
     flushIntervalMs: 5000,
     sampleRates: { 'db.query_ms': 0.1 },

@@ -154,9 +154,13 @@ export function reconcileInsights(
        AND id NOT IN (SELECT id FROM insights)`,
       )
       .run().changes;
-  } catch {
+  } catch (err: unknown) {
     // memory_insights table does not exist (sqlite-vec never loaded) — skip
-    return { resetEmbedding: 0, orphanedVector: 0 };
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('no such table')) {
+      return { resetEmbedding: 0, orphanedVector: 0 };
+    }
+    throw err; // re-throw unexpected errors
   }
 
   if (resetEmbedding > 0 || orphanedVector > 0) {

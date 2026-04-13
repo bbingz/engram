@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_IMPORTANCE } from '../core/db/insight-repo.js';
 import type { Database } from '../core/db.js';
 import type { EmbeddingClient } from '../core/embeddings.js';
 import type { Logger } from '../core/logger.js';
@@ -59,6 +60,25 @@ interface SaveInsightResult {
 
 const DEDUP_THRESHOLD = 0.85;
 
+/**
+ * Delete an insight from both text (insights+FTS) and vector (memory_insights+vec_insights) stores.
+ * Callers don't need to remember to delete from both — this is the single entry point.
+ */
+export function deleteInsight(
+  id: string,
+  deps: { db?: Database; vecStore?: VectorStore | null },
+): boolean {
+  let deleted = false;
+  if (deps.db) {
+    deleted = deps.db.deleteInsightText(id) || deleted;
+  }
+  if (deps.vecStore) {
+    deps.vecStore.deleteInsight(id);
+    deleted = true;
+  }
+  return deleted;
+}
+
 export async function handleSaveInsight(
   params: {
     content: string;
@@ -95,7 +115,7 @@ export async function handleSaveInsight(
   if (params.room) params.room = params.room.trim().slice(0, 200);
 
   const id = randomUUID();
-  const importance = params.importance ?? 5;
+  const importance = params.importance ?? DEFAULT_IMPORTANCE;
 
   // Text-only fallback: save to insights table when no embedding support
   if (!deps.vecStore || !deps.embedder) {

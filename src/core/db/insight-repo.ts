@@ -65,12 +65,12 @@ export function findDuplicateInsight(
   const rows = wing
     ? (db
         .prepare(
-          'SELECT * FROM insights WHERE wing = ? ORDER BY created_at DESC LIMIT 50',
+          'SELECT * FROM insights WHERE wing = ? ORDER BY created_at DESC LIMIT 200',
         )
         .all(wing) as InsightRow[])
     : (db
         .prepare(
-          'SELECT * FROM insights WHERE wing IS NULL ORDER BY created_at DESC LIMIT 50',
+          'SELECT * FROM insights WHERE wing IS NULL ORDER BY created_at DESC LIMIT 200',
         )
         .all() as InsightRow[]);
 
