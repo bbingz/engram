@@ -116,6 +116,36 @@ export class IndexJobRunner {
     }
   }
 
+  /** Promote text-only insights to embedded when a provider becomes available. */
+  async backfillInsightEmbeddings(): Promise<number> {
+    if (!this.store || !this.client) return 0;
+    const unembedded = this.db.listUnembeddedInsights(20);
+    let count = 0;
+    for (const insight of unembedded) {
+      try {
+        const embedding = await this.client.embed(insight.content);
+        if (embedding) {
+          this.store.upsertInsight(
+            insight.id,
+            insight.content,
+            embedding,
+            this.client.model,
+            {
+              wing: insight.wing ?? undefined,
+              room: insight.room ?? undefined,
+              importance: insight.importance,
+            },
+          );
+          this.db.markInsightEmbedded(insight.id);
+          count++;
+        }
+      } catch {
+        /* skip this insight, retry on next pass */
+      }
+    }
+    return count;
+  }
+
   private async indexChunks(sessionId: string, ftsText: string): Promise<void> {
     if (!this.store || !this.client) return;
 
