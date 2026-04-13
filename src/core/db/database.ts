@@ -12,6 +12,8 @@ import type {
 import * as aliases from './alias-repo.js';
 import * as fts from './fts-repo.js';
 import * as jobs from './index-job-repo.js';
+import type { InsightRow } from './insight-repo.js';
+import * as insights from './insight-repo.js';
 import * as maint from './maintenance.js';
 import * as metricsRepo from './metrics-repo.js';
 import { runMigrations } from './migration.js';
@@ -343,6 +345,38 @@ export class Database {
   }
   deduplicateFilePaths(): number {
     return maint.deduplicateFilePaths(this.db);
+  }
+
+  // --- Insight repo ---
+  saveInsightText(
+    id: string,
+    content: string,
+    wing?: string,
+    room?: string,
+    importance?: number,
+    sourceSessionId?: string,
+  ): void {
+    insights.saveInsightText(
+      this.db,
+      id,
+      content,
+      wing,
+      room,
+      importance,
+      sourceSessionId,
+    );
+  }
+  searchInsightsFts(query: string, limit = 10): InsightRow[] {
+    return insights.searchInsightsFts(this.db, query, limit);
+  }
+  listInsightsByWing(wing: string | undefined, limit = 10): InsightRow[] {
+    return insights.listInsightsByWing(this.db, wing, limit);
+  }
+  markInsightEmbedded(id: string): void {
+    insights.markInsightEmbedded(this.db, id);
+  }
+  listUnembeddedInsights(limit = 20): InsightRow[] {
+    return insights.listUnembeddedInsights(this.db, limit);
   }
 
   // --- Alias repo ---

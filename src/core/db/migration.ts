@@ -394,4 +394,26 @@ export function runMigrations(
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_ai_audit_trace ON ai_audit_log(trace_id)',
   );
+
+  // ── Insights (text-only backing store for save_insight) ──────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS insights (
+      id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      wing TEXT,
+      room TEXT,
+      source_session_id TEXT,
+      importance INTEGER DEFAULT 5,
+      has_embedding INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_insights_wing ON insights(wing)');
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS insights_fts USING fts5(
+      insight_id UNINDEXED,
+      content,
+      tokenize='trigram case_sensitive 0'
+    )
+  `);
 }
