@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 // src/index.ts
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -8,20 +7,10 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { AiAuditWriter } from './core/ai-audit.js';
-import {
-  createAdapters,
-  ensureDataDirs,
-  initVectorDeps,
-} from './core/bootstrap.js';
-import { DEFAULT_AI_AUDIT_CONFIG, readFileSettings } from './core/config.js';
-import { Database } from './core/db.js';
-import { IndexJobRunner } from './core/index-job-runner.js';
-import { Indexer } from './core/indexer.js';
+import { createMCPDeps } from './core/bootstrap.js';
 import { setupProcessLifecycle } from './core/lifecycle.js';
 import { createLogger } from './core/logger.js';
 import { runWithContext } from './core/request-context.js';
-import { Tracer, TraceWriter } from './core/tracer.js';
 import { startWatcher } from './core/watcher.js';
 import { exportTool, handleExport } from './tools/export.js';
 import { handleFileActivity } from './tools/file_activity.js';
@@ -57,46 +46,20 @@ import {
 
 const log = createLogger('mcp', { stderrJson: true });
 
-const DB_DIR = ensureDataDirs();
-const db = new Database(join(DB_DIR, 'index.sqlite'));
-const traceWriter = new TraceWriter(db.raw);
-const tracer = new Tracer(traceWriter);
-const adapters = createAdapters();
-const adapterMap = Object.fromEntries(adapters.map((a) => [a.name, a]));
-
-const fileSettings = readFileSettings();
-const auditConfig = { ...DEFAULT_AI_AUDIT_CONFIG, ...fileSettings.aiAudit };
-const audit = new AiAuditWriter(db.getRawDb(), auditConfig);
-const authoritativeNode = fileSettings.syncNodeName || 'local';
-
-// Apply tier-based noise filter
-db.noiseFilter = fileSettings.noiseFilter ?? 'hide-skip';
-
-const indexer = new Indexer(db, adapters, {
-  authoritativeNode,
-});
-
-// Vector store — may fail if sqlite-vec can't load
-const vecDeps = initVectorDeps(db, {
-  openaiApiKey: fileSettings.openaiApiKey,
-  ollamaUrl: fileSettings.ollamaUrl,
-  ollamaModel: fileSettings.embedding?.model ?? fileSettings.ollamaModel,
-  embeddingDimension:
-    fileSettings.embedding?.dimension ?? fileSettings.embeddingDimension,
-  embeddingProvider: fileSettings.embedding?.provider,
-  audit,
-});
-const vectorDeps: GetContextDeps = vecDeps
-  ? {
-      vectorStore: vecDeps.vectorStore,
-      embed: (text) => vecDeps.embeddingClient.embed(text),
-    }
-  : {};
-const indexJobRunner = new IndexJobRunner(
+const {
   db,
-  vecDeps?.vectorStore,
-  vecDeps?.embeddingClient,
-);
+  adapters,
+  adapterMap,
+  settings: fileSettings,
+  audit,
+  tracer,
+  indexer,
+  indexJobRunner,
+  vecDeps,
+  vectorStore,
+  embed,
+} = createMCPDeps();
+const vectorDeps: GetContextDeps = { vectorStore, embed };
 
 const manageProjectAliasTool = {
   name: 'manage_project_alias',

@@ -191,7 +191,7 @@ export class SqliteVecStore implements VectorStore {
         wing TEXT,
         room TEXT,
         source_session_id TEXT,
-        importance INTEGER DEFAULT 3,
+        importance INTEGER DEFAULT 5,
         model TEXT NOT NULL DEFAULT 'unknown',
         created_at TEXT DEFAULT (datetime('now')),
         deleted_at TEXT
@@ -434,7 +434,7 @@ export class SqliteVecStore implements VectorStore {
       opts?.wing ?? null,
       opts?.room ?? null,
       opts?.sourceSessionId ?? null,
-      opts?.importance ?? 3,
+      opts?.importance ?? 5,
       model,
     );
     this.stmts.insertInsightVec.run(id, buf);

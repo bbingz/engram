@@ -346,6 +346,11 @@ export class Database {
   deduplicateFilePaths(): number {
     return maint.deduplicateFilePaths(this.db);
   }
+  reconcileInsights(log?: {
+    info: (message: string, data?: Record<string, unknown>) => void;
+  }): { resetEmbedding: number; orphanedVector: number } {
+    return maint.reconcileInsights(this.db, log);
+  }
 
   // --- Insight repo ---
   saveInsightText(
@@ -375,8 +380,14 @@ export class Database {
   markInsightEmbedded(id: string): void {
     insights.markInsightEmbedded(this.db, id);
   }
+  findDuplicateInsight(content: string, wing?: string): InsightRow | null {
+    return insights.findDuplicateInsight(this.db, content, wing);
+  }
   listUnembeddedInsights(limit = 20): InsightRow[] {
     return insights.listUnembeddedInsights(this.db, limit);
+  }
+  deleteInsightText(id: string): boolean {
+    return insights.deleteInsightText(this.db, id);
   }
 
   // --- Alias repo ---
