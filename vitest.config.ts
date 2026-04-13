@@ -8,11 +8,17 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**'],
-      exclude: ['src/cli/index.ts', 'src/cli/resume.ts'],
+      exclude: [
+        'src/cli/index.ts',
+        'src/cli/resume.ts',
+        'src/daemon.ts',
+        'src/index.ts',
+        'src/types/**',
+      ],
       thresholds: {
-        lines: 65,
-        branches: 60,
-        functions: 70,
+        lines: 75,
+        branches: 70,
+        functions: 80,
       },
       reporter: ['text', 'lcov'],
     },

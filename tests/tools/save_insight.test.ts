@@ -145,4 +145,85 @@ describe('handleSaveInsight', () => {
     db.close();
     rmSync(tmpDir, { recursive: true });
   });
+
+  it('falls back to text-only when embedder returns null', async () => {
+    const { store, db: sqliteDb, tmpDir } = makeStore();
+    const engDb = new Database(join(tmpDir, 'engram.sqlite'));
+    const nullEmbedder: EmbeddingClient = {
+      dimension: 768,
+      model: 'null-model',
+      embed: async () => null,
+    };
+
+    const result = await handleSaveInsight(
+      { content: 'embed-fail insight', wing: 'proj' },
+      { vecStore: store, embedder: nullEmbedder, db: engDb },
+    );
+
+    expect(result.id).toBeTruthy();
+    expect(result.content).toBe('embed-fail insight');
+    expect(result.warning).toContain('Embedding generation failed');
+    // Not saved in vector store
+    expect(store.countInsights()).toBe(0);
+    // Saved in text DB
+    const rows = engDb.listInsightsByWing('proj', 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].has_embedding).toBe(0);
+
+    sqliteDb.close();
+    engDb.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it('dual-writes to both vector store and text DB', async () => {
+    const { store, db: sqliteDb, tmpDir } = makeStore();
+    const engDb = new Database(join(tmpDir, 'engram.sqlite'));
+    const embedder = makeMockEmbedder();
+
+    const result = await handleSaveInsight(
+      { content: 'dual-write test', wing: 'proj' },
+      { vecStore: store, embedder, db: engDb },
+    );
+
+    expect(result.id).toBeTruthy();
+    expect(result.warning).toBeUndefined();
+    expect(store.countInsights()).toBe(1);
+    const rows = engDb.listInsightsByWing('proj', 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].has_embedding).toBe(1);
+
+    sqliteDb.close();
+    engDb.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it('accepts importance boundary 0', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'insight-imp0-'));
+    const db = new Database(join(tmpDir, 'test.sqlite'));
+
+    const result = await handleSaveInsight(
+      { content: 'trivial note', importance: 0 },
+      { db },
+    );
+
+    expect(result.importance).toBe(0);
+
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it('accepts importance boundary 5', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'insight-imp5-'));
+    const db = new Database(join(tmpDir, 'test.sqlite'));
+
+    const result = await handleSaveInsight(
+      { content: 'critical insight', importance: 5 },
+      { db },
+    );
+
+    expect(result.importance).toBe(5);
+
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
 });
