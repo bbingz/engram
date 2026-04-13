@@ -60,7 +60,7 @@
 
 ## 快速上手
 
-**前置要求：** Node.js 18+
+**前置要求：** Node.js >= 20
 
 ```bash
 # 1. 克隆并构建
@@ -345,7 +345,7 @@ API 端点：
 
 ### `get_memory` — 记忆检索
 
-从历史会话中提取的记忆信息中搜索。需要配置 OpenViking。
+从历史会话中提取的记忆信息中搜索。基于本地 sqlite-vec 向量搜索，需配置 embedding provider。
 
 **参数：**
 
@@ -359,7 +359,7 @@ API 端点：
 { "query": "用户的编码偏好" }
 ```
 
-**返回：** 匹配的记忆列表。未配置 OpenViking 时返回空列表和配置提示。
+**返回：** 匹配的记忆列表。未配置 embedding provider 时返回空列表和配置提示。
 
 ---
 
@@ -560,7 +560,7 @@ interface SessionAdapter {
 ## 开发
 
 ```bash
-npm test              # 运行测试（278 tests）
+npm test              # 运行测试（767 tests）
 npm run test:watch    # 监听模式
 npm run test:coverage # 覆盖率报告
 npm run build         # 编译 TypeScript -> dist/
