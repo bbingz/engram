@@ -253,7 +253,8 @@ export interface HealthIssue {
 }
 
 /** Check for stale git branches (merged into main but not deleted). */
-export function checkStaleBranches(cwd: string): HealthIssue[] {
+// biome-ignore lint/correctness/noUnusedVariables: kept for potential future use
+function checkStaleBranches(cwd: string): HealthIssue[] {
   try {
     const mainBranch = (() => {
       try {
@@ -301,7 +302,8 @@ export function checkStaleBranches(cwd: string): HealthIssue[] {
 }
 
 /** Check for large uncommitted changes. */
-export function checkLargeUncommitted(cwd: string): HealthIssue[] {
+// biome-ignore lint/correctness/noUnusedVariables: kept for potential future use
+function checkLargeUncommitted(cwd: string): HealthIssue[] {
   try {
     const status = execFileSync('git', ['status', '--porcelain'], {
       cwd,
@@ -329,7 +331,8 @@ export function checkLargeUncommitted(cwd: string): HealthIssue[] {
 }
 
 /** Check for zombie node processes related to Engram. */
-export function checkZombieProcesses(): HealthIssue[] {
+// biome-ignore lint/correctness/noUnusedVariables: kept for potential future use
+function checkZombieProcesses(): HealthIssue[] {
   try {
     const ps = execFileSync('pgrep', ['-lf', 'engram.*daemon|daemon.*engram'], {
       encoding: 'utf-8',
@@ -352,6 +355,7 @@ export function checkZombieProcesses(): HealthIssue[] {
 }
 
 /** @deprecated Use runAllHealthChecks(db) from health-rules.ts instead */
-export function runHealthChecks(_cwd: string): HealthIssue[] {
+// biome-ignore lint/correctness/noUnusedVariables: deprecated, kept for backward compat
+function runHealthChecks(_cwd: string): HealthIssue[] {
   return []; // Superseded by runAllHealthChecks(db)
 }

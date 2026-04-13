@@ -29,7 +29,7 @@ function gitCmd(repoPath: string, args: string): string | null {
   }
 }
 
-export function discoverRepos(db: Database.Database): string[] {
+function discoverRepos(db: Database.Database): string[] {
   const rows = db
     .prepare(`
     SELECT DISTINCT cwd FROM sessions WHERE cwd IS NOT NULL AND cwd != '' AND (tier IS NULL OR tier != 'skip')
@@ -44,7 +44,7 @@ export function discoverRepos(db: Database.Database): string[] {
   return [...repos];
 }
 
-export function probeRepo(repoPath: string): Omit<GitRepo, 'sessionCount'> {
+function probeRepo(repoPath: string): Omit<GitRepo, 'sessionCount'> {
   const name = repoPath.split('/').pop() || repoPath;
   const branch = gitCmd(repoPath, 'branch --show-current');
   const statusLines = (gitCmd(repoPath, 'status --porcelain') || '')

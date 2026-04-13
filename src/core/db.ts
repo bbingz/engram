@@ -49,7 +49,7 @@ export interface StatsGroup {
 
 export type NoiseFilter = 'all' | 'hide-skip' | 'hide-noise';
 
-export function buildTierFilter(filter: NoiseFilter = 'hide-skip'): string[] {
+function buildTierFilter(filter: NoiseFilter = 'hide-skip'): string[] {
   if (filter === 'all') return [];
   if (filter === 'hide-noise')
     return ["(tier IS NULL OR tier NOT IN ('skip', 'lite'))"];

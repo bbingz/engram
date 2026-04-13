@@ -201,10 +201,7 @@ async function getLastUserMessage(
 }
 
 /** Format duration between two ISO timestamps as human-readable (e.g., "2h 15m", "45m", "5m") */
-export function formatDuration(
-  startTime: string,
-  endTime?: string,
-): string | null {
+function formatDuration(startTime: string, endTime?: string): string | null {
   if (!endTime) return null;
   const diffMs = new Date(endTime).getTime() - new Date(startTime).getTime();
   if (diffMs <= 0) return null;
@@ -217,7 +214,7 @@ export function formatDuration(
   return `${hours}h ${minutes}m`;
 }
 
-export function formatRelativeTime(isoTime: string): string {
+function formatRelativeTime(isoTime: string): string {
   const diffMs = Date.now() - new Date(isoTime).getTime();
   if (diffMs < 0) return 'just now';
   const minutes = Math.floor(diffMs / 60_000);

@@ -26,9 +26,7 @@ function which(cmd: string): string | null {
   }
 }
 
-export function detectTool(
-  source: string,
-): { path: string; name: string } | null {
+function detectTool(source: string): { path: string; name: string } | null {
   const toolMap: Record<string, string> = {
     'claude-code': 'claude',
     codex: 'codex',

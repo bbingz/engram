@@ -26,7 +26,7 @@ import { createEmbeddingClient } from './embeddings.js';
 import { migrateDataDir } from './migrate.js';
 import { SqliteVecStore } from './vector-store.js';
 
-export const ENGRAM_DIR = join(homedir(), '.engram');
+const ENGRAM_DIR = join(homedir(), '.engram');
 
 export function ensureDataDirs(): string {
   migrateDataDir();

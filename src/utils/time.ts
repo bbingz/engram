@@ -32,7 +32,8 @@ export function toLocalDate(utcString: string | undefined): string {
 /**
  * UTC ISO → 本地所在周的周日（YYYY-MM-DD），用于 stats week 分组
  */
-export function toLocalWeekStart(utcString: string): string {
+// biome-ignore lint/correctness/noUnusedVariables: kept for potential future use
+function toLocalWeekStart(utcString: string): string {
   try {
     const localDate = new Date(utcString).toLocaleDateString('sv', {
       timeZone: TZ,

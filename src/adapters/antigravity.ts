@@ -345,7 +345,7 @@ export class AntigravityAdapter implements SessionAdapter {
 
 // Parse the Markdown output of ConvertTrajectoryToMarkdown into {role, content} pairs.
 // Format: ## User\n\ntext...\n\n## Cascade\n\ntext...
-export function parseMarkdownToMessages(
+function parseMarkdownToMessages(
   markdown: string,
 ): { role: 'user' | 'assistant'; content: string; timestamp?: string }[] {
   const messages: { role: 'user' | 'assistant'; content: string }[] = [];

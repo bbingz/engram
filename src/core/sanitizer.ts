@@ -1,4 +1,4 @@
-export const PII_PATTERNS: Array<{
+const PII_PATTERNS: Array<{
   name: string;
   regex: RegExp;
   replacement: string;
