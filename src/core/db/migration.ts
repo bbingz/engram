@@ -56,6 +56,14 @@ export function runMigrations(
         'ALTER TABLE sessions ADD COLUMN quality_score INTEGER DEFAULT 0',
       );
     }
+    if (!colNames.has('parent_session_id'))
+      db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
+    if (!colNames.has('suggested_parent_id'))
+      db.exec('ALTER TABLE sessions ADD COLUMN suggested_parent_id TEXT');
+    if (!colNames.has('link_source'))
+      db.exec('ALTER TABLE sessions ADD COLUMN link_source TEXT');
+    if (!colNames.has('link_checked_at'))
+      db.exec('ALTER TABLE sessions ADD COLUMN link_checked_at TEXT');
     // Drop Viking columns if they exist (removed in local-semantic-search migration)
     // SQLite doesn't support DROP COLUMN before 3.35.0; columns are left harmless
   }
@@ -89,7 +97,11 @@ export function runMigrations(
       snapshot_hash TEXT,
       tier TEXT,
       generated_title TEXT,
-      quality_score INTEGER DEFAULT 0
+      quality_score INTEGER DEFAULT 0,
+      parent_session_id TEXT,
+      suggested_parent_id TEXT,
+      link_source TEXT,
+      link_checked_at TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -98,6 +110,17 @@ export function runMigrations(
     CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
     CREATE INDEX IF NOT EXISTS idx_sessions_agent_role ON sessions(agent_role);
     CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier);
+    CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
+
+    CREATE TRIGGER IF NOT EXISTS trg_sessions_parent_cascade
+    AFTER DELETE ON sessions
+    BEGIN
+      UPDATE sessions SET parent_session_id = NULL, link_source = NULL, tier = NULL
+        WHERE parent_session_id = OLD.id;
+      UPDATE sessions SET suggested_parent_id = NULL
+        WHERE suggested_parent_id = OLD.id;
+    END;
 
     CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
       session_id UNINDEXED,

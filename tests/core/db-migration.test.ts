@@ -106,7 +106,88 @@ describe('Database migration', () => {
     db.close();
   });
 
-  // 3. Migration is idempotent across multiple opens
+  // 3. Parent session columns exist after migration
+  it('adds parent_session_id, suggested_parent_id, link_source, link_checked_at columns', () => {
+    const dbPath = makeTmpDb();
+    const db = new Database(dbPath);
+    const cols = db.raw.prepare('PRAGMA table_info(sessions)').all() as {
+      name: string;
+    }[];
+    const colNames = cols.map((c) => c.name);
+    expect(colNames).toContain('parent_session_id');
+    expect(colNames).toContain('suggested_parent_id');
+    expect(colNames).toContain('link_source');
+    expect(colNames).toContain('link_checked_at');
+    db.close();
+  });
+
+  // 4. Orphan protection trigger exists
+  it('creates orphan protection trigger', () => {
+    const dbPath = makeTmpDb();
+    const db = new Database(dbPath);
+    const triggers = db.raw
+      .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
+      .all() as { name: string }[];
+    expect(triggers.map((t) => t.name)).toContain(
+      'trg_sessions_parent_cascade',
+    );
+    db.close();
+  });
+
+  // 5. Composite indexes for parent queries
+  it('creates composite indexes for parent queries', () => {
+    const dbPath = makeTmpDb();
+    const db = new Database(dbPath);
+    const indexes = db.raw
+      .prepare("SELECT name FROM sqlite_master WHERE type='index'")
+      .all() as { name: string }[];
+    const names = indexes.map((i) => i.name);
+    expect(names).toContain('idx_sessions_parent');
+    expect(names).toContain('idx_sessions_suggested_parent');
+    db.close();
+  });
+
+  // 6. Parent columns added to existing DB via ALTER TABLE migration
+  it('adds parent columns to existing database via ALTER TABLE', () => {
+    const dbPath = makeTmpDb();
+
+    // Create a minimal DB without parent columns
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT,
+        cwd TEXT NOT NULL DEFAULT '',
+        project TEXT,
+        model TEXT,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        user_message_count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT,
+        file_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    rawDb.close();
+
+    // Re-open with Database class — should run migration and add parent columns
+    const db = new Database(dbPath);
+    const cols = db.raw.prepare('PRAGMA table_info(sessions)').all() as {
+      name: string;
+    }[];
+    const colNames = cols.map((c) => c.name);
+
+    expect(colNames).toContain('parent_session_id');
+    expect(colNames).toContain('suggested_parent_id');
+    expect(colNames).toContain('link_source');
+    expect(colNames).toContain('link_checked_at');
+
+    db.close();
+  });
+
+  // 7. Migration is idempotent across multiple opens
   it('migration is idempotent — opening DB multiple times does not error', () => {
     const dbPath = makeTmpDb();
 
