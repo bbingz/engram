@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { Database } from '../../src/core/db.js';
 import type { EmbeddingClient } from '../../src/core/embeddings.js';
 import { SqliteVecStore } from '../../src/core/vector-store.js';
 import { handleSaveInsight } from '../../src/tools/save_insight.js';
@@ -95,13 +96,39 @@ describe('handleSaveInsight', () => {
     rmSync(tmpDir, { recursive: true });
   });
 
-  it('throws when no embedding support', async () => {
+  it('throws when no embedding support and no database', async () => {
     await expect(
       handleSaveInsight(
         { content: 'test' },
         { vecStore: null, embedder: null },
       ),
-    ).rejects.toThrow('embedding support');
+    ).rejects.toThrow('embedding support or a database');
+  });
+
+  it('saves text-only insight when no embedding deps', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'insight-textonly-'));
+    const db = new Database(join(tmpDir, 'test.sqlite'));
+
+    const result = await handleSaveInsight(
+      { content: 'text-only insight', wing: 'project-x', importance: 4 },
+      { db },
+    );
+
+    expect(result.id).toBeTruthy();
+    expect(result.content).toBe('text-only insight');
+    expect(result.wing).toBe('project-x');
+    expect(result.importance).toBe(4);
+    expect(result.warning).toContain('without embedding');
+    expect(result.duplicateWarning).toBeUndefined();
+
+    // Verify it's in the insights table
+    const rows = db.listInsightsByWing('project-x', 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toBe('text-only insight');
+    expect(rows[0].has_embedding).toBe(0);
+
+    db.close();
+    rmSync(tmpDir, { recursive: true });
   });
 
   it('respects custom importance', async () => {

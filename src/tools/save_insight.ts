@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Database } from '../core/db.js';
 import type { EmbeddingClient } from '../core/embeddings.js';
 import type { Logger } from '../core/logger.js';
 import type { VectorStore } from '../core/vector-store.js';
@@ -35,19 +36,21 @@ export const saveInsightTool = {
   },
 };
 
-interface SaveInsightDeps {
+export interface SaveInsightDeps {
   vecStore?: VectorStore | null;
   embedder?: EmbeddingClient | null;
+  db?: Database;
   log?: Logger;
 }
 
-interface SaveInsightResult {
+export interface SaveInsightResult {
   id: string;
   content: string;
   wing?: string;
   room?: string;
   importance: number;
   duplicateWarning?: string;
+  warning?: string;
 }
 
 const DEDUP_THRESHOLD = 0.85;
@@ -66,14 +69,54 @@ export async function handleSaveInsight(
     wing: params.wing,
   });
 
+  const id = randomUUID();
+  const importance = params.importance ?? 3;
+
+  // Text-only fallback: save to insights table when no embedding support
   if (!deps.vecStore || !deps.embedder) {
-    throw new Error(
-      'Insight storage requires embedding support. Ensure an embedding provider is configured.',
+    if (!deps.db) {
+      throw new Error(
+        'Insight storage requires either embedding support or a database connection.',
+      );
+    }
+    deps.db.saveInsightText(
+      id,
+      params.content,
+      params.wing,
+      params.room,
+      importance,
     );
+    return {
+      id,
+      content: params.content,
+      wing: params.wing,
+      room: params.room,
+      importance,
+      warning:
+        'Saved without embedding — keyword search only until an embedding provider is configured.',
+    };
   }
 
   const embedding = await deps.embedder.embed(params.content);
   if (!embedding) {
+    // Embedding failed — fall back to text-only if DB available
+    if (deps.db) {
+      deps.db.saveInsightText(
+        id,
+        params.content,
+        params.wing,
+        params.room,
+        importance,
+      );
+      return {
+        id,
+        content: params.content,
+        wing: params.wing,
+        room: params.room,
+        importance,
+        warning: 'Embedding generation failed — saved as text-only.',
+      };
+    }
     throw new Error('Failed to generate embedding for insight content.');
   }
 
@@ -90,9 +133,6 @@ export async function handleSaveInsight(
     }
   }
 
-  const id = randomUUID();
-  const importance = params.importance ?? 3;
-
   deps.vecStore.upsertInsight(
     id,
     params.content,
@@ -104,6 +144,18 @@ export async function handleSaveInsight(
       importance,
     },
   );
+
+  // Also persist to text store for FTS search
+  if (deps.db) {
+    deps.db.saveInsightText(
+      id,
+      params.content,
+      params.wing,
+      params.room,
+      importance,
+    );
+    deps.db.markInsightEmbedded(id);
+  }
 
   return {
     id,
