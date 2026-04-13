@@ -363,7 +363,7 @@ export class Database {
   setParentSession(
     sessionId: string,
     parentId: string,
-    linkSource: 'path' | 'manual' | 'suggested',
+    linkSource: 'path' | 'manual',
   ) {
     parentLinks.setParentSession(this.db, sessionId, parentId, linkSource);
   }

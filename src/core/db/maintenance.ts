@@ -315,7 +315,11 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
       setSuggestedParent(db, candidate.id, bestParent);
       suggested++;
     } else {
-      markChecked.run(candidate.id);
+      // No parent found, but dispatch pattern matched → mark as agent anyway
+      // This ensures dispatched sessions get tier='skip' via backfillTiers()
+      db.prepare(
+        `UPDATE sessions SET agent_role = 'dispatched', link_checked_at = datetime('now') WHERE id = ?`,
+      ).run(candidate.id);
     }
   }
 

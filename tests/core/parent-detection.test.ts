@@ -68,8 +68,8 @@ describe('isDispatchPattern', () => {
     expect(isDispatchPattern('What does this function do?')).toBe(false);
   });
 
-  it('empty string returns false', () => {
-    expect(isDispatchPattern('')).toBe(false);
+  it('empty string returns true (no summary = likely dispatched agent)', () => {
+    expect(isDispatchPattern('')).toBe(true);
   });
 
   it('short string (< 10 chars) returns false', () => {

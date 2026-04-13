@@ -8,18 +8,36 @@ export const DISPATCH_PATTERNS = [
   /^Your task is to\b/i,
   /^You are a\b.*\bagent\b/i,
   /^You are a\b.*\bassistant\b/i,
-  /^<TASK>/,
-  /^Review the (?:following|code|implementation)\b/i,
-  /^Analyze (?:the |this )/i,
+  /^You are (?:implementing|reviewing|debugging)\b/i,
+  /^Review the\b/i,
+  /^Analyze (?:the |this |all )/i,
+  /^IMPORTANT:\s*Do NOT/i,
+  /^Generate a file named\b/i,
+  /^(?:Read|Check|Verify|Audit|Inspect) the\b.*(?:code|file|implementation|spec|plan)/i,
 ];
 
+/** Short messages that are clearly agent probes (exact match, case-insensitive) */
+const PROBE_MESSAGES = new Set([
+  'ping',
+  'hello',
+  'hi',
+  'update',
+  'test',
+  'what is 2+2?',
+  'what is 2+2? reply with just the number.',
+  'reply with only the model name you are running as, nothing else',
+]);
+
 /**
- * Returns true if the message matches any dispatch pattern.
- * Short/empty messages are rejected outright.
+ * Returns true if the message matches any dispatch pattern or known probe.
+ * Empty messages (no summary) are also treated as dispatched.
  */
 export function isDispatchPattern(firstMessage: string): boolean {
-  if (!firstMessage || firstMessage.length < 10) return false;
+  if (!firstMessage) return true; // no summary = likely dispatched agent with no user message
   const trimmed = firstMessage.trim();
+  if (trimmed.length === 0) return true;
+  if (PROBE_MESSAGES.has(trimmed.toLowerCase())) return true;
+  if (trimmed.length < 10) return false; // too short but not a known probe
   return DISPATCH_PATTERNS.some((p) => p.test(trimmed));
 }
 

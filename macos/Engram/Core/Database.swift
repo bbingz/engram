@@ -86,7 +86,7 @@ final class DatabaseManager {
             var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
             var args: [DatabaseValueConvertible] = []
             if topLevelOnly {
-                parts.append("AND parent_session_id IS NULL")
+                parts.append("AND parent_session_id IS NULL AND suggested_parent_id IS NULL")
             }
             if !sources.isEmpty {
                 let ph = sources.map { _ in "?" }.joined(separator: ", ")
