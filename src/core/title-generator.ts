@@ -2,7 +2,7 @@
 
 import type { AiAuditWriter } from './ai-audit.js';
 
-export interface TitleGeneratorConfig {
+interface TitleGeneratorConfig {
   provider: 'ollama' | 'openai' | 'dashscope' | 'custom';
   baseUrl: string;
   model: string;

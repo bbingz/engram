@@ -60,13 +60,13 @@ export function getAdapter(name: string): SessionAdapter | undefined {
   return adapterMap.get(name as SourceName);
 }
 
-export interface VectorDeps {
+interface VectorDeps {
   vectorStore: SqliteVecStore;
   embeddingClient: EmbeddingClient;
   embeddingIndexer: EmbeddingIndexer;
 }
 
-export interface VectorDepsOptions {
+interface VectorDepsOptions {
   openaiApiKey?: string;
   ollamaUrl?: string;
   ollamaModel?: string;

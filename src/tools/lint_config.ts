@@ -20,7 +20,7 @@ export const lintConfigTool = {
   },
 };
 
-export interface LintIssue {
+interface LintIssue {
   file: string;
   line: number;
   severity: 'error' | 'warning' | 'info';
@@ -245,7 +245,7 @@ export async function handleLintConfig(
 
 // ── Infrastructure Health Checks ────────────────────────────────────
 
-export interface HealthIssue {
+interface HealthIssue {
   kind: string;
   severity: 'warning' | 'error' | 'info';
   message: string;

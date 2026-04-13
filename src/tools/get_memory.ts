@@ -19,7 +19,7 @@ export const getMemoryTool = {
   },
 };
 
-export interface MemoryInsight {
+interface MemoryInsight {
   id: string;
   content: string;
   wing: string | null;
@@ -28,7 +28,7 @@ export interface MemoryInsight {
   distance: number;
 }
 
-export interface GetMemoryDeps {
+interface GetMemoryDeps {
   vecStore?: VectorStore | null;
   embedder?: EmbeddingClient | null;
   log?: Logger;

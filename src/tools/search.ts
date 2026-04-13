@@ -15,7 +15,7 @@ export interface SearchDeps {
   tracer?: Tracer;
 }
 
-export interface SearchResult {
+interface SearchResult {
   session: SessionInfo;
   snippet: string;
   matchType: 'keyword' | 'semantic' | 'both';

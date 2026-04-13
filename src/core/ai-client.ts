@@ -6,7 +6,7 @@ import { getBaseURL, resolveSummaryConfig } from './config.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export interface ConversationMessage {
+interface ConversationMessage {
   role: string;
   content: string;
 }

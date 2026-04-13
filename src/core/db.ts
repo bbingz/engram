@@ -26,19 +26,13 @@ export interface ListSessionsOptions {
   agents?: 'hide' | 'only'; // hide = exclude agents, only = agents only
 }
 
-export interface FtsMatch {
-  sessionId: string;
-  content: string;
-  rank: number;
-}
-
-export interface FtsSearchResult {
+interface FtsSearchResult {
   sessionId: string;
   snippet: string;
   rank: number;
 }
 
-export interface StatsGroup {
+interface StatsGroup {
   key: string;
   sessionCount: number;
   messageCount: number;
@@ -47,7 +41,7 @@ export interface StatsGroup {
   toolMessageCount: number;
 }
 
-export type NoiseFilter = 'all' | 'hide-skip' | 'hide-noise';
+type NoiseFilter = 'all' | 'hide-skip' | 'hide-noise';
 
 function buildTierFilter(filter: NoiseFilter = 'hide-skip'): string[] {
   if (filter === 'all') return [];

@@ -1,19 +1,19 @@
 // src/core/resume-coordinator.ts
 import { execFileSync } from 'node:child_process';
 
-export interface ResumeCommand {
+interface ResumeCommand {
   tool: string;
   command: string;
   args: string[];
   cwd: string;
 }
 
-export interface ResumeError {
+interface ResumeError {
   error: string;
   hint: string;
 }
 
-export type ResumeResult = ResumeCommand | ResumeError;
+type ResumeResult = ResumeCommand | ResumeError;
 
 function which(cmd: string): string | null {
   try {

@@ -12,7 +12,7 @@ export interface SyncPeer {
   url: string;
 }
 
-export interface SyncResult {
+interface SyncResult {
   peer: string;
   pulled: number;
   skipped: number;

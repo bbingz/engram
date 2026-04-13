@@ -53,7 +53,7 @@ message ConvertTrajectoryToMarkdownResponse {
 }
 `;
 
-export interface ConversationSummary {
+interface ConversationSummary {
   cascadeId: string; // the map key (UUID of the .pb file)
   title: string;
   summary: string;
@@ -85,7 +85,7 @@ interface ConvertResponse {
   markdown?: string;
 }
 
-export interface TrajectoryMessage {
+interface TrajectoryMessage {
   role: 'user' | 'assistant';
   content: string;
 }

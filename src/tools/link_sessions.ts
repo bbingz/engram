@@ -23,7 +23,7 @@ export const linkSessionsTool = {
   },
 };
 
-export interface LinkResult {
+interface LinkResult {
   created: number;
   skipped: number;
   errors: string[];

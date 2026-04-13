@@ -28,7 +28,7 @@ const ACTIVE_MS = 15 * 60 * 1000; // 15 min → green (active)
 const IDLE_MS = 8 * 3600 * 1000; // 8 hours → yellow (idle)
 const RECENT_MS = 48 * 3600 * 1000; // 48 hours → gray (recent)
 
-export interface LiveSessionMonitorOptions {
+interface LiveSessionMonitorOptions {
   watchDirs: WatchDir[];
   stalenessMs?: number; // default 48 hours
 }

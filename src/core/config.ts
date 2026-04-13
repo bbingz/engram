@@ -17,7 +17,7 @@ export type AiProtocol = 'openai' | 'anthropic' | 'gemini';
 
 export type SummaryPreset = 'concise' | 'standard' | 'detailed';
 
-export interface SummaryConfig {
+interface SummaryConfig {
   maxTokens: number;
   temperature: number;
   sampleFirst: number;

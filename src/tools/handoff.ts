@@ -26,7 +26,7 @@ export const handoffTool = {
   },
 };
 
-export interface HandoffParams {
+interface HandoffParams {
   cwd: string;
   sessionId?: string;
   format?: 'markdown' | 'plain';

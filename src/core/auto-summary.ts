@@ -1,4 +1,4 @@
-export interface AutoSummaryOptions {
+interface AutoSummaryOptions {
   cooldownMs: number;
   minMessages: number;
   onTrigger: (sessionId: string) => Promise<void>;

@@ -29,7 +29,18 @@ export async function handleStats(
     exclude_noise?: boolean;
   },
   opts?: { log?: Logger },
-) {
+): Promise<{
+  groupBy: string;
+  groups: {
+    key: string;
+    sessionCount: number;
+    messageCount: number;
+    userMessageCount: number;
+    assistantMessageCount: number;
+    toolMessageCount: number;
+  }[];
+  totalSessions: number;
+}> {
   opts?.log?.info('stats invoked', {
     groupBy: params.group_by,
     since: params.since,

@@ -27,18 +27,18 @@ export interface CostSuggestion {
   topItems?: TopItem[];
 }
 
-export interface CostSuggestionSummary {
+interface CostSuggestionSummary {
   totalSpent: number;
   projectedMonthly: number;
   potentialSavings: number;
 }
 
-export interface CostSuggestionResult {
+interface CostSuggestionResult {
   suggestions: CostSuggestion[];
   summary: CostSuggestionSummary;
 }
 
-export interface CostAdvisorOptions {
+interface CostAdvisorOptions {
   since?: string;
 }
 

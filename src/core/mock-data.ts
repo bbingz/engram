@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Database } from './db.js';
 import { computeCost } from './pricing.js';
 
-export interface MockStats {
+interface MockStats {
   sessions: number;
   tools: number;
   costUsd: number;

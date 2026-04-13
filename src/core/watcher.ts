@@ -9,7 +9,7 @@ import type { Indexer } from './indexer.js';
 import { runWithContext } from './request-context.js';
 import type { SessionTier } from './session-tier.js';
 
-export interface WatcherOptions {
+interface WatcherOptions {
   onIndexed?: (
     sessionId: string,
     messageCount: number,

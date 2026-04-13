@@ -7,9 +7,9 @@ export interface EmbeddingClient {
   model: string;
 }
 
-export type EmbeddingProvider = 'ollama' | 'openai' | 'transformers';
+type EmbeddingProvider = 'ollama' | 'openai' | 'transformers';
 
-export interface EmbeddingClientOptions {
+interface EmbeddingClientOptions {
   provider?: EmbeddingProvider;
   ollamaUrl?: string;
   ollamaModel?: string;

@@ -6,7 +6,7 @@ import type { AiAuditConfig } from './config.js';
 import { getRequestContext } from './request-context.js';
 import { applyPatterns } from './sanitizer.js';
 
-export interface AiAuditRecord {
+interface AiAuditRecord {
   id?: number;
   ts?: string;
   traceId?: string;
@@ -29,7 +29,7 @@ export interface AiAuditRecord {
   meta?: Record<string, unknown>;
 }
 
-export interface AiAuditStats {
+interface AiAuditStats {
   timeRange: { from: string; to: string };
   totals: {
     requests: number;

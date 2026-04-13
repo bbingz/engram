@@ -22,13 +22,13 @@ export interface HealthIssue {
   action?: string;
 }
 
-export interface HealthCheckResult {
+interface HealthCheckResult {
   issues: HealthIssue[];
   score: number;
   checkedAt: string;
 }
 
-export interface HealthCheckOptions {
+interface HealthCheckOptions {
   force?: boolean;
   scope?: 'project' | 'global';
   cwd?: string;

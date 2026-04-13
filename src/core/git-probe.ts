@@ -3,7 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import type Database from 'better-sqlite3';
 
-export interface GitRepo {
+interface GitRepo {
   path: string;
   name: string;
   branch: string | null;

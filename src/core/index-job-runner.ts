@@ -5,7 +5,7 @@ import type { EmbeddingClient } from './embeddings.js';
 import type { PersistedIndexJob } from './session-snapshot.js';
 import type { VectorStore } from './vector-store.js';
 
-export interface JobRunSummary {
+interface JobRunSummary {
   completed: number;
   notApplicable: number;
   failedRetryable: number;
