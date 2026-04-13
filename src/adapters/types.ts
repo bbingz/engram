@@ -39,6 +39,8 @@ export interface SessionInfo {
   summaryMessageCount?: number; // message count at last summary generation (for auto-refresh)
   tier?: string; // session tier: 'skip' | 'lite' | 'normal' | 'premium'
   qualityScore?: number; // 0-100 quality score based on session heuristics
+  parentSessionId?: string;
+  suggestedParentId?: string;
 }
 
 export interface ToolCall {

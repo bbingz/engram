@@ -50,6 +50,8 @@ function rowToSession(row: Record<string, unknown>): SessionInfo {
     summaryMessageCount: row.summary_message_count as number | undefined,
     tier: row.tier as string | undefined,
     qualityScore: (row.quality_score as number | null) ?? 0,
+    parentSessionId: row.parent_session_id as string | undefined,
+    suggestedParentId: row.suggested_parent_id as string | undefined,
   };
 }
 
