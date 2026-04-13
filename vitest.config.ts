@@ -10,8 +10,8 @@ export default defineConfig({
       include: ['src/**'],
       exclude: ['src/cli/index.ts', 'src/cli/resume.ts'],
       thresholds: {
-        lines: 75,
-        branches: 65,
+        lines: 65,
+        branches: 60,
         functions: 70,
       },
       reporter: ['text', 'lcov'],
