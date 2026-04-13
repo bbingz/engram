@@ -177,9 +177,10 @@ const server = new Server(
   { capabilities: { tools: {} }, instructions: ENGRAM_INSTRUCTIONS },
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: allTools,
-}));
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  heartbeat();
+  return { tools: allTools };
+});
 
 let heartbeat = () => {}; // assigned after transport connects
 
@@ -457,7 +458,11 @@ await server.connect(transport);
 
 // Multi-layer process lifecycle — MUST be after transport connects
 // so that stdin.resume() doesn't race with StdioServerTransport's stdin reader.
+// Idle timeout disabled for MCP server: Claude Code manages the process lifecycle
+// via stdin close. The 5-min default caused premature exits during normal
+// conversation gaps, leading to "MCP server disconnected" errors.
 ({ heartbeat } = setupProcessLifecycle({
+  idleTimeoutMs: 0,
   onExit: () => {
     watcher?.close();
   },
