@@ -24,7 +24,7 @@ export function isTierHidden(
   return tier === 'skip';
 }
 
-export function rowToSession(row: Record<string, unknown>): SessionInfo {
+function rowToSession(row: Record<string, unknown>): SessionInfo {
   return {
     id: row.id as string,
     source: row.source as SessionInfo['source'],
@@ -53,7 +53,7 @@ export function rowToSession(row: Record<string, unknown>): SessionInfo {
   };
 }
 
-export function rowToAuthoritativeSnapshot(
+function rowToAuthoritativeSnapshot(
   row: Record<string, unknown>,
 ): AuthoritativeSessionSnapshot {
   return {
@@ -89,8 +89,7 @@ export function rowToAuthoritativeSnapshot(
   };
 }
 
-export function applyFilters(
-  db: BetterSqlite3.Database,
+function applyFilters(
   conditions: string[],
   params: Record<string, unknown>,
   opts: Pick<
@@ -241,7 +240,7 @@ export function listSessions(
   const conditions: string[] = ['hidden_at IS NULL'];
   const params: Record<string, unknown> = {};
 
-  applyFilters(db, conditions, params, opts, noiseFilter, resolveAliases);
+  applyFilters(conditions, params, opts, noiseFilter, resolveAliases);
 
   const where = `WHERE ${conditions.join(' AND ')}`;
   const limit = opts.limit ?? 20;
@@ -346,7 +345,7 @@ export function countSessions(
 ): number {
   const conditions: string[] = ['hidden_at IS NULL'];
   const params: Record<string, unknown> = {};
-  applyFilters(db, conditions, params, opts, noiseFilter, resolveAliases);
+  applyFilters(conditions, params, opts, noiseFilter, resolveAliases);
   return (
     db
       .prepare(
@@ -432,16 +431,6 @@ export function updateSessionSummary(
   } else {
     db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, id);
   }
-}
-
-export function getFtsContent(
-  db: BetterSqlite3.Database,
-  sessionId: string,
-): string[] {
-  const rows = db
-    .prepare('SELECT content FROM sessions_fts WHERE session_id = ?')
-    .all(sessionId) as { content: string }[];
-  return rows.map((r) => r.content);
 }
 
 export function upsertAuthoritativeSnapshot(

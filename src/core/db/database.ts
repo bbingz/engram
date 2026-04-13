@@ -173,7 +173,7 @@ export class Database {
     sessions.updateSessionSummary(this.db, id, summary, messageCount);
   }
   getFtsContent(sessionId: string): string[] {
-    return sessions.getFtsContent(this.db, sessionId);
+    return fts.getFtsContent(this.db, sessionId);
   }
   getAuthoritativeSnapshot(id: string): AuthoritativeSessionSnapshot | null {
     return sessions.getAuthoritativeSnapshot(this.db, id);

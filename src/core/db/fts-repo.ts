@@ -178,6 +178,16 @@ function searchSessionsLike(
   });
 }
 
+export function getFtsContent(
+  db: BetterSqlite3.Database,
+  sessionId: string,
+): string[] {
+  const rows = db
+    .prepare('SELECT content FROM sessions_fts WHERE session_id = ?')
+    .all(sessionId) as { content: string }[];
+  return rows.map((r) => r.content);
+}
+
 export function replaceFtsContent(
   db: BetterSqlite3.Database,
   sessionId: string,
