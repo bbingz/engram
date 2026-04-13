@@ -25,6 +25,9 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let tier: String?
     let toolMessageCount: Int
     let generatedTitle: String?
+    let parentSessionId: String?
+    let suggestedParentId: String?
+    let linkSource: String?
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -43,6 +46,9 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case tier
         case toolMessageCount = "tool_message_count"
         case generatedTitle   = "generated_title"
+        case parentSessionId  = "parent_session_id"
+        case suggestedParentId = "suggested_parent_id"
+        case linkSource       = "link_source"
     }
 
     var displayTitle: String {
@@ -59,6 +65,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     var displayDate: String        { String(startTime.prefix(10)) }
     var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }
     var isSubAgent: Bool           { agentRole != nil }
+    var hasParent: Bool { parentSessionId != nil }
+    var hasSuggestedParent: Bool { suggestedParentId != nil && parentSessionId == nil }
     var formattedSize: String {
         if sizeBytes < 1024 { return "\(sizeBytes) B" }
         let kb = Double(sizeBytes) / 1024

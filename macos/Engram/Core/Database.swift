@@ -22,7 +22,7 @@ enum GroupingMode: String, CaseIterable {
 @MainActor
 @Observable
 final class DatabaseManager {
-    @ObservationIgnored nonisolated(unsafe) private let dbPath: String
+    @ObservationIgnored private let dbPath: String
     @ObservationIgnored nonisolated(unsafe) private var pool: DatabasePool?
     @ObservationIgnored private var writerPool: DatabasePool?
 
@@ -77,6 +77,7 @@ final class DatabaseManager {
         projects: Set<String> = [],  // empty = all
         since: String? = nil,
         subAgent: Bool? = nil,       // nil=all, true=only sub-agents, false=hide sub-agents
+        topLevelOnly: Bool = false,
         sort: SessionSort = .createdDesc,
         limit: Int = 200,
         offset: Int = 0
@@ -84,6 +85,9 @@ final class DatabaseManager {
         try readInBackground { db in
             var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
             var args: [DatabaseValueConvertible] = []
+            if topLevelOnly {
+                parts.append("AND parent_session_id IS NULL")
+            }
             if !sources.isEmpty {
                 let ph = sources.map { _ in "?" }.joined(separator: ", ")
                 parts.append("AND source IN (\(ph))")
@@ -703,7 +707,9 @@ final class DatabaseManager {
         try readInBackground { db in
             try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
-                WHERE hidden_at IS NULL AND (tier IS NULL OR tier != 'skip')
+                WHERE hidden_at IS NULL
+                  AND parent_session_id IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
                 ORDER BY start_time DESC LIMIT ?
             """, arguments: [limit])
         }
@@ -792,6 +798,72 @@ final class DatabaseManager {
                 )
             }
             .sorted { $0.lastActive > $1.lastActive }
+        }
+    }
+
+    // MARK: - Parent/Child Session Queries
+
+    nonisolated func childSessions(parentId: String, limit: Int = 20, offset: Int = 0) throws -> [Session] {
+        try readInBackground { db in
+            try Session.fetchAll(db, sql: """
+                SELECT * FROM sessions
+                WHERE parent_session_id = ? AND hidden_at IS NULL
+                ORDER BY start_time ASC
+                LIMIT ? OFFSET ?
+            """, arguments: [parentId, limit, offset])
+        }
+    }
+
+    nonisolated func suggestedChildSessions(parentId: String) throws -> [Session] {
+        try readInBackground { db in
+            try Session.fetchAll(db, sql: """
+                SELECT * FROM sessions
+                WHERE suggested_parent_id = ?
+                  AND parent_session_id IS NULL
+                  AND hidden_at IS NULL
+                ORDER BY start_time ASC
+            """, arguments: [parentId])
+        }
+    }
+
+    nonisolated func childCount(parentIds: [String]) throws -> [String: Int] {
+        guard !parentIds.isEmpty else { return [:] }
+        return try readInBackground { db in
+            let placeholders = parentIds.map { _ in "?" }.joined(separator: ",")
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT parent_session_id, COUNT(*) as cnt
+                FROM sessions
+                WHERE parent_session_id IN (\(placeholders)) AND hidden_at IS NULL
+                GROUP BY parent_session_id
+            """, arguments: StatementArguments(parentIds))
+            var result: [String: Int] = [:]
+            for row in rows {
+                let pid: String = row["parent_session_id"]
+                let cnt: Int = row["cnt"]
+                result[pid] = cnt
+            }
+            return result
+        }
+    }
+
+    nonisolated func suggestedChildCount(parentIds: [String]) throws -> [String: Int] {
+        guard !parentIds.isEmpty else { return [:] }
+        return try readInBackground { db in
+            let placeholders = parentIds.map { _ in "?" }.joined(separator: ",")
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT suggested_parent_id, COUNT(*) as cnt
+                FROM sessions
+                WHERE suggested_parent_id IN (\(placeholders))
+                  AND parent_session_id IS NULL AND hidden_at IS NULL
+                GROUP BY suggested_parent_id
+            """, arguments: StatementArguments(parentIds))
+            var result: [String: Int] = [:]
+            for row in rows {
+                let pid: String = row["suggested_parent_id"]
+                let cnt: Int = row["cnt"]
+                result[pid] = cnt
+            }
+            return result
         }
     }
 

@@ -393,7 +393,10 @@ struct SearchAPISession: Decodable {
             customName: nil,
             tier: nil,
             toolMessageCount: 0,
-            generatedTitle: nil
+            generatedTitle: nil,
+            parentSessionId: nil,
+            suggestedParentId: nil,
+            linkSource: nil
         )
         return SearchResult(
             id: id,
