@@ -7,7 +7,7 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 767 tests, ~5s
+npm test               # vitest: 804 tests, ~5s
 npm run dev            # tsx: run without compile
 npm run lint           # biome check (must pass — pre-commit enforced)
 npm run lint:fix       # biome auto-fix
@@ -26,13 +26,13 @@ xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 ```
 src/
   adapters/    # SessionAdapter implementations (15 sources: codex, claude-code, cursor, etc.)
-  core/        # indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, chunker.ts, vector-store.ts, embeddings.ts
+  core/        # indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, chunker.ts, vector-store.ts, embeddings.ts, bootstrap.ts (factories)
     db/        # Database modules: database.ts (facade), migration.ts, session-repo.ts, fts-repo.ts, metrics-repo.ts, index-job-repo.ts, sync-repo.ts, maintenance.ts, alias-repo.ts, insight-repo.ts
     db.ts      # ESM re-export shim (preserves `import { Database } from '../core/db.js'`)
   tools/       # MCP tool handlers (19 tools: get_context, search, save_insight, list_sessions, get_session, get_memory, get_insights, get_costs, stats, tool_analytics, file_activity, etc.)
   web.ts       # Hono HTTP server + API endpoints
-  index.ts     # MCP server entry (stdin/stdout transport)
-  daemon.ts    # Daemon entry (indexer + watcher + web server)
+  index.ts     # MCP server entry — uses createMCPDeps() from bootstrap.ts
+  daemon.ts    # Daemon entry — uses createDaemonDeps() + createShutdownHandler() from bootstrap.ts
 
 macos/
   Engram/      # SwiftUI app (menu bar + main window)
@@ -58,6 +58,13 @@ macos/
 - `streamMessages()` — async generator yielding messages lazily
 
 New adapters: create `src/adapters/<name>.ts`, register in `src/core/bootstrap.ts:createAdapters()`.
+
+### Bootstrap Factories
+`src/core/bootstrap.ts` centralizes initialization for both entry points:
+- `createMCPDeps()` — db, adapters, tracer, settings, audit, indexer, vecDeps → used by `index.ts`
+- `createDaemonDeps()` — extends MCPDeps + log, metrics, auditQuery, titleGenerator → used by `daemon.ts`
+- `createShutdownHandler(resources)` — idempotent cleanup of timers, monitors, watcher, web server, db
+- `initVectorDeps()` — sqlite-vec + embedding client + embedding indexer (returns null if unavailable)
 
 ### Database
 - Node owns schema (`src/core/db.ts:migrate()`). Swift reads via GRDB (read-only pool).
@@ -89,9 +96,12 @@ Hybrid search: FTS5 (trigram) + sqlite-vec (vector embeddings) + RRF fusion. All
 
 ### Insight Degradation UX
 Two storage layers for insights: `insights` table (text+FTS, always available) and `memory_insights` (vector, requires sqlite-vec).
+- save_insight: input validation (min 10 chars, max 50KB, trim); text-only dedup via normalized comparison; default importance = 5
 - save_insight: no embedding → text-only save with warning; with embedding → dual-write (vector + text)
+- `source_session_id` wired through both stores; `deleteInsight()` helper deletes from both
 - get_memory/search/get_context: no embedding → FTS keyword fallback from `insights` table
 - Daemon backfills: promotes text-only insights to embedded when provider becomes available
+- Daemon maintenance: `reconcileInsights()` fixes has_embedding/memory_insights divergence on startup
 - CJK queries use LIKE fallback (same as session FTS)
 
 ### Daemon ↔ Swift Communication
