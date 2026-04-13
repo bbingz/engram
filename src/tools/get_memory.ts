@@ -29,7 +29,7 @@ interface MemoryInsight {
   distance: number;
 }
 
-export interface GetMemoryDeps {
+interface GetMemoryDeps {
   vecStore?: VectorStore | null;
   embedder?: EmbeddingClient | null;
   db?: Database;

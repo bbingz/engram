@@ -2,7 +2,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 export const SCHEMA_VERSION = 1;
-export const FTS_VERSION = '3';
+const FTS_VERSION = '3';
 
 export function runMigrations(
   db: BetterSqlite3.Database,

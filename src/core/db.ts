@@ -4,16 +4,10 @@
 
 export { Database } from './db/database.js';
 export { containsCJK } from './db/fts-repo.js';
-export type { InsightRow } from './db/insight-repo.js';
-export { FTS_VERSION, SCHEMA_VERSION } from './db/migration.js';
-export { buildTierFilter, isTierHidden } from './db/session-repo.js';
+export { SCHEMA_VERSION } from './db/migration.js';
+export { isTierHidden } from './db/session-repo.js';
 export type {
-  CostSummaryRow,
   FileActivityRow,
-  FtsSearchResult,
   ListSessionsOptions,
-  NoiseFilter,
   SearchFilters,
-  StatsGroup,
-  ToolAnalyticsRow,
 } from './db/types.js';

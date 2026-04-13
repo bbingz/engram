@@ -36,14 +36,14 @@ export const saveInsightTool = {
   },
 };
 
-export interface SaveInsightDeps {
+interface SaveInsightDeps {
   vecStore?: VectorStore | null;
   embedder?: EmbeddingClient | null;
   db?: Database;
   log?: Logger;
 }
 
-export interface SaveInsightResult {
+interface SaveInsightResult {
   id: string;
   content: string;
   wing?: string;

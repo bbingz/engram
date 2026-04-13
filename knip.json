@@ -4,7 +4,5 @@
     "src/index.ts",
     "src/daemon.ts"
   ],
-  "project": ["src/**/*.ts"],
-  "ignore": ["src/types/**"],
-  "ignoreDependencies": []
+  "project": ["src/**/*.ts"]
 }
