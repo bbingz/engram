@@ -149,237 +149,44 @@ API 端点：
 
 ## MCP Tools 参考
 
-### `get_context` — 核心工具
+Engram 提供 19 个 MCP 工具，覆盖上下文获取、搜索、记忆管理、统计分析等场景：
 
-为当前工作目录自动提取相关历史上下文。**在开始新任务时调用**，获取该项目的历史记录。支持语义搜索增强（需配置 embedding provider）。
+| 工具 | 说明 |
+|------|------|
+| `get_context` | 🔑 **核心工具** — 自动提取当前项目的历史上下文，开始新任务时调用 |
+| `search` | 混合搜索（FTS 关键词 + 语义向量 + RRF 融合排序） |
+| `list_sessions` | 列出历史会话，支持按来源/项目/时间过滤 |
+| `get_session` | 读取单个会话完整对话，支持分页 |
+| `save_insight` | 保存重要知识片段，跨会话持久化 |
+| `get_memory` | 检索已保存的记忆和知识 |
+| `project_timeline` | 查看项目跨工具的操作时间线 |
+| `stats` | 用量统计（按来源/项目/天/周分组） |
+| `get_costs` | Token 用量和费用统计 |
+| `tool_analytics` | 分析各工具（Read/Edit/Bash 等）调用频率 |
+| `file_activity` | 项目中最常编辑/读取的文件 |
+| `handoff` | 生成项目交接简报 |
+| `export` | 导出会话为 Markdown/JSON |
+| `generate_summary` | AI 生成会话摘要 |
+| `link_sessions` | 在项目目录创建会话文件软链接 |
+| `manage_project_alias` | 管理项目别名（目录移动后保持关联） |
+| `live_sessions` | 列出当前活跃的编程会话 |
+| `lint_config` | 校验 CLAUDE.md 等配置文件 |
+| `get_insights` | 获取费用优化建议 |
 
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `cwd` | string | ✅ | 当前工作目录（绝对路径） |
-| `task` | string | — | 当前任务描述，会附在上下文开头 |
-| `max_tokens` | number | — | token 预算，默认 4000 |
-
-**示例：**
-
-```json
-{
-  "cwd": "/Users/me/my-project",
-  "task": "重构认证模块"
-}
-```
-
-**返回：** `contextText`（直接可读的上下文摘要）+ `sessions`（匹配的会话列表）+ `estimatedTokens`
-
----
-
-### `list_sessions` — 列出会话
-
-列出历史会话，支持按工具来源、项目、时间范围过滤。
-
-**参数：**
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `source` | string | `codex` / `claude-code` / `copilot` / `gemini-cli` / `antigravity` / `windsurf` / `cursor` / `vscode` / `opencode` / `iflow` / `qwen` / `kimi` / `minimax` / `lobsterai` / `cline` |
-| `project` | string | 项目名关键词（部分匹配） |
-| `since` | string | 开始时间（ISO 8601），如 `2026-01-01` |
-| `until` | string | 结束时间（ISO 8601） |
-| `limit` | number | 最多返回条数，默认 20，最大 100 |
-| `offset` | number | 分页偏移量 |
-
-**示例：**
+**快速示例：**
 
 ```json
-{ "source": "codex", "project": "my-project", "limit": 10 }
+// 获取项目上下文
+{ "cwd": "/Users/me/my-project", "task": "重构认证模块" }
+
+// 搜索历史
+{ "query": "JWT 认证", "mode": "hybrid" }
+
+// 保存知识
+{ "content": "项目使用 Hono 作为 HTTP 框架", "wing": "engram" }
 ```
 
----
-
-### `get_session` — 读取会话内容
-
-读取单个会话的完整对话内容，大会话支持分页（每页 50 条消息）。
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | string | ✅ | 会话 ID（从 `list_sessions` 或 `search` 获取） |
-| `page` | number | — | 页码，从 1 开始，默认 1 |
-| `roles` | array | — | 只返回指定角色，如 `["user"]` |
-
-**示例：**
-
-```json
-{ "id": "019c9d89-e65c-7df0-9e7a-ca361961f6a5", "page": 1, "roles": ["user", "assistant"] }
-```
-
----
-
-### `search` — 混合搜索
-
-在所有会话内容中搜索，支持三种模式：关键词（FTS5 trigram）、语义向量搜索、混合模式（RRF 融合排序）。
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `query` | string | ✅ | 搜索关键词（关键词搜索至少 3 字符，语义搜索至少 2 字符） |
-| `source` | string | — | 限定工具来源 |
-| `project` | string | — | 限定项目 |
-| `since` | string | — | 限定时间范围 |
-| `limit` | number | — | 默认 10，最大 50 |
-| `mode` | string | — | `hybrid`（默认）/ `keyword` / `semantic` |
-
-**示例：**
-
-```json
-{ "query": "JWT 认证", "source": "claude-code", "mode": "hybrid" }
-```
-
-**返回：** 每条结果包含会话元数据、高亮文本片段（`<mark>` 标签）、匹配类型（keyword / semantic / both）和融合分数。
-
----
-
-### `project_timeline` — 项目时间线
-
-查看某个项目跨工具的操作时间线，了解在不同 AI 助手中分别做了什么、先后顺序如何。
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `project` | string | ✅ | 项目名或路径片段 |
-| `since` | string | — | 开始时间 |
-| `until` | string | — | 结束时间 |
-
-**示例：**
-
-```json
-{ "project": "my-project", "since": "2026-01-01" }
-```
-
----
-
-### `stats` — 用量统计
-
-统计各工具的会话数量、消息数等数据，支持按不同维度分组。
-
-**参数：**
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `group_by` | string | `source`（默认）/ `project` / `day` / `week` |
-| `since` | string | 开始时间 |
-| `until` | string | 结束时间 |
-
-**示例：**
-
-```json
-{ "group_by": "day", "since": "2026-02-01" }
-```
-
----
-
-### `export` — 导出会话
-
-将单个会话导出为 Markdown 或 JSON 文件，保存到 `~/codex-exports/` 目录。
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | string | ✅ | 会话 ID |
-| `format` | string | — | `markdown`（默认）或 `json` |
-
-**示例：**
-
-```json
-{ "id": "019c9d89-...", "format": "markdown" }
-```
-
-**返回：** 导出文件的路径。
-
----
-
-### `generate_summary` — AI 摘要生成
-
-使用 AI 为指定会话生成摘要，并更新到数据库中。需要在 `~/.engram/settings.json` 中配置 OpenAI 或 Anthropic API Key。
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `sessionId` | string | ✅ | 会话 ID |
-
-**示例：**
-
-```json
-{ "sessionId": "019c9d89-e65c-7df0-9e7a-ca361961f6a5" }
-```
-
-**返回：** 生成的摘要文本。
-
----
-
-### `link_sessions` — 链接会话文件
-
-将某项目的所有 AI 会话文件以符号链接形式集中到项目目录下的 `conversation_log/<source>/`，方便查看和管理。
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `targetDir` | string | ✅ | 项目目录（绝对路径），自动从 basename 推导项目名 |
-
-**示例：**
-
-```json
-{ "targetDir": "/Users/me/my-project" }
-```
-
-**返回：** `created`（新建链接数）、`skipped`（已存在跳过数）、`errors`（错误列表）
-
----
-
-### `get_memory` — 记忆检索
-
-从历史会话中提取的记忆信息中搜索。基于本地 sqlite-vec 向量搜索，需配置 embedding provider。
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `query` | string | ✅ | 要回忆的内容，如 "用户的编码偏好" |
-
-**示例：**
-
-```json
-{ "query": "用户的编码偏好" }
-```
-
-**返回：** 匹配的记忆列表。未配置 embedding provider 时返回空列表和配置提示。
-
----
-
-### `manage_project_alias` — 项目别名管理
-
-声明两个项目名是同一个项目，所有按项目过滤的查询自动展开别名。详见[项目别名](#项目别名)。
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | ✅ | `add` / `remove` / `list` |
-| `old_project` | string | add/remove | 旧项目名 |
-| `new_project` | string | add/remove | 新项目名 |
-
-**示例：**
-
-```json
-{ "action": "add", "old_project": "wechat-decrypt", "new_project": "wechat-decrypt-bing" }
-```
+> 完整参数文档见 [MCP Tools Reference](docs/mcp-tools.md)。
 
 ---
 
@@ -560,7 +367,7 @@ interface SessionAdapter {
 ## 开发
 
 ```bash
-npm test              # 运行测试（767 tests）
+npm test              # 运行测试（909 tests）
 npm run test:watch    # 监听模式
 npm run test:coverage # 覆盖率报告
 npm run build         # 编译 TypeScript -> dist/
