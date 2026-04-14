@@ -8,6 +8,7 @@ import type { SessionInfo } from '../../../src/adapters/types.js';
 import {
   backfillParentLinks,
   backfillSuggestedParents,
+  downgradeSubagentTiers,
 } from '../../../src/core/db/maintenance.js';
 import {
   childCount,
@@ -181,7 +182,7 @@ describe('parent-link-repo', () => {
       expect(row.suggested_parent_id).toBeNull();
     });
 
-    it('upgrades tier from skip to lite', () => {
+    it('does not modify tier when linking', () => {
       db.upsertSession(
         makeSession({
           id: 'parent',
@@ -197,7 +198,6 @@ describe('parent-link-repo', () => {
           tier: 'skip',
         }),
       );
-      // Force tier to skip (backfill may override)
       db.getRawDb()
         .prepare("UPDATE sessions SET tier = 'skip' WHERE id = 'child'")
         .run();
@@ -208,35 +208,7 @@ describe('parent-link-repo', () => {
         .getRawDb()
         .prepare('SELECT tier FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
-      expect(row.tier).toBe('lite');
-    });
-
-    it('does not downgrade tier from normal', () => {
-      db.upsertSession(
-        makeSession({
-          id: 'parent',
-          filePath: '/f/p',
-          startTime: '2026-01-01T09:00:00Z',
-        }),
-      );
-      db.upsertSession(
-        makeSession({
-          id: 'child',
-          filePath: '/f/c',
-          startTime: '2026-01-01T10:00:00Z',
-        }),
-      );
-      db.getRawDb()
-        .prepare("UPDATE sessions SET tier = 'normal' WHERE id = 'child'")
-        .run();
-
-      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
-
-      const row = db
-        .getRawDb()
-        .prepare('SELECT tier FROM sessions WHERE id = ?')
-        .get('child') as Record<string, unknown>;
-      expect(row.tier).toBe('normal');
+      expect(row.tier).toBe('skip');
     });
   });
 
@@ -642,7 +614,7 @@ describe('parent-link-repo', () => {
       expect(result.error).toContain('no suggestion');
     });
 
-    it('upgrades tier from skip to lite on confirm', () => {
+    it('keeps tier unchanged on confirm (no longer upgrades skip to lite)', () => {
       db.upsertSession(
         makeSession({
           id: 'parent',
@@ -669,7 +641,7 @@ describe('parent-link-repo', () => {
         .getRawDb()
         .prepare('SELECT tier FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
-      expect(row.tier).toBe('lite');
+      expect(row.tier).toBe('skip');
     });
   });
 
@@ -799,7 +771,7 @@ describe('parent-link-repo', () => {
       expect(result.linked).toBe(0);
     });
 
-    it('upgrades tier from skip to lite for linked sessions', () => {
+    it('keeps subagent tier as skip after linking', () => {
       db.upsertSession(
         makeSession({
           id: 'sess-p',
@@ -822,6 +794,53 @@ describe('parent-link-repo', () => {
       const row = db.raw
         .prepare('SELECT tier FROM sessions WHERE id = ?')
         .get('agent-t') as Record<string, unknown>;
+      expect(row.tier).toBe('skip');
+    });
+  });
+
+  // ── downgradeSubagentTiers ───────────────────────────────────────
+
+  describe('downgradeSubagentTiers', () => {
+    it('downgrades subagent sessions from lite to skip', () => {
+      db.raw
+        .prepare(
+          `
+        INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes, agent_role, tier, message_count, user_message_count)
+        VALUES ('agent-a', 'claude-code', '2026-04-13T10:05:00Z', '/test',
+                '/home/.claude/projects/myproj/sess/subagents/agent-a.jsonl', 50, 'subagent', 'lite', 5, 2)
+      `,
+        )
+        .run();
+
+      const count = downgradeSubagentTiers(db.raw);
+      expect(count).toBe(1);
+
+      const row = db.raw
+        .prepare('SELECT tier FROM sessions WHERE id = ?')
+        .get('agent-a') as Record<string, unknown>;
+      expect(row.tier).toBe('skip');
+    });
+
+    it('does not touch non-subagent sessions', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'normal-sess',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          filePath: '/home/.claude/projects/myproj/normal.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.raw
+        .prepare("UPDATE sessions SET tier = 'lite' WHERE id = 'normal-sess'")
+        .run();
+
+      const count = downgradeSubagentTiers(db.raw);
+      expect(count).toBe(0);
+
+      const row = db.raw
+        .prepare('SELECT tier FROM sessions WHERE id = ?')
+        .get('normal-sess') as Record<string, unknown>;
       expect(row.tier).toBe('lite');
     });
   });
@@ -974,6 +993,45 @@ describe('parent-link-repo', () => {
         .prepare('SELECT suggested_parent_id FROM sessions WHERE id = ?')
         .get('codex-agent') as Record<string, unknown>;
       expect(row.suggested_parent_id).toBe('cc-parent2');
+    });
+
+    it('does not suggest a parent for ordinary user follow-up prompts', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'cc-parent3',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          endTime: '2026-04-13T12:00:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/cc3.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.upsertSession(
+        makeSession({
+          id: 'codex-normal-followup',
+          source: 'codex',
+          startTime: '2026-04-13T10:02:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/codex-normal-followup.json',
+          sizeBytes: 50,
+          summary: 'Say more about vector search tradeoffs',
+        }),
+      );
+
+      const result = backfillSuggestedParents(db.raw);
+      expect(result.checked).toBe(1);
+      expect(result.suggested).toBe(0);
+
+      const row = db.raw
+        .prepare(
+          'SELECT suggested_parent_id, link_checked_at FROM sessions WHERE id = ?',
+        )
+        .get('codex-normal-followup') as Record<string, unknown>;
+      expect(row.suggested_parent_id).toBeNull();
+      expect(row.link_checked_at).toBeTruthy();
     });
   });
 

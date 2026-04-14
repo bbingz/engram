@@ -81,7 +81,7 @@ export function getLocalState(
     sessionId: row.session_id,
     hiddenAt: row.hidden_at ?? undefined,
     customName: row.custom_name ?? undefined,
-    localReadablePath: row.local_readable_path ?? undefined,
+    localReadablePath: row.local_readable_path || undefined,
   };
 }
 
@@ -90,9 +90,13 @@ export function setLocalReadablePath(
   sessionId: string,
   localReadablePath: string | null,
 ): void {
+  const normalizedPath =
+    localReadablePath && localReadablePath.length > 0
+      ? localReadablePath
+      : null;
   db.prepare(`
     INSERT INTO session_local_state (session_id, local_readable_path)
     VALUES (?, ?)
     ON CONFLICT(session_id) DO UPDATE SET local_readable_path = excluded.local_readable_path
-  `).run(sessionId, localReadablePath);
+  `).run(sessionId, normalizedPath);
 }

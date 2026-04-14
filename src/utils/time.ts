@@ -3,6 +3,62 @@
 
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+export interface LocalTimeRange {
+  startUtcIso: string;
+  endUtcIso: string;
+  monthStartUtcIso: string;
+  nextMonthStartUtcIso: string;
+  localDate: string;
+  localMonth: string;
+}
+
+function toShiftedDate(value: Date, timeZoneOffsetMinutes: number): Date {
+  return new Date(value.getTime() - timeZoneOffsetMinutes * 60_000);
+}
+
+function toUtcIso(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+export function getLocalTimeRange(
+  now: Date = new Date(),
+  timeZoneOffsetMinutes: number = now.getTimezoneOffset(),
+): LocalTimeRange {
+  const shifted = toShiftedDate(now, timeZoneOffsetMinutes);
+  const localDate = shifted.toISOString().slice(0, 10);
+  const localMonth = localDate.slice(0, 7);
+
+  const startShiftedMs = Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate(),
+  );
+  const monthStartShiftedMs = Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    1,
+  );
+  const nextMonthStartShiftedMs = Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth() + 1,
+    1,
+  );
+
+  const startUtcMs = startShiftedMs + timeZoneOffsetMinutes * 60_000;
+  const monthStartUtcMs = monthStartShiftedMs + timeZoneOffsetMinutes * 60_000;
+  const nextMonthStartUtcMs =
+    nextMonthStartShiftedMs + timeZoneOffsetMinutes * 60_000;
+
+  return {
+    startUtcIso: toUtcIso(startUtcMs),
+    endUtcIso: toUtcIso(startUtcMs + 24 * 60 * 60 * 1000),
+    monthStartUtcIso: toUtcIso(monthStartUtcMs),
+    nextMonthStartUtcIso: toUtcIso(nextMonthStartUtcMs),
+    localDate,
+    localMonth,
+  };
+}
+
 /**
  * UTC ISO → 本地日期时间字符串 "YYYY-MM-DD HH:mm:ss"
  */

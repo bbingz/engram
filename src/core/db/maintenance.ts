@@ -1,6 +1,8 @@
 // src/core/db/maintenance.ts — post-migration backfills and DB maintenance
+import { closeSync, openSync, readSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 import {
+  DETECTION_VERSION,
   isDispatchPattern,
   pickBestCandidate,
   scoreCandidate,
@@ -183,11 +185,10 @@ export function reconcileInsights(
 /**
  * Backfill parent links for subagent sessions that have no parent set.
  * Parses the file_path to extract the parent session ID from the directory structure.
- * Also upgrades tier from 'skip' to 'lite' for any linked sessions.
+ * Subagent sessions stay tier='skip' — they are accessed through their parent.
  */
 export function backfillParentLinks(db: BetterSqlite3.Database): {
   linked: number;
-  tierUpgraded: number;
 } {
   let linked = 0;
 
@@ -216,17 +217,70 @@ export function backfillParentLinks(db: BetterSqlite3.Database): {
     linked++;
   }
 
-  // Tier upgrade pass
-  const tierUpgraded = db
+  return { linked };
+}
+
+/**
+ * Downgrade subagent sessions that were incorrectly upgraded to 'lite' back to 'skip'.
+ * Also removes orphaned FTS entries for subagent sessions.
+ * Subagent content is accessed through the parent session, not independently.
+ */
+export function downgradeSubagentTiers(db: BetterSqlite3.Database): number {
+  const downgraded = db
     .prepare(
       `
-    UPDATE sessions SET tier = 'lite'
-    WHERE parent_session_id IS NOT NULL AND tier = 'skip'
+    UPDATE sessions SET tier = 'skip'
+    WHERE agent_role = 'subagent' AND tier != 'skip'
   `,
     )
     .run().changes;
 
-  return { linked, tierUpgraded };
+  // Clean up FTS entries for subagent sessions — they shouldn't be in search results
+  db.prepare(
+    `DELETE FROM sessions_fts WHERE session_id IN (SELECT id FROM sessions WHERE agent_role = 'subagent')`,
+  ).run();
+
+  return downgraded;
+}
+
+/**
+ * Backfill empty file_path from source_locator.
+ * Swift reads file_path directly for message parsing. When file_path is empty
+ * but source_locator has the correct path, sessions show "No Messages" in the app.
+ */
+export function backfillFilePaths(db: BetterSqlite3.Database): number {
+  const sessionPaths = db
+    .prepare(
+      `
+    UPDATE sessions SET file_path = source_locator
+    WHERE (file_path IS NULL OR file_path = '')
+      AND source_locator IS NOT NULL
+      AND source_locator != ''
+  `,
+    )
+    .run().changes;
+
+  const localPaths = db
+    .prepare(
+      `
+    UPDATE session_local_state
+    SET local_readable_path = (
+      SELECT COALESCE(NULLIF(source_locator, ''), NULLIF(file_path, ''))
+      FROM sessions
+      WHERE id = session_local_state.session_id
+    )
+    WHERE (local_readable_path IS NULL OR local_readable_path = '')
+      AND EXISTS (
+        SELECT 1
+        FROM sessions
+        WHERE id = session_local_state.session_id
+          AND COALESCE(NULLIF(source_locator, ''), NULLIF(file_path, '')) IS NOT NULL
+      )
+  `,
+    )
+    .run().changes;
+
+  return sessionPaths + localPaths;
 }
 
 /**
@@ -235,6 +289,56 @@ export function backfillParentLinks(db: BetterSqlite3.Database): {
  * (e.g. `<task>`, "Your task is to...") and scores overlapping claude-code sessions
  * to find the most likely parent.
  */
+/**
+ * Retroactively read Codex session files to extract the `originator` field
+ * from session_meta. Sessions with `originator: "Claude Code"` get
+ * `agent_role = 'dispatched'` and their `link_checked_at` is cleared so
+ * `backfillSuggestedParents()` can score them for a parent.
+ */
+export function backfillCodexOriginator(db: BetterSqlite3.Database): number {
+  const candidates = db
+    .prepare(
+      `
+    SELECT id, file_path FROM sessions
+    WHERE source = 'codex'
+      AND agent_role IS NULL
+      AND parent_session_id IS NULL
+      AND suggested_parent_id IS NULL
+      AND (link_source IS NULL OR link_source != 'manual')
+    LIMIT 500
+  `,
+    )
+    .all() as { id: string; file_path: string }[];
+
+  let updated = 0;
+  const update = db.prepare(
+    `UPDATE sessions SET agent_role = 'dispatched', link_checked_at = NULL WHERE id = ?`,
+  );
+
+  for (const { id, file_path } of candidates) {
+    try {
+      // Read the first ~16KB (session_meta line) — some Codex files have 13KB+ first lines
+      const fd = openSync(file_path, 'r');
+      const chunk = Buffer.alloc(16384);
+      const bytesRead = readSync(fd, chunk, 0, 16384, 0);
+      closeSync(fd);
+      const text = chunk.toString('utf8', 0, bytesRead);
+      const newlineIdx = text.indexOf('\n');
+      const firstLine = newlineIdx > 0 ? text.slice(0, newlineIdx) : text;
+      const obj = JSON.parse(firstLine);
+      const originator = obj?.payload?.originator;
+      if (originator === 'Claude Code') {
+        update.run(id);
+        updated++;
+      }
+    } catch {
+      // File missing or unparseable — skip silently
+    }
+  }
+
+  return updated;
+}
+
 export function backfillSuggestedParents(db: BetterSqlite3.Database): {
   checked: number;
   suggested: number;
@@ -242,10 +346,11 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
   let checked = 0;
   let suggested = 0;
 
+  // Select agent_role so we can skip dispatch-pattern check for known agents
   const candidates = db
     .prepare(
       `
-    SELECT id, start_time, project, cwd, summary FROM sessions
+    SELECT id, start_time, project, cwd, summary, agent_role FROM sessions
     WHERE parent_session_id IS NULL
       AND suggested_parent_id IS NULL
       AND link_checked_at IS NULL
@@ -260,6 +365,7 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
     project: string | null;
     cwd: string;
     summary: string | null;
+    agent_role: string | null;
   }[];
 
   const markChecked = db.prepare(
@@ -268,9 +374,15 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
 
   for (const candidate of candidates) {
     checked++;
-    if (!candidate.summary || !isDispatchPattern(candidate.summary)) {
-      markChecked.run(candidate.id);
-      continue;
+
+    // Sessions with a known agent_role (dispatched, worker, explorer, etc.)
+    // are already confirmed agents — skip dispatch-pattern gating.
+    const knownAgent = candidate.agent_role != null;
+    if (!knownAgent) {
+      if (!candidate.summary || !isDispatchPattern(candidate.summary)) {
+        markChecked.run(candidate.id);
+        continue;
+      }
     }
 
     const parents = db
@@ -280,16 +392,10 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
       WHERE source IN ('claude-code', 'claude')
         AND start_time <= ?
         AND start_time >= datetime(?, '-24 hours')
-        AND (end_time IS NULL OR end_time >= ?)
         AND parent_session_id IS NULL
-        AND hidden_at IS NULL
     `,
       )
-      .all(
-        candidate.start_time,
-        candidate.start_time,
-        candidate.start_time,
-      ) as {
+      .all(candidate.start_time, candidate.start_time) as {
       id: string;
       start_time: string;
       end_time: string | null;
@@ -315,13 +421,66 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
       setSuggestedParent(db, candidate.id, bestParent);
       suggested++;
     } else {
-      // No parent found, but dispatch pattern matched → mark as agent anyway
-      // This ensures dispatched sessions get tier='skip' via backfillTiers()
+      // No parent found, but dispatch pattern matched → mark as agent anyway.
+      // COALESCE preserves existing roles (worker, explorer) while setting
+      // 'dispatched' for sessions that have no role yet.
       db.prepare(
-        `UPDATE sessions SET agent_role = 'dispatched', link_checked_at = datetime('now') WHERE id = ?`,
+        `UPDATE sessions SET agent_role = COALESCE(agent_role, 'dispatched'), link_checked_at = datetime('now') WHERE id = ?`,
       ).run(candidate.id);
     }
   }
 
   return { checked, suggested };
+}
+
+/**
+ * Reset `link_checked_at` for sessions checked by an older detection algorithm.
+ * This allows `backfillSuggestedParents()` to re-evaluate them with improved logic.
+ * User-confirmed/dismissed links (`link_source = 'manual'`) are never touched.
+ */
+export function resetStaleDetections(db: BetterSqlite3.Database): number {
+  const row = db
+    .prepare("SELECT value FROM metadata WHERE key = 'detection_version'")
+    .get() as { value: string } | undefined;
+  const storedVersion = row ? Number.parseInt(row.value, 10) : 0;
+
+  if (storedVersion >= DETECTION_VERSION) return 0;
+
+  // Reset sessions that were checked but didn't get a parent link
+  const r1 = db
+    .prepare(
+      `
+    UPDATE sessions
+    SET link_checked_at = NULL
+    WHERE link_checked_at IS NOT NULL
+      AND parent_session_id IS NULL
+      AND suggested_parent_id IS NULL
+      AND (link_source IS NULL OR link_source != 'manual')
+      AND source IN ('gemini-cli', 'codex')
+  `,
+    )
+    .run();
+
+  // Also reset sessions marked 'dispatched' (by old heuristic) with no parent found.
+  // The improved scoring may now find a parent for them.
+  const r2 = db
+    .prepare(
+      `
+    UPDATE sessions
+    SET link_checked_at = NULL
+    WHERE link_checked_at IS NOT NULL
+      AND agent_role = 'dispatched'
+      AND parent_session_id IS NULL
+      AND suggested_parent_id IS NULL
+      AND (link_source IS NULL OR link_source != 'manual')
+  `,
+    )
+    .run();
+
+  // Store updated version
+  db.prepare(
+    "INSERT INTO metadata (key, value) VALUES ('detection_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(String(DETECTION_VERSION));
+
+  return r1.changes + r2.changes;
 }

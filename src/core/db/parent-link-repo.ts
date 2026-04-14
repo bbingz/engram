@@ -35,7 +35,7 @@ export function validateParentLink(
 
 /**
  * Set confirmed parent on a session. Clears any existing suggestion.
- * Upgrades tier from 'skip' to 'lite' (but never downgrades).
+ * Tier is not modified — subagent sessions stay 'skip'.
  */
 export function setParentSession(
   db: BetterSqlite3.Database,
@@ -43,23 +43,13 @@ export function setParentSession(
   parentId: string,
   linkSource: 'path' | 'manual',
 ): void {
-  const tx = db.transaction(() => {
-    db.prepare(`
-      UPDATE sessions
-      SET parent_session_id = @parentId,
-          link_source = @linkSource,
-          suggested_parent_id = NULL
-      WHERE id = @sessionId
-    `).run({ sessionId, parentId, linkSource });
-
-    // Upgrade skip → lite (never downgrade)
-    db.prepare(`
-      UPDATE sessions
-      SET tier = 'lite'
-      WHERE id = @sessionId AND tier = 'skip'
-    `).run({ sessionId });
-  });
-  tx();
+  db.prepare(`
+    UPDATE sessions
+    SET parent_session_id = @parentId,
+        link_source = @linkSource,
+        suggested_parent_id = NULL
+    WHERE id = @sessionId
+  `).run({ sessionId, parentId, linkSource });
 }
 
 /**
@@ -158,7 +148,10 @@ function rowToSessionInfo(row: Record<string, unknown>): SessionInfo {
     toolMessageCount: (row.tool_message_count as number) ?? 0,
     systemMessageCount: (row.system_message_count as number) ?? 0,
     summary: row.summary as string | undefined,
-    filePath: row.file_path as string,
+    filePath: (typeof row.source_locator === 'string' &&
+    row.source_locator.length > 0
+      ? row.source_locator
+      : row.file_path) as string,
     sizeBytes: row.size_bytes as number,
     indexedAt: row.indexed_at as string | undefined,
     agentRole: row.agent_role as string | undefined,

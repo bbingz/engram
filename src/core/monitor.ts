@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { getLocalTimeRange } from '../utils/time.js';
 import type { MonitorConfig } from './config.js';
 import type { Database } from './db.js';
 import { runAllHealthChecks } from './health-rules.js';
@@ -25,6 +26,8 @@ export class BackgroundMonitor {
   private db: Database;
   private config: MonitorConfig;
   private onAlert?: (alert: MonitorAlert) => void;
+  private nowProvider: () => Date;
+  private timeZoneOffsetMinutes?: number;
   private liveMonitor?: {
     getSessions(): Array<{
       startedAt: string;
@@ -39,11 +42,15 @@ export class BackgroundMonitor {
     config: MonitorConfig,
     onAlert?: (alert: MonitorAlert) => void,
     liveMonitor?: BackgroundMonitor['liveMonitor'],
+    nowProvider: () => Date = () => new Date(),
+    timeZoneOffsetMinutes?: number,
   ) {
     this.db = db;
     this.config = config;
     this.onAlert = onAlert;
     this.liveMonitor = liveMonitor;
+    this.nowProvider = nowProvider;
+    this.timeZoneOffsetMinutes = timeZoneOffsetMinutes;
   }
 
   start(intervalMs = 600_000): void {
@@ -81,14 +88,20 @@ export class BackgroundMonitor {
   }
 
   async check(): Promise<void> {
+    const now = this.nowProvider();
+    const range = getLocalTimeRange(
+      now,
+      this.timeZoneOffsetMinutes ?? now.getTimezoneOffset(),
+    );
+
     // Evict dismissed alerts older than 24h before running checks
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
     this.alerts = this.alerts.filter(
       (a) => !(a.dismissed && new Date(a.timestamp).getTime() < oneDayAgo),
     );
 
-    await this.checkDailyCost();
-    await this.checkCostBudget();
+    await this.checkDailyCost(now, range);
+    await this.checkCostBudget(now, range);
     await this.checkUnpushedCommits();
     this.checkLongSessions();
     await this.checkHealthRules();
@@ -100,7 +113,28 @@ export class BackgroundMonitor {
     }
   }
 
-  private async checkDailyCost(): Promise<void> {
+  private isSameLocalDay(timestamp: string, localDate: string): boolean {
+    return (
+      getLocalTimeRange(
+        new Date(timestamp),
+        this.timeZoneOffsetMinutes ?? new Date(timestamp).getTimezoneOffset(),
+      ).localDate === localDate
+    );
+  }
+
+  private isSameLocalMonth(timestamp: string, localMonth: string): boolean {
+    return (
+      getLocalTimeRange(
+        new Date(timestamp),
+        this.timeZoneOffsetMinutes ?? new Date(timestamp).getTimezoneOffset(),
+      ).localMonth === localMonth
+    );
+  }
+
+  private async checkDailyCost(
+    now: Date,
+    range: ReturnType<typeof getLocalTimeRange>,
+  ): Promise<void> {
     const budget = this.config.dailyCostBudget ?? 20;
     try {
       const row = this.db
@@ -109,9 +143,11 @@ export class BackgroundMonitor {
         SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
         FROM session_costs c
         JOIN sessions s ON c.session_id = s.id
-        WHERE date(s.start_time) = date('now')
+        WHERE s.start_time >= ? AND s.start_time < ?
       `)
-        .get() as { totalCost: number } | undefined;
+        .get(range.startUtcIso, range.endUtcIso) as
+        | { totalCost: number }
+        | undefined;
 
       const totalCost = row?.totalCost ?? 0;
       if (totalCost > budget) {
@@ -119,7 +155,7 @@ export class BackgroundMonitor {
         const existingToday = this.alerts.find(
           (a) =>
             a.category === 'cost_threshold' &&
-            a.timestamp.startsWith(new Date().toISOString().slice(0, 10)),
+            this.isSameLocalDay(a.timestamp, range.localDate),
         );
         if (!existingToday) {
           const alert: MonitorAlert = {
@@ -128,7 +164,7 @@ export class BackgroundMonitor {
             severity: totalCost > budget * 2 ? 'critical' : 'warning',
             title: `Daily cost exceeded $${budget}`,
             detail: `Current daily spend: $${totalCost.toFixed(2)} (budget: $${budget})`,
-            timestamp: new Date().toISOString(),
+            timestamp: now.toISOString(),
             dismissed: false,
           };
           this.alerts.push(alert);
@@ -140,15 +176,15 @@ export class BackgroundMonitor {
     }
   }
 
-  private async checkCostBudget(): Promise<void> {
+  private async checkCostBudget(
+    now: Date,
+    range: ReturnType<typeof getLocalTimeRange>,
+  ): Promise<void> {
     const dailyBudget = this.config.dailyCostBudget;
     const monthlyBudget = this.config.monthlyCostBudget;
     if (!dailyBudget && !monthlyBudget) return;
 
     try {
-      const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-      const firstOfMonth = `${today.slice(0, 7)}-01`; // YYYY-MM-01
-
       if (dailyBudget) {
         const row = this.db
           .getRawDb()
@@ -156,9 +192,11 @@ export class BackgroundMonitor {
           SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
           FROM session_costs c
           JOIN sessions s ON c.session_id = s.id
-          WHERE date(s.start_time) = date('now')
+          WHERE s.start_time >= ? AND s.start_time < ?
         `)
-          .get() as { totalCost: number } | undefined;
+          .get(range.startUtcIso, range.endUtcIso) as
+          | { totalCost: number }
+          | undefined;
         const totalCost = row?.totalCost ?? 0;
         const pct = Math.round((totalCost / dailyBudget) * 100);
 
@@ -167,7 +205,7 @@ export class BackgroundMonitor {
             (a) =>
               a.category === 'cost_budget' &&
               a.detail.includes('Daily') &&
-              a.timestamp.startsWith(today),
+              this.isSameLocalDay(a.timestamp, range.localDate),
           );
           if (!existing) {
             const alert: MonitorAlert = {
@@ -179,7 +217,7 @@ export class BackgroundMonitor {
                   ? `Daily cost $${totalCost.toFixed(2)} exceeds budget $${dailyBudget.toFixed(2)}`
                   : `Daily cost approaching budget (${pct}%)`,
               detail: `Daily spend: $${totalCost.toFixed(2)} of $${dailyBudget.toFixed(2)} budget (${pct}%)`,
-              timestamp: new Date().toISOString(),
+              timestamp: now.toISOString(),
               dismissed: false,
             };
             this.alerts.push(alert);
@@ -195,20 +233,20 @@ export class BackgroundMonitor {
           SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
           FROM session_costs c
           JOIN sessions s ON c.session_id = s.id
-          WHERE date(s.start_time) >= date(?)
+          WHERE s.start_time >= ? AND s.start_time < ?
         `)
-          .get(firstOfMonth) as { totalCost: number } | undefined;
+          .get(range.monthStartUtcIso, range.nextMonthStartUtcIso) as
+          | { totalCost: number }
+          | undefined;
         const totalCost = row?.totalCost ?? 0;
         const pct = Math.round((totalCost / monthlyBudget) * 100);
 
         if (pct >= 80) {
-          // One monthly alert per calendar month
-          const monthKey = today.slice(0, 7); // YYYY-MM
           const existing = this.alerts.find(
             (a) =>
               a.category === 'cost_budget' &&
               a.detail.includes('Monthly') &&
-              a.timestamp.startsWith(monthKey),
+              this.isSameLocalMonth(a.timestamp, range.localMonth),
           );
           if (!existing) {
             const alert: MonitorAlert = {
@@ -220,7 +258,7 @@ export class BackgroundMonitor {
                   ? `Monthly cost $${totalCost.toFixed(2)} exceeds budget $${monthlyBudget.toFixed(2)}`
                   : `Monthly cost approaching budget (${pct}%)`,
               detail: `Monthly spend: $${totalCost.toFixed(2)} of $${monthlyBudget.toFixed(2)} budget (${pct}%)`,
-              timestamp: new Date().toISOString(),
+              timestamp: now.toISOString(),
               dismissed: false,
             };
             this.alerts.push(alert);

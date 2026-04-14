@@ -157,6 +157,14 @@ export class Database {
       this.resolveProjectAliases(p),
     );
   }
+  countTodayParentSessions(now?: Date, timeZoneOffsetMinutes?: number): number {
+    return sessions.countTodayParentSessions(
+      this.db,
+      this.noiseFilter,
+      now,
+      timeZoneOffsetMinutes,
+    );
+  }
   listSources(): string[] {
     return sessions.listSources(this.db);
   }
@@ -397,6 +405,18 @@ export class Database {
   }
   backfillParentLinks() {
     return maint.backfillParentLinks(this.db);
+  }
+  downgradeSubagentTiers() {
+    return maint.downgradeSubagentTiers(this.db);
+  }
+  backfillFilePaths() {
+    return maint.backfillFilePaths(this.db);
+  }
+  backfillCodexOriginator() {
+    return maint.backfillCodexOriginator(this.db);
+  }
+  resetStaleDetections() {
+    return maint.resetStaleDetections(this.db);
   }
   backfillSuggestedParents() {
     return maint.backfillSuggestedParents(this.db);

@@ -76,6 +76,47 @@ describe('isDispatchPattern', () => {
     expect(isDispatchPattern('Hi there')).toBe(false);
   });
 
+  it('recognizes known probe messages', () => {
+    expect(isDispatchPattern('say hi')).toBe(true);
+    expect(isDispatchPattern('exit')).toBe(true);
+    expect(isDispatchPattern('quit')).toBe(true);
+    expect(isDispatchPattern('list-skills')).toBe(true);
+  });
+
+  it('matches math probe patterns with varying numbers', () => {
+    expect(isDispatchPattern('What is 5+5?')).toBe(true);
+    expect(isDispatchPattern('What is 1+1?')).toBe(true);
+    expect(isDispatchPattern('what is 10 * 2?')).toBe(true);
+    expect(isDispatchPattern('What is 100 - 7?')).toBe(true);
+  });
+
+  it('matches "say" probe variants', () => {
+    expect(isDispatchPattern('Say hello in 3 words')).toBe(true);
+    expect(isDispatchPattern('Say exactly: streaming works')).toBe(true);
+    expect(isDispatchPattern('say: all fixes verified')).toBe(true);
+  });
+
+  it('does NOT treat ordinary "say more" follow-ups as agent probes', () => {
+    expect(isDispatchPattern('Say more about vector search tradeoffs')).toBe(
+      false,
+    );
+  });
+
+  it('matches echo and reply probes', () => {
+    expect(isDispatchPattern("echo 'hello'")).toBe(true);
+    expect(isDispatchPattern('Reply with just the number')).toBe(true);
+    expect(isDispatchPattern('Respond with only the answer')).toBe(true);
+  });
+
+  it('does NOT treat ordinary explanation questions as agent probes', () => {
+    expect(
+      isDispatchPattern('What is the meaning of this regex in auth.ts?'),
+    ).toBe(false);
+    expect(
+      isDispatchPattern('Tell me the answer to why this test flakes'),
+    ).toBe(false);
+  });
+
   it('trims whitespace before matching', () => {
     expect(isDispatchPattern('  <task>Implement the feature</task>')).toBe(
       true,
@@ -84,6 +125,82 @@ describe('isDispatchPattern', () => {
 
   it('case insensitive for <task>', () => {
     expect(isDispatchPattern('<Task>Do the thing</Task>')).toBe(true);
+  });
+
+  it('matches embedded <task> blocks after a short preface', () => {
+    expect(
+      isDispatchPattern(
+        'Frontend Code Quality & Security Review for the app.\n<task>Perform a focused review of the frontend code.</task>',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches review-task prompts that start with "Review this"', () => {
+    expect(
+      isDispatchPattern(
+        'Review this implementation plan for the project. Read the spec, inspect the diff, and report gaps.',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches reviewer payload envelopes from delegated review flows', () => {
+    expect(
+      isDispatchPattern(
+        '<user_action>\n<context>User initiated a review task.</context>\n<action>review</action>',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches task verbs with technical context', () => {
+    expect(isDispatchPattern('Fix the type error in services/auth.ts')).toBe(
+      true,
+    );
+    expect(
+      isDispatchPattern(
+        'Debug the performance issue in the /api/search module',
+      ),
+    ).toBe(true);
+    expect(
+      isDispatchPattern(
+        'Implement the caching component for the search function',
+      ),
+    ).toBe(true);
+    expect(isDispatchPattern('Write tests for the database.ts module')).toBe(
+      true,
+    );
+  });
+
+  it('does NOT match bare task verbs without technical context', () => {
+    expect(isDispatchPattern('Fix my lunch order')).toBe(false);
+    expect(isDispatchPattern('Implement a strategy for growth')).toBe(false);
+  });
+
+  it('matches context preambles and instruction blocks', () => {
+    expect(
+      isDispatchPattern('Context: The user wants to refactor the auth module'),
+    ).toBe(true);
+    expect(isDispatchPattern('Instructions: Follow the spec below')).toBe(true);
+    expect(
+      isDispatchPattern(
+        '<instructions>\nDo the following tasks...</instructions>',
+      ),
+    ).toBe(true);
+    expect(isDispatchPattern('The following code needs to be reviewed')).toBe(
+      true,
+    );
+  });
+
+  it('matches role prompts for auditing and evaluation sessions', () => {
+    expect(
+      isDispatchPattern(
+        'You are auditing the authentication flow of the service. Review the codebase and identify security issues.',
+      ),
+    ).toBe(true);
+    expect(
+      isDispatchPattern(
+        'You are evaluating the Engram project on branch feat/local-semantic-search.',
+      ),
+    ).toBe(true);
   });
 });
 
@@ -166,6 +283,107 @@ describe('scoreCandidate', () => {
     const noProject = scoreCandidate(plus30s, base, null, null, null);
     expect(oneNull).toEqual(noProject);
   });
+
+  it('long-running parent still gets meaningful score', () => {
+    // Parent started 2 hours ago but is still running
+    const agentStart = '2026-04-13T12:00:00Z';
+    const parentStart = '2026-04-13T10:00:00Z'; // 2h ago
+    const score = scoreCandidate(
+      agentStart,
+      parentStart,
+      null, // still running
+      'my-project',
+      'my-project',
+    );
+    // With 4h half-life: time ≈ 0.37, project = 0.3, active = 0.1 → ~0.77
+    expect(score).toBeGreaterThan(0.5);
+  });
+
+  it('prefers exact cwd match over a closer unrelated cwd', () => {
+    const agentStart = '2026-04-13T11:17:10Z';
+    const exactCwdParent = scoreCandidate(
+      agentStart,
+      '2026-04-13T10:46:20Z',
+      '2026-04-13T14:07:07Z',
+      null,
+      null,
+      '/Users/bing/-Code-/gemini-plugin-cc',
+      '/Users/bing/-Code-/gemini-plugin-cc',
+    );
+    const unrelatedCloserParent = scoreCandidate(
+      agentStart,
+      '2026-04-13T11:10:02Z',
+      '2026-04-13T13:24:03Z',
+      null,
+      null,
+      '/Users/bing/-Code-/gemini-plugin-cc',
+      '/Users/bing/-Code-/sscms-audit',
+    );
+
+    expect(exactCwdParent).toBeGreaterThan(unrelatedCloserParent);
+  });
+
+  it('scores > 0 when parent ended before agent with same CWD (gap < 4h)', () => {
+    // Parent ended at 11:48, agent started at 15:43 — 3h55m gap, same CWD
+    const score = scoreCandidate(
+      '2026-04-08T15:43:00Z',
+      '2026-04-08T11:42:44Z',
+      '2026-04-08T11:48:17Z',
+      'Zhiwei',
+      null,
+      '/Users/bing/-Code-/Zhiwei',
+      '/Users/bing/-Code-/Zhiwei',
+    );
+    expect(score).toBeGreaterThan(0);
+  });
+
+  it('returns 0 when parent ended before agent with unrelated CWD', () => {
+    const score = scoreCandidate(
+      '2026-04-08T15:43:00Z',
+      '2026-04-08T11:42:44Z',
+      '2026-04-08T11:48:17Z',
+      null,
+      null,
+      '/Users/bing/-Code-/Zhiwei',
+      '/Users/bing/-Code-/sscms-audit',
+    );
+    expect(score).toBe(0);
+  });
+
+  it('returns 0 when parent ended > 4h before agent even with same CWD', () => {
+    const score = scoreCandidate(
+      '2026-04-08T16:00:00Z',
+      '2026-04-08T10:00:00Z',
+      '2026-04-08T11:00:00Z', // 5h gap
+      null,
+      null,
+      '/Users/bing/-Code-/Zhiwei',
+      '/Users/bing/-Code-/Zhiwei',
+    );
+    expect(score).toBe(0);
+  });
+
+  it('penalizes unrelated cwd candidates when both sides provide cwd', () => {
+    const agentStart = '2026-04-13T11:17:10Z';
+    const unknownCwd = scoreCandidate(
+      agentStart,
+      '2026-04-13T11:10:02Z',
+      null,
+      null,
+      null,
+    );
+    const unrelatedCwd = scoreCandidate(
+      agentStart,
+      '2026-04-13T11:10:02Z',
+      null,
+      null,
+      null,
+      '/Users/bing/-Code-/gemini-plugin-cc',
+      '/Users/bing/-Code-/sscms-audit',
+    );
+
+    expect(unrelatedCwd).toBeLessThan(unknownCwd);
+  });
 });
 
 describe('pickBestCandidate', () => {
@@ -195,23 +413,14 @@ describe('pickBestCandidate', () => {
     ).toBe('best');
   });
 
-  it('returns null for ambiguous candidates (gap < 15%)', () => {
+  it('returns best even for close candidates (prefers suggestion over none)', () => {
+    // Two nearly identical scores — still picks the best one
     expect(
       pickBestCandidate([
         { parentId: 'a', score: 0.8 },
         { parentId: 'b', score: 0.78 },
       ]),
-    ).toBeNull();
-  });
-
-  it('returns best when gap is exactly 15%', () => {
-    // gap = (0.80 - 0.68) / 0.80 = 0.15 exactly
-    expect(
-      pickBestCandidate([
-        { parentId: 'winner', score: 0.8 },
-        { parentId: 'loser', score: 0.68 },
-      ]),
-    ).toBe('winner');
+    ).toBe('a');
   });
 
   it('handles more than 2 candidates', () => {

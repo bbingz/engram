@@ -62,6 +62,33 @@ describe('BackgroundMonitor', () => {
     expect(costAlerts.length).toBe(0);
   });
 
+  it('treats sessions after local midnight as part of today for cost alerts', async () => {
+    const freshDb = new Database(':memory:');
+    freshDb.getRawDb().exec(`
+      INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier)
+      VALUES ('local-midnight-cost', 'claude-code', '2026-04-13T16:30:00Z', '/test', 'test', 'claude-opus-4-6', 10, 3, 5, 1, 1, '/test/local-midnight.jsonl', 500, 'normal')
+    `);
+    freshDb.getRawDb().exec(`
+      INSERT INTO session_costs (session_id, model, input_tokens, output_tokens, cost_usd, computed_at)
+      VALUES ('local-midnight-cost', 'claude-opus-4-6', 100000, 5000, 25.50, '2026-04-14T01:00:00Z')
+    `);
+
+    const alerts: MonitorAlert[] = [];
+    const monitor = new BackgroundMonitor(
+      freshDb,
+      { enabled: true, dailyCostBudget: 20 },
+      (alert) => alerts.push(alert),
+      undefined,
+      () => new Date('2026-04-14T13:56:07.817Z'),
+      -480,
+    );
+
+    await monitor.check();
+
+    const costAlerts = alerts.filter((a) => a.category === 'cost_threshold');
+    expect(costAlerts.length).toBe(1);
+  });
+
   it('stores and retrieves alerts', async () => {
     const config: MonitorConfig = { enabled: true, dailyCostBudget: 1 };
     const monitor = new BackgroundMonitor(db, config);

@@ -1,6 +1,7 @@
 // src/core/db/session-repo.ts — session CRUD + filtering
 import type BetterSqlite3 from 'better-sqlite3';
 import type { SessionInfo, SourceName } from '../../adapters/types.js';
+import { getLocalTimeRange } from '../../utils/time.js';
 import { computeQualityScore } from '../session-scoring.js';
 import type {
   AuthoritativeSessionSnapshot,
@@ -25,6 +26,18 @@ export function isTierHidden(
   return tier === 'skip';
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function preferredPath(...values: unknown[]): string {
+  for (const value of values) {
+    const normalized = nonEmptyString(value);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
 function rowToSession(row: Record<string, unknown>): SessionInfo {
   return {
     id: row.id as string,
@@ -40,10 +53,11 @@ function rowToSession(row: Record<string, unknown>): SessionInfo {
     toolMessageCount: (row.tool_message_count as number) ?? 0,
     systemMessageCount: (row.system_message_count as number) ?? 0,
     summary: row.summary as string | undefined,
-    filePath:
-      (row.local_readable_path as string | undefined) ??
-      (row.source_locator as string | undefined) ??
-      (row.file_path as string),
+    filePath: preferredPath(
+      row.local_readable_path,
+      row.source_locator,
+      row.file_path,
+    ),
     sizeBytes: row.size_bytes as number,
     indexedAt: row.indexed_at as string | undefined,
     agentRole: row.agent_role as string | undefined,
@@ -69,9 +83,7 @@ function rowToAuthoritativeSnapshot(
     syncVersion: (row.sync_version as number | null) ?? 0,
     snapshotHash: (row.snapshot_hash as string | null) ?? '',
     indexedAt: row.indexed_at as string,
-    sourceLocator: ((row.source_locator as string | null) ??
-      (row.file_path as string | null) ??
-      '') as string,
+    sourceLocator: preferredPath(row.source_locator, row.file_path),
     sizeBytes: (row.size_bytes as number | null) ?? 0,
     startTime: row.start_time as string,
     endTime: (row.end_time as string | null) ?? undefined,
@@ -174,6 +186,7 @@ export function upsertSession(
       tool_message_count = excluded.tool_message_count,
       system_message_count = excluded.system_message_count,
       summary = excluded.summary,
+      file_path = CASE WHEN sessions.file_path = '' AND excluded.file_path != '' THEN excluded.file_path ELSE sessions.file_path END,
       size_bytes = excluded.size_bytes,
       indexed_at = excluded.indexed_at,
       agent_role = excluded.agent_role,
@@ -381,6 +394,33 @@ export function countSessions(
   ).n;
 }
 
+export function countTodayParentSessions(
+  db: BetterSqlite3.Database,
+  noiseFilter: NoiseFilter,
+  now: Date = new Date(),
+  timeZoneOffsetMinutes: number = now.getTimezoneOffset(),
+): number {
+  const range = getLocalTimeRange(now, timeZoneOffsetMinutes);
+  const conditions: string[] = [
+    'hidden_at IS NULL',
+    'parent_session_id IS NULL',
+    'suggested_parent_id IS NULL',
+    'start_time >= @dayStart',
+    'start_time < @dayEnd',
+  ];
+  conditions.push(...buildTierFilter(noiseFilter));
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) as n FROM sessions WHERE ${conditions.join(' AND ')}`,
+      )
+      .get({
+        dayStart: range.startUtcIso,
+        dayEnd: range.endUtcIso,
+      }) as { n: number }
+  ).n;
+}
+
 export function listSources(db: BetterSqlite3.Database): string[] {
   const rows = db
     .prepare(
@@ -464,7 +504,10 @@ export function upsertAuthoritativeSnapshot(
   snapshot: AuthoritativeSessionSnapshot,
   getLocalState: (sessionId: string) => { localReadablePath?: string } | null,
 ): void {
-  const localReadablePath = getLocalState(snapshot.id)?.localReadablePath ?? '';
+  const localReadablePath =
+    getLocalState(snapshot.id)?.localReadablePath ||
+    snapshot.sourceLocator ||
+    '';
   db.prepare(`
     INSERT INTO sessions (
       id, source, start_time, end_time, cwd, project, model,

@@ -210,6 +210,51 @@ describe('Database', () => {
     );
   });
 
+  it('falls back to source_locator when local_readable_path is an empty string', () => {
+    const snapshot: AuthoritativeSessionSnapshot = {
+      id: 'synced-empty-path',
+      source: 'codex',
+      authoritativeNode: 'remote-node',
+      syncVersion: 1,
+      snapshotHash: 'hash-empty-path',
+      indexedAt: '2026-04-14T10:00:00Z',
+      sourceLocator: '/remote/sessions/synced-empty-path.jsonl',
+      sizeBytes: 42,
+      startTime: '2026-04-14T09:00:00Z',
+      cwd: '/repo',
+      messageCount: 1,
+      userMessageCount: 1,
+      assistantMessageCount: 0,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+    };
+    db.upsertAuthoritativeSnapshot(snapshot);
+    db.setLocalReadablePath('synced-empty-path', '');
+    db.getRawDb()
+      .prepare("UPDATE sessions SET file_path = '' WHERE id = ?")
+      .run('synced-empty-path');
+
+    db.backfillFilePaths();
+
+    expect(db.getSession('synced-empty-path')?.filePath).toBe(
+      '/remote/sessions/synced-empty-path.jsonl',
+    );
+  });
+
+  it('counts local-day parent sessions using an explicit clock boundary', () => {
+    db.upsertSession({
+      ...mockSession,
+      id: 'after-local-midnight',
+      startTime: '2026-04-13T16:30:00.000Z',
+      endTime: '2026-04-13T16:40:00.000Z',
+      filePath: '/tmp/after-local-midnight.jsonl',
+    });
+
+    expect(
+      db.countTodayParentSessions(new Date('2026-04-14T13:56:07.817Z'), -480),
+    ).toBe(1);
+  });
+
   it('stores sync cursor as indexed_at + session_id tuple', () => {
     db.setSyncCursor('peer-a', {
       indexedAt: '2026-03-18T12:00:00Z',
