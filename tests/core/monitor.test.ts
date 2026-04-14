@@ -80,7 +80,7 @@ describe('BackgroundMonitor', () => {
       (alert) => alerts.push(alert),
       undefined,
       () => new Date('2026-04-14T13:56:07.817Z'),
-      -480,
+      'Asia/Shanghai',
     );
 
     await monitor.check();

@@ -256,6 +256,7 @@ export function backfillFilePaths(db: BetterSqlite3.Database): number {
     WHERE (file_path IS NULL OR file_path = '')
       AND source_locator IS NOT NULL
       AND source_locator != ''
+      AND source_locator NOT LIKE 'sync://%'
   `,
     )
     .run().changes;
@@ -265,7 +266,10 @@ export function backfillFilePaths(db: BetterSqlite3.Database): number {
       `
     UPDATE session_local_state
     SET local_readable_path = (
-      SELECT COALESCE(NULLIF(source_locator, ''), NULLIF(file_path, ''))
+      SELECT COALESCE(
+        NULLIF(CASE WHEN source_locator LIKE 'sync://%' THEN '' ELSE source_locator END, ''),
+        NULLIF(CASE WHEN file_path LIKE 'sync://%' THEN '' ELSE file_path END, '')
+      )
       FROM sessions
       WHERE id = session_local_state.session_id
     )
@@ -274,7 +278,10 @@ export function backfillFilePaths(db: BetterSqlite3.Database): number {
         SELECT 1
         FROM sessions
         WHERE id = session_local_state.session_id
-          AND COALESCE(NULLIF(source_locator, ''), NULLIF(file_path, '')) IS NOT NULL
+          AND COALESCE(
+            NULLIF(CASE WHEN source_locator LIKE 'sync://%' THEN '' ELSE source_locator END, ''),
+            NULLIF(CASE WHEN file_path LIKE 'sync://%' THEN '' ELSE file_path END, '')
+          ) IS NOT NULL
       )
   `,
     )
@@ -312,7 +319,7 @@ export function backfillCodexOriginator(db: BetterSqlite3.Database): number {
 
   let updated = 0;
   const update = db.prepare(
-    `UPDATE sessions SET agent_role = 'dispatched', link_checked_at = NULL WHERE id = ?`,
+    `UPDATE sessions SET agent_role = 'dispatched', tier = 'skip', link_checked_at = NULL WHERE id = ?`,
   );
 
   for (const { id, file_path } of candidates) {
@@ -425,7 +432,7 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
       // COALESCE preserves existing roles (worker, explorer) while setting
       // 'dispatched' for sessions that have no role yet.
       db.prepare(
-        `UPDATE sessions SET agent_role = COALESCE(agent_role, 'dispatched'), link_checked_at = datetime('now') WHERE id = ?`,
+        `UPDATE sessions SET agent_role = COALESCE(agent_role, 'dispatched'), tier = 'skip', link_checked_at = datetime('now') WHERE id = ?`,
       ).run(candidate.id);
     }
   }

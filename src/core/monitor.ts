@@ -27,7 +27,7 @@ export class BackgroundMonitor {
   private config: MonitorConfig;
   private onAlert?: (alert: MonitorAlert) => void;
   private nowProvider: () => Date;
-  private timeZoneOffsetMinutes?: number;
+  private timeZone: string;
   private liveMonitor?: {
     getSessions(): Array<{
       startedAt: string;
@@ -43,14 +43,14 @@ export class BackgroundMonitor {
     onAlert?: (alert: MonitorAlert) => void,
     liveMonitor?: BackgroundMonitor['liveMonitor'],
     nowProvider: () => Date = () => new Date(),
-    timeZoneOffsetMinutes?: number,
+    timeZone: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
   ) {
     this.db = db;
     this.config = config;
     this.onAlert = onAlert;
     this.liveMonitor = liveMonitor;
     this.nowProvider = nowProvider;
-    this.timeZoneOffsetMinutes = timeZoneOffsetMinutes;
+    this.timeZone = timeZone;
   }
 
   start(intervalMs = 600_000): void {
@@ -89,10 +89,7 @@ export class BackgroundMonitor {
 
   async check(): Promise<void> {
     const now = this.nowProvider();
-    const range = getLocalTimeRange(
-      now,
-      this.timeZoneOffsetMinutes ?? now.getTimezoneOffset(),
-    );
+    const range = getLocalTimeRange(now, this.timeZone);
 
     // Evict dismissed alerts older than 24h before running checks
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -115,19 +112,15 @@ export class BackgroundMonitor {
 
   private isSameLocalDay(timestamp: string, localDate: string): boolean {
     return (
-      getLocalTimeRange(
-        new Date(timestamp),
-        this.timeZoneOffsetMinutes ?? new Date(timestamp).getTimezoneOffset(),
-      ).localDate === localDate
+      getLocalTimeRange(new Date(timestamp), this.timeZone).localDate ===
+      localDate
     );
   }
 
   private isSameLocalMonth(timestamp: string, localMonth: string): boolean {
     return (
-      getLocalTimeRange(
-        new Date(timestamp),
-        this.timeZoneOffsetMinutes ?? new Date(timestamp).getTimezoneOffset(),
-      ).localMonth === localMonth
+      getLocalTimeRange(new Date(timestamp), this.timeZone).localMonth ===
+      localMonth
     );
   }
 

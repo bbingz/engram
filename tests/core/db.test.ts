@@ -241,7 +241,33 @@ describe('Database', () => {
     );
   });
 
-  it('counts local-day parent sessions using an explicit clock boundary', () => {
+  it('does not treat sync locators as locally readable file paths', () => {
+    const snapshot: AuthoritativeSessionSnapshot = {
+      id: 'metadata-only-sync',
+      source: 'codex',
+      authoritativeNode: 'peer-a',
+      syncVersion: 1,
+      snapshotHash: 'hash-sync-only',
+      indexedAt: '2026-04-14T10:00:00Z',
+      sourceLocator: 'sync://peer-a/metadata-only-sync.jsonl',
+      sizeBytes: 42,
+      startTime: '2026-04-14T09:00:00Z',
+      cwd: '/repo',
+      messageCount: 1,
+      userMessageCount: 1,
+      assistantMessageCount: 0,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+    };
+    db.upsertAuthoritativeSnapshot(snapshot);
+
+    expect(db.getSession('metadata-only-sync')?.filePath).toBe('');
+    expect(db.getLocalState('metadata-only-sync')?.localReadablePath).toBe(
+      undefined,
+    );
+  });
+
+  it('counts local-day parent sessions using an explicit timezone boundary', () => {
     db.upsertSession({
       ...mockSession,
       id: 'after-local-midnight',
@@ -251,7 +277,10 @@ describe('Database', () => {
     });
 
     expect(
-      db.countTodayParentSessions(new Date('2026-04-14T13:56:07.817Z'), -480),
+      db.countTodayParentSessions(
+        new Date('2026-04-14T13:56:07.817Z'),
+        'Asia/Shanghai',
+      ),
     ).toBe(1);
   });
 

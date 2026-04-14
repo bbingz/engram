@@ -12,46 +12,128 @@ export interface LocalTimeRange {
   localMonth: string;
 }
 
-function toShiftedDate(value: Date, timeZoneOffsetMinutes: number): Date {
-  return new Date(value.getTime() - timeZoneOffsetMinutes * 60_000);
+interface LocalDateParts {
+  year: number;
+  month: number;
+  day: number;
 }
 
 function toUtcIso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
+function getLocalDateParts(value: Date, timeZone: string): LocalDateParts {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value);
+  return {
+    year: Number(parts.find((part) => part.type === 'year')?.value),
+    month: Number(parts.find((part) => part.type === 'month')?.value),
+    day: Number(parts.find((part) => part.type === 'day')?.value),
+  };
+}
+
+function getOffsetMilliseconds(value: Date, timeZone: string): number {
+  const timeZoneName = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    timeZoneName: 'longOffset',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+    .formatToParts(value)
+    .find((part) => part.type === 'timeZoneName')?.value;
+  if (!timeZoneName || timeZoneName === 'GMT') return 0;
+
+  const match = timeZoneName.match(/^GMT([+-])(\d{1,2})(?::(\d{2}))?$/);
+  if (!match)
+    throw new RangeError(`Unsupported time zone offset: ${timeZoneName}`);
+
+  const [, sign, hours, minutes = '00'] = match;
+  const totalMinutes = Number(hours) * 60 + Number(minutes);
+  return (sign === '+' ? 1 : -1) * totalMinutes * 60_000;
+}
+
+function resolveLocalMidnightUtc(
+  year: number,
+  month: number,
+  day: number,
+  timeZone: string,
+): number {
+  let utcMs = Date.UTC(year, month - 1, day, 0, 0, 0);
+  for (let i = 0; i < 3; i++) {
+    const offsetMs = getOffsetMilliseconds(new Date(utcMs), timeZone);
+    const nextUtcMs = Date.UTC(year, month - 1, day, 0, 0, 0) - offsetMs;
+    if (nextUtcMs === utcMs) break;
+    utcMs = nextUtcMs;
+  }
+  return utcMs;
+}
+
+function shiftLocalDay(
+  { year, month, day }: LocalDateParts,
+  deltaDays: number,
+): LocalDateParts {
+  const shifted = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+  shifted.setUTCDate(shifted.getUTCDate() + deltaDays);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
+}
+
+function startOfNextMonth({ year, month }: LocalDateParts): LocalDateParts {
+  const shifted = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+  shifted.setUTCMonth(shifted.getUTCMonth() + 1);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: 1,
+  };
+}
+
 export function getLocalTimeRange(
   now: Date = new Date(),
-  timeZoneOffsetMinutes: number = now.getTimezoneOffset(),
+  timeZone: string = TZ,
 ): LocalTimeRange {
-  const shifted = toShiftedDate(now, timeZoneOffsetMinutes);
-  const localDate = shifted.toISOString().slice(0, 10);
-  const localMonth = localDate.slice(0, 7);
+  const localParts = getLocalDateParts(now, timeZone);
+  const nextDayParts = shiftLocalDay(localParts, 1);
+  const monthStartParts = { ...localParts, day: 1 };
+  const nextMonthParts = startOfNextMonth(monthStartParts);
 
-  const startShiftedMs = Date.UTC(
-    shifted.getUTCFullYear(),
-    shifted.getUTCMonth(),
-    shifted.getUTCDate(),
+  const startUtcMs = resolveLocalMidnightUtc(
+    localParts.year,
+    localParts.month,
+    localParts.day,
+    timeZone,
   );
-  const monthStartShiftedMs = Date.UTC(
-    shifted.getUTCFullYear(),
-    shifted.getUTCMonth(),
-    1,
+  const endUtcMs = resolveLocalMidnightUtc(
+    nextDayParts.year,
+    nextDayParts.month,
+    nextDayParts.day,
+    timeZone,
   );
-  const nextMonthStartShiftedMs = Date.UTC(
-    shifted.getUTCFullYear(),
-    shifted.getUTCMonth() + 1,
-    1,
+  const monthStartUtcMs = resolveLocalMidnightUtc(
+    monthStartParts.year,
+    monthStartParts.month,
+    monthStartParts.day,
+    timeZone,
   );
-
-  const startUtcMs = startShiftedMs + timeZoneOffsetMinutes * 60_000;
-  const monthStartUtcMs = monthStartShiftedMs + timeZoneOffsetMinutes * 60_000;
-  const nextMonthStartUtcMs =
-    nextMonthStartShiftedMs + timeZoneOffsetMinutes * 60_000;
+  const nextMonthStartUtcMs = resolveLocalMidnightUtc(
+    nextMonthParts.year,
+    nextMonthParts.month,
+    nextMonthParts.day,
+    timeZone,
+  );
+  const localDate = `${String(localParts.year).padStart(4, '0')}-${String(localParts.month).padStart(2, '0')}-${String(localParts.day).padStart(2, '0')}`;
+  const localMonth = `${String(localParts.year).padStart(4, '0')}-${String(localParts.month).padStart(2, '0')}`;
 
   return {
     startUtcIso: toUtcIso(startUtcMs),
-    endUtcIso: toUtcIso(startUtcMs + 24 * 60 * 60 * 1000),
+    endUtcIso: toUtcIso(endUtcMs),
     monthStartUtcIso: toUtcIso(monthStartUtcMs),
     nextMonthStartUtcIso: toUtcIso(nextMonthStartUtcMs),
     localDate,

@@ -1,6 +1,7 @@
 // src/core/db/parent-link-repo.ts — parent/child session link management
 import type BetterSqlite3 from 'better-sqlite3';
 import type { SessionInfo } from '../../adapters/types.js';
+import { pickReadableSessionPath } from '../session-path.js';
 
 export type LinkValidation =
   | 'ok'
@@ -148,10 +149,10 @@ function rowToSessionInfo(row: Record<string, unknown>): SessionInfo {
     toolMessageCount: (row.tool_message_count as number) ?? 0,
     systemMessageCount: (row.system_message_count as number) ?? 0,
     summary: row.summary as string | undefined,
-    filePath: (typeof row.source_locator === 'string' &&
-    row.source_locator.length > 0
-      ? row.source_locator
-      : row.file_path) as string,
+    filePath: pickReadableSessionPath(
+      row.file_path as string | undefined,
+      row.source_locator as string | undefined,
+    ),
     sizeBytes: row.size_bytes as number,
     indexedAt: row.indexed_at as string | undefined,
     agentRole: row.agent_role as string | undefined,

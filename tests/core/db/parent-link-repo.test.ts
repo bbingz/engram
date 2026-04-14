@@ -1,11 +1,12 @@
 // tests/core/db/parent-link-repo.test.ts
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SessionInfo } from '../../../src/adapters/types.js';
 import {
+  backfillCodexOriginator,
   backfillParentLinks,
   backfillSuggestedParents,
   downgradeSubagentTiers,
@@ -904,9 +905,10 @@ describe('parent-link-repo', () => {
       backfillSuggestedParents(db.raw);
 
       const row = db.raw
-        .prepare('SELECT link_checked_at FROM sessions WHERE id = ?')
+        .prepare('SELECT link_checked_at, tier FROM sessions WHERE id = ?')
         .get('gem-orphan') as Record<string, unknown>;
       expect(row.link_checked_at).toBeTruthy();
+      expect(row.tier).toBe('skip');
     });
 
     it('skips sessions without dispatch pattern summary', () => {
@@ -1032,6 +1034,48 @@ describe('parent-link-repo', () => {
         .get('codex-normal-followup') as Record<string, unknown>;
       expect(row.suggested_parent_id).toBeNull();
       expect(row.link_checked_at).toBeTruthy();
+    });
+  });
+
+  describe('backfillCodexOriginator', () => {
+    it('marks Claude Code-originated Codex sessions as dispatched and skip-tier', () => {
+      const tempFile = join(tmpDir, 'codex-originator.jsonl');
+      writeFileSync(
+        tempFile,
+        `${JSON.stringify({
+          type: 'session_meta',
+          payload: {
+            id: 'codex-originator',
+            originator: 'Claude Code',
+          },
+        })}\n`,
+      );
+
+      db.upsertSession(
+        makeSession({
+          id: 'codex-originator',
+          source: 'codex',
+          startTime: '2026-04-13T10:02:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: tempFile,
+          sizeBytes: 50,
+          summary: 'Regular summary',
+          tier: 'normal',
+        }),
+      );
+
+      const updated = backfillCodexOriginator(db.raw);
+      expect(updated).toBe(1);
+
+      const row = db.raw
+        .prepare(
+          'SELECT agent_role, tier, link_checked_at FROM sessions WHERE id = ?',
+        )
+        .get('codex-originator') as Record<string, unknown>;
+      expect(row.agent_role).toBe('dispatched');
+      expect(row.tier).toBe('skip');
+      expect(row.link_checked_at).toBeNull();
     });
   });
 

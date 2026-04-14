@@ -2,6 +2,10 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import type { SessionInfo, SourceName } from '../../adapters/types.js';
 import { getLocalTimeRange } from '../../utils/time.js';
+import {
+  isReadableSessionPath,
+  pickReadableSessionPath,
+} from '../session-path.js';
 import { computeQualityScore } from '../session-scoring.js';
 import type {
   AuthoritativeSessionSnapshot,
@@ -30,14 +34,6 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function preferredPath(...values: unknown[]): string {
-  for (const value of values) {
-    const normalized = nonEmptyString(value);
-    if (normalized) return normalized;
-  }
-  return '';
-}
-
 function rowToSession(row: Record<string, unknown>): SessionInfo {
   return {
     id: row.id as string,
@@ -53,10 +49,10 @@ function rowToSession(row: Record<string, unknown>): SessionInfo {
     toolMessageCount: (row.tool_message_count as number) ?? 0,
     systemMessageCount: (row.system_message_count as number) ?? 0,
     summary: row.summary as string | undefined,
-    filePath: preferredPath(
-      row.local_readable_path,
-      row.source_locator,
-      row.file_path,
+    filePath: pickReadableSessionPath(
+      nonEmptyString(row.local_readable_path),
+      nonEmptyString(row.file_path),
+      nonEmptyString(row.source_locator),
     ),
     sizeBytes: row.size_bytes as number,
     indexedAt: row.indexed_at as string | undefined,
@@ -83,7 +79,8 @@ function rowToAuthoritativeSnapshot(
     syncVersion: (row.sync_version as number | null) ?? 0,
     snapshotHash: (row.snapshot_hash as string | null) ?? '',
     indexedAt: row.indexed_at as string,
-    sourceLocator: preferredPath(row.source_locator, row.file_path),
+    sourceLocator:
+      nonEmptyString(row.source_locator) ?? nonEmptyString(row.file_path) ?? '',
     sizeBytes: (row.size_bytes as number | null) ?? 0,
     startTime: row.start_time as string,
     endTime: (row.end_time as string | null) ?? undefined,
@@ -398,9 +395,9 @@ export function countTodayParentSessions(
   db: BetterSqlite3.Database,
   noiseFilter: NoiseFilter,
   now: Date = new Date(),
-  timeZoneOffsetMinutes: number = now.getTimezoneOffset(),
+  timeZone: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
 ): number {
-  const range = getLocalTimeRange(now, timeZoneOffsetMinutes);
+  const range = getLocalTimeRange(now, timeZone);
   const conditions: string[] = [
     'hidden_at IS NULL',
     'parent_session_id IS NULL',
@@ -504,10 +501,12 @@ export function upsertAuthoritativeSnapshot(
   snapshot: AuthoritativeSessionSnapshot,
   getLocalState: (sessionId: string) => { localReadablePath?: string } | null,
 ): void {
-  const localReadablePath =
-    getLocalState(snapshot.id)?.localReadablePath ||
-    snapshot.sourceLocator ||
-    '';
+  const localReadablePath = pickReadableSessionPath(
+    getLocalState(snapshot.id)?.localReadablePath,
+    isReadableSessionPath(snapshot.sourceLocator)
+      ? snapshot.sourceLocator
+      : null,
+  );
   db.prepare(`
     INSERT INTO sessions (
       id, source, start_time, end_time, cwd, project, model,

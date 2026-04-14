@@ -157,12 +157,12 @@ export class Database {
       this.resolveProjectAliases(p),
     );
   }
-  countTodayParentSessions(now?: Date, timeZoneOffsetMinutes?: number): number {
+  countTodayParentSessions(now?: Date, timeZone?: string): number {
     return sessions.countTodayParentSessions(
       this.db,
       this.noiseFilter,
       now,
-      timeZoneOffsetMinutes,
+      timeZone,
     );
   }
   listSources(): string[] {
