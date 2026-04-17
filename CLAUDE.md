@@ -7,7 +7,7 @@ Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar
 ```bash
 # TypeScript
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 893 tests, ~5s
+npm test               # vitest: 922 tests, ~5s
 npm run dev            # tsx: run without compile
 npm run lint           # biome check (must pass — pre-commit enforced)
 npm run lint:fix       # biome auto-fix
@@ -108,21 +108,28 @@ Two storage layers for insights: `insights` table (text+FTS, always available) a
 Parent-child session linking: agent sessions (dispatched by Claude Code to Gemini/Codex) are grouped under their parent.
 - `parent_session_id`: confirmed link. `suggested_parent_id`: Layer 2 heuristic (advisory).
 - `link_source`: `'path'` (Layer 1) or `'manual'` (user-confirmed). `'manual'` with NULL parent = explicitly unlinked.
-- Three detection layers:
+- Four detection layers:
   1. **Layer 1 (path)**: Claude Code subagents — parse parent ID from `/subagents/` file path. Deterministic.
-  2. **Layer 2 (heuristic)**: Gemini/Codex dispatched sessions — dispatch pattern matching + temporal/cwd scoring. Advisory only → `suggested_parent_id`.
-  3. **Layer 3 (manual)**: HTTP API endpoints at `POST/DELETE /api/sessions/:id/link`, `POST /api/sessions/:id/confirm-suggestion`, `DELETE /api/sessions/:id/suggestion`.
+  2. **Layer 1b (originator)**: Codex `session_meta.originator === "Claude Code"` → auto `agentRole: 'dispatched'`. Deterministic.
+  3. **Layer 1c (sidecar)**: Gemini plugin writes `{sessionId}.engram.json` sidecar with `parentSessionId`. Deterministic.
+  4. **Layer 2 (heuristic)**: Dispatch pattern matching + temporal/cwd scoring. Advisory → `suggested_parent_id`.
+  5. **Layer 3 (manual)**: HTTP API endpoints at `POST/DELETE /api/sessions/:id/link`, `POST /api/sessions/:id/confirm-suggestion`, `DELETE /api/sessions/:id/suggestion`.
 - Orphan trigger: `trg_sessions_parent_cascade` nullifies children on parent deletion + resets tier for re-evaluation.
-- Tier lifecycle: linked children upgrade `skip` → `lite` (FTS searchable); unlinked children get tier reset to NULL for re-evaluation.
-- Dispatch-pattern sessions without a parent get `agent_role = 'dispatched'` → `tier = 'skip'`.
-- `src/core/parent-detection.ts`: pure functions for dispatch pattern matching + candidate scoring (exponential time decay, cwd subdirectory fallback, 24h candidate window, 15% ambiguity rejection).
+- Tier lifecycle: subagent sessions always stay `skip` (accessed through parent, not independently); unlinked children get tier reset to NULL for re-evaluation. `downgradeSubagentTiers()` on daemon startup fixes any incorrectly upgraded sessions.
+- Dispatch-pattern sessions without a parent get `agent_role = COALESCE(agent_role, 'dispatched')` → `tier = 'skip'`.
+- `src/core/parent-detection.ts`: `DETECTION_VERSION` (bump to trigger re-evaluation), dispatch patterns + `PROBE_REGEXES`, `scoreCandidate()` (4h half-life, CWD classification, soft end_time handling), `pickBestCandidate()` (best-score wins, no ambiguity rejection).
+- `src/core/db/maintenance.ts`: `backfillCodexOriginator()` (reads file first 16KB for history), `resetStaleDetections()` (version-gated re-evaluation), `backfillSuggestedParents()` (no end_time SQL filter — scoring handles it; includes hidden parents).
 - `src/core/db/parent-link-repo.ts`: validation (self-link, existence, depth=1), CRUD, child queries.
-- Swift UI: `ExpandableSessionCard` with disclosure triangle + `CompactChildRow`. Used in HomeView, SessionListView, TimelinePageView.
+- `src/core/db/session-repo.ts`: `countTodayParentSessions()` for menu bar badge.
+- Daemon startup order: `downgradeSubagentTiers → backfillParentLinks → resetStaleDetections → backfillCodexOriginator → backfillSuggestedParents`.
+- Swift UI: `ExpandableSessionCard` with disclosure triangle + `CompactChildRow`. Used in HomeView, SessionsPageView, SessionListView, TimelinePageView.
 - All three views filter `parent_session_id IS NULL AND suggested_parent_id IS NULL` for top-level display.
+- Menu bar badge: shows today's parent session count (not total), via `todayParents` field in daemon events.
 
 ### Daemon ↔ Swift Communication
-- Daemon writes JSON lines to stdout: `{ event: "ready", indexed: N, total: M }`
-- Swift `IndexerProcess` parses these events via pipe
+- Daemon writes JSON lines to stdout: `{ event: "ready", indexed: N, total: M, todayParents: P }`
+- Initial `ready.todayParents` must be emitted only after parent-link / tier backfills complete, so the menu bar badge starts with the authoritative parent-session count.
+- Swift `IndexerProcess` parses these events via pipe, exposes `totalSessions` and `todayParentSessions`
 - Daemon stderr → `os_log` (`com.engram.app:daemon`, viewable in Console.app)
 
 ## Conventions
@@ -141,6 +148,7 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - Xcode builds to: `~/Library/Developer/Xcode/DerivedData/Engram-*/Build/Products/{Debug,Release}/Engram.app`
 - Do NOT use `macos/build/` — stale cache, gitignored
 - Bundle includes: `Contents/Resources/node/{daemon.js, ...dist files, node_modules/}`
+- Deploy to `/Applications`: must `rm -rf` first, then `cp -R`. `cp -R` silently skips running binaries.
 
 ## Data
 
@@ -161,6 +169,7 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - Don't add Viking/OpenViking code — it was removed (2026-04-13). Use local sqlite-vec + FTS5 instead
 - Don't re-enable idle timeout for MCP server (`idleTimeoutMs` in index.ts) — causes premature disconnect
 - Don't add db methods directly to db.ts — add to the appropriate module in `src/core/db/`, facade in `database.ts` delegates
+- Don't upgrade subagent tier from `skip` — subagent content is accessed through parent sessions, not independently. `setParentSession()` must NOT modify tier
 
 ## Skill routing
 

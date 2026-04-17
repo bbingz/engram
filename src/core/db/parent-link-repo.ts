@@ -3,7 +3,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 import type { SessionInfo } from '../../adapters/types.js';
 import { pickReadableSessionPath } from '../session-path.js';
 
-export type LinkValidation =
+type LinkValidation =
   | 'ok'
   | 'self-link'
   | 'parent-not-found'

@@ -49,7 +49,7 @@
 | [Windsurf](https://codeium.com/windsurf) | gRPC + `~/.codeium/windsurf/` | ✅ 完整支持 |
 | [Cursor](https://cursor.sh) | `~/Library/Application Support/Cursor/…/state.vscdb` | ✅ 完整支持 |
 | [VS Code Copilot](https://code.visualstudio.com) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
-| [GitHub Copilot](https://github.com/features/copilot) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
+| [GitHub Copilot](https://github.com/features/copilot) | `~/.copilot/session-state/<uuid>/events.jsonl` | ✅ 完整支持 |
 | [iflow](https://iflow.ai) | `~/.iflow/projects/` | ✅ 完整支持 |
 | [Qwen Code](https://qwen.ai) | `~/.qwen/projects/` | ✅ 完整支持 |
 | [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | ✅ 完整支持 |
@@ -129,6 +129,8 @@ node dist/daemon.js
 
 Web UI 功能：
 - **会话列表**：按来源、项目、时间筛选，支持多选过滤和分页
+- **父子会话归组**：Claude Code → Codex/Gemini 等派发子会话自动挂到父会话下
+- **今日父会话 badge**：菜单栏徽标显示今天的顶层父会话数量，而不是全部子任务总数
 - **会话详情**：完整对话内容，Markdown 渲染
 - **混合搜索**：FTS 关键词 + 语义向量搜索，实时高亮
 - **用量统计**：按来源 / 项目 / 天 / 周分组统计
@@ -318,6 +320,9 @@ Engram 支持多台机器之间同步会话索引（pull-based）。
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `httpPort` | number | `3457` | Web UI 监听端口 |
+| `httpHost` | string | `"127.0.0.1"` | Web/API 绑定地址；默认仅 localhost |
+| `httpAllowCIDR` | string[] | `[]` | 当 `httpHost` 非 localhost 时必须提供；否则 daemon 会拒绝启动 |
+| `httpBearerToken` | string | auto | 非 localhost 首次启动时自动生成，用于写接口鉴权 |
 | `aiProvider` | string | `"openai"` | AI 摘要生成器：`openai` 或 `anthropic` |
 | `openaiApiKey` | string | — | OpenAI API Key（用于摘要生成和语义搜索） |
 | `openaiModel` | string | `"gpt-4o-mini"` | OpenAI 摘要模型 |
@@ -330,6 +335,8 @@ Engram 支持多台机器之间同步会话索引（pull-based）。
 | `syncEnabled` | boolean | `false` | 是否启用同步 |
 | `syncIntervalMinutes` | number | `10` | 同步间隔（分钟） |
 | `syncPeers` | array | `[]` | 同步节点列表 `[{ name, url }]` |
+
+> **安全说明：** 如果把 `httpHost` 设为 `0.0.0.0` 或其他非 localhost 地址，但没有配置 `httpAllowCIDR`，daemon 会直接拒绝启动，不会自动回退到 localhost。
 
 ## 添加新适配器
 
@@ -367,7 +374,7 @@ interface SessionAdapter {
 ## 开发
 
 ```bash
-npm test              # 运行测试（909 tests）
+npm test              # 运行测试（922 tests）
 npm run test:watch    # 监听模式
 npm run test:coverage # 覆盖率报告
 npm run build         # 编译 TypeScript -> dist/

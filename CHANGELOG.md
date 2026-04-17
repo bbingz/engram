@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- daemon 启动时的首个 `ready.todayParents` 事件现在在父子链接/层级回填后再发出，避免菜单栏 badge 启动瞬间出现旧值
+- `ThemeTests` 改为断言本地时区显示结果，不再把 UTC 字符串误当作本地时间
+- 文档同步到当前事实：`922 tests`、`save_insight` 默认 importance = `5`、非 localhost + 缺少 `httpAllowCIDR` 时 daemon 直接拒绝启动
+
 ## [0.0.1.1] - 2026-04-13
 
 ### Added
@@ -20,11 +27,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - **Bootstrap Factories**：`createMCPDeps()` / `createDaemonDeps()` / `createShutdownHandler()` 统一初始化
 
 ### Changed
-- **测试覆盖率提升**：767 → 909 tests
+- **测试覆盖率提升**：767 → 922 tests
 
 ### Fixed
 - MCP Server idle timeout 导致提前断连（已禁用 `idleTimeoutMs`）
-- `importance` 默认值全局统一为 3
+- `importance` 默认值全局统一为 5
 
 ---
 

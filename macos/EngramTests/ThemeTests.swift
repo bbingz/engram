@@ -3,6 +3,13 @@ import XCTest
 import SwiftUI
 @testable import Engram
 
+private let expectedLocalTimeFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "HH:mm:ss"
+    formatter.timeZone = .current
+    return formatter
+}()
+
 final class ThemeTests: XCTestCase {
 
     // MARK: - Color constants
@@ -43,14 +50,21 @@ final class ThemeTests: XCTestCase {
     // MARK: - formatTimestamp
 
     func testFormatTimestampExtractsTimeFromISO8601() {
-        let result = formatTimestamp("2026-03-20T14:30:45Z")
-        XCTAssertEqual(result, "14:30:45")
+        let timestamp = "2026-03-20T14:30:45Z"
+        let result = formatTimestamp(timestamp)
+        let date = ISO8601DateFormatter().date(from: timestamp)
+
+        XCTAssertEqual(result, date.map { expectedLocalTimeFormatter.string(from: $0) })
     }
 
     func testFormatTimestampWithMilliseconds() {
-        let result = formatTimestamp("2026-03-20T14:30:45.123Z")
-        // prefix(8) of "14:30:45.123Z" = "14:30:45"
-        XCTAssertEqual(result, "14:30:45")
+        let timestamp = "2026-03-20T14:30:45.123Z"
+        let result = formatTimestamp(timestamp)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = formatter.date(from: timestamp)
+
+        XCTAssertEqual(result, date.map { expectedLocalTimeFormatter.string(from: $0) })
     }
 
     func testFormatTimestampHandlesMalformedInput() {

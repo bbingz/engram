@@ -1,6 +1,6 @@
 # Engram Privacy Policy
 
-**Last updated**: 2026-04-13
+**Last updated**: 2026-04-16
 
 ## Overview
 
@@ -22,12 +22,12 @@ Engram reads session files created by AI coding tools on your local machine:
 | Cursor | `~/Library/Application Support/Cursor/` | Read-only |
 | VS Code | `~/Library/Application Support/Code/` | Read-only |
 | Cline | `~/.cline/data/tasks/` | Read-only |
-| Copilot | `~/.copilot/session-state/` | Read-only |
-| OpenCode | `~/.local/share/opencode/` | Read-only |
+| Copilot | `~/.copilot/session-state/<uuid>/events.jsonl` | Read-only |
+| OpenCode | `~/.local/share/opencode/opencode.db` | Read-only |
 | Windsurf | `~/.codeium/windsurf/` | Read-only |
-| Kimi | `~/.kimi/` | Read-only |
-| Qwen | `~/.qwen/` | Read-only |
-| iflow | `~/.iflow/` | Read-only |
+| Kimi | `~/.kimi/sessions/` | Read-only |
+| Qwen | `~/.qwen/projects/` | Read-only |
+| iflow | `~/.iflow/projects/` | Read-only |
 | Antigravity | `~/.gemini/antigravity/` | Read-only |
 
 Engram never modifies your AI tool session files.

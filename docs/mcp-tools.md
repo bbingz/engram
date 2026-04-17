@@ -195,7 +195,7 @@ Save an important insight, decision, or lesson learned for future retrieval. Use
 | content | string | **yes** | The insight or knowledge to save |
 | wing | string | no | Project or domain name |
 | room | string | no | Sub-area within the project |
-| importance | number | no | Importance level 0-5. Default 3 |
+| importance | number | no | Importance level 0-5. Default 5 |
 
 **Notes:** Performs semantic deduplication: warns if a similar insight already exists (cosine similarity > 85%). Saves both as a vector embedding (for semantic search) and as text (for FTS keyword search). If no embedding provider is configured, saves as text-only with a warning. Importance is clamped to 0-5 range by schema validation.
 

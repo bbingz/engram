@@ -3,7 +3,7 @@
 
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-export interface LocalTimeRange {
+interface LocalTimeRange {
   startUtcIso: string;
   endUtcIso: string;
   monthStartUtcIso: string;

@@ -64,7 +64,7 @@ const DEDUP_THRESHOLD = 0.85;
  * Delete an insight from both text (insights+FTS) and vector (memory_insights+vec_insights) stores.
  * Callers don't need to remember to delete from both — this is the single entry point.
  */
-export function deleteInsight(
+function _deleteInsight(
   id: string,
   deps: { db?: Database; vecStore?: VectorStore | null },
 ): boolean {

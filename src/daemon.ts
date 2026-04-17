@@ -16,6 +16,7 @@ import {
   type FileSettings,
   readFileSettings,
 } from './core/config.js';
+import { runInitialScan } from './core/daemon-startup.js';
 import { startGitProbeLoop } from './core/git-probe.js';
 import { LiveSessionMonitor, type WatchDir } from './core/live-sessions.js';
 import { populateMockData } from './core/mock-data.js';
@@ -126,106 +127,16 @@ if (process.argv.includes('--mock')) {
 }
 
 // Initial full scan
-indexer
-  .indexAll()
-  .then(async (indexed) => {
-    const total = db.countSessions();
-    emit({ event: 'ready', indexed, total });
-
-    // Backfill assistant/system counts for sessions indexed before this feature
-    try {
-      const backfilled = await indexer.backfillCounts();
-      if (backfilled > 0) {
-        emit({ event: 'backfill_counts', backfilled });
-      }
-    } catch (err) {
-      log.warn('backfill counts failed', {}, err);
-    }
-
-    // Backfill costs and tool analytics for sessions without cost data
-    try {
-      const costBackfilled = await indexer.backfillCosts();
-      if (costBackfilled > 0) {
-        emit({ event: 'backfill', type: 'costs', count: costBackfilled });
-      }
-    } catch (err) {
-      log.warn('backfill costs failed', {}, err);
-    }
-
-    // Backfill quality scores for sessions without scores
-    try {
-      const scoreBackfilled = db.backfillScores();
-      if (scoreBackfilled > 0) {
-        emit({ event: 'backfill', type: 'scores', count: scoreBackfilled });
-      }
-    } catch (err) {
-      log.warn('backfill scores failed', {}, err);
-    }
-
-    // DB maintenance: dedup, optimize FTS, VACUUM if fragmented, reconcile insights
-    try {
-      const deduped = db.deduplicateFilePaths();
-      if (deduped > 0)
-        emit({ event: 'db_maintenance', action: 'dedup', removed: deduped });
-      db.optimizeFts();
-      const vacuumed = db.vacuumIfNeeded(15); // VACUUM if >15% fragmentation
-      if (vacuumed) emit({ event: 'db_maintenance', action: 'vacuum' });
-      const reconciled = db.reconcileInsights(log);
-      if (reconciled.resetEmbedding > 0 || reconciled.orphanedVector > 0) {
-        emit({
-          event: 'db_maintenance',
-          action: 'reconcile_insights',
-          ...reconciled,
-        });
-      }
-    } catch (err) {
-      log.warn('db maintenance failed', {}, err);
-    }
-
-    // Backfill parent session links
-    try {
-      const parentLinks = db.backfillParentLinks();
-      if (parentLinks.linked > 0 || parentLinks.tierUpgraded > 0) {
-        emit({
-          event: 'backfill',
-          type: 'parent_links',
-          linked: parentLinks.linked,
-          tierUpgraded: parentLinks.tierUpgraded,
-        });
-      }
-      const suggestions = db.backfillSuggestedParents();
-      if (suggestions.suggested > 0) {
-        emit({
-          event: 'backfill',
-          type: 'suggested_parents',
-          checked: suggestions.checked,
-          suggested: suggestions.suggested,
-        });
-      }
-    } catch (err) {
-      log.warn('parent link backfill failed', {}, err);
-    }
-
-    try {
-      const jobSummary = await indexJobRunner.runRecoverableJobs();
-      if (jobSummary.completed > 0 || jobSummary.notApplicable > 0) {
-        emit({ event: 'index_jobs_recovered', ...jobSummary });
-      }
-      // Promote text-only insights to embedded when provider is available
-      const promoted = await indexJobRunner.backfillInsightEmbeddings();
-      if (promoted > 0) {
-        emit({ event: 'insights_promoted', count: promoted });
-      }
-    } catch (err) {
-      log.warn('index job recovery failed', {}, err);
-    }
-
-    // Start usage probe collection after indexing is ready
-    usageCollector.start();
-  })
-  .catch((err) => {
-    emit({ event: 'error', message: String(err) });
-  });
+runInitialScan({
+  emit,
+  log,
+  usageCollector,
+  indexer,
+  indexJobRunner,
+  db,
+}).catch((err) => {
+  emit({ event: 'error', message: String(err) });
+});
 
 // Auto-summary manager — lazily created when settings enable it
 let autoSummary: AutoSummaryManager | undefined;
@@ -296,6 +207,7 @@ function getAutoSummary(): AutoSummaryManager | undefined {
               sessionId,
               summary,
               total: db.countSessions(),
+              todayParents: db.countTodayParentSessions(),
             });
           }
         } catch (err) {
@@ -310,7 +222,11 @@ function getAutoSummary(): AutoSummaryManager | undefined {
 // File watcher (persistent — keeps process alive)
 const watcher = startWatcher(adapters, indexer, {
   onIndexed: (sessionId, messageCount, tier) => {
-    emit({ event: 'watcher_indexed', total: db.countSessions() });
+    emit({
+      event: 'watcher_indexed',
+      total: db.countSessions(),
+      todayParents: db.countTodayParentSessions(),
+    });
     if (tier === 'premium') {
       getAutoSummary()?.onSessionIndexed(sessionId, messageCount);
     }
@@ -374,7 +290,8 @@ const rescanTimer = setInterval(async () => {
             : 0;
         if (indexed > 0) {
           const total = db.countSessions();
-          emit({ event: 'rescan', indexed, total });
+          const todayParents = db.countTodayParentSessions();
+          emit({ event: 'rescan', indexed, total, todayParents });
           indexJobRunner.runRecoverableJobs().catch(() => {});
         }
       } catch (err) {
@@ -399,6 +316,7 @@ async function syncAndEmit(): Promise<void> {
       results,
       totalPulled,
       total: db.countSessions(),
+      todayParents: db.countTodayParentSessions(),
     });
     indexJobRunner.runRecoverableJobs().catch(() => {}); // intentional: fire-and-forget background job
   }

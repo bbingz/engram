@@ -13,5 +13,10 @@ macos/Engram.xcodeproj/project.xcworkspace/xcuserdata/
 # Coverage
 coverage/
 
+# Local investigation / generated fixture noise
+.tmp-parent-detection.mjs
+tests/fixtures/antigravity/cache/*.jsonl
+!tests/fixtures/antigravity/cache/conv-001.jsonl
+
 # macOS
 .DS_Store

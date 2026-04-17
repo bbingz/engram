@@ -44,7 +44,7 @@ export function ensureDataDirs(): string {
   return ENGRAM_DIR;
 }
 
-export function createAdapters(): SessionAdapter[] {
+function createAdapters(): SessionAdapter[] {
   return [
     new CodexAdapter(),
     new ClaudeCodeAdapter(),
@@ -84,7 +84,7 @@ interface VectorDepsOptions {
   audit?: AiAuditWriter;
 }
 
-export function initVectorDeps(
+function initVectorDeps(
   db: Database,
   opts: VectorDepsOptions = {},
 ): VectorDeps | null {
@@ -112,7 +112,7 @@ export function initVectorDeps(
 
 // --- MCP Dependencies Factory ---
 
-export interface MCPDeps {
+interface MCPDeps {
   db: Database;
   adapters: SessionAdapter[];
   adapterMap: Record<string, SessionAdapter>;
@@ -186,7 +186,7 @@ export function createMCPDeps(opts?: { dbPath?: string }): MCPDeps {
 
 // --- Daemon Dependencies Factory ---
 
-export interface DaemonCoreDeps extends MCPDeps {
+interface DaemonCoreDeps extends MCPDeps {
   log: Logger;
   logWriter: LogWriter;
   traceWriter: TraceWriter;
