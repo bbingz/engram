@@ -30,6 +30,7 @@ final class SessionModelTests: XCTestCase {
         systemMessageCount: Int = 1,
         summary: String? = "A test summary",
         filePath: String = "/tmp/test.jsonl",
+        sourceLocator: String? = nil,
         sizeBytes: Int = 50000,
         indexedAt: String = "2026-03-20T12:00:00Z",
         agentRole: String? = nil,
@@ -54,6 +55,7 @@ final class SessionModelTests: XCTestCase {
             "system_message_count": systemMessageCount,
             "summary": summary,
             "file_path": filePath,
+            "source_locator": sourceLocator,
             "size_bytes": sizeBytes,
             "indexed_at": indexedAt,
             "agent_role": agentRole,
@@ -104,6 +106,26 @@ final class SessionModelTests: XCTestCase {
     func testDisplayTitleSkipsEmptyCustomName() throws {
         let session = makeSession(summary: nil, customName: "", generatedTitle: "Fallback")
         XCTAssertEqual(session.displayTitle, "Fallback")
+    }
+
+    // MARK: - effectiveFilePath tests
+
+    /// effectiveFilePath returns filePath when it is non-empty
+    func testEffectiveFilePathUsesFilePath() throws {
+        let session = makeSession(filePath: "/tmp/test.jsonl", sourceLocator: "/other/path.jsonl")
+        XCTAssertEqual(session.effectiveFilePath, "/tmp/test.jsonl")
+    }
+
+    /// effectiveFilePath falls back to sourceLocator when filePath is empty
+    func testEffectiveFilePathFallsBackToSourceLocator() throws {
+        let session = makeSession(filePath: "", sourceLocator: "/Users/bing/.codex/sessions/test.jsonl")
+        XCTAssertEqual(session.effectiveFilePath, "/Users/bing/.codex/sessions/test.jsonl")
+    }
+
+    /// effectiveFilePath returns empty when both are empty
+    func testEffectiveFilePathBothEmpty() throws {
+        let session = makeSession(filePath: "", sourceLocator: nil)
+        XCTAssertEqual(session.effectiveFilePath, "")
     }
 
     // MARK: - formattedSize tests

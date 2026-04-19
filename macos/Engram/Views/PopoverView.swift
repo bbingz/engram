@@ -82,7 +82,7 @@ struct PopoverView: View {
     private var statsSection: some View {
         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
             GridRow {
-                statRow("Sessions", "\(indexer.totalSessions)")
+                statRow("Today", "\(indexer.todayParentSessions)")
                 statRow("Sources", "\(sourceCount)")
             }
             GridRow {

@@ -1,7 +1,7 @@
 // src/adapters/gemini-cli.ts
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type {
   Message,
   SessionAdapter,
@@ -109,6 +109,21 @@ export class GeminiCliAdapter implements SessionAdapter {
         ? extractText(userMessages[0].content)
         : undefined;
 
+      // Try reading sidecar file written by gemini-plugin-cc for deterministic linking
+      let parentSessionId: string | undefined;
+      let originator: string | undefined;
+      try {
+        const sidecarPath = join(
+          dirname(filePath),
+          `${session.sessionId}.engram.json`,
+        );
+        const sidecar = JSON.parse(await readFile(sidecarPath, 'utf8'));
+        if (sidecar.parentSessionId) parentSessionId = sidecar.parentSessionId;
+        if (sidecar.originator) originator = sidecar.originator;
+      } catch {
+        // No sidecar — fall through to heuristic detection
+      }
+
       return {
         id: session.sessionId,
         source: 'gemini-cli',
@@ -124,6 +139,9 @@ export class GeminiCliAdapter implements SessionAdapter {
         summary: firstUserText?.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
+        parentSessionId,
+        originator,
+        agentRole: originator === 'claude-code' ? 'dispatched' : undefined,
       };
     } catch {
       return null;

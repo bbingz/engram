@@ -17,6 +17,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let systemMessageCount: Int
     let summary: String?
     let filePath: String
+    let sourceLocator: String?
     let sizeBytes: Int
     let indexedAt: String
     let agentRole: String?
@@ -38,6 +39,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case assistantMessageCount = "assistant_message_count"
         case systemMessageCount    = "system_message_count"
         case filePath         = "file_path"
+        case sourceLocator    = "source_locator"
         case sizeBytes        = "size_bytes"
         case indexedAt        = "indexed_at"
         case agentRole        = "agent_role"
@@ -49,6 +51,12 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case parentSessionId  = "parent_session_id"
         case suggestedParentId = "suggested_parent_id"
         case linkSource       = "link_source"
+    }
+
+    /// Prefer filePath; fall back to sourceLocator when filePath is empty.
+    var effectiveFilePath: String {
+        if filePath.isEmpty, let sl = sourceLocator, !sl.isEmpty { return sl }
+        return filePath
     }
 
     var displayTitle: String {

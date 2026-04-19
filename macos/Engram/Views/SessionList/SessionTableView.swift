@@ -93,7 +93,7 @@ struct SessionTableView: View {
                             }
                         }
                         Button("Reveal Session Log") {
-                            NSWorkspace.shared.selectFile(session.filePath, inFileViewerRootedAtPath: "")
+                            NSWorkspace.shared.selectFile(session.effectiveFilePath, inFileViewerRootedAtPath: "")
                         }
                         Divider()
                         Button("Copy Session ID") {

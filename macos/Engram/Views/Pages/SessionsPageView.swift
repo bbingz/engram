@@ -9,8 +9,11 @@ private let isoFormatter: ISO8601DateFormatter = {
 
 struct SessionsPageView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(DaemonClient.self) var daemonClient
 
     @State private var sessions: [Session] = []
+    @State private var confirmedCounts: [String: Int] = [:]
+    @State private var suggestedCounts: [String: Int] = [:]
     @State private var totalCount = 0
     @State private var totalMessages = 0
     @State private var timeFilter = "All Time"
@@ -57,9 +60,34 @@ struct SessionsPageView: View {
                 } else {
                     LazyVStack(spacing: 4) {
                         ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-                            SessionCard(session: session) {
-                                NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
-                            }
+                            ExpandableSessionCard(
+                                session: session,
+                                confirmedChildCount: confirmedCounts[session.id] ?? 0,
+                                suggestedChildCount: suggestedCounts[session.id] ?? 0,
+                                onTap: {
+                                    NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                                },
+                                onChildTap: { child in
+                                    NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
+                                },
+                                onConfirmSuggestion: { child in
+                                    Task {
+                                        try? await daemonClient.confirmSuggestion(sessionId: child.id)
+                                        await loadData()
+                                    }
+                                },
+                                onDismissSuggestion: { child in
+                                    Task {
+                                        if let suggestedId = child.suggestedParentId {
+                                            try? await daemonClient.dismissSuggestion(
+                                                sessionId: child.id,
+                                                suggestedParentId: suggestedId
+                                            )
+                                        }
+                                        await loadData()
+                                    }
+                                }
+                            )
                             .accessibilityIdentifier("sessions_row_\(index)")
                         }
                     }
@@ -82,10 +110,16 @@ struct SessionsPageView: View {
             let db = self.db
             let sources: Set<String> = sourceFilter.map { [$0] } ?? []
             let since = sinceDate(for: timeFilter)
-            let loaded = try await Task.detached {
-                try db.listSessions(sources: sources, since: since, subAgent: false, limit: 200)
+            let data = try await Task.detached {
+                let loaded = try db.listSessions(sources: sources, since: since, subAgent: false, limit: 200)
+                let parentIds = loaded.map(\.id)
+                let confirmed = try db.childCount(parentIds: parentIds)
+                let suggested = try db.suggestedChildCount(parentIds: parentIds)
+                return (loaded, confirmed, suggested)
             }.value
-            sessions = loaded
+            sessions = data.0
+            confirmedCounts = data.1
+            suggestedCounts = data.2
             totalCount = sessions.count
             totalMessages = sessions.reduce(0) { $0 + $1.messageCount }
             availableSources = Array(Set(sessions.map(\.source))).sorted()

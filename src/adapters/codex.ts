@@ -85,6 +85,11 @@ export class CodexAdapter implements SessionAdapter {
 
       const payload = meta as Record<string, unknown>;
       const agentRole = payload.agent_role as string | undefined;
+      const originator = payload.originator as string | undefined;
+      // If Claude Code launched this session and no explicit role was set,
+      // mark it as dispatched so it skips dispatch-pattern matching in backfill.
+      const effectiveRole =
+        agentRole || (originator === 'Claude Code' ? 'dispatched' : undefined);
       return {
         id: payload.id as string,
         source: 'codex',
@@ -100,7 +105,8 @@ export class CodexAdapter implements SessionAdapter {
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
-        agentRole: agentRole || undefined,
+        agentRole: effectiveRole,
+        originator: originator || undefined,
       };
     } catch {
       return null;

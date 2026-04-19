@@ -386,6 +386,7 @@ struct SearchAPISession: Decodable {
             systemMessageCount: systemMessageCount ?? 0,
             summary: summary,
             filePath: filePath ?? "",
+            sourceLocator: nil,
             sizeBytes: sizeBytes ?? 0,
             indexedAt: indexedAt ?? "",
             agentRole: agentRole,

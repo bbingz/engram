@@ -288,31 +288,8 @@ struct SessionDetailView: View {
             messages = []
             indexedMessages = []
             typeCounts = [:]
-            let path = session.filePath
+            var effectivePath = session.effectiveFilePath
             let source = session.source
-            // If filePath is empty, try to find the session file by scanning known directories
-            var effectivePath = path
-            if effectivePath.isEmpty {
-                let home = NSHomeDirectory()
-                switch source {
-                case "claude-code":
-                    effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.claude/projects") ?? ""
-                case "codex":
-                    effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.codex/sessions") ?? ""
-                case "kimi":
-                    effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.kimi/chats") ?? ""
-                case "copilot":
-                    // Copilot stores as {sessionId}/events.jsonl
-                    let copilotDirect = home + "/.copilot/session-state/\(session.id)/events.jsonl"
-                    if FileManager.default.fileExists(atPath: copilotDirect) {
-                        effectivePath = copilotDirect
-                    } else {
-                        effectivePath = findSessionFile(sessionId: session.id, baseDir: home + "/.copilot/session-state") ?? ""
-                    }
-                default:
-                    break
-                }
-            }
             // Resolve relative paths against the DB's parent directory (test fixtures)
             if !effectivePath.isEmpty && !effectivePath.hasPrefix("/") {
                 let dbDir = (db.path as NSString).deletingLastPathComponent
@@ -417,43 +394,6 @@ struct SessionDetailView: View {
         }
     }
 
-    /// Find a session file by scanning a base directory recursively (up to 3 levels)
-    func findSessionFile(sessionId: String, baseDir: String) -> String? {
-        let fm = FileManager.default
-        let extensions = ["jsonl", "json", "ndjson"]
-
-        // Quick check: direct file at baseDir/{sessionId}.{ext}
-        for ext in extensions {
-            let direct = (baseDir as NSString).appendingPathComponent("\(sessionId).\(ext)")
-            if fm.fileExists(atPath: direct) { return direct }
-        }
-
-        // Recursive scan up to 3 levels deep
-        guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: baseDir),
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
-
-        var depth = 0
-        for case let fileURL as URL in enumerator {
-            // Limit depth
-            if enumerator.level > 3 { enumerator.skipDescendants(); continue }
-
-            let name = fileURL.lastPathComponent
-            // Match: filename contains sessionId
-            if name.contains(sessionId) {
-                let ext = fileURL.pathExtension
-                if extensions.contains(ext) {
-                    return fileURL.path
-                }
-            }
-
-            depth += 1
-            if depth > 5000 { break } // safety limit
-        }
-        return nil
-    }
 
     func performHandoff() {
         Task {

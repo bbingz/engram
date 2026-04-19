@@ -35,6 +35,7 @@ export interface SessionInfo {
   sizeBytes: number;
   indexedAt?: string; // ISO 8601 — when this session was last indexed (set by DB)
   agentRole?: string; // e.g. "worker" | "awaiter" for Codex; "subagent" for claude-code
+  originator?: string; // e.g. "Claude Code" — the tool that launched this session
   origin?: string; // machine/device identifier for sync (default: 'local')
   summaryMessageCount?: number; // message count at last summary generation (for auto-refresh)
   tier?: string; // session tier: 'skip' | 'lite' | 'normal' | 'premium'

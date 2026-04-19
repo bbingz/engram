@@ -6,6 +6,7 @@ struct DaemonEvent: Decodable {
     let event: String        // "ready" | "indexed" | "error" | "web_ready" | "summary_generated" | "db_maintenance"
     let indexed: Int?
     let total: Int?
+    let todayParents: Int?
     let message: String?
     let sessionId: String?
     let summary: String?
@@ -49,6 +50,7 @@ final class IndexerProcess {
 
     var status: Status = .stopped
     var totalSessions: Int = 0
+    var todayParentSessions: Int = 0
     var lastSummarySessionId: String?
     var port: Int?
     var usageData: [UsageItem] = []
@@ -152,12 +154,18 @@ final class IndexerProcess {
                 totalSessions = n
                 status = .running(total: n)
             }
+            if let tp = event.todayParents {
+                todayParentSessions = tp
+            }
         case "web_ready":
             port = event.port
         case "summary_generated":
             if let n = event.total {
                 totalSessions = n
                 status = .running(total: n)
+            }
+            if let tp = event.todayParents {
+                todayParentSessions = tp
             }
             lastSummarySessionId = event.sessionId
         case "error":

@@ -279,6 +279,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private func observeTotalSessions() {
         withObservationTracking {
             _ = indexer.totalSessions
+            _ = indexer.todayParentSessions
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 self?.updateBadge()
@@ -297,18 +298,18 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
 
     private func updateBadge() {
-        let total = indexer.totalSessions
+        let today = indexer.todayParentSessions
         Task {
             do {
                 let response: LiveSessionsResponse = try await daemonClient.fetch("/api/live")
                     let live = response.sessions.filter { $0.activityLevel == "active" }
                 if live.isEmpty {
-                    self.statusItem.button?.title = total > 0 ? " \(total)" : ""
+                    self.statusItem.button?.title = today > 0 ? " \(today)" : ""
                 } else {
-                    self.statusItem.button?.title = " \(total) \u{25CF} \(live.count)"
+                    self.statusItem.button?.title = " \(today) \u{25CF} \(live.count)"
                 }
             } catch {
-                self.statusItem.button?.title = total > 0 ? " \(total)" : ""
+                self.statusItem.button?.title = today > 0 ? " \(today)" : ""
             }
         }
     }

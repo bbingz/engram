@@ -181,7 +181,7 @@ class MCPTools {
             "model": s.model, "summary": s.summary,
             "messageCount": s.messageCount,
             "userMessageCount": s.userMessageCount,
-            "filePath": s.filePath, "sizeBytes": s.sizeBytes,
+            "filePath": s.effectiveFilePath, "sizeBytes": s.sizeBytes,
         ]
         let clean = obj.compactMapValues { $0 }
         let data = try? JSONSerialization.data(withJSONObject: clean, options: .prettyPrinted)
