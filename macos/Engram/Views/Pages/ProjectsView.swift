@@ -12,6 +12,9 @@ struct ProjectsView: View {
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
     @State private var selectedProject: DatabaseManager.ProjectGroup? = nil
     @State private var isLoading = true
+    @State private var renameTarget: String?
+    @State private var archiveTarget: String?
+    @State private var showUndoSheet = false
 
     private var activeCount: Int {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
@@ -55,41 +58,81 @@ struct ProjectsView: View {
                         }
                     }
                 } else {
-                    SectionHeader(icon: "folder", title: "Projects")
+                    HStack {
+                        SectionHeader(icon: "folder", title: "Projects")
+                        Spacer()
+                        Button {
+                            showUndoSheet = true
+                        } label: {
+                            Label("Undo Recent Move…", systemImage: "arrow.uturn.backward")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("projects_undoButton")
+                    }
                     if projectGroups.isEmpty && !isLoading {
                         EmptyState(icon: "folder", title: "No projects", message: "Sessions without project associations won't appear here")
                             .accessibilityIdentifier("projects_emptyState")
                     } else {
                         LazyVStack(spacing: 4) {
                             ForEach(Array(projectGroups.enumerated()), id: \.element.id) { index, group in
-                                Button(action: { selectedProject = group }) {
-                                    HStack {
-                                        Text(group.project.split(separator: "/").last.map(String.init) ?? group.project)
-                                            .font(.callout)
-                                            .foregroundStyle(Theme.primaryText)
-                                        Text(group.project)
+                                HStack(spacing: 0) {
+                                    Button(action: { selectedProject = group }) {
+                                        HStack {
+                                            Text(group.project.split(separator: "/").last.map(String.init) ?? group.project)
+                                                .font(.callout)
+                                                .foregroundStyle(Theme.primaryText)
+                                            Text(group.project)
+                                                .font(.caption)
+                                                .foregroundStyle(Theme.tertiaryText)
+                                                .lineLimit(1)
+                                            Spacer()
+                                            Text("\(group.sessionCount)")
+                                                .font(.caption)
+                                                .foregroundStyle(Theme.secondaryText)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 2)
+                                                .background(Theme.surfaceHighlight)
+                                                .clipShape(Capsule())
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 10)
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    Menu {
+                                        Button {
+                                            renameTarget = group.project
+                                        } label: {
+                                            Label("Rename…", systemImage: "pencil")
+                                        }
+                                        Button {
+                                            archiveTarget = group.project
+                                        } label: {
+                                            Label("Archive…", systemImage: "archivebox")
+                                        }
+                                    } label: {
+                                        Image(systemName: "ellipsis")
                                             .font(.caption)
                                             .foregroundStyle(Theme.tertiaryText)
-                                            .lineLimit(1)
-                                        Spacer()
-                                        Text("\(group.sessionCount)")
-                                            .font(.caption)
-                                            .foregroundStyle(Theme.secondaryText)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 2)
-                                            .background(Theme.surfaceHighlight)
-                                            .clipShape(Capsule())
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption2)
-                                            .foregroundStyle(Theme.tertiaryText.opacity(0.5))
+                                            .frame(width: 22, height: 22)
+                                            .contentShape(Rectangle())
                                     }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 10)
-                                    .background(Theme.surface)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .menuStyle(.borderlessButton)
+                                    .menuIndicator(.hidden)
+                                    .fixedSize()
+                                    .padding(.trailing, 8)
+                                    .accessibilityIdentifier("projects_menu_\(index)")
+
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(Theme.tertiaryText.opacity(0.5))
+                                        .padding(.trailing, 12)
                                 }
-                                .buttonStyle(.plain)
+                                .background(Theme.surface)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("projects_group_\(index)")
                             }
                         }
@@ -101,6 +144,24 @@ struct ProjectsView: View {
         }
         .accessibilityIdentifier("projects_container")
         .task { await loadData() }
+        .sheet(item: Binding(
+            get: { renameTarget.map(SheetWrappedString.init) },
+            set: { renameTarget = $0?.value }
+        )) { wrapped in
+            RenameSheet(projectName: wrapped.value)
+        }
+        .sheet(item: Binding(
+            get: { archiveTarget.map(SheetWrappedString.init) },
+            set: { archiveTarget = $0?.value }
+        )) { wrapped in
+            ArchiveSheet(projectName: wrapped.value)
+        }
+        .sheet(isPresented: $showUndoSheet) {
+            UndoSheet()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .projectsDidChange)) { _ in
+            Task { await loadData() }
+        }
     }
 
     private func loadData() async {
@@ -108,4 +169,11 @@ struct ProjectsView: View {
         defer { isLoading = false }
         do { projectGroups = try db.listSessionsByProject() } catch { print("ProjectsView error:", error) }
     }
+}
+
+/// Wrap a String so it can drive `.sheet(item:)` which requires Identifiable.
+/// Used because the project name IS the identifier for the sheet presentation.
+private struct SheetWrappedString: Identifiable {
+    let value: String
+    var id: String { value }
 }
