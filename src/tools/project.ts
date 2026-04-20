@@ -209,7 +209,7 @@ export async function handleProjectArchive(
     // sees accurate git-dirty info before committing to the archive.
     const git = await checkGitDirty(src);
     const suggestion = await suggestArchiveTarget(src, { forceCategory });
-    const plan = buildDryRunPlan(
+    const plan = await buildDryRunPlan(
       {
         src,
         dst: suggestion.dst,

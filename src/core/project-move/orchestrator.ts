@@ -182,9 +182,12 @@ export async function runProjectMove(
     );
   }
 
-  // Dry-run returns a plan without side effects (other than the git probe)
+  // Dry-run returns a plan without side effects (other than the git probe +
+  // a read-only scan for impact preview). Previously a stub with 0/0 counts,
+  // surfaced by the Swift UI "Dry-run impact" always reading 0 regardless
+  // of reality — fixed by actually scanning the sources without patching.
   if (opts.dryRun) {
-    return buildDryRunPlan(opts, git);
+    return await buildDryRunPlan(opts, git);
   }
 
   const migrationId = randomUUID();
@@ -677,21 +680,100 @@ async function compensate(
   return report;
 }
 
-/** Exported so archive / batch can reuse the same dry-run shape without
- *  duplicating the field list (Codex Q4). */
-export function buildDryRunPlan(
-  _opts: RunProjectMoveOpts,
+/**
+ * Build the dry-run plan — shape matches a committed PipelineResult but
+ * state='dry-run' and no FS side effects. Performs a read-only scan so the
+ * UI "Dry-run impact" box reports the actual file / occurrence count the
+ * user would see if they ran the move. Exported so archive / batch can
+ * reuse the same shape (Codex Q4).
+ *
+ * Large-file safety: occurrence counting reads each matched file into
+ * memory; files above DRY_RUN_READ_CAP are counted as 1 occurrence without
+ * reading to avoid OOM on pathological session stores.
+ */
+const DRY_RUN_READ_CAP = 50 * 1024 * 1024; // 50 MiB
+
+export async function buildDryRunPlan(
+  opts: RunProjectMoveOpts,
   git: GitDirtyStatus,
-): PipelineResult {
+): Promise<PipelineResult> {
+  const { src, dst } = opts;
+  const roots = getSourceRoots(opts.home);
+
+  // Same dir-rename plan shape as the main pipeline — lets the UI show which
+  // per-project dirs would be renamed even though we don't touch them here.
+  const renamedDirs: DirRenamePlan[] = [];
+  for (const root of roots) {
+    if (!root.encodeProjectDir) continue;
+    const oldName = root.encodeProjectDir(src);
+    const newName = root.encodeProjectDir(dst);
+    if (oldName === newName) continue;
+    const plan: DirRenamePlan = {
+      sourceId: root.id,
+      oldDir: join(root.path, oldName),
+      newDir: join(root.path, newName),
+    };
+    try {
+      await stat(plan.oldDir);
+      renamedDirs.push(plan);
+    } catch {
+      /* oldDir absent — this source has no dir for this project */
+    }
+  }
+
+  // Scan every source root for files referencing `src`. Count via byte-level
+  // split on the needle so the reported "occurrences" matches what the real
+  // patcher would rewrite.
+  const { readFile } = await import('node:fs/promises');
+  const perSource: PerSourceStats[] = [];
+  let totalFilesPatched = 0;
+  let totalOccurrences = 0;
+  const srcBuf = Buffer.from(src, 'utf8');
+
+  for (const root of roots) {
+    const hits = await findReferencingFiles(root.path, src);
+    let filesPatched = 0;
+    let occurrences = 0;
+    for (const file of hits) {
+      filesPatched++;
+      try {
+        const st = await stat(file);
+        if (st.size > DRY_RUN_READ_CAP) {
+          occurrences += 1; // file too large to scan cheaply
+          continue;
+        }
+        const buf = await readFile(file);
+        let idx = buf.indexOf(srcBuf);
+        while (idx !== -1) {
+          occurrences++;
+          idx = buf.indexOf(srcBuf, idx + srcBuf.length);
+        }
+      } catch {
+        // unreadable file — still counted in filesPatched
+      }
+    }
+    perSource.push({
+      id: root.id,
+      root: root.path,
+      filesPatched,
+      occurrences,
+      issues: [],
+    });
+    totalFilesPatched += filesPatched;
+    totalOccurrences += occurrences;
+  }
+
+  const ccDirRenamed = renamedDirs.some((d) => d.sourceId === 'claude-code');
+
   return {
     migrationId: 'dry-run',
     state: 'dry-run',
     moveStrategy: 'skipped',
-    ccDirRenamed: false,
-    renamedDirs: [],
-    perSource: [],
-    totalFilesPatched: 0,
-    totalOccurrences: 0,
+    ccDirRenamed,
+    renamedDirs,
+    perSource,
+    totalFilesPatched,
+    totalOccurrences,
     sessionsUpdated: 0,
     aliasCreated: false,
     review: { own: [], other: [] },
