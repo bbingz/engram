@@ -156,6 +156,13 @@ export async function runProjectMove(
   opts: RunProjectMoveOpts,
 ): Promise<PipelineResult> {
   const { src, dst } = opts;
+  if (!src || !dst) {
+    // Empty paths are a caller bug; catch before downstream code (the
+    // dry-run scanner would infinite-loop on an empty needle).
+    throw new Error(
+      `runProjectMove: src and dst must be non-empty absolute paths (got src="${src}", dst="${dst}")`,
+    );
+  }
   if (src === dst) {
     throw new Error(`runProjectMove: src === dst (${src})`);
   }

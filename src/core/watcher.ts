@@ -90,8 +90,10 @@ export function startWatcher(
     // ever yielding a session to index. ENFILE on machines with large
     // Gemini tmp trees was the trigger (see e.g. .gemini/tmp/<proj>/
     // tool-outputs/run_shell_command_*.txt — thousands per session).
+    // Patterns anchored where possible so we don't accidentally skip a
+    // user project that happens to be named "tool-outputs" / etc.
     ignored: [
-      /\/tool-outputs\//,
+      /\/\.gemini\/tmp\/[^/]+\/tool-outputs\//,
       /\/\.vite-temp\//,
       /\.engram-tmp-/,
       /\.engram-move-tmp-/,
