@@ -186,11 +186,18 @@ struct ProjectsView: View {
         defer { isLoading = false }
         do { projectGroups = try db.listSessionsByProject() } catch { print("ProjectsView error:", error) }
         // Refresh the Undo button's enabled state — cheap call, at most 5 rows.
-        if let migrations = try? await daemonClient.listProjectMigrations(
-            state: "committed",
-            limit: 1
-        ) {
+        // Reviewer minor #7: distinguish "no migrations" from "daemon failed"
+        // so the tooltip doesn't lie when the daemon is unreachable.
+        do {
+            let migrations = try await daemonClient.listProjectMigrations(
+                state: "committed",
+                limit: 1
+            )
             hasRecentMigrations = !migrations.isEmpty
+        } catch {
+            print("ProjectsView: listProjectMigrations failed:", error)
+            // Leave previous value intact — the user may have cached state
+            // from a successful earlier fetch. Falls to false on first load.
         }
     }
 }

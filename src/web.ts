@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as pathResolve } from 'node:path';
 import { Hono } from 'hono';
 import type { SessionAdapter, SourceName } from './adapters/types.js';
 import type { AiAuditQuery, AiAuditWriter } from './core/ai-audit.js';
@@ -56,8 +56,7 @@ function createRateLimiter(maxPerMinute: number) {
 }
 
 /** Humanize Node.js fs errors and strip internal `project-move:` prefixes
- *  so the Swift UI can surface actionable messages (Gemini major #4).
- *  Keeps the raw message around as `detail` in case a power user needs it. */
+ *  so the Swift UI can surface actionable messages (Gemini major #4). */
 function sanitizeProjectMoveMessage(raw: string): string {
   if (!raw) return 'Unknown error';
   let msg = raw;
@@ -143,12 +142,19 @@ function validationError(
   return { error: { name, message, retry_policy: 'never' } };
 }
 
-/** Normalize a user-supplied path: expand `~`, then ensure the result is
- *  absolute. Returns null if the path is invalid for the HTTP boundary
- *  (we don't resolve relative paths here because the HTTP layer has no
- *  meaningful cwd context — unlike the CLI). Codex major #3. */
+/** Normalize a user-supplied path: expand `~`, resolve `..` / `.` segments,
+ *  require absolute, and confine to `$HOME` unless the caller explicitly
+ *  opts out via settings. Matches the defense-in-depth already present on
+ *  `/api/lint` (review follow-up Important #2 + Minor #11). Returns the
+ *  canonicalized path on success.
+ *
+ *  The HOME confinement matters most when no bearer token is set — the
+ *  HTTP layer is localhost-only, but any process on the box can still hit
+ *  it. Restricting to $HOME caps the blast radius of a stray request to
+ *  the user's own files. */
 function normalizeHttpPath(
   raw: string | undefined,
+  opts: { allowOutsideHome?: boolean } = {},
 ): { ok: true; path: string } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'string') {
     return { ok: false, error: 'missing or non-string path' };
@@ -162,7 +168,19 @@ function normalizeHttpPath(
       error: `path must be absolute (got "${raw}"). Use /full/path/... or ~/rel/path.`,
     };
   }
-  return { ok: true, path: p };
+  // Canonicalize — pathResolve collapses `..` / `.` so `~/../../etc/passwd`
+  // becomes `/etc/passwd` and can be checked against $HOME honestly.
+  const canonical = pathResolve(p);
+  if (!opts.allowOutsideHome) {
+    const home = homedir();
+    if (canonical !== home && !canonical.startsWith(`${home}/`)) {
+      return {
+        ok: false,
+        error: `path must live under ${home} (got "${canonical}"). Use the CLI for paths outside your home directory.`,
+      };
+    }
+  }
+  return { ok: true, path: canonical };
 }
 
 // --- CIDR access control ---

@@ -33,7 +33,10 @@ describe('Web API — /api/project/*', () => {
     db = new Database(join(tmp, 'engram.sqlite'));
     app = createApp(db);
 
-    const projects = join(tmp, 'projects');
+    // Project workspace lives *under* home so the $HOME-prefix guard
+    // added in Important #2 accepts paths there when HOME is pointed
+    // at this fake home via process.env.
+    const projects = join(home, 'projects');
     mkdirSync(projects);
     src = join(projects, 'old-proj');
     mkdirSync(src);
@@ -160,6 +163,36 @@ describe('Web API — /api/project/*', () => {
     expect(body.error).toBeTruthy();
   });
 
+  it('POST /api/project/move rejects paths outside $HOME (defense-in-depth)', async () => {
+    const res = await app.request('/api/project/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src: '/etc/passwd', dst: '/etc/other' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { name: string; message: string };
+    };
+    expect(body.error.name).toBe('InvalidPath');
+    expect(body.error.message).toMatch(/must live under/);
+  });
+
+  it('POST /api/project/move resolves ~/../.. traversal and rejects it', async () => {
+    // `~/../../etc` expands to /Users/bing/../../etc, which pathResolve
+    // canonicalizes to /etc. The $HOME prefix check then rejects it.
+    const res = await app.request('/api/project/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        src: '~/../../etc/passwd',
+        dst: '~/some/legal/path',
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { name: string } };
+    expect(body.error.name).toBe('InvalidPath');
+  });
+
   // Pass 5 additions (3-way review Phase 4b rev2)
   it('POST /api/project/move with relative path returns 400 with envelope', async () => {
     const res = await app.request('/api/project/move', {
@@ -214,6 +247,47 @@ describe('Web API — /api/project/*', () => {
     };
     expect(body.error.name).toBe('Unauthorized');
     expect(body.error.retry_policy).toBe('never');
+  });
+
+  it('POST /api/project/move dry-run returns 200 contract (Swift decode target)', async () => {
+    // Reviewer Important #3: lock the 200 response shape. Swift
+    // ProjectMoveResult decodes migrationId/state/ccDirRenamed/
+    // totalFilesPatched/totalOccurrences/sessionsUpdated/aliasCreated/
+    // review — a silent field rename on the TS side would break the UI
+    // only at runtime. This test catches it at CI time.
+    //
+    // process.env.HOME is swapped to the tmp so (a) normalizeHttpPath's
+    // $HOME guard lets `src` under tmp through, and (b) the orchestrator's
+    // getSourceRoots fallback picks up the fake home layout we set up in
+    // beforeEach. Restored at end of test.
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const res = await app.request('/api/project/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          src,
+          dst: `${home}/newhome`,
+          dryRun: true,
+          force: true, // src has no .git so this is moot, but future-proof
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      // Required fields the Swift ProjectMoveResult decoder reads
+      expect(body.migrationId).toBe('dry-run');
+      expect(body.state).toBe('dry-run');
+      expect(typeof body.ccDirRenamed).toBe('boolean');
+      expect(typeof body.totalFilesPatched).toBe('number');
+      expect(typeof body.totalOccurrences).toBe('number');
+      expect(typeof body.sessionsUpdated).toBe('number');
+      expect(typeof body.aliasCreated).toBe('boolean');
+      expect(body.review).toMatchObject({ own: [], other: [] });
+    } finally {
+      if (savedHome) process.env.HOME = savedHome;
+      else delete process.env.HOME;
+    }
   });
 
   it('migration_log detail includes skipped_dirs and gemini_projects_json_updated', async () => {
