@@ -250,11 +250,10 @@ describe('Web API — /api/project/*', () => {
   });
 
   it('POST /api/project/move dry-run returns 200 contract (Swift decode target)', async () => {
-    // Reviewer Important #3: lock the 200 response shape. Swift
-    // ProjectMoveResult decodes migrationId/state/ccDirRenamed/
-    // totalFilesPatched/totalOccurrences/sessionsUpdated/aliasCreated/
-    // review — a silent field rename on the TS side would break the UI
-    // only at runtime. This test catches it at CI time.
+    // Codex follow-up minor #5 — this test used to only assert types,
+    // so the `buildDryRunPlan` stub (hardcoded 0/0) passed it. Now we
+    // seed a CC session file that references `src` and assert the scan
+    // returns a non-zero count. A future stub-regression will fail.
     //
     // process.env.HOME is swapped to the tmp so (a) normalizeHttpPath's
     // $HOME guard lets `src` under tmp through, and (b) the orchestrator's
@@ -284,6 +283,10 @@ describe('Web API — /api/project/*', () => {
       expect(typeof body.sessionsUpdated).toBe('number');
       expect(typeof body.aliasCreated).toBe('boolean');
       expect(body.review).toMatchObject({ own: [], other: [] });
+      // Semantic assertion — the beforeEach seeded a CC session file
+      // containing `src` as its cwd. A real scan MUST find it.
+      expect(body.totalFilesPatched as number).toBeGreaterThanOrEqual(1);
+      expect(body.totalOccurrences as number).toBeGreaterThanOrEqual(1);
     } finally {
       if (savedHome) process.env.HOME = savedHome;
       else delete process.env.HOME;

@@ -1,4 +1,4 @@
-// src/core/project-move/sources.ts — enumerate the 6 AI session root dirs
+// src/core/project-move/sources.ts — enumerate the 7 AI session root dirs
 // that a project move must scan + patch.
 //
 // Mirrors mvp.py globals (CC_PROJECTS, CODEX_SESSIONS, GEMINI_TMP,

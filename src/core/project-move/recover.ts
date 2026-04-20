@@ -14,8 +14,14 @@
 //   2. run `engram project move <partial-dst> <src>` to reverse
 //   3. accept the partial state and `engram project log-delete <id>`
 
-import { stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
+import { basename, dirname } from 'node:path';
 import type { Database } from '../db.js';
+
+/** Three-state FS presence probe. `unknown` means we got an error other
+ *  than ENOENT (typically EACCES / ELOOP / ENOTDIR) — lumping it into
+ *  `false` would mislead the user. Codex follow-up minor #6. */
+export type PathProbe = 'exists' | 'absent' | 'unknown';
 
 export interface RecoverDiagnosis {
   migrationId: string;
@@ -29,7 +35,17 @@ export interface RecoverDiagnosis {
   fs: {
     oldPathExists: boolean;
     newPathExists: boolean;
-    tempArtifacts: string[]; // .engram-tmp-*, .engram-move-tmp-* residue
+    /** Three-state version of the existence probe; kept alongside the
+     *  boolean for backward compat. */
+    oldPathState: PathProbe;
+    newPathState: PathProbe;
+    /** Sibling `.engram-move-tmp-*` / `.engram-tmp-*` dirs left behind by
+     *  a crashed EXDEV move or killed patch. Empty when the probe dir
+     *  couldn't be read (record as unknown via `probeError`). */
+    tempArtifacts: string[];
+    /** Reason the temp-artifact scan skipped, if any (e.g. parent
+     *  directory unreadable). Null on success. */
+    probeError: string | null;
   };
   /** Human-readable recommendation, not a prescription. */
   recommendation: string;
@@ -59,8 +75,11 @@ export async function diagnoseStuckMigrations(
 
   const diagnoses: RecoverDiagnosis[] = [];
   for (const row of rows) {
-    const oldExists = await exists(row.oldPath);
-    const newExists = await exists(row.newPath);
+    const oldState = await probePath(row.oldPath);
+    const newState = await probePath(row.newPath);
+    const oldExists = oldState === 'exists';
+    const newExists = newState === 'exists';
+    const artifacts = await scanTempArtifacts(row.oldPath, row.newPath);
 
     const recommendation = buildRecommendation(row.state, oldExists, newExists);
 
@@ -75,7 +94,10 @@ export async function diagnoseStuckMigrations(
       fs: {
         oldPathExists: oldExists,
         newPathExists: newExists,
-        tempArtifacts: [], // TODO Phase 3.1: scan for .engram-move-tmp-* siblings
+        oldPathState: oldState,
+        newPathState: newState,
+        tempArtifacts: artifacts.paths,
+        probeError: artifacts.error,
       },
       recommendation,
     });
@@ -83,13 +105,55 @@ export async function diagnoseStuckMigrations(
   return diagnoses;
 }
 
-async function exists(path: string): Promise<boolean> {
+/** Three-state existence probe — distinguish "confirmed absent" (ENOENT)
+ *  from "I have no idea" (EACCES, EIO, ELOOP). */
+async function probePath(path: string): Promise<PathProbe> {
   try {
     await stat(path);
-    return true;
-  } catch {
-    return false;
+    return 'exists';
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'absent';
+    return 'unknown';
   }
+}
+
+/** Scan the parents of oldPath + newPath for `.engram-tmp-*` and
+ *  `.engram-move-tmp-*` directories left behind by a crashed move. We
+ *  list entries lazily and filter — avoids loading huge dir listings into
+ *  the return value. Probing both parents covers EXDEV-style fallbacks
+ *  where the temp sits next to the destination. */
+async function scanTempArtifacts(
+  oldPath: string,
+  newPath: string,
+): Promise<{ paths: string[]; error: string | null }> {
+  const parents = Array.from(
+    new Set([dirname(oldPath), dirname(newPath)]),
+  ).filter((p) => p && p !== '/' && p !== '.');
+  const found: string[] = [];
+  const errors: string[] = [];
+  for (const parent of parents) {
+    try {
+      const entries = await readdir(parent);
+      for (const name of entries) {
+        if (
+          name.startsWith('.engram-tmp-') ||
+          name.startsWith('.engram-move-tmp-') ||
+          // Also the fs-ops sibling temp (safeMoveDir EXDEV path)
+          name.startsWith(`${basename(newPath)}.engram-move-tmp-`) ||
+          name.startsWith(`${basename(oldPath)}.engram-move-tmp-`)
+        ) {
+          found.push(`${parent}/${name}`);
+        }
+      }
+    } catch (err) {
+      errors.push(`${parent}: ${(err as Error).message}`);
+    }
+  }
+  return {
+    paths: found.sort(),
+    error: errors.length > 0 ? errors.join('; ') : null,
+  };
 }
 
 function buildRecommendation(

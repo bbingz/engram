@@ -16,7 +16,12 @@ struct ProjectsView: View {
     @State private var renameTarget: String?
     @State private var archiveTarget: String?
     @State private var showUndoSheet = false
-    @State private var hasRecentMigrations = false
+    /// Three-state: nil = haven't fetched yet / last fetch failed (unknown),
+    /// true = ≥1 committed migration exists, false = none.
+    /// Reviewer: silently preserving the last-known true value when the
+    /// daemon becomes unreachable was misleading. Now the Undo button is
+    /// disabled when we can't confirm the log is reachable.
+    @State private var hasRecentMigrations: Bool? = nil
 
     private var activeCount: Int {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
@@ -71,12 +76,8 @@ struct ProjectsView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .disabled(!hasRecentMigrations)
-                        .help(
-                            hasRecentMigrations
-                                ? "Pick a recent committed migration to reverse"
-                                : "No recent committed migrations to undo"
-                        )
+                        .disabled(hasRecentMigrations != true)
+                        .help(undoButtonHelp)
                         .accessibilityIdentifier("projects_undoButton")
                     }
                     if projectGroups.isEmpty && !isLoading {
@@ -181,13 +182,22 @@ struct ProjectsView: View {
         }
     }
 
+    private var undoButtonHelp: String {
+        switch hasRecentMigrations {
+        case .some(true): return "Pick a recent committed migration to reverse"
+        case .some(false): return "No recent committed migrations to undo"
+        case .none: return "Migration log unavailable — daemon may not be running"
+        }
+    }
+
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
         do { projectGroups = try db.listSessionsByProject() } catch { print("ProjectsView error:", error) }
-        // Refresh the Undo button's enabled state — cheap call, at most 5 rows.
-        // Reviewer minor #7: distinguish "no migrations" from "daemon failed"
-        // so the tooltip doesn't lie when the daemon is unreachable.
+        // Refresh the Undo button's enabled state. Reviewer follow-up:
+        // reset to nil on failure instead of silently preserving the last
+        // truthy value — the user deserves an honest "daemon unreachable"
+        // indicator rather than a stale optimistic one.
         do {
             let migrations = try await daemonClient.listProjectMigrations(
                 state: "committed",
@@ -196,8 +206,7 @@ struct ProjectsView: View {
             hasRecentMigrations = !migrations.isEmpty
         } catch {
             print("ProjectsView: listProjectMigrations failed:", error)
-            // Leave previous value intact — the user may have cached state
-            // from a successful earlier fetch. Falls to false on first load.
+            hasRecentMigrations = nil
         }
     }
 }

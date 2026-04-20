@@ -468,8 +468,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return response;
       }
 
+      // Emit structuredContent on success too so AI clients get typed
+      // access to `migrationId`, `totalFilesPatched`, etc. without re-parsing
+      // the text blob (Codex follow-up important #2 — previously only the
+      // error path populated structuredContent).
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        structuredContent: result as Record<string, unknown>,
       };
     } catch (err) {
       span.setError(err as Error);

@@ -27,6 +27,11 @@ struct RenameSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    /// Populated when the migration committed but left residual old-path
+    /// references in the user's own scope (review.own non-empty). Gemini
+    /// follow-up high: previously the UI silently closed on any committed
+    /// result even if the backend flagged these. Non-nil blocks auto-dismiss.
+    @State private var residualRefCount: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -87,33 +92,47 @@ struct RenameSheet: View {
                 if let error = errorMessage {
                     errorBox(error)
                 }
+                if let residual = residualRefCount, residual > 0 {
+                    residualWarningBox(residual)
+                }
             }
 
             Divider()
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(isExecuting)
-
-                if previewResult?.state != "dry-run" {
-                    Button("Preview") {
-                        activeTask = Task { await runPreview() }
-                    }
-                    .disabled(
-                        newPath.isEmpty
-                            || selectedCwd.isEmpty
-                            || isPreviewLoading
-                            || isExecuting
-                    )
-                } else {
-                    Button("Rename") {
-                        activeTask = Task { await runRename() }
+                if residualRefCount != nil {
+                    // Post-commit state: offer explicit dismiss so the user
+                    // has to acknowledge the residual-refs warning.
+                    Button("Close") {
+                        NotificationCenter.default.post(name: .projectsDidChange, object: nil)
+                        dismiss()
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(isExecuting)
+                } else {
+                    Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                        .disabled(isExecuting)
+
+                    if previewResult?.state != "dry-run" {
+                        Button("Preview") {
+                            activeTask = Task { await runPreview() }
+                        }
+                        .disabled(
+                            newPath.isEmpty
+                                || selectedCwd.isEmpty
+                                || isPreviewLoading
+                                || isExecuting
+                        )
+                    } else {
+                        Button("Rename") {
+                            activeTask = Task { await runRename() }
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isExecuting)
+                    }
                 }
             }
         }
@@ -163,6 +182,26 @@ struct RenameSheet: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func residualWarningBox(_ count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(
+                "Rename committed, but \(count) file(s) in the project's own scope still reference the old path.",
+                systemImage: "exclamationmark.triangle"
+            )
+            .foregroundStyle(.orange)
+            .font(.caption)
+            Text(
+                "This usually means the auto-fix regex didn't cover an edge case. Run `engram project review <old> <new>` from the CLI to list the remaining files."
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
@@ -231,6 +270,7 @@ struct RenameSheet: View {
 
     private func runRename() async {
         errorMessage = nil
+        residualRefCount = nil
         isExecuting = true
         defer { isExecuting = false; activeTask = nil }
         do {
@@ -242,8 +282,16 @@ struct RenameSheet: View {
             )
             if Task.isCancelled { return }
             if res.state == "committed" {
-                NotificationCenter.default.post(name: .projectsDidChange, object: nil)
-                dismiss()
+                // Gemini follow-up high: don't auto-dismiss if the backend
+                // flagged residual own-scope refs. Swap Rename button for
+                // a Close button so the user explicitly acknowledges the
+                // warning before the sheet closes.
+                if res.review.own.isEmpty {
+                    NotificationCenter.default.post(name: .projectsDidChange, object: nil)
+                    dismiss()
+                } else {
+                    residualRefCount = res.review.own.count
+                }
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }

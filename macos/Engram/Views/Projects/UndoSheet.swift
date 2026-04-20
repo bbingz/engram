@@ -218,6 +218,16 @@ struct UndoSheet: View {
             let res = try await daemonClient.projectUndo(migrationId: id, force: false)
             if Task.isCancelled { return }
             if res.state == "committed" {
+                if !res.review.own.isEmpty {
+                    // Gemini follow-up: surface residual refs instead of
+                    // silently closing. Undo usually has zero (it's a
+                    // reverse move), but a half-failed reverse can leave
+                    // some behind.
+                    errorMessage =
+                        "Undo committed, but \(res.review.own.count) file(s) still reference the undone path. Run `engram project review` from CLI to inspect."
+                    retryPolicy = "never"
+                    return
+                }
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
             } else {

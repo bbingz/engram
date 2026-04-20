@@ -26,7 +26,7 @@
 import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import { rename, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve as pathResolve } from 'node:path';
 import type { Database } from '../db.js';
 import { safeMoveDir } from './fs-ops.js';
 import {
@@ -155,14 +155,21 @@ export async function runProjectMove(
   db: Database,
   opts: RunProjectMoveOpts,
 ): Promise<PipelineResult> {
-  const { src, dst } = opts;
-  if (!src || !dst) {
+  const rawSrc = opts.src;
+  const rawDst = opts.dst;
+  if (!rawSrc || !rawDst) {
     // Empty paths are a caller bug; catch before downstream code (the
     // dry-run scanner would infinite-loop on an empty needle).
     throw new Error(
-      `runProjectMove: src and dst must be non-empty absolute paths (got src="${src}", dst="${dst}")`,
+      `runProjectMove: src and dst must be non-empty absolute paths (got src="${rawSrc}", dst="${rawDst}")`,
     );
   }
+  // Canonicalize BEFORE the string-level guards so `/x/a/../proj` vs
+  // `/x/proj` and trailing-slash variants don't slip past (Codex follow-up
+  // critical #1 — only the HTTP layer normalized previously; MCP / CLI /
+  // batch callers could feed unresolved paths straight through).
+  const src = pathResolve(rawSrc);
+  const dst = pathResolve(rawDst);
   if (src === dst) {
     throw new Error(`runProjectMove: src === dst (${src})`);
   }
@@ -193,8 +200,9 @@ export async function runProjectMove(
   // a read-only scan for impact preview). Previously a stub with 0/0 counts,
   // surfaced by the Swift UI "Dry-run impact" always reading 0 regardless
   // of reality — fixed by actually scanning the sources without patching.
+  // Pass the resolved src/dst so the scanner sees the canonical paths.
   if (opts.dryRun) {
-    return await buildDryRunPlan(opts, git);
+    return await buildDryRunPlan({ ...opts, src, dst }, git);
   }
 
   const migrationId = randomUUID();
@@ -741,12 +749,20 @@ export async function buildDryRunPlan(
     const hits = await findReferencingFiles(root.path, src);
     let filesPatched = 0;
     let occurrences = 0;
+    const issues: WalkIssue[] = [];
     for (const file of hits) {
       filesPatched++;
       try {
         const st = await stat(file);
         if (st.size > DRY_RUN_READ_CAP) {
-          occurrences += 1; // file too large to scan cheaply
+          // Codex follow-up important #3: previously counted as 1 occurrence
+          // silently. Surface as a WalkIssue so the UI can show "N large
+          // files skipped" instead of pretending the count is precise.
+          issues.push({
+            path: file,
+            reason: 'too_large',
+            detail: `${st.size} bytes > cap ${DRY_RUN_READ_CAP}`,
+          });
           continue;
         }
         const buf = await readFile(file);
@@ -755,8 +771,15 @@ export async function buildDryRunPlan(
           occurrences++;
           idx = buf.indexOf(srcBuf, idx + srcBuf.length);
         }
-      } catch {
-        // unreadable file — still counted in filesPatched
+      } catch (err) {
+        // Codex follow-up important #3: don't swallow the error. The file
+        // was found by grep, so it exists — if we can't stat/read, that's
+        // a permissions issue the user should know about.
+        issues.push({
+          path: file,
+          reason: 'stat_failed',
+          detail: (err as Error).message,
+        });
       }
     }
     perSource.push({
@@ -764,7 +787,7 @@ export async function buildDryRunPlan(
       root: root.path,
       filesPatched,
       occurrences,
-      issues: [],
+      issues,
     });
     totalFilesPatched += filesPatched;
     totalOccurrences += occurrences;

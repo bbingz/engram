@@ -19,6 +19,7 @@ struct ArchiveSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    @State private var residualRefCount: Int?
 
     // English aliases match the MCP tool's canonical enum; labels in the
     // picker show the Chinese variants alongside for clarity.
@@ -125,23 +126,48 @@ struct ArchiveSheet: View {
                     .background(Color.red.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
+                if let residual = residualRefCount, residual > 0 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(
+                            "Archive committed, but \(residual) file(s) in the project's own scope still reference the old path.",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                        Text("Run `engram project review` from the CLI to inspect.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                    .background(Color.orange.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
             }
 
             Divider()
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(isExecuting)
-                Button("Archive") {
-                    activeTask = Task { await runArchive() }
+                if residualRefCount != nil {
+                    Button("Close") {
+                        NotificationCenter.default.post(name: .projectsDidChange, object: nil)
+                        dismiss()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                        .disabled(isExecuting)
+                    Button("Archive") {
+                        activeTask = Task { await runArchive() }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        selectedCwd.isEmpty || isExecuting || availableCwds.isEmpty
+                    )
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    selectedCwd.isEmpty || isExecuting || availableCwds.isEmpty
-                )
             }
         }
         .padding(20)
@@ -165,6 +191,7 @@ struct ArchiveSheet: View {
 
     private func runArchive() async {
         errorMessage = nil
+        residualRefCount = nil
         isExecuting = true
         defer { isExecuting = false; activeTask = nil }
         do {
@@ -174,8 +201,12 @@ struct ArchiveSheet: View {
             )
             if Task.isCancelled { return }
             if res.state == "committed" {
-                NotificationCenter.default.post(name: .projectsDidChange, object: nil)
-                dismiss()
+                if res.review.own.isEmpty {
+                    NotificationCenter.default.post(name: .projectsDidChange, object: nil)
+                    dismiss()
+                } else {
+                    residualRefCount = res.review.own.count
+                }
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }

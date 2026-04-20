@@ -25,6 +25,12 @@ final class DaemonClient {
     func fetch<T: Decodable>(_ path: String) async throws -> T {
         var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Trace-Id")
+        // Codex follow-up info #8: /api/ai/* GETs are token-gated server-side
+        // even though they're GETs. Attach the bearer like post/delete do so
+        // this method works when token protection is enabled.
+        if let token = freshBearerToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         let (data, response) = try await session.data(for: request)
         try validateResponse(response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
