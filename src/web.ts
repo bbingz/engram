@@ -55,6 +55,49 @@ function createRateLimiter(maxPerMinute: number) {
   };
 }
 
+/** Map a project-move orchestrator / undo error to a JSON body the Swift UI
+ *  can render. Mirrors the MCP layer's retry_policy semantics so the client
+ *  can decide whether to prompt for retry. */
+function mapProjectMoveError(err: unknown): {
+  error: { name: string; message: string; retry_policy: string };
+} {
+  const e = err as Error;
+  const name = e?.name ?? 'Error';
+  const retryPolicy =
+    name === 'LockBusyError'
+      ? 'wait'
+      : name === 'ConcurrentModificationError'
+        ? 'conditional'
+        : name === 'UndoStaleError' ||
+            name === 'UndoNotAllowedError' ||
+            name === 'DirCollisionError' ||
+            name === 'SharedEncodingCollisionError' ||
+            name === 'InvalidUtf8Error'
+          ? 'never'
+          : 'safe';
+  return {
+    error: {
+      name,
+      message: e?.message ?? String(err),
+      retry_policy: retryPolicy,
+    },
+  };
+}
+
+function mapProjectMoveErrorStatus(err: unknown): 400 | 409 | 500 {
+  const name = (err as Error)?.name;
+  if (name === 'LockBusyError') return 409;
+  if (
+    name === 'DirCollisionError' ||
+    name === 'SharedEncodingCollisionError' ||
+    name === 'UndoNotAllowedError' ||
+    name === 'UndoStaleError'
+  ) {
+    return 409;
+  }
+  return 500;
+}
+
 // --- CIDR access control ---
 
 export function ipToUint32(ip: string): number {
@@ -748,6 +791,132 @@ export function createApp(
     return c.json({
       removed: { alias: body.alias, canonical: body.canonical },
     });
+  });
+
+  // --- Project migration API (powers Swift UI: Rename / Archive / Undo) ---
+  // Writes (POST) require bearer auth via the generic /api/* middleware above.
+  // The orchestrator enforces its own single-writer lock, so concurrent POSTs
+  // will fail with LockBusyError (returned as HTTP 409) instead of corrupting.
+
+  // GET /api/project/migrations — recent migrations (defaults to committed
+  // only, limit 20). Used by UndoSheet to pick a row to reverse.
+  app.get('/api/project/migrations', (c) => {
+    const limit = Math.min(
+      Math.max(parseInt(c.req.query('limit') ?? '20', 10) || 20, 1),
+      100,
+    );
+    const stateFilter = c.req.query('state'); // undefined = all states
+    const rows = db.listMigrations({ limit });
+    const filtered = stateFilter
+      ? rows.filter((r) => r.state === stateFilter)
+      : rows;
+    return c.json({ migrations: filtered });
+  });
+
+  // GET /api/project/cwds?project=<name> — distinct cwds for a project
+  // grouping. MVP assumes most projects map to a single cwd; multi-cwd
+  // cases let the UI present a picker.
+  app.get('/api/project/cwds', (c) => {
+    const project = c.req.query('project');
+    if (!project) return c.json({ error: 'project query param required' }, 400);
+    const raw = db.getRawDb();
+    const rows = raw
+      .prepare(
+        `SELECT DISTINCT cwd FROM sessions
+         WHERE project = @project AND cwd IS NOT NULL AND cwd != ''
+         ORDER BY cwd`,
+      )
+      .all({ project }) as Array<{ cwd: string }>;
+    return c.json({ project, cwds: rows.map((r) => r.cwd) });
+  });
+
+  // POST /api/project/move — run a move (or dry-run).
+  app.post('/api/project/move', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      src?: string;
+      dst?: string;
+      dryRun?: boolean;
+      force?: boolean;
+      auditNote?: string;
+    };
+    if (!body.src || !body.dst) {
+      return c.json({ error: 'src and dst required' }, 400);
+    }
+    const { runProjectMove } = await import(
+      './core/project-move/orchestrator.js'
+    );
+    try {
+      const result = await runProjectMove(db, {
+        src: body.src,
+        dst: body.dst,
+        dryRun: body.dryRun === true,
+        force: body.force === true,
+        auditNote: body.auditNote,
+        actor: 'swift-ui',
+      });
+      return c.json(result);
+    } catch (err) {
+      return c.json(mapProjectMoveError(err), mapProjectMoveErrorStatus(err));
+    }
+  });
+
+  // POST /api/project/undo — reverse a committed migration.
+  app.post('/api/project/undo', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      migrationId?: string;
+      force?: boolean;
+    };
+    if (!body.migrationId) {
+      return c.json({ error: 'migrationId required' }, 400);
+    }
+    const { undoMigration } = await import('./core/project-move/undo.js');
+    try {
+      const result = await undoMigration(db, body.migrationId, {
+        force: body.force === true,
+        actor: 'swift-ui',
+      });
+      return c.json(result);
+    } catch (err) {
+      return c.json(mapProjectMoveError(err), mapProjectMoveErrorStatus(err));
+    }
+  });
+
+  // POST /api/project/archive — auto-suggest + move to _archive/<category>/.
+  app.post('/api/project/archive', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      src?: string;
+      archiveTo?: string;
+      force?: boolean;
+      dryRun?: boolean;
+      auditNote?: string;
+    };
+    if (!body.src) return c.json({ error: 'src required' }, 400);
+    const { runProjectMove } = await import(
+      './core/project-move/orchestrator.js'
+    );
+    const { suggestArchiveTarget } = await import(
+      './core/project-move/archive.js'
+    );
+    try {
+      const suggestion = await suggestArchiveTarget(body.src, {
+        forceCategory: body.archiveTo as never,
+      });
+      const { mkdir } = await import('node:fs/promises');
+      const { dirname } = await import('node:path');
+      await mkdir(dirname(suggestion.dst), { recursive: true });
+      const result = await runProjectMove(db, {
+        src: body.src,
+        dst: suggestion.dst,
+        archived: true,
+        force: body.force === true,
+        dryRun: body.dryRun === true,
+        auditNote: body.auditNote ?? `archive: ${suggestion.reason}`,
+        actor: 'swift-ui',
+      });
+      return c.json({ ...result, suggestion });
+    } catch (err) {
+      return c.json(mapProjectMoveError(err), mapProjectMoveErrorStatus(err));
+    }
   });
 
   // --- Summary API ---
