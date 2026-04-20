@@ -20,6 +20,7 @@ struct ArchiveSheet: View {
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
     @State private var residualRefCount: Int?
+    @State private var errorDetails: ProjectMoveAPIError.Details?
 
     // English aliases match the MCP tool's canonical enum; labels in the
     // picker show the Chinese variants alongside for clarity.
@@ -121,6 +122,22 @@ struct ArchiveSheet: View {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red)
                             .font(.caption)
+                        if let details = errorDetails {
+                            if let src = details.sourceId {
+                                Text("Source: \(src)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let newDir = details.newDir {
+                                Text("Conflict path: \(newDir)")
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(newDir)
+                                    .textSelection(.enabled)
+                            }
+                        }
                         HStack {
                             Text(retryPolicyExplainer(retryPolicy))
                                 .font(.caption2)
@@ -205,6 +222,7 @@ struct ArchiveSheet: View {
 
     private func runArchive() async {
         errorMessage = nil
+        errorDetails = nil
         residualRefCount = nil
         isExecuting = true
         defer { isExecuting = false; activeTask = nil }
@@ -228,9 +246,11 @@ struct ArchiveSheet: View {
             if Task.isCancelled { return }
             errorMessage = apiErr.message
             retryPolicy = apiErr.retryPolicy
+            errorDetails = apiErr.details
         } catch {
             if Task.isCancelled { return }
             errorMessage = error.localizedDescription
+            errorDetails = nil
         }
     }
 }

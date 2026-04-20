@@ -17,6 +17,11 @@ import type { LogWriter } from './core/logger.js';
 import type { MetricsCollector } from './core/metrics.js';
 import { clearMockData, populateMockData } from './core/mock-data.js';
 import type { BackgroundMonitor } from './core/monitor.js';
+import {
+  buildErrorEnvelope,
+  type ErrorEnvelope,
+  mapErrorStatus,
+} from './core/project-move/retry-policy.js';
 import { runWithContext } from './core/request-context.js';
 import { buildResumeCommand } from './core/resume-coordinator.js';
 import type { SyncEngine, SyncPeer } from './core/sync.js';
@@ -55,90 +60,23 @@ function createRateLimiter(maxPerMinute: number) {
   };
 }
 
-/** Humanize Node.js fs errors and strip internal `project-move:` prefixes
- *  so the Swift UI can surface actionable messages (Gemini major #4). */
-function sanitizeProjectMoveMessage(raw: string): string {
-  if (!raw) return 'Unknown error';
-  let msg = raw;
-  // Strip the mechanical prefixes orchestrator throws with
-  msg = msg.replace(/^runProjectMove:\s*/, '');
-  msg = msg.replace(/^project-move:\s*/, '');
-  // Translate common Node fs error codes (ENOENT / EACCES / EEXIST etc.)
-  // to human-readable forms. Patterns are defensive — original message is
-  // preserved if no pattern matches.
-  if (/\bENOENT\b/.test(msg)) {
-    msg = msg.replace(
-      /ENOENT[^,]*,\s*([a-z]+)\s+'?([^']*)'?/,
-      (_, op, path) => `File or directory not found: ${path.trim()} (${op})`,
-    );
-  }
-  if (/\bEACCES\b/.test(msg)) {
-    msg = msg.replace(
-      /EACCES[^,]*,\s*([a-z]+)\s+'?([^']*)'?/,
-      (_, op, path) => `Permission denied: ${path.trim()} (${op})`,
-    );
-  }
-  if (/\bEEXIST\b/.test(msg)) {
-    msg = msg.replace(
-      /EEXIST[^,]*,\s*([a-z]+)\s+'?([^']*)'?/,
-      (_, op, path) => `Path already exists: ${path.trim()} (${op})`,
-    );
-  }
-  return msg.trim();
-}
-
-/** Map a project-move orchestrator / undo error to a JSON body the Swift UI
- *  can render. Mirrors the MCP layer's retry_policy semantics so the client
- *  can decide whether to prompt for retry. */
-function mapProjectMoveError(err: unknown): {
-  error: { name: string; message: string; retry_policy: string };
-} {
-  const e = err as Error;
-  const name = e?.name ?? 'Error';
-  const retryPolicy =
-    name === 'LockBusyError'
-      ? 'wait'
-      : name === 'ConcurrentModificationError'
-        ? 'conditional'
-        : name === 'UndoStaleError' ||
-            name === 'UndoNotAllowedError' ||
-            name === 'DirCollisionError' ||
-            name === 'SharedEncodingCollisionError' ||
-            name === 'InvalidUtf8Error'
-          ? 'never'
-          : 'safe';
-  return {
-    error: {
-      name,
-      message: sanitizeProjectMoveMessage(e?.message ?? String(err)),
-      retry_policy: retryPolicy,
-    },
-  };
+/** Round 4: retry_policy classification + error-envelope construction +
+ *  message sanitization all live in src/core/project-move/retry-policy.ts
+ *  so MCP (src/index.ts) and HTTP (here) share one implementation.
+ *  Previously the two diverged — unknown errors got 'never' from MCP but
+ *  'safe' from HTTP, and structured DirCollisionError fields were dropped. */
+function mapProjectMoveError(err: unknown): ErrorEnvelope {
+  return buildErrorEnvelope(err, { sanitize: true });
 }
 
 function mapProjectMoveErrorStatus(err: unknown): 400 | 409 | 500 {
-  const name = (err as Error)?.name;
-  if (name === 'LockBusyError') return 409;
-  if (
-    name === 'DirCollisionError' ||
-    name === 'SharedEncodingCollisionError' ||
-    name === 'UndoNotAllowedError' ||
-    name === 'UndoStaleError'
-  ) {
-    return 409;
-  }
-  return 500;
+  return mapErrorStatus((err as Error)?.name);
 }
 
 /** Build a 400 validation-error envelope identical in shape to the
  *  orchestrator error envelope so the Swift client can decode uniformly
  *  (Codex minor #4). `retry_policy: 'never'` — client must fix input. */
-function validationError(
-  name: string,
-  message: string,
-): {
-  error: { name: string; message: string; retry_policy: string };
-} {
+function validationError(name: string, message: string): ErrorEnvelope {
   return { error: { name, message, retry_policy: 'never' } };
 }
 

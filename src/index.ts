@@ -10,6 +10,10 @@ import {
 import { createMCPDeps } from './core/bootstrap.js';
 import { setupProcessLifecycle } from './core/lifecycle.js';
 import { createLogger } from './core/logger.js';
+import {
+  buildErrorEnvelope,
+  humanizeForMcp,
+} from './core/project-move/retry-policy.js';
 import { runWithContext } from './core/request-context.js';
 import { startWatcher } from './core/watcher.js';
 import { exportTool, handleExport } from './tools/export.js';
@@ -478,58 +482,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (err) {
       span.setError(err as Error);
-      const e = err as Error & { name?: string };
-      const name = e?.name ?? 'Error';
 
-      // Retry policy semantics (Gemini Phase-4a-rev2 M4):
-      //   'safe'        — idempotent retry is fine
-      //   'conditional' — caller must resolve a condition (e.g. user stops
-      //                   editing) before retrying; do NOT retry in a loop
-      //   'wait'        — retry after a small delay, sequential only
-      //   'never'       — do not retry; surface to user
-      let retryPolicy: 'safe' | 'conditional' | 'wait' | 'never' = 'never';
-      let humanText = `${name}: ${e.message}`;
-      switch (name) {
-        case 'LockBusyError':
-          retryPolicy = 'wait';
-          humanText =
-            'Another project-move is already running. Wait 5–10 seconds, then retry — but only if YOU did not start the other one. Never launch project_* tools in parallel.\n' +
-            e.message;
-          break;
-        case 'ConcurrentModificationError':
-          retryPolicy = 'conditional';
-          humanText =
-            'A session file was modified while engram was patching it (another AI client likely wrote to it). Ask the user to stop editing the affected project in other tools, then retry once. Do NOT retry blindly.\n' +
-            e.message;
-          break;
-        case 'UndoStaleError':
-          humanText =
-            'This migration can no longer be safely undone — its newPath is no longer owned by it (a later migration or manual edit overlaid it). Do not retry; tell the user.\n' +
-            e.message;
-          break;
-        case 'UndoNotAllowedError':
-          humanText =
-            'Undo is only allowed for committed migrations. Use project_recover to diagnose failed/stuck ones.\n' +
-            e.message;
-          break;
-        case 'InvalidUtf8Error':
-          humanText =
-            'A session file is not valid UTF-8; engram refused to patch to avoid data loss. The user must manually inspect/fix the file before retrying.\n' +
-            e.message;
-          break;
-      }
-
-      // MCP spec-native `structuredContent` — AI clients pick this up as
-      // first-class structured output (CallToolResultSchema is $loose, so
-      // extra fields pass through, but structuredContent is the canonical
-      // slot). Mirror under _structuredError for legacy debuggers.
-      const structured = {
-        error: {
-          name,
-          message: e.message,
-          retry_policy: retryPolicy,
-        },
-      };
+      // Round 4: retry_policy + structured-details extraction + message
+      // humanization all delegate to the shared retry-policy module so
+      // MCP and HTTP produce the same envelope. Previously this switch
+      // and the one in src/web.ts drifted (unknown-error default was
+      // 'never' here but 'safe' over HTTP), and DirCollisionError's
+      // sourceId/newDir were silently dropped by both layers.
+      const structured = buildErrorEnvelope(err, { sanitize: false });
+      const humanText = humanizeForMcp(err);
       return {
         content: [{ type: 'text', text: humanText }],
         isError: true,

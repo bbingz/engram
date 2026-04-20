@@ -32,6 +32,10 @@ struct RenameSheet: View {
     /// follow-up high: previously the UI silently closed on any committed
     /// result even if the backend flagged these. Non-nil blocks auto-dismiss.
     @State private var residualRefCount: Int?
+    /// Structured error details (Round 4): DirCollisionError / SharedEncoding
+    /// carry sourceId + dir paths so the UI can show exactly which path
+    /// conflicts instead of forcing users to parse the error message.
+    @State private var errorDetails: ProjectMoveAPIError.Details?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -297,6 +301,13 @@ struct RenameSheet: View {
             Label(message, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)
                 .font(.caption)
+            // Round 4: structured error details (DirCollisionError /
+            // SharedEncodingCollisionError) expose sourceId + conflict
+            // path so the user doesn't have to parse the prose message
+            // to figure out which directory to move aside.
+            if let details = errorDetails {
+                errorDetailsView(details)
+            }
             HStack {
                 Text(retryPolicyExplainer(retryPolicy))
                     .font(.caption2)
@@ -317,6 +328,40 @@ struct RenameSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
+    @ViewBuilder
+    private func errorDetailsView(_ details: ProjectMoveAPIError.Details) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let src = details.sourceId {
+                HStack(spacing: 6) {
+                    Text("Source:")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text(src)
+                        .font(.system(.caption2, design: .monospaced))
+                }
+            }
+            if let newDir = details.newDir {
+                HStack(spacing: 6) {
+                    Text("Conflict path:")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text(newDir)
+                        .font(.system(.caption2, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(newDir)
+                        .textSelection(.enabled)
+                }
+            }
+            if let cwds = details.sharingCwds, !cwds.isEmpty {
+                Text("Shared with: \(cwds.joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
     // MARK: - Actions
 
     private func loadCwds() async {
@@ -333,6 +378,7 @@ struct RenameSheet: View {
 
     private func runPreview() async {
         errorMessage = nil
+        errorDetails = nil
         isPreviewLoading = true
         defer { isPreviewLoading = false; activeTask = nil }
         do {
@@ -348,14 +394,17 @@ struct RenameSheet: View {
             if Task.isCancelled { return }
             errorMessage = apiErr.message
             retryPolicy = apiErr.retryPolicy
+            errorDetails = apiErr.details
         } catch {
             if Task.isCancelled { return }
             errorMessage = error.localizedDescription
+            errorDetails = nil
         }
     }
 
     private func runRename() async {
         errorMessage = nil
+        errorDetails = nil
         residualRefCount = nil
         isExecuting = true
         defer { isExecuting = false; activeTask = nil }
@@ -385,9 +434,11 @@ struct RenameSheet: View {
             if Task.isCancelled { return }
             errorMessage = apiErr.message
             retryPolicy = apiErr.retryPolicy
+            errorDetails = apiErr.details
         } catch {
             if Task.isCancelled { return }
             errorMessage = error.localizedDescription
+            errorDetails = nil
         }
     }
 }

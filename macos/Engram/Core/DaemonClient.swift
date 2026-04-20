@@ -94,7 +94,8 @@ final class DaemonClient {
                 httpStatus: status,
                 name: inner.name ?? "Error",
                 message: inner.message ?? "HTTP \(status)",
-                retryPolicy: inner.retryPolicy ?? "safe"
+                retryPolicy: inner.retryPolicy ?? "safe",
+                details: inner.details
             )
         }
         // 2. Legacy {error: "string"} body.
@@ -104,7 +105,8 @@ final class DaemonClient {
                 httpStatus: status,
                 name: "HTTPError",
                 message: msg,
-                retryPolicy: status == 401 ? "never" : "safe"
+                retryPolicy: status == 401 ? "never" : "safe",
+                details: nil
             )
         }
         // 3. Plain text body (older endpoints).
@@ -113,7 +115,8 @@ final class DaemonClient {
                 httpStatus: status,
                 name: "HTTPError",
                 message: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                retryPolicy: status == 401 ? "never" : "safe"
+                retryPolicy: status == 401 ? "never" : "safe",
+                details: nil
             )
         }
         // 4. Empty body — last-resort generic error.
@@ -359,8 +362,27 @@ struct ProjectMoveAPIError: Error, LocalizedError {
     /// reading fresh state; 'wait' — another process holds the lock;
     /// 'never' — user intervention required.
     let retryPolicy: String
+    /// Optional structured fields for DirCollisionError / SharedEncoding /
+    /// UndoNotAllowed — previously dropped at the network layer (Round 4
+    /// Critical). Lets the UI render "conflict path: /x/y" as a labeled
+    /// row instead of forcing the user to parse a free-text message.
+    let details: Details?
 
-    var errorDescription: String? { "\(name): \(message)" }
+    struct Details: Decodable {
+        let sourceId: String?
+        let oldDir: String?
+        let newDir: String?
+        let sharingCwds: [String]?
+        let migrationId: String?
+        let state: String?
+    }
+
+    /// Previously returned `"\(name): \(message)"` — but the backend's
+    /// `sanitizeProjectMoveMessage` already strips the `project-move:`
+    /// prefix, and re-pasting the error class name added unhelpful
+    /// `DirCollisionError: ...` noise. The error name stays available
+    /// via `.name` for programmatic use; UI shows the message as-is.
+    var errorDescription: String? { message }
 }
 
 /// Error body shape returned by /api/project/* on non-2xx. Declared at
@@ -371,10 +393,12 @@ private struct _ProjectErrEnvelope: Decodable {
         let name: String?
         let message: String?
         let retryPolicy: String?
+        let details: ProjectMoveAPIError.Details?
         enum CodingKeys: String, CodingKey {
             case name
             case message
             case retryPolicy = "retry_policy"
+            case details
         }
     }
     let error: Inner?
