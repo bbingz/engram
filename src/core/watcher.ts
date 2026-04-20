@@ -86,6 +86,18 @@ export function startWatcher(
     ignoreInitial: true,
     followSymlinks: false,
     awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 500 },
+    // Skip high-churn noise directories that explode the fd count without
+    // ever yielding a session to index. ENFILE on machines with large
+    // Gemini tmp trees was the trigger (see e.g. .gemini/tmp/<proj>/
+    // tool-outputs/run_shell_command_*.txt — thousands per session).
+    ignored: [
+      /\/tool-outputs\//,
+      /\/\.vite-temp\//,
+      /\.engram-tmp-/,
+      /\.engram-move-tmp-/,
+      /\/node_modules\//,
+      /\.DS_Store$/,
+    ],
   });
 
   const handleChange = async (filePath: string) => {
