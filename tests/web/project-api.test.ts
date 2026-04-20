@@ -287,6 +287,28 @@ describe('Web API — /api/project/*', () => {
       // containing `src` as its cwd. A real scan MUST find it.
       expect(body.totalFilesPatched as number).toBeGreaterThanOrEqual(1);
       expect(body.totalOccurrences as number).toBeGreaterThanOrEqual(1);
+      // Round 4: manifest must carry per-file breakdown so the Swift UI
+      // can show *which* files will be patched. Previously the backend
+      // returned `manifest: []` in dry-run, so the UI had nothing to
+      // render — users reported flying blind.
+      const manifest = body.manifest as Array<{
+        path: string;
+        occurrences: number;
+      }>;
+      expect(Array.isArray(manifest)).toBe(true);
+      expect(manifest.length).toBe(body.totalFilesPatched);
+      // Each entry must carry a real path + non-negative occurrences.
+      for (const entry of manifest) {
+        expect(typeof entry.path).toBe('string');
+        expect(entry.path.length).toBeGreaterThan(0);
+        expect(typeof entry.occurrences).toBe('number');
+        expect(entry.occurrences).toBeGreaterThanOrEqual(0);
+      }
+      // Sum of manifest occurrences must match the aggregate counter —
+      // otherwise the "N files · M occurrences" banner is inconsistent
+      // with the expandable file list.
+      const occSum = manifest.reduce((acc, e) => acc + e.occurrences, 0);
+      expect(occSum).toBe(body.totalOccurrences);
     } finally {
       if (savedHome) process.env.HOME = savedHome;
       else delete process.env.HOME;

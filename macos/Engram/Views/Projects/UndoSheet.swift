@@ -77,6 +77,19 @@ struct UndoSheet: View {
                         migrationRow(m)
                     }
                 }
+                if isExecuting {
+                    // Round 4 feedback: Undo runs a full reverse migration
+                    // (patch files + rename dirs + move physical dir back).
+                    // Without a spinner the sheet looks frozen for seconds.
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Reversing migration — restoring files and directories…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
                 if let error = errorMessage {
                     VStack(alignment: .leading, spacing: 6) {
                         Label(error, systemImage: "exclamationmark.triangle")

@@ -175,7 +175,15 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(result.state).toBe('dry-run');
     expect(existsSync(src)).toBe(true); // src intact
     expect(existsSync(dst)).toBe(false);
-    expect(result.manifest).toEqual([]);
+    // Round 4: dry-run now populates `manifest` with per-file breakdown
+    // so the UI can show which files would be patched. Empty-manifest was
+    // the old stub behavior (see buildDryRunPlan Round 2 fix).
+    expect(result.manifest.length).toBe(result.totalFilesPatched);
+    const occSum = result.manifest.reduce(
+      (acc, entry) => acc + entry.occurrences,
+      0,
+    );
+    expect(occSum).toBe(result.totalOccurrences);
     expect(db.listMigrations()).toEqual([]); // no log row
   });
 

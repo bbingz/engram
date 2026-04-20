@@ -321,8 +321,13 @@ struct MigrationLogEntry: Decodable, Identifiable {
 }
 
 /// Subset of the TS PipelineResult actually used by the UI. We ignore
-/// `perSource`, `manifest`, `git`, `renamedDirs`, etc. — add them here
-/// later if a view needs them. Decodable is defensive about extras.
+/// `perSource`, `git`, `renamedDirs`, etc. — add them here later if a
+/// view needs them. Decodable is defensive about extras.
+///
+/// `manifest` is the per-file breakdown (path + occurrence count). On
+/// dry-run it's the projected list of files that will be patched; on
+/// committed it's the actual list that was patched. Round 4: UI needs
+/// this to show users *which* files are impacted before they commit.
 struct ProjectMoveResult: Decodable {
     let migrationId: String
     let state: String                  // 'committed' | 'dry-run' | 'failed'
@@ -332,10 +337,17 @@ struct ProjectMoveResult: Decodable {
     let sessionsUpdated: Int
     let aliasCreated: Bool
     let review: ReviewBlock
+    let manifest: [ManifestEntry]?    // optional — older daemons may omit
 
     struct ReviewBlock: Decodable {
         let own: [String]
         let other: [String]
+    }
+
+    struct ManifestEntry: Decodable, Identifiable {
+        let path: String
+        let occurrences: Int
+        var id: String { path }
     }
 }
 

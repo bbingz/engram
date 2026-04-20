@@ -738,9 +738,12 @@ export async function buildDryRunPlan(
 
   // Scan every source root for files referencing `src`. Count via byte-level
   // split on the needle so the reported "occurrences" matches what the real
-  // patcher would rewrite.
+  // patcher would rewrite. Populate `manifest` with the per-file breakdown
+  // so the UI can show *which* files will be patched (Round 4 feedback:
+  // users won't trust a bare "N files" count without being able to inspect).
   const { readFile } = await import('node:fs/promises');
   const perSource: PerSourceStats[] = [];
+  const manifest: Array<{ path: string; occurrences: number }> = [];
   let totalFilesPatched = 0;
   let totalOccurrences = 0;
   const srcBuf = Buffer.from(src, 'utf8');
@@ -763,14 +766,20 @@ export async function buildDryRunPlan(
             reason: 'too_large',
             detail: `${st.size} bytes > cap ${DRY_RUN_READ_CAP}`,
           });
+          // Still record the file in the manifest with 0 occurrences so the
+          // UI can show it was skipped rather than hide it entirely.
+          manifest.push({ path: file, occurrences: 0 });
           continue;
         }
         const buf = await readFile(file);
+        let fileOccurrences = 0;
         let idx = buf.indexOf(srcBuf);
         while (idx !== -1) {
-          occurrences++;
+          fileOccurrences++;
           idx = buf.indexOf(srcBuf, idx + srcBuf.length);
         }
+        occurrences += fileOccurrences;
+        manifest.push({ path: file, occurrences: fileOccurrences });
       } catch (err) {
         // Codex follow-up important #3: don't swallow the error. The file
         // was found by grep, so it exists — if we can't stat/read, that's
@@ -808,6 +817,6 @@ export async function buildDryRunPlan(
     aliasCreated: false,
     review: { own: [], other: [] },
     git,
-    manifest: [],
+    manifest,
   };
 }

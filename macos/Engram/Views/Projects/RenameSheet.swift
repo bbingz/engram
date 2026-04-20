@@ -85,6 +85,30 @@ struct RenameSheet: View {
                     .accessibilityLabel("New project path")
                     .accessibilityHint("Enter the full destination path; ~/… is accepted.")
 
+                if isPreviewLoading {
+                    // Round 4 feedback: previously only the Preview button
+                    // went disabled while the scan ran — users thought the
+                    // UI was frozen. Inline spinner + explicit copy makes
+                    // the async work visible.
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Scanning sources for references…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                } else if isExecuting {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Renaming — patching files and renaming dirs…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+
                 if let preview = previewResult, preview.state == "dry-run" {
                     previewBox(preview)
                 }
@@ -131,7 +155,12 @@ struct RenameSheet: View {
                         }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
-                        .disabled(isExecuting)
+                        // Round 4 code-reviewer I4: previously disabled only
+                        // on `isExecuting`, so a user clicking Rename while
+                        // a preview was still in-flight would spawn a
+                        // concurrent Task that overwrote `activeTask`. Guard
+                        // on both states.
+                        .disabled(isExecuting || isPreviewLoading)
                     }
                 }
             }
@@ -159,7 +188,7 @@ struct RenameSheet: View {
 
     @ViewBuilder
     private func previewBox(_ preview: ProjectMoveResult) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "doc.text.magnifyingglass")
                     .foregroundStyle(.blue)
@@ -171,6 +200,44 @@ struct RenameSheet: View {
             )
             .font(.caption2)
             .foregroundStyle(.secondary)
+
+            // Round 4 feedback: users couldn't see *which* files would be
+            // patched — only an aggregate count. For a destructive op on
+            // arbitrary session files, that trust gap is a blocker. Expose
+            // the per-file breakdown behind a DisclosureGroup so the common
+            // case stays compact but inspection is one click away.
+            if let manifest = preview.manifest, !manifest.isEmpty {
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(manifest) { entry in
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(shortenFilePath(entry.path))
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(entry.path)  // full path on hover
+                                Spacer(minLength: 6)
+                                Text(
+                                    entry.occurrences == 0
+                                        ? "skipped"
+                                        : "\(entry.occurrences)×"
+                                )
+                                .font(.caption2)
+                                .foregroundStyle(
+                                    entry.occurrences == 0 ? .orange : .secondary
+                                )
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    Text("Show affected files (\(manifest.count))")
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                }
+            }
+
             if !preview.review.own.isEmpty {
                 Text(
                     "⚠️ \(preview.review.own.count) residual own-scope ref(s) after patch — manual review may be needed"
@@ -183,6 +250,25 @@ struct RenameSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Shorten `/Users/bing/.codex/sessions/2026-04-20/abc123.jsonl` to
+    /// `~/.codex/…/abc123.jsonl` so the list stays readable on a 480pt
+    /// sheet. The full path is accessible via `.help()` (hover tooltip).
+    private func shortenFilePath(_ abs: String) -> String {
+        let home = NSHomeDirectory()
+        var s = abs
+        if s.hasPrefix(home) {
+            s = "~" + s.dropFirst(home.count)
+        }
+        // Collapse deep middle segments for very long paths.
+        let parts = s.split(separator: "/", omittingEmptySubsequences: false)
+        if parts.count > 5 {
+            let head = parts.prefix(2).joined(separator: "/")
+            let tail = parts.suffix(2).joined(separator: "/")
+            return "\(head)/…/\(tail)"
+        }
+        return s
     }
 
     @ViewBuilder

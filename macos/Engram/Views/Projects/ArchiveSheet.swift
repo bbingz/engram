@@ -89,6 +89,20 @@ struct ArchiveSheet: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
+                if isExecuting {
+                    // Round 4 feedback: no visible progress during the
+                    // physical move + DB commit — user thought UI was
+                    // frozen. Inline spinner mirrors RenameSheet.
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Archiving — moving files and updating index…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+
                 // Gemini minor: users don't always realize archive =
                 // physical file move. Any open editor / shell / build
                 // running in the source dir will see the files vanish.
