@@ -853,17 +853,38 @@ export function createApp(
 
   // GET /api/project/migrations — recent migrations (defaults to committed
   // only, limit 20). Used by UndoSheet to pick a row to reverse.
+  //
+  // Round 4 Critical: previously fetched `limit` rows THEN filtered by
+  // state in JS. With state='committed' and limit=5, if the 5 most
+  // recent rows included any failed/pending ones, the user saw a
+  // truncated list even though many committed ones existed further
+  // back. listMigrations already supports state filtering — push it in.
   app.get('/api/project/migrations', (c) => {
     const limit = Math.min(
       Math.max(parseInt(c.req.query('limit') ?? '20', 10) || 20, 1),
       100,
     );
     const stateFilter = c.req.query('state'); // undefined = all states
-    const rows = db.listMigrations({ limit });
-    const filtered = stateFilter
-      ? rows.filter((r) => r.state === stateFilter)
-      : rows;
-    return c.json({ migrations: filtered });
+    const validStates = ['fs_pending', 'fs_done', 'committed', 'failed'];
+    if (stateFilter && !validStates.includes(stateFilter)) {
+      return c.json(
+        validationError(
+          'InvalidParam',
+          `state must be one of ${validStates.join(', ')}`,
+        ),
+        400,
+      );
+    }
+    const rows = db.listMigrations({
+      limit,
+      state: stateFilter as
+        | 'fs_pending'
+        | 'fs_done'
+        | 'committed'
+        | 'failed'
+        | undefined,
+    });
+    return c.json({ migrations: rows });
   });
 
   // GET /api/project/cwds?project=<name> — distinct cwds for a project
@@ -984,12 +1005,23 @@ export function createApp(
       './core/project-move/archive.js'
     );
     try {
+      // Round 4 Critical (reviewer C1): archive.ts now owns alias
+      // normalization — pass the raw string in, suggestArchiveTarget
+      // will throw on unknowns with a consistent message. Previously
+      // this cast-through-`as never` produced _archive/archived-done/
+      // folders with English names instead of /归档完成/.
       const suggestion = await suggestArchiveTarget(srcResolved.path, {
-        forceCategory: body.archiveTo as never,
+        forceCategory: body.archiveTo,
       });
-      const { mkdir } = await import('node:fs/promises');
-      const { dirname } = await import('node:path');
-      await mkdir(dirname(suggestion.dst), { recursive: true });
+      // Round 4 Critical (Codex #4): only create the _archive/<cat>/
+      // parent dir on a real run. A dry-run used to mkdir unconditionally
+      // which left empty `_archive/<cat>/` folders on the FS even when
+      // the user only wanted a preview.
+      if (body.dryRun !== true) {
+        const { mkdir } = await import('node:fs/promises');
+        const { dirname } = await import('node:path');
+        await mkdir(dirname(suggestion.dst), { recursive: true });
+      }
       const result = await runProjectMove(db, {
         src: srcResolved.path,
         dst: suggestion.dst,

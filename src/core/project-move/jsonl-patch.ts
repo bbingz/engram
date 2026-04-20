@@ -145,6 +145,30 @@ export class ConcurrentModificationError extends Error {
 }
 
 /**
+ * Combined path-rewrite: main regex (path-terminator aware) + dot-quote
+ * fallback. Round 4 Critical: previously the orchestrator ran the dot-quote
+ * sweep as a SEPARATE read-write pass bypassing CAS, which could overwrite
+ * concurrent writes. Folding it into patchBuffer keeps the transformation
+ * atomic AND makes it automatically reversible by compensation (since
+ * compensation replays patchFile with src/dst swapped).
+ */
+export function patchBufferWithDotQuote(
+  data: Buffer,
+  oldPath: string,
+  newPath: string,
+): PatchResult {
+  const first = patchBuffer(data, oldPath, newPath);
+  // autoFixDotQuote still works on the remaining pattern — after the main
+  // regex, any `<oldPath>."` that slipped through (path-terminator regex
+  // excludes `.` to preserve `.bak`) gets caught here.
+  const second = autoFixDotQuote(first.buffer, oldPath, newPath);
+  return {
+    buffer: second.buffer,
+    count: first.count + second.count,
+  };
+}
+
+/**
  * Read, patch, write a single file atomically with compare-and-swap mtime
  * protection. Uses `<file>.engram-tmp-<pid>-<rand>` + rename.
  *
@@ -160,6 +184,10 @@ export class ConcurrentModificationError extends Error {
  * Returns the number of replacements (0 = not touched, no write, no CAS check).
  * mvp.py equivalent: `patch_file(file, old, new)` including I/O (but mvp.py
  * has no CAS — it silently clobbers; this is the improvement).
+ *
+ * Round 4: uses `patchBufferWithDotQuote` so the dot-quote fallback sweep
+ * happens within the same CAS window as the main rewrite — previously the
+ * orchestrator ran the dot-quote pass separately and bypassed CAS.
  */
 export async function patchFile(
   filePath: string,
@@ -175,7 +203,7 @@ export async function patchFile(
   const mtimeBefore = stBefore.mtimeMs;
 
   const buf = await readFile(filePath);
-  const res = patchBuffer(buf, oldPath, newPath);
+  const res = patchBufferWithDotQuote(buf, oldPath, newPath);
   if (res.count === 0) return 0;
 
   // Re-stat BEFORE we write — if the file changed since we read it, bail out.

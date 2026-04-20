@@ -100,6 +100,49 @@ async function cmdMove(args: string[]): Promise<void> {
       const plan = await runProjectMove(db, { src, dst, dryRun: true });
       log(`${COLOR.dim}--- plan ---${COLOR.reset}`);
       log(`[1] mv  ${src} → ${dst}`);
+      log(
+        `[2] patch ${plan.totalFilesPatched} file(s) across ${plan.perSource.filter((p) => p.filesPatched > 0).length} source(s) · ${plan.totalOccurrences} occurrence(s)`,
+      );
+      // Round 4 Gemini Important: show per-source breakdown so users can
+      // see which sources participate (dir rename + content patch) vs
+      // content-only vs skipped.
+      for (const p of plan.perSource) {
+        if (p.filesPatched === 0) continue;
+        const willRename = plan.renamedDirs.some((d) => d.sourceId === p.id);
+        const role = willRename ? 'rename+patch' : 'content patch';
+        log(
+          `    ${COLOR.dim}- ${p.id}: ${role}, ${p.filesPatched} file(s) · ${p.occurrences} occurrence(s)${COLOR.reset}`,
+        );
+      }
+      // Round 4 Critical: skippedDirs were silent — surface so users
+      // know which sources will NOT be renamed (iFlow lossy collapse,
+      // no project dir, etc.) instead of assuming all 7 participated.
+      if (plan.skippedDirs.length > 0) {
+        log(`${COLOR.dim}--- skipped (no dir rename) ---${COLOR.reset}`);
+        for (const s of plan.skippedDirs) {
+          const reasonLabel =
+            s.reason === 'noop'
+              ? 'encoded name unchanged (content-only)'
+              : 'no dir on disk for this project';
+          log(`    ${COLOR.dim}- ${s.sourceId}: ${reasonLabel}${COLOR.reset}`);
+        }
+      }
+      // Dry-run issues (too_large / stat_failed) — hidden failures the
+      // user should see BEFORE committing.
+      const allIssues = plan.perSource.flatMap((p) => p.issues);
+      if (allIssues.length > 0) {
+        log(
+          `${COLOR.yellow}!${COLOR.reset} ${allIssues.length} file(s) could not be scanned:`,
+        );
+        for (const i of allIssues.slice(0, 5)) {
+          log(`    ${COLOR.dim}[${i.reason}] ${i.path}${COLOR.reset}`);
+        }
+        if (allIssues.length > 5) {
+          log(
+            `    ${COLOR.dim}... and ${allIssues.length - 5} more${COLOR.reset}`,
+          );
+        }
+      }
       if (plan.git.dirty) {
         log(
           `${COLOR.yellow}!${COLOR.reset} git: ${src} has uncommitted changes (${plan.git.untrackedOnly ? 'untracked only' : 'tracked changes'})`,
@@ -131,6 +174,14 @@ async function cmdMove(args: string[]): Promise<void> {
         `patched ${result.totalFilesPatched} file(s) with ${result.totalOccurrences} replacement(s); ` +
         `sessions_updated=${result.sessionsUpdated}; alias_created=${result.aliasCreated}`,
     );
+    if (result.skippedDirs.length > 0) {
+      const lossy = result.skippedDirs.filter((s) => s.reason === 'noop');
+      if (lossy.length > 0) {
+        log(
+          `${COLOR.yellow}!${COLOR.reset} ${lossy.length} source(s) had encoded name unchanged (content-only patch): ${lossy.map((s) => s.sourceId).join(', ')}`,
+        );
+      }
+    }
     if (result.review.own.length > 0) {
       log(
         `${COLOR.yellow}!${COLOR.reset} ${result.review.own.length} own-scope residual ref(s) — manual review suggested:`,

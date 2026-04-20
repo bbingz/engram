@@ -13,6 +13,34 @@ import { basename, dirname, join } from 'node:path';
 
 export type ArchiveCategory = '历史脚本' | '空项目' | '归档完成';
 
+/** Alias map for user input: accepts CJK names verbatim AND English
+ *  aliases that appear in the MCP tool schema / Swift UI picker. Living
+ *  here instead of the tools/ layer means every caller (MCP, HTTP,
+ *  Swift via HTTP, CLI) shares one normalization — Round 4 Critical
+ *  (reviewer C1): the HTTP layer previously passed `"archived-done"`
+ *  straight through, producing `_archive/archived-done/` folders
+ *  instead of `_archive/归档完成/`. */
+const ARCHIVE_CATEGORY_ALIASES: Record<string, ArchiveCategory> = {
+  历史脚本: '历史脚本',
+  空项目: '空项目',
+  归档完成: '归档完成',
+  'historical-scripts': '历史脚本',
+  'empty-project': '空项目',
+  'archived-done': '归档完成',
+  // Soft backwards-compat for early adopters (not exposed in schema enum).
+  empty: '空项目',
+  completed: '归档完成',
+};
+
+/** Normalize a user-supplied category string to the canonical CJK enum.
+ *  Returns undefined if the input doesn't match any known alias. */
+export function normalizeArchiveCategory(
+  input: string | undefined,
+): ArchiveCategory | undefined {
+  if (!input) return undefined;
+  return ARCHIVE_CATEGORY_ALIASES[input];
+}
+
 export interface ArchiveSuggestion {
   /** Absolute destination path, e.g. `/Users/bing/-Code-/_archive/历史脚本/WuKong` */
   dst: string;
@@ -32,8 +60,11 @@ export interface ArchiveOptions {
    * use this category — even if the project would otherwise be rule-4
    * (ambiguous) which normally throws. Gemini critical #1: without this
    * escape hatch, `--to` couldn't rescue ambiguous projects.
+   *
+   * Accepts either the canonical CJK enum OR an English alias (see
+   * normalizeArchiveCategory). Non-matching strings throw.
    */
-  forceCategory?: ArchiveCategory;
+  forceCategory?: ArchiveCategory | string;
 }
 
 /**
@@ -51,12 +82,23 @@ export async function suggestArchiveTarget(
   const archiveRoot =
     opts.archiveRoot ?? join(dirname(src.replace(/\/+$/, '')), '_archive');
 
-  // User override — skip all heuristics (Gemini critical #1).
+  // User override — skip all heuristics (Gemini critical #1). Round 4
+  // reviewer C1: normalize English aliases at the centralized point,
+  // *not* in the tools/ layer — HTTP /api/project/archive passed raw
+  // `archived-done` through and produced an English-named folder.
   if (opts.forceCategory) {
+    const normalized = normalizeArchiveCategory(opts.forceCategory);
+    if (!normalized) {
+      throw new Error(
+        `suggestArchiveTarget: unknown forceCategory '${opts.forceCategory}'. ` +
+          'Expected 历史脚本 / 空项目 / 归档完成 or ' +
+          'historical-scripts / empty-project / archived-done.',
+      );
+    }
     return {
-      dst: join(archiveRoot, opts.forceCategory, name),
-      category: opts.forceCategory,
-      reason: `user-specified via --to ${opts.forceCategory}`,
+      dst: join(archiveRoot, normalized, name),
+      category: normalized,
+      reason: `user-specified via --to ${normalized}`,
     };
   }
 

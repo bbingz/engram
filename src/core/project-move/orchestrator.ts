@@ -36,7 +36,7 @@ import {
   reverseGeminiProjectsJsonUpdate,
 } from './gemini-projects-json.js';
 import { checkGitDirty, type GitDirtyStatus } from './git-dirty.js';
-import { autoFixDotQuote, patchFile } from './jsonl-patch.js';
+import { patchFile } from './jsonl-patch.js';
 import { acquireLock, defaultLockPath, releaseLock } from './lock.js';
 import { type ReviewResult, reviewScan } from './review.js';
 import {
@@ -414,6 +414,22 @@ export async function runProjectMove(
       let occurrences = 0;
       for (const r of perFile) {
         if (r.err) {
+          // Round 4 Critical (reviewer C2): patchFile used to silently
+          // downgrade every error to a WalkIssue — so InvalidUtf8Error
+          // and ConcurrentModificationError on files we knew were
+          // referencing `src` left a half-patched project shipped as
+          // state='committed'. Now we classify: errors that mean "we
+          // can't guarantee this file was patched correctly" propagate
+          // and trigger full compensation; transient per-file EACCES
+          // (file went away under us, or permission flip mid-scan)
+          // becomes a WalkIssue the UI can surface.
+          const name = r.err.name;
+          const isHard =
+            name === 'InvalidUtf8Error' ||
+            name === 'ConcurrentModificationError';
+          if (isHard) {
+            throw r.err;
+          }
           issues.push({
             path: r.file,
             reason: 'stat_failed',
@@ -436,24 +452,12 @@ export async function runProjectMove(
       totalOccurrences += occurrences;
     }
 
-    // Step 4: auto-fix `<old>."` sentence-end pattern (only on files we touched)
-    // This is a text-level belt-and-suspenders on top of step 3's regex.
-    let dotQuoteExtras = 0;
-    for (const entry of [...manifest]) {
-      try {
-        const { readFile, writeFile } = await import('node:fs/promises');
-        const buf = await readFile(entry.path);
-        const fixed = autoFixDotQuote(buf, src, dst);
-        if (fixed.count > 0) {
-          await writeFile(entry.path, fixed.buffer);
-          dotQuoteExtras += fixed.count;
-          entry.occurrences += fixed.count;
-        }
-      } catch {
-        // skip — main regex already did most of the work
-      }
-    }
-    totalOccurrences += dotQuoteExtras;
+    // Step 4 (removed Round 4): the dot-quote fallback sweep used to live
+    // here as a separate readFile/writeFile pass, bypassing patchFile's
+    // CAS — under concurrent writes this could silently overwrite another
+    // process's append. Now folded into patchFile via
+    // patchBufferWithDotQuote, so every rewrite is atomic AND compensation
+    // (which replays patchFile in reverse) automatically covers it.
 
     // Phase B: mark FS complete
     db.markMigrationFsDone({
@@ -775,21 +779,19 @@ export async function buildDryRunPlan(
     let occurrences = 0;
     const issues: WalkIssue[] = [];
     for (const file of hits) {
-      filesPatched++;
+      // Round 4 (Codex #6 / reviewer M3): filesPatched used to increment
+      // up front — so oversized/unreadable files still contributed to the
+      // "N files will be patched" banner even though they'd actually be
+      // skipped. Now we only count a file after it passes the size + read
+      // gates; skipped files show up in `issues` instead.
       try {
         const st = await stat(file);
         if (st.size > DRY_RUN_READ_CAP) {
-          // Codex follow-up important #3: previously counted as 1 occurrence
-          // silently. Surface as a WalkIssue so the UI can show "N large
-          // files skipped" instead of pretending the count is precise.
           issues.push({
             path: file,
             reason: 'too_large',
             detail: `${st.size} bytes > cap ${DRY_RUN_READ_CAP}`,
           });
-          // Still record the file in the manifest with 0 occurrences so the
-          // UI can show it was skipped rather than hide it entirely.
-          manifest.push({ path: file, occurrences: 0 });
           continue;
         }
         const buf = await readFile(file);
@@ -799,8 +801,11 @@ export async function buildDryRunPlan(
           fileOccurrences++;
           idx = buf.indexOf(srcBuf, idx + srcBuf.length);
         }
-        occurrences += fileOccurrences;
-        manifest.push({ path: file, occurrences: fileOccurrences });
+        if (fileOccurrences > 0) {
+          filesPatched++;
+          occurrences += fileOccurrences;
+          manifest.push({ path: file, occurrences: fileOccurrences });
+        }
       } catch (err) {
         // Codex follow-up important #3: don't swallow the error. The file
         // was found by grep, so it exists — if we can't stat/read, that's

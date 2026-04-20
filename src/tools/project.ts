@@ -14,6 +14,7 @@ import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 import {
   type ArchiveCategory,
+  normalizeArchiveCategory,
   suggestArchiveTarget,
 } from '../core/project-move/archive.js';
 import {
@@ -166,19 +167,6 @@ export const projectArchiveTool = {
   },
 };
 
-const ARCHIVE_CATEGORY_ALIASES: Record<string, ArchiveCategory> = {
-  历史脚本: '历史脚本',
-  空项目: '空项目',
-  归档完成: '归档完成',
-  'historical-scripts': '历史脚本',
-  'empty-project': '空项目',
-  'archived-done': '归档完成',
-  // Soft backwards-compatibility for early adopters; mapped but not in schema
-  // enum. Prefer the specific names above.
-  empty: '空项目',
-  completed: '归档完成',
-};
-
 export async function handleProjectArchive(
   db: Database,
   params: {
@@ -193,13 +181,15 @@ export async function handleProjectArchive(
   PipelineResult & { archive: { category: ArchiveCategory; reason: string } }
 > {
   opts?.log?.info('project_archive', { src: params.src, to: params.to });
-  const forceCategory = params.to
-    ? (ARCHIVE_CATEGORY_ALIASES[params.to] ?? undefined)
-    : undefined;
+  // Round 4: normalization now lives in archive.ts (normalizeArchiveCategory)
+  // so HTTP / MCP / CLI all route English aliases through one shared map.
+  // Pass `params.to` through — suggestArchiveTarget will throw on unknown
+  // values with a consistent message.
+  const forceCategory = normalizeArchiveCategory(params.to);
   if (params.to && !forceCategory) {
     throw new Error(
       `project_archive: unknown category '${params.to}'. ` +
-        'Expected one of: 历史脚本/空项目/归档完成 or historical-scripts/empty/completed.',
+        'Expected one of: 历史脚本/空项目/归档完成 or historical-scripts/empty-project/archived-done.',
     );
   }
   const src = expandHome(params.src);
