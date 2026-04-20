@@ -36,6 +36,26 @@ struct RenameSheet: View {
     /// carry sourceId + dir paths so the UI can show exactly which path
     /// conflicts instead of forcing users to parse the error message.
     @State private var errorDetails: ProjectMoveAPIError.Details?
+    /// Round 4: keep the previous preview visible (dimmed) when the
+    /// user edits the path, rather than hard-clearing it — the abrupt
+    /// visual jump was called out as disorienting (Gemini Minor).
+    @State private var previewStale: Bool = false
+
+    /// Validate the new-path input before enabling Preview:
+    ///   - non-empty after trimming whitespace
+    ///   - not equal to the source (including after trimming)
+    ///   - a selected cwd exists
+    /// Gemini Important: previously only `newPath.isEmpty` was checked,
+    /// so whitespace-only paths and src == dst strings reached the
+    /// backend.
+    private var isPathValid: Bool {
+        let trimmed = newPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return false }
+        if selectedCwd.isEmpty { return false }
+        if trimmed == selectedCwd { return false }
+        if isPreviewLoading || isExecuting { return false }
+        return true
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -115,6 +135,14 @@ struct RenameSheet: View {
 
                 if let preview = previewResult, preview.state == "dry-run" {
                     previewBox(preview)
+                        .opacity(previewStale ? 0.5 : 1.0)
+                    if previewStale {
+                        Text(
+                            "Path changed — click Preview again to refresh these numbers."
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    }
                 }
 
                 if let error = errorMessage {
@@ -147,24 +175,23 @@ struct RenameSheet: View {
                         Button("Preview") {
                             activeTask = Task { await runPreview() }
                         }
-                        .disabled(
-                            newPath.isEmpty
-                                || selectedCwd.isEmpty
-                                || isPreviewLoading
-                                || isExecuting
-                        )
+                        // Round 4 Gemini Critical: Enter must trigger
+                        // Preview in this state so users don't have to
+                        // move their hand to the mouse after typing.
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!isPathValid)
                     } else {
                         Button("Rename") {
                             activeTask = Task { await runRename() }
                         }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
-                        // Round 4 code-reviewer I4: previously disabled only
-                        // on `isExecuting`, so a user clicking Rename while
-                        // a preview was still in-flight would spawn a
-                        // concurrent Task that overwrote `activeTask`. Guard
-                        // on both states.
-                        .disabled(isExecuting || isPreviewLoading)
+                        // Round 4: disable on (a) executing, (b) preview
+                        // still in flight — prevents concurrent Task
+                        // spawn (code-reviewer I4) — (c) stale preview
+                        // after path edit, so user can't commit against
+                        // numbers that no longer reflect the input.
+                        .disabled(isExecuting || isPreviewLoading || previewStale)
                     }
                 }
             }
@@ -177,14 +204,15 @@ struct RenameSheet: View {
         .interactiveDismissDisabled(isExecuting || isPreviewLoading)
         .task { await loadCwds() }
         .onDisappear { activeTask?.cancel() }
-        // Self-review: stale preview — if user edits the path after
-        // previewing, invalidate the preview box so they don't rename
-        // against the wrong target.
+        // Round 4: instead of hard-clearing the preview (abrupt visual
+        // jump), flag it stale and render dimmed with an inline notice.
+        // Rename button also gates on `!previewStale` so the user can't
+        // commit against a result that no longer matches the input.
         .onChange(of: newPath) { _, _ in
-            if previewResult != nil { previewResult = nil }
+            if previewResult != nil { previewStale = true }
         }
         .onChange(of: selectedCwd) { _, _ in
-            if previewResult != nil { previewResult = nil }
+            if previewResult != nil { previewStale = true }
         }
     }
 
@@ -249,11 +277,81 @@ struct RenameSheet: View {
                 .font(.caption2)
                 .foregroundStyle(.orange)
             }
+
+            // Round 4 Critical: surface perSource.issues (too_large /
+            // stat_failed) — previously silently dropped at decode, so
+            // users saw "N files will be patched" with no hint that some
+            // files failed to scan (EACCES, etc.).
+            let totalIssues = (preview.perSource ?? []).reduce(0) {
+                $0 + ($1.issues?.count ?? 0)
+            }
+            if totalIssues > 0 {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("⚠️ \(totalIssues) file(s) could not be scanned")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.orange)
+                    ForEach(preview.perSource ?? []) { src in
+                        if let issues = src.issues, !issues.isEmpty {
+                            ForEach(issues) { issue in
+                                HStack(spacing: 4) {
+                                    Text(reasonLabel(issue.reason))
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.orange)
+                                    Text(shortenFilePath(issue.path))
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .help(issue.detail ?? issue.path)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+
+            // Round 4 Critical: surface skippedDirs so users know which
+            // sources did not participate in the rename (iFlow lossy
+            // encoding collapse, etc.) rather than assume all 7 sources
+            // migrated successfully.
+            if let skipped = preview.skippedDirs, !skipped.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("ℹ️ \(skipped.count) source(s) not renamed")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.blue)
+                    ForEach(skipped) { s in
+                        Text("• \(s.sourceId): \(skippedReasonLabel(s.reason))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 2)
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func reasonLabel(_ r: String) -> String {
+        switch r {
+        case "too_large": return "too large"
+        case "stat_failed": return "permission / read error"
+        default: return r
+        }
+    }
+
+    private func skippedReasonLabel(_ r: String) -> String {
+        switch r {
+        case "noop":
+            return "no directory rename needed (content-only patch, or lossy encoding produced same name)"
+        case "missing":
+            return "no directory exists for this project at this source"
+        default:
+            return r
+        }
     }
 
     /// Shorten `/Users/bing/.codex/sessions/2026-04-20/abc123.jsonl` to
@@ -390,6 +488,7 @@ struct RenameSheet: View {
             )
             if Task.isCancelled { return }
             previewResult = res
+            previewStale = false
         } catch let apiErr as ProjectMoveAPIError {
             if Task.isCancelled { return }
             errorMessage = apiErr.message

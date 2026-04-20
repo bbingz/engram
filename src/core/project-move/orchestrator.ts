@@ -131,6 +131,13 @@ export interface PipelineResult {
   ccDirRenamed: boolean;
   /** All per-project directories that were renamed during this move. */
   renamedDirs: DirRenamePlan[];
+  /** Per-project directories intentionally NOT renamed. `noop` = encoded
+   *  dir name is the same before/after (e.g. content-only source, or
+   *  iFlow lossy encoding collapse). `missing` = no dir exists for this
+   *  project at this source. Round 4 Critical: previously lived only in
+   *  migration_log.detail so CLI/Swift couldn't show the user which
+   *  sources skipped the rename. */
+  skippedDirs: Array<{ sourceId: SourceId; reason: 'noop' | 'missing' }>;
   perSource: PerSourceStats[];
   totalFilesPatched: number;
   totalOccurrences: number;
@@ -497,6 +504,7 @@ export async function runProjectMove(
       moveStrategy,
       ccDirRenamed,
       renamedDirs,
+      skippedDirs,
       perSource,
       totalFilesPatched,
       totalOccurrences,
@@ -717,12 +725,24 @@ export async function buildDryRunPlan(
 
   // Same dir-rename plan shape as the main pipeline — lets the UI show which
   // per-project dirs would be renamed even though we don't touch them here.
+  // Round 4: also populate `skippedDirs` so the UI can surface which
+  // sources will NOT be renamed (iFlow lossy collapse, no-op encoding,
+  // or project absent on disk) — previously these were silent.
   const renamedDirs: DirRenamePlan[] = [];
+  const skippedDirs: Array<{
+    sourceId: SourceId;
+    reason: 'noop' | 'missing';
+  }> = [];
   for (const root of roots) {
     if (!root.encodeProjectDir) continue;
     const oldName = root.encodeProjectDir(src);
     const newName = root.encodeProjectDir(dst);
-    if (oldName === newName) continue;
+    if (oldName === newName) {
+      // encodeProjectDir produced the same name — lossy encoding (iFlow)
+      // or semantically equivalent rename. Content still gets patched.
+      skippedDirs.push({ sourceId: root.id, reason: 'noop' });
+      continue;
+    }
     const plan: DirRenamePlan = {
       sourceId: root.id,
       oldDir: join(root.path, oldName),
@@ -732,7 +752,8 @@ export async function buildDryRunPlan(
       await stat(plan.oldDir);
       renamedDirs.push(plan);
     } catch {
-      /* oldDir absent — this source has no dir for this project */
+      // oldDir absent on this source — project never had history here.
+      skippedDirs.push({ sourceId: root.id, reason: 'missing' });
     }
   }
 
@@ -810,6 +831,7 @@ export async function buildDryRunPlan(
     moveStrategy: 'skipped',
     ccDirRenamed,
     renamedDirs,
+    skippedDirs,
     perSource,
     totalFilesPatched,
     totalOccurrences,

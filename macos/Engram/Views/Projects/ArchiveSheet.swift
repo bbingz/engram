@@ -21,6 +21,7 @@ struct ArchiveSheet: View {
     @State private var activeTask: Task<Void, Never>?
     @State private var residualRefCount: Int?
     @State private var errorDetails: ProjectMoveAPIError.Details?
+    @State private var showConfirmDialog: Bool = false
 
     // English aliases match the MCP tool's canonical enum; labels in the
     // picker show the Chinese variants alongside for clarity.
@@ -84,11 +85,14 @@ struct ArchiveSheet: View {
                 .labelsHidden()
                 .disabled(isExecuting)
 
-                Text(
-                    "Will move to ~/-Code-/_archive/<category>/\(projectName) (or similar)."
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                // Round 4 Gemini Minor: previously hardcoded ~/-Code-/_archive/
+                // which is wrong for any user whose projects live elsewhere.
+                // The actual destination is the src's parent joined with
+                // _archive/<category>/<basename> — show that so the user
+                // can verify.
+                Text("Will move to \(previewArchiveDst()) (or similar).")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
 
                 if isExecuting {
                     // Round 4 feedback: no visible progress during the
@@ -190,14 +194,18 @@ struct ArchiveSheet: View {
                     Button("Cancel") { dismiss() }
                         .keyboardShortcut(.cancelAction)
                         .disabled(isExecuting)
-                    Button("Archive") {
-                        activeTask = Task { await runArchive() }
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        selectedCwd.isEmpty || isExecuting || availableCwds.isEmpty
-                    )
+                    // Round 4 Gemini Critical: Archive physically moves
+                    // the project dir. Any editor/shell/build attached
+                    // to the old path will break on next fs access. The
+                    // Archive button now triggers a confirmationDialog;
+                    // the actual work only starts after explicit confirm.
+                    Button("Archive") { showConfirmDialog = true }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            selectedCwd.isEmpty || isExecuting
+                                || availableCwds.isEmpty
+                        )
                 }
             }
         }
@@ -206,6 +214,40 @@ struct ArchiveSheet: View {
         .interactiveDismissDisabled(isExecuting)
         .task { await loadCwds() }
         .onDisappear { activeTask?.cancel() }
+        .confirmationDialog(
+            "Archive project?",
+            isPresented: $showConfirmDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Archive to \(previewArchiveDst())", role: .destructive) {
+                activeTask = Task { await runArchive() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This physically moves \(selectedCwd) to the _archive folder. "
+                    + "Any editor, shell, or build running in that path will see "
+                    + "files vanish mid-session. Close them first."
+            )
+        }
+    }
+
+    /// Build the "Will move to …" preview string without hitting the
+    /// backend — the rule is: <src's parent>/_archive/<category>/<basename>.
+    /// Matches `suggestArchiveTarget` semantics for the default case;
+    /// when category is "auto-detect", placeholder `<category>` is shown.
+    private func previewArchiveDst() -> String {
+        let src = selectedCwd.isEmpty ? "<source>" : selectedCwd
+        let parent = (src as NSString).deletingLastPathComponent
+        let base = (src as NSString).lastPathComponent
+        let cat = category.isEmpty ? "<category>" : category
+        let full = "\(parent)/_archive/\(cat)/\(base)"
+        // Collapse $HOME to ~ for display.
+        let home = NSHomeDirectory()
+        if full.hasPrefix(home) {
+            return "~" + full.dropFirst(home.count)
+        }
+        return full
     }
 
     private func loadCwds() async {

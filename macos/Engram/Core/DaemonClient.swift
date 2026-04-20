@@ -341,6 +341,16 @@ struct ProjectMoveResult: Decodable {
     let aliasCreated: Bool
     let review: ReviewBlock
     let manifest: [ManifestEntry]?    // optional — older daemons may omit
+    /// Per-source scan breakdown + walk issues (too_large / stat_failed).
+    /// Round 4: previously dropped at decode, so EACCES errors during
+    /// dry-run scan were invisible — UI showed "executable" with no
+    /// hint that some files couldn't be read.
+    let perSource: [PerSource]?
+    /// Per-source dirs that were intentionally skipped (iFlow lossy
+    /// encoding collapsing src == dst, Gemini basename unchanged, etc.).
+    /// Round 4 Critical: previously silent in CLI + Swift UI — user
+    /// thought migration complete while some sources were no-op.
+    let skippedDirs: [SkippedDir]?
 
     struct ReviewBlock: Decodable {
         let own: [String]
@@ -351,6 +361,28 @@ struct ProjectMoveResult: Decodable {
         let path: String
         let occurrences: Int
         var id: String { path }
+    }
+
+    struct PerSource: Decodable, Identifiable {
+        let id: String
+        let root: String
+        let filesPatched: Int
+        let occurrences: Int
+        let issues: [WalkIssue]?
+
+        struct WalkIssue: Decodable, Identifiable {
+            let path: String
+            let reason: String  // 'too_large' | 'stat_failed'
+            let detail: String?
+            var id: String { "\(reason)::\(path)" }
+        }
+    }
+
+    struct SkippedDir: Decodable, Identifiable {
+        let sourceId: String
+        let reason: String  // 'encoded_name_unchanged' | 'absent_on_disk' | 'lossy_collapse'
+        let dir: String?
+        var id: String { "\(sourceId)::\(dir ?? reason)" }
     }
 }
 

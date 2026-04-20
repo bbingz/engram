@@ -51,6 +51,12 @@ struct UndoSheet: View {
     /// IDs where retry_policy: 'never' came back (UndoStale etc.) — these
     /// can't be retried, so the UI disables the row. Codex minor #5.
     @State private var disabledMigrationIds: Set<String> = []
+    /// Gemini Round 4 Important: previously the disabled row was just
+    /// dimmed — user had no idea why. Now the reason (error message) is
+    /// stashed per-id and rendered inline under the disabled row so the
+    /// user can read "this migration's newPath was overlaid by migration
+    /// X" instead of guessing.
+    @State private var disabledReasons: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -193,6 +199,14 @@ struct UndoSheet: View {
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
+                    // Gemini Round 4: inline reason for disabled rows so
+                    // the user isn't left guessing.
+                    if let reason = disabledReasons[m.id] {
+                        Label("Can't undo: \(reason)", systemImage: "exclamationmark.triangle")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .padding(.top, 2)
+                    }
                 }
                 Spacer()
             }
@@ -207,6 +221,11 @@ struct UndoSheet: View {
         }
         .buttonStyle(.plain)
         .disabled(isExecuting || disabledMigrationIds.contains(m.id))
+        .accessibilityLabel(
+            disabledMigrationIds.contains(m.id)
+                ? "Migration \(m.id.prefix(8)) — can't undo: \(disabledReasons[m.id] ?? "blocked")"
+                : "Migration \(m.id.prefix(8)) — \(m.oldBasename) to \(m.newBasename)"
+        )
     }
 
     private func loadMigrations() async {
@@ -255,6 +274,7 @@ struct UndoSheet: View {
             // the same stale row. They can still try a different one.
             if apiErr.retryPolicy == "never" {
                 disabledMigrationIds.insert(id)
+                disabledReasons[id] = apiErr.message
                 selectedMigrationId = nil
             }
         } catch {
