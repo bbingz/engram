@@ -78,12 +78,26 @@ plans/project-move-takeover.md    # 方案文档 (rev 2)
 
 ## 下次继续时的决策点
 
-所有计划内 phase 全部落地。剩余可选项：
+计划内 phase 全部落地并经过 **3 轮 post-ship review**。
 
-1. **Swift UI 手工走查** — Xcode 跑起来点一遍 Rename/Archive/Undo 三个 sheet（build 已绿，但没真按过按钮）
-2. **Phase 4b 3-way review** — 新增的 HTTP endpoints + Swift UI 可以再过一轮 codex + gemini
-3. **push 到 origin/main** — 本地已积 3 次 feat commit 未 push
-4. **暂停** — 功能完整，进入下个项目
+### 已完成
+1. ✅ Phase 4b 3-way review (rev2 修 1 Critical + 4 Major + 7 Minor)
+2. ✅ superpowers code-reviewer follow-ups (3 Important + 3 Minor)
+3. ✅ 部署 Release build 到 `/Applications/Engram.app`，daemon 3457 真实监听
+4. ✅ User 实测 Pi-Agent dry-run → 抓到 `buildDryRunPlan` stub bug → 真扫描替换
+5. ✅ Round 2/3 fix：watcher ENFILE + resolve guard + structuredContent + review.own 警告 + tempArtifacts 真扫 + PathProbe 三态 + 测试加真值断言 + 多项 Swift UI trust-failure 修复
+
+### 未完成 / 新一轮 review 候选
+1. **Round 4 review** — 用户计划 compact 后开启新轮，同类 stub/silent-trust 可能还有
+2. **UI 手工再走查** — 真点 Rename → 完整 committed 流程（非 dry-run）到现在还没验
+3. **recover 的 fs_done 路径** — 写的逻辑 "re-run same args" 理论上 idempotent，没有端到端 test
+4. **Batch YAML 功能** — 代码全、tests 全，但实际大批量 move 没跑过真实数据
+5. **Archive 分类启发式** — 3 个 rule（YYYYMMDD-/空项目/.git+content）没有边界大样本测
+
+### 已知边界/不修
+- 测试用 `process.env.HOME` 注入 tmp —— 有 afterEach restore；并行测试不互扰
+- RenameSheet 坚持 Preview → Rename 两步 —— 对破坏性操作合理
+- 内存里 `disabledMigrationIds` 只跨 sheet 生命周期 —— 关了重开丢失，但罕见
 
 ## Phase 5a 翻译说明（mvp shim, 2026-04-20）
 
