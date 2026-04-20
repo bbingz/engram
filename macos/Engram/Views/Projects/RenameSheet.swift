@@ -26,6 +26,7 @@ struct RenameSheet: View {
     @State private var previewResult: ProjectMoveResult?
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
+    @State private var activeTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -76,6 +77,8 @@ struct RenameSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .disabled(isExecuting)
+                    .accessibilityLabel("New project path")
+                    .accessibilityHint("Enter the full destination path; ~/… is accepted.")
 
                 if let preview = previewResult, preview.state == "dry-run" {
                     previewBox(preview)
@@ -95,24 +98,42 @@ struct RenameSheet: View {
                     .disabled(isExecuting)
 
                 if previewResult?.state != "dry-run" {
-                    Button("Preview") { Task { await runPreview() } }
-                        .disabled(
-                            newPath.isEmpty
-                                || selectedCwd.isEmpty
-                                || isPreviewLoading
-                                || isExecuting
-                        )
+                    Button("Preview") {
+                        activeTask = Task { await runPreview() }
+                    }
+                    .disabled(
+                        newPath.isEmpty
+                            || selectedCwd.isEmpty
+                            || isPreviewLoading
+                            || isExecuting
+                    )
                 } else {
-                    Button("Rename") { Task { await runRename() } }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isExecuting)
+                    Button("Rename") {
+                        activeTask = Task { await runRename() }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isExecuting)
                 }
             }
         }
         .padding(20)
         .frame(width: 480)
+        // Codex + Gemini: prevent interactive dismissal while an operation
+        // is running — otherwise the user thinks they cancelled, but the
+        // Task keeps writing to the FS + DB.
+        .interactiveDismissDisabled(isExecuting || isPreviewLoading)
         .task { await loadCwds() }
+        .onDisappear { activeTask?.cancel() }
+        // Self-review: stale preview — if user edits the path after
+        // previewing, invalidate the preview box so they don't rename
+        // against the wrong target.
+        .onChange(of: newPath) { _, _ in
+            if previewResult != nil { previewResult = nil }
+        }
+        .onChange(of: selectedCwd) { _, _ in
+            if previewResult != nil { previewResult = nil }
+        }
     }
 
     // MARK: - Preview / action subviews
@@ -147,16 +168,23 @@ struct RenameSheet: View {
 
     @ViewBuilder
     private func errorBox(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Label(message, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)
                 .font(.caption)
-            if retryPolicy != "never" {
-                Text(
-                    "retry_policy: \(retryPolicy) — you can retry after resolving the cause."
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            HStack {
+                Text(retryPolicyExplainer(retryPolicy))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if retryPolicyAllowsRetry(retryPolicy) {
+                    Button("Retry") {
+                        activeTask = Task { await runRename() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isExecuting)
+                }
             }
         }
         .padding(8)
@@ -181,7 +209,7 @@ struct RenameSheet: View {
     private func runPreview() async {
         errorMessage = nil
         isPreviewLoading = true
-        defer { isPreviewLoading = false }
+        defer { isPreviewLoading = false; activeTask = nil }
         do {
             let res = try await daemonClient.projectMove(
                 src: selectedCwd,
@@ -189,11 +217,14 @@ struct RenameSheet: View {
                 dryRun: true,
                 force: false
             )
+            if Task.isCancelled { return }
             previewResult = res
         } catch let apiErr as ProjectMoveAPIError {
+            if Task.isCancelled { return }
             errorMessage = apiErr.message
             retryPolicy = apiErr.retryPolicy
         } catch {
+            if Task.isCancelled { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -201,7 +232,7 @@ struct RenameSheet: View {
     private func runRename() async {
         errorMessage = nil
         isExecuting = true
-        defer { isExecuting = false }
+        defer { isExecuting = false; activeTask = nil }
         do {
             let res = try await daemonClient.projectMove(
                 src: selectedCwd,
@@ -209,6 +240,7 @@ struct RenameSheet: View {
                 dryRun: false,
                 force: false
             )
+            if Task.isCancelled { return }
             if res.state == "committed" {
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
@@ -216,9 +248,11 @@ struct RenameSheet: View {
                 errorMessage = "Unexpected state: \(res.state)"
             }
         } catch let apiErr as ProjectMoveAPIError {
+            if Task.isCancelled { return }
             errorMessage = apiErr.message
             retryPolicy = apiErr.retryPolicy
         } catch {
+            if Task.isCancelled { return }
             errorMessage = error.localizedDescription
         }
     }

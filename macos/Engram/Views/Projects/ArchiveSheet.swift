@@ -18,6 +18,7 @@ struct ArchiveSheet: View {
     @State private var isExecuting = false
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
+    @State private var activeTask: Task<Void, Never>?
 
     // English aliases match the MCP tool's canonical enum; labels in the
     // picker show the Chinese variants alongside for clarity.
@@ -87,15 +88,37 @@ struct ArchiveSheet: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
+                // Gemini minor: users don't always realize archive =
+                // physical file move. Any open editor / shell / build
+                // running in the source dir will see the files vanish.
+                Label(
+                    "Archiving moves the physical directory. Active editors, shells, or builds in this path will break. Close them first.",
+                    systemImage: "exclamationmark.bubble"
+                )
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .padding(8)
+                .background(Color.orange.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
                 if let error = errorMessage {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red)
                             .font(.caption)
-                        if retryPolicy != "never" {
-                            Text("retry_policy: \(retryPolicy)")
+                        HStack {
+                            Text(retryPolicyExplainer(retryPolicy))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            Spacer()
+                            if retryPolicyAllowsRetry(retryPolicy) {
+                                Button("Retry") {
+                                    activeTask = Task { await runArchive() }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(isExecuting)
+                            }
                         }
                     }
                     .padding(8)
@@ -111,17 +134,21 @@ struct ArchiveSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(isExecuting)
-                Button("Archive") { Task { await runArchive() } }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        selectedCwd.isEmpty || isExecuting || availableCwds.isEmpty
-                    )
+                Button("Archive") {
+                    activeTask = Task { await runArchive() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    selectedCwd.isEmpty || isExecuting || availableCwds.isEmpty
+                )
             }
         }
         .padding(20)
         .frame(width: 480)
+        .interactiveDismissDisabled(isExecuting)
         .task { await loadCwds() }
+        .onDisappear { activeTask?.cancel() }
     }
 
     private func loadCwds() async {
@@ -139,12 +166,13 @@ struct ArchiveSheet: View {
     private func runArchive() async {
         errorMessage = nil
         isExecuting = true
-        defer { isExecuting = false }
+        defer { isExecuting = false; activeTask = nil }
         do {
             let res = try await daemonClient.projectArchive(
                 src: selectedCwd,
                 archiveTo: category.isEmpty ? nil : category
             )
+            if Task.isCancelled { return }
             if res.state == "committed" {
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
@@ -152,9 +180,11 @@ struct ArchiveSheet: View {
                 errorMessage = "Unexpected state: \(res.state)"
             }
         } catch let apiErr as ProjectMoveAPIError {
+            if Task.isCancelled { return }
             errorMessage = apiErr.message
             retryPolicy = apiErr.retryPolicy
         } catch {
+            if Task.isCancelled { return }
             errorMessage = error.localizedDescription
         }
     }

@@ -314,9 +314,21 @@ private struct _ProjectErrEnvelope: Decodable {
     struct Inner: Decodable {
         let name: String?
         let message: String?
-        let retry_policy: String?
+        let retryPolicy: String?
+        enum CodingKeys: String, CodingKey {
+            case name
+            case message
+            case retryPolicy = "retry_policy"
+        }
     }
     let error: Inner?
+}
+
+/// Legacy envelope shape (plain string error body). Older endpoints and
+/// external HTTP tools may still produce this; we decode it as a fallback
+/// so the Swift UI shows a sensible message instead of "HTTP 401".
+private struct _LegacyStringErrEnvelope: Decodable {
+    let error: String?
 }
 
 extension DaemonClient {
@@ -435,13 +447,33 @@ extension DaemonClient {
         if (200..<300).contains(status) {
             return try JSONDecoder().decode(T.self, from: data)
         }
+        // 1. Prefer the structured envelope {error: {name, message, retry_policy}}.
         if let env = try? JSONDecoder().decode(_ProjectErrEnvelope.self, from: data),
            let inner = env.error {
             throw ProjectMoveAPIError(
                 httpStatus: status,
                 name: inner.name ?? "Error",
                 message: inner.message ?? "HTTP \(status)",
-                retryPolicy: inner.retry_policy ?? "safe"
+                retryPolicy: inner.retryPolicy ?? "safe"
+            )
+        }
+        // 2. Fallback to legacy {error: "string"} body.
+        if let legacy = try? JSONDecoder().decode(_LegacyStringErrEnvelope.self, from: data),
+           let msg = legacy.error {
+            throw ProjectMoveAPIError(
+                httpStatus: status,
+                name: "HTTPError",
+                message: msg,
+                retryPolicy: status == 401 ? "never" : "safe"
+            )
+        }
+        // 3. Plain-text body (older endpoints). Surface what we can.
+        if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+            throw ProjectMoveAPIError(
+                httpStatus: status,
+                name: "HTTPError",
+                message: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                retryPolicy: status == 401 ? "never" : "safe"
             )
         }
         throw DaemonClientError.httpError(status)

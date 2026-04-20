@@ -159,4 +159,93 @@ describe('Web API — /api/project/*', () => {
     const body = (await res.json()) as { error?: { name: string } };
     expect(body.error).toBeTruthy();
   });
+
+  // Pass 5 additions (3-way review Phase 4b rev2)
+  it('POST /api/project/move with relative path returns 400 with envelope', async () => {
+    const res = await app.request('/api/project/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src: 'relative/src', dst: '/abs/dst' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { name: string; message: string; retry_policy: string };
+    };
+    expect(body.error.name).toBe('InvalidPath');
+    expect(body.error.retry_policy).toBe('never');
+    expect(body.error.message).toContain('src:');
+  });
+
+  it('POST /api/project/move validation error returns structured envelope', async () => {
+    const res = await app.request('/api/project/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { name: string; retry_policy: string };
+    };
+    // Uniform envelope shape — Swift DaemonClient relies on this.
+    expect(body.error).toMatchObject({
+      name: 'MissingParam',
+      retry_policy: 'never',
+    });
+  });
+
+  it('POST with wrong bearer token returns 401 as JSON envelope', async () => {
+    // Spin up a protected app for this one case — main suite is open.
+    const protectedApp = createApp(db, {
+      settings: { httpBearerToken: 'test-secret' },
+    });
+    const res = await protectedApp.request('/api/project/move', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer wrong-token',
+      },
+      body: JSON.stringify({ src: '/a', dst: '/b' }),
+    });
+    expect(res.status).toBe(401);
+    // Swift client expects the envelope shape; plain text would fall through
+    // to DaemonClientError.httpError and hide the reason.
+    const body = (await res.json()) as {
+      error: { name: string; retry_policy: string };
+    };
+    expect(body.error.name).toBe('Unauthorized');
+    expect(body.error.retry_policy).toBe('never');
+  });
+
+  it('migration_log detail includes skipped_dirs and gemini_projects_json_updated', async () => {
+    // Contract regression: the Swift UI doesn't read these yet, but the
+    // telemetry surface should stay stable for debugging.
+    const raw = db.getRawDb();
+    raw
+      .prepare(
+        `INSERT INTO migration_log (id, old_path, new_path, old_basename,
+       new_basename, state, started_at, dry_run, audit_note, archived,
+       actor, detail) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 0, null, 0, 'cli', ?)`,
+      )
+      .run(
+        'm-contract',
+        '/a/p',
+        '/b/p',
+        'p',
+        'p',
+        'committed',
+        JSON.stringify({
+          renamed_dirs: [{ source: 'claude-code', old: '/o', new: '/n' }],
+          skipped_dirs: [{ sourceId: 'codex', reason: 'noop' }],
+          gemini_projects_json_updated: false,
+        }),
+      );
+    const listRes = await app.request('/api/project/migrations?limit=1');
+    expect(listRes.status).toBe(200);
+    const body = (await listRes.json()) as {
+      migrations: Array<{ detail: Record<string, unknown> }>;
+    };
+    expect(body.migrations[0].detail).toMatchObject({
+      gemini_projects_json_updated: false,
+    });
+  });
 });

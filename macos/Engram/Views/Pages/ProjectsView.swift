@@ -9,12 +9,14 @@ private let isoFormatter: ISO8601DateFormatter = {
 
 struct ProjectsView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(DaemonClient.self) var daemonClient
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
     @State private var selectedProject: DatabaseManager.ProjectGroup? = nil
     @State private var isLoading = true
     @State private var renameTarget: String?
     @State private var archiveTarget: String?
     @State private var showUndoSheet = false
+    @State private var hasRecentMigrations = false
 
     private var activeCount: Int {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
@@ -69,6 +71,12 @@ struct ProjectsView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .disabled(!hasRecentMigrations)
+                        .help(
+                            hasRecentMigrations
+                                ? "Pick a recent committed migration to reverse"
+                                : "No recent committed migrations to undo"
+                        )
                         .accessibilityIdentifier("projects_undoButton")
                     }
                     if projectGroups.isEmpty && !isLoading {
@@ -122,13 +130,22 @@ struct ProjectsView: View {
                                     .menuStyle(.borderlessButton)
                                     .menuIndicator(.hidden)
                                     .fixedSize()
-                                    .padding(.trailing, 8)
+                                    .accessibilityLabel("Project options")
                                     .accessibilityIdentifier("projects_menu_\(index)")
 
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption2)
-                                        .foregroundStyle(Theme.tertiaryText.opacity(0.5))
-                                        .padding(.trailing, 12)
+                                    // Chevron as a separate Button so it keeps a
+                                    // visible click target (previously it was a
+                                    // no-op sibling of the Menu button).
+                                    Button(action: { selectedProject = group }) {
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2)
+                                            .foregroundStyle(Theme.tertiaryText.opacity(0.5))
+                                            .frame(width: 22, height: 22)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.trailing, 8)
+                                    .accessibilityLabel("Open project details")
                                 }
                                 .background(Theme.surface)
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
@@ -168,6 +185,13 @@ struct ProjectsView: View {
         isLoading = true
         defer { isLoading = false }
         do { projectGroups = try db.listSessionsByProject() } catch { print("ProjectsView error:", error) }
+        // Refresh the Undo button's enabled state — cheap call, at most 5 rows.
+        if let migrations = try? await daemonClient.listProjectMigrations(
+            state: "committed",
+            limit: 1
+        ) {
+            hasRecentMigrations = !migrations.isEmpty
+        }
     }
 }
 

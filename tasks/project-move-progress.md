@@ -22,7 +22,8 @@ Swift UI (Phase 4b) 和 mvp.py 退役 (Phase 5) 还没做。
 | Phase 2 — FS/Patch/Scan 层 | ✅ rev2 | jsonl-patch (Buffer字节级+UTF8校验)、fs-ops tempDst模式、subprocess grep fast-path、6 源覆盖含 copilot、concurrent-write CAS、Golden diff-test 与 Python mvp.py byte-identical |
 | Phase 3 — Orchestrator + CLI + Undo/Recover/Batch | ✅ rev2 | runProjectMove 7-step + 补偿、atomic lock (O_EXCL)、self-subdir guard、UndoStaleError、SIGINT handler、concurrent patchFile pool |
 | Phase 4a — MCP 工具 | ✅ rev3 | 7 tools + 2 critical/10 major/若干 minor 修复到位 |
-| **Phase 4b — Swift UI** | ⏳ 待做 | ProjectsView `⋯` 菜单 + Rename/Undo sheet，从 DB 反查 cwd |
+| Phase 4b — Swift UI | ✅ done 2026-04-20 | `/api/project/*` HTTP endpoints + `DaemonClient` wrappers + `ProjectsView` ⋯ 菜单 (Rename/Archive) + top-bar Undo button + Rename/Archive/Undo sheets w/ retry_policy-aware 错误展示；xcodebuild Debug 绿 |
+| Phase 4b rev2 (3-way review 修复) | ✅ done 2026-04-20 | 1 Critical + 4 Major + 7 Minor：interactiveDismissDisabled + Task 取消、HTTP 401 JSON envelope + per-request token 刷新、expandHome + 绝对路径校验、sanitize node FS 错误、retry_policy 人话翻译 + Retry 按钮、UndoStale 行禁用、Undo 按钮条件显示、archive 物理移动警告、startedAt DateFormatter、accessibility labels、chevron 转独立 button。+4 test cases，1143 TS pass，xcodebuild 绿 |
 | Phase 5a — mvp shim | ✅ done 2026-04-20 | `/Users/bing/-Code-/_项目扫描报告/mvp` 是 bash shim；Python 原版备份为 `mvp.py-retired-20260420` |
 | Phase 5b1 — Gemini/iFlow 救援迁移 | ✅ done 2026-04-20 | 41 Gemini + 1 iFlow 活会话从 coding-memory 迁到 engram；DB `source_locator/file_path/cwd` 同步更新；冷备份 `~/.engram/index.sqlite.bak.zombie-rescue.20260420_133127` |
 | Phase 5b2 — orchestrator 多源 rename | ✅ done 2026-04-20 | `sources.ts`：`encodesCwd` → `encodeProjectDir`（per-source fn）；加入 iflow (7 sources)；orchestrator 循环 rename 所有源侧项目目录，补偿反向同步。1113 tests green |
@@ -77,10 +78,12 @@ plans/project-move-takeover.md    # 方案文档 (rev 2)
 
 ## 下次继续时的决策点
 
-1. **Phase 4b Swift UI**（2 天）— ProjectsView 右键菜单 + DB 反查 cwd 模式 picker
-2. **Phase 5b2 再 3-way review** — 多源 rename 重构动的是 orchestrator 核心路径，值得 codex+gemini 再审一轮（compensation 是否完整、gemini basename 冲突边界是否处理、iflow 有损编码的 collision 风险）
-3. **合并当前批次到 main** — 9 次提交在 branch 上，可 ship
-4. **暂停** — 留给下个冲刺
+所有计划内 phase 全部落地。剩余可选项：
+
+1. **Swift UI 手工走查** — Xcode 跑起来点一遍 Rename/Archive/Undo 三个 sheet（build 已绿，但没真按过按钮）
+2. **Phase 4b 3-way review** — 新增的 HTTP endpoints + Swift UI 可以再过一轮 codex + gemini
+3. **push 到 origin/main** — 本地已积 3 次 feat commit 未 push
+4. **暂停** — 功能完整，进入下个项目
 
 ## Phase 5a 翻译说明（mvp shim, 2026-04-20）
 

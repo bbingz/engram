@@ -55,6 +55,39 @@ function createRateLimiter(maxPerMinute: number) {
   };
 }
 
+/** Humanize Node.js fs errors and strip internal `project-move:` prefixes
+ *  so the Swift UI can surface actionable messages (Gemini major #4).
+ *  Keeps the raw message around as `detail` in case a power user needs it. */
+function sanitizeProjectMoveMessage(raw: string): string {
+  if (!raw) return 'Unknown error';
+  let msg = raw;
+  // Strip the mechanical prefixes orchestrator throws with
+  msg = msg.replace(/^runProjectMove:\s*/, '');
+  msg = msg.replace(/^project-move:\s*/, '');
+  // Translate common Node fs error codes (ENOENT / EACCES / EEXIST etc.)
+  // to human-readable forms. Patterns are defensive — original message is
+  // preserved if no pattern matches.
+  if (/\bENOENT\b/.test(msg)) {
+    msg = msg.replace(
+      /ENOENT[^,]*,\s*([a-z]+)\s+'?([^']*)'?/,
+      (_, op, path) => `File or directory not found: ${path.trim()} (${op})`,
+    );
+  }
+  if (/\bEACCES\b/.test(msg)) {
+    msg = msg.replace(
+      /EACCES[^,]*,\s*([a-z]+)\s+'?([^']*)'?/,
+      (_, op, path) => `Permission denied: ${path.trim()} (${op})`,
+    );
+  }
+  if (/\bEEXIST\b/.test(msg)) {
+    msg = msg.replace(
+      /EEXIST[^,]*,\s*([a-z]+)\s+'?([^']*)'?/,
+      (_, op, path) => `Path already exists: ${path.trim()} (${op})`,
+    );
+  }
+  return msg.trim();
+}
+
 /** Map a project-move orchestrator / undo error to a JSON body the Swift UI
  *  can render. Mirrors the MCP layer's retry_policy semantics so the client
  *  can decide whether to prompt for retry. */
@@ -78,7 +111,7 @@ function mapProjectMoveError(err: unknown): {
   return {
     error: {
       name,
-      message: e?.message ?? String(err),
+      message: sanitizeProjectMoveMessage(e?.message ?? String(err)),
       retry_policy: retryPolicy,
     },
   };
@@ -96,6 +129,40 @@ function mapProjectMoveErrorStatus(err: unknown): 400 | 409 | 500 {
     return 409;
   }
   return 500;
+}
+
+/** Build a 400 validation-error envelope identical in shape to the
+ *  orchestrator error envelope so the Swift client can decode uniformly
+ *  (Codex minor #4). `retry_policy: 'never'` — client must fix input. */
+function validationError(
+  name: string,
+  message: string,
+): {
+  error: { name: string; message: string; retry_policy: string };
+} {
+  return { error: { name, message, retry_policy: 'never' } };
+}
+
+/** Normalize a user-supplied path: expand `~`, then ensure the result is
+ *  absolute. Returns null if the path is invalid for the HTTP boundary
+ *  (we don't resolve relative paths here because the HTTP layer has no
+ *  meaningful cwd context — unlike the CLI). Codex major #3. */
+function normalizeHttpPath(
+  raw: string | undefined,
+): { ok: true; path: string } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'string') {
+    return { ok: false, error: 'missing or non-string path' };
+  }
+  let p = raw;
+  if (p === '~') p = homedir();
+  else if (p.startsWith('~/')) p = `${homedir()}/${p.slice(2)}`;
+  if (!p.startsWith('/')) {
+    return {
+      ok: false,
+      error: `path must be absolute (got "${raw}"). Use /full/path/... or ~/rel/path.`,
+    };
+  }
+  return { ok: true, path: p };
 }
 
 // --- CIDR access control ---
@@ -256,15 +323,43 @@ export function createApp(
     });
   }
 
-  // Bearer token auth on write endpoints — scoped to /api/* only
-  const bearerToken = settings.httpBearerToken;
-  if (bearerToken) {
+  // Bearer token auth on write endpoints — scoped to /api/* only.
+  // Codex major #1: when the caller did NOT inject a `settings` object, the
+  // token is re-read per request so the user can rotate it in settings.json
+  // without restarting the daemon. When `settings` IS injected (tests, or
+  // non-file-backed deployments), the snapshot is used so tests stay
+  // deterministic.
+  //
+  // 401 responses use a JSON envelope (same shape as validation errors) so
+  // clients like the Swift DaemonClient can decode uniformly instead of
+  // falling through to a generic HTTP error.
+  const injectedSettings = opts?.settings;
+  const resolveBearerToken = (): string | undefined => {
+    if (injectedSettings) return injectedSettings.httpBearerToken;
+    return readFileSettings().httpBearerToken;
+  };
+  const unauthorizedJson = () =>
+    ({
+      error: {
+        name: 'Unauthorized',
+        message: 'Invalid or missing bearer token',
+        retry_policy: 'never',
+      },
+    }) as const;
+
+  if (settings.httpBearerToken) {
     const WRITE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
     app.use('/api/*', async (c, next) => {
       if (WRITE_METHODS.has(c.req.method)) {
+        const currentToken = resolveBearerToken();
+        if (!currentToken) {
+          // Token was removed at runtime — treat as open (local-dev default).
+          await next();
+          return;
+        }
         const auth = c.req.header('authorization');
-        if (auth !== `Bearer ${bearerToken}`) {
-          return c.text('Unauthorized', 401);
+        if (auth !== `Bearer ${currentToken}`) {
+          return c.json(unauthorizedJson(), 401);
         }
       }
       await next();
@@ -272,14 +367,16 @@ export function createApp(
   }
 
   // Bearer auth for /api/ai/* GET endpoints (audit data may contain sensitive content).
-  // When no httpBearerToken is configured (localhost-only), audit endpoints are
-  // accessible without auth — acceptable for a local dev tool. When a token IS
-  // configured (e.g. remote/non-localhost bind), all /api/ai/* requests require it.
-  if (bearerToken) {
+  if (settings.httpBearerToken) {
     app.use('/api/ai/*', async (c, next) => {
+      const currentToken = resolveBearerToken();
+      if (!currentToken) {
+        await next();
+        return;
+      }
       const auth = c.req.header('authorization');
-      if (auth !== `Bearer ${bearerToken}`) {
-        return c.json({ error: 'Unauthorized' }, 401);
+      if (auth !== `Bearer ${currentToken}`) {
+        return c.json(unauthorizedJson(), 401);
       }
       await next();
     });
@@ -818,7 +915,12 @@ export function createApp(
   // cases let the UI present a picker.
   app.get('/api/project/cwds', (c) => {
     const project = c.req.query('project');
-    if (!project) return c.json({ error: 'project query param required' }, 400);
+    if (!project) {
+      return c.json(
+        validationError('MissingParam', 'project query param required'),
+        400,
+      );
+    }
     const raw = db.getRawDb();
     const rows = raw
       .prepare(
@@ -840,15 +942,32 @@ export function createApp(
       auditNote?: string;
     };
     if (!body.src || !body.dst) {
-      return c.json({ error: 'src and dst required' }, 400);
+      return c.json(
+        validationError('MissingParam', 'src and dst required'),
+        400,
+      );
+    }
+    const srcResolved = normalizeHttpPath(body.src);
+    const dstResolved = normalizeHttpPath(body.dst);
+    if (!srcResolved.ok) {
+      return c.json(
+        validationError('InvalidPath', `src: ${srcResolved.error}`),
+        400,
+      );
+    }
+    if (!dstResolved.ok) {
+      return c.json(
+        validationError('InvalidPath', `dst: ${dstResolved.error}`),
+        400,
+      );
     }
     const { runProjectMove } = await import(
       './core/project-move/orchestrator.js'
     );
     try {
       const result = await runProjectMove(db, {
-        src: body.src,
-        dst: body.dst,
+        src: srcResolved.path,
+        dst: dstResolved.path,
         dryRun: body.dryRun === true,
         force: body.force === true,
         auditNote: body.auditNote,
@@ -867,7 +986,10 @@ export function createApp(
       force?: boolean;
     };
     if (!body.migrationId) {
-      return c.json({ error: 'migrationId required' }, 400);
+      return c.json(
+        validationError('MissingParam', 'migrationId required'),
+        400,
+      );
     }
     const { undoMigration } = await import('./core/project-move/undo.js');
     try {
@@ -890,7 +1012,15 @@ export function createApp(
       dryRun?: boolean;
       auditNote?: string;
     };
-    if (!body.src) return c.json({ error: 'src required' }, 400);
+    if (!body.src)
+      return c.json(validationError('MissingParam', 'src required'), 400);
+    const srcResolved = normalizeHttpPath(body.src);
+    if (!srcResolved.ok) {
+      return c.json(
+        validationError('InvalidPath', `src: ${srcResolved.error}`),
+        400,
+      );
+    }
     const { runProjectMove } = await import(
       './core/project-move/orchestrator.js'
     );
@@ -898,14 +1028,14 @@ export function createApp(
       './core/project-move/archive.js'
     );
     try {
-      const suggestion = await suggestArchiveTarget(body.src, {
+      const suggestion = await suggestArchiveTarget(srcResolved.path, {
         forceCategory: body.archiveTo as never,
       });
       const { mkdir } = await import('node:fs/promises');
       const { dirname } = await import('node:path');
       await mkdir(dirname(suggestion.dst), { recursive: true });
       const result = await runProjectMove(db, {
-        src: body.src,
+        src: srcResolved.path,
         dst: suggestion.dst,
         archived: true,
         force: body.force === true,

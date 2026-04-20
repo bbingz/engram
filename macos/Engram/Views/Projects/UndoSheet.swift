@@ -7,6 +7,36 @@
 
 import SwiftUI
 
+/// Shared parser for the ISO-8601 timestamps the daemon emits, with a
+/// fallback for the rare case where `startedAt` comes back in SQLite's
+/// default string format. Gemini minor #12.
+private let migrationISOFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+private let migrationSQLiteFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    f.timeZone = TimeZone(identifier: "UTC")
+    return f
+}()
+
+private let migrationHumanFormatter: RelativeDateTimeFormatter = {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .abbreviated
+    return f
+}()
+
+private func humanizeMigrationTimestamp(_ raw: String) -> String {
+    let parsed =
+        migrationISOFormatter.date(from: raw)
+        ?? migrationSQLiteFormatter.date(from: raw)
+    guard let date = parsed else { return raw }
+    return migrationHumanFormatter.localizedString(for: date, relativeTo: Date())
+}
+
 struct UndoSheet: View {
     @Environment(DaemonClient.self) var daemonClient
     @Environment(\.dismiss) var dismiss
@@ -17,6 +47,10 @@ struct UndoSheet: View {
     @State private var isExecuting = false
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
+    @State private var activeTask: Task<Void, Never>?
+    /// IDs where retry_policy: 'never' came back (UndoStale etc.) — these
+    /// can't be retried, so the UI disables the row. Codex minor #5.
+    @State private var disabledMigrationIds: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -44,14 +78,25 @@ struct UndoSheet: View {
                     }
                 }
                 if let error = errorMessage {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red)
                             .font(.caption)
-                        if retryPolicy != "safe" {
-                            Text("retry_policy: \(retryPolicy)")
+                        HStack {
+                            Text(retryPolicyExplainer(retryPolicy))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            Spacer()
+                            if retryPolicyAllowsRetry(retryPolicy),
+                               selectedMigrationId != nil
+                            {
+                                Button("Retry") {
+                                    activeTask = Task { await runUndo() }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(isExecuting)
+                            }
                         }
                     }
                     .padding(8)
@@ -67,20 +112,32 @@ struct UndoSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(isExecuting)
-                Button("Undo") { Task { await runUndo() } }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(selectedMigrationId == nil || isExecuting)
+                Button("Undo") {
+                    activeTask = Task { await runUndo() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    selectedMigrationId == nil
+                        || isExecuting
+                        || (selectedMigrationId.map { disabledMigrationIds.contains($0) } ?? false)
+                )
             }
         }
         .padding(20)
         .frame(width: 560)
+        .interactiveDismissDisabled(isExecuting)
         .task { await loadMigrations() }
+        .onDisappear { activeTask?.cancel() }
     }
 
     @ViewBuilder
     private func migrationRow(_ m: MigrationLogEntry) -> some View {
-        Button(action: { selectedMigrationId = m.id }) {
+        Button(action: {
+            if !disabledMigrationIds.contains(m.id) {
+                selectedMigrationId = m.id
+            }
+        }) {
             HStack(spacing: 10) {
                 Image(
                     systemName: selectedMigrationId == m.id
@@ -112,9 +169,10 @@ struct UndoSheet: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     HStack(spacing: 8) {
-                        Text(m.startedAt)
+                        Text(humanizeMigrationTimestamp(m.startedAt))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
+                            .help(m.startedAt)  // hover to see raw ISO
                         Text(m.id.prefix(8))
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundStyle(.tertiary)
@@ -132,9 +190,10 @@ struct UndoSheet: View {
                     : Color.clear
             )
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            .opacity(disabledMigrationIds.contains(m.id) ? 0.5 : 1.0)
         }
         .buttonStyle(.plain)
-        .disabled(isExecuting)
+        .disabled(isExecuting || disabledMigrationIds.contains(m.id))
     }
 
     private func loadMigrations() async {
@@ -154,9 +213,10 @@ struct UndoSheet: View {
         guard let id = selectedMigrationId else { return }
         errorMessage = nil
         isExecuting = true
-        defer { isExecuting = false }
+        defer { isExecuting = false; activeTask = nil }
         do {
             let res = try await daemonClient.projectUndo(migrationId: id, force: false)
+            if Task.isCancelled { return }
             if res.state == "committed" {
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
@@ -164,9 +224,18 @@ struct UndoSheet: View {
                 errorMessage = "Unexpected state: \(res.state)"
             }
         } catch let apiErr as ProjectMoveAPIError {
+            if Task.isCancelled { return }
             errorMessage = apiErr.message
             retryPolicy = apiErr.retryPolicy
+            // Codex minor #5: on a 'never' policy (UndoStale, etc.), mark
+            // this specific migration as disabled so the user can't retry
+            // the same stale row. They can still try a different one.
+            if apiErr.retryPolicy == "never" {
+                disabledMigrationIds.insert(id)
+                selectedMigrationId = nil
+            }
         } catch {
+            if Task.isCancelled { return }
             errorMessage = error.localizedDescription
         }
     }
