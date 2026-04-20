@@ -84,12 +84,26 @@ export function patchBuffer(
       `patchBuffer: input is not valid UTF-8 (${(err as Error).message})`,
     );
   }
-  const re = buildRegex(oldPath);
+  const primary = buildRegex(oldPath);
   let count = 0;
-  const out = text.replace(re, () => {
+  let out = text.replace(primary, () => {
     count++;
     return newPath;
   });
+  // Round 4 (Codex #3): macOS HFS+ stores filenames in NFD; an AI CLI
+  // running on such a volume may also write the *path* in NFD into its
+  // JSONL. If the user typed the rename target in NFC (common), the
+  // primary regex will miss those occurrences. Retry with an NFD-form
+  // needle as a fallback — the replacement stays NFC so the FS wins
+  // the tie (consumers open files by NFC path anyway).
+  const oldNfd = oldPath.normalize('NFD');
+  if (oldNfd !== oldPath) {
+    const secondary = buildRegex(oldNfd);
+    out = out.replace(secondary, () => {
+      count++;
+      return newPath;
+    });
+  }
   if (count === 0) return { buffer: data, count: 0 };
   return { buffer: Buffer.from(out, 'utf8'), count };
 }

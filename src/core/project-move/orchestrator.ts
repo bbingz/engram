@@ -295,15 +295,33 @@ export async function runProjectMove(
     // Step 0.6: pre-flight — catch collisions BEFORE the physical move so
     // we don't have to roll back a potentially multi-GB rename.
     // (Codex MAJOR #2 + Gemini critical #1.)
+    //
+    // Round 4 Critical (Codex #3 / reviewer C4): on macOS APFS (case
+    // insensitive by default), `stat(plan.newDir)` succeeds for a
+    // case-only rename (Foo → foo) because the OS resolves to the same
+    // inode. Previously that falsely triggered DirCollisionError. Use
+    // realpath to distinguish "dst points to the same dir as src"
+    // (legitimate case rename — allow) from "dst is a different dir
+    // that happens to exist" (real collision — refuse).
+    const { realpath } = await import('node:fs/promises');
     for (const plan of dirRenamePlans) {
       try {
         await stat(plan.newDir);
-        throw new DirCollisionError(plan.sourceId, plan.oldDir, plan.newDir);
       } catch (err) {
-        if (err instanceof DirCollisionError) throw err;
         const e = err as { code?: string };
-        if (e.code !== 'ENOENT') throw err;
+        if (e.code === 'ENOENT') continue; // clean path
+        throw err;
       }
+      // newDir exists — check if it's actually the same inode as oldDir
+      // (case-only rename on case-insensitive FS).
+      try {
+        const oldReal = await realpath(plan.oldDir);
+        const newReal = await realpath(plan.newDir);
+        if (oldReal === newReal) continue; // same dir, legitimate rename
+      } catch {
+        // realpath failed → treat as a collision to be safe.
+      }
+      throw new DirCollisionError(plan.sourceId, plan.oldDir, plan.newDir);
     }
 
     // Step 0.7: Gemini-specific probes. Shared-basename hijack + plan the
