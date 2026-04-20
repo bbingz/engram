@@ -179,10 +179,30 @@ describe('gemini-projects-json', () => {
       );
       await applyGeminiProjectsJsonUpdate(plan);
       await reverseGeminiProjectsJsonUpdate(plan);
-      const after = JSON.parse(readFileSync(file, 'utf8')) as {
-        projects: Record<string, string>;
-      };
-      expect(after.projects['/a/proj-v2']).toBeUndefined();
+      // Round 4 (Gemini Minor): when engram created the file AND the
+      // reversed map is empty, compensation unlinks the file entirely
+      // to restore the exact pre-migration state. Either an absent
+      // file or a file with no matching entry is acceptable.
+      const fsSync = await import('node:fs');
+      if (fsSync.existsSync(file)) {
+        const after = JSON.parse(readFileSync(file, 'utf8')) as {
+          projects: Record<string, string>;
+        };
+        expect(after.projects['/a/proj-v2']).toBeUndefined();
+      }
+      // else: file was unlinked — ideal state, pre-migration restored.
+    });
+
+    it('unlinks the file entirely when engram created it and map ends up empty', async () => {
+      const plan = await planGeminiProjectsJsonUpdate(
+        file,
+        '/a/proj',
+        '/a/proj-v2',
+      );
+      await applyGeminiProjectsJsonUpdate(plan);
+      await reverseGeminiProjectsJsonUpdate(plan);
+      const fsSync = await import('node:fs');
+      expect(fsSync.existsSync(file)).toBe(false);
     });
   });
 

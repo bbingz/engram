@@ -62,8 +62,16 @@ export const projectMoveTool = {
     type: 'object' as const,
     required: ['src', 'dst'],
     properties: {
-      src: { type: 'string', description: 'Absolute source path' },
-      dst: { type: 'string', description: 'Absolute destination path' },
+      src: {
+        type: 'string',
+        description:
+          'Absolute source path (e.g. /Users/bing/-Code-/MyProject). ~-prefix accepted.',
+      },
+      dst: {
+        type: 'string',
+        description:
+          'Absolute destination path (e.g. /Users/bing/-Code-/MyProject-v2). ~-prefix accepted.',
+      },
       dry_run: {
         type: 'boolean',
         description: 'Plan only, no side effects',
@@ -134,7 +142,11 @@ export const projectArchiveTool = {
     type: 'object' as const,
     required: ['src'],
     properties: {
-      src: { type: 'string', description: 'Absolute source path' },
+      src: {
+        type: 'string',
+        description:
+          'Absolute source path (e.g. /Users/bing/-Code-/OldScript). ~-prefix accepted.',
+      },
       to: {
         type: 'string',
         enum: [

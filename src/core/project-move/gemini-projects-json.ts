@@ -137,6 +137,12 @@ export async function applyGeminiProjectsJsonUpdate(
 /**
  * Reverse the update (compensation path). Restores the snapshot if we
  * captured one; otherwise deletes the entry we added.
+ *
+ * Round 4 (Gemini Minor): if engram created the projects.json file from
+ * scratch AND removing our entry leaves an empty map, unlink the file
+ * rather than leaving an empty shell on disk. This restores the exact
+ * pre-migration state (Gemini CLI will lazily create the file again
+ * when needed).
  */
 export async function reverseGeminiProjectsJsonUpdate(
   plan: GeminiProjectsJsonUpdatePlan,
@@ -145,11 +151,20 @@ export async function reverseGeminiProjectsJsonUpdate(
     await writeAtomic(plan.filePath, plan.originalText);
     return;
   }
-  // Original file didn't exist — remove the entry we inserted. If the
-  // resulting map is empty AND we created the file, best effort: leave it
-  // (harmless, and Gemini CLI would have recreated it anyway).
+  // Original file didn't exist — remove the entry we inserted.
   const { shape } = await loadProjectsJson(plan.filePath);
   delete shape.map[plan.newEntry.cwd];
+  if (Object.keys(shape.map).length === 0) {
+    // We created the file AND we're the only contributor — fully
+    // restore the pre-migration state by unlinking it.
+    const { unlink } = await import('node:fs/promises');
+    try {
+      await unlink(plan.filePath);
+    } catch {
+      // Best-effort cleanup; leaving an empty file behind is harmless.
+    }
+    return;
+  }
   await writeAtomic(plan.filePath, serialize(shape));
 }
 

@@ -152,6 +152,22 @@ struct ProjectsView: View {
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("projects_group_\(index)")
+                                // Round 4 Gemini Minor: right-click menu
+                                // mirrors the ⋯ button for discoverability.
+                                // New users aren't used to hunting for
+                                // ellipsis icons and expect context menus.
+                                .contextMenu {
+                                    Button {
+                                        renameTarget = group.project
+                                    } label: {
+                                        Label("Rename…", systemImage: "pencil")
+                                    }
+                                    Button {
+                                        archiveTarget = group.project
+                                    } label: {
+                                        Label("Archive…", systemImage: "archivebox")
+                                    }
+                                }
                             }
                         }
                         .accessibilityIdentifier("projects_list")

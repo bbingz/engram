@@ -444,15 +444,30 @@ export async function main(args: string[]): Promise<void> {
   } catch (err) {
     const e = err as Error;
     const name = e?.name ?? 'Error';
+    // Round 4: use shared retry-policy classifier so CLI error hints stay
+    // consistent with MCP and HTTP. Previously CLI had its own switch
+    // that drifted from the other two layers.
+    const { classifyRetryPolicy } = await import(
+      '../core/project-move/retry-policy.js'
+    );
+    const policy = classifyRetryPolicy(name);
+    const retryHint =
+      policy === 'safe'
+        ? ' (retry is safe)'
+        : policy === 'conditional'
+          ? ' (retry once after resolving the condition above)'
+          : policy === 'wait'
+            ? ' (wait a few seconds, then retry)'
+            : ''; // 'never' — no retry hint, message already explains
     switch (name) {
       case 'LockBusyError':
         console.error(
-          `${COLOR.red}✗${COLOR.reset} another project-move is in progress — ${e.message}`,
+          `${COLOR.red}✗${COLOR.reset} another project-move is in progress — ${e.message}${retryHint}`,
         );
         break;
       case 'ConcurrentModificationError':
         console.error(
-          `${COLOR.red}✗${COLOR.reset} a session file changed while patching; re-run \`engram project move\` to retry.\n   detail: ${e.message}`,
+          `${COLOR.red}✗${COLOR.reset} a session file changed while patching; re-run \`engram project move\` to retry${retryHint}.\n   detail: ${e.message}`,
         );
         break;
       case 'InvalidUtf8Error':
@@ -460,13 +475,17 @@ export async function main(args: string[]): Promise<void> {
           `${COLOR.red}✗${COLOR.reset} a session file is not valid UTF-8 — refusing to touch. Manually inspect and fix, then retry.\n   detail: ${e.message}`,
         );
         break;
+      case 'DirCollisionError':
+      case 'SharedEncodingCollisionError':
       case 'UndoNotAllowedError':
       case 'UndoStaleError':
         console.error(`${COLOR.red}✗${COLOR.reset} ${e.message}`);
         break;
       default: {
         // Generic: show message without stack trace
-        console.error(`${COLOR.red}✗${COLOR.reset} ${e.message ?? String(e)}`);
+        console.error(
+          `${COLOR.red}✗${COLOR.reset} ${e.message ?? String(e)}${retryHint}`,
+        );
         if (process.env.ENGRAM_DEBUG) console.error(e.stack);
       }
     }

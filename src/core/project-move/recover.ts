@@ -181,8 +181,19 @@ function buildRecommendation(
     return 'Neither path exists — something catastrophic happened. Restore from backup.';
   }
   if (state === 'fs_done') {
+    // Round 4 Codex Minor #9: previously suggested "re-run `engram
+    // project move <src> <dst>`" — but since src is gone and dst
+    // exists, the orchestrator's preflight would immediately throw
+    // ENOENT / DirCollisionError. The actual resolution is either
+    // (a) manually finish the DB commit, or (b) mv the dir back and
+    // retry. Point the user at the correct path.
     if (!oldExists && newExists)
-      return 'FS move succeeded; DB commit failed. Re-run `engram project move <src> <dst>` with the same args — it will re-apply step 5 idempotently.';
+      return (
+        'FS move succeeded; DB commit failed mid-way. ' +
+        'To finish: either (a) mv the new path back to the old path and retry `engram project move`, ' +
+        "or (b) mark the migration committed directly — connect to ~/.engram/index.sqlite and run `UPDATE migration_log SET state='committed' WHERE id='<this>'`, then run `engram project review <oldPath> <newPath>` to check residual refs. " +
+        'Re-running `engram project move <oldPath> <newPath>` as-is WILL NOT work (src gone, dst exists).'
+      );
     if (oldExists && newExists)
       return 'Both paths exist — FS work may have been partially undone. Inspect both; prefer manual mv back over retry.';
     return 'Unexpected state. Investigate manually.';
@@ -191,7 +202,10 @@ function buildRecommendation(
     if (oldExists && !newExists)
       return 'Compensation succeeded — src is back where it started. Safe to ignore and retry later.';
     if (!oldExists && newExists)
-      return 'FS move completed but DB commit failed. Re-run `engram project move` with same args to finish the DB side.';
+      return (
+        'FS move completed but DB commit failed and compensation did not reverse the FS. ' +
+        "Either (a) manually mv new → old then retry `engram project move`, or (b) mark committed directly: `UPDATE migration_log SET state='committed' WHERE id='<this>'` then `engram project review`."
+      );
     if (oldExists && newExists)
       return 'Both paths exist — compensation ran partially. Inspect, then `engram project move` (or manual mv) to reach a consistent state.';
     return 'Neither path exists — likely data loss. Restore from backup.';
