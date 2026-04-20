@@ -4,15 +4,14 @@
 
 ## 一句话现状
 
-Phase 4a rev3 **完成并全绿**。功能在 CLI 和 MCP 层都可用。
-Swift UI (Phase 4b) 和 mvp.py 退役 (Phase 5) 还没做。
+全部 Phase 完成；经过 **4 轮 post-ship review** + 用户 2 次 UI 实测修复。功能在 CLI / MCP / HTTP / Swift UI 四个端全部可用。
 
 ## 测试 / Lint 状态
 
-- `npx vitest run`: **1111 pass / 0 fail**
+- `./node_modules/.bin/vitest run`: **1169 pass / 0 fail**（+23 since Round 3）
 - `npm run build`: clean
-- `biome check`: 0 errors, 3 cosmetic infos
-- Phase 4a 新增 14 个 MCP 工具测试；Phase 3 新增 ~40 个；Phase 2 新增 80+；Phase 1 新增 25+
+- `biome check`: pre-existing `noExplicitAny` warnings in scripts/tests（非本轮改动引入）
+- Round 4 新增：19 retry-policy 契约 + 3 NFC/NFD + 1 projects.json unlink
 
 ## Phase 完成情况
 
@@ -86,13 +85,23 @@ plans/project-move-takeover.md    # 方案文档 (rev 2)
 3. ✅ 部署 Release build 到 `/Applications/Engram.app`，daemon 3457 真实监听
 4. ✅ User 实测 Pi-Agent dry-run → 抓到 `buildDryRunPlan` stub bug → 真扫描替换
 5. ✅ Round 2/3 fix：watcher ENFILE + resolve guard + structuredContent + review.own 警告 + tempArtifacts 真扫 + PathProbe 三态 + 测试加真值断言 + 多项 Swift UI trust-failure 修复
+6. ✅ User 二次 UI 实测：发现 Preview 无进度条 + 文件列表不可展开 → 修 `4d3edb5`（progress indicators + manifest disclosure + code-reviewer I4）
+7. ✅ Round 4 三方 review（codex + gemini + code-reviewer）+ 全修：4 Critical + 7 Important + 12 Minor
+   - B1 `cb95811`: retry-policy.ts 单一事实源；error details 结构化透传；sanitize 逗号修复
+   - B2 `a5c4edf`: skippedDirs + perSource.issues surface；ArchiveSheet confirmationDialog；Rename 输入校验 + Enter 绑定；UndoSheet 禁用原因；stale-preview opacity
+   - B3 `c95f788`: autoFixDotQuote 入 CAS + 补偿自动反转；archive 别名 normalize 集中；patchFile 硬/软错误分类；limit-before-filter 修；dry-run 计数器；CLI skippedDirs 输出
+   - B4 `ff333cb`: macOS case-only rename preflight；NFC/NFD fallback in patchBuffer
+   - B5 `f3e9a5c`: contextMenu；MCP 路径示例；recover fs_done 建议修正；Gemini projects.json 空文件 unlink；CLI retry_policy 人话
+8. ✅ 测试 1169 绿（+23 since Round 3）；Swift xcodebuild Debug 绿；CHANGELOG + memory 已同步
 
 ### 未完成 / 新一轮 review 候选
-1. **Round 4 review** — 用户计划 compact 后开启新轮，同类 stub/silent-trust 可能还有
-2. **UI 手工再走查** — 真点 Rename → 完整 committed 流程（非 dry-run）到现在还没验
-3. **recover 的 fs_done 路径** — 写的逻辑 "re-run same args" 理论上 idempotent，没有端到端 test
+1. **Round 5 review** — 如需继续，应针对 Round 4 引入的新代码（retry-policy.ts / patchBufferWithDotQuote / realpath preflight / NFC fallback）做专项审
+2. **UI 手工再走查** — 真点 Rename → 完整 committed 流程（非 dry-run）到现在还没验（Round 4 加了 ArchiveSheet confirm dialog，需手测）
+3. **recover 的 fs_done 路径** — Round 4 已修建议文案，端到端 test 仍缺
 4. **Batch YAML 功能** — 代码全、tests 全，但实际大批量 move 没跑过真实数据
-5. **Archive 分类启发式** — 3 个 rule（YYYYMMDD-/空项目/.git+content）没有边界大样本测
+5. **Archive 分类启发式** — 3 个 rule 没有边界大样本测
+6. **Round 4 未做**：UndoSheet 键盘导航（List(selection:) 重构 — 工作量大，跳过）；CAS mtime 1s 精度（需 inode + size 双 CAS，工作量大，跳过）
+7. **已知局限**：NFC/NFD fallback 只处理 `patchBuffer`，不处理 `findReferencingFiles`（grep 不做 normalize）— 极端边界用户须人肉检查
 
 ### 已知边界/不修
 - 测试用 `process.env.HOME` 注入 tmp —— 有 afterEach restore；并行测试不互扰
