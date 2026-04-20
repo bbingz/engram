@@ -79,4 +79,10 @@ export interface SessionAdapter {
     filePath: string,
     opts?: StreamMessagesOptions,
   ): AsyncGenerator<Message>;
+  /**
+   * Check whether a locator is still accessible (file exists, virtual path resolvable, etc.).
+   * Orphan-scanner entry point. Default behaviour for real file paths: fs.stat; adapters that
+   * store virtual locators (opencode, cursor) must override with source-specific checks.
+   */
+  isAccessible(locator: string): Promise<boolean>;
 }

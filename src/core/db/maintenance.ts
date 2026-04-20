@@ -8,6 +8,8 @@ import {
   scoreCandidate,
 } from '../parent-detection.js';
 import { computeQualityScore } from '../session-scoring.js';
+import { addProjectAlias } from './alias-repo.js';
+import { finishMigration } from './migration-log-repo.js';
 import {
   setParentSession,
   setSuggestedParent,
@@ -490,4 +492,347 @@ export function resetStaleDetections(db: BetterSqlite3.Database): number {
   ).run(String(DETECTION_VERSION));
 
   return r1.changes + r2.changes;
+}
+
+export interface OrphanScanAdapter {
+  readonly name: string;
+  isAccessible(locator: string): Promise<boolean>;
+}
+
+export interface OrphanScanResult {
+  scanned: number;
+  newlyFlagged: number;
+  confirmed: number;
+  recovered: number;
+  skipped: number;
+}
+
+/**
+ * Walk every session with a locator, ask its adapter `isAccessible`, and maintain
+ * the `orphan_status` / `orphan_since` / `orphan_reason` triple.
+ *
+ * State machine (current → next):
+ *  - NULL + accessible → NULL (no-op)
+ *  - NULL + unreachable → 'suspect' + orphan_since = now + reason = 'path_unreachable'
+ *  - 'suspect' + accessible → cleared (file came back — rename/mount restored)
+ *  - 'suspect' + unreachable + age ≥ 30d → promote to 'confirmed'
+ *  - 'confirmed' + accessible → cleared (very late recovery)
+ *  - 'confirmed' + unreachable → no-op (ready for GC later)
+ *
+ * Caller should run this as a background task (not on a blocking path).
+ */
+export async function detectOrphans(
+  db: BetterSqlite3.Database,
+  adapters: readonly OrphanScanAdapter[],
+  opts: { gracePeriodDays?: number } = {},
+): Promise<OrphanScanResult> {
+  const gracePeriodDays = opts.gracePeriodDays ?? 30;
+  const adapterByName = new Map<string, OrphanScanAdapter>();
+  for (const a of adapters) adapterByName.set(a.name, a);
+
+  const rows = db
+    .prepare(
+      `
+    SELECT id, source, file_path, source_locator, orphan_status, orphan_since
+    FROM sessions
+    WHERE (source_locator IS NOT NULL AND source_locator != '')
+       OR (file_path IS NOT NULL AND file_path != '')
+  `,
+    )
+    .all() as {
+    id: string;
+    source: string;
+    file_path: string | null;
+    source_locator: string | null;
+    orphan_status: string | null;
+    orphan_since: string | null;
+  }[];
+
+  const markSuspect = db.prepare(`
+    UPDATE sessions
+    SET orphan_status = 'suspect',
+        orphan_since = datetime('now'),
+        orphan_reason = COALESCE(orphan_reason, 'path_unreachable')
+    WHERE id = ?
+  `);
+  const promoteConfirmed = db.prepare(
+    `UPDATE sessions SET orphan_status = 'confirmed' WHERE id = ?`,
+  );
+  const clearFlag = db.prepare(`
+    UPDATE sessions
+    SET orphan_status = NULL, orphan_since = NULL, orphan_reason = NULL
+    WHERE id = ?
+  `);
+
+  let scanned = 0;
+  let newlyFlagged = 0;
+  let confirmed = 0;
+  let recovered = 0;
+  let skipped = 0;
+  const now = Date.now();
+  const graceMs = gracePeriodDays * 24 * 60 * 60 * 1000;
+
+  for (const row of rows) {
+    scanned++;
+    const adapter = adapterByName.get(row.source);
+    const locator = row.file_path || row.source_locator || '';
+    if (!adapter || !locator) {
+      skipped++;
+      continue;
+    }
+    // Skip sync-only locators — remote rows are not our problem
+    if (locator.startsWith('sync://')) {
+      skipped++;
+      continue;
+    }
+
+    let accessible = false;
+    try {
+      accessible = await adapter.isAccessible(locator);
+    } catch {
+      accessible = false;
+    }
+
+    if (accessible) {
+      if (row.orphan_status !== null) {
+        clearFlag.run(row.id);
+        recovered++;
+      }
+      continue;
+    }
+
+    if (row.orphan_status === null) {
+      markSuspect.run(row.id);
+      newlyFlagged++;
+      continue;
+    }
+
+    if (row.orphan_status === 'suspect' && row.orphan_since) {
+      const sinceMs = Date.parse(`${row.orphan_since}Z`);
+      if (!Number.isNaN(sinceMs) && now - sinceMs >= graceMs) {
+        promoteConfirmed.run(row.id);
+        confirmed++;
+      }
+    }
+  }
+
+  return { scanned, newlyFlagged, confirmed, recovered, skipped };
+}
+
+/**
+ * Mark a single session as orphan (used by the watcher unlink handler).
+ * Does NOT promote confirmed; that only happens via the periodic detectOrphans pass.
+ */
+export function markSessionOrphan(
+  db: BetterSqlite3.Database,
+  sessionId: string,
+  reason: 'cleaned_by_source' | 'file_deleted' | 'path_unreachable',
+): void {
+  db.prepare(
+    `
+    UPDATE sessions
+    SET orphan_status = COALESCE(orphan_status, 'suspect'),
+        orphan_since = COALESCE(orphan_since, datetime('now')),
+        orphan_reason = COALESCE(orphan_reason, ?)
+    WHERE id = ?
+  `,
+  ).run(reason, sessionId);
+}
+
+/**
+ * Called by the watcher when a session file is unlinked. Marks every row whose
+ * locator matches as orphan. Returns the number of rows touched.
+ */
+export function markOrphanByPath(
+  db: BetterSqlite3.Database,
+  filePath: string,
+  reason: 'cleaned_by_source' | 'file_deleted' = 'cleaned_by_source',
+): number {
+  if (!filePath) return 0;
+  return db
+    .prepare(
+      `
+    UPDATE sessions
+    SET orphan_status = COALESCE(orphan_status, 'suspect'),
+        orphan_since = COALESCE(orphan_since, datetime('now')),
+        orphan_reason = COALESCE(orphan_reason, ?)
+    WHERE file_path = ? OR source_locator = ?
+  `,
+    )
+    .run(reason, filePath, filePath).changes;
+}
+
+export interface ApplyMigrationInput {
+  migrationId: string;
+  oldPath: string;
+  newPath: string;
+  oldBasename: string;
+  newBasename: string;
+}
+
+export interface ApplyMigrationResult {
+  sessionsUpdated: number;
+  localStateUpdated: number;
+  aliasCreated: boolean;
+}
+
+/**
+ * Phase C of the project-move pipeline. Runs in a single DB transaction.
+ * Caller must have already:
+ *   1. Inserted migration_log row with state='fs_pending' (startMigration)
+ *   2. Completed all FS operations (mv, JSONL patch, CC dir rename)
+ *   3. Marked state='fs_done' (markFsDone)
+ *
+ * This function:
+ *   - UPDATEs sessions' source_locator / file_path / cwd with strict '/' boundary
+ *     (so '/foo/bar' does NOT match '/foo/barbar')
+ *   - UPDATEs session_local_state.local_readable_path (UI reads this first!)
+ *   - Adds project_aliases row when basenames differ
+ *   - Clears orphan_* flags on matched rows (file existed before move,
+ *     now points to the new location — not an orphan anymore)
+ *   - Marks migration_log state='committed'
+ *
+ * Idempotent: running twice with the same old/new is a no-op on the second call
+ * (no rows match old paths anymore).
+ */
+export function applyMigrationDb(
+  db: BetterSqlite3.Database,
+  input: ApplyMigrationInput,
+): ApplyMigrationResult {
+  const { migrationId, oldPath, newPath, oldBasename, newBasename } = input;
+
+  // Committed early-exit (Codex #2): if this migration has already been
+  // successfully committed, return the cached counts instead of re-running
+  // the transaction. Otherwise a retry would overwrite sessions_updated=0
+  // (since no rows match the old path anymore).
+  const existing = db
+    .prepare(
+      'SELECT state, sessions_updated, alias_created FROM migration_log WHERE id = ?',
+    )
+    .get(migrationId) as
+    | { state: string; sessions_updated: number; alias_created: number }
+    | undefined;
+  if (existing?.state === 'committed') {
+    return {
+      sessionsUpdated: existing.sessions_updated,
+      localStateUpdated: 0, // not tracked in log, and irrelevant on replay
+      aliasCreated: Boolean(existing.alias_created),
+    };
+  }
+
+  // Use substr prefix comparison to avoid LIKE wildcard hazards.
+  // A column value "belongs to oldPath" iff:
+  //   value = oldPath              (exact match)
+  //   OR length(value) > length(oldPath)
+  //      AND substr(value, 1, length(oldPath)+1) = oldPath || '/'   (subtree)
+  // This matches mvp.py's path-rewrite semantics but is safe for paths
+  // containing `_` or `%` which LIKE would treat as wildcards.
+  const pathMatch = (col: string) =>
+    `(${col} = @old OR (LENGTH(${col}) > LENGTH(@old) AND SUBSTR(${col}, 1, LENGTH(@old) + 1) = @old || '/'))`;
+  const rewrite = (col: string) =>
+    `CASE
+       WHEN ${col} = @old THEN @new
+       WHEN LENGTH(${col}) > LENGTH(@old)
+            AND SUBSTR(${col}, 1, LENGTH(@old) + 1) = @old || '/'
+         THEN @new || SUBSTR(${col}, LENGTH(@old) + 1)
+       ELSE ${col}
+     END`;
+
+  // Run all writes + the commit log entry inside one transaction
+  const tx = db.transaction((): ApplyMigrationResult => {
+    // 1a. Collect affected session ids BEFORE the UPDATE — Phase 3 undo
+    // needs the authoritative list, not a prefix-reverse guess. Stored in
+    // migration_log.detail.
+    const affectedRows = db
+      .prepare(
+        `
+      SELECT id FROM sessions
+       WHERE ${pathMatch('source_locator')}
+          OR ${pathMatch('file_path')}
+          OR ${pathMatch('cwd')}
+    `,
+      )
+      .all({ old: oldPath }) as { id: string }[];
+    const affectedSessionIds = affectedRows.map((r) => r.id);
+
+    // 1b. Rewrite sessions path fields for matched rows.
+    // NOTE: we deliberately do NOT clear orphan_* flags here. "Filesystem
+    // is the only truth" — detectOrphans decides orphan state based on
+    // actual isAccessible(), not on path rewrites. If a session was a
+    // stale zombie pointing at a deleted subagent file, moving the DB path
+    // doesn't un-ghost it.
+    const sessionsRes = db
+      .prepare(
+        `
+      UPDATE sessions
+         SET source_locator = ${rewrite('source_locator')},
+             file_path      = ${rewrite('file_path')},
+             cwd            = ${rewrite('cwd')}
+       WHERE ${pathMatch('source_locator')}
+          OR ${pathMatch('file_path')}
+          OR ${pathMatch('cwd')}
+    `,
+      )
+      .run({ old: oldPath, new: newPath });
+
+    // 2. Rewrite session_local_state.local_readable_path (UI read-priority field)
+    const localRes = db
+      .prepare(
+        `
+      UPDATE session_local_state
+         SET local_readable_path = ${rewrite('local_readable_path')}
+       WHERE ${pathMatch('local_readable_path')}
+    `,
+      )
+      .run({ old: oldPath, new: newPath });
+
+    // 3. Add project alias iff basenames differ (idempotent via INSERT OR IGNORE)
+    let aliasCreated = false;
+    if (oldBasename !== newBasename && oldBasename && newBasename) {
+      const before = db
+        .prepare(
+          'SELECT COUNT(*) AS c FROM project_aliases WHERE alias = ? AND canonical = ?',
+        )
+        .get(oldBasename, newBasename) as { c: number };
+      addProjectAlias(db, oldBasename, newBasename);
+      const after = db
+        .prepare(
+          'SELECT COUNT(*) AS c FROM project_aliases WHERE alias = ? AND canonical = ?',
+        )
+        .get(oldBasename, newBasename) as { c: number };
+      aliasCreated = after.c > before.c;
+    }
+
+    // 4. Merge affected session ids into migration_log.detail.
+    // The row may already have a detail payload from Phase B (markFsDone);
+    // we don't want to lose that, so read-merge-write.
+    const existingDetail = db
+      .prepare('SELECT detail FROM migration_log WHERE id = ?')
+      .get(migrationId) as { detail: string | null } | undefined;
+    const merged = {
+      ...(existingDetail?.detail
+        ? (JSON.parse(existingDetail.detail) as Record<string, unknown>)
+        : {}),
+      affectedSessionIds,
+    };
+    db.prepare('UPDATE migration_log SET detail = ? WHERE id = ?').run(
+      JSON.stringify(merged),
+      migrationId,
+    );
+
+    // 5. Mark migration_log state='committed'
+    finishMigration(db, {
+      id: migrationId,
+      sessionsUpdated: sessionsRes.changes,
+      aliasCreated,
+    });
+
+    return {
+      sessionsUpdated: sessionsRes.changes,
+      localStateUpdated: localRes.changes,
+      aliasCreated,
+    };
+  });
+
+  return tx();
 }

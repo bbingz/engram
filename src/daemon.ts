@@ -134,6 +134,7 @@ runInitialScan({
   indexer,
   indexJobRunner,
   db,
+  adapters,
 }).catch((err) => {
   emit({ event: 'error', message: String(err) });
 });
@@ -221,6 +222,11 @@ function getAutoSummary(): AutoSummaryManager | undefined {
 
 // File watcher (persistent — keeps process alive)
 const watcher = startWatcher(adapters, indexer, {
+  // Skip all events (add/change/unlink) for paths covered by an in-flight
+  // project move. chokidar fires unlink(old)+add(new) on rename; handling
+  // either would corrupt DB (index pre-patch JSONL or orphan soon-to-be-
+  // rewritten rows).
+  shouldSkip: (filePath) => db.hasPendingMigrationFor(filePath),
   onIndexed: (sessionId, messageCount, tier) => {
     emit({
       event: 'watcher_indexed',
@@ -231,6 +237,16 @@ const watcher = startWatcher(adapters, indexer, {
       getAutoSummary()?.onSessionIndexed(sessionId, messageCount);
     }
     indexJobRunner.runRecoverableJobs().catch(() => {}); // intentional: fire-and-forget background job
+  },
+  onUnlink: (filePath) => {
+    const touched = db.markOrphanByPath(filePath, 'cleaned_by_source');
+    if (touched > 0) {
+      emit({
+        event: 'watcher_orphaned',
+        path: filePath,
+        sessions: touched,
+      });
+    }
   },
 });
 

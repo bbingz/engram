@@ -33,6 +33,22 @@ import { handleLintConfig, lintConfigTool } from './tools/lint_config.js';
 import { handleListSessions, listSessionsTool } from './tools/list_sessions.js';
 import { handleLiveSessions, liveSessionsTool } from './tools/live_sessions.js';
 import {
+  handleProjectArchive,
+  handleProjectListMigrations,
+  handleProjectMove,
+  handleProjectMoveBatch,
+  handleProjectRecover,
+  handleProjectReview,
+  handleProjectUndo,
+  projectArchiveTool,
+  projectListMigrationsTool,
+  projectMoveBatchTool,
+  projectMoveTool,
+  projectRecoverTool,
+  projectReviewTool,
+  projectUndoTool,
+} from './tools/project.js';
+import {
   handleProjectTimeline,
   projectTimelineTool,
 } from './tools/project_timeline.js';
@@ -64,7 +80,10 @@ const vectorDeps: GetContextDeps = { vectorStore, embed };
 const manageProjectAliasTool = {
   name: 'manage_project_alias',
   description:
-    'Link two project names so sessions from one appear in queries for the other. Use when a project directory has been moved or renamed.',
+    'Link two project names so sessions from one appear in queries for the other. ' +
+    'Only use this for directories moved MANUALLY outside of engram ' +
+    '(e.g. someone ran `mv` directly). Do NOT call after project_move — ' +
+    'that tool already creates the alias automatically.',
   inputSchema: {
     type: 'object' as const,
     required: ['action'],
@@ -119,6 +138,16 @@ const allTools = [
       },
     },
   },
+  // Phase 4a: project directory operations. Ordering matters for AI tool
+  // selection (first-seen heuristic) — high-intent actions first, diagnostic/
+  // review tools last so AI doesn't "try review" instead of committing.
+  projectMoveTool,
+  projectArchiveTool,
+  projectUndoTool,
+  projectMoveBatchTool,
+  projectListMigrationsTool,
+  projectRecoverTool,
+  projectReviewTool,
 ];
 
 const ENGRAM_INSTRUCTIONS = `Engram is a cross-tool AI session aggregator. Key tools:
@@ -128,6 +157,10 @@ const ENGRAM_INSTRUCTIONS = `Engram is a cross-tool AI session aggregator. Key t
 - get_memory: Retrieve previously saved insights and cross-session knowledge
 - get_session: Read full conversation transcript of any session
 - list_sessions: Browse sessions with filters (source, project, date)
+- project_move / project_archive / project_undo: move or rename a project directory
+    while keeping all AI session history reachable (patches cwd in 6 tool stores,
+    renames Claude Code encoded dir, updates DB, creates alias). Use dry_run:true
+    first to preview impact.
 
 Best practices:
 1. Call get_context at the start of a task to see what's been done before
@@ -355,6 +388,56 @@ toolRegistry.set('get_insights', async (a) => {
   };
 });
 
+// Phase 4a — project_* tools (thin wrappers over orchestrator/undo/recover/batch)
+toolRegistry.set('project_move', (a) =>
+  handleProjectMove(
+    db,
+    a as {
+      src: string;
+      dst: string;
+      dry_run?: boolean;
+      force?: boolean;
+      note?: string;
+    },
+    { log },
+  ),
+);
+toolRegistry.set('project_archive', (a) =>
+  handleProjectArchive(
+    db,
+    a as {
+      src: string;
+      to?: '历史脚本' | '空项目' | '归档完成';
+      force?: boolean;
+      note?: string;
+    },
+    { log },
+  ),
+);
+toolRegistry.set('project_review', (a) =>
+  handleProjectReview(a as { old_path: string; new_path: string }, { log }),
+);
+toolRegistry.set('project_undo', (a) =>
+  handleProjectUndo(db, a as { migration_id: string; force?: boolean }, {
+    log,
+  }),
+);
+toolRegistry.set('project_list_migrations', (a) =>
+  handleProjectListMigrations(db, a as { limit?: number; since?: string }, {
+    log,
+  }),
+);
+toolRegistry.set('project_recover', (a) =>
+  handleProjectRecover(
+    db,
+    a as { since?: string; include_committed?: boolean },
+    { log },
+  ),
+);
+toolRegistry.set('project_move_batch', (a) =>
+  handleProjectMoveBatch(db, a as { yaml: string; force?: boolean }, { log }),
+);
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   heartbeat();
   const { name, arguments: args } = request.params;
@@ -390,13 +473,90 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (err) {
       span.setError(err as Error);
+      const e = err as Error & { name?: string };
+      const name = e?.name ?? 'Error';
+
+      // Retry policy semantics (Gemini Phase-4a-rev2 M4):
+      //   'safe'        — idempotent retry is fine
+      //   'conditional' — caller must resolve a condition (e.g. user stops
+      //                   editing) before retrying; do NOT retry in a loop
+      //   'wait'        — retry after a small delay, sequential only
+      //   'never'       — do not retry; surface to user
+      let retryPolicy: 'safe' | 'conditional' | 'wait' | 'never' = 'never';
+      let humanText = `${name}: ${e.message}`;
+      switch (name) {
+        case 'LockBusyError':
+          retryPolicy = 'wait';
+          humanText =
+            'Another project-move is already running. Wait 5–10 seconds, then retry — but only if YOU did not start the other one. Never launch project_* tools in parallel.\n' +
+            e.message;
+          break;
+        case 'ConcurrentModificationError':
+          retryPolicy = 'conditional';
+          humanText =
+            'A session file was modified while engram was patching it (another AI client likely wrote to it). Ask the user to stop editing the affected project in other tools, then retry once. Do NOT retry blindly.\n' +
+            e.message;
+          break;
+        case 'UndoStaleError':
+          humanText =
+            'This migration can no longer be safely undone — its newPath is no longer owned by it (a later migration or manual edit overlaid it). Do not retry; tell the user.\n' +
+            e.message;
+          break;
+        case 'UndoNotAllowedError':
+          humanText =
+            'Undo is only allowed for committed migrations. Use project_recover to diagnose failed/stuck ones.\n' +
+            e.message;
+          break;
+        case 'InvalidUtf8Error':
+          humanText =
+            'A session file is not valid UTF-8; engram refused to patch to avoid data loss. The user must manually inspect/fix the file before retrying.\n' +
+            e.message;
+          break;
+      }
+
+      // MCP spec-native `structuredContent` — AI clients pick this up as
+      // first-class structured output (CallToolResultSchema is $loose, so
+      // extra fields pass through, but structuredContent is the canonical
+      // slot). Mirror under _structuredError for legacy debuggers.
+      const structured = {
+        error: {
+          name,
+          message: e.message,
+          retry_policy: retryPolicy,
+        },
+      };
       return {
-        content: [{ type: 'text', text: `Error: ${String(err)}` }],
+        content: [{ type: 'text', text: humanText }],
         isError: true,
+        structuredContent: structured,
+        _structuredError: structured.error,
       };
     }
   });
 });
+
+// One-shot heal of empty file_path rows on startup. Mirrors the daemon's
+// equivalent call; needed because daemon may not be running (MCP-only mode).
+try {
+  const fixed = db.backfillFilePaths();
+  if (fixed > 0) {
+    process.stderr.write(`[engram] backfilled ${fixed} empty file_path rows\n`);
+  }
+} catch {
+  // intentional: backfill failure must not block MCP startup
+}
+
+// Clean up stale project-move migrations (crashed mid-way, stuck pending)
+try {
+  const stale = db.cleanupStaleMigrations();
+  if (stale > 0) {
+    process.stderr.write(
+      `[engram] marked ${stale} stale migrations as failed (crashed mid-move)\n`,
+    );
+  }
+} catch {
+  // intentional: cleanup failure must not block startup
+}
 
 // 启动时建立索引
 indexer
@@ -406,13 +566,36 @@ indexer
       process.stderr.write(`[engram] Indexed ${count} new sessions\n`);
     }
     await indexJobRunner.runRecoverableJobs().catch(() => {}); // intentional: best-effort in MCP server mode
+
+    // Background orphan scan — non-blocking. Uses adapter.isAccessible so
+    // virtual-path adapters (opencode/cursor) don't get false-positives.
+    setImmediate(() => {
+      db.detectOrphans(adapters)
+        .then((r) => {
+          if (r.newlyFlagged > 0 || r.confirmed > 0 || r.recovered > 0) {
+            process.stderr.write(
+              `[engram] orphan scan: +${r.newlyFlagged} flagged, +${r.confirmed} confirmed, ${r.recovered} recovered (of ${r.scanned})\n`,
+            );
+          }
+        })
+        .catch(() => {}); // intentional: orphan scan must not break MCP
+    });
   })
   .catch(() => {}); // intentional: indexing failure is non-fatal for MCP server
 
 // 启动文件监听
 const watcher = startWatcher(adapters, indexer, {
+  // During an in-flight project move, chokidar fires unlink(old)+add(new).
+  // We must skip BOTH: don't orphan the old path (move is intentional), AND
+  // don't index the new path (JSONL cwd patch may not be done yet — indexing
+  // would re-persist the pre-patch cwd). Applies to add, change, unlink.
+  shouldSkip: (filePath) => db.hasPendingMigrationFor(filePath),
   onIndexed: () => {
     indexJobRunner.runRecoverableJobs().catch(() => {}); // intentional: fire-and-forget background job
+  },
+  onUnlink: (filePath) => {
+    // Source-side cleanup (Claude Code subagent GC, rm -rf, etc.) — mark orphan, don't delete.
+    db.markOrphanByPath(filePath, 'cleaned_by_source');
   },
 });
 

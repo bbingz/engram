@@ -11,6 +11,8 @@ export interface ListSessionsOptions {
   limit?: number;
   offset?: number;
   agents?: 'hide' | 'only'; // hide = exclude agents, only = agents only
+  /** Include orphan (file-missing) sessions. Default: orphans are hidden. */
+  includeOrphans?: boolean;
 }
 
 export interface FtsSearchResult {

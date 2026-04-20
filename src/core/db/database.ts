@@ -17,6 +17,8 @@ import * as insights from './insight-repo.js';
 import * as maint from './maintenance.js';
 import * as metricsRepo from './metrics-repo.js';
 import { runMigrations } from './migration.js';
+import type { MigrationLogRow } from './migration-log-repo.js';
+import * as migrationLog from './migration-log-repo.js';
 import * as parentLinks from './parent-link-repo.js';
 import * as sessions from './session-repo.js';
 import * as sync from './sync-repo.js';
@@ -420,6 +422,55 @@ export class Database {
   }
   backfillSuggestedParents() {
     return maint.backfillSuggestedParents(this.db);
+  }
+  detectOrphans(
+    adapters: readonly maint.OrphanScanAdapter[],
+    opts?: { gracePeriodDays?: number },
+  ) {
+    return maint.detectOrphans(this.db, adapters, opts);
+  }
+  markSessionOrphan(
+    sessionId: string,
+    reason: 'cleaned_by_source' | 'file_deleted' | 'path_unreachable',
+  ) {
+    return maint.markSessionOrphan(this.db, sessionId, reason);
+  }
+  markOrphanByPath(
+    filePath: string,
+    reason: 'cleaned_by_source' | 'file_deleted' = 'cleaned_by_source',
+  ) {
+    return maint.markOrphanByPath(this.db, filePath, reason);
+  }
+
+  // --- migration_log (project move lifecycle) ---
+  startMigration(input: migrationLog.StartMigrationInput): void {
+    migrationLog.startMigration(this.db, input);
+  }
+  markMigrationFsDone(input: migrationLog.FsDoneInput): void {
+    migrationLog.markFsDone(this.db, input);
+  }
+  finishMigration(input: migrationLog.FinishMigrationInput): void {
+    migrationLog.finishMigration(this.db, input);
+  }
+  failMigration(id: string, error: string): void {
+    migrationLog.failMigration(this.db, id, error);
+  }
+  findMigration(id: string): MigrationLogRow | null {
+    return migrationLog.findMigration(this.db, id);
+  }
+  listMigrations(opts?: migrationLog.ListMigrationsOptions): MigrationLogRow[] {
+    return migrationLog.listMigrations(this.db, opts);
+  }
+  hasPendingMigrationFor(filePath: string): boolean {
+    return migrationLog.hasPendingMigrationFor(this.db, filePath);
+  }
+  cleanupStaleMigrations(): number {
+    return migrationLog.cleanupStaleMigrations(this.db);
+  }
+  applyMigrationDb(
+    input: maint.ApplyMigrationInput,
+  ): maint.ApplyMigrationResult {
+    return maint.applyMigrationDb(this.db, input);
   }
 
   // --- Insight repo ---

@@ -21,6 +21,15 @@ export function buildTierFilter(filter: NoiseFilter = 'hide-skip'): string[] {
   return ["(tier IS NULL OR tier != 'skip')"];
 }
 
+/**
+ * SQL fragment that hides orphan sessions (file has disappeared from source).
+ * Pass includeOrphans=true in admin/GC contexts.
+ */
+export function buildOrphanFilter(includeOrphans?: boolean): string[] {
+  if (includeOrphans) return [];
+  return ['orphan_status IS NULL'];
+}
+
 export function isTierHidden(
   tier: string | null | undefined,
   filter: NoiseFilter = 'hide-skip',
@@ -106,7 +115,14 @@ function applyFilters(
   params: Record<string, unknown>,
   opts: Pick<
     ListSessionsOptions,
-    'source' | 'sources' | 'project' | 'projects' | 'since' | 'until' | 'agents'
+    | 'source'
+    | 'sources'
+    | 'project'
+    | 'projects'
+    | 'since'
+    | 'until'
+    | 'agents'
+    | 'includeOrphans'
   >,
   noiseFilter: NoiseFilter,
   resolveAliases: (projects: string[]) => string[],
@@ -158,6 +174,7 @@ function applyFilters(
       "(agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')",
     );
   }
+  conditions.push(...buildOrphanFilter(opts.includeOrphans));
 }
 
 export function upsertSession(
@@ -406,6 +423,7 @@ export function countTodayParentSessions(
     'start_time < @dayEnd',
   ];
   conditions.push(...buildTierFilter(noiseFilter));
+  conditions.push(...buildOrphanFilter());
   return (
     db
       .prepare(
@@ -540,6 +558,12 @@ export function upsertAuthoritativeSnapshot(
       origin = excluded.origin,
       authoritative_node = excluded.authoritative_node,
       source_locator = excluded.source_locator,
+      file_path = CASE
+        WHEN (sessions.file_path IS NULL OR sessions.file_path = '')
+             AND excluded.source_locator NOT LIKE 'sync://%'
+          THEN excluded.source_locator
+        ELSE sessions.file_path
+      END,
       sync_version = excluded.sync_version,
       snapshot_hash = excluded.snapshot_hash,
       tier = excluded.tier,

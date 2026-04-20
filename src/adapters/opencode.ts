@@ -234,4 +234,22 @@ export class OpenCodeAdapter implements SessionAdapter {
       db?.close();
     }
   }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    const parts = this.splitVirtualPath(locator);
+    if (!parts) return false;
+    if (!existsSync(parts.dbPath)) return false;
+    let db: Database.Database | null = null;
+    try {
+      db = new Database(parts.dbPath, { readonly: true });
+      const row = db
+        .prepare('SELECT 1 FROM session WHERE id = ? LIMIT 1')
+        .get(parts.sessionId);
+      return row !== undefined;
+    } catch {
+      return false;
+    } finally {
+      db?.close();
+    }
+  }
 }

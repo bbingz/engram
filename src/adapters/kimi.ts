@@ -4,6 +4,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { isFileAccessible } from './_accessible.js';
 import type {
   Message,
   SessionAdapter,
@@ -258,5 +259,9 @@ export class KimiAdapter implements SessionAdapter {
     } catch {
       return null;
     }
+  }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    return isFileAccessible(locator);
   }
 }

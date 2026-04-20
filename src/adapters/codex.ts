@@ -4,6 +4,7 @@ import { glob, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { isFileAccessible } from './_accessible.js';
 import type {
   Message,
   SessionAdapter,
@@ -182,5 +183,9 @@ export class CodexAdapter implements SessionAdapter {
       if (c.input_text) return c.input_text as string;
     }
     return '';
+  }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    return isFileAccessible(locator);
   }
 }

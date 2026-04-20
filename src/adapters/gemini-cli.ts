@@ -2,6 +2,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { isFileAccessible } from './_accessible.js';
 import type {
   Message,
   SessionAdapter,
@@ -196,5 +197,9 @@ export class GeminiCliAdapter implements SessionAdapter {
       this.projectsCache = new Map();
     }
     return this.projectsCache;
+  }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    return isFileAccessible(locator);
   }
 }

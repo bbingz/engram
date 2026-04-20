@@ -64,6 +64,12 @@ export function runMigrations(
       db.exec('ALTER TABLE sessions ADD COLUMN link_source TEXT');
     if (!colNames.has('link_checked_at'))
       db.exec('ALTER TABLE sessions ADD COLUMN link_checked_at TEXT');
+    if (!colNames.has('orphan_status'))
+      db.exec('ALTER TABLE sessions ADD COLUMN orphan_status TEXT');
+    if (!colNames.has('orphan_since'))
+      db.exec('ALTER TABLE sessions ADD COLUMN orphan_since TEXT');
+    if (!colNames.has('orphan_reason'))
+      db.exec('ALTER TABLE sessions ADD COLUMN orphan_reason TEXT');
     // Drop Viking columns if they exist (removed in local-semantic-search migration)
     // SQLite doesn't support DROP COLUMN before 3.35.0; columns are left harmless
   }
@@ -101,7 +107,10 @@ export function runMigrations(
       parent_session_id TEXT,
       suggested_parent_id TEXT,
       link_source TEXT,
-      link_checked_at TEXT
+      link_checked_at TEXT,
+      orphan_status TEXT,
+      orphan_since TEXT,
+      orphan_reason TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -112,6 +121,7 @@ export function runMigrations(
     CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier);
     CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_orphan_status ON sessions(orphan_status);
 
     CREATE TRIGGER IF NOT EXISTS trg_sessions_parent_cascade
     AFTER DELETE ON sessions
@@ -167,6 +177,32 @@ export function runMigrations(
 
     CREATE INDEX IF NOT EXISTS idx_session_index_jobs_status ON session_index_jobs(status);
     CREATE INDEX IF NOT EXISTS idx_session_index_jobs_session_id ON session_index_jobs(session_id);
+
+    CREATE TABLE IF NOT EXISTS migration_log (
+      id                TEXT PRIMARY KEY,
+      old_path          TEXT NOT NULL,
+      new_path          TEXT NOT NULL,
+      old_basename      TEXT NOT NULL,
+      new_basename      TEXT NOT NULL,
+      state             TEXT NOT NULL DEFAULT 'fs_pending',
+      files_patched     INTEGER NOT NULL DEFAULT 0,
+      occurrences       INTEGER NOT NULL DEFAULT 0,
+      sessions_updated  INTEGER NOT NULL DEFAULT 0,
+      alias_created     INTEGER NOT NULL DEFAULT 0,
+      cc_dir_renamed    INTEGER NOT NULL DEFAULT 0,
+      started_at        TEXT NOT NULL,
+      finished_at       TEXT,
+      dry_run           INTEGER NOT NULL DEFAULT 0,
+      rolled_back_of    TEXT,
+      audit_note        TEXT,
+      archived          INTEGER NOT NULL DEFAULT 0,
+      actor             TEXT NOT NULL DEFAULT 'cli',
+      detail            TEXT,
+      error             TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_migration_log_started_at ON migration_log(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_migration_log_paths ON migration_log(old_path, new_path);
+    CREATE INDEX IF NOT EXISTS idx_migration_log_state ON migration_log(state);
   `);
 
   const syncCols = db.prepare('PRAGMA table_info(sync_state)').all() as {

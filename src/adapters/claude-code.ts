@@ -4,6 +4,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { isFileAccessible } from './_accessible.js';
 import type {
   Message,
   SessionAdapter,
@@ -403,5 +404,9 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     if (name === 'Grep') return (input.pattern as string) || '';
     if (name === 'Agent') return (input.description as string) || '';
     return '';
+  }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    return isFileAccessible(locator);
   }
 }

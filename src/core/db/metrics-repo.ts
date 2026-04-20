@@ -1,6 +1,6 @@
 // src/core/db/metrics-repo.ts — stats, costs, files, tools
 import type BetterSqlite3 from 'better-sqlite3';
-import { buildTierFilter } from './session-repo.js';
+import { buildOrphanFilter, buildTierFilter } from './session-repo.js';
 import type {
   CostSummaryRow,
   FileActivityRow,
@@ -37,6 +37,7 @@ export function statsGroupBy(
   if (opts?.excludeNoise) {
     conditions.push(...buildTierFilter(noiseFilter));
   }
+  conditions.push(...buildOrphanFilter());
   const where = `WHERE ${conditions.join(' AND ')}`;
 
   // Exclude skip/lite sessions from user message count even when showing all sessions

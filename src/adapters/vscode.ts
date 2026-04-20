@@ -2,6 +2,7 @@
 import { glob, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { isFileAccessible } from './_accessible.js';
 import type {
   Message,
   SessionAdapter,
@@ -189,5 +190,9 @@ export class VsCodeAdapter implements SessionAdapter {
       }
     }
     return '';
+  }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    return isFileAccessible(locator);
   }
 }

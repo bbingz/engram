@@ -35,7 +35,8 @@
     "chokidar": "^4.0.3",
     "hono": "^4.12.4",
     "openai": "^6.25.0",
-    "sqlite-vec": "0.1.7-alpha.2"
+    "sqlite-vec": "0.1.7-alpha.2",
+    "yaml": "^2.8.3"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^3.4.0"

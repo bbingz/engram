@@ -49,7 +49,25 @@ interface InitialScanDeps {
       checked: number;
       suggested: number;
     };
+    cleanupStaleMigrations: () => number;
+    detectOrphans: (
+      adapters: ReadonlyArray<{
+        name: string;
+        isAccessible(locator: string): Promise<boolean>;
+      }>,
+      opts?: { gracePeriodDays?: number },
+    ) => Promise<{
+      scanned: number;
+      newlyFlagged: number;
+      confirmed: number;
+      recovered: number;
+      skipped: number;
+    }>;
   };
+  adapters: ReadonlyArray<{
+    name: string;
+    isAccessible(locator: string): Promise<boolean>;
+  }>;
 }
 
 export async function runInitialScan({
@@ -59,6 +77,7 @@ export async function runInitialScan({
   indexer,
   indexJobRunner,
   db,
+  adapters,
 }: InitialScanDeps): Promise<void> {
   const indexed = await indexer.indexAll();
 
@@ -174,11 +193,39 @@ export async function runInitialScan({
     log.warn('parent link backfill failed', {}, err);
   }
 
+  // Clean up stale project-move migrations (crashed mid-way)
+  try {
+    const stale = db.cleanupStaleMigrations();
+    if (stale > 0) {
+      emit({ event: 'migration_cleanup', stale });
+    }
+  } catch (err) {
+    log.warn('migration cleanup failed', {}, err);
+  }
+
   emit({
     event: 'ready',
     indexed,
     total: db.countSessions(),
     todayParents: db.countTodayParentSessions(),
+  });
+
+  // Background orphan scan — runs after ready so the menu-bar badge is not delayed.
+  setImmediate(() => {
+    db.detectOrphans(adapters)
+      .then((r) => {
+        if (r.newlyFlagged > 0 || r.confirmed > 0 || r.recovered > 0) {
+          emit({
+            event: 'orphan_scan',
+            scanned: r.scanned,
+            newly_flagged: r.newlyFlagged,
+            confirmed: r.confirmed,
+            recovered: r.recovered,
+            skipped: r.skipped,
+          });
+        }
+      })
+      .catch((err) => log.warn('orphan scan failed', {}, err));
   });
 
   try {

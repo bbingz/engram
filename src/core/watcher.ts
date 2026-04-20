@@ -15,6 +15,21 @@ interface WatcherOptions {
     messageCount: number,
     tier: SessionTier,
   ) => void;
+  /**
+   * Called when a watched session file disappears. The caller should mark
+   * matching DB rows as orphaned (reason='cleaned_by_source') — not delete them.
+   * The path is the absolute filesystem path that chokidar reported as unlinked.
+   */
+  onUnlink?: (filePath: string) => void;
+  /**
+   * Return true to skip the event entirely (no indexing, no orphan marking).
+   * Used to pause watcher activity during an in-flight `project move`:
+   * chokidar sees rename as unlink + add, and we must not index a half-moved
+   * JSONL (pre-patch `cwd`), nor mark the old path as orphaned.
+   *
+   * Called for add / change / unlink events. If omitted, all events proceed.
+   */
+  shouldSkip?: (filePath: string) => boolean;
 }
 
 /** Source names that have file watchers (jsonl-based, filesystem events work) */
@@ -74,6 +89,9 @@ export function startWatcher(
   });
 
   const handleChange = async (filePath: string) => {
+    // Skip if caller (usually project-move in flight) says so.
+    // Prevents indexer reading half-moved JSONL before its cwd is patched.
+    if (opts?.shouldSkip?.(filePath)) return;
     await runWithContext(
       { requestId: randomUUID(), source: 'watcher' },
       async () => {
@@ -96,6 +114,18 @@ export function startWatcher(
 
   watcher.on('add', handleChange);
   watcher.on('change', handleChange);
+
+  if (opts?.onUnlink) {
+    watcher.on('unlink', (filePath: string) => {
+      // shouldSkip also covers unlink — during rename both unlink+add fire
+      if (opts.shouldSkip?.(filePath)) return;
+      try {
+        opts.onUnlink?.(filePath);
+      } catch {
+        // intentional: unlink hook must not crash the watcher
+      }
+    });
+  }
 
   return watcher;
 }

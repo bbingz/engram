@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { isFileAccessible } from './_accessible.js';
 import { CascadeGrpcClient } from './grpc/cascade-client.js';
 import type {
   Message,
@@ -211,6 +212,10 @@ export class WindsurfAdapter implements SessionAdapter {
     for await (const line of rl) {
       if (line.trim()) yield line;
     }
+  }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    return isFileAccessible(locator);
   }
 }
 

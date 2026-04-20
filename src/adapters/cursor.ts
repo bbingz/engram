@@ -233,4 +233,26 @@ export class CursorAdapter implements SessionAdapter {
       composerId: filePath.slice(idx + 10),
     };
   }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    const { dbPath, composerId } = this.parsePath(locator);
+    if (!composerId) return false;
+    try {
+      await stat(dbPath);
+    } catch {
+      return false;
+    }
+    let db: BetterSqlite3.Database | null = null;
+    try {
+      db = new BetterSqlite3(dbPath, { readonly: true });
+      const row = db
+        .prepare('SELECT 1 FROM cursorDiskKV WHERE key = ? LIMIT 1')
+        .get(`composerData:${composerId}`);
+      return row !== undefined;
+    } catch {
+      return false;
+    } finally {
+      db?.close();
+    }
+  }
 }
