@@ -57,9 +57,17 @@ final class IndexerProcess {
 
     private var process: Process?
     private var stdoutPipe: Pipe?
+    private var userInitiatedStop = false
+    private var restartAttempts = 0
+    private var restartTask: Task<Void, Never>?
+    private var lastStartArgs: (nodePath: String, scriptPath: String, dbPath: String?)?
+    private let maxRestartAttempts = 5
+    private let restartBackoffSeconds: Double = 5
 
     func start(nodePath: String, scriptPath: String, dbPath: String? = nil) {
         guard process == nil else { return }
+        userInitiatedStop = false
+        lastStartArgs = (nodePath, scriptPath, dbPath)
         status = .starting
 
         // Kill any orphaned indexer processes from previous app runs (e.g. Xcode SIGKILL)
@@ -103,9 +111,15 @@ final class IndexerProcess {
 
         proc.terminationHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.process = nil
-                self?.stdoutPipe = nil
-                self?.status = .stopped
+                guard let self else { return }
+                self.process = nil
+                self.stdoutPipe = nil
+                if self.userInitiatedStop {
+                    self.status = .stopped
+                    self.restartAttempts = 0
+                    return
+                }
+                self.scheduleAutoRestart()
             }
         }
 
@@ -141,10 +155,45 @@ final class IndexerProcess {
     }
 
     func stop() {
+        userInitiatedStop = true
+        restartTask?.cancel()
+        restartTask = nil
+        restartAttempts = 0
         process?.terminate()
         process    = nil
         stdoutPipe = nil
         status = .stopped
+    }
+
+    private func scheduleAutoRestart() {
+        guard let args = lastStartArgs else {
+            status = .error("Daemon exited but no start args cached")
+            return
+        }
+        if restartAttempts >= maxRestartAttempts {
+            status = .error("Daemon exited \(restartAttempts) times; auto-restart gave up")
+            EngramLogger.error(
+                "Daemon auto-restart gave up after \(restartAttempts) attempts",
+                module: .daemon
+            )
+            return
+        }
+        restartAttempts += 1
+        status = .starting
+        let attempt = restartAttempts
+        let maxAttempts = maxRestartAttempts
+        let backoffSec = restartBackoffSeconds
+        EngramLogger.warn(
+            "Daemon exited unexpectedly; auto-restart \(attempt)/\(maxAttempts) in \(Int(backoffSec))s",
+            module: .daemon
+        )
+        restartTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(backoffSec * 1_000_000_000))
+            guard let self else { return }
+            if Task.isCancelled || self.userInitiatedStop { return }
+            self.restartTask = nil
+            self.start(nodePath: args.nodePath, scriptPath: args.scriptPath, dbPath: args.dbPath)
+        }
     }
 
     private func handleEvent(_ event: DaemonEvent) {
@@ -157,6 +206,8 @@ final class IndexerProcess {
             if let tp = event.todayParents {
                 todayParentSessions = tp
             }
+            // Healthy tick — daemon is stable, reset auto-restart counter
+            restartAttempts = 0
         case "web_ready":
             port = event.port
         case "summary_generated":

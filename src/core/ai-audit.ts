@@ -88,8 +88,10 @@ export class AiAuditWriter extends EventEmitter {
           @promptTokens, @completionTokens, @totalTokens,
           @requestBody, @responseBody, @error, @sessionId, @meta)
       `);
-    } catch {
-      /* table may not exist yet in tests */
+    } catch (err) {
+      // Leaves stmt=null; record() will then no-op. Logged so a missing table
+      // in production is visible instead of silently disabling audit.
+      console.error('[ai-audit] INSERT prepare failed', err);
     }
   }
 
@@ -141,7 +143,8 @@ export class AiAuditWriter extends EventEmitter {
       const id = Number(result?.lastInsertRowid ?? -1);
       this.emit('entry', { id, ...entry, traceId, requestSource });
       return id;
-    } catch {
+    } catch (err) {
+      console.error('[ai-audit] record failed', err);
       return -1;
     }
   }
@@ -154,7 +157,8 @@ export class AiAuditWriter extends EventEmitter {
         )
         .run(retentionDays);
       return result.changes;
-    } catch {
+    } catch (err) {
+      console.error('[ai-audit] cleanup failed', err);
       return 0;
     }
   }

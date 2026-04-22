@@ -83,18 +83,28 @@ export class MetricsCollector {
   flush(): void {
     if (this.buffer.length === 0) return;
     const entries = this.buffer.splice(0);
-    const insertMany = this.db.transaction((items: MetricEntry[]) => {
-      for (const entry of items) {
-        this.insertStmt.run({
-          name: entry.name,
-          type: entry.type,
-          value: entry.value,
-          tags: entry.tags ? JSON.stringify(entry.tags) : null,
-          ts: entry.ts,
-        });
-      }
-    });
-    insertMany(entries);
+    try {
+      const insertMany = this.db.transaction((items: MetricEntry[]) => {
+        for (const entry of items) {
+          this.insertStmt.run({
+            name: entry.name,
+            type: entry.type,
+            value: entry.value,
+            tags: entry.tags ? JSON.stringify(entry.tags) : null,
+            ts: entry.ts,
+          });
+        }
+      });
+      insertMany(entries);
+    } catch (err) {
+      // Batch is dropped (already spliced). Without this catch the throw
+      // propagates out of setInterval to uncaughtException, which we saw
+      // silently swallow on 2026-04-22.
+      console.error(
+        `[metrics] flush failed, dropped ${entries.length} entries`,
+        err,
+      );
+    }
   }
 
   rollup(): void {

@@ -148,6 +148,21 @@ describe('AiAuditWriter', () => {
     ).toBe(-1);
   });
 
+  it('logs to console.error when record fails (not silent)', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.close();
+    writer.record({
+      caller: 'title',
+      operation: 'generate',
+      durationMs: 100,
+    });
+    expect(spy).toHaveBeenCalledWith(
+      '[ai-audit] record failed',
+      expect.any(Error),
+    );
+    spy.mockRestore();
+  });
+
   it('emits entry event after recording', () => {
     const handler = vi.fn();
     writer.on('entry', handler);

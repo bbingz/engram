@@ -1,5 +1,5 @@
 // tests/core/metrics.test.ts
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Database } from '../../src/core/db.js';
 import { MetricsCollector } from '../../src/core/metrics.js';
 
@@ -77,6 +77,19 @@ describe('MetricsCollector', () => {
     expect(
       (db.raw.prepare('SELECT COUNT(*) as c FROM metrics').get() as any).c,
     ).toBeGreaterThanOrEqual(5);
+  });
+
+  it('does not throw on flush failure and logs the drop', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    metrics.counter('test.count', 1);
+    metrics.counter('test.count', 1);
+    db.close();
+    expect(() => metrics.flush()).not.toThrow();
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining('[metrics] flush failed, dropped 2 entries'),
+      expect.any(Error),
+    );
+    spy.mockRestore();
   });
 });
 
