@@ -1,0 +1,12 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"brief\": \"## Handoff — missing-project\\n\\nNo recent sessions found for this project.\",\n  \"sessionCount\": 0\n}"
+    }
+  ],
+  "structuredContent": {
+    "brief": "## Handoff — missing-project\n\nNo recent sessions found for this project.",
+    "sessionCount": 0
+  }
+}

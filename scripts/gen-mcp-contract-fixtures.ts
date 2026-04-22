@@ -3,14 +3,24 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CodexAdapter } from '../src/adapters/codex.js';
 import { Database } from '../src/core/db.js';
+import { handleExport } from '../src/tools/export.js';
 import { handleFileActivity } from '../src/tools/file_activity.js';
 import { handleGetContext } from '../src/tools/get_context.js';
 import { handleGetCosts } from '../src/tools/get_costs.js';
+import { handleGetInsights } from '../src/tools/get_insights.js';
 import { handleGetMemory } from '../src/tools/get_memory.js';
+import { handleGetSession } from '../src/tools/get_session.js';
+import { handleHandoff } from '../src/tools/handoff.js';
+import { handleLinkSessions } from '../src/tools/link_sessions.js';
+import { handleLintConfig } from '../src/tools/lint_config.js';
 import { handleListSessions } from '../src/tools/list_sessions.js';
 import { handleLiveSessions } from '../src/tools/live_sessions.js';
-import { handleProjectListMigrations } from '../src/tools/project.js';
+import {
+  handleProjectListMigrations,
+  handleProjectReview,
+} from '../src/tools/project.js';
 import { handleProjectTimeline } from '../src/tools/project_timeline.js';
 import { handleSaveInsight } from '../src/tools/save_insight.js';
 import { handleSearch } from '../src/tools/search.js';
@@ -21,12 +31,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const fixtureDbPath = resolve(repoRoot, 'tests/fixtures/mcp-contract.sqlite');
 const goldenDir = resolve(repoRoot, 'tests/fixtures/mcp-golden');
+const runtimeDir = resolve(repoRoot, 'tests/fixtures/mcp-runtime');
+const lintProjectDir = resolve(runtimeDir, 'lint-project');
+const linkTargetDir = resolve(runtimeDir, 'engram');
+const reviewHomeDir = resolve(runtimeDir, 'review-home');
+const transcriptDir = resolve(runtimeDir, 'transcripts');
+const exportHomeDir = resolve(runtimeDir, 'export-home');
 
 rmSync(fixtureDbPath, { force: true });
 rmSync(`${fixtureDbPath}-wal`, { force: true });
 rmSync(`${fixtureDbPath}-shm`, { force: true });
 rmSync(goldenDir, { recursive: true, force: true });
+rmSync(runtimeDir, { recursive: true, force: true });
 mkdirSync(goldenDir, { recursive: true });
+mkdirSync(runtimeDir, { recursive: true });
+mkdirSync(transcriptDir, { recursive: true });
 
 const db = new Database(fixtureDbPath);
 const raw = db.getRawDb();
@@ -312,6 +331,148 @@ for (const row of [
   insertMigration.run(row);
 }
 
+mkdirSync(resolve(lintProjectDir, 'src'), { recursive: true });
+writeFileSync(
+  resolve(lintProjectDir, 'CLAUDE.md'),
+  [
+    '# Fixture Lint Project',
+    '',
+    'Run `npm run build` before release.',
+    'Document `src/present.ts` and `npm run verify` in the onboarding guide.',
+  ].join('\n'),
+);
+writeFileSync(
+  resolve(lintProjectDir, 'package.json'),
+  JSON.stringify(
+    {
+      name: 'mcp-lint-fixture',
+      private: true,
+      scripts: {
+        build: 'echo build',
+      },
+    },
+    null,
+    2,
+  ),
+);
+writeFileSync(
+  resolve(lintProjectDir, 'src/existing.ts'),
+  'export const fixture = true;\n',
+);
+
+mkdirSync(linkTargetDir, { recursive: true });
+
+const reviewOwnDir = resolve(
+  reviewHomeDir,
+  '.claude/projects',
+  '-Users-test-work-engram-v2',
+);
+const reviewOtherDir = resolve(
+  reviewHomeDir,
+  '.claude/projects',
+  '-Users-test-work-other-app',
+);
+const reviewCodexDir = resolve(reviewHomeDir, '.codex/sessions/2026/04/22');
+mkdirSync(reviewOwnDir, { recursive: true });
+mkdirSync(reviewOtherDir, { recursive: true });
+mkdirSync(reviewCodexDir, { recursive: true });
+writeFileSync(
+  resolve(reviewOwnDir, 'session-own.jsonl'),
+  JSON.stringify({ old: '/Users/test/work/engram-old', note: 'own scope' }) +
+    '\n',
+);
+writeFileSync(
+  resolve(reviewOtherDir, 'session-other.jsonl'),
+  JSON.stringify({ old: '/Users/test/work/engram-old', note: 'other scope' }) +
+    '\n',
+);
+writeFileSync(
+  resolve(reviewCodexDir, 'rollout-review.jsonl'),
+  JSON.stringify({
+    note: 'codex still references /Users/test/work/engram-old',
+  }) + '\n',
+);
+
+const transcriptPath = resolve(
+  transcriptDir,
+  'rollout-mcp-transcript-01.jsonl',
+);
+writeFileSync(
+  transcriptPath,
+  [
+    JSON.stringify({
+      type: 'session_meta',
+      payload: {
+        id: 'mcp-transcript-01',
+        timestamp: '2026-01-15T09:00:00.000Z',
+        cwd: '/Users/test/work/transcript-fixture',
+        model_provider: 'gpt-5.4',
+      },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      timestamp: '2026-01-15T09:00:00.000Z',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [
+          { text: 'Summarize the Swift MCP shim scope before implementation.' },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      timestamp: '2026-01-15T09:01:00.000Z',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [
+          {
+            text: 'Phase C only ports the MCP stdio shim and daemon forwarding layer.',
+          },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      timestamp: '2026-01-15T09:02:00.000Z',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ text: 'Keep src/index.ts as the fallback entry point.' }],
+      },
+    }),
+    '',
+  ].join('\n'),
+);
+
+insertSession.run({
+  id: 'mcp-transcript-01',
+  source: 'codex',
+  startTime: '2026-01-15T09:00:00.000Z',
+  endTime: '2026-01-15T09:05:00.000Z',
+  cwd: '/Users/test/work/transcript-fixture',
+  project: 'transcript-fixture',
+  model: 'gpt-5.4',
+  messageCount: 3,
+  userMessageCount: 2,
+  assistantMessageCount: 1,
+  toolMessageCount: 0,
+  systemMessageCount: 0,
+  summary:
+    'Transcript fixture codex session for get_session/export contract tests',
+  filePath: transcriptPath,
+  sizeBytes: 2048,
+  indexedAt: '2026-01-15T09:06:00.000Z',
+  agentRole: null,
+  origin: 'local',
+  tier: 'normal',
+  generatedTitle: null,
+  qualityScore: 55,
+});
+
+const codexAdapter = new CodexAdapter();
+
 type MCPResponse = {
   content: Array<{ type: string; text: string }>;
   structuredContent?: unknown;
@@ -378,6 +539,21 @@ const goldens: Record<string, unknown> = {
       )
     ).contextText,
   ),
+  'get_insights.empty': success(
+    await handleGetInsights(
+      db,
+      {},
+      {
+        since: '2026-02-15T00:00:00.000Z',
+      },
+    ),
+  ),
+  'get_session.transcript': success(
+    await handleGetSession(db, codexAdapter, {
+      id: 'mcp-transcript-01',
+      page: 1,
+    }),
+  ),
   'list_sessions.engram': success(
     await handleListSessions(db, {
       project: 'engram',
@@ -421,6 +597,40 @@ const goldens: Record<string, unknown> = {
   'get_memory.keyword': success(
     await handleGetMemory({ query: 'single writer daemon HTTP' }, { db }),
   ),
+  'lint_config.fixture': success(
+    await handleLintConfig({
+      cwd: lintProjectDir,
+    }),
+  ),
+  'export.transcript': success(
+    await (async () => {
+      const previousHome = process.env.HOME;
+      process.env.HOME = exportHomeDir;
+      try {
+        return await handleExport(db, codexAdapter, {
+          id: 'mcp-transcript-01',
+          format: 'json',
+        });
+      } finally {
+        process.env.HOME = previousHome;
+      }
+    })(),
+  ),
+  'handoff.empty': success(
+    await handleHandoff(
+      db,
+      {
+        cwd: '/Users/test/work/missing-project',
+        format: 'markdown',
+      },
+      undefined,
+    ),
+  ),
+  'link_sessions.engram': success(
+    await handleLinkSessions(db, {
+      targetDir: linkTargetDir,
+    }),
+  ),
   'manage_project_alias.list': success(db.listProjectAliases()),
   'manage_project_alias.add': success(
     (() => {
@@ -448,6 +658,21 @@ const goldens: Record<string, unknown> = {
         { db },
       ),
     ),
+  ),
+  'project_review.fixture': success(
+    await (async () => {
+      const previousHome = process.env.HOME;
+      process.env.HOME = reviewHomeDir;
+      try {
+        return await handleProjectReview({
+          old_path: '/Users/test/work/engram-old',
+          new_path: '/Users/test/work/engram-v2',
+          max_items: 100,
+        });
+      } finally {
+        process.env.HOME = previousHome;
+      }
+    })(),
   ),
 };
 

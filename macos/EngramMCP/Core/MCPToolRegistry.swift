@@ -231,6 +231,245 @@ enum MCPToolRegistry {
             ])
         ),
         MCPToolDefinition(
+            name: "search",
+            description: "Full-text and semantic search across all session content. Supports Chinese and English.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("query")]),
+                "properties": .object([
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Search keywords (at least 2 characters for semantic, 3 for keyword)"),
+                    ]),
+                    "source": .object([
+                        "type": .string("string"),
+                        "enum": .array([
+                            .string("codex"),
+                            .string("claude-code"),
+                            .string("gemini-cli"),
+                            .string("opencode"),
+                            .string("iflow"),
+                            .string("qwen"),
+                            .string("kimi"),
+                            .string("cline"),
+                            .string("cursor"),
+                            .string("vscode"),
+                            .string("antigravity"),
+                            .string("windsurf"),
+                        ]),
+                    ]),
+                    "project": .object(["type": .string("string")]),
+                    "since": .object(["type": .string("string")]),
+                    "limit": .object([
+                        "type": .string("number"),
+                        "description": .string("Default 10, max 50"),
+                    ]),
+                    "mode": .object([
+                        "type": .string("string"),
+                        "enum": .array([
+                            .string("hybrid"),
+                            .string("keyword"),
+                            .string("semantic"),
+                        ]),
+                        "description": .string("Search mode (default: hybrid)"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "get_context",
+            description: "为当前工作目录自动提取相关的历史会话上下文。在开始新任务时调用，获取该项目的历史记录。",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("cwd")]),
+                "properties": .object([
+                    "cwd": .object([
+                        "type": .string("string"),
+                        "description": .string("当前工作目录（绝对路径）"),
+                    ]),
+                    "task": .object([
+                        "type": .string("string"),
+                        "description": .string("当前任务描述（可选，用于语义搜索）"),
+                    ]),
+                    "max_tokens": .object([
+                        "type": .string("number"),
+                        "description": .string("token 预算，默认 4000（约 16000 字符）"),
+                    ]),
+                    "detail": .object([
+                        "type": .string("string"),
+                        "enum": .array([
+                            .string("abstract"),
+                            .string("overview"),
+                            .string("full"),
+                        ]),
+                        "description": .string("详情级别: abstract (~100 tokens, cost+alerts only), overview (~2K tokens), full (default)"),
+                    ]),
+                    "sort_by": .object([
+                        "type": .string("string"),
+                        "enum": .array([
+                            .string("recency"),
+                            .string("score"),
+                        ]),
+                        "description": .string("排序方式: recency (默认按时间倒序) 或 score (按质量分数倒序)"),
+                    ]),
+                    "include_environment": .object([
+                        "type": .string("boolean"),
+                        "description": .string("包含实时环境数据（活跃会话、今日成本、工具使用、告警），默认 true"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "get_insights",
+            description: "Get actionable cost optimization suggestions with savings estimates",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "since": .object([
+                        "type": .string("string"),
+                        "description": .string("ISO timestamp for start of analysis window (default: 7 days ago)"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "lint_config",
+            description: "Lint CLAUDE.md and similar config files: verify file references exist, npm scripts are valid, and detect stale instructions.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("cwd")]),
+                "properties": .object([
+                    "cwd": .object([
+                        "type": .string("string"),
+                        "description": .string("Project root directory"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "link_sessions",
+            description: "Create symlinks to all AI session files for a project in <targetDir>/conversation_log/<source>/",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("targetDir")]),
+                "properties": .object([
+                    "targetDir": .object([
+                        "type": .string("string"),
+                        "description": .string("Project directory (absolute path). Project name is derived from basename."),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "project_review",
+            description: "Scan all 7 AI session roots for residual references to an old project path. Classifies hits into `own` (in the migrated project's own spaces — real leftovers) vs `other` (historical mentions in unrelated conversations — left alone by design).",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("old_path"), .string("new_path")]),
+                "properties": .object([
+                    "old_path": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute old path"),
+                    ]),
+                    "new_path": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute new path (used to identify own-scope CC dir)"),
+                    ]),
+                    "max_items": .object([
+                        "type": .string("number"),
+                        "description": .string("Cap own/other arrays (default 100). Response includes `truncated` if applied."),
+                        "default": .int(100),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "get_session",
+            description: "读取单个会话的完整对话内容。大会话支持分页（每页 50 条消息）。",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("id")]),
+                "properties": .object([
+                    "id": .object([
+                        "type": .string("string"),
+                        "description": .string("会话 ID"),
+                    ]),
+                    "page": .object([
+                        "type": .string("number"),
+                        "description": .string("页码，从 1 开始，默认 1"),
+                    ]),
+                    "roles": .object([
+                        "type": .string("array"),
+                        "items": .object([
+                            "type": .string("string"),
+                            "enum": .array([
+                                .string("user"),
+                                .string("assistant"),
+                            ]),
+                        ]),
+                        "description": .string("只返回指定角色的消息，默认返回全部"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "export",
+            description: "将单个会话导出为 Markdown 或 JSON 文件，保存到 ~/codex-exports/ 目录。",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("id")]),
+                "properties": .object([
+                    "id": .object([
+                        "type": .string("string"),
+                        "description": .string("会话 ID"),
+                    ]),
+                    "format": .object([
+                        "type": .string("string"),
+                        "enum": .array([
+                            .string("markdown"),
+                            .string("json"),
+                        ]),
+                        "description": .string("默认 markdown"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "handoff",
+            description: "Generate a handoff brief for a project — summarizes recent sessions to help resume work.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("cwd")]),
+                "properties": .object([
+                    "cwd": .object([
+                        "type": .string("string"),
+                        "description": .string("Project directory (absolute path)"),
+                    ]),
+                    "sessionId": .object([
+                        "type": .string("string"),
+                        "description": .string("Specific session to handoff (optional)"),
+                    ]),
+                    "format": .object([
+                        "type": .string("string"),
+                        "enum": .array([
+                            .string("markdown"),
+                            .string("plain"),
+                        ]),
+                        "description": .string("Output format (default: markdown)"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
             name: "save_insight",
             description: "Save an important insight, decision, or lesson learned for future retrieval. Use this to preserve knowledge that should persist across sessions.",
             inputSchema: .object([
@@ -370,6 +609,76 @@ enum MCPToolRegistry {
             let database = try MCPDatabase(path: config.dbPath)
             let structured = try database.getMemory(query: try requiredString("query", in: arguments))
             return .toolSuccess(structured)
+        case "search":
+            let database = try MCPDatabase(path: config.dbPath)
+            let structured = try database.searchSessions(
+                query: try requiredString("query", in: arguments),
+                source: arguments["source"]?.stringValue,
+                project: arguments["project"]?.stringValue,
+                since: arguments["since"]?.stringValue,
+                limit: min(arguments["limit"]?.intValue ?? 10, 50),
+                mode: arguments["mode"]?.stringValue ?? "hybrid"
+            )
+            return .toolSuccess(structured)
+        case "get_context":
+            let database = try MCPDatabase(path: config.dbPath)
+            let text = try database.getContext(
+                cwd: try requiredString("cwd", in: arguments),
+                task: arguments["task"]?.stringValue,
+                maxTokens: arguments["max_tokens"]?.intValue ?? 4000,
+                sortBy: arguments["sort_by"]?.stringValue ?? "recency",
+                includeEnvironment: arguments["include_environment"]?.boolValue ?? true
+            )
+            return .textOnly(text)
+        case "get_insights":
+            let database = try MCPDatabase(path: config.dbPath)
+            let structured = try MCPInsightsTool.result(
+                database: database,
+                since: arguments["since"]?.stringValue
+            )
+            return .toolSuccess(structured)
+        case "lint_config":
+            return .toolSuccess(MCPFileTools.lintConfig(cwd: try requiredString("cwd", in: arguments)))
+        case "link_sessions":
+            let database = try MCPDatabase(path: config.dbPath)
+            let structured = try MCPFileTools.linkSessions(
+                database: database,
+                targetDir: try requiredString("targetDir", in: arguments)
+            )
+            return .toolSuccess(structured)
+        case "project_review":
+            let structured = MCPFileTools.projectReview(
+                oldPath: try requiredString("old_path", in: arguments),
+                newPath: try requiredString("new_path", in: arguments),
+                maxItems: arguments["max_items"]?.intValue ?? 100
+            )
+            return .toolSuccess(structured)
+        case "get_session":
+            let database = try MCPDatabase(path: config.dbPath)
+            let structured = try MCPTranscriptTools.getSession(
+                database: database,
+                id: try requiredString("id", in: arguments),
+                page: arguments["page"]?.intValue ?? 1,
+                roles: arguments["roles"]?.arrayValue?.compactMap(\.stringValue)
+            )
+            return .toolSuccess(structured)
+        case "export":
+            let database = try MCPDatabase(path: config.dbPath)
+            let structured = try MCPTranscriptTools.exportSession(
+                database: database,
+                id: try requiredString("id", in: arguments),
+                format: arguments["format"]?.stringValue ?? "markdown"
+            )
+            return .toolSuccess(structured)
+        case "handoff":
+            let database = try MCPDatabase(path: config.dbPath)
+            let structured = try MCPTranscriptTools.handoff(
+                database: database,
+                cwd: try requiredString("cwd", in: arguments),
+                sessionID: arguments["sessionId"]?.stringValue,
+                format: arguments["format"]?.stringValue ?? "markdown"
+            )
+            return .toolSuccess(structured)
         case "save_insight":
             let body = SaveInsightBody(
                 actor: "mcp",
@@ -482,7 +791,7 @@ private struct ProjectAliasBody: Encodable {
     let canonical: String
 }
 
-private enum MCPToolError: LocalizedError {
+enum MCPToolError: LocalizedError {
     case invalidArguments(String)
 
     var errorDescription: String? {
@@ -515,6 +824,17 @@ extension OrderedJSONValue {
                 ]),
             ])),
             ("isError", .bool(true)),
+        ])
+    }
+
+    static func textOnly(_ text: String) -> OrderedJSONValue {
+        .object([
+            ("content", .array([
+                .object([
+                    ("type", .string("text")),
+                    ("text", .string(text)),
+                ]),
+            ])),
         ])
     }
 }

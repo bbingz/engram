@@ -1,6 +1,65 @@
 import Foundation
 import GRDB
 
+struct MCPSessionLinkRecord {
+    let source: String
+    let filePath: String
+}
+
+struct MCPSessionRecord {
+    let id: String
+    let source: String
+    let startTime: String
+    let endTime: String?
+    let cwd: String
+    let project: String?
+    let model: String?
+    let messageCount: Int
+    let userMessageCount: Int
+    let assistantMessageCount: Int
+    let toolMessageCount: Int
+    let systemMessageCount: Int
+    let summary: String?
+    let filePath: String
+    let sizeBytes: Int
+    let indexedAt: String?
+    let agentRole: String?
+    let origin: String?
+    let summaryMessageCount: Int?
+    let tier: String?
+    let qualityScore: Int?
+    let parentSessionId: String?
+    let suggestedParentId: String?
+
+    var orderedJSONValue: OrderedJSONValue {
+        .object([
+            ("id", .string(id)),
+            ("source", .string(source)),
+            ("startTime", .string(startTime)),
+            ("endTime", valueOrNull(endTime)),
+            ("cwd", .string(cwd)),
+            ("project", valueOrNull(project)),
+            ("model", valueOrNull(model)),
+            ("messageCount", .int(messageCount)),
+            ("userMessageCount", .int(userMessageCount)),
+            ("assistantMessageCount", .int(assistantMessageCount)),
+            ("toolMessageCount", .int(toolMessageCount)),
+            ("systemMessageCount", .int(systemMessageCount)),
+            ("summary", valueOrNull(summary)),
+            ("filePath", .string(filePath)),
+            ("sizeBytes", .int(sizeBytes)),
+            ("indexedAt", valueOrNull(indexedAt)),
+            ("agentRole", valueOrNull(agentRole)),
+            ("origin", valueOrNull(origin)),
+            ("summaryMessageCount", summaryMessageCount.map(OrderedJSONValue.int) ?? .null),
+            ("tier", valueOrNull(tier)),
+            ("qualityScore", qualityScore.map(OrderedJSONValue.int) ?? .null),
+            ("parentSessionId", valueOrNull(parentSessionId)),
+            ("suggestedParentId", valueOrNull(suggestedParentId)),
+        ])
+    }
+}
+
 final class MCPDatabase {
     private let queue: DatabaseQueue
 
@@ -397,6 +456,136 @@ final class MCPDatabase {
         ])
     }
 
+    func searchSessions(
+        query: String,
+        source: String?,
+        project: String?,
+        since: String?,
+        limit: Int,
+        mode: String
+    ) throws -> OrderedJSONValue {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cappedLimit = min(max(limit, 1), 50)
+
+        if isUUID(normalizedQuery) {
+            if let row = try fetchSessionRow(id: normalizedQuery) {
+                return .object([
+                    ("results", .array([
+                        .object([
+                            ("session", fullSessionObject(from: row)),
+                            ("snippet", .string("")),
+                            ("matchType", .string("keyword")),
+                            ("score", .double(1)),
+                        ]),
+                    ])),
+                    ("query", .string(query)),
+                    ("searchModes", .array([.string("id")])),
+                ])
+            }
+
+            return .object([
+                ("results", .array([])),
+                ("query", .string(query)),
+                ("searchModes", .array([.string("id")])),
+                ("warning", .string("No session found with this ID")),
+            ])
+        }
+
+        guard mode != "semantic", normalizedQuery.count >= 3 else {
+            var entries: [(String, OrderedJSONValue)] = [
+                ("results", .array([])),
+                ("query", .string(query)),
+                ("searchModes", .array([])),
+            ]
+            if normalizedQuery.count < 3 {
+                entries.append(("warning", .string("Search query needs at least 3 characters for keyword search (2 for semantic)")))
+            }
+            return .object(entries)
+        }
+
+        let matches = try keywordSearch(
+            query: normalizedQuery,
+            source: source,
+            project: project,
+            since: since,
+            limit: cappedLimit * 3
+        )
+
+        var seen = Set<String>()
+        var ranked: [(sessionID: String, snippet: String, score: Double)] = []
+        var rank = 1
+        for match in matches {
+            guard seen.insert(match.sessionID).inserted else { continue }
+            ranked.append((match.sessionID, match.snippet, 1.0 / Double(60 + rank)))
+            rank += 1
+            if ranked.count >= cappedLimit { break }
+        }
+
+        let resultRows = try ranked.compactMap { match -> OrderedJSONValue? in
+            guard let row = try fetchSessionRow(id: match.sessionID) else { return nil }
+            return .object([
+                ("session", fullSessionObject(from: row)),
+                ("snippet", .string(match.snippet.isEmpty ? (stringValue(row["summary"]) ?? "") : match.snippet)),
+                ("matchType", .string("keyword")),
+                ("score", .double(match.score)),
+            ])
+        }
+
+        return .object([
+            ("results", .array(resultRows)),
+            ("query", .string(query)),
+            ("searchModes", .array([.string("keyword")])),
+        ])
+    }
+
+    func getContext(
+        cwd: String,
+        task: String?,
+        maxTokens: Int,
+        sortBy: String,
+        includeEnvironment: Bool
+    ) throws -> String {
+        let maxChars = maxTokens * 4
+        let projectName = URL(fileURLWithPath: cwd).lastPathComponent
+        var sessions = try listContextSessions(projectName: projectName, cwd: cwd)
+
+        if sortBy == "score" {
+            sessions.sort { intValue($0["quality_score"]) > intValue($1["quality_score"]) }
+        } else {
+            sessions.sort { (stringValue($0["start_time"]) ?? "") > (stringValue($1["start_time"]) ?? "") }
+        }
+
+        var parts: [String] = []
+        var totalChars = 0
+        var selectedCount = 0
+
+        if let task, !task.isEmpty {
+            let line = "当前任务：\(task)\n"
+            parts.append(line)
+            totalChars += line.count
+        }
+
+        for row in sessions {
+            guard let summary = stringValue(row["summary"]), !summary.isEmpty else { continue }
+            let source = stringValue(row["source"]) ?? "unknown"
+            let date = toLocalDate(stringValue(row["start_time"]))
+            let line = "[\(source)] \(date) — \(summary)\n"
+            if totalChars + line.count > maxChars { break }
+            parts.append(line)
+            totalChars += line.count
+            selectedCount += 1
+        }
+
+        let footer = "\n— \(selectedCount) sessions, ~\(Int(ceil(Double(totalChars) / 4.0))) tokens"
+        parts.append(footer)
+
+        if includeEnvironment {
+            // TODO(mcp-get-context-env): port environment/status addenda after read-tool parity lands.
+        }
+
+        return parts.joined()
+    }
+
     func listProjectAliases() throws -> OrderedJSONValue {
         let rows = try queue.read { db in
             try Row.fetchAll(
@@ -410,6 +599,63 @@ final class MCPDatabase {
                 ("canonical", .string(row["canonical"])),
             ])
         })
+    }
+
+    func resolvedProjectAliases(for project: String) throws -> [String] {
+        try resolveProjectAliases([project])
+    }
+
+    func listSessionLinkRecords(project: String, limit: Int) throws -> (projectNames: [String], sessions: [MCPSessionLinkRecord], truncated: Bool) {
+        let projectNames = try resolveProjectAliases([project])
+        let cappedLimit = min(max(limit, 1), 10_000)
+        let rows = try queue.read { db in
+            let placeholders = Array(repeating: "?", count: max(projectNames.count, 1)).joined(separator: ",")
+            let sql = """
+            SELECT s.source, COALESCE(ls.local_readable_path, s.file_path) AS file_path
+            FROM sessions s
+            LEFT JOIN session_local_state ls ON ls.session_id = s.id
+            WHERE s.hidden_at IS NULL
+              AND s.orphan_status IS NULL
+              AND s.project IN (\(placeholders))
+            ORDER BY s.start_time DESC
+            LIMIT ?
+            """
+            let values: [DatabaseValueConvertible?] = (projectNames.isEmpty ? [project] : projectNames) + [cappedLimit]
+            let arguments = StatementArguments(values)
+            return try Row.fetchAll(db, sql: sql, arguments: arguments)
+        }
+
+        return (
+            projectNames,
+            rows.map { row in
+                MCPSessionLinkRecord(
+                    source: stringValue(row["source"]) ?? "unknown",
+                    filePath: stringValue(row["file_path"]) ?? ""
+                )
+            },
+            rows.count == cappedLimit
+        )
+    }
+
+    func totalCostSince(_ since: String) throws -> Double {
+        try queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT SUM(c.cost_usd) AS cost
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.start_time >= ?
+                """,
+                arguments: [since]
+            )
+            return doubleValue(row?["cost"])
+        }
+    }
+
+    func sessionRecord(id: String) throws -> MCPSessionRecord? {
+        guard let row = try fetchSessionRow(id: id) else { return nil }
+        return makeSessionRecord(from: row)
     }
 
     private func searchInsightsFTS(query: String, limit: Int) throws -> [Row] {
@@ -465,6 +711,118 @@ final class MCPDatabase {
         }
     }
 
+    private func fetchSessionRow(id: String) throws -> Row? {
+        try queue.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT s.*, ls.local_readable_path
+                FROM sessions s
+                LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                WHERE s.id = ?
+                LIMIT 1
+                """,
+                arguments: [id]
+            )
+        }
+    }
+
+    private func listContextSessions(projectName: String, cwd: String) throws -> [Row] {
+        let projects = try resolveProjectAliases([projectName])
+        return try queue.read { db in
+            if !projects.isEmpty {
+                let placeholders = Array(repeating: "?", count: projects.count).joined(separator: ",")
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT s.*
+                    FROM sessions s
+                    WHERE s.hidden_at IS NULL
+                      AND s.orphan_status IS NULL
+                      AND s.project IN (\(placeholders))
+                    ORDER BY s.start_time DESC
+                    LIMIT 50
+                    """,
+                    arguments: StatementArguments(projects)
+                )
+                if !rows.isEmpty { return rows }
+            }
+
+            return try Row.fetchAll(
+                db,
+                sql: """
+                SELECT s.*
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
+                  AND s.orphan_status IS NULL
+                  AND s.project = ?
+                ORDER BY s.start_time DESC
+                LIMIT 50
+                """,
+                arguments: [cwd]
+            )
+        }
+    }
+
+    private func keywordSearch(
+        query: String,
+        source: String?,
+        project: String?,
+        since: String?,
+        limit: Int
+    ) throws -> [(sessionID: String, snippet: String)] {
+        let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
+        return try queue.read { db in
+            var conditions = [
+                "sessions_fts MATCH ?",
+                "s.hidden_at IS NULL",
+                "s.orphan_status IS NULL",
+            ]
+            var values: [DatabaseValueConvertible?] = [query]
+
+            if let source {
+                conditions.append("s.source = ?")
+                values.append(source)
+            }
+            if !expandedProjects.isEmpty {
+                if expandedProjects.count == 1, let only = expandedProjects.first {
+                    conditions.append("s.project LIKE ?")
+                    values.append("%\(only)%")
+                } else {
+                    let clauses = expandedProjects.map { _ in "s.project LIKE ?" }.joined(separator: " OR ")
+                    conditions.append("(\(clauses))")
+                    values.append(contentsOf: expandedProjects.map { "%\($0)%" })
+                }
+            }
+            if let since {
+                conditions.append("s.start_time >= ?")
+                values.append(since)
+            }
+            values.append(limit)
+
+            let sql = """
+            SELECT
+              f.session_id AS session_id,
+              snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32) AS snippet,
+              f.rank
+            FROM sessions_fts f
+            JOIN sessions s ON s.id = f.session_id
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY f.rank
+            LIMIT ?
+            """
+
+            do {
+                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+                return rows.map { (stringValue($0["session_id"]) ?? "", stringValue($0["snippet"]) ?? "") }
+            } catch {
+                values[0] = "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
+                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+                return rows.map { (stringValue($0["session_id"]) ?? "", stringValue($0["snippet"]) ?? "") }
+            }
+        }
+    }
+
     private func resolveProjectAliases(_ projects: [String]) throws -> [String] {
         guard !projects.isEmpty else { return projects }
         return try queue.read { db in
@@ -485,7 +843,7 @@ final class MCPDatabase {
             for row in rows {
                 all.insert(stringValue(row["name"]) ?? "")
             }
-            return all.filter { !$0.isEmpty }
+            return all.filter { !$0.isEmpty }.sorted()
         }
     }
 }
@@ -506,6 +864,10 @@ private func listSessionObject(from row: Row) -> OrderedJSONValue {
         ("summary", valueOrNull(stringValue(row["summary"]))),
     ]
     return .object(entries)
+}
+
+private func fullSessionObject(from row: Row) -> OrderedJSONValue {
+    makeSessionRecord(from: row).orderedJSONValue
 }
 
 private func costSummaryObject(from row: Row) -> OrderedJSONValue {
@@ -583,6 +945,34 @@ private func detailJSONValue(from raw: DatabaseValueConvertible?) -> OrderedJSON
     return (try? parser.parse()) ?? .null
 }
 
+private func makeSessionRecord(from row: Row) -> MCPSessionRecord {
+    MCPSessionRecord(
+        id: stringValue(row["id"]) ?? "",
+        source: stringValue(row["source"]) ?? "unknown",
+        startTime: stringValue(row["start_time"]) ?? "",
+        endTime: stringValue(row["end_time"]),
+        cwd: stringValue(row["cwd"]) ?? "",
+        project: stringValue(row["project"]),
+        model: stringValue(row["model"]),
+        messageCount: intValue(row["message_count"]),
+        userMessageCount: intValue(row["user_message_count"]),
+        assistantMessageCount: intValue(row["assistant_message_count"]),
+        toolMessageCount: intValue(row["tool_message_count"]),
+        systemMessageCount: intValue(row["system_message_count"]),
+        summary: stringValue(row["summary"]),
+        filePath: stringValue(row["local_readable_path"]) ?? stringValue(row["file_path"]) ?? "",
+        sizeBytes: intValue(row["size_bytes"]),
+        indexedAt: stringValue(row["indexed_at"]),
+        agentRole: stringValue(row["agent_role"]),
+        origin: stringValue(row["origin"]),
+        summaryMessageCount: optionalInt(row["summary_message_count"]),
+        tier: stringValue(row["tier"]),
+        qualityScore: optionalInt(row["quality_score"]),
+        parentSessionId: stringValue(row["parent_session_id"]),
+        suggestedParentId: stringValue(row["suggested_parent_id"])
+    )
+}
+
 private func containsCJK(_ text: String) -> Bool {
     text.range(of: #"[\u{2E80}-\u{9FFF}\u{F900}-\u{FAFF}\u{FE30}-\u{FE4F}]"#, options: .regularExpression) != nil
 }
@@ -597,6 +987,32 @@ private func escapeLike(_ value: String) -> String {
 private func valueOrNull(_ value: String?) -> OrderedJSONValue {
     guard let value else { return .null }
     return .string(value)
+}
+
+private func intOrNull(_ value: DatabaseValueConvertible?) -> OrderedJSONValue {
+    switch value {
+    case let value as Int:
+        return .int(value)
+    case let value as Int64:
+        return .int(Int(value))
+    case let value as Double:
+        return .int(Int(value))
+    default:
+        return .null
+    }
+}
+
+private func optionalInt(_ value: DatabaseValueConvertible?) -> Int? {
+    switch value {
+    case let value as Int:
+        return value
+    case let value as Int64:
+        return Int(value)
+    case let value as Double:
+        return Int(value)
+    default:
+        return nil
+    }
 }
 
 private func intValue(_ value: DatabaseValueConvertible?) -> Int {
@@ -649,7 +1065,7 @@ private func stringValue(_ value: DatabaseValueConvertible?) -> String? {
     }
 }
 
-private func toLocalDateTime(_ value: String?) -> String {
+func toLocalDateTime(_ value: String?) -> String {
     guard let value, !value.isEmpty else { return "" }
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -668,6 +1084,34 @@ private func toLocalDateTime(_ value: String?) -> String {
     }
     output.dateFormat = "yyyy-MM-dd HH:mm:ss"
     return output.string(from: date)
+}
+
+func toLocalDate(_ value: String?) -> String {
+    guard let value, !value.isEmpty else { return "" }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let fallback = ISO8601DateFormatter()
+    guard let date = formatter.date(from: value) ?? fallback.date(from: value) else {
+        return value
+    }
+
+    let output = DateFormatter()
+    output.locale = Locale(identifier: "sv_SE")
+    if let configured = ProcessInfo.processInfo.environment["TZ"],
+       let timeZone = TimeZone(identifier: configured) {
+        output.timeZone = timeZone
+    } else {
+        output.timeZone = .autoupdatingCurrent
+    }
+    output.dateFormat = "yyyy-MM-dd"
+    return output.string(from: date)
+}
+
+private func isUUID(_ value: String) -> Bool {
+    value.range(
+        of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#,
+        options: .regularExpression
+    ) != nil
 }
 
 private extension OrderedJSONValue {

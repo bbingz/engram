@@ -118,6 +118,106 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testSearchMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "search",
+            arguments: """
+            {"query":"Swift MCP shim","mode":"keyword","limit":5}
+            """,
+            goldenFixture: "mcp-golden/search.keyword.json"
+        )
+    }
+
+    func testGetContextMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "get_context",
+            arguments: """
+            {"cwd":"/Users/test/work/engram","task":"port engram mcp shim to swift","include_environment":false,"sort_by":"score"}
+            """,
+            goldenFixture: "mcp-golden/get_context.engram.json"
+        )
+    }
+
+    func testGetInsightsMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "get_insights",
+            arguments: """
+            {"since":"2026-02-15T00:00:00.000Z"}
+            """,
+            goldenFixture: "mcp-golden/get_insights.empty.json"
+        )
+    }
+
+    func testLintConfigMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "lint_config",
+            arguments: """
+            {"cwd":"\(fixturePath("mcp-runtime/lint-project"))"}
+            """,
+            goldenFixture: "mcp-golden/lint_config.fixture.json"
+        )
+    }
+
+    func testLinkSessionsMatchesGolden() throws {
+        let conversationLogDir = fixturePath("mcp-runtime/engram/conversation_log")
+        try? FileManager.default.removeItem(atPath: conversationLogDir)
+        try assertToolCallMatchesGolden(
+            tool: "link_sessions",
+            arguments: """
+            {"targetDir":"\(fixturePath("mcp-runtime/engram"))"}
+            """,
+            goldenFixture: "mcp-golden/link_sessions.engram.json"
+        )
+    }
+
+    func testProjectReviewMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "project_review",
+            arguments: """
+            {"old_path":"/Users/test/work/engram-old","new_path":"/Users/test/work/engram-v2","max_items":100}
+            """,
+            goldenFixture: "mcp-golden/project_review.fixture.json",
+            environment: [
+                "HOME": fixturePath("mcp-runtime/review-home"),
+            ]
+        )
+    }
+
+    func testGetSessionMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "get_session",
+            arguments: """
+            {"id":"mcp-transcript-01","page":1}
+            """,
+            goldenFixture: "mcp-golden/get_session.transcript.json"
+        )
+    }
+
+    func testExportMatchesGolden() throws {
+        let exportDir = fixturePath("mcp-runtime/export-home/codex-exports")
+        try? FileManager.default.removeItem(atPath: exportDir)
+        try assertToolCallMatchesGolden(
+            tool: "export",
+            arguments: """
+            {"id":"mcp-transcript-01","format":"json"}
+            """,
+            goldenFixture: "mcp-golden/export.transcript.json",
+            environment: [
+                "HOME": fixturePath("mcp-runtime/export-home"),
+            ]
+        )
+    }
+
+    func testHandoffMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "handoff",
+            arguments: """
+            {"cwd":"/Users/test/work/missing-project","format":"markdown"}
+            """,
+            goldenFixture: "mcp-golden/handoff.empty.json"
+        )
+    }
+
     func testSaveInsightMatchesGoldenViaDaemonHTTP() throws {
         let goldenPath = fixturePath("mcp-golden/save_insight.text_only.json")
         let goldenData = try Data(contentsOf: URL(fileURLWithPath: goldenPath))
