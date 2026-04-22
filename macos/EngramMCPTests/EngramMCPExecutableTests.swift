@@ -14,8 +14,24 @@ final class EngramMCPExecutableTests: XCTestCase {
             XCTFail("Expected tools/list result.tools array")
             return
         }
-        XCTAssertGreaterThanOrEqual(tools.count, 3)
-        // TODO(mcp-bulk-port): switch to XCTAssertEqual(..., 26) when all tools land.
+        XCTAssertEqual(tools.count, 26)
+    }
+
+    func testToolNameParityMatchesNodeAllTools() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"] else {
+            XCTFail("Expected tools/list result.tools array")
+            return
+        }
+        let actual = Set(tools.compactMap { $0["name"]?.stringValue })
+        let expectedData = try Data(contentsOf: URL(fileURLWithPath: fixturePath("mcp-golden/tools.json")))
+        let expected = Set(try JSONDecoder().decode([String].self, from: expectedData))
+        XCTAssertEqual(actual, expected)
     }
 
     func testInitializeReturnsServerCapabilities() throws {
@@ -218,6 +234,16 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testProjectRecoverMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "project_recover",
+            arguments: """
+            {"since":"2026-03-01T00:00:00.000Z"}
+            """,
+            goldenFixture: "mcp-golden/project_recover.fixture.json"
+        )
+    }
+
     func testSaveInsightMatchesGoldenViaDaemonHTTP() throws {
         let goldenPath = fixturePath("mcp-golden/save_insight.text_only.json")
         let goldenData = try Data(contentsOf: URL(fileURLWithPath: goldenPath))
@@ -319,6 +345,173 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(seenPaths, ["POST /api/project-aliases", "DELETE /api/project-aliases"])
     }
 
+    func testGenerateSummaryMatchesGoldenViaDaemonHTTP() throws {
+        let goldenPath = fixturePath("mcp-golden/generate_summary.fixture.json")
+        let server = try MockDaemonServer { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.path, "/api/summary")
+            let body = try request.decodeBody([String: TestJSONValue].self)
+            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+            XCTAssertEqual(body["sessionId"]?.stringValue, "mcp-fixture-01")
+            return .json(
+                statusCode: 200,
+                body: .object([
+                    "summary": .string("Fixture summary: Phase C ports the stdio MCP shim and forwards writes through daemon HTTP."),
+                ])
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"generate_summary","arguments":{"sessionId":"mcp-fixture-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+            ]
+        )
+        XCTAssertEqual(
+            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
+            try String(contentsOfFile: goldenPath, encoding: .utf8)
+        )
+    }
+
+    func testProjectMoveMatchesGoldenViaDaemonHTTP() throws {
+        let golden = try loadGoldenJSON("mcp-golden/project_move.dry_run.json")
+        let raw = try daemonProjectMovePayload(from: golden)
+        let server = try MockDaemonServer { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.path, "/api/project/move")
+            let body = try request.decodeBody([String: TestJSONValue].self)
+            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+            XCTAssertEqual(body["dryRun"]?.boolValue, true)
+            XCTAssertEqual(body["force"]?.boolValue, false)
+            XCTAssertEqual(body["auditNote"]?.stringValue, "fixture move dry run")
+            XCTAssertTrue(body["src"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/proj2") == true)
+            XCTAssertTrue(body["dst"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/proj2-renamed") == true)
+            return .json(statusCode: 200, body: raw)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"project_move","arguments":{"src":"~/proj2","dst":"~/proj2-renamed","dry_run":true,"note":"fixture move dry run"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "HOME": fixturePath("mcp-runtime/write-home"),
+            ]
+        )
+        XCTAssertEqual(
+            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
+            try String(contentsOfFile: fixturePath("mcp-golden/project_move.dry_run.json"), encoding: .utf8)
+        )
+    }
+
+    func testProjectArchiveMatchesGoldenViaDaemonHTTP() throws {
+        let golden = try loadGoldenJSON("mcp-golden/project_archive.dry_run.json")
+        let raw = try daemonProjectArchivePayload(from: golden)
+        let server = try MockDaemonServer { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.path, "/api/project/archive")
+            let body = try request.decodeBody([String: TestJSONValue].self)
+            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+            XCTAssertEqual(body["dryRun"]?.boolValue, true)
+            XCTAssertEqual(body["force"]?.boolValue, false)
+            XCTAssertEqual(body["auditNote"]?.stringValue, "fixture archive dry run")
+            XCTAssertEqual(body["archiveTo"], nil)
+            XCTAssertTrue(body["src"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/arch-me") == true)
+            return .json(statusCode: 200, body: raw)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"project_archive","arguments":{"src":"~/arch-me","dry_run":true,"note":"fixture archive dry run"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "HOME": fixturePath("mcp-runtime/write-home"),
+            ]
+        )
+        XCTAssertEqual(
+            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
+            try String(contentsOfFile: fixturePath("mcp-golden/project_archive.dry_run.json"), encoding: .utf8)
+        )
+    }
+
+    func testProjectUndoMatchesGoldenViaDaemonHTTP() throws {
+        let golden = try loadGoldenJSON("mcp-golden/project_undo.fixture.json")
+        let structured = try XCTUnwrap(golden["structuredContent"])
+        let server = try MockDaemonServer { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.path, "/api/project/undo")
+            let body = try request.decodeBody([String: TestJSONValue].self)
+            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+            XCTAssertEqual(body["force"]?.boolValue, false)
+            XCTAssertEqual(body["migrationId"]?.stringValue, "<generated-uuid>")
+            return .json(statusCode: 200, body: structured)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"project_undo","arguments":{"migration_id":"<generated-uuid>"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+            ]
+        )
+        let actual = try normalizeUUIDs(in: prettyJSONString(from: XCTUnwrap(capture.ordered["result"])))
+        let expected = try String(contentsOfFile: fixturePath("mcp-golden/project_undo.fixture.json"), encoding: .utf8)
+        XCTAssertEqual(actual, expected)
+    }
+
+    func testProjectMoveBatchMatchesGoldenViaDaemonHTTP() throws {
+        let golden = try loadGoldenJSON("mcp-golden/project_move_batch.dry_run.json")
+        let structured = try XCTUnwrap(golden["structuredContent"])
+        let yaml = """
+        version: 1
+        defaults: { dry_run: false }
+        operations:
+          - { src: ~/batch-src, dst: ~/batch-dst, note: fixture batch }
+        """
+        let server = try MockDaemonServer { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.path, "/api/project/move-batch")
+            let body = try request.decodeBody([String: TestJSONValue].self)
+            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+            XCTAssertEqual(body["dryRun"]?.boolValue, true)
+            XCTAssertEqual(body["force"]?.boolValue, false)
+            XCTAssertEqual(body["yaml"]?.stringValue, yaml)
+            return .json(statusCode: 200, body: structured)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"project_move_batch","arguments":{"yaml":"version: 1\\ndefaults: { dry_run: false }\\noperations:\\n  - { src: ~/batch-src, dst: ~/batch-dst, note: fixture batch }","dry_run":true}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+            ]
+        )
+        XCTAssertEqual(
+            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
+            try String(contentsOfFile: fixturePath("mcp-golden/project_move_batch.dry_run.json"), encoding: .utf8)
+        )
+    }
+
     private func rpc(_ request: String, environment: [String: String] = [:]) throws -> RPCCapture {
         let process = Process()
         process.executableURL = executableURL()
@@ -396,6 +589,36 @@ final class EngramMCPExecutableTests: XCTestCase {
         let regex = try NSRegularExpression(pattern: pattern)
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "<generated-uuid>")
+    }
+
+    private func loadGoldenJSON(_ relativePath: String) throws -> TestJSONValue {
+        let data = try Data(contentsOf: URL(fileURLWithPath: fixturePath(relativePath)))
+        return try JSONDecoder().decode(TestJSONValue.self, from: data)
+    }
+
+    private func daemonProjectMovePayload(from golden: TestJSONValue) throws -> TestJSONValue {
+        guard case .object(let topLevel) = golden,
+              let structured = topLevel["structuredContent"],
+              case .object(let structuredObject) = structured else {
+            throw NSError(domain: "EngramMCPTests", code: 10)
+        }
+        var payload = structuredObject
+        payload.removeValue(forKey: "resolved")
+        return .object(payload)
+    }
+
+    private func daemonProjectArchivePayload(from golden: TestJSONValue) throws -> TestJSONValue {
+        guard case .object(let topLevel) = golden,
+              let structured = topLevel["structuredContent"],
+              case .object(let structuredObject) = structured else {
+            throw NSError(domain: "EngramMCPTests", code: 11)
+        }
+        var payload = structuredObject
+        guard let archive = payload.removeValue(forKey: "archive") else {
+            throw NSError(domain: "EngramMCPTests", code: 12)
+        }
+        payload["suggestion"] = archive
+        return .object(payload)
     }
 }
 
@@ -596,6 +819,11 @@ private enum TestJSONValue: Codable, Equatable {
         guard case .string(let value) = self else { return nil }
         return value
     }
+
+    var boolValue: Bool? {
+        guard case .bool(let value) = self else { return nil }
+        return value
+    }
 }
 
 private struct TestJSONRPCResponse: Decodable {
@@ -697,6 +925,11 @@ private indirect enum OrderedTestJSONValue {
     subscript(key: String) -> OrderedTestJSONValue? {
         guard case .object(let entries) = self else { return nil }
         return entries.first(where: { $0.0 == key })?.1
+    }
+
+    var stringValue: String? {
+        guard case .string(let value) = self else { return nil }
+        return value
     }
 
     func prettyJSONString() -> String {

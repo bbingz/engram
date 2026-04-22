@@ -1,6 +1,12 @@
 #!/usr/bin/env tsx
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CodexAdapter } from '../src/adapters/codex.js';
@@ -18,8 +24,13 @@ import { handleLintConfig } from '../src/tools/lint_config.js';
 import { handleListSessions } from '../src/tools/list_sessions.js';
 import { handleLiveSessions } from '../src/tools/live_sessions.js';
 import {
+  handleProjectArchive,
   handleProjectListMigrations,
+  handleProjectMove,
+  handleProjectMoveBatch,
+  handleProjectRecover,
   handleProjectReview,
+  handleProjectUndo,
 } from '../src/tools/project.js';
 import { handleProjectTimeline } from '../src/tools/project_timeline.js';
 import { handleSaveInsight } from '../src/tools/save_insight.js';
@@ -37,6 +48,8 @@ const linkTargetDir = resolve(runtimeDir, 'engram');
 const reviewHomeDir = resolve(runtimeDir, 'review-home');
 const transcriptDir = resolve(runtimeDir, 'transcripts');
 const exportHomeDir = resolve(runtimeDir, 'export-home');
+const writeHomeDir = resolve(runtimeDir, 'write-home');
+const writeDbPath = resolve(runtimeDir, 'mcp-write.sqlite');
 
 rmSync(fixtureDbPath, { force: true });
 rmSync(`${fixtureDbPath}-wal`, { force: true });
@@ -46,6 +59,7 @@ rmSync(runtimeDir, { recursive: true, force: true });
 mkdirSync(goldenDir, { recursive: true });
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(transcriptDir, { recursive: true });
+mkdirSync(writeHomeDir, { recursive: true });
 
 const db = new Database(fixtureDbPath);
 const raw = db.getRawDb();
@@ -493,6 +507,18 @@ function early(text: string, isError = false): MCPResponse {
   };
 }
 
+function earlyWithMetadata(
+  text: string,
+  metadata: Record<string, unknown>,
+  isError = false,
+): MCPResponse {
+  return {
+    content: [{ type: 'text', text }],
+    metadata,
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
 function normalizeDynamic(value: unknown): unknown {
   const json = JSON.parse(
     JSON.stringify(value, (_key, current) => {
@@ -674,7 +700,85 @@ const goldens: Record<string, unknown> = {
       }
     })(),
   ),
+  'project_recover.fixture': success(
+    await handleProjectRecover(db, {
+      since: '2026-03-01T00:00:00.000Z',
+    }),
+  ),
 };
+
+const writeGoldens = await (async () => {
+  const previousHome = process.env.HOME;
+  process.env.HOME = writeHomeDir;
+  try {
+    copyFileSync(fixtureDbPath, writeDbPath);
+    const writeDb = new Database(writeDbPath);
+
+    mkdirSync(resolve(writeHomeDir, 'proj2'), { recursive: true });
+    writeFileSync(resolve(writeHomeDir, 'proj2/a.txt'), 'x\n');
+
+    mkdirSync(resolve(writeHomeDir, 'arch-me'), { recursive: true });
+    writeFileSync(resolve(writeHomeDir, 'arch-me/README.md'), '# fixture\n');
+
+    mkdirSync(resolve(writeHomeDir, 'undo-src'), { recursive: true });
+    writeFileSync(resolve(writeHomeDir, 'undo-src/a.txt'), 'x\n');
+
+    mkdirSync(resolve(writeHomeDir, 'batch-src'), { recursive: true });
+    writeFileSync(resolve(writeHomeDir, 'batch-src/a.txt'), 'x\n');
+
+    const projectMove = normalizeDynamic(
+      await handleProjectMove(writeDb, {
+        src: '~/proj2',
+        dst: '~/proj2-renamed',
+        dry_run: true,
+        note: 'fixture move dry run',
+      }),
+    );
+    const projectArchive = normalizeDynamic(
+      await handleProjectArchive(writeDb, {
+        src: '~/arch-me',
+        dry_run: true,
+        note: 'fixture archive dry run',
+      }),
+    );
+    const forward = await handleProjectMove(writeDb, {
+      src: '~/undo-src',
+      dst: '~/undo-dst',
+      note: 'fixture forward move',
+    });
+    const projectUndo = normalizeDynamic(
+      await handleProjectUndo(writeDb, {
+        migration_id: forward.migrationId,
+      }),
+    );
+    const projectMoveBatch = normalizeDynamic(
+      await handleProjectMoveBatch(writeDb, {
+        yaml: `
+version: 1
+defaults: { dry_run: false }
+operations:
+  - { src: ~/batch-src, dst: ~/batch-dst, note: fixture batch }
+`,
+        dry_run: true,
+      }),
+    );
+
+    return {
+      'generate_summary.fixture': earlyWithMetadata(
+        'Fixture summary: Phase C ports the stdio MCP shim and forwards writes through daemon HTTP.',
+        { sessionId: 'mcp-fixture-01' },
+      ),
+      'project_move.dry_run': success(projectMove),
+      'project_archive.dry_run': success(projectArchive),
+      'project_undo.fixture': success(projectUndo),
+      'project_move_batch.dry_run': success(projectMoveBatch),
+    };
+  } finally {
+    process.env.HOME = previousHome;
+  }
+})();
+
+Object.assign(goldens, writeGoldens);
 
 for (const [name, payload] of Object.entries(goldens)) {
   writeFileSync(
@@ -682,6 +786,11 @@ for (const [name, payload] of Object.entries(goldens)) {
     `${JSON.stringify(payload, null, 2)}\n`,
   );
 }
+
+writeFileSync(
+  resolve(goldenDir, 'tools.json'),
+  `${JSON.stringify(extractToolNamesFromIndex(), null, 2)}\n`,
+);
 
 writeFileSync(
   resolve(goldenDir, 'README.md'),
@@ -702,3 +811,137 @@ db.close();
 
 console.log(`Generated ${fixtureDbPath}`);
 console.log(`Generated goldens in ${goldenDir}`);
+
+function extractToolNamesFromIndex(): string[] {
+  const indexPath = resolve(repoRoot, 'src/index.ts');
+  const indexSource = readFileSync(indexPath, 'utf8');
+  const importMap = new Map<string, string>();
+  for (const match of indexSource.matchAll(
+    /import\s*\{([\s\S]*?)\}\s*from\s*'([^']+)'/g,
+  )) {
+    const names = match[1]
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    for (const name of names) {
+      const [imported, local] = name.split(/\s+as\s+/);
+      importMap.set((local ?? imported).trim(), match[2]);
+    }
+  }
+
+  const blockMatch = indexSource.match(/const allTools = \[([\s\S]*?)\n\];/);
+  if (!blockMatch) {
+    throw new Error('Unable to locate allTools block in src/index.ts');
+  }
+
+  const blockWithoutComments = blockMatch[1].replace(/^\s*\/\/.*$/gm, '');
+  const entries = splitTopLevelEntries(blockWithoutComments);
+  return entries
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => resolveToolName(entry, importMap));
+}
+
+function splitTopLevelEntries(block: string): string[] {
+  const entries: string[] = [];
+  let current = '';
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+  let inString = false;
+  let stringQuote = '';
+  let escaped = false;
+
+  for (const char of block) {
+    current += char;
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === stringQuote) {
+        inString = false;
+        stringQuote = '';
+      }
+      continue;
+    }
+
+    if (char === "'" || char === '"' || char === '`') {
+      inString = true;
+      stringQuote = char;
+      continue;
+    }
+    if (char === '{') braceDepth += 1;
+    else if (char === '}') braceDepth -= 1;
+    else if (char === '[') bracketDepth += 1;
+    else if (char === ']') bracketDepth -= 1;
+    else if (char === '(') parenDepth += 1;
+    else if (char === ')') parenDepth -= 1;
+    else if (
+      char === ',' &&
+      braceDepth === 0 &&
+      bracketDepth === 0 &&
+      parenDepth === 0
+    ) {
+      entries.push(current.slice(0, -1));
+      current = '';
+    }
+  }
+
+  if (current.trim()) {
+    entries.push(current);
+  }
+  return entries.filter((entry) => entry.trim().length > 0);
+}
+
+function resolveToolName(
+  entry: string,
+  importMap: Map<string, string>,
+): string {
+  entry = entry.replace(/^\s*\/\/.*$/gm, '').trim();
+  if (entry.startsWith('{')) {
+    const match = entry.match(/name:\s*'([^']+)'/);
+    if (!match) {
+      throw new Error(`Unable to extract inline tool name from: ${entry}`);
+    }
+    return match[1];
+  }
+
+  const identifier = entry.replace(/,$/, '').trim();
+  const relativeImport = importMap.get(identifier);
+  if (!relativeImport) {
+    const indexSource = readFileSync(resolve(repoRoot, 'src/index.ts'), 'utf8');
+    const localMatch = indexSource.match(
+      new RegExp(
+        String.raw`const ${identifier}\s*=\s*\{[\s\S]*?name:\s*'([^']+)'`,
+      ),
+    );
+    if (localMatch) {
+      return localMatch[1];
+    }
+    throw new Error(`Missing import for allTools entry: ${identifier}`);
+  }
+
+  const sourcePath = resolve(
+    repoRoot,
+    'src',
+    relativeImport.replace(/^\.\//, '').replace(/\.js$/, '.ts'),
+  );
+  const source = readFileSync(sourcePath, 'utf8');
+  const match = source.match(
+    new RegExp(
+      String.raw`export const ${identifier}\s*=\s*\{[\s\S]*?name:\s*'([^']+)'`,
+    ),
+  );
+  if (!match) {
+    throw new Error(
+      `Unable to resolve tool name for ${identifier} from ${sourcePath}`,
+    );
+  }
+  return match[1];
+}

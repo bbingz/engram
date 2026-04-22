@@ -470,6 +470,21 @@ enum MCPToolRegistry {
             ])
         ),
         MCPToolDefinition(
+            name: "generate_summary",
+            description: "Generate an AI summary for a conversation session",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("sessionId")]),
+                "properties": .object([
+                    "sessionId": .object([
+                        "type": .string("string"),
+                        "description": .string("The session ID to summarize"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
             name: "save_insight",
             description: "Save an important insight, decision, or lesson learned for future retrieval. Use this to preserve knowledge that should persist across sessions.",
             inputSchema: .object([
@@ -497,6 +512,144 @@ enum MCPToolRegistry {
                     "source_session_id": .object([
                         "type": .string("string"),
                         "description": .string("Session ID that generated this insight (optional)"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "project_move",
+            description: "⚠️ Cannot run concurrently with other project_* tools; execute sequentially. Move a project directory and keep all AI session history reachable. Patches cwd references in Claude Code / Codex / Gemini / iFlow / OpenCode / Antigravity / Copilot session files, renames per-project directories for every source that groups by project (Claude Code encoded cwd, Gemini basename, iFlow encoded), syncs Gemini's projects.json, updates engram DB, and creates a project alias. Transactional with compensation on failure.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("src"), .string("dst")]),
+                "properties": .object([
+                    "src": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute source path (e.g. /Users/bing/-Code-/MyProject). ~-prefix accepted."),
+                    ]),
+                    "dst": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute destination path (e.g. /Users/bing/-Code-/MyProject-v2). ~-prefix accepted."),
+                    ]),
+                    "dry_run": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Plan only, no side effects"),
+                        "default": .bool(false),
+                    ]),
+                    "force": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Bypass git-dirty warning on source"),
+                        "default": .bool(false),
+                    ]),
+                    "note": .object([
+                        "type": .string("string"),
+                        "description": .string("Audit note stored in migration_log"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "project_archive",
+            description: "⚠️ Cannot run concurrently with other project_* tools; execute sequentially. Archive a project by moving it under _archive/ with auto-suggested category.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("src")]),
+                "properties": .object([
+                    "src": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute source path (e.g. /Users/bing/-Code-/OldScript). ~-prefix accepted."),
+                    ]),
+                    "to": .object([
+                        "type": .string("string"),
+                        "enum": .array([
+                            .string("历史脚本"),
+                            .string("空项目"),
+                            .string("归档完成"),
+                            .string("historical-scripts"),
+                            .string("empty-project"),
+                            .string("archived-done"),
+                        ]),
+                        "description": .string("Force archive category (bypasses heuristic, required for ambiguous projects)."),
+                    ]),
+                    "dry_run": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Plan only, returns suggested target without moving"),
+                        "default": .bool(false),
+                    ]),
+                    "force": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Bypass git-dirty warning"),
+                        "default": .bool(false),
+                    ]),
+                    "note": .object([
+                        "type": .string("string"),
+                        "description": .string("Audit note stored in migration_log"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "project_undo",
+            description: "⚠️ Cannot run concurrently with other project_* tools; execute sequentially. Reverse a committed project-move migration.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("migration_id")]),
+                "properties": .object([
+                    "migration_id": .object([
+                        "type": .string("string"),
+                        "description": .string("Migration id returned from an earlier project_move"),
+                    ]),
+                    "force": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Bypass git-dirty warning on the current destination"),
+                        "default": .bool(false),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "project_move_batch",
+            description: "⚠️ Cannot run concurrently with other project_* tools; execute sequentially. Run multiple project moves sequentially from an inline YAML document.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("yaml")]),
+                "properties": .object([
+                    "yaml": .object([
+                        "type": .string("string"),
+                        "description": .string("Inline YAML document conforming to schema v1"),
+                    ]),
+                    "dry_run": .object([
+                        "type": .string("boolean"),
+                        "description": .string("If true, all operations run as dry-run regardless of YAML defaults."),
+                        "default": .bool(false),
+                    ]),
+                    "force": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Bypass git-dirty warning on every operation"),
+                        "default": .bool(false),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "project_recover",
+            description: "Diagnose stuck or failed migrations. Reads migration_log rows in state fs_pending/fs_done/failed, probes the filesystem, and returns a per-migration recommendation. Advisory — does NOT modify anything.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "since": .object([
+                        "type": .string("string"),
+                        "description": .string("ISO timestamp filter"),
+                    ]),
+                    "include_committed": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Also inspect committed migrations (usually unnecessary; costs FS probes)"),
+                        "default": .bool(false),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
@@ -679,6 +832,27 @@ enum MCPToolRegistry {
                 format: arguments["format"]?.stringValue ?? "markdown"
             )
             return .toolSuccess(structured)
+        case "generate_summary":
+            let body = GenerateSummaryBody(
+                actor: "mcp",
+                sessionId: try requiredString("sessionId", in: arguments)
+            )
+            let client = DaemonHTTPClientCore(
+                baseURL: config.daemonBaseURL,
+                bearerTokenProvider: { config.bearerToken }
+            )
+            let response: GenerateSummaryResponse = try await client.post("/api/summary", body: body)
+            return .object([
+                ("content", .array([
+                    .object([
+                        ("type", .string("text")),
+                        ("text", .string(response.summary)),
+                    ]),
+                ])),
+                ("metadata", .object([
+                    ("sessionId", .string(body.sessionId)),
+                ])),
+            ])
         case "save_insight":
             let body = SaveInsightBody(
                 actor: "mcp",
@@ -737,6 +911,77 @@ enum MCPToolRegistry {
             default:
                 return .toolError(message: "Unknown action: \(action)")
             }
+        case "project_move":
+            let originalSrc = try requiredString("src", in: arguments)
+            let originalDst = try requiredString("dst", in: arguments)
+            let src = expandHomePath(originalSrc)
+            let dst = expandHomePath(originalDst)
+            let body = ProjectMoveBody(
+                actor: "mcp",
+                src: src,
+                dst: dst,
+                dryRun: arguments["dry_run"]?.boolValue ?? false,
+                force: arguments["force"]?.boolValue ?? false,
+                auditNote: arguments["note"]?.stringValue
+            )
+            let client = DaemonHTTPClientCore(
+                baseURL: config.daemonBaseURL,
+                bearerTokenProvider: { config.bearerToken }
+            )
+            let raw: JSONValue = try await client.post("/api/project/move", body: body)
+            let resolved: (src: String, dst: String)? = (src != originalSrc || dst != originalDst)
+                ? (src, dst)
+                : nil
+            let ordered = orderedProjectMoveResult(from: raw, resolved: resolved)
+            return .toolSuccess(ordered)
+        case "project_archive":
+            let src = expandHomePath(try requiredString("src", in: arguments))
+            let body = ProjectArchiveBody(
+                actor: "mcp",
+                src: src,
+                archiveTo: arguments["to"]?.stringValue,
+                dryRun: arguments["dry_run"]?.boolValue ?? false,
+                force: arguments["force"]?.boolValue ?? false,
+                auditNote: arguments["note"]?.stringValue
+            )
+            let client = DaemonHTTPClientCore(
+                baseURL: config.daemonBaseURL,
+                bearerTokenProvider: { config.bearerToken }
+            )
+            let raw: JSONValue = try await client.post("/api/project/archive", body: body)
+            return .toolSuccess(orderedProjectArchiveResult(from: raw))
+        case "project_undo":
+            let body = ProjectUndoBody(
+                actor: "mcp",
+                migrationId: try requiredString("migration_id", in: arguments),
+                force: arguments["force"]?.boolValue ?? false
+            )
+            let client = DaemonHTTPClientCore(
+                baseURL: config.daemonBaseURL,
+                bearerTokenProvider: { config.bearerToken }
+            )
+            let raw: JSONValue = try await client.post("/api/project/undo", body: body)
+            return .toolSuccess(orderedPipelineResult(from: raw))
+        case "project_move_batch":
+            let body = ProjectMoveBatchBody(
+                actor: "mcp",
+                yaml: try requiredString("yaml", in: arguments),
+                dryRun: arguments["dry_run"]?.boolValue ?? false,
+                force: arguments["force"]?.boolValue ?? false
+            )
+            let client = DaemonHTTPClientCore(
+                baseURL: config.daemonBaseURL,
+                bearerTokenProvider: { config.bearerToken }
+            )
+            let raw: JSONValue = try await client.post("/api/project/move-batch", body: body)
+            return .toolSuccess(orderedProjectMoveBatchResult(from: raw))
+        case "project_recover":
+            let database = try MCPDatabase(path: config.dbPath)
+            let structured = try database.projectRecover(
+                since: arguments["since"]?.stringValue,
+                includeCommitted: arguments["include_committed"]?.boolValue ?? false
+            )
+            return .toolSuccess(structured)
         default:
             return .toolError(message: "Unknown tool: \(name)")
         }
@@ -767,6 +1012,158 @@ private func orderedSaveInsight(from raw: JSONValue) -> OrderedJSONValue {
     return .object(entries)
 }
 
+private func orderedProjectMoveResult(
+    from raw: JSONValue,
+    resolved: (src: String, dst: String)?
+) -> OrderedJSONValue {
+    guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
+    var entries = orderedPipelineEntries(from: object)
+    if let resolved {
+        entries.append((
+            "resolved",
+            .object([
+                ("src", .string(resolved.src)),
+                ("dst", .string(resolved.dst)),
+            ])
+        ))
+    }
+    return .object(entries)
+}
+
+private func orderedProjectArchiveResult(from raw: JSONValue) -> OrderedJSONValue {
+    guard case .object(let object) = raw else {
+        return OrderedJSONValue(raw)
+    }
+    var entries = orderedPipelineEntries(from: object)
+    if let suggestion = object["suggestion"] {
+        entries.append(("archive", orderedArchiveSuggestion(from: suggestion)))
+    }
+    return .object(entries)
+}
+
+private func orderedProjectMoveBatchResult(from raw: JSONValue) -> OrderedJSONValue {
+    guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
+    return .object([
+        ("completed", .array(object["completed"]?.arrayValue?.map(orderedPipelineResultWithoutExtras) ?? [])),
+        ("failed", OrderedJSONValue(object["failed"] ?? .array([]))),
+        ("skipped", OrderedJSONValue(object["skipped"] ?? .array([]))),
+    ])
+}
+
+private func orderedPipelineResult(from raw: JSONValue) -> OrderedJSONValue {
+    guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
+    return .object(orderedPipelineEntries(from: object))
+}
+
+private func orderedPipelineResultWithoutExtras(_ raw: JSONValue) -> OrderedJSONValue {
+    guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
+    return .object(orderedPipelineEntries(from: object))
+}
+
+private func orderedPipelineEntries(from object: [String: JSONValue]) -> [(String, OrderedJSONValue)] {
+    var entries: [(String, OrderedJSONValue)] = []
+    if let migrationId = object["migrationId"] {
+        entries.append(("migrationId", OrderedJSONValue(migrationId)))
+    }
+    if let state = object["state"] {
+        entries.append(("state", OrderedJSONValue(state)))
+    }
+    if let moveStrategy = object["moveStrategy"] {
+        entries.append(("moveStrategy", OrderedJSONValue(moveStrategy)))
+    }
+    if let ccDirRenamed = object["ccDirRenamed"] {
+        entries.append(("ccDirRenamed", OrderedJSONValue(ccDirRenamed)))
+    }
+    if let renamedDirs = object["renamedDirs"] {
+        entries.append(("renamedDirs", OrderedJSONValue(renamedDirs)))
+    }
+    if let skippedDirs = object["skippedDirs"]?.arrayValue {
+        entries.append(("skippedDirs", .array(skippedDirs.map(orderedSkippedDir))))
+    }
+    if let perSource = object["perSource"]?.arrayValue {
+        entries.append(("perSource", .array(perSource.map(orderedPerSourceResult))))
+    }
+    if let totalFilesPatched = object["totalFilesPatched"] {
+        entries.append(("totalFilesPatched", OrderedJSONValue(totalFilesPatched)))
+    }
+    if let totalOccurrences = object["totalOccurrences"] {
+        entries.append(("totalOccurrences", OrderedJSONValue(totalOccurrences)))
+    }
+    if let sessionsUpdated = object["sessionsUpdated"] {
+        entries.append(("sessionsUpdated", OrderedJSONValue(sessionsUpdated)))
+    }
+    if let aliasCreated = object["aliasCreated"] {
+        entries.append(("aliasCreated", OrderedJSONValue(aliasCreated)))
+    }
+    if let review = object["review"]?.objectValue {
+        entries.append((
+            "review",
+            .object([
+                ("own", OrderedJSONValue(review["own"] ?? .array([]))),
+                ("other", OrderedJSONValue(review["other"] ?? .array([]))),
+            ])
+        ))
+    }
+    if let git = object["git"]?.objectValue {
+        entries.append((
+            "git",
+            .object([
+                ("isGitRepo", OrderedJSONValue(git["isGitRepo"] ?? .bool(false))),
+                ("dirty", OrderedJSONValue(git["dirty"] ?? .bool(false))),
+                ("untrackedOnly", OrderedJSONValue(git["untrackedOnly"] ?? .bool(false))),
+                ("porcelain", OrderedJSONValue(git["porcelain"] ?? .string(""))),
+            ])
+        ))
+    }
+    if let manifest = object["manifest"] {
+        entries.append(("manifest", OrderedJSONValue(manifest)))
+    }
+    return entries
+}
+
+private func orderedSkippedDir(_ raw: JSONValue) -> OrderedJSONValue {
+    guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
+    return .object([
+        ("sourceId", OrderedJSONValue(object["sourceId"] ?? .null)),
+        ("reason", OrderedJSONValue(object["reason"] ?? .null)),
+    ])
+}
+
+private func orderedPerSourceResult(_ raw: JSONValue) -> OrderedJSONValue {
+    guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
+    return .object([
+        ("id", OrderedJSONValue(object["id"] ?? .null)),
+        ("root", OrderedJSONValue(object["root"] ?? .null)),
+        ("filesPatched", OrderedJSONValue(object["filesPatched"] ?? .int(0))),
+        ("occurrences", OrderedJSONValue(object["occurrences"] ?? .int(0))),
+        ("issues", OrderedJSONValue(object["issues"] ?? .array([]))),
+    ])
+}
+
+private func orderedArchiveSuggestion(from raw: JSONValue) -> OrderedJSONValue {
+    guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
+    return .object([
+        ("category", OrderedJSONValue(object["category"] ?? .null)),
+        ("reason", OrderedJSONValue(object["reason"] ?? .null)),
+        ("dst", OrderedJSONValue(object["dst"] ?? .null)),
+    ])
+}
+
+private func expandHomePath(_ path: String) -> String {
+    let homePath = ProcessInfo.processInfo.environment["HOME"]
+        .flatMap { $0.isEmpty ? nil : $0 }
+        ?? FileManager.default.homeDirectoryForCurrentUser.path
+    if path == "~" {
+        return homePath
+    }
+    if path.hasPrefix("~/") {
+        return URL(fileURLWithPath: homePath, isDirectory: true)
+            .appendingPathComponent(String(path.dropFirst(2)))
+            .path
+    }
+    return path
+}
+
 private struct SaveInsightBody: Encodable {
     let actor: String
     let content: String
@@ -785,10 +1182,50 @@ private struct SaveInsightBody: Encodable {
     }
 }
 
+private struct GenerateSummaryBody: Encodable {
+    let actor: String
+    let sessionId: String
+}
+
+private struct GenerateSummaryResponse: Decodable {
+    let summary: String
+}
+
 private struct ProjectAliasBody: Encodable {
     let actor: String
     let alias: String
     let canonical: String
+}
+
+private struct ProjectMoveBody: Encodable {
+    let actor: String
+    let src: String
+    let dst: String
+    let dryRun: Bool
+    let force: Bool
+    let auditNote: String?
+}
+
+private struct ProjectArchiveBody: Encodable {
+    let actor: String
+    let src: String
+    let archiveTo: String?
+    let dryRun: Bool
+    let force: Bool
+    let auditNote: String?
+}
+
+private struct ProjectUndoBody: Encodable {
+    let actor: String
+    let migrationId: String
+    let force: Bool
+}
+
+private struct ProjectMoveBatchBody: Encodable {
+    let actor: String
+    let yaml: String
+    let dryRun: Bool
+    let force: Bool
 }
 
 enum MCPToolError: LocalizedError {

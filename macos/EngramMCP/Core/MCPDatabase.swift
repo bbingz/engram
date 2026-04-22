@@ -456,6 +456,66 @@ final class MCPDatabase {
         ])
     }
 
+    func projectRecover(since: String?, includeCommitted: Bool) throws -> OrderedJSONValue {
+        var conditions: [String] = []
+        var arguments: [String: DatabaseValueConvertible?] = [:]
+        let states = includeCommitted
+            ? ["fs_pending", "fs_done", "failed", "committed"]
+            : ["fs_pending", "fs_done", "failed"]
+        let placeholders = states.enumerated().map { index, _ in ":state\(index)" }.joined(separator: ", ")
+        for (index, state) in states.enumerated() {
+            arguments["state\(index)"] = state
+        }
+        conditions.append("state IN (\(placeholders))")
+        if let since {
+            conditions.append("started_at >= :since")
+            arguments["since"] = since
+        }
+
+        let sql = """
+        SELECT *
+        FROM migration_log
+        WHERE \(conditions.joined(separator: " AND "))
+        ORDER BY started_at DESC, rowid DESC
+        """
+        let rows = try queue.read { db in
+            try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+        }
+
+        let diagnoses = rows.map { row in
+            let oldPath = stringValue(row["old_path"]) ?? ""
+            let newPath = stringValue(row["new_path"]) ?? ""
+            let oldState = probePathState(oldPath)
+            let newState = probePathState(newPath)
+            let artifacts = scanTempArtifacts(oldPath: oldPath, newPath: newPath)
+
+            return OrderedJSONValue.object([
+                ("migrationId", .string(stringValue(row["id"]) ?? "")),
+                ("state", .string(stringValue(row["state"]) ?? "")),
+                ("oldPath", .string(oldPath)),
+                ("newPath", .string(newPath)),
+                ("startedAt", .string(stringValue(row["started_at"]) ?? "")),
+                ("finishedAt", valueOrNull(stringValue(row["finished_at"]))),
+                ("error", valueOrNull(stringValue(row["error"]))),
+                ("fs", .object([
+                    ("oldPathExists", .bool(oldState == "exists")),
+                    ("newPathExists", .bool(newState == "exists")),
+                    ("oldPathState", .string(oldState)),
+                    ("newPathState", .string(newState)),
+                    ("tempArtifacts", .array(artifacts.paths.map(OrderedJSONValue.string))),
+                    ("probeError", valueOrNull(artifacts.error)),
+                ])),
+                ("recommendation", .string(buildRecoverRecommendation(
+                    state: stringValue(row["state"]) ?? "",
+                    oldExists: oldState == "exists",
+                    newExists: newState == "exists"
+                ))),
+            ])
+        }
+
+        return .array(diagnoses)
+    }
+
     func searchSessions(
         query: String,
         source: String?,
@@ -1112,6 +1172,115 @@ private func isUUID(_ value: String) -> Bool {
         of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#,
         options: .regularExpression
     ) != nil
+}
+
+private func probePathState(_ path: String) -> String {
+    do {
+        _ = try FileManager.default.attributesOfItem(atPath: path)
+        return "exists"
+    } catch let error as NSError {
+        if error.domain == NSCocoaErrorDomain &&
+            (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
+            return "absent"
+        }
+        return "unknown"
+    }
+}
+
+private func scanTempArtifacts(
+    oldPath: String,
+    newPath: String
+) -> (paths: [String], error: String?) {
+    let candidateParents = [
+        URL(fileURLWithPath: oldPath).deletingLastPathComponent().path,
+        URL(fileURLWithPath: newPath).deletingLastPathComponent().path,
+    ]
+    var parents: [String] = []
+    for parent in candidateParents where !parent.isEmpty && parent != "/" && parent != "." {
+        if !parents.contains(parent) {
+            parents.append(parent)
+        }
+    }
+
+    var found: [String] = []
+    var errors: [String] = []
+    let oldBase = URL(fileURLWithPath: oldPath).lastPathComponent
+    let newBase = URL(fileURLWithPath: newPath).lastPathComponent
+
+    for parent in parents {
+        do {
+            let entries = try FileManager.default.contentsOfDirectory(atPath: parent)
+            for name in entries {
+                if name.hasPrefix(".engram-tmp-") ||
+                    name.hasPrefix(".engram-move-tmp-") ||
+                    name.hasPrefix("\(newBase).engram-move-tmp-") ||
+                    name.hasPrefix("\(oldBase).engram-move-tmp-") {
+                    found.append("\(parent)/\(name)")
+                }
+            }
+        } catch {
+            errors.append("\(parent): \(scandirErrorDescription(path: parent, error: error))")
+        }
+    }
+
+    return (found.sorted(), errors.isEmpty ? nil : errors.joined(separator: "; "))
+}
+
+private func buildRecoverRecommendation(
+    state: String,
+    oldExists: Bool,
+    newExists: Bool
+) -> String {
+    if state == "committed" {
+        if newExists && !oldExists { return "OK — move completed as logged." }
+        if oldExists && !newExists {
+            return "Anomaly — log says committed but src still exists. Investigate manually; consider `engram project undo <id>`."
+        }
+        return "Anomaly — both or neither paths present. Investigate."
+    }
+    if state == "fs_pending" {
+        if oldExists && !newExists {
+            return "FS untouched. Safe to ignore; retry the move when ready. The stale log row auto-fails after 24h."
+        }
+        if oldExists && newExists {
+            return "Both paths exist — partial fs.cp may have occurred. Inspect new path; remove it manually if bogus."
+        }
+        if !oldExists && newExists {
+            return "Move seems to have actually succeeded; DB log did not catch up. Manual fix: UPDATE migration_log SET state='committed' WHERE id=<this>. Then re-run `engram project move` to sync DB cwd/source_locator."
+        }
+        return "Neither path exists — something catastrophic happened. Restore from backup."
+    }
+    if state == "fs_done" {
+        if !oldExists && newExists {
+            return "FS move succeeded; DB commit failed mid-way. To finish: either (a) mv the new path back to the old path and retry `engram project move`, or (b) mark the migration committed directly — connect to ~/.engram/index.sqlite and run `UPDATE migration_log SET state='committed' WHERE id='<this>'`, then run `engram project review <oldPath> <newPath>` to check residual refs. Re-running `engram project move <oldPath> <newPath>` as-is WILL NOT work (src gone, dst exists)."
+        }
+        if oldExists && newExists {
+            return "Both paths exist — FS work may have been partially undone. Inspect both; prefer manual mv back over retry."
+        }
+        return "Unexpected state. Investigate manually."
+    }
+    if state == "failed" {
+        if oldExists && !newExists {
+            return "Compensation succeeded — src is back where it started. Safe to ignore and retry later."
+        }
+        if !oldExists && newExists {
+            return "FS move completed but DB commit failed and compensation did not reverse the FS. Either (a) manually mv new → old then retry `engram project move`, or (b) mark committed directly: `UPDATE migration_log SET state='committed' WHERE id='<this>'` then `engram project review`."
+        }
+        if oldExists && newExists {
+            return "Both paths exist — compensation ran partially. Inspect, then `engram project move` (or manual mv) to reach a consistent state."
+        }
+        return "Neither path exists — likely data loss. Restore from backup."
+    }
+    return "Unknown state"
+}
+
+private func scandirErrorDescription(path: String, error: Error) -> String {
+    let nsError = error as NSError
+    if nsError.domain == NSCocoaErrorDomain &&
+        (nsError.code == NSFileNoSuchFileError || nsError.code == NSFileReadNoSuchFileError) {
+        return "ENOENT: no such file or directory, scandir '\(path)'"
+    }
+    return nsError.localizedDescription
 }
 
 private extension OrderedJSONValue {
