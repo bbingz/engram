@@ -10,6 +10,9 @@ struct NetworkSettingsSection: View {
     @State private var syncStatus: String = ""
     @State private var isSyncing: Bool = false
 
+    // MCP (Phase B — daemon single-writer)
+    @State private var mcpStrictSingleWriter: Bool = false
+
     @State private var isLoadingSettings: Bool = false
 
     // Add peer form
@@ -145,6 +148,22 @@ struct NetworkSettingsSection: View {
                 }
                 .padding(.vertical, 4)
             }
+
+            // MCP single-writer policy — Phase B. When ON, MCP write tools fail
+            // fast if the daemon is unreachable instead of falling back to a
+            // direct DB write. Default OFF = soft single-writer (resilient but
+            // allows brief concurrent-write windows during daemon restarts).
+            GroupBox("MCP") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Strict single writer", isOn: $mcpStrictSingleWriter)
+                        .onChange(of: mcpStrictSingleWriter) { saveMcpSettings() }
+                    Text("When on, MCP write tools (save_insight, project_move, …) fail if the daemon can't be reached, instead of falling back to a direct DB write. Reduces lock contention to zero; requires a running daemon. Takes effect on the next MCP spawn.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 4)
+            }
         }
         .onAppear {
             loadSyncSettings()
@@ -171,6 +190,14 @@ struct NetworkSettingsSection: View {
         if let name = settings["syncNodeName"] as? String { syncNodeName = name }
         if let interval = settings["syncIntervalMinutes"] as? Int { syncIntervalMinutes = interval }
         if let peers = settings["syncPeers"] as? [[String: String]] { syncPeers = peers }
+        if let strict = settings["mcpStrictSingleWriter"] as? Bool { mcpStrictSingleWriter = strict }
+    }
+
+    private func saveMcpSettings() {
+        guard !isLoadingSettings else { return }
+        mutateEngramSettings { settings in
+            settings["mcpStrictSingleWriter"] = mcpStrictSingleWriter
+        }
     }
 
     private func triggerSync() {

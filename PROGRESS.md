@@ -92,7 +92,12 @@
   - 契约测 5 个（invalid actor → 400、$HOME bypass、swift-ui 默认保留 $HOME 约束）
   - **1202 tests ✓**
   - **需要 daemon 重新部署**：端点签名变了（新 `actor` 字段），旧 daemon 会忽略它（MCP 请求暂时落到 actor='swift-ui'，功能正常、审计有小漂移）
-- ⏳ **Step 6**：跑 24h 生产观察 + 把 `mcpStrictSingleWriter` 开关做到 Swift UI
+- ✅ **Step 6B**（完成 2026-04-22）：`mcpStrictSingleWriter` 开关做到 Swift UI
+  - `macos/Engram/Views/Settings/NetworkSettingsSection.swift` 加 `MCP` GroupBox + Toggle "Strict single writer"
+  - 走现成的 `readEngramSettings()` / `mutateEngramSettings()`，`isLoadingSettings` 防抖
+  - 帮助文案解释 trade-off：ON = daemon 不可达时失败（零锁竞争但依赖 daemon），OFF = 降级到直写（默认，容错）
+  - 在下次 MCP spawn 时生效（MCP 启动时读 `fileSettings`）
+- ⏳ **Step 6A**：跑 24h 生产观察 `database is locked` → 0（被动等待）
 
 ### 成本估计（修订）
 
