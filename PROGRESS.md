@@ -152,7 +152,19 @@
 - MCP 冷启动延迟被用户反复反馈
 - Node 版本升级迁移负担 >> 当前
 
-**当前不满足任一条**，保持观察。
+~~**当前不满足任一条**，保持观察。~~ 用户 2026-04-22 要求启动（理由：macOS 原生效率 + 简化技术栈），**范围锁定 small-shim**。
+
+### Kickoff — 2026-04-22（delegated to Codex）
+
+交 Codex 在独立 worktree 执行：
+
+- **Worktree**：`../engram-mcp-swift`，分支 `feature/mcp-swift-shim`（off main）
+- **范围锁定**：**只** MCP server（stdio + tool dispatch + HTTP forwarding）。daemon、15 adapters、chunker、embedder、vector-store、sqlite-vec FFI、1210 vitest、SwiftUI app、DB schema **全部不动**
+- **Gating**：Phase 0 可行性报告 → 用户 review → Phase 1 计划 → 用户 review → Phase 2 实现。Codex 不得跳阶段
+- **Fallback 保留**：`src/index.ts`（Node MCP）**不删**，用户随时可通过 `.claude/mcp.json` 切回
+- **验收**：xcodebuild SUCCEEDED + `npm test` 绿 + 端到端 save_insight 经 daemon HTTP 走完（`ai_audit_log.request_source='mcp'`）+ Swift binary < 15 MB
+
+原始 prompt 在用户与本会话的 2026-04-22 消息中（段首 `Task: Port Engram's MCP server from Node to Swift (Phase C — "small shim" scope)`）。
 
 ---
 
