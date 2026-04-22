@@ -41,6 +41,13 @@ final class DaemonHTTPClientCore {
         try validateResponse(response, data: data)
     }
 
+    func delete<T: Decodable>(_ path: String, body: (any Encodable)? = nil) async throws -> T {
+        let request = try buildRequest(path, method: "DELETE", body: body)
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response, data: data)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
     private func buildRequest(
         _ path: String,
         method: String,

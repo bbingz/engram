@@ -321,6 +321,8 @@ Fixture discipline:
 | Runtime surface drift between Node and Swift | Wrong Claude tool selection / missing tools | Generate tool list from `src/index.ts` inventory and assert count = 26 in tests |
 | Reusing `DaemonClient.swift` pulls app-only DTO baggage into helper | Target coupling and compile noise | Extract only request-building, bearer, validation, error envelope logic into shared core; leave app DTOs/extensions in app target |
 | Strict-only fail-fast changes behavior vs current Node fallback | Expected by review, but may surprise users during daemon outages | Document explicitly in plan/tests; return clear MCP error text naming daemon unreachability |
+| Hardcoded MCP protocol version | Future client/server negotiation mismatch | Ship MVP with `2025-03-26`, add explicit TODO for `initialize` negotiation, and cover version handling before broad client rollout |
+| `DispatchSemaphore` sync bridge in stdio tool dispatch | Blocks stdin during long calls today and becomes a Swift 6 Sendable migration hazard later | Accept for MVP only, add explicit TODO to move to an async stdin loop before Swift 6 migration / concurrency tightening |
 | GRDB query parity for read tools | Shape mismatch | Port selected handlers one-by-one with Node snapshot tests before bulk rollout |
 | Generated Xcode project churn from worktree name | Noisy diffs | Keep `project.yml` authoritative; review generated diffs for bundle/helper additions only |
 
