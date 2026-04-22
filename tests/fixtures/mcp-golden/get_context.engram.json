@@ -1,0 +1,8 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "当前任务：port engram mcp shim to swift\n[windsurf] 2026-01-06 — engram windsurf session 6: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[iflow] 2026-01-05 — engram iflow session 5: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[cursor] 2026-01-04 — engram cursor session 4: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[gemini-cli] 2026-01-03 — engram gemini-cli session 3: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[codex] 2026-01-02 — engram codex session 2: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[claude-code] 2026-01-01 — engram claude-code session 1: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n\n— 6 sessions, ~189 tokens"
+    }
+  ]
+}
