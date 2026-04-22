@@ -47,12 +47,13 @@
 | **project_move** | orchestrator 内部写 | ✅ `POST /api/project/move` (+ actor) | ✅ **Step 3** |
 | **project_archive** | orchestrator 内部写 | ✅ `POST /api/project/archive` (+ actor) | ✅ **Step 3** |
 | **project_undo** | orchestrator 内部写 | ✅ `POST /api/project/undo` (+ actor) | ✅ **Step 3** |
+| **project_move_batch** | `runBatch` → 多次 orchestrator 写 | ✅ `POST /api/project/move-batch`（新增） | ✅ **Round 2 M3** |
 
 **不需要迁移**：
 - `handoff` / `lint_config` / `get_*` / `list_*` / `search` / `stats` / `export` / `live_sessions` / `file_activity` / `project_review` / `project_list_migrations` / `project_recover` / `project_timeline` / `tool_analytics` / `generate_title` —— 只读
 - **`link_sessions`**（Step 5 的原计划）—— 实际只读 DB（`resolveProjectAliases`、`listSessions`），"写"是文件系统 symlink，不在 Phase B 范围
 
-**实际 DB 写工具 = 6 个，6/6 ✅ 全部完成**（Step 1-4 完成）。
+**实际 DB 写工具 = 7 个，7/7 ✅ 全部完成**（Step 1-4 + Round 2 补齐 `project_move_batch`）。6-way review 发现 Survey v3 漏数了 batch 工具。
 
 ### 目标架构
 

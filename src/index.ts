@@ -90,6 +90,10 @@ const vectorDeps: GetContextDeps = { vectorStore, embed };
 // Tool dispatch below routes writes here first; unreachable → direct fallback
 // unless fileSettings.mcpStrictSingleWriter is set.
 const daemonClient = createDaemonClientFromSettings(fileSettings, log);
+// Hard single-writer toggle — when true, dispatch fallback to direct writes is
+// disabled and daemon-unreachable errors bubble up. Read once at startup; UI
+// help text informs the user that toggles require a new MCP spawn.
+const strictSingleWriter = fileSettings.mcpStrictSingleWriter === true;
 
 const manageProjectAliasTool = {
   name: 'manage_project_alias',
@@ -405,8 +409,6 @@ toolRegistry.set('get_memory', async (a) =>
   }),
 );
 
-const strictSingleWriter = fileSettings.mcpStrictSingleWriter === true;
-
 toolRegistry.set('save_insight', async (a) => {
   const params = a as {
     content: string;
@@ -534,9 +536,15 @@ toolRegistry.set('project_archive', async (a) => {
     // keep only the two fields the MCP contract exposed.
     const { suggestion, ...rest } = raw;
     if (!suggestion) return raw; // defensive — should always be present
+    // Round 2 S2: include dst so AI agents can reference the archived
+    // destination in follow-up prompts (matches direct-path shape).
     return {
       ...rest,
-      archive: { category: suggestion.category, reason: suggestion.reason },
+      archive: {
+        category: suggestion.category,
+        reason: suggestion.reason,
+        dst: suggestion.dst,
+      },
     };
   } catch (err) {
     if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
@@ -584,9 +592,25 @@ toolRegistry.set('project_recover', (a) =>
     { log },
   ),
 );
-toolRegistry.set('project_move_batch', (a) =>
-  handleProjectMoveBatch(db, a as { yaml: string; force?: boolean }, { log }),
-);
+toolRegistry.set('project_move_batch', async (a) => {
+  const params = a as { yaml: string; dry_run?: boolean; force?: boolean };
+  const body = {
+    yaml: params.yaml,
+    dryRun: params.dry_run === true,
+    force: params.force === true,
+  };
+  try {
+    return await daemonClient.post('/api/project/move-batch', body);
+  } catch (err) {
+    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    log.warn(
+      'project_move_batch: daemon unreachable, direct fallback',
+      { endpoint: daemonClient.endpoint },
+      err,
+    );
+    return handleProjectMoveBatch(db, params, { log });
+  }
+});
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   heartbeat();

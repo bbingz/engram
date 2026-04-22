@@ -190,7 +190,9 @@ export async function handleProjectArchive(
   },
   opts?: ToolHandlerOpts,
 ): Promise<
-  PipelineResult & { archive: { category: ArchiveCategory; reason: string } }
+  PipelineResult & {
+    archive: { category: ArchiveCategory; reason: string; dst: string };
+  }
 > {
   opts?.log?.info('project_archive', { src: params.src, to: params.to });
   // Round 4: normalization now lives in archive.ts (normalizeArchiveCategory)
@@ -221,7 +223,12 @@ export async function handleProjectArchive(
     );
     return {
       ...plan,
-      archive: { category: suggestion.category, reason: suggestion.reason },
+      // Round 2 S2 — match the committed-path shape: include dst.
+      archive: {
+        category: suggestion.category,
+        reason: suggestion.reason,
+        dst: suggestion.dst,
+      },
     };
   }
   const suggestion = await suggestArchiveTarget(src, { forceCategory });
@@ -239,7 +246,15 @@ export async function handleProjectArchive(
   });
   return {
     ...result,
-    archive: { category: suggestion.category, reason: suggestion.reason },
+    // Round 2 S2 (6-way review follow-up): include dst so MCP callers see
+    // where the project actually ended up — AI agents need this to reference
+    // the archived location in follow-up prompts. Direct-path and HTTP-path
+    // now both carry this field.
+    archive: {
+      category: suggestion.category,
+      reason: suggestion.reason,
+      dst: suggestion.dst,
+    },
   };
 }
 

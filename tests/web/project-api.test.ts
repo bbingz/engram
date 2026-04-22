@@ -211,6 +211,54 @@ describe('Web API — /api/project/*', () => {
     expect(body.error.name).toBe('InvalidActor');
   });
 
+  // Round 2 M3: project_move_batch now routes through daemon too
+  it('POST /api/project/move-batch with missing yaml returns 400', async () => {
+    const res = await app.request('/api/project/move-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dryRun: true }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { name: string; message: string };
+    };
+    expect(body.error.name).toBe('MissingParam');
+    expect(body.error.message).toMatch(/yaml/);
+  });
+
+  it('POST /api/project/move-batch dry-run runs batch pipeline', async () => {
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const yaml = [
+        'version: 1',
+        'defaults:',
+        '  dry_run: true',
+        'operations:',
+        `  - src: "${src}"`,
+        `    dst: "${home}/newbatch"`,
+      ].join('\n');
+      const res = await app.request('/api/project/move-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ yaml, force: true }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        completed: unknown[];
+        failed: unknown[];
+        skipped: unknown[];
+      };
+      // Dry-run batch succeeds — the single operation lands in `completed`
+      // (dry-run is still a "successful" simulation).
+      expect(body.completed.length).toBe(1);
+      expect(body.failed).toEqual([]);
+    } finally {
+      if (savedHome) process.env.HOME = savedHome;
+      else delete process.env.HOME;
+    }
+  });
+
   it('actor:mcp still respects $HOME confinement (Round 1 hotfix)', async () => {
     // Originally actor:'mcp' bypassed the $HOME guard on the theory that MCP
     // is a trusted local peer. The 6-way review flagged this as derivable-

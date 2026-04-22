@@ -1078,6 +1078,44 @@ export function createApp(
     }
   });
 
+  // POST /api/project/move-batch — run a YAML-described batch of moves.
+  // Round 2 M3 (6-way review follow-up): previously project_move_batch was
+  // the last write tool still bypassing the single-writer discipline —
+  // dispatched directly in index.ts. Route it through daemon too. The
+  // `actor` field is fixed to 'batch' inside runBatch() per operation; no
+  // need to accept it on the HTTP body. $HOME confinement isn't enforced
+  // here because paths come from the YAML document itself (parsed inside
+  // runBatch via expandHome); the batch entrypoint is intentionally
+  // permissive to match the CLI variant.
+  app.post('/api/project/move-batch', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      yaml?: string;
+      dryRun?: boolean;
+      force?: boolean;
+    };
+    if (!body.yaml || typeof body.yaml !== 'string') {
+      return c.json(
+        validationError('MissingParam', 'yaml (string) required'),
+        400,
+      );
+    }
+    const { parse: parseYaml } = await import('yaml');
+    const { normalizeBatchDocument, runBatch } = await import(
+      './core/project-move/batch.js'
+    );
+    try {
+      const raw = parseYaml(body.yaml) as Record<string, unknown>;
+      const doc = normalizeBatchDocument(raw);
+      if (body.dryRun === true) {
+        doc.defaults = { ...doc.defaults, dryRun: true };
+      }
+      const result = await runBatch(db, doc, { force: body.force === true });
+      return c.json(result);
+    } catch (err) {
+      return c.json(mapProjectMoveError(err), mapProjectMoveErrorStatus(err));
+    }
+  });
+
   // --- Summary API ---
   app.post('/api/summary', async (c) => {
     const body = await c.req.json().catch(() => ({}));
