@@ -35,12 +35,23 @@
 
 **目标**：从根上消除"N 个 MCP 进程都能写 DB"的架构缺陷。
 
-### 现状
+### 现状（Step 1 完成，2026-04-22）
 
-- `src/tools/*.ts` 里的写工具（`save_insight` / `generate_summary` / `handoff` / `link_sessions` / `manage_project_alias` / `project_move` / `project_undo` / `project_archive` / `confirm-suggestion`…）**全部 `deps.db.xxx` 直连 SQLite**。
-- `src/web.ts` 里 daemon 已经暴露了**几乎对应的全部 HTTP 写端点**：`/api/handoff` / `/api/link-sessions` / `/api/project/move` / `/api/project-aliases` / `/api/session/:id/generate-title` …
-- Swift `DaemonClient` 已在走这些端点。
-- **只剩 MCP 没用它** —— 这是最后一公里。
+完整写工具清点（survey 结果比原估计小）：
+
+| MCP 工具 | 写操作 | 已有 HTTP 端点 | 迁移状态 |
+|---|---|---|---|
+| **save_insight** | `saveInsightText`, `markInsightEmbedded`, `deleteInsightText`, `vecStore.upsertInsight` | ❌→ ✅ 新增 `POST /api/insight` | ✅ **Step 1 pilot** |
+| generate_summary | `updateSessionSummary` | ✅ `POST /api/summary` | ⏳ |
+| project_move | orchestrator 内部写 | ✅ `POST /api/project/move` | ⏳ |
+| project_archive | orchestrator 内部写 | ✅ `POST /api/project/archive` | ⏳ |
+| project_undo | orchestrator 内部写 | ✅ `POST /api/project/undo` | ⏳ |
+| manage_project_alias | `addProjectAlias`, `removeProjectAlias` | ✅ `POST/DELETE /api/project-aliases` | ⏳ |
+| link_sessions | `handleLinkSessions` | ✅ `POST /api/link-sessions` | ⏳ |
+
+**handoff / lint_config / get_* / list_* / search / stats / export / live_sessions / file_activity / project_review / project_list_migrations / project_recover / project_timeline / tool_analytics / generate_title** 全部只读，不需要迁移。
+
+**实际写工具 = 7 个**（原估计 10），其中 6 个端点已有，只 save_insight 需要新端点。Swift `DaemonClient` 也已在用这些端点，迁移对 Swift 无影响。
 
 ### 目标架构
 
@@ -55,21 +66,24 @@
 
 ### 工作项
 
-1. **清点写工具** — grep `src/tools/` 里所有 `deps.db.(save|insert|update|delete|upsert|mark|set)` 调用，落表对应 `/api/...`。缺口端点在 `web.ts` 补齐。
-2. **写一个 `DaemonHttpClient`**（`src/core/daemon-client.ts`）—— 封装 `fetch` + 超时 + Bearer 鉴权 + error envelope 解析。
-3. **`bootstrap.ts` 注入策略切换**：
-   - daemon 进程内：直接注入 `db`（无 HTTP）
-   - MCP 进程：注入 `DaemonHttpClient`，写调用转发；读调用仍直连
-4. **离线 fallback**：daemon HTTP 连不通时（端口没起、daemon 挂了），MCP 能退回直写，避免完全断链。配 settings 开关 `mcpStrictSingleWriter`，默认 `false`（软约束），开启后 daemon 不可达直接返回错误。
-5. **契约测试**：每个 write tool 写对照测试——走 HTTP 和走直连的行为必须一致。
-6. **迁移顺序**：`save_insight`（最高频）→ `generate_summary` → project_move 家族 → link_sessions 家族 → 其余。每个 tool 切完跑全量 vitest + manual smoke，再切下一个。
+- ✅ **Step 1**（已完成 2026-04-22）
+  - `src/core/daemon-client.ts` — `DaemonClient` (fetch + bearer + timeout + fetchImpl 注入) + `DaemonClientError` + `createDaemonClientFromSettings`。7 个单测
+  - `POST /api/insight` 端点 + 4 个端点测 + 2 个 DaemonClient→app 契约测
+  - `src/index.ts` save_insight dispatch：HTTP 优先，网络错误/404/405/501 软降级到直写，400/409/422 直接 throw（避免 MCP 对无效输入静默重试到本地）
+  - `FileSettings.mcpStrictSingleWriter`（默认 false）
+  - **1185 tests ✓**
+- ⏳ **Step 2**（下一个 commit）：`generate_summary` 迁移
+- ⏳ **Step 3**：project_move / archive / undo（共享 orchestrator，一次迁完）
+- ⏳ **Step 4**：manage_project_alias（alias CRUD，MCP 内联实现）
+- ⏳ **Step 5**：link_sessions
+- ⏳ **Step 6**：跑 24h 生产观察 + 把 `mcpStrictSingleWriter` 开关做到 Swift UI
 
-### 成本估计
+### 成本估计（修订）
 
-- 写工具约 **10 个**，每个 ~20-40 行（切端点 + fallback + 测试）
-- DaemonHttpClient + bootstrap 注入点 ~1 天
-- 契约测试 ~1 天
-- **总计 1.5-2 天**
+- 基础设施 + save_insight pilot：**0.5 天**（已完成）
+- 剩余 6 个工具 × 每个 ~30 行 + 契约测：**0.5-1 天**
+- 24h 观察 + Swift UI 开关：**0.5 天**
+- **总计 ~1.5 天**（与原估计接近）
 
 ### 风险
 

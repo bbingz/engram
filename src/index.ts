@@ -8,6 +8,10 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { createMCPDeps } from './core/bootstrap.js';
+import {
+  createDaemonClientFromSettings,
+  DaemonClientError,
+} from './core/daemon-client.js';
 import { setupProcessLifecycle } from './core/lifecycle.js';
 import { createLogger } from './core/logger.js';
 import {
@@ -80,6 +84,11 @@ const {
   embed,
 } = createMCPDeps();
 const vectorDeps: GetContextDeps = { vectorStore, embed };
+
+// Phase B: HTTP client for forwarding write operations to the daemon.
+// Tool dispatch below routes writes here first; unreachable → direct fallback
+// unless fileSettings.mcpStrictSingleWriter is set.
+const daemonClient = createDaemonClientFromSettings(fileSettings, log);
 
 const manageProjectAliasTool = {
   name: 'manage_project_alias',
@@ -354,17 +363,47 @@ toolRegistry.set('get_memory', async (a) =>
   }),
 );
 
-toolRegistry.set('save_insight', async (a) =>
-  handleSaveInsight(
-    a as { content: string; wing?: string; room?: string; importance?: number },
-    {
+toolRegistry.set('save_insight', async (a) => {
+  const params = a as {
+    content: string;
+    wing?: string;
+    room?: string;
+    importance?: number;
+    source_session_id?: string;
+  };
+  // Route through daemon (single-writer); fall back to direct write when the
+  // daemon is unreachable and strict mode is off.
+  //   - Network errors (ECONNREFUSED, AbortError): soft-recoverable
+  //   - 404/405/501: endpoint not deployed yet on an older daemon — treat as
+  //     "unreachable" so rolling deploys don't break write path
+  //   - Other 4xx: real rejection (validation / conflict), must bubble up
+  //     even in non-strict mode; otherwise MCP would silently retry invalid
+  //     input against the local DB
+  try {
+    return await daemonClient.post('/api/insight', params);
+  } catch (err) {
+    const isValidationError =
+      err instanceof DaemonClientError &&
+      err.status >= 400 &&
+      err.status < 500 &&
+      err.status !== 404 &&
+      err.status !== 405 &&
+      err.status !== 501;
+    if (isValidationError) throw err;
+    if (fileSettings.mcpStrictSingleWriter) throw err;
+    log.warn(
+      'save_insight: daemon unreachable, falling back to direct write',
+      { endpoint: daemonClient.endpoint },
+      err,
+    );
+    return handleSaveInsight(params, {
       vecStore: vecDeps?.vectorStore,
       embedder: vecDeps?.embeddingClient ?? null,
       db,
       log,
-    },
-  ),
-);
+    });
+  }
+});
 
 toolRegistry.set('handoff', async (a) =>
   handleHandoff(

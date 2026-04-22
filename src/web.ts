@@ -35,6 +35,7 @@ import { handleGetCosts } from './tools/get_costs.js';
 import { handleHandoff } from './tools/handoff.js';
 import { handleLinkSessions } from './tools/link_sessions.js';
 import { handleLintConfig, runAllHealthChecks } from './tools/lint_config.js';
+import { handleSaveInsight } from './tools/save_insight.js';
 import { handleSearch, type SearchDeps } from './tools/search.js';
 import { handleStats } from './tools/stats.js';
 import { handleToolAnalytics } from './tools/tool_analytics.js';
@@ -1091,6 +1092,45 @@ export function createApp(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return c.json({ error: msg }, 500);
+    }
+  });
+
+  // --- Insight write (single-writer routing for save_insight MCP tool) ---
+  app.post('/api/insight', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const content = typeof body.content === 'string' ? body.content : undefined;
+    if (!content) {
+      return c.json({ error: 'Missing required field: content' }, 400);
+    }
+    try {
+      const result = await handleSaveInsight(
+        {
+          content,
+          wing: typeof body.wing === 'string' ? body.wing : undefined,
+          room: typeof body.room === 'string' ? body.room : undefined,
+          importance:
+            typeof body.importance === 'number' ? body.importance : undefined,
+          source_session_id:
+            typeof body.source_session_id === 'string'
+              ? body.source_session_id
+              : undefined,
+        },
+        {
+          db,
+          vecStore: opts?.vectorStore ?? null,
+          embedder: opts?.embeddingClient ?? null,
+        },
+      );
+      return c.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Validation errors come back as plain Error — surface as 400.
+      const isValidation =
+        msg.startsWith('Content ') || msg.includes('requires either');
+      return c.json({ error: msg }, isValidation ? 400 : 500);
     }
   });
 

@@ -101,6 +101,10 @@ export interface FileSettings {
   httpHost?: string; // '127.0.0.1' (default) | '0.0.0.0' | specific IP
   httpAllowCIDR?: string[]; // e.g. ['10.0.0.0/8', '192.168.1.0/24']
   httpBearerToken?: string; // auto-generated bearer token for write API auth
+  /** Phase B: when true, MCP write tools refuse to fall back to direct DB
+   *  writes if the daemon is unreachable. Default: false (soft single-writer
+   *  — MCP still writes locally as a last resort). */
+  mcpStrictSingleWriter?: boolean;
   syncNodeName?: string;
   syncPeers?: SyncPeer[];
   syncIntervalMinutes?: number;

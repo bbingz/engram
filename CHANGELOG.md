@@ -7,6 +7,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Phase B Step 1：DaemonClient + save_insight 单写者 pilot (2026-04-22)
+
+MCP 从"多写者"改造成"daemon 唯一写者"的基础设施 + 首个 pilot 工具。Survey 发现实际写工具 7 个（非 10），其中 6 个端点已存在，只 save_insight 需新增。
+
+- **`src/core/daemon-client.ts`**（新）：`DaemonClient` 封装 fetch + Bearer 鉴权 + timeout + `fetchImpl` 注入（测试友好）。`DaemonClientError` 带 status + body，4xx 与网络错误语义分离。`createDaemonClientFromSettings()` 固定走 127.0.0.1（即使 daemon 绑 0.0.0.0，MCP 走 loopback）
+- **`POST /api/insight`**（`src/web.ts`）：调 `handleSaveInsight(params, { db, vecStore, embedder })`，与 MCP 直写路径共用同一 handler，行为一致。校验错误 400，其他 500
+- **`src/index.ts` save_insight dispatch**：HTTP 优先，5 种错误分路：
+  - 网络错误 (ECONNREFUSED/AbortError) → 软降级到直写
+  - 404/405/501 → 软降级（rolling deploy：旧 daemon 没新端点时 MCP 不挂）
+  - 400/409/422 → 直接 throw（避免 MCP 对无效输入静默重试到本地）
+  - 500+ → 软降级
+  - 任何情况下 `mcpStrictSingleWriter=true` → throw
+- **`FileSettings.mcpStrictSingleWriter`**（默认 `false`）：软/硬约束开关，硬约束下 daemon 不可达直接 fail
+- **测试 +13**：DaemonClient 单测 7 个（fetch 注入）、`/api/insight` 端点测 4 个、DaemonClient → Hono app 契约测 2 个（通过 fetch-shim 把 app.request 包装成 fetch）
+- `npm run build` ✓、`npx vitest run` **1185/1185** ✓、biome 对改动 6 个文件干净
+
+**行为变化**：
+- 新 MCP 进程（下次 spawn）save_insight 先 POST 到 daemon，不可达则退回直写
+- 现有旧 MCP 进程（session 里已在跑的）不受影响，仍走旧路径
+- 部署 daemon 后才真正激活单写者（否则 404→ 降级到直写，等效于 Phase A 行为）
+
 ### Fixed — MCP 锁竞争快速止血 Phase A (2026-04-22)
 
 用户报"MCP 又挂了"。排查发现 MCP 其实 `✓ Connected`，真症状是 `database is locked` —— 近 2h 有 29 条 `indexFile failed` 报错，**全部来自 `src=watcher`**。DB 同时有 3 个 node 进程（daemon + 2 MCP）持写句柄，WAL 涨到 137 MB，`busy_timeout=5s` 被突破。
