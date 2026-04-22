@@ -214,6 +214,13 @@
 			remoteGlobalIDString = CBCDC5ABCED1290D34EC5E45;
 			remoteInfo = Engram;
 		};
+		E7BAE140681A7D5314C1DC88 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E6974E702704633D9605491C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 790D3733722391768E6E845B;
+			remoteInfo = EngramMCP;
+		};
 		E91566D3653DE0A5095ACACA /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E6974E702704633D9605491C /* Project object */;
@@ -1026,11 +1033,13 @@
 				DB3485C9ED0FCF9E1A6BD0FC /* Sources */,
 				80565A6CA1787E3852E0004E /* Resources */,
 				BFCC4B2B043B653E78FBA363 /* Frameworks */,
+				D18102F91500CA4710BF2372 /* Bundle EngramMCP helper */,
 				C64DD06E99B4717CA3559D76 /* Replace AppIcon.icns with complete version */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				8CEBC41F7C816FA5EA6650AD /* PBXTargetDependency */,
 			);
 			name = Engram;
 			packageProductDependencies = (
@@ -1165,6 +1174,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "# Xcode only generates icns with 16+128 sizes; replace with our pre-built complete icns\nICNS_SRC=\"${SRCROOT}/Engram/Resources/AppIcon.icns\"\nICNS_DST=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/AppIcon.icns\"\nif [ -f \"$ICNS_SRC\" ]; then\n  cp \"$ICNS_SRC\" \"$ICNS_DST\"\nfi\n";
+		};
+		D18102F91500CA4710BF2372 /* Bundle EngramMCP helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle EngramMCP helper";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "${SRCROOT}/scripts/copy-mcp-helper.sh";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1408,6 +1436,11 @@
 			isa = PBXTargetDependency;
 			target = CBCDC5ABCED1290D34EC5E45 /* Engram */;
 			targetProxy = A7D93D448A4BA40785DF0AA9 /* PBXContainerItemProxy */;
+		};
+		8CEBC41F7C816FA5EA6650AD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 790D3733722391768E6E845B /* EngramMCP */;
+			targetProxy = E7BAE140681A7D5314C1DC88 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 

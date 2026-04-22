@@ -35,6 +35,20 @@
                ReferencedContainer = "container:Engram.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "790D3733722391768E6E845B"
+               BuildableName = "EngramMCP"
+               BlueprintName = "EngramMCP"
+               ReferencedContainer = "container:Engram.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
