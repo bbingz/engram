@@ -3,8 +3,18 @@ import Network
 import XCTest
 
 final class EngramMCPExecutableTests: XCTestCase {
-    func testToolRegistryHasTemplateFloor() {
-        XCTAssertGreaterThanOrEqual(MCPToolRegistry.tools.count, 3)
+    func testToolsListHasTemplateFloor() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"] else {
+            XCTFail("Expected tools/list result.tools array")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(tools.count, 3)
         // TODO(mcp-bulk-port): switch to XCTAssertEqual(..., 26) when all tools land.
     }
 

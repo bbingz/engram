@@ -177,3 +177,12 @@ schemes:
       config: Debug
       targets:
         - EngramMCPTests
+  EngramMCPTests:
+    build:
+      targets:
+        EngramMCP: all
+        EngramMCPTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramMCPTests
