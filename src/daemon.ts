@@ -74,6 +74,21 @@ log.info('daemon starting', { powerMode });
 // Emit power state
 emit({ event: 'power', mode: powerMode });
 
+// Eager WAL checkpoint on startup — clears accumulated frames left by the
+// previous process so readers don't pay for a huge -wal file up front.
+try {
+  const cp = db.checkpointWal('TRUNCATE');
+  emit({
+    event: 'wal_checkpoint',
+    phase: 'startup',
+    busy: cp.busy,
+    log: cp.log,
+    checkpointed: cp.checkpointed,
+  });
+} catch (err) {
+  log.warn('startup wal_checkpoint failed', {}, err);
+}
+
 audit.on(
   'entry',
   (entry: {
@@ -436,6 +451,28 @@ const metricsRollupTimer = setTimeout(() => {
   }, 3600000);
 }, 300000);
 
+// Periodic WAL checkpoint — every 10 minutes (20 on battery).
+// Bounds the -wal file; TRUNCATE degrades to PASSIVE if a reader blocks it.
+const walCheckpointTimer = setInterval(() => {
+  runWithContext({ requestId: randomUUID(), source: 'scheduler' }, () => {
+    try {
+      const cp = db.checkpointWal('TRUNCATE');
+      if (cp.busy === 1 || cp.checkpointed > 0) {
+        emit({
+          event: 'wal_checkpoint',
+          phase: 'periodic',
+          busy: cp.busy,
+          log: cp.log,
+          checkpointed: cp.checkpointed,
+        });
+      }
+      metrics.gauge('db.wal_frames', cp.log);
+    } catch (err) {
+      log.warn('periodic wal_checkpoint failed', {}, err);
+    }
+  });
+}, 600_000 * POWER_MULTIPLIER);
+
 // Daemon uptime gauge — report every 60 seconds
 const daemonStartTime = Date.now();
 const uptimeTimer = setInterval(() => {
@@ -467,6 +504,7 @@ const shutdown = createShutdownHandler(
       rollupInterval,
       uptimeTimer,
       alertCheckTimer,
+      walCheckpointTimer,
     ],
     watcher,
     webServer,

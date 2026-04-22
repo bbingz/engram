@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  checkpointWal,
   detectOrphans,
   markOrphanByPath,
   reconcileInsights,
@@ -326,5 +327,44 @@ describe('orphan detection', () => {
       .prepare('SELECT orphan_reason FROM sessions WHERE id = ?')
       .get('s-y') as { orphan_reason: string };
     expect(row.orphan_reason).toBe('cleaned_by_source');
+  });
+});
+
+describe('checkpointWal', () => {
+  let db: Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'engram-checkpoint-test-'));
+    db = new Database(join(tmpDir, 'test.sqlite'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it('returns busy/log/checkpointed on a fresh DB', () => {
+    const r = checkpointWal(db.raw, 'TRUNCATE');
+    expect(r.busy).toBeTypeOf('number');
+    expect(r.log).toBeTypeOf('number');
+    expect(r.checkpointed).toBeTypeOf('number');
+    expect(r.busy).toBe(0);
+  });
+
+  it('truncates WAL after writes when no other reader blocks', () => {
+    // Force WAL growth with a few writes.
+    db.raw.exec(
+      "INSERT INTO insights (id, content) VALUES ('c-1', 'one'), ('c-2', 'two'), ('c-3', 'three')",
+    );
+    const r = checkpointWal(db.raw, 'TRUNCATE');
+    expect(r.busy).toBe(0);
+    // All pending frames moved into the main DB file.
+    expect(r.checkpointed).toBe(r.log);
+  });
+
+  it('honors PASSIVE mode without throwing', () => {
+    const r = checkpointWal(db.raw, 'PASSIVE');
+    expect(r.busy).toBe(0);
   });
 });

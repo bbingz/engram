@@ -105,6 +105,24 @@ export function optimizeFts(db: BetterSqlite3.Database): void {
   db.exec("INSERT INTO insights_fts(insights_fts) VALUES('optimize')");
 }
 
+export type WalCheckpointMode = 'PASSIVE' | 'FULL' | 'RESTART' | 'TRUNCATE';
+export interface WalCheckpointResult {
+  busy: number; // 1 if another conn blocked the requested mode
+  log: number; // WAL frames at start
+  checkpointed: number; // frames moved to main DB
+}
+
+// Drive WAL checkpoint from the daemon only. TRUNCATE shrinks the -wal file
+// back to zero when possible; readers holding an older snapshot force it to
+// fall back to PASSIVE (busy=1) — safe, we retry on the next tick.
+export function checkpointWal(
+  db: BetterSqlite3.Database,
+  mode: WalCheckpointMode = 'TRUNCATE',
+): WalCheckpointResult {
+  const rows = db.pragma(`wal_checkpoint(${mode})`) as WalCheckpointResult[];
+  return rows[0] ?? { busy: 0, log: 0, checkpointed: 0 };
+}
+
 export function vacuumIfNeeded(
   db: BetterSqlite3.Database,
   thresholdPct: number,

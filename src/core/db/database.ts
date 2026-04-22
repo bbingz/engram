@@ -45,7 +45,9 @@ export class Database {
   constructor(dbPath: string) {
     this.db = new BetterSqlite3(dbPath);
     this.db.pragma('journal_mode = WAL');
-    this.db.pragma('busy_timeout = 5000');
+    // 30s busy_timeout: watcher batch transactions + concurrent MCP writers
+    // regularly exceed the old 5s under load (see PROGRESS.md Phase A).
+    this.db.pragma('busy_timeout = 30000');
     this.db.pragma('foreign_keys = ON');
     runMigrations(
       this.db,
@@ -353,6 +355,11 @@ export class Database {
   }
   optimizeFts(): void {
     maint.optimizeFts(this.db);
+  }
+  checkpointWal(
+    mode: maint.WalCheckpointMode = 'TRUNCATE',
+  ): maint.WalCheckpointResult {
+    return maint.checkpointWal(this.db, mode);
   }
   vacuumIfNeeded(thresholdPct: number): boolean {
     return maint.vacuumIfNeeded(this.db, thresholdPct);
