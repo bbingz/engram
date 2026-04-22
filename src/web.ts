@@ -1174,6 +1174,9 @@ export function createApp(
   });
 
   // --- Insight write (single-writer routing for save_insight MCP tool) ---
+  // Round 3 (6-way review S1 follow-up): uses the same {error:{name,message,
+  // retry_policy}} envelope shape as /api/project/* so Swift clients + MCP's
+  // shouldFallbackToDirect see one contract, not two.
   app.post('/api/insight', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<
       string,
@@ -1181,7 +1184,10 @@ export function createApp(
     >;
     const content = typeof body.content === 'string' ? body.content : undefined;
     if (!content) {
-      return c.json({ error: 'Missing required field: content' }, 400);
+      return c.json(
+        validationError('MissingParam', 'content (string) required'),
+        400,
+      );
     }
     try {
       const result = await handleSaveInsight(
@@ -1205,10 +1211,25 @@ export function createApp(
       return c.json(result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Validation errors come back as plain Error — surface as 400.
+      // handleSaveInsight throws plain Error for validation failures — map
+      // onto the shared envelope. Known validation messages get 400 with
+      // retry_policy='never'; anything else is a 500 server-side error
+      // (retry_policy='safe' = client may retry).
       const isValidation =
         msg.startsWith('Content ') || msg.includes('requires either');
-      return c.json({ error: msg }, isValidation ? 400 : 500);
+      if (isValidation) {
+        return c.json(validationError('InvalidInsight', msg), 400);
+      }
+      return c.json(
+        {
+          error: {
+            name: 'InsightSaveFailed',
+            message: msg,
+            retry_policy: 'safe',
+          },
+        },
+        500,
+      );
     }
   });
 

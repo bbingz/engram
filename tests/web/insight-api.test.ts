@@ -54,18 +54,52 @@ describe('POST /api/insight', () => {
     expect(row.importance).toBe(4);
   });
 
-  it('returns 400 when content is missing', async () => {
+  it('returns 400 envelope when content is missing', async () => {
     const res = await post({ wing: 'x' });
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toMatch(/content/i);
+    const body = (await res.json()) as {
+      error: { name: string; message: string; retry_policy: string };
+    };
+    expect(body.error.name).toBe('MissingParam');
+    expect(body.error.retry_policy).toBe('never');
+    expect(body.error.message).toMatch(/content/i);
   });
 
-  it('returns 400 when content is too short', async () => {
+  it('returns 400 envelope when content is too short', async () => {
     const res = await post({ content: 'hi' });
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toMatch(/too short/i);
+    const body = (await res.json()) as {
+      error: { name: string; message: string; retry_policy: string };
+    };
+    expect(body.error.name).toBe('InvalidInsight');
+    expect(body.error.retry_policy).toBe('never');
+    expect(body.error.message).toMatch(/too short/i);
+  });
+
+  it('concurrent identical saves collapse to a single row (regression)', async () => {
+    // 6-way review asked whether concurrent save_insight calls could race
+    // past the dedup check and produce duplicates. Analysis: the text-only
+    // path has no await between findDuplicateInsight and saveInsightText,
+    // and better-sqlite3 is synchronous — Node's single-thread invariant
+    // serializes the two handlers end-to-end. This test pins that property:
+    // two Promise.all'd posts with identical content must produce exactly
+    // one row, the second response carrying a duplicateWarning.
+    const payload = {
+      content: 'Phase B single-writer rules out concurrent DB writers.',
+      wing: 'concurrency',
+    };
+    const [res1, res2] = await Promise.all([post(payload), post(payload)]);
+    const [a, b] = (await Promise.all([res1.json(), res2.json()])) as Array<{
+      id: string;
+      duplicateWarning?: string;
+    }>;
+    const warnings = [a.duplicateWarning, b.duplicateWarning].filter(Boolean);
+    expect(warnings).toHaveLength(1);
+    expect(a.id).toBe(b.id);
+    const rows = db.raw
+      .prepare('SELECT COUNT(*) AS n FROM insights WHERE wing = ?')
+      .get('concurrency') as { n: number };
+    expect(rows.n).toBe(1);
   });
 
   it('dedups against an existing identical insight', async () => {
