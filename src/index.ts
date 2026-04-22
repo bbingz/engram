@@ -14,6 +14,7 @@ import {
 } from './core/daemon-client.js';
 import { setupProcessLifecycle } from './core/lifecycle.js';
 import { createLogger } from './core/logger.js';
+import { expandHome } from './core/project-move/paths.js';
 import {
   buildErrorEnvelope,
   humanizeForMcp,
@@ -458,40 +459,119 @@ toolRegistry.set('get_insights', async (a) => {
   };
 });
 
-// Phase 4a — project_* tools (thin wrappers over orchestrator/undo/recover/batch)
-toolRegistry.set('project_move', (a) =>
-  handleProjectMove(
-    db,
-    a as {
-      src: string;
-      dst: string;
-      dry_run?: boolean;
-      force?: boolean;
-      note?: string;
-    },
-    { log },
-  ),
-);
-toolRegistry.set('project_archive', (a) =>
-  handleProjectArchive(
-    db,
-    a as {
-      src: string;
-      to?: '历史脚本' | '空项目' | '归档完成';
-      force?: boolean;
-      note?: string;
-    },
-    { log },
-  ),
-);
+// Phase 4a — project_* tools. Phase B Step 3 routes writes through daemon for
+// single-writer discipline; reads / list / recover / review stay direct.
+//
+// Response shape notes:
+//   - project_move / project_undo: HTTP and handleProject* return the same
+//     PipelineResult shape, so no transform needed
+//   - project_archive: HTTP returns {...result, suggestion:{category,reason,dst}};
+//     MCP callers historically see {...result, archive:{category,reason}}. We
+//     transform after HTTP so Swift UI contract stays untouched and MCP callers
+//     see the field name they've always seen
+toolRegistry.set('project_move', async (a) => {
+  const params = a as {
+    src: string;
+    dst: string;
+    dry_run?: boolean;
+    force?: boolean;
+    note?: string;
+  };
+  const body = {
+    src: expandHome(params.src),
+    dst: expandHome(params.dst),
+    dryRun: params.dry_run === true,
+    force: params.force === true,
+    auditNote: params.note,
+    actor: 'mcp' as const,
+  };
+  try {
+    const result = await daemonClient.post('/api/project/move', body);
+    // Preserve the pre-B behavior of echoing `resolved` when ~ expanded
+    if (body.src !== params.src || body.dst !== params.dst) {
+      return {
+        ...(result as object),
+        resolved: { src: body.src, dst: body.dst },
+      };
+    }
+    return result;
+  } catch (err) {
+    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    log.warn(
+      'project_move: daemon unreachable, direct fallback',
+      { endpoint: daemonClient.endpoint },
+      err,
+    );
+    return handleProjectMove(db, params, { log });
+  }
+});
+
+toolRegistry.set('project_archive', async (a) => {
+  const params = a as {
+    src: string;
+    to?: '历史脚本' | '空项目' | '归档完成';
+    dry_run?: boolean;
+    force?: boolean;
+    note?: string;
+  };
+  const body = {
+    src: expandHome(params.src),
+    archiveTo: params.to,
+    dryRun: params.dry_run === true,
+    force: params.force === true,
+    auditNote: params.note,
+    actor: 'mcp' as const,
+  };
+  try {
+    const raw = (await daemonClient.post(
+      '/api/project/archive',
+      body,
+    )) as Record<string, unknown> & {
+      suggestion?: { category: string; reason: string; dst?: string };
+    };
+    // HTTP returns {...pipelineResult, suggestion}; MCP callers see
+    // {...pipelineResult, archive:{category,reason}}. Drop `suggestion`,
+    // keep only the two fields the MCP contract exposed.
+    const { suggestion, ...rest } = raw;
+    if (!suggestion) return raw; // defensive — should always be present
+    return {
+      ...rest,
+      archive: { category: suggestion.category, reason: suggestion.reason },
+    };
+  } catch (err) {
+    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    log.warn(
+      'project_archive: daemon unreachable, direct fallback',
+      { endpoint: daemonClient.endpoint },
+      err,
+    );
+    return handleProjectArchive(db, params, { log });
+  }
+});
+
 toolRegistry.set('project_review', (a) =>
   handleProjectReview(a as { old_path: string; new_path: string }, { log }),
 );
-toolRegistry.set('project_undo', (a) =>
-  handleProjectUndo(db, a as { migration_id: string; force?: boolean }, {
-    log,
-  }),
-);
+
+toolRegistry.set('project_undo', async (a) => {
+  const params = a as { migration_id: string; force?: boolean };
+  const body = {
+    migrationId: params.migration_id,
+    force: params.force === true,
+    actor: 'mcp' as const,
+  };
+  try {
+    return await daemonClient.post('/api/project/undo', body);
+  } catch (err) {
+    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    log.warn(
+      'project_undo: daemon unreachable, direct fallback',
+      { endpoint: daemonClient.endpoint },
+      err,
+    );
+    return handleProjectUndo(db, params, { log });
+  }
+});
 toolRegistry.set('project_list_migrations', (a) =>
   handleProjectListMigrations(db, a as { limit?: number; since?: string }, {
     log,

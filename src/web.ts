@@ -70,6 +70,28 @@ function mapProjectMoveError(err: unknown): ErrorEnvelope {
   return buildErrorEnvelope(err, { sanitize: true });
 }
 
+// Phase B Step 3: actor threads through to migration_log for audit. MCP is a
+// trusted local peer (same user, same machine), so 'mcp' bypasses $HOME path
+// confinement; other actors (swift-ui, cli, batch) stay confined. An invalid
+// actor string is a hard 400 to avoid audit poisoning.
+const KNOWN_ACTORS = ['cli', 'mcp', 'swift-ui', 'batch'] as const;
+type KnownActor = (typeof KNOWN_ACTORS)[number];
+function parseActor(
+  raw: unknown,
+): { ok: true; actor: KnownActor } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, actor: 'swift-ui' };
+  if (
+    typeof raw !== 'string' ||
+    !(KNOWN_ACTORS as readonly string[]).includes(raw)
+  ) {
+    return {
+      ok: false,
+      error: `actor must be one of: ${KNOWN_ACTORS.join(', ')}`,
+    };
+  }
+  return { ok: true, actor: raw as KnownActor };
+}
+
 function mapProjectMoveErrorStatus(err: unknown): 400 | 409 | 500 {
   return mapErrorStatus((err as Error)?.name);
 }
@@ -918,6 +940,7 @@ export function createApp(
       dryRun?: boolean;
       force?: boolean;
       auditNote?: string;
+      actor?: string;
     };
     if (!body.src || !body.dst) {
       return c.json(
@@ -925,8 +948,13 @@ export function createApp(
         400,
       );
     }
-    const srcResolved = normalizeHttpPath(body.src);
-    const dstResolved = normalizeHttpPath(body.dst);
+    const actorResult = parseActor(body.actor);
+    if (!actorResult.ok) {
+      return c.json(validationError('InvalidActor', actorResult.error), 400);
+    }
+    const allowOutsideHome = actorResult.actor === 'mcp';
+    const srcResolved = normalizeHttpPath(body.src, { allowOutsideHome });
+    const dstResolved = normalizeHttpPath(body.dst, { allowOutsideHome });
     if (!srcResolved.ok) {
       return c.json(
         validationError('InvalidPath', `src: ${srcResolved.error}`),
@@ -949,7 +977,7 @@ export function createApp(
         dryRun: body.dryRun === true,
         force: body.force === true,
         auditNote: body.auditNote,
-        actor: 'swift-ui',
+        actor: actorResult.actor,
       });
       return c.json(result);
     } catch (err) {
@@ -962,6 +990,7 @@ export function createApp(
     const body = (await c.req.json().catch(() => ({}))) as {
       migrationId?: string;
       force?: boolean;
+      actor?: string;
     };
     if (!body.migrationId) {
       return c.json(
@@ -969,11 +998,15 @@ export function createApp(
         400,
       );
     }
+    const actorResult = parseActor(body.actor);
+    if (!actorResult.ok) {
+      return c.json(validationError('InvalidActor', actorResult.error), 400);
+    }
     const { undoMigration } = await import('./core/project-move/undo.js');
     try {
       const result = await undoMigration(db, body.migrationId, {
         force: body.force === true,
-        actor: 'swift-ui',
+        actor: actorResult.actor,
       });
       return c.json(result);
     } catch (err) {
@@ -989,10 +1022,16 @@ export function createApp(
       force?: boolean;
       dryRun?: boolean;
       auditNote?: string;
+      actor?: string;
     };
     if (!body.src)
       return c.json(validationError('MissingParam', 'src required'), 400);
-    const srcResolved = normalizeHttpPath(body.src);
+    const actorResult = parseActor(body.actor);
+    if (!actorResult.ok) {
+      return c.json(validationError('InvalidActor', actorResult.error), 400);
+    }
+    const allowOutsideHome = actorResult.actor === 'mcp';
+    const srcResolved = normalizeHttpPath(body.src, { allowOutsideHome });
     if (!srcResolved.ok) {
       return c.json(
         validationError('InvalidPath', `src: ${srcResolved.error}`),
@@ -1030,7 +1069,7 @@ export function createApp(
         force: body.force === true,
         dryRun: body.dryRun === true,
         auditNote: body.auditNote ?? `archive: ${suggestion.reason}`,
-        actor: 'swift-ui',
+        actor: actorResult.actor,
       });
       return c.json({ ...result, suggestion });
     } catch (err) {

@@ -177,6 +177,82 @@ describe('Web API — /api/project/*', () => {
     expect(body.error.message).toMatch(/must live under/);
   });
 
+  // Phase B Step 3: actor threading + $HOME bypass for MCP ---------------
+  it('unknown actor value returns 400 InvalidActor (audit hygiene)', async () => {
+    const res = await app.request('/api/project/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src: '~/x', dst: '~/y', actor: 'hacker' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { name: string } };
+    expect(body.error.name).toBe('InvalidActor');
+  });
+
+  it('POST /api/project/undo also validates actor', async () => {
+    const res = await app.request('/api/project/undo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ migrationId: 'x', actor: 'hacker' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { name: string } };
+    expect(body.error.name).toBe('InvalidActor');
+  });
+
+  it('POST /api/project/archive also validates actor', async () => {
+    const res = await app.request('/api/project/archive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src: '~/x', actor: 'hacker' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { name: string } };
+    expect(body.error.name).toBe('InvalidActor');
+  });
+
+  it('actor:mcp bypasses $HOME confinement (trusted local peer)', async () => {
+    // Without the bypass, a path under /tmp (outside real $HOME) would be
+    // rejected as InvalidPath "must live under $HOME". MCP is co-located and
+    // trusted, so the bypass lets the pipeline take over and fail further
+    // down (since src doesn't exist) — the important thing is the rejection
+    // must NOT be InvalidPath from the HOME guard.
+    const res = await app.request('/api/project/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        src: '/tmp/engram-step3-no-such-src',
+        dst: '/tmp/engram-step3-no-such-dst',
+        actor: 'mcp',
+      }),
+    });
+    if (res.status === 400) {
+      const body = (await res.json()) as {
+        error: { name: string; message: string };
+      };
+      expect(body.error.name).not.toBe('InvalidPath');
+    }
+    // Otherwise 409 / 500 from the orchestrator — both acceptable.
+  });
+
+  it('actor:swift-ui (default) still enforces $HOME confinement', async () => {
+    const res = await app.request('/api/project/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        src: '/tmp/engram-step3-no-such-src',
+        dst: '/tmp/engram-step3-no-such-dst',
+        // no actor → default 'swift-ui'
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { name: string; message: string };
+    };
+    expect(body.error.name).toBe('InvalidPath');
+    expect(body.error.message).toMatch(/must live under/);
+  });
+
   it('POST /api/project/move resolves ~/../.. traversal and rejects it', async () => {
     // `~/../../etc` expands to /Users/bing/../../etc, which pathResolve
     // canonicalizes to /etc. The $HOME prefix check then rejects it.

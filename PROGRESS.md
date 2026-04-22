@@ -44,15 +44,15 @@
 | **save_insight** | `saveInsightText`, `markInsightEmbedded`, `deleteInsightText`, `vecStore.upsertInsight` | ❌→ ✅ 新增 `POST /api/insight` | ✅ **Step 1** |
 | **generate_summary** | `updateSessionSummary` | ✅ `POST /api/summary` | ✅ **Step 2** |
 | **manage_project_alias** (add/remove) | `addProjectAlias`, `removeProjectAlias` | ✅ `POST/DELETE /api/project-aliases` | ✅ **Step 4** |
-| project_move | orchestrator 内部写 | ✅ `POST /api/project/move` | ⏳ Step 3（复杂） |
-| project_archive | orchestrator 内部写 | ✅ `POST /api/project/archive` | ⏳ Step 3 |
-| project_undo | orchestrator 内部写 | ✅ `POST /api/project/undo` | ⏳ Step 3 |
+| **project_move** | orchestrator 内部写 | ✅ `POST /api/project/move` (+ actor) | ✅ **Step 3** |
+| **project_archive** | orchestrator 内部写 | ✅ `POST /api/project/archive` (+ actor) | ✅ **Step 3** |
+| **project_undo** | orchestrator 内部写 | ✅ `POST /api/project/undo` (+ actor) | ✅ **Step 3** |
 
 **不需要迁移**：
 - `handoff` / `lint_config` / `get_*` / `list_*` / `search` / `stats` / `export` / `live_sessions` / `file_activity` / `project_review` / `project_list_migrations` / `project_recover` / `project_timeline` / `tool_analytics` / `generate_title` —— 只读
 - **`link_sessions`**（Step 5 的原计划）—— 实际只读 DB（`resolveProjectAliases`、`listSessions`），"写"是文件系统 symlink，不在 Phase B 范围
 
-**实际 DB 写工具 = 6 个，已完成 4 个**。剩下 project 家族 3 个（共享同一个 orchestrator）是 Step 3 的大头。
+**实际 DB 写工具 = 6 个，6/6 ✅ 全部完成**（Step 1-4 完成）。
 
 ### 目标架构
 
@@ -83,13 +83,15 @@
   - 契约测加 alias POST/DELETE round-trip + 400 validation bubble-up
   - **1197 tests ✓**（+1 delete-with-body 单测 + 2 alias contract 测）
   - **不需要 daemon 重新部署**：`/api/project-aliases` 早就存在
-- ⏳ **Step 3**（待做，复杂度超出原估计）：project_move / archive / undo
-  - **复杂点**：MCP 返回 `archive: {category, reason}`，HTTP 返回 `suggestion: {category, reason, dst}` —— 字段名和内容都不一致
-  - **复杂点**：MCP `handleProjectArchive` 在 dry_run 走 `buildDryRunPlan`，HTTP 走 `runProjectMove({dryRun:true})` —— 同一输入可能产生略异的计划
-  - **复杂点**：MCP 没有 $HOME 约束，HTTP `normalizeHttpPath` 强制 $HOME —— MCP 路由过 HTTP 后行为收紧（可能阻止某些合法路径）
-  - **actor 审计**：HTTP 硬编码 `actor:'swift-ui'`，MCP 用 `actor:'mcp'` —— 要么加 `actor` body 字段透传，要么 HTTP 根据鉴权状态推断
-  - **响应协调**：给 HTTP 加 MCP 期待的 `archive` 字段 或 给 MCP 侧加转换层
-  - 预估：0.5-1 天（含响应形状协调 + 契约测）
+- ✅ **Step 3**（完成 2026-04-22）：project_move / archive / undo 全部上线 HTTP 路由
+  - **3a** 端点侧：`/api/project/{move,archive,undo}` 加 `actor?: 'cli'|'mcp'|'swift-ui'|'batch'` body 字段，默认 `'swift-ui'`（Swift UI 不变）。未知 actor → `400 InvalidActor`（防审计污染）
+  - **3a** `actor === 'mcp'` → `normalizeHttpPath` 的 `allowOutsideHome: true`，跳过 $HOME 约束（MCP 是本地信任对等进程，不需要 HTTP 层的 $HOME 防御）
+  - **3b/c** MCP `project_move`/`project_undo` dispatch 迁移：本地 expandHome → snake_case→camelCase → 带 `actor:'mcp'` 发 HTTP；响应直接透传（PipelineResult 原本就一致）
+  - **3d** `project_archive` dispatch 加响应转换：HTTP 返 `{...result, suggestion:{category,reason,dst}}`，MCP 侧 drop `suggestion`、补 `archive:{category,reason}`，保持 MCP 契约不变
+  - dry-run 路径差异（`buildDryRunPlan` vs `runProjectMove({dryRun:true})`）—— 看了 orchestrator 发现 `runProjectMove({dryRun:true})` **内部就是 call buildDryRunPlan**（`orchestrator.ts:211-212`），所以迁移后 MCP 和 HTTP 走同一条路径，"差异"自动消失
+  - 契约测 5 个（invalid actor → 400、$HOME bypass、swift-ui 默认保留 $HOME 约束）
+  - **1202 tests ✓**
+  - **需要 daemon 重新部署**：端点签名变了（新 `actor` 字段），旧 daemon 会忽略它（MCP 请求暂时落到 actor='swift-ui'，功能正常、审计有小漂移）
 - ⏳ **Step 6**：跑 24h 生产观察 + 把 `mcpStrictSingleWriter` 开关做到 Swift UI
 
 ### 成本估计（修订）
