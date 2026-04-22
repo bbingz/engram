@@ -1,4 +1,9 @@
 #!/usr/bin/env tsx
+// IMPORTANT: always run with TZ=UTC so golden timestamps match the xctest
+// environment, which itself runs under UTC regardless of the host TZ.
+// Example:  TZ=UTC ./node_modules/.bin/tsx scripts/gen-mcp-contract-fixtures.ts
+// Without TZ=UTC the generator emits host-local times (e.g. +08:00 CST) while
+// xctest outputs UTC — 5 goldens with timestamps would silently diverge.
 import { randomUUID } from 'node:crypto';
 import {
   copyFileSync,

@@ -2,7 +2,7 @@
   "content": [
     {
       "type": "text",
-      "text": "{\n  \"migrationId\": \"dry-run\",\n  \"state\": \"dry-run\",\n  \"moveStrategy\": \"skipped\",\n  \"ccDirRenamed\": false,\n  \"renamedDirs\": [],\n  \"skippedDirs\": [\n    {\n      \"sourceId\": \"claude-code\",\n      \"reason\": \"missing\"\n    },\n    {\n      \"sourceId\": \"gemini-cli\",\n      \"reason\": \"missing\"\n    },\n    {\n      \"sourceId\": \"iflow\",\n      \"reason\": \"missing\"\n    }\n  ],\n  \"perSource\": [\n    {\n      \"id\": \"claude-code\",\n      \"root\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.claude/projects\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"codex\",\n      \"root\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.codex/sessions\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"gemini-cli\",\n      \"root\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.gemini/tmp\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"iflow\",\n      \"root\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.iflow/projects\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"opencode\",\n      \"root\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.local/share/opencode\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"antigravity\",\n      \"root\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.antigravity\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"copilot\",\n      \"root\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.copilot\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    }\n  ],\n  \"totalFilesPatched\": 0,\n  \"totalOccurrences\": 0,\n  \"sessionsUpdated\": 0,\n  \"aliasCreated\": false,\n  \"review\": {\n    \"own\": [],\n    \"other\": []\n  },\n  \"git\": {\n    \"isGitRepo\": false,\n    \"dirty\": false,\n    \"untrackedOnly\": false,\n    \"porcelain\": \"\"\n  },\n  \"manifest\": [],\n  \"resolved\": {\n    \"src\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/proj2\",\n    \"dst\": \"/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/proj2-renamed\"\n  }\n}"
+      "text": "{\n  \"migrationId\": \"dry-run\",\n  \"state\": \"dry-run\",\n  \"moveStrategy\": \"skipped\",\n  \"ccDirRenamed\": false,\n  \"renamedDirs\": [],\n  \"skippedDirs\": [\n    {\n      \"sourceId\": \"claude-code\",\n      \"reason\": \"missing\"\n    },\n    {\n      \"sourceId\": \"gemini-cli\",\n      \"reason\": \"missing\"\n    },\n    {\n      \"sourceId\": \"iflow\",\n      \"reason\": \"missing\"\n    }\n  ],\n  \"perSource\": [\n    {\n      \"id\": \"claude-code\",\n      \"root\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.claude/projects\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"codex\",\n      \"root\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.codex/sessions\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"gemini-cli\",\n      \"root\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.gemini/tmp\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"iflow\",\n      \"root\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.iflow/projects\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"opencode\",\n      \"root\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.local/share/opencode\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"antigravity\",\n      \"root\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.antigravity\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    },\n    {\n      \"id\": \"copilot\",\n      \"root\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.copilot\",\n      \"filesPatched\": 0,\n      \"occurrences\": 0,\n      \"issues\": []\n    }\n  ],\n  \"totalFilesPatched\": 0,\n  \"totalOccurrences\": 0,\n  \"sessionsUpdated\": 0,\n  \"aliasCreated\": false,\n  \"review\": {\n    \"own\": [],\n    \"other\": []\n  },\n  \"git\": {\n    \"isGitRepo\": false,\n    \"dirty\": false,\n    \"untrackedOnly\": false,\n    \"porcelain\": \"\"\n  },\n  \"manifest\": [],\n  \"resolved\": {\n    \"src\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/proj2\",\n    \"dst\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/proj2-renamed\"\n  }\n}"
     }
   ],
   "structuredContent": {
@@ -28,49 +28,49 @@
     "perSource": [
       {
         "id": "claude-code",
-        "root": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.claude/projects",
+        "root": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.claude/projects",
         "filesPatched": 0,
         "occurrences": 0,
         "issues": []
       },
       {
         "id": "codex",
-        "root": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.codex/sessions",
+        "root": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.codex/sessions",
         "filesPatched": 0,
         "occurrences": 0,
         "issues": []
       },
       {
         "id": "gemini-cli",
-        "root": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.gemini/tmp",
+        "root": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.gemini/tmp",
         "filesPatched": 0,
         "occurrences": 0,
         "issues": []
       },
       {
         "id": "iflow",
-        "root": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.iflow/projects",
+        "root": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.iflow/projects",
         "filesPatched": 0,
         "occurrences": 0,
         "issues": []
       },
       {
         "id": "opencode",
-        "root": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.local/share/opencode",
+        "root": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.local/share/opencode",
         "filesPatched": 0,
         "occurrences": 0,
         "issues": []
       },
       {
         "id": "antigravity",
-        "root": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.antigravity",
+        "root": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.antigravity",
         "filesPatched": 0,
         "occurrences": 0,
         "issues": []
       },
       {
         "id": "copilot",
-        "root": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/.copilot",
+        "root": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/.copilot",
         "filesPatched": 0,
         "occurrences": 0,
         "issues": []
@@ -92,8 +92,8 @@
     },
     "manifest": [],
     "resolved": {
-      "src": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/proj2",
-      "dst": "/Users/bing/-Code-/engram-mcp-swift/tests/fixtures/mcp-runtime/write-home/proj2-renamed"
+      "src": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/proj2",
+      "dst": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/write-home/proj2-renamed"
     }
   }
 }
