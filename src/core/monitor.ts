@@ -136,7 +136,7 @@ export class BackgroundMonitor {
         SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
         FROM session_costs c
         JOIN sessions s ON c.session_id = s.id
-        WHERE s.start_time >= ? AND s.start_time < ?
+        WHERE datetime(s.start_time) >= datetime(?) AND datetime(s.start_time) < datetime(?)
       `)
         .get(range.startUtcIso, range.endUtcIso) as
         | { totalCost: number }
@@ -185,7 +185,7 @@ export class BackgroundMonitor {
           SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
           FROM session_costs c
           JOIN sessions s ON c.session_id = s.id
-          WHERE s.start_time >= ? AND s.start_time < ?
+          WHERE datetime(s.start_time) >= datetime(?) AND datetime(s.start_time) < datetime(?)
         `)
           .get(range.startUtcIso, range.endUtcIso) as
           | { totalCost: number }
@@ -226,7 +226,7 @@ export class BackgroundMonitor {
           SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
           FROM session_costs c
           JOIN sessions s ON c.session_id = s.id
-          WHERE s.start_time >= ? AND s.start_time < ?
+          WHERE datetime(s.start_time) >= datetime(?) AND datetime(s.start_time) < datetime(?)
         `)
           .get(range.monthStartUtcIso, range.nextMonthStartUtcIso) as
           | { totalCost: number }

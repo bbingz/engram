@@ -419,8 +419,8 @@ export function countTodayParentSessions(
     'hidden_at IS NULL',
     'parent_session_id IS NULL',
     'suggested_parent_id IS NULL',
-    'start_time >= @dayStart',
-    'start_time < @dayEnd',
+    'datetime(start_time) >= datetime(@dayStart)',
+    'datetime(start_time) < datetime(@dayEnd)',
   ];
   conditions.push(...buildTierFilter(noiseFilter));
   conditions.push(...buildOrphanFilter());
