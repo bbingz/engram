@@ -127,3 +127,35 @@ export function createDaemonClientFromSettings(
     log,
   });
 }
+
+// Decide whether MCP should swallow an HTTP-routing failure and fall back to
+// direct DB writes. Centralizes the heuristic so every write tool gets the
+// same rolling-deploy safety guarantees.
+//
+// Fall back when:
+//   - Non-DaemonClientError (network error, AbortError) — transport broken
+//   - DaemonClientError 405 / 501 — method / endpoint not supported
+//   - DaemonClientError 404 with NO JSON envelope — endpoint not deployed on
+//     old daemon (Hono returns plain text for unknown routes, while
+//     application-level 404s always respond `{error: "..."}`)
+//   - DaemonClientError 5xx — server error, retry locally
+//
+// Bubble up (real rejection) when:
+//   - 400 / 409 / 413 / 422 — validation / conflict; silent retry to local
+//     would mask invalid input
+//   - 404 / 405 WITH structured error body — application-level "not found" /
+//     "method not allowed" that the caller must see
+//   - strict === true — always bubble up, no fallback allowed
+export function shouldFallbackToDirect(err: unknown, strict: boolean): boolean {
+  if (strict) return false;
+  if (!(err instanceof DaemonClientError)) return true; // transport error
+  const hasErrorEnvelope =
+    typeof err.body === 'object' &&
+    err.body !== null &&
+    'error' in (err.body as Record<string, unknown>);
+  if (err.status === 404 || err.status === 405 || err.status === 501) {
+    return !hasErrorEnvelope; // transport-level missing-endpoint only
+  }
+  if (err.status >= 500) return true;
+  return false; // 4xx with envelope (or without) — real rejection
+}

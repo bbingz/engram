@@ -66,15 +66,19 @@
 
 ### 工作项
 
-- ✅ **Step 1**（已完成 2026-04-22）
-  - `src/core/daemon-client.ts` — `DaemonClient` (fetch + bearer + timeout + fetchImpl 注入) + `DaemonClientError` + `createDaemonClientFromSettings`。7 个单测
-  - `POST /api/insight` 端点 + 4 个端点测 + 2 个 DaemonClient→app 契约测
-  - `src/index.ts` save_insight dispatch：HTTP 优先，网络错误/404/405/501 软降级到直写，400/409/422 直接 throw（避免 MCP 对无效输入静默重试到本地）
+- ✅ **Step 1**（完成 2026-04-22）
+  - `src/core/daemon-client.ts` — `DaemonClient` (fetch + bearer + timeout + fetchImpl 注入) + `DaemonClientError` + `createDaemonClientFromSettings`
+  - `POST /api/insight` 端点 + MCP dispatch 走 HTTP
   - `FileSettings.mcpStrictSingleWriter`（默认 false）
-  - **1185 tests ✓**
-- ⏳ **Step 2**（下一个 commit）：`generate_summary` 迁移
+- ✅ **Step 2**（完成 2026-04-22）
+  - 抽 `shouldFallbackToDirect(err, strict)` 共享 helper —— 核心判断：**带 `{error:...}` 的 4xx = 应用层拒绝（上抛），无 envelope 的 404/405/501 = 旧 daemon 端点缺失（降级）**。避免每个工具重复判断
+  - save_insight dispatch 改用 helper（行为不变，代码减半）
+  - generate_summary 迁移：MCP POST `/api/summary`（端点原已存在），返回值从 `{summary}` 包装成 MCP content 格式。不改 HTTP 响应形状（Swift `SessionDetailView.swift:446` 依赖它）
+  - 端点与 helper 的 envelope 契约测（`tests/web/summary-contract.test.ts`）—— 防止 helper 的判断和 Hono 实际返回形状漂移
+  - **1194 tests ✓**（+5 helper 单测、+3 contract 测）
+  - **不需要 daemon 重新部署**：/api/summary 早就存在，只改 MCP 路由
 - ⏳ **Step 3**：project_move / archive / undo（共享 orchestrator，一次迁完）
-- ⏳ **Step 4**：manage_project_alias（alias CRUD，MCP 内联实现）
+- ⏳ **Step 4**：manage_project_alias（alias CRUD，MCP 内联实现，需要先提到 tools/）
 - ⏳ **Step 5**：link_sessions
 - ⏳ **Step 6**：跑 24h 生产观察 + 把 `mcpStrictSingleWriter` 开关做到 Swift UI
 

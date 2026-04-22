@@ -10,7 +10,7 @@ import {
 import { createMCPDeps } from './core/bootstrap.js';
 import {
   createDaemonClientFromSettings,
-  DaemonClientError,
+  shouldFallbackToDirect,
 } from './core/daemon-client.js';
 import { setupProcessLifecycle } from './core/lifecycle.js';
 import { createLogger } from './core/logger.js';
@@ -311,13 +311,42 @@ toolRegistry.set('get_context', async (a) => {
 });
 
 toolRegistry.set('generate_summary', async (a) => {
-  return {
-    _early: true,
-    ...(await handleGenerateSummary(db, a as { sessionId: string }, {
-      log,
-      audit,
-    })),
-  };
+  const params = a as { sessionId: string };
+  // Route through daemon (single-writer). /api/summary returns { summary } on
+  // success or { error } with a 4xx/5xx status; wrap that into the MCP tool
+  // content shape here so response format stays identical to the direct path.
+  try {
+    const { summary } = await daemonClient.post<{ summary: string }>(
+      '/api/summary',
+      { sessionId: params.sessionId },
+    );
+    return {
+      _early: true,
+      content: [{ type: 'text' as const, text: summary }],
+      metadata: { sessionId: params.sessionId },
+    };
+  } catch (err) {
+    if (!shouldFallbackToDirect(err, strictSingleWriter)) {
+      // Application-level rejection (e.g., "Session not found", "no API key"):
+      // surface to caller as an MCP error, not a thrown exception, to match
+      // the direct-path behavior.
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        _early: true,
+        content: [{ type: 'text' as const, text: msg }],
+        isError: true,
+      };
+    }
+    log.warn(
+      'generate_summary: daemon unreachable, falling back to direct',
+      { endpoint: daemonClient.endpoint },
+      err,
+    );
+    return {
+      _early: true,
+      ...(await handleGenerateSummary(db, params, { log, audit })),
+    };
+  }
 });
 
 toolRegistry.set('manage_project_alias', async (a) => {
@@ -363,6 +392,8 @@ toolRegistry.set('get_memory', async (a) =>
   }),
 );
 
+const strictSingleWriter = fileSettings.mcpStrictSingleWriter === true;
+
 toolRegistry.set('save_insight', async (a) => {
   const params = a as {
     content: string;
@@ -371,26 +402,10 @@ toolRegistry.set('save_insight', async (a) => {
     importance?: number;
     source_session_id?: string;
   };
-  // Route through daemon (single-writer); fall back to direct write when the
-  // daemon is unreachable and strict mode is off.
-  //   - Network errors (ECONNREFUSED, AbortError): soft-recoverable
-  //   - 404/405/501: endpoint not deployed yet on an older daemon — treat as
-  //     "unreachable" so rolling deploys don't break write path
-  //   - Other 4xx: real rejection (validation / conflict), must bubble up
-  //     even in non-strict mode; otherwise MCP would silently retry invalid
-  //     input against the local DB
   try {
     return await daemonClient.post('/api/insight', params);
   } catch (err) {
-    const isValidationError =
-      err instanceof DaemonClientError &&
-      err.status >= 400 &&
-      err.status < 500 &&
-      err.status !== 404 &&
-      err.status !== 405 &&
-      err.status !== 501;
-    if (isValidationError) throw err;
-    if (fileSettings.mcpStrictSingleWriter) throw err;
+    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
     log.warn(
       'save_insight: daemon unreachable, falling back to direct write',
       { endpoint: daemonClient.endpoint },

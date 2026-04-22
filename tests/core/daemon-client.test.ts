@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DaemonClient,
   DaemonClientError,
+  shouldFallbackToDirect,
 } from '../../src/core/daemon-client.js';
 
 function makeFetch(
@@ -112,6 +113,61 @@ describe('DaemonClient.post', () => {
     const client = new DaemonClient({ baseUrl: 'http://x', fetchImpl });
     const r = await client.post<string>('/p', {});
     expect(r).toBe('plain text');
+  });
+});
+
+describe('shouldFallbackToDirect', () => {
+  it('falls back on non-DaemonClientError (network / abort)', () => {
+    expect(shouldFallbackToDirect(new Error('ECONNREFUSED'), false)).toBe(true);
+    expect(
+      shouldFallbackToDirect(new DOMException('abort', 'AbortError'), false),
+    ).toBe(true);
+  });
+
+  it('falls back on 404 / 405 / 501 without structured body (missing endpoint)', () => {
+    const mk = (s: number) =>
+      new DaemonClientError(s, 'Not Found', `HTTP ${s}`);
+    expect(shouldFallbackToDirect(mk(404), false)).toBe(true);
+    expect(shouldFallbackToDirect(mk(405), false)).toBe(true);
+    expect(shouldFallbackToDirect(mk(501), false)).toBe(true);
+  });
+
+  it('bubbles 404 / 405 WITH envelope (application-level rejection)', () => {
+    const err = new DaemonClientError(
+      404,
+      { error: 'Session not found: abc' },
+      'HTTP 404',
+    );
+    expect(shouldFallbackToDirect(err, false)).toBe(false);
+  });
+
+  it('bubbles 4xx validation rejections (400 / 409 / 422)', () => {
+    const mk = (s: number) =>
+      new DaemonClientError(s, { error: 'bad' }, `HTTP ${s}`);
+    expect(shouldFallbackToDirect(mk(400), false)).toBe(false);
+    expect(shouldFallbackToDirect(mk(409), false)).toBe(false);
+    expect(shouldFallbackToDirect(mk(422), false)).toBe(false);
+  });
+
+  it('falls back on 5xx server errors', () => {
+    const err = new DaemonClientError(500, { error: 'internal' }, 'HTTP 500');
+    expect(shouldFallbackToDirect(err, false)).toBe(true);
+  });
+
+  it('never falls back when strict mode is on', () => {
+    expect(shouldFallbackToDirect(new Error('net'), true)).toBe(false);
+    expect(
+      shouldFallbackToDirect(
+        new DaemonClientError(404, 'missing', 'HTTP 404'),
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      shouldFallbackToDirect(
+        new DaemonClientError(500, { error: 'boom' }, 'HTTP 500'),
+        true,
+      ),
+    ).toBe(false);
   });
 });
 
