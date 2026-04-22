@@ -141,6 +141,28 @@ describe('shouldFallbackToDirect', () => {
     expect(shouldFallbackToDirect(err, false)).toBe(false);
   });
 
+  it('bubbles 404 with a non-{error} JSON body (e.g. {message:...})', () => {
+    // Round 1 hotfix: any JSON-object body on a 404/405/501 means the
+    // endpoint is present and answered — bubble up the rejection instead
+    // of silently falling back to a direct write.
+    const err = new DaemonClientError(
+      404,
+      { message: 'migration id does not exist', code: 'MIGRATION_NOT_FOUND' },
+      'HTTP 404',
+    );
+    expect(shouldFallbackToDirect(err, false)).toBe(false);
+  });
+
+  it('bubbles 404 with empty JSON-object body (still structured)', () => {
+    const err = new DaemonClientError(404, {}, 'HTTP 404');
+    expect(shouldFallbackToDirect(err, false)).toBe(false);
+  });
+
+  it('falls back on 404 with a string body (Hono default route-not-found)', () => {
+    const err = new DaemonClientError(404, '404 Not Found', 'HTTP 404');
+    expect(shouldFallbackToDirect(err, false)).toBe(true);
+  });
+
   it('bubbles 4xx validation rejections (400 / 409 / 422)', () => {
     const mk = (s: number) =>
       new DaemonClientError(s, { error: 'bad' }, `HTTP ${s}`);

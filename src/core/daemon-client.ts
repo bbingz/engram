@@ -138,27 +138,26 @@ export function createDaemonClientFromSettings(
 //
 // Fall back when:
 //   - Non-DaemonClientError (network error, AbortError) — transport broken
-//   - DaemonClientError 405 / 501 — method / endpoint not supported
-//   - DaemonClientError 404 with NO JSON envelope — endpoint not deployed on
-//     old daemon (Hono returns plain text for unknown routes, while
-//     application-level 404s always respond `{error: "..."}`)
+//   - DaemonClientError 404 / 405 / 501 AND no JSON-object body — Hono's
+//     default not-found / method-not-allowed, or the endpoint isn't deployed
+//     on an older daemon. Hono returns plain text for these; application
+//     handlers always JSON-encode.
 //   - DaemonClientError 5xx — server error, retry locally
 //
 // Bubble up (real rejection) when:
 //   - 400 / 409 / 413 / 422 — validation / conflict; silent retry to local
 //     would mask invalid input
-//   - 404 / 405 WITH structured error body — application-level "not found" /
-//     "method not allowed" that the caller must see
+//   - 404 / 405 / 501 WITH a JSON-object body — application-level rejection
+//     (e.g., "Session not found", "migration id does not exist"). We accept
+//     any JSON object shape, not just {error: ...}, to be resilient to
+//     endpoints that return {message: ...} or richer envelopes.
 //   - strict === true — always bubble up, no fallback allowed
 export function shouldFallbackToDirect(err: unknown, strict: boolean): boolean {
   if (strict) return false;
   if (!(err instanceof DaemonClientError)) return true; // transport error
-  const hasErrorEnvelope =
-    typeof err.body === 'object' &&
-    err.body !== null &&
-    'error' in (err.body as Record<string, unknown>);
+  const hasJsonObjectBody = typeof err.body === 'object' && err.body !== null;
   if (err.status === 404 || err.status === 405 || err.status === 501) {
-    return !hasErrorEnvelope; // transport-level missing-endpoint only
+    return !hasJsonObjectBody; // transport-level missing-endpoint only
   }
   if (err.status >= 500) return true;
   return false; // 4xx with envelope (or without) — real rejection

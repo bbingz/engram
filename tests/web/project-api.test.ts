@@ -211,12 +211,12 @@ describe('Web API — /api/project/*', () => {
     expect(body.error.name).toBe('InvalidActor');
   });
 
-  it('actor:mcp bypasses $HOME confinement (trusted local peer)', async () => {
-    // Without the bypass, a path under /tmp (outside real $HOME) would be
-    // rejected as InvalidPath "must live under $HOME". MCP is co-located and
-    // trusted, so the bypass lets the pipeline take over and fail further
-    // down (since src doesn't exist) — the important thing is the rejection
-    // must NOT be InvalidPath from the HOME guard.
+  it('actor:mcp still respects $HOME confinement (Round 1 hotfix)', async () => {
+    // Originally actor:'mcp' bypassed the $HOME guard on the theory that MCP
+    // is a trusted local peer. The 6-way review flagged this as derivable-
+    // trust — any local process could self-declare as MCP and escape the
+    // guard. Hotfix: $HOME is enforced for every actor; the actor field is
+    // audit-only.
     const res = await app.request('/api/project/move', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -226,16 +226,15 @@ describe('Web API — /api/project/*', () => {
         actor: 'mcp',
       }),
     });
-    if (res.status === 400) {
-      const body = (await res.json()) as {
-        error: { name: string; message: string };
-      };
-      expect(body.error.name).not.toBe('InvalidPath');
-    }
-    // Otherwise 409 / 500 from the orchestrator — both acceptable.
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { name: string; message: string };
+    };
+    expect(body.error.name).toBe('InvalidPath');
+    expect(body.error.message).toMatch(/must live under/);
   });
 
-  it('actor:swift-ui (default) still enforces $HOME confinement', async () => {
+  it('actor:swift-ui (default) enforces $HOME confinement', async () => {
     const res = await app.request('/api/project/move', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

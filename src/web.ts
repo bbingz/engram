@@ -70,10 +70,13 @@ function mapProjectMoveError(err: unknown): ErrorEnvelope {
   return buildErrorEnvelope(err, { sanitize: true });
 }
 
-// Phase B Step 3: actor threads through to migration_log for audit. MCP is a
-// trusted local peer (same user, same machine), so 'mcp' bypasses $HOME path
-// confinement; other actors (swift-ui, cli, batch) stay confined. An invalid
-// actor string is a hard 400 to avoid audit poisoning.
+// Phase B Step 3: actor threads through to migration_log for audit. Originally
+// actor==='mcp' also bypassed $HOME confinement ("MCP is a trusted local
+// peer") but the 6-way review flagged this as weak defense-in-depth —
+// trust was being derived from an unauthenticated body string, so any local
+// process could self-declare as MCP and escape the guard. Reverted in Round
+// 1 hotfix: actor is audit-only; every actor respects $HOME confinement.
+// Invalid actor → hard 400 to keep the audit field honest.
 const KNOWN_ACTORS = ['cli', 'mcp', 'swift-ui', 'batch'] as const;
 type KnownActor = (typeof KNOWN_ACTORS)[number];
 function parseActor(
@@ -952,9 +955,8 @@ export function createApp(
     if (!actorResult.ok) {
       return c.json(validationError('InvalidActor', actorResult.error), 400);
     }
-    const allowOutsideHome = actorResult.actor === 'mcp';
-    const srcResolved = normalizeHttpPath(body.src, { allowOutsideHome });
-    const dstResolved = normalizeHttpPath(body.dst, { allowOutsideHome });
+    const srcResolved = normalizeHttpPath(body.src);
+    const dstResolved = normalizeHttpPath(body.dst);
     if (!srcResolved.ok) {
       return c.json(
         validationError('InvalidPath', `src: ${srcResolved.error}`),
@@ -1030,8 +1032,7 @@ export function createApp(
     if (!actorResult.ok) {
       return c.json(validationError('InvalidActor', actorResult.error), 400);
     }
-    const allowOutsideHome = actorResult.actor === 'mcp';
-    const srcResolved = normalizeHttpPath(body.src, { allowOutsideHome });
+    const srcResolved = normalizeHttpPath(body.src);
     if (!srcResolved.ok) {
       return c.json(
         validationError('InvalidPath', `src: ${srcResolved.error}`),

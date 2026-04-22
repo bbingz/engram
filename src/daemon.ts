@@ -452,11 +452,15 @@ const metricsRollupTimer = setTimeout(() => {
 }, 300000);
 
 // Periodic WAL checkpoint — every 10 minutes (20 on battery).
-// Bounds the -wal file; TRUNCATE degrades to PASSIVE if a reader blocks it.
+// Round 1 hotfix: PASSIVE mode (non-blocking) — TRUNCATE on the daemon's
+// main connection was blocking the event loop up to 30s (busy_timeout)
+// whenever a reader held an old snapshot. PASSIVE moves what frames it
+// can without waiting; startup still uses TRUNCATE to clear accumulated
+// WAL in one shot when we own the DB exclusively.
 const walCheckpointTimer = setInterval(() => {
   runWithContext({ requestId: randomUUID(), source: 'scheduler' }, () => {
     try {
-      const cp = db.checkpointWal('TRUNCATE');
+      const cp = db.checkpointWal('PASSIVE');
       if (cp.busy === 1 || cp.checkpointed > 0) {
         emit({
           event: 'wal_checkpoint',
