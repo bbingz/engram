@@ -1,0 +1,46 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "[\n  {\n    \"migrationId\": \"mig-002\",\n    \"state\": \"failed\",\n    \"oldPath\": \"/Users/test/work/apollo\",\n    \"newPath\": \"/Users/test/work/_archive/archived-done/apollo\",\n    \"startedAt\": \"2026-03-02T09:00:00.000Z\",\n    \"finishedAt\": \"2026-03-02T09:00:30.000Z\",\n    \"error\": \"git dirty\",\n    \"fs\": {\n      \"oldPathExists\": false,\n      \"newPathExists\": false,\n      \"oldPathState\": \"absent\",\n      \"newPathState\": \"absent\",\n      \"tempArtifacts\": [],\n      \"probeError\": \"/Users/test/work: ENOENT: no such file or directory, scandir '/Users/test/work'; /Users/test/work/_archive/archived-done: ENOENT: no such file or directory, scandir '/Users/test/work/_archive/archived-done'\"\n    },\n    \"recommendation\": \"Neither path exists — likely data loss. Restore from backup.\"\n  },\n  {\n    \"migrationId\": \"mig-001\",\n    \"state\": \"fs_done\",\n    \"oldPath\": \"/Users/test/work/delta-kit\",\n    \"newPath\": \"/Users/test/work/delta-kit-v2\",\n    \"startedAt\": \"2026-03-01T08:00:00.000Z\",\n    \"finishedAt\": null,\n    \"error\": null,\n    \"fs\": {\n      \"oldPathExists\": false,\n      \"newPathExists\": false,\n      \"oldPathState\": \"absent\",\n      \"newPathState\": \"absent\",\n      \"tempArtifacts\": [],\n      \"probeError\": \"/Users/test/work: ENOENT: no such file or directory, scandir '/Users/test/work'\"\n    },\n    \"recommendation\": \"Unexpected state. Investigate manually.\"\n  }\n]"
+    }
+  ],
+  "structuredContent": [
+    {
+      "migrationId": "mig-002",
+      "state": "failed",
+      "oldPath": "/Users/test/work/apollo",
+      "newPath": "/Users/test/work/_archive/archived-done/apollo",
+      "startedAt": "2026-03-02T09:00:00.000Z",
+      "finishedAt": "2026-03-02T09:00:30.000Z",
+      "error": "git dirty",
+      "fs": {
+        "oldPathExists": false,
+        "newPathExists": false,
+        "oldPathState": "absent",
+        "newPathState": "absent",
+        "tempArtifacts": [],
+        "probeError": "/Users/test/work: ENOENT: no such file or directory, scandir '/Users/test/work'; /Users/test/work/_archive/archived-done: ENOENT: no such file or directory, scandir '/Users/test/work/_archive/archived-done'"
+      },
+      "recommendation": "Neither path exists — likely data loss. Restore from backup."
+    },
+    {
+      "migrationId": "mig-001",
+      "state": "fs_done",
+      "oldPath": "/Users/test/work/delta-kit",
+      "newPath": "/Users/test/work/delta-kit-v2",
+      "startedAt": "2026-03-01T08:00:00.000Z",
+      "finishedAt": null,
+      "error": null,
+      "fs": {
+        "oldPathExists": false,
+        "newPathExists": false,
+        "oldPathState": "absent",
+        "newPathState": "absent",
+        "tempArtifacts": [],
+        "probeError": "/Users/test/work: ENOENT: no such file or directory, scandir '/Users/test/work'"
+      },
+      "recommendation": "Unexpected state. Investigate manually."
+    }
+  ]
+}

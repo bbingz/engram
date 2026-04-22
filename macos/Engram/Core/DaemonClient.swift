@@ -5,122 +5,50 @@ import Observation
 @MainActor
 @Observable
 final class DaemonClient {
-    private let baseURL: String
-    private let session: URLSession
+    private let core: DaemonHTTPClientCore
 
     init(port: Int = 3457, session: URLSession = .shared) {
-        self.baseURL = "http://127.0.0.1:\(port)"
-        self.session = session
-    }
-
-    /// Read the bearer token fresh on every call so that `~/.engram/settings.json`
-    /// rotations take effect without restarting the app. Matches the daemon's
-    /// per-request re-read (see src/web.ts).
-    private func freshBearerToken() -> String? {
-        readEngramSettings()?["httpBearerToken"] as? String
+        self.core = DaemonHTTPClientCore(
+            baseURL: URL(string: "http://127.0.0.1:\(port)")!,
+            session: session,
+            bearerTokenProvider: {
+                readEngramSettings()?["httpBearerToken"] as? String
+            }
+        )
     }
 
     // MARK: - HTTP Methods
 
     func fetch<T: Decodable>(_ path: String) async throws -> T {
-        var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
-        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Trace-Id")
-        // Codex follow-up info #8: /api/ai/* GETs are token-gated server-side
-        // even though they're GETs. Attach the bearer like post/delete do so
-        // this method works when token protection is enabled.
-        if let token = freshBearerToken() {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            return try await core.fetch(path)
+        } catch let error as DaemonHTTPTransportError {
+            throw mapTransportError(error)
         }
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response, data: data)
-        return try JSONDecoder().decode(T.self, from: data)
     }
 
     func post<T: Decodable>(_ path: String, body: (any Encodable)? = nil) async throws -> T {
-        let request = try buildRequest(path, method: "POST", body: body)
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response, data: data)
-        return try JSONDecoder().decode(T.self, from: data)
+        do {
+            return try await core.post(path, body: body)
+        } catch let error as DaemonHTTPTransportError {
+            throw mapTransportError(error)
+        }
     }
 
     func postRaw(_ path: String, body: (any Encodable)? = nil) async throws {
-        let request = try buildRequest(path, method: "POST", body: body)
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response, data: data)
+        do {
+            try await core.postRaw(path, body: body)
+        } catch let error as DaemonHTTPTransportError {
+            throw mapTransportError(error)
+        }
     }
 
     func delete(_ path: String) async throws {
-        var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
-        request.httpMethod = "DELETE"
-        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Trace-Id")
-        if let token = freshBearerToken() {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            try await core.delete(path)
+        } catch let error as DaemonHTTPTransportError {
+            throw mapTransportError(error)
         }
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response, data: data)
-    }
-
-    // MARK: - Internal
-
-    private func buildRequest(_ path: String, method: String, body: (any Encodable)?) throws -> URLRequest {
-        var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
-        request.httpMethod = method
-        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Trace-Id")
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(AnyEncodable(body))
-        }
-        // Bearer token is read fresh on every request (see freshBearerToken).
-        if let token = freshBearerToken() {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        return request
-    }
-
-    /// Shared non-2xx handler. Decodes the server's error envelope (structured
-    /// `{error:{name,message,retry_policy}}` → legacy `{error:"string"}` →
-    /// plain text) and throws a typed `ProjectMoveAPIError` so every call
-    /// site surfaces a human-readable reason. Falls back to `httpError(code)`
-    /// only when the body is truly empty and the status unknown. Reviewer
-    /// follow-up #1: previously only `postProject` did this, so 401 on
-    /// link/unlink etc. surfaced "HTTP 401" instead of the envelope.
-    private func validateResponse(_ response: URLResponse, data: Data) throws {
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if (200..<300).contains(status) { return }
-        // 1. Structured envelope (preferred — modern endpoints)
-        if let env = try? JSONDecoder().decode(_ProjectErrEnvelope.self, from: data),
-           let inner = env.error {
-            throw ProjectMoveAPIError(
-                httpStatus: status,
-                name: inner.name ?? "Error",
-                message: inner.message ?? "HTTP \(status)",
-                retryPolicy: inner.retryPolicy ?? "safe",
-                details: inner.details
-            )
-        }
-        // 2. Legacy {error: "string"} body.
-        if let legacy = try? JSONDecoder().decode(_LegacyStringErrEnvelope.self, from: data),
-           let msg = legacy.error {
-            throw ProjectMoveAPIError(
-                httpStatus: status,
-                name: "HTTPError",
-                message: msg,
-                retryPolicy: status == 401 ? "never" : "safe",
-                details: nil
-            )
-        }
-        // 3. Plain text body (older endpoints).
-        if let text = String(data: data, encoding: .utf8), !text.isEmpty {
-            throw ProjectMoveAPIError(
-                httpStatus: status,
-                name: "HTTPError",
-                message: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                retryPolicy: status == 401 ? "never" : "safe",
-                details: nil
-            )
-        }
-        // 4. Empty body — last-resort generic error.
-        throw DaemonClientError.httpError(status)
     }
 
     enum DaemonClientError: Error, LocalizedError {
@@ -131,19 +59,17 @@ final class DaemonClient {
             }
         }
     }
-}
 
-// MARK: - Type-erased Encodable wrapper
-
-private struct AnyEncodable: Encodable {
-    private let _encode: (Encoder) throws -> Void
-    init(_ wrapped: any Encodable) {
-        _encode = { encoder in try wrapped.encode(to: encoder) }
-    }
-    func encode(to encoder: Encoder) throws {
-        try _encode(encoder)
+    private func mapTransportError(_ error: DaemonHTTPTransportError) -> DaemonClientError {
+        switch error {
+        case .httpError(let code):
+            return .httpError(code)
+        case .invalidURL:
+            return .httpError(0)
+        }
     }
 }
+
 
 // MARK: - API Response Types
 
@@ -257,9 +183,14 @@ extension DaemonClient {
 
     func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws {
         struct Body: Encodable { let suggestedParentId: String }
-        let request = try buildRequest("/api/sessions/\(sessionId)/suggestion", method: "DELETE", body: Body(suggestedParentId: suggestedParentId))
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response, data: data)
+        do {
+            try await core.delete(
+                "/api/sessions/\(sessionId)/suggestion",
+                body: Body(suggestedParentId: suggestedParentId)
+            )
+        } catch let error as DaemonHTTPTransportError {
+            throw mapTransportError(error)
+        }
     }
 }
 
@@ -384,63 +315,6 @@ struct ProjectMoveResult: Decodable {
         let dir: String?
         var id: String { "\(sourceId)::\(dir ?? reason)" }
     }
-}
-
-struct ProjectMoveAPIError: Error, LocalizedError {
-    let httpStatus: Int
-    let name: String
-    let message: String
-    /// 'safe' — retry is OK; 'conditional' — transient, retry after
-    /// reading fresh state; 'wait' — another process holds the lock;
-    /// 'never' — user intervention required.
-    let retryPolicy: String
-    /// Optional structured fields for DirCollisionError / SharedEncoding /
-    /// UndoNotAllowed — previously dropped at the network layer (Round 4
-    /// Critical). Lets the UI render "conflict path: /x/y" as a labeled
-    /// row instead of forcing the user to parse a free-text message.
-    let details: Details?
-
-    struct Details: Decodable {
-        let sourceId: String?
-        let oldDir: String?
-        let newDir: String?
-        let sharingCwds: [String]?
-        let migrationId: String?
-        let state: String?
-    }
-
-    /// Previously returned `"\(name): \(message)"` — but the backend's
-    /// `sanitizeProjectMoveMessage` already strips the `project-move:`
-    /// prefix, and re-pasting the error class name added unhelpful
-    /// `DirCollisionError: ...` noise. The error name stays available
-    /// via `.name` for programmatic use; UI shows the message as-is.
-    var errorDescription: String? { message }
-}
-
-/// Error body shape returned by /api/project/* on non-2xx. Declared at
-/// file scope because Swift disallows Decodable nested types inside
-/// generic functions.
-private struct _ProjectErrEnvelope: Decodable {
-    struct Inner: Decodable {
-        let name: String?
-        let message: String?
-        let retryPolicy: String?
-        let details: ProjectMoveAPIError.Details?
-        enum CodingKeys: String, CodingKey {
-            case name
-            case message
-            case retryPolicy = "retry_policy"
-            case details
-        }
-    }
-    let error: Inner?
-}
-
-/// Legacy envelope shape (plain string error body). Older endpoints and
-/// external HTTP tools may still produce this; we decode it as a fallback
-/// so the Swift UI shows a sensible message instead of "HTTP 401".
-private struct _LegacyStringErrEnvelope: Decodable {
-    let error: String?
 }
 
 extension DaemonClient {

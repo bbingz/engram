@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "generate:fixtures": "tsx scripts/generate-test-fixtures.ts",
+    "generate:mcp-contract-fixtures": "TZ=UTC tsx scripts/gen-mcp-contract-fixtures.ts",
     "check:fixtures": "tsx scripts/check-fixture-schema.ts",
     "screenshots:compare": "tsx scripts/screenshot-compare.ts",
     "baselines:generate": "tsx scripts/baselines-generate.ts",

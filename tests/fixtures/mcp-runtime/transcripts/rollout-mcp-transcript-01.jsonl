@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"id":"mcp-transcript-01","timestamp":"2026-01-15T09:00:00.000Z","cwd":"/Users/test/work/transcript-fixture","model_provider":"gpt-5.4"}}
+{"type":"response_item","timestamp":"2026-01-15T09:00:00.000Z","payload":{"type":"message","role":"user","content":[{"text":"Summarize the Swift MCP shim scope before implementation."}]}}
+{"type":"response_item","timestamp":"2026-01-15T09:01:00.000Z","payload":{"type":"message","role":"assistant","content":[{"text":"Phase C only ports the MCP stdio shim and daemon forwarding layer."}]}}
+{"type":"response_item","timestamp":"2026-01-15T09:02:00.000Z","payload":{"type":"message","role":"user","content":[{"text":"Keep src/index.ts as the fallback entry point."}]}}

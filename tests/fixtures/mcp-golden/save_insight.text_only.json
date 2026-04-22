@@ -1,0 +1,16 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"id\": \"<generated-uuid>\",\n  \"content\": \"Swift MCP contract tests should use deterministic fixture databases and byte-stable JSON golden files.\",\n  \"wing\": \"engram\",\n  \"room\": \"mcp-swift\",\n  \"importance\": 5,\n  \"warning\": \"Saved without embedding — keyword search only until an embedding provider is configured.\"\n}"
+    }
+  ],
+  "structuredContent": {
+    "id": "<generated-uuid>",
+    "content": "Swift MCP contract tests should use deterministic fixture databases and byte-stable JSON golden files.",
+    "wing": "engram",
+    "room": "mcp-swift",
+    "importance": 5,
+    "warning": "Saved without embedding — keyword search only until an embedding provider is configured."
+  }
+}

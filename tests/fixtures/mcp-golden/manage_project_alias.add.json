@@ -1,0 +1,14 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"added\": {\n    \"alias\": \"apollo-next\",\n    \"canonical\": \"apollo\"\n  }\n}"
+    }
+  ],
+  "structuredContent": {
+    "added": {
+      "alias": "apollo-next",
+      "canonical": "apollo"
+    }
+  }
+}

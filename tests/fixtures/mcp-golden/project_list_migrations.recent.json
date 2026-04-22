@@ -1,0 +1,85 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "[\n  {\n    \"id\": \"mig-003\",\n    \"oldPath\": \"/Users/test/work/engram-old\",\n    \"newPath\": \"/Users/test/work/engram\",\n    \"oldBasename\": \"engram-old\",\n    \"newBasename\": \"engram\",\n    \"state\": \"committed\",\n    \"filesPatched\": 12,\n    \"occurrences\": 44,\n    \"sessionsUpdated\": 8,\n    \"aliasCreated\": true,\n    \"ccDirRenamed\": true,\n    \"startedAt\": \"2026-03-03T10:00:00.000Z\",\n    \"finishedAt\": \"2026-03-03T10:01:00.000Z\",\n    \"dryRun\": false,\n    \"rolledBackOf\": null,\n    \"auditNote\": \"fixture committed move\",\n    \"archived\": false,\n    \"actor\": \"mcp\",\n    \"detail\": {\n      \"source\": \"fixture\",\n      \"kind\": \"move\"\n    },\n    \"error\": null\n  },\n  {\n    \"id\": \"mig-002\",\n    \"oldPath\": \"/Users/test/work/apollo\",\n    \"newPath\": \"/Users/test/work/_archive/archived-done/apollo\",\n    \"oldBasename\": \"apollo\",\n    \"newBasename\": \"apollo\",\n    \"state\": \"failed\",\n    \"filesPatched\": 3,\n    \"occurrences\": 9,\n    \"sessionsUpdated\": 0,\n    \"aliasCreated\": false,\n    \"ccDirRenamed\": false,\n    \"startedAt\": \"2026-03-02T09:00:00.000Z\",\n    \"finishedAt\": \"2026-03-02T09:00:30.000Z\",\n    \"dryRun\": false,\n    \"rolledBackOf\": null,\n    \"auditNote\": \"fixture archive failure\",\n    \"archived\": true,\n    \"actor\": \"cli\",\n    \"detail\": {\n      \"source\": \"fixture\",\n      \"kind\": \"archive\"\n    },\n    \"error\": \"git dirty\"\n  },\n  {\n    \"id\": \"mig-001\",\n    \"oldPath\": \"/Users/test/work/delta-kit\",\n    \"newPath\": \"/Users/test/work/delta-kit-v2\",\n    \"oldBasename\": \"delta-kit\",\n    \"newBasename\": \"delta-kit-v2\",\n    \"state\": \"fs_done\",\n    \"filesPatched\": 7,\n    \"occurrences\": 22,\n    \"sessionsUpdated\": 0,\n    \"aliasCreated\": false,\n    \"ccDirRenamed\": false,\n    \"startedAt\": \"2026-03-01T08:00:00.000Z\",\n    \"finishedAt\": null,\n    \"dryRun\": true,\n    \"rolledBackOf\": null,\n    \"auditNote\": \"fixture dry run\",\n    \"archived\": false,\n    \"actor\": \"batch\",\n    \"detail\": {\n      \"source\": \"fixture\",\n      \"kind\": \"dry-run\"\n    },\n    \"error\": null\n  }\n]"
+    }
+  ],
+  "structuredContent": [
+    {
+      "id": "mig-003",
+      "oldPath": "/Users/test/work/engram-old",
+      "newPath": "/Users/test/work/engram",
+      "oldBasename": "engram-old",
+      "newBasename": "engram",
+      "state": "committed",
+      "filesPatched": 12,
+      "occurrences": 44,
+      "sessionsUpdated": 8,
+      "aliasCreated": true,
+      "ccDirRenamed": true,
+      "startedAt": "2026-03-03T10:00:00.000Z",
+      "finishedAt": "2026-03-03T10:01:00.000Z",
+      "dryRun": false,
+      "rolledBackOf": null,
+      "auditNote": "fixture committed move",
+      "archived": false,
+      "actor": "mcp",
+      "detail": {
+        "source": "fixture",
+        "kind": "move"
+      },
+      "error": null
+    },
+    {
+      "id": "mig-002",
+      "oldPath": "/Users/test/work/apollo",
+      "newPath": "/Users/test/work/_archive/archived-done/apollo",
+      "oldBasename": "apollo",
+      "newBasename": "apollo",
+      "state": "failed",
+      "filesPatched": 3,
+      "occurrences": 9,
+      "sessionsUpdated": 0,
+      "aliasCreated": false,
+      "ccDirRenamed": false,
+      "startedAt": "2026-03-02T09:00:00.000Z",
+      "finishedAt": "2026-03-02T09:00:30.000Z",
+      "dryRun": false,
+      "rolledBackOf": null,
+      "auditNote": "fixture archive failure",
+      "archived": true,
+      "actor": "cli",
+      "detail": {
+        "source": "fixture",
+        "kind": "archive"
+      },
+      "error": "git dirty"
+    },
+    {
+      "id": "mig-001",
+      "oldPath": "/Users/test/work/delta-kit",
+      "newPath": "/Users/test/work/delta-kit-v2",
+      "oldBasename": "delta-kit",
+      "newBasename": "delta-kit-v2",
+      "state": "fs_done",
+      "filesPatched": 7,
+      "occurrences": 22,
+      "sessionsUpdated": 0,
+      "aliasCreated": false,
+      "ccDirRenamed": false,
+      "startedAt": "2026-03-01T08:00:00.000Z",
+      "finishedAt": null,
+      "dryRun": true,
+      "rolledBackOf": null,
+      "auditNote": "fixture dry run",
+      "archived": false,
+      "actor": "batch",
+      "detail": {
+        "source": "fixture",
+        "kind": "dry-run"
+      },
+      "error": null
+    }
+  ]
+}

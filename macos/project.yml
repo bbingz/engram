@@ -34,6 +34,9 @@ targets:
         product: GRDB
       - package: Hummingbird
         product: Hummingbird
+      - target: EngramMCP
+        link: false
+        embed: false
     prebuildScripts:
       - name: Bundle Node.js Daemon
         script: "${SRCROOT}/scripts/build-node-bundle.sh"
@@ -42,6 +45,9 @@ targets:
         runForInstallBuildsOnly: false
         basedOnDependencyAnalysis: false
     postbuildScripts:
+      - name: Bundle EngramMCP helper
+        script: "${SRCROOT}/scripts/copy-mcp-helper.sh"
+        basedOnDependencyAnalysis: false
       - name: Replace AppIcon.icns with complete version
         script: |
           # Xcode only generates icns with 16+128 sizes; replace with our pre-built complete icns
@@ -81,6 +87,21 @@ targets:
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
+  EngramMCP:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramMCP
+      - path: Shared
+    dependencies:
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.mcp
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+
   EngramTests:
     type: bundle.unit-test
     platform: macOS
@@ -97,6 +118,21 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
       BUNDLE_LOADER: "$(TEST_HOST)"
+
+  EngramMCPTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramMCPTests
+      - path: ../tests/fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: EngramMCP
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
 
   EngramUITests:
     type: bundle.ui-testing
@@ -123,6 +159,7 @@ schemes:
       targets:
         Engram: all
         EngramCLI: all
+        EngramMCP: all
     run:
       config: Debug
     test:
@@ -137,3 +174,22 @@ schemes:
         EngramCLI: all
     run:
       config: Debug
+  EngramMCP:
+    build:
+      targets:
+        EngramMCP: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EngramMCPTests
+  EngramMCPTests:
+    build:
+      targets:
+        EngramMCP: all
+        EngramMCPTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramMCPTests

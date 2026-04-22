@@ -3,6 +3,7 @@ dist/
 .worktrees/
 *.sqlite
 !test-fixtures/*.sqlite
+!tests/fixtures/mcp-contract.sqlite
 *.db
 
 # Xcode

@@ -15,34 +15,6 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "CBCDC5ABCED1290D34EC5E45"
-               BuildableName = "Engram.app"
-               BlueprintName = "Engram"
-               ReferencedContainer = "container:Engram.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "6EFB8FB1AB1AF1754D7D12E2"
-               BuildableName = "EngramCLI"
-               BlueprintName = "EngramCLI"
-               ReferencedContainer = "container:Engram.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
                BlueprintIdentifier = "790D3733722391768E6E845B"
                BuildableName = "EngramMCP"
                BlueprintName = "EngramMCP"
@@ -60,9 +32,9 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CBCDC5ABCED1290D34EC5E45"
-            BuildableName = "Engram.app"
-            BlueprintName = "Engram"
+            BlueprintIdentifier = "790D3733722391768E6E845B"
+            BuildableName = "EngramMCP"
+            BlueprintName = "EngramMCP"
             ReferencedContainer = "container:Engram.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
@@ -72,20 +44,9 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "30D8E174D1B1B7E0305A85E7"
-               BuildableName = "EngramTests.xctest"
-               BlueprintName = "EngramTests"
-               ReferencedContainer = "container:Engram.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "3E8B4E524AA151B373A0BC91"
-               BuildableName = "EngramUITests.xctest"
-               BlueprintName = "EngramUITests"
+               BlueprintIdentifier = "4BEDF7101A8E6E1E3BE7587E"
+               BuildableName = "EngramMCPTests.xctest"
+               BlueprintName = "EngramMCPTests"
                ReferencedContainer = "container:Engram.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -107,9 +68,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CBCDC5ABCED1290D34EC5E45"
-            BuildableName = "Engram.app"
-            BlueprintName = "Engram"
+            BlueprintIdentifier = "790D3733722391768E6E845B"
+            BuildableName = "EngramMCP"
+            BlueprintName = "EngramMCP"
             ReferencedContainer = "container:Engram.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -126,9 +87,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CBCDC5ABCED1290D34EC5E45"
-            BuildableName = "Engram.app"
-            BlueprintName = "Engram"
+            BlueprintIdentifier = "790D3733722391768E6E845B"
+            BuildableName = "EngramMCP"
+            BlueprintName = "EngramMCP"
             ReferencedContainer = "container:Engram.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
