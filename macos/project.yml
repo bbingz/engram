@@ -81,6 +81,21 @@ targets:
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
+  EngramMCP:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramMCP
+      - path: Shared
+    dependencies:
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.mcp
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+
   EngramTests:
     type: bundle.unit-test
     platform: macOS
@@ -97,6 +112,21 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
       BUNDLE_LOADER: "$(TEST_HOST)"
+
+  EngramMCPTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramMCPTests
+      - path: ../tests/fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: EngramMCP
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
 
   EngramUITests:
     type: bundle.ui-testing
@@ -137,3 +167,13 @@ schemes:
         EngramCLI: all
     run:
       config: Debug
+  EngramMCP:
+    build:
+      targets:
+        EngramMCP: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EngramMCPTests
