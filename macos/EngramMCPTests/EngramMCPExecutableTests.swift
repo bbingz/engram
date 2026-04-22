@@ -31,18 +31,91 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     func testStatsMatchesGolden() throws {
-        let capture = try rpc(
-            """
-            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stats","arguments":{"group_by":"source","since":"2026-01-01T00:00:00.000Z"}}}
+        try assertToolCallMatchesGolden(
+            tool: "stats",
+            arguments: """
+            {"group_by":"source","since":"2026-01-01T00:00:00.000Z"}
             """,
-            environment: [
-                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-            ]
+            goldenFixture: "mcp-golden/stats.source.json"
         )
+    }
 
-        let actual = try prettyJSONString(from: XCTUnwrap(capture.ordered["result"]))
-        let expected = try String(contentsOfFile: fixturePath("mcp-golden/stats.source.json"), encoding: .utf8)
-        XCTAssertEqual(actual, expected)
+    func testListSessionsMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "list_sessions",
+            arguments: """
+            {"project":"engram","since":"2026-01-01T00:00:00.000Z","limit":4,"offset":0}
+            """,
+            goldenFixture: "mcp-golden/list_sessions.engram.json"
+        )
+    }
+
+    func testGetCostsMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "get_costs",
+            arguments: """
+            {"group_by":"project","since":"2026-01-01T00:00:00.000Z"}
+            """,
+            goldenFixture: "mcp-golden/get_costs.project.json"
+        )
+    }
+
+    func testToolAnalyticsMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "tool_analytics",
+            arguments: """
+            {"group_by":"tool","since":"2026-01-01T00:00:00.000Z"}
+            """,
+            goldenFixture: "mcp-golden/tool_analytics.tool.json"
+        )
+    }
+
+    func testFileActivityMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "file_activity",
+            arguments: """
+            {"project":"engram","since":"2026-01-01T00:00:00.000Z","limit":4}
+            """,
+            goldenFixture: "mcp-golden/file_activity.engram.json"
+        )
+    }
+
+    func testProjectTimelineMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "project_timeline",
+            arguments: """
+            {"project":"engram","since":"2026-01-01T00:00:00.000Z"}
+            """,
+            goldenFixture: "mcp-golden/project_timeline.engram.json"
+        )
+    }
+
+    func testProjectListMigrationsMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "project_list_migrations",
+            arguments: """
+            {"since":"2026-03-01T00:00:00.000Z","limit":3}
+            """,
+            goldenFixture: "mcp-golden/project_list_migrations.recent.json"
+        )
+    }
+
+    func testLiveSessionsMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "live_sessions",
+            arguments: "{}",
+            goldenFixture: "mcp-golden/live_sessions.unavailable.json"
+        )
+    }
+
+    func testGetMemoryMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "get_memory",
+            arguments: """
+            {"query":"single writer daemon HTTP"}
+            """,
+            goldenFixture: "mcp-golden/get_memory.keyword.json"
+        )
     }
 
     func testSaveInsightMatchesGoldenViaDaemonHTTP() throws {
@@ -149,7 +222,9 @@ final class EngramMCPExecutableTests: XCTestCase {
     private func rpc(_ request: String, environment: [String: String] = [:]) throws -> RPCCapture {
         let process = Process()
         process.executableURL = executableURL()
-        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(["TZ": "UTC"]) { _, new in new }
+            .merging(environment) { _, new in new }
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -195,6 +270,25 @@ final class EngramMCPExecutableTests: XCTestCase {
 
     private func prettyJSONString(from value: OrderedTestJSONValue) throws -> String {
         value.prettyJSONString() + "\n"
+    }
+
+    private func assertToolCallMatchesGolden(
+        tool: String,
+        arguments: String,
+        goldenFixture: String,
+        environment: [String: String] = [:]
+    ) throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"\(tool)","arguments":\(arguments)}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ].merging(environment) { _, new in new }
+        )
+        let actual = try prettyJSONString(from: XCTUnwrap(capture.ordered["result"]))
+        let expected = try String(contentsOfFile: fixturePath(goldenFixture), encoding: .utf8)
+        XCTAssertEqual(actual, expected)
     }
 
     private func normalizeUUIDs(in text: String) throws -> String {
@@ -487,7 +581,7 @@ private extension TestJSONValue {
     private func quotedJSONString(_ value: String) -> String {
         let data = try! JSONSerialization.data(withJSONObject: [value])
         let arrayText = String(data: data, encoding: .utf8)!
-        return String(arrayText.dropFirst().dropLast())
+        return String(arrayText.dropFirst().dropLast()).replacingOccurrences(of: "\\/", with: "/")
     }
 }
 
@@ -546,7 +640,7 @@ private indirect enum OrderedTestJSONValue {
     private func quotedJSONString(_ value: String) -> String {
         let data = try! JSONSerialization.data(withJSONObject: [value])
         let arrayText = String(data: data, encoding: .utf8)!
-        return String(arrayText.dropFirst().dropLast())
+        return String(arrayText.dropFirst().dropLast()).replacingOccurrences(of: "\\/", with: "/")
     }
 }
 

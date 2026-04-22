@@ -58,7 +58,7 @@ indirect enum OrderedJSONValue {
     private func quotedJSONString(_ value: String) -> String {
         let data = try! JSONSerialization.data(withJSONObject: [value])
         let arrayText = String(data: data, encoding: .utf8)!
-        return String(arrayText.dropFirst().dropLast())
+        return String(arrayText.dropFirst().dropLast()).replacingOccurrences(of: "\\/", with: "/")
     }
 }
 

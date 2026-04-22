@@ -4,9 +4,14 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Database } from '../src/core/db.js';
+import { handleFileActivity } from '../src/tools/file_activity.js';
 import { handleGetContext } from '../src/tools/get_context.js';
 import { handleGetCosts } from '../src/tools/get_costs.js';
+import { handleGetMemory } from '../src/tools/get_memory.js';
 import { handleListSessions } from '../src/tools/list_sessions.js';
+import { handleLiveSessions } from '../src/tools/live_sessions.js';
+import { handleProjectListMigrations } from '../src/tools/project.js';
+import { handleProjectTimeline } from '../src/tools/project_timeline.js';
 import { handleSaveInsight } from '../src/tools/save_insight.js';
 import { handleSearch } from '../src/tools/search.js';
 import { handleStats } from '../src/tools/stats.js';
@@ -63,6 +68,19 @@ const insertInsight = raw.prepare(`
 `);
 const insertInsightFts = raw.prepare(`
   INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)
+`);
+const insertMigration = raw.prepare(`
+  INSERT INTO migration_log (
+    id, old_path, new_path, old_basename, new_basename,
+    state, files_patched, occurrences, sessions_updated, alias_created,
+    cc_dir_renamed, started_at, finished_at, dry_run, rolled_back_of,
+    audit_note, archived, actor, detail, error
+  ) VALUES (
+    @id, @oldPath, @newPath, @oldBasename, @newBasename,
+    @state, @filesPatched, @occurrences, @sessionsUpdated, @aliasCreated,
+    @ccDirRenamed, @startedAt, @finishedAt, @dryRun, @rolledBackOf,
+    @auditNote, @archived, @actor, @detail, @error
+  )
 `);
 
 const longBlock = (label: string) =>
@@ -223,6 +241,77 @@ insertMetric.run(
   '2026-02-01T10:04:00.000Z',
 );
 
+for (const row of [
+  {
+    id: 'mig-003',
+    oldPath: '/Users/test/work/engram-old',
+    newPath: '/Users/test/work/engram',
+    oldBasename: 'engram-old',
+    newBasename: 'engram',
+    state: 'committed',
+    filesPatched: 12,
+    occurrences: 44,
+    sessionsUpdated: 8,
+    aliasCreated: 1,
+    ccDirRenamed: 1,
+    startedAt: '2026-03-03T10:00:00.000Z',
+    finishedAt: '2026-03-03T10:01:00.000Z',
+    dryRun: 0,
+    rolledBackOf: null,
+    auditNote: 'fixture committed move',
+    archived: 0,
+    actor: 'mcp',
+    detail: JSON.stringify({ source: 'fixture', kind: 'move' }),
+    error: null,
+  },
+  {
+    id: 'mig-002',
+    oldPath: '/Users/test/work/apollo',
+    newPath: '/Users/test/work/_archive/archived-done/apollo',
+    oldBasename: 'apollo',
+    newBasename: 'apollo',
+    state: 'failed',
+    filesPatched: 3,
+    occurrences: 9,
+    sessionsUpdated: 0,
+    aliasCreated: 0,
+    ccDirRenamed: 0,
+    startedAt: '2026-03-02T09:00:00.000Z',
+    finishedAt: '2026-03-02T09:00:30.000Z',
+    dryRun: 0,
+    rolledBackOf: null,
+    auditNote: 'fixture archive failure',
+    archived: 1,
+    actor: 'cli',
+    detail: JSON.stringify({ source: 'fixture', kind: 'archive' }),
+    error: 'git dirty',
+  },
+  {
+    id: 'mig-001',
+    oldPath: '/Users/test/work/delta-kit',
+    newPath: '/Users/test/work/delta-kit-v2',
+    oldBasename: 'delta-kit',
+    newBasename: 'delta-kit-v2',
+    state: 'fs_done',
+    filesPatched: 7,
+    occurrences: 22,
+    sessionsUpdated: 0,
+    aliasCreated: 0,
+    ccDirRenamed: 0,
+    startedAt: '2026-03-01T08:00:00.000Z',
+    finishedAt: null,
+    dryRun: 1,
+    rolledBackOf: null,
+    auditNote: 'fixture dry run',
+    archived: 0,
+    actor: 'batch',
+    detail: JSON.stringify({ source: 'fixture', kind: 'dry-run' }),
+    error: null,
+  },
+]) {
+  insertMigration.run(row);
+}
+
 type MCPResponse = {
   content: Array<{ type: string; text: string }>;
   structuredContent?: unknown;
@@ -308,6 +397,29 @@ const goldens: Record<string, unknown> = {
       group_by: 'tool',
       since: '2026-01-01T00:00:00.000Z',
     }),
+  ),
+  'file_activity.engram': success(
+    handleFileActivity(db, {
+      project: 'engram',
+      since: '2026-01-01T00:00:00.000Z',
+      limit: 4,
+    }),
+  ),
+  'project_timeline.engram': success(
+    await handleProjectTimeline(db, {
+      project: 'engram',
+      since: '2026-01-01T00:00:00.000Z',
+    }),
+  ),
+  'project_list_migrations.recent': success(
+    handleProjectListMigrations(db, {
+      since: '2026-03-01T00:00:00.000Z',
+      limit: 3,
+    }),
+  ),
+  'live_sessions.unavailable': success(handleLiveSessions(null)),
+  'get_memory.keyword': success(
+    await handleGetMemory({ query: 'single writer daemon HTTP' }, { db }),
   ),
   'manage_project_alias.list': success(db.listProjectAliases()),
   'manage_project_alias.add': success(
