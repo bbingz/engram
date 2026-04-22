@@ -351,36 +351,48 @@ toolRegistry.set('generate_summary', async (a) => {
 
 toolRegistry.set('manage_project_alias', async (a) => {
   const action = a.action as string;
+  // Reads stay direct — Phase B only routes writes.
   if (action === 'list') return db.listProjectAliases();
-  if (action === 'add') {
-    if (!a.old_project || !a.new_project)
-      return {
-        _early: true,
-        content: [
-          { type: 'text', text: 'old_project and new_project required' },
-        ],
-        isError: true,
-      };
-    db.addProjectAlias(a.old_project as string, a.new_project as string);
-    return { added: { alias: a.old_project, canonical: a.new_project } };
+
+  if (action !== 'add' && action !== 'remove') {
+    return {
+      _early: true,
+      content: [{ type: 'text', text: `Unknown action: ${action}` }],
+      isError: true,
+    };
   }
-  if (action === 'remove') {
-    if (!a.old_project || !a.new_project)
-      return {
-        _early: true,
-        content: [
-          { type: 'text', text: 'old_project and new_project required' },
-        ],
-        isError: true,
-      };
-    db.removeProjectAlias(a.old_project as string, a.new_project as string);
-    return { removed: { alias: a.old_project, canonical: a.new_project } };
+  if (!a.old_project || !a.new_project) {
+    return {
+      _early: true,
+      content: [{ type: 'text', text: 'old_project and new_project required' }],
+      isError: true,
+    };
   }
-  return {
-    _early: true,
-    content: [{ type: 'text', text: `Unknown action: ${action}` }],
-    isError: true,
+  const body = {
+    alias: a.old_project as string,
+    canonical: a.new_project as string,
   };
+  const runDirect = () => {
+    if (action === 'add') {
+      db.addProjectAlias(body.alias, body.canonical);
+      return { added: body };
+    }
+    db.removeProjectAlias(body.alias, body.canonical);
+    return { removed: body };
+  };
+  try {
+    return action === 'add'
+      ? await daemonClient.post('/api/project-aliases', body)
+      : await daemonClient.delete('/api/project-aliases', body);
+  } catch (err) {
+    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    log.warn(
+      `manage_project_alias(${action}): daemon unreachable, direct fallback`,
+      { endpoint: daemonClient.endpoint },
+      err,
+    );
+    return runDirect();
+  }
 });
 
 toolRegistry.set('get_memory', async (a) =>

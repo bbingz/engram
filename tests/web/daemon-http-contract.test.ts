@@ -1,6 +1,7 @@
-// Contract: DaemonClient routing decisions for /api/summary match what the
-// endpoint actually returns. Guards against drift between the helper's
-// "envelope-ness" detection and Hono's real 404 shape.
+// Contract tests: DaemonClient routing decisions match what the endpoints
+// actually return. Guards against drift between the helper's "envelope-ness"
+// detection and Hono's real 404 shape, and between MCP dispatch expectations
+// and the current endpoint responses.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -84,5 +85,53 @@ describe('DaemonClient → /api/summary (Phase B Step 2 contract)', () => {
     }
     expect(caught).toBeInstanceOf(TypeError);
     expect(shouldFallbackToDirect(caught, false)).toBe(true);
+  });
+});
+
+describe('DaemonClient → /api/project-aliases (Phase B Step 4 contract)', () => {
+  let db: Database;
+  let app: ReturnType<typeof createApp>;
+  let client: DaemonClient;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    app = createApp(db);
+    client = new DaemonClient({
+      baseUrl: 'http://127.0.0.1:3457',
+      fetchImpl: proxyFetch(app),
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('POST adds alias and DELETE removes it via DaemonClient round-trip', async () => {
+    const added = await client.post<{
+      added: { alias: string; canonical: string };
+    }>('/api/project-aliases', { alias: 'foo', canonical: 'bar' });
+    expect(added.added).toEqual({ alias: 'foo', canonical: 'bar' });
+    expect(db.listProjectAliases()).toContainEqual({
+      alias: 'foo',
+      canonical: 'bar',
+    });
+
+    const removed = await client.delete<{
+      removed: { alias: string; canonical: string };
+    }>('/api/project-aliases', { alias: 'foo', canonical: 'bar' });
+    expect(removed.removed).toEqual({ alias: 'foo', canonical: 'bar' });
+    expect(db.listProjectAliases()).toEqual([]);
+  });
+
+  it('400 with {error} envelope bubbles up (does not fall back)', async () => {
+    let caught: unknown;
+    try {
+      await client.post('/api/project-aliases', { alias: 'only-alias' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DaemonClientError);
+    expect((caught as DaemonClientError).status).toBe(400);
+    expect(shouldFallbackToDirect(caught, false)).toBe(false);
   });
 });

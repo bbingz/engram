@@ -186,4 +186,25 @@ describe('DaemonClient.delete', () => {
       (seen?.init.headers as Record<string, string>)['content-type'],
     ).toBeUndefined();
   });
+
+  it('supports DELETE with a JSON body (needed for /api/project-aliases)', async () => {
+    let seen: { init: RequestInit } | undefined;
+    const fetchImpl = makeFetch((_url, init) => {
+      seen = { init };
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    });
+    const client = new DaemonClient({ baseUrl: 'http://x', fetchImpl });
+    await client.delete('/api/project-aliases', {
+      alias: 'a',
+      canonical: 'b',
+    });
+    expect(seen?.init.method).toBe('DELETE');
+    expect(JSON.parse(String(seen?.init.body))).toEqual({
+      alias: 'a',
+      canonical: 'b',
+    });
+    expect((seen?.init.headers as Record<string, string>)['content-type']).toBe(
+      'application/json',
+    );
+  });
 });

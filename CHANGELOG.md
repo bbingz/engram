@@ -7,6 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Phase B Step 4：manage_project_alias 迁移 + DELETE body (2026-04-22)
+
+Step 3（project 家族）迁移发现响应形状不对齐（`archive` vs `suggestion`、dry-run 计划差异、$HOME 约束）— 延后为专门一轮。先做简单的 Step 4 闭环继续推进。
+
+- **`manage_project_alias` add/remove 路由到 `POST/DELETE /api/project-aliases`**（端点早有）。`list` 保持直接读（Phase B 只动写路径）
+- **`DaemonClient.delete(path, body?)`** 扩展支持带 body 的 DELETE —— `/api/project-aliases` DELETE 需要 `{alias, canonical}` 才能定位要删的行
+- MCP dispatch 参数翻译：`old_project/new_project` → `alias/canonical`
+- 契约测新增 alias POST+DELETE round-trip + 400 validation bubble-up
+- 测试文件重命名 `summary-contract` → `daemon-http-contract`（作用域拓宽到多端点）
+- `npm run build` ✓、`npx vitest run` **1197/1197** ✓（+1 delete-with-body + 2 alias contract）
+- **不需要 daemon 重新部署**：`/api/project-aliases` 端点早就存在
+
+**Phase B 写工具清点再修订（Survey v3）**：实际 DB 写工具 **6 个**（原估计 10，然后 7，现在 6）：
+- `link_sessions` 实为只读（filesystem symlink 是副作用，不触 DB 写），移出 Phase B 范围
+- 已完成 4/6：save_insight / generate_summary / alias add / alias remove
+- 剩下 Step 3 的 project_move / project_archive / project_undo（共享 orchestrator）
+
 ### Added — Phase B Step 2：generate_summary 迁移 + fallback helper 抽共享 (2026-04-22)
 
 Step 1 留的 dispatch 内联判断抽成共享 `shouldFallbackToDirect(err, strict)`，给剩下 5 个工具复用；顺手把 generate_summary 接上 HTTP。

@@ -37,21 +37,22 @@
 
 ### 现状（Step 1 完成，2026-04-22）
 
-完整写工具清点（survey 结果比原估计小）：
+完整写工具清点（Survey 2 次修订后）：
 
 | MCP 工具 | 写操作 | 已有 HTTP 端点 | 迁移状态 |
 |---|---|---|---|
-| **save_insight** | `saveInsightText`, `markInsightEmbedded`, `deleteInsightText`, `vecStore.upsertInsight` | ❌→ ✅ 新增 `POST /api/insight` | ✅ **Step 1 pilot** |
-| generate_summary | `updateSessionSummary` | ✅ `POST /api/summary` | ⏳ |
-| project_move | orchestrator 内部写 | ✅ `POST /api/project/move` | ⏳ |
-| project_archive | orchestrator 内部写 | ✅ `POST /api/project/archive` | ⏳ |
-| project_undo | orchestrator 内部写 | ✅ `POST /api/project/undo` | ⏳ |
-| manage_project_alias | `addProjectAlias`, `removeProjectAlias` | ✅ `POST/DELETE /api/project-aliases` | ⏳ |
-| link_sessions | `handleLinkSessions` | ✅ `POST /api/link-sessions` | ⏳ |
+| **save_insight** | `saveInsightText`, `markInsightEmbedded`, `deleteInsightText`, `vecStore.upsertInsight` | ❌→ ✅ 新增 `POST /api/insight` | ✅ **Step 1** |
+| **generate_summary** | `updateSessionSummary` | ✅ `POST /api/summary` | ✅ **Step 2** |
+| **manage_project_alias** (add/remove) | `addProjectAlias`, `removeProjectAlias` | ✅ `POST/DELETE /api/project-aliases` | ✅ **Step 4** |
+| project_move | orchestrator 内部写 | ✅ `POST /api/project/move` | ⏳ Step 3（复杂） |
+| project_archive | orchestrator 内部写 | ✅ `POST /api/project/archive` | ⏳ Step 3 |
+| project_undo | orchestrator 内部写 | ✅ `POST /api/project/undo` | ⏳ Step 3 |
 
-**handoff / lint_config / get_* / list_* / search / stats / export / live_sessions / file_activity / project_review / project_list_migrations / project_recover / project_timeline / tool_analytics / generate_title** 全部只读，不需要迁移。
+**不需要迁移**：
+- `handoff` / `lint_config` / `get_*` / `list_*` / `search` / `stats` / `export` / `live_sessions` / `file_activity` / `project_review` / `project_list_migrations` / `project_recover` / `project_timeline` / `tool_analytics` / `generate_title` —— 只读
+- **`link_sessions`**（Step 5 的原计划）—— 实际只读 DB（`resolveProjectAliases`、`listSessions`），"写"是文件系统 symlink，不在 Phase B 范围
 
-**实际写工具 = 7 个**（原估计 10），其中 6 个端点已有，只 save_insight 需要新端点。Swift `DaemonClient` 也已在用这些端点，迁移对 Swift 无影响。
+**实际 DB 写工具 = 6 个，已完成 4 个**。剩下 project 家族 3 个（共享同一个 orchestrator）是 Step 3 的大头。
 
 ### 目标架构
 
@@ -74,12 +75,21 @@
   - 抽 `shouldFallbackToDirect(err, strict)` 共享 helper —— 核心判断：**带 `{error:...}` 的 4xx = 应用层拒绝（上抛），无 envelope 的 404/405/501 = 旧 daemon 端点缺失（降级）**。避免每个工具重复判断
   - save_insight dispatch 改用 helper（行为不变，代码减半）
   - generate_summary 迁移：MCP POST `/api/summary`（端点原已存在），返回值从 `{summary}` 包装成 MCP content 格式。不改 HTTP 响应形状（Swift `SessionDetailView.swift:446` 依赖它）
-  - 端点与 helper 的 envelope 契约测（`tests/web/summary-contract.test.ts`）—— 防止 helper 的判断和 Hono 实际返回形状漂移
-  - **1194 tests ✓**（+5 helper 单测、+3 contract 测）
-  - **不需要 daemon 重新部署**：/api/summary 早就存在，只改 MCP 路由
-- ⏳ **Step 3**：project_move / archive / undo（共享 orchestrator，一次迁完）
-- ⏳ **Step 4**：manage_project_alias（alias CRUD，MCP 内联实现，需要先提到 tools/）
-- ⏳ **Step 5**：link_sessions
+  - 端点与 helper 的 envelope 契约测（`tests/web/daemon-http-contract.test.ts`）
+  - **不需要 daemon 重新部署**：/api/summary 早就存在
+- ✅ **Step 4**（完成 2026-04-22，跳过原 Step 3 先做这个简单的）
+  - `manage_project_alias` add/remove 路由到 `POST/DELETE /api/project-aliases`；`list` 保持直接读（Phase B 只管写路径）
+  - 扩展 `DaemonClient.delete(path, body?)` 支持带 body 的 DELETE（alias 删除需要 `{alias, canonical}`）
+  - 契约测加 alias POST/DELETE round-trip + 400 validation bubble-up
+  - **1197 tests ✓**（+1 delete-with-body 单测 + 2 alias contract 测）
+  - **不需要 daemon 重新部署**：`/api/project-aliases` 早就存在
+- ⏳ **Step 3**（待做，复杂度超出原估计）：project_move / archive / undo
+  - **复杂点**：MCP 返回 `archive: {category, reason}`，HTTP 返回 `suggestion: {category, reason, dst}` —— 字段名和内容都不一致
+  - **复杂点**：MCP `handleProjectArchive` 在 dry_run 走 `buildDryRunPlan`，HTTP 走 `runProjectMove({dryRun:true})` —— 同一输入可能产生略异的计划
+  - **复杂点**：MCP 没有 $HOME 约束，HTTP `normalizeHttpPath` 强制 $HOME —— MCP 路由过 HTTP 后行为收紧（可能阻止某些合法路径）
+  - **actor 审计**：HTTP 硬编码 `actor:'swift-ui'`，MCP 用 `actor:'mcp'` —— 要么加 `actor` body 字段透传，要么 HTTP 根据鉴权状态推断
+  - **响应协调**：给 HTTP 加 MCP 期待的 `archive` 字段 或 给 MCP 侧加转换层
+  - 预估：0.5-1 天（含响应形状协调 + 契约测）
 - ⏳ **Step 6**：跑 24h 生产观察 + 把 `mcpStrictSingleWriter` 开关做到 Swift UI
 
 ### 成本估计（修订）

@@ -52,8 +52,12 @@ export class DaemonClient {
     return this.request<T>('POST', path, body, opts);
   }
 
-  async delete<T>(path: string, opts?: { timeoutMs?: number }): Promise<T> {
-    return this.request<T>('DELETE', path, undefined, opts);
+  async delete<T>(
+    path: string,
+    body?: unknown,
+    opts?: { timeoutMs?: number },
+  ): Promise<T> {
+    return this.request<T>('DELETE', path, body, opts);
   }
 
   get endpoint(): string {
