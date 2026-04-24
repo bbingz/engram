@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+if ! command -v rg >/dev/null 2>&1; then
+  export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+fi
+
 PATTERN='DatabasePool\(path:|DatabaseQueue\(|\.write[[:space:]]*\{|execute\(sql:|sql:[[:space:]]*"((DELETE FROM|UPDATE|INSERT INTO)[^"]*)'
 
 READ_ONLY_DB_FILES=(
@@ -80,6 +84,9 @@ if (( ${#unclassified_failures[@]} > 0 )); then
 fi
 
 echo "direct write scan ok"
+echo
+echo "Allowed legacy app DB writer hits:"
+echo "none"
 echo
 echo "Allowed Stage 4 MCP DB/project-op hits:"
 echo "none"

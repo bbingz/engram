@@ -26,12 +26,12 @@ public enum SchemaManifest {
         "ai_audit_log",
         "insights",
         "insights_fts",
+        "memory_insights",
     ]
 
     public static let lazyVectorTables: Set<String> = [
         "session_embeddings",
         "session_chunks",
-        "memory_insights",
         "vec_sessions",
         "vec_chunks",
         "vec_insights",

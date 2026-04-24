@@ -42,7 +42,12 @@ struct ArchiveSheet: View {
 
             Divider()
 
-            if isLoadingCwds {
+            if !nativeProjectMigrationCommandsEnabled {
+                Label(nativeProjectMigrationUnavailableMessage, systemImage: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 12)
+            } else if isLoadingCwds {
                 ProgressView("Looking up project path…")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 20)
@@ -183,7 +188,10 @@ struct ArchiveSheet: View {
 
             HStack {
                 Spacer()
-                if residualRefCount != nil {
+                if !nativeProjectMigrationCommandsEnabled {
+                    Button("Close") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                } else if residualRefCount != nil {
                     Button("Close") {
                         NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                         dismiss()
@@ -212,7 +220,10 @@ struct ArchiveSheet: View {
         .padding(20)
         .frame(width: 480)
         .interactiveDismissDisabled(isExecuting)
-        .task { await loadCwds() }
+        .task {
+            guard nativeProjectMigrationCommandsEnabled else { return }
+            await loadCwds()
+        }
         .onDisappear { activeTask?.cancel() }
         .confirmationDialog(
             "Archive project?",

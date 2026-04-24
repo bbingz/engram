@@ -18,10 +18,6 @@
   "lint_config",
   "get_insights",
   "file_activity",
-  "project_move",
-  "project_archive",
-  "project_undo",
-  "project_move_batch",
   "project_list_migrations",
   "project_recover",
   "project_review"

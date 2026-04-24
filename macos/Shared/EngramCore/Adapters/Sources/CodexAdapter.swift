@@ -211,7 +211,7 @@ final class CodexAdapter: SessionAdapter {
 
             let explicitRole = JSONLAdapterSupport.string(meta["agent_role"])
             let originator = JSONLAdapterSupport.string(meta["originator"])
-            let effectiveRole = explicitRole ?? (originator == "Claude Code" ? "dispatched" : nil)
+            let effectiveRole = explicitRole ?? (OriginatorClassifier.isClaudeCode(originator) ? "dispatched" : nil)
             return .success(
                 NormalizedSessionInfo(
                     id: id,

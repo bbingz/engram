@@ -34,6 +34,30 @@ final class UnixSocketTransportTests: XCTestCase {
         }
     }
 
+    func testBindSocketRejectsNonSocketPath() throws {
+        let socketPath = temporarySocketPath()
+        try "not a socket".write(toFile: socketPath, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)) { error in
+            guard case EngramServiceError.serviceUnavailable = error else {
+                return XCTFail("Expected serviceUnavailable, got \(error)")
+            }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+    }
+
+    func testBindSocketRejectsWorldWritableRuntimeDirectory() throws {
+        let directory = temporaryDirectory()
+        chmod(directory.path, 0o777)
+        let socketPath = directory.appendingPathComponent("s.sock").path
+
+        XCTAssertThrowsError(try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)) { error in
+            guard case EngramServiceError.serviceUnavailable = error else {
+                return XCTFail("Expected serviceUnavailable, got \(error)")
+            }
+        }
+    }
+
     func testRoundTripDecodesTypedStatus() async throws {
         let socketPath = temporarySocketPath()
         let server = try UnixSocketFixtureServer(socketPath: socketPath) { request in
@@ -183,7 +207,11 @@ private func temporaryDirectory() -> URL {
     let suffix = UUID().uuidString.prefix(8)
     let directory = URL(fileURLWithPath: "/tmp", isDirectory: true)
         .appendingPathComponent("eg-\(suffix)", isDirectory: true)
-    try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try! FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
     return directory
 }
 

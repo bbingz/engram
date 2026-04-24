@@ -20,6 +20,12 @@ public final class EngramDatabaseWriter {
         try pool.read(block)
     }
 
+    public func checkpointPassive() throws {
+        try pool.write { db in
+            _ = try Row.fetchAll(db, sql: "PRAGMA wal_checkpoint(PASSIVE)")
+        }
+    }
+
     public func migrate() throws {
         try pool.write { db in
             try EngramMigrationRunner.migrate(db)

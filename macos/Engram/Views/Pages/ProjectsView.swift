@@ -68,17 +68,19 @@ struct ProjectsView: View {
                     HStack {
                         SectionHeader(icon: "folder", title: "Projects")
                         Spacer()
-                        Button {
-                            showUndoSheet = true
-                        } label: {
-                            Label("Undo Recent Move…", systemImage: "arrow.uturn.backward")
-                                .font(.caption)
+                        if nativeProjectMigrationCommandsEnabled {
+                            Button {
+                                showUndoSheet = true
+                            } label: {
+                                Label("Undo Recent Move…", systemImage: "arrow.uturn.backward")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(hasRecentMigrations != true)
+                            .help(undoButtonHelp)
+                            .accessibilityIdentifier("projects_undoButton")
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(hasRecentMigrations != true)
-                        .help(undoButtonHelp)
-                        .accessibilityIdentifier("projects_undoButton")
                     }
                     if projectGroups.isEmpty && !isLoading {
                         EmptyState(icon: "folder", title: "No projects", message: "Sessions without project associations won't appear here")
@@ -110,29 +112,31 @@ struct ProjectsView: View {
                                     }
                                     .buttonStyle(.plain)
 
-                                    Menu {
-                                        Button {
-                                            renameTarget = group.project
+                                    if nativeProjectMigrationCommandsEnabled {
+                                        Menu {
+                                            Button {
+                                                renameTarget = group.project
+                                            } label: {
+                                                Label("Rename…", systemImage: "pencil")
+                                            }
+                                            Button {
+                                                archiveTarget = group.project
+                                            } label: {
+                                                Label("Archive…", systemImage: "archivebox")
+                                            }
                                         } label: {
-                                            Label("Rename…", systemImage: "pencil")
+                                            Image(systemName: "ellipsis")
+                                                .font(.caption)
+                                                .foregroundStyle(Theme.tertiaryText)
+                                                .frame(width: 22, height: 22)
+                                                .contentShape(Rectangle())
                                         }
-                                        Button {
-                                            archiveTarget = group.project
-                                        } label: {
-                                            Label("Archive…", systemImage: "archivebox")
-                                        }
-                                    } label: {
-                                        Image(systemName: "ellipsis")
-                                            .font(.caption)
-                                            .foregroundStyle(Theme.tertiaryText)
-                                            .frame(width: 22, height: 22)
-                                            .contentShape(Rectangle())
+                                        .menuStyle(.borderlessButton)
+                                        .menuIndicator(.hidden)
+                                        .fixedSize()
+                                        .accessibilityLabel("Project options")
+                                        .accessibilityIdentifier("projects_menu_\(index)")
                                     }
-                                    .menuStyle(.borderlessButton)
-                                    .menuIndicator(.hidden)
-                                    .fixedSize()
-                                    .accessibilityLabel("Project options")
-                                    .accessibilityIdentifier("projects_menu_\(index)")
 
                                     // Chevron as a separate Button so it keeps a
                                     // visible click target (previously it was a
@@ -157,15 +161,17 @@ struct ProjectsView: View {
                                 // New users aren't used to hunting for
                                 // ellipsis icons and expect context menus.
                                 .contextMenu {
-                                    Button {
-                                        renameTarget = group.project
-                                    } label: {
-                                        Label("Rename…", systemImage: "pencil")
-                                    }
-                                    Button {
-                                        archiveTarget = group.project
-                                    } label: {
-                                        Label("Archive…", systemImage: "archivebox")
+                                    if nativeProjectMigrationCommandsEnabled {
+                                        Button {
+                                            renameTarget = group.project
+                                        } label: {
+                                            Label("Rename…", systemImage: "pencil")
+                                        }
+                                        Button {
+                                            archiveTarget = group.project
+                                        } label: {
+                                            Label("Archive…", systemImage: "archivebox")
+                                        }
                                     }
                                 }
                             }
@@ -210,6 +216,10 @@ struct ProjectsView: View {
         isLoading = true
         defer { isLoading = false }
         do { projectGroups = try db.listSessionsByProject() } catch { print("ProjectsView error:", error) }
+        guard nativeProjectMigrationCommandsEnabled else {
+            hasRecentMigrations = false
+            return
+        }
         // Refresh the Undo button's enabled state. Reviewer follow-up:
         // reset to nil on failure instead of silently preserving the last
         // truthy value — the user deserves an honest "daemon unreachable"

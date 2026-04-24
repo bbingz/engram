@@ -164,6 +164,19 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testIndexAllFlushesSnapshotsInBoundedBatches() async throws {
+        let sink = RecordingBatchSink()
+        let indexer = SwiftIndexer(
+            sink: sink,
+            adapters: [SyntheticSessionAdapter(count: 205)]
+        )
+
+        let indexed = try await indexer.indexAll()
+
+        XCTAssertEqual(indexed, 205)
+        XCTAssertEqual(sink.batchSizes, [100, 100, 5])
+    }
+
     private func makeSnapshot(
         id: String,
         syncVersion: Int = 1,
@@ -276,6 +289,76 @@ private struct NoopIndexingWriteSink: IndexingWriteSink {
         reason: IndexingWriteReason
     ) throws -> SessionBatchUpsertResult {
         SessionBatchUpsertResult(reason: reason, results: [])
+    }
+}
+
+private final class RecordingBatchSink: IndexingWriteSink {
+    var batchSizes: [Int] = []
+
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        batchSizes.append(snapshots.count)
+        return SessionBatchUpsertResult(
+            reason: reason,
+            results: snapshots.map {
+                SessionBatchItemResult(sessionId: $0.id, action: .merge, enqueuedJobs: [])
+            }
+        )
+    }
+}
+
+private final class SyntheticSessionAdapter: SessionAdapter {
+    let source: SourceName = .codex
+    private let count: Int
+
+    init(count: Int) {
+        self.count = count
+    }
+
+    func detect() async -> Bool {
+        true
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        (0..<count).map { "synthetic://\($0)" }
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        let id = locator.replacingOccurrences(of: "synthetic://", with: "synthetic-")
+        return .success(
+            NormalizedSessionInfo(
+                id: id,
+                source: .codex,
+                startTime: "2026-04-24T00:00:00Z",
+                cwd: "/repo",
+                model: "synthetic",
+                messageCount: 2,
+                userMessageCount: 1,
+                assistantMessageCount: 1,
+                toolMessageCount: 0,
+                systemMessageCount: 0,
+                summary: "hello",
+                filePath: locator,
+                sizeBytes: 128
+            )
+        )
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "hello"))
+            continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        true
     }
 }
 

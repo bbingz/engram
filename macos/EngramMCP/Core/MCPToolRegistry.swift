@@ -39,7 +39,18 @@ enum MCPToolRegistry {
         }
     }
 
-    static let tools: [MCPToolDefinition] = [
+    private static let unavailableNativeProjectOperationTools: Set<String> = [
+        "project_move",
+        "project_archive",
+        "project_undo",
+        "project_move_batch",
+    ]
+
+    static let tools: [MCPToolDefinition] = allToolDefinitions.filter {
+        !unavailableNativeProjectOperationTools.contains($0.name)
+    }
+
+    private static let allToolDefinitions: [MCPToolDefinition] = [
         MCPToolDefinition(
             name: "list_sessions",
             description: "列出 AI 编程助手的历史会话。支持按工具来源、项目、时间范围过滤。",
@@ -706,6 +717,12 @@ enum MCPToolRegistry {
         arguments: [String: JSONValue],
         config: MCPConfig
     ) async throws -> OrderedJSONValue {
+        if unavailableNativeProjectOperationTools.contains(name) {
+            return .toolError(
+                message: "\(name) is unavailable in the Swift-only runtime; use the Node CLI until the native project migration pipeline is ported."
+            )
+        }
+
         let category = toolCategory(name: name, arguments: arguments)
         if category.requiresServiceSocket, !(await config.canReachEngramService()) {
             return .serviceUnavailable(

@@ -18,6 +18,18 @@ public enum SourceName: String, CaseIterable, Codable, Sendable {
     case windsurf
 }
 
+public enum OriginatorClassifier {
+    public static func isClaudeCode(_ originator: String?) -> Bool {
+        guard let originator else { return false }
+        let normalized = originator
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+        return normalized == "claude-code"
+    }
+}
+
 public enum NormalizedMessageRole: String, Codable, Sendable {
     case user
     case assistant

@@ -1,5 +1,9 @@
 import Foundation
 
+let nativeProjectMigrationCommandsEnabled = false
+let nativeProjectMigrationUnavailableMessage =
+    "Project move/archive/undo are temporarily unavailable in the Swift-only runtime. Use the Node CLI project commands until the native migration pipeline is ported."
+
 struct ProjectMoveServiceErrorDetails: Equatable {
     let sourceId: String?
     let oldDir: String?

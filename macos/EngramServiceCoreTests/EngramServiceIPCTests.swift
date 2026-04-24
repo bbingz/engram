@@ -189,7 +189,7 @@ final class EngramServiceIPCTests: XCTestCase {
         }
 
         let serviceHome = paths.runtime.appendingPathComponent("service-home", isDirectory: true)
-        let clientHome = paths.runtime.appendingPathComponent("client-home", isDirectory: true)
+        let clientHome = serviceHome.appendingPathComponent("client-home", isDirectory: true)
         let oldHome = getenv("HOME").map { String(cString: $0) }
         setenv("HOME", serviceHome.path, 1)
         defer {
@@ -215,6 +215,49 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertTrue(response.outputPath.hasPrefix(clientHome.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: serviceHome.appendingPathComponent("codex-exports").path))
+    }
+
+    func testExportSessionRejectsOutputHomeOutsideServiceHome() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
+        try """
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"outside home"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [transcript.path])
+        }
+
+        let serviceHome = paths.runtime.appendingPathComponent("service-home", isDirectory: true)
+        let outsideHome = paths.runtime.appendingPathComponent("outside-home", isDirectory: true)
+        let oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("HOME", serviceHome.path, 1)
+        defer {
+            if let oldHome {
+                setenv("HOME", oldHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        do {
+            _ = try await client.exportSession(
+                EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: outsideHome.path, actor: "test")
+            )
+            XCTFail("Expected invalidRequest for output_home outside HOME")
+        } catch let error as EngramServiceError {
+            XCTAssertEqual(error, .invalidRequest(message: "output_home must be within HOME"))
+        }
     }
 
     func testExportSessionRejectsInvalidFormat() async throws {
@@ -264,8 +307,18 @@ final class EngramServiceIPCTests: XCTestCase {
         defer { server.stop() }
 
         let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("HOME", exportHome.path, 1)
+        defer {
+            if let oldHome {
+                setenv("HOME", oldHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
         let response = try await client.exportSession(
-            EngramServiceExportSessionRequest(id: "copilot-1", format: "json", outputHome: paths.runtime.path, actor: "test")
+            EngramServiceExportSessionRequest(id: "copilot-1", format: "json", outputHome: exportHome.path, actor: "test")
         )
 
         XCTAssertEqual(response.messageCount, 2)

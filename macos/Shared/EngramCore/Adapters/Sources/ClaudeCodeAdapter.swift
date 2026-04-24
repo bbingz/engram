@@ -361,3 +361,59 @@ final class ClaudeCodeAdapter: SessionAdapter {
         return parts[subagentsIndex - 1]
     }
 }
+
+final class ClaudeCodeDerivedSourceAdapter: SessionAdapter {
+    let source: SourceName
+    private let base: ClaudeCodeAdapter
+
+    init(
+        source: SourceName,
+        projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects")
+            .path,
+        limits: ParserLimits = .default
+    ) {
+        precondition(source == .minimax || source == .lobsterai)
+        self.source = source
+        self.base = ClaudeCodeAdapter(projectsRoot: projectsRoot, limits: limits)
+    }
+
+    func detect() async -> Bool {
+        await base.detect()
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        var locators: [String] = []
+        for locator in try await base.listSessionLocators() {
+            switch try await base.parseSessionInfo(locator: locator) {
+            case .success(let info) where info.source == source:
+                locators.append(locator)
+            default:
+                continue
+            }
+        }
+        return locators
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        switch try await base.parseSessionInfo(locator: locator) {
+        case .success(let info) where info.source == source:
+            return .success(info)
+        case .success:
+            return .failure(.unsupportedVirtualLocator)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        try await base.streamMessages(locator: locator, options: options)
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        await base.isAccessible(locator: locator)
+    }
+}

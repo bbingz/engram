@@ -4,6 +4,8 @@ import GRDB
 import EngramCoreRead
 
 public final class SwiftIndexer {
+    private static let writeBatchSize = 100
+
     private let sink: any IndexingWriteSink
     private let adapters: [any SessionAdapter]
     private let authoritativeNode: String
@@ -30,17 +32,58 @@ public final class SwiftIndexer {
 
     @discardableResult
     public func indexAll(sources: Set<SourceName>? = nil) async throws -> Int {
-        let snapshots = try await collectSnapshots(sources: sources)
-        guard !snapshots.isEmpty else { return 0 }
-        _ = try sink.upsertBatch(snapshots, reason: .initialScan)
+        var batch: [AuthoritativeSessionSnapshot] = []
+        var indexed = 0
+
+        for try await snapshot in snapshotStream(sources: sources) {
+            batch.append(snapshot)
+            if batch.count >= Self.writeBatchSize {
+                _ = try sink.upsertBatch(batch, reason: .initialScan)
+                indexed += batch.count
+                batch.removeAll(keepingCapacity: true)
+            }
+        }
+
+        if !batch.isEmpty {
+            _ = try sink.upsertBatch(batch, reason: .initialScan)
+            indexed += batch.count
+        }
+
         if let db {
             _ = try StartupBackfills.backfillSuggestedParents(db)
         }
-        return snapshots.count
+        return indexed
     }
 
     public func collectSnapshots(sources: Set<SourceName>? = nil) async throws -> [AuthoritativeSessionSnapshot] {
         var snapshots: [AuthoritativeSessionSnapshot] = []
+        for try await snapshot in snapshotStream(sources: sources) {
+            snapshots.append(snapshot)
+        }
+        return snapshots
+    }
+
+    private func snapshotStream(
+        sources: Set<SourceName>? = nil
+    ) -> AsyncThrowingStream<AuthoritativeSessionSnapshot, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    try await scanSnapshots(sources: sources) { snapshot in
+                        continuation.yield(snapshot)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func scanSnapshots(
+        sources: Set<SourceName>? = nil,
+        yield: (AuthoritativeSessionSnapshot) -> Void
+    ) async throws {
         for adapter in adapters {
             if let sources, !sources.contains(adapter.source) { continue }
             guard await adapter.detect() else { continue }
@@ -54,27 +97,47 @@ public final class SwiftIndexer {
                         info.project = URL(fileURLWithPath: info.cwd).lastPathComponent
                     }
 
-                    var messages: [NormalizedMessage] = []
-                    let stream = try await adapter.streamMessages(locator: locator, options: StreamMessagesOptions())
-                    for try await message in stream where !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        if message.role == .user || message.role == .assistant {
-                            messages.append(message)
-                        }
-                    }
-                    snapshots.append(buildSnapshot(info: info, locator: locator, messages: messages))
+                    let stats = try await streamStats(adapter: adapter, locator: locator)
+                    yield(buildSnapshot(info: info, locator: locator, stats: stats))
                 }
             }
         }
-        return snapshots
+    }
+
+    private struct SessionStreamStats {
+        var indexedMessageCount = 0
+        var assistantCount = 0
+        var toolCount = 0
+        var firstUserMessages: [String] = []
+    }
+
+    private func streamStats(adapter: any SessionAdapter, locator: String) async throws -> SessionStreamStats {
+        var stats = SessionStreamStats()
+        let stream = try await adapter.streamMessages(locator: locator, options: StreamMessagesOptions())
+        for try await message in stream {
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+            guard message.role == .user || message.role == .assistant else { continue }
+
+            stats.indexedMessageCount += 1
+            if message.role == .assistant {
+                stats.assistantCount += 1
+            }
+            if message.role == .tool || !(message.toolCalls ?? []).isEmpty {
+                stats.toolCount += 1
+            }
+            if message.role == .user, stats.firstUserMessages.count < 3 {
+                stats.firstUserMessages.append(message.content)
+            }
+        }
+        return stats
     }
 
     private func buildSnapshot(
         info: NormalizedSessionInfo,
         locator: String,
-        messages: [NormalizedMessage]
+        stats: SessionStreamStats
     ) -> AuthoritativeSessionSnapshot {
-        let assistantCount = messages.filter { $0.role == .assistant }.count
-        let toolCount = messages.filter { $0.role == .tool || !($0.toolCalls ?? []).isEmpty }.count
         let tier = SessionTier.compute(
             TierInput(
                 messageCount: info.messageCount,
@@ -85,12 +148,12 @@ public final class SwiftIndexer {
                 startTime: info.startTime,
                 endTime: info.endTime,
                 source: info.source.rawValue,
-                isPreamble: isPreambleOnly(messages.filter { $0.role == .user }.prefix(3).map(\.content)),
-                assistantCount: assistantCount,
-                toolCount: toolCount
+                isPreamble: isPreambleOnly(stats.firstUserMessages),
+                assistantCount: stats.assistantCount,
+                toolCount: stats.toolCount
             )
         )
-        let summaryMessageCount = messages.count
+        let summaryMessageCount = stats.indexedMessageCount
         return AuthoritativeSessionSnapshot(
             id: info.id,
             source: info.source,

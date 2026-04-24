@@ -67,7 +67,12 @@ struct RenameSheet: View {
 
             Divider()
 
-            if isLoadingCwds {
+            if !nativeProjectMigrationCommandsEnabled {
+                Label(nativeProjectMigrationUnavailableMessage, systemImage: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 12)
+            } else if isLoadingCwds {
                 ProgressView("Looking up project path…")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 20)
@@ -157,7 +162,10 @@ struct RenameSheet: View {
 
             HStack {
                 Spacer()
-                if residualRefCount != nil {
+                if !nativeProjectMigrationCommandsEnabled {
+                    Button("Close") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                } else if residualRefCount != nil {
                     // Post-commit state: offer explicit dismiss so the user
                     // has to acknowledge the residual-refs warning.
                     Button("Close") {
@@ -202,7 +210,10 @@ struct RenameSheet: View {
         // is running — otherwise the user thinks they cancelled, but the
         // Task keeps writing to the FS + DB.
         .interactiveDismissDisabled(isExecuting || isPreviewLoading)
-        .task { await loadCwds() }
+        .task {
+            guard nativeProjectMigrationCommandsEnabled else { return }
+            await loadCwds()
+        }
         .onDisappear { activeTask?.cancel() }
         // Round 4: instead of hard-clearing the preview (abrupt visual
         // jump), flag it stale and render dimmed with an inline notice.

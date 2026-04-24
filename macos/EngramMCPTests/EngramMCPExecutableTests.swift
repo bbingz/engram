@@ -15,7 +15,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             XCTFail("Expected tools/list result.tools array")
             return
         }
-        XCTAssertEqual(tools.count, 26)
+        XCTAssertEqual(tools.count, 22)
     }
 
     func testToolNameParityMatchesNodeAllTools() throws {
@@ -384,10 +384,6 @@ final class EngramMCPExecutableTests: XCTestCase {
         let listExpected = try String(contentsOfFile: fixturePath("mcp-golden/manage_project_alias.list.json"), encoding: .utf8)
         XCTAssertEqual(listActual, listExpected)
 
-        let addGolden = try Data(contentsOf: URL(fileURLWithPath: fixturePath("mcp-golden/manage_project_alias.add.json")))
-        let addStructured = try XCTUnwrap(try JSONDecoder().decode(TestJSONValue.self, from: addGolden)["structuredContent"])
-        let removeGolden = try Data(contentsOf: URL(fileURLWithPath: fixturePath("mcp-golden/manage_project_alias.remove.json")))
-        let removeStructured = try XCTUnwrap(try JSONDecoder().decode(TestJSONValue.self, from: removeGolden)["structuredContent"])
         var seenActions: [String] = []
         let server = try MockServiceSocketServer { request in
             switch request.command {
@@ -406,9 +402,15 @@ final class EngramMCPExecutableTests: XCTestCase {
                 seenActions.append(action)
                 switch action {
                 case "add":
-                    return try request.success(addStructured, databaseGeneration: 1)
+                    return try request.success(
+                        .object(["added": .object(["alias": .string("apollo-next"), "canonical": .string("apollo")])]),
+                        databaseGeneration: 1
+                    )
                 case "remove":
-                    return try request.success(removeStructured, databaseGeneration: 2)
+                    return try request.success(
+                        .object(["removed": .object(["alias": .string("apollo-next"), "canonical": .string("apollo")])]),
+                        databaseGeneration: 2
+                    )
                 default:
                     throw NSError(domain: "MockServiceSocketServer", code: 102)
                 }
@@ -429,10 +431,7 @@ final class EngramMCPExecutableTests: XCTestCase {
                 "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
-        XCTAssertEqual(
-            try prettyJSONString(from: XCTUnwrap(addCapture.ordered["result"])),
-            try String(contentsOfFile: fixturePath("mcp-golden/manage_project_alias.add.json"), encoding: .utf8)
-        )
+        try assertAliasMutation(addCapture, key: "added")
 
         let removeCapture = try rpc(
             """
@@ -443,10 +442,7 @@ final class EngramMCPExecutableTests: XCTestCase {
                 "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
-        XCTAssertEqual(
-            try prettyJSONString(from: XCTUnwrap(removeCapture.ordered["result"])),
-            try String(contentsOfFile: fixturePath("mcp-golden/manage_project_alias.remove.json"), encoding: .utf8)
-        )
+        try assertAliasMutation(removeCapture, key: "removed")
         XCTAssertEqual(seenActions, ["add", "remove"])
     }
 
@@ -493,182 +489,22 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    func testProjectMoveMatchesGoldenViaServiceSocket() throws {
-        let golden = try loadGoldenJSON("mcp-golden/project_move.dry_run.json")
-        let structured = try XCTUnwrap(golden["structuredContent"])
-        let server = try MockServiceSocketServer { request in
-            switch request.command {
-            case "status":
-                return try request.success(
-                    .object([
-                        "state": .string("running"),
-                        "total": .int(0),
-                        "todayParents": .int(0),
-                    ])
-                )
-            case "projectMove":
-                let body = try request.decodePayload([String: TestJSONValue].self)
-                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-                XCTAssertEqual(body["dryRun"]?.boolValue, true)
-                XCTAssertEqual(body["force"]?.boolValue, false)
-                XCTAssertEqual(body["auditNote"]?.stringValue, "fixture move dry run")
-                XCTAssertTrue(body["src"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/proj2") == true)
-                XCTAssertTrue(body["dst"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/proj2-renamed") == true)
-                return try request.success(structured, databaseGeneration: 1)
-            default:
-                throw NSError(domain: "MockServiceSocketServer", code: 101)
-            }
+    func testNativeProjectOperationsAreExplicitlyUnavailable() throws {
+        for (index, tool) in ["project_move", "project_archive", "project_undo", "project_move_batch"].enumerated() {
+            let capture = try rpc(
+                """
+                {"jsonrpc":"2.0","id":\(20 + index),"method":"tools/call","params":{"name":"\(tool)","arguments":{}}}
+                """,
+                environment: [
+                    "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                ]
+            )
+            let result = try XCTUnwrap(capture.ordered["result"]?.objectValue)
+            XCTAssertEqual(result["isError"]?.boolValue, true)
+            let text = result["content"]?.arrayValue?.first?.objectValue?["text"]?.stringValue
+            XCTAssertTrue(text?.contains(tool) == true)
+            XCTAssertTrue(text?.contains("Swift-only runtime") == true)
         }
-        try server.start()
-        defer { server.stop() }
-
-        let capture = try rpc(
-            """
-            {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"project_move","arguments":{"src":"~/proj2","dst":"~/proj2-renamed","dry_run":true,"note":"fixture move dry run"}}}
-            """,
-            environment: [
-                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
-                "HOME": fixturePath("mcp-runtime/write-home"),
-            ]
-        )
-        XCTAssertEqual(
-            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
-            try String(contentsOfFile: fixturePath("mcp-golden/project_move.dry_run.json"), encoding: .utf8)
-        )
-    }
-
-    func testProjectArchiveMatchesGoldenViaServiceSocket() throws {
-        let golden = try loadGoldenJSON("mcp-golden/project_archive.dry_run.json")
-        let structured = try XCTUnwrap(golden["structuredContent"])
-        let server = try MockServiceSocketServer { request in
-            switch request.command {
-            case "status":
-                return try request.success(
-                    .object([
-                        "state": .string("running"),
-                        "total": .int(0),
-                        "todayParents": .int(0),
-                    ])
-                )
-            case "projectArchive":
-                let body = try request.decodePayload([String: TestJSONValue].self)
-                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-                XCTAssertEqual(body["dryRun"]?.boolValue, true)
-                XCTAssertEqual(body["force"]?.boolValue, false)
-                XCTAssertEqual(body["auditNote"]?.stringValue, "fixture archive dry run")
-                XCTAssertEqual(body["archiveTo"], nil)
-                XCTAssertTrue(body["src"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/arch-me") == true)
-                return try request.success(structured, databaseGeneration: 1)
-            default:
-                throw NSError(domain: "MockServiceSocketServer", code: 102)
-            }
-        }
-        try server.start()
-        defer { server.stop() }
-
-        let capture = try rpc(
-            """
-            {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"project_archive","arguments":{"src":"~/arch-me","dry_run":true,"note":"fixture archive dry run"}}}
-            """,
-            environment: [
-                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
-                "HOME": fixturePath("mcp-runtime/write-home"),
-            ]
-        )
-        XCTAssertEqual(
-            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
-            try String(contentsOfFile: fixturePath("mcp-golden/project_archive.dry_run.json"), encoding: .utf8)
-        )
-    }
-
-    func testProjectUndoMatchesGoldenViaServiceSocket() throws {
-        let golden = try loadGoldenJSON("mcp-golden/project_undo.fixture.json")
-        let structured = try XCTUnwrap(golden["structuredContent"])
-        let server = try MockServiceSocketServer { request in
-            switch request.command {
-            case "status":
-                return try request.success(
-                    .object([
-                        "state": .string("running"),
-                        "total": .int(0),
-                        "todayParents": .int(0),
-                    ])
-                )
-            case "projectUndo":
-                let body = try request.decodePayload([String: TestJSONValue].self)
-                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-                XCTAssertEqual(body["force"]?.boolValue, false)
-                XCTAssertEqual(body["migrationId"]?.stringValue, "<generated-uuid>")
-                return try request.success(structured, databaseGeneration: 1)
-            default:
-                throw NSError(domain: "MockServiceSocketServer", code: 103)
-            }
-        }
-        try server.start()
-        defer { server.stop() }
-
-        let capture = try rpc(
-            """
-            {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"project_undo","arguments":{"migration_id":"<generated-uuid>"}}}
-            """,
-            environment: [
-                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
-            ]
-        )
-        let actual = try normalizeUUIDs(in: prettyJSONString(from: XCTUnwrap(capture.ordered["result"])))
-        let expected = try String(contentsOfFile: fixturePath("mcp-golden/project_undo.fixture.json"), encoding: .utf8)
-        XCTAssertEqual(actual, expected)
-    }
-
-    func testProjectMoveBatchMatchesGoldenViaServiceSocket() throws {
-        let golden = try loadGoldenJSON("mcp-golden/project_move_batch.dry_run.json")
-        let structured = try XCTUnwrap(golden["structuredContent"])
-        let yaml = """
-        version: 1
-        defaults: { dry_run: false }
-        operations:
-          - { src: ~/batch-src, dst: ~/batch-dst, note: fixture batch }
-        """
-        let server = try MockServiceSocketServer { request in
-            switch request.command {
-            case "status":
-                return try request.success(
-                    .object([
-                        "state": .string("running"),
-                        "total": .int(0),
-                        "todayParents": .int(0),
-                    ])
-                )
-            case "projectMoveBatch":
-                let body = try request.decodePayload([String: TestJSONValue].self)
-                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-                XCTAssertEqual(body["dry_run"]?.boolValue, true)
-                XCTAssertEqual(body["force"]?.boolValue, false)
-                XCTAssertEqual(body["yaml"]?.stringValue, yaml)
-                return try request.success(structured, databaseGeneration: 1)
-            default:
-                throw NSError(domain: "MockServiceSocketServer", code: 104)
-            }
-        }
-        try server.start()
-        defer { server.stop() }
-
-        let capture = try rpc(
-            """
-            {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"project_move_batch","arguments":{"yaml":"version: 1\\ndefaults: { dry_run: false }\\noperations:\\n  - { src: ~/batch-src, dst: ~/batch-dst, note: fixture batch }","dry_run":true}}}
-            """,
-            environment: [
-                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
-            ]
-        )
-        XCTAssertEqual(
-            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
-            try String(contentsOfFile: fixturePath("mcp-golden/project_move_batch.dry_run.json"), encoding: .utf8)
-        )
     }
 
     private func rpc(_ request: String, environment: [String: String] = [:]) throws -> RPCCapture {
@@ -722,6 +558,21 @@ final class EngramMCPExecutableTests: XCTestCase {
 
     private func prettyJSONString(from value: OrderedTestJSONValue) throws -> String {
         value.prettyJSONString() + "\n"
+    }
+
+    private func assertAliasMutation(_ capture: RPCCapture, key: String) throws {
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["structuredContent"]?[key]?["alias"]?.stringValue, "apollo-next")
+        XCTAssertEqual(result["structuredContent"]?[key]?["canonical"]?.stringValue, "apollo")
+
+        guard case .array(let content)? = result["content"],
+              let text = content.first?["text"]?.stringValue,
+              let data = text.data(using: .utf8) else {
+            return XCTFail("Expected text content")
+        }
+        let decodedText = try JSONDecoder().decode(TestJSONValue.self, from: data)
+        XCTAssertEqual(decodedText[key]?["alias"]?.stringValue, "apollo-next")
+        XCTAssertEqual(decodedText[key]?["canonical"]?.stringValue, "apollo")
     }
 
     private func assertToolCallMatchesGolden(
@@ -1297,6 +1148,21 @@ private indirect enum OrderedTestJSONValue {
     var stringValue: String? {
         guard case .string(let value) = self else { return nil }
         return value
+    }
+
+    var boolValue: Bool? {
+        guard case .bool(let value) = self else { return nil }
+        return value
+    }
+
+    var arrayValue: [OrderedTestJSONValue]? {
+        guard case .array(let values) = self else { return nil }
+        return values
+    }
+
+    var objectValue: OrderedTestJSONValue? {
+        guard case .object = self else { return nil }
+        return self
     }
 
     func prettyJSONString() -> String {

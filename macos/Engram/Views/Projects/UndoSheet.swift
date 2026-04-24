@@ -68,7 +68,12 @@ struct UndoSheet: View {
 
             Divider()
 
-            if isLoading {
+            if !nativeProjectMigrationCommandsEnabled {
+                Label(nativeProjectMigrationUnavailableMessage, systemImage: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 12)
+            } else if isLoading {
                 ProgressView("Loading recent migrations…")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 20)
@@ -128,25 +133,33 @@ struct UndoSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(isExecuting)
-                Button("Undo") {
-                    activeTask = Task { await runUndo() }
+                if !nativeProjectMigrationCommandsEnabled {
+                    Button("Close") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                        .disabled(isExecuting)
+                    Button("Undo") {
+                        activeTask = Task { await runUndo() }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        selectedMigrationId == nil
+                            || isExecuting
+                            || (selectedMigrationId.map { disabledMigrationIds.contains($0) } ?? false)
+                    )
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    selectedMigrationId == nil
-                        || isExecuting
-                        || (selectedMigrationId.map { disabledMigrationIds.contains($0) } ?? false)
-                )
             }
         }
         .padding(20)
         .frame(width: 560)
         .interactiveDismissDisabled(isExecuting)
-        .task { await loadMigrations() }
+        .task {
+            guard nativeProjectMigrationCommandsEnabled else { return }
+            await loadMigrations()
+        }
         .onDisappear { activeTask?.cancel() }
     }
 

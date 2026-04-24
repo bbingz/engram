@@ -27,13 +27,17 @@ final class SQLiteConnectionPolicyTests: XCTestCase {
             (
                 try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? "",
                 try Int.fetchOne(db, sql: "PRAGMA busy_timeout") ?? 0,
-                try Int.fetchOne(db, sql: "PRAGMA foreign_keys") ?? 0
+                try Int.fetchOne(db, sql: "PRAGMA foreign_keys") ?? 0,
+                try Int.fetchOne(db, sql: "PRAGMA wal_autocheckpoint") ?? 0,
+                try Int.fetchOne(db, sql: "PRAGMA synchronous") ?? 0
             )
         }
 
         XCTAssertEqual(pragmas.0.lowercased(), "wal")
         XCTAssertEqual(pragmas.1, 30_000)
         XCTAssertEqual(pragmas.2, 1)
+        XCTAssertEqual(pragmas.3, SQLiteConnectionPolicy.walAutocheckpointPages)
+        XCTAssertEqual(pragmas.4, 1)
     }
 
     func testReaderCanReadExistingWalDatabaseWithoutWrites() throws {

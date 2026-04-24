@@ -58,6 +58,53 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(message.usage?.cacheCreationTokens, 1)
     }
 
+    func testClaudeCodeOriginatorClassifierMatchesCodexAndGeminiSpellings() {
+        XCTAssertTrue(OriginatorClassifier.isClaudeCode("Claude Code"))
+        XCTAssertTrue(OriginatorClassifier.isClaudeCode("claude-code"))
+        XCTAssertTrue(OriginatorClassifier.isClaudeCode("CLAUDE_CODE"))
+        XCTAssertFalse(OriginatorClassifier.isClaudeCode("codex_cli_rs"))
+        XCTAssertFalse(OriginatorClassifier.isClaudeCode(nil))
+    }
+
+    func testClaudeDerivedSourceAdaptersExposeMinimaxAndLobsterSessions() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-derived-\(UUID().uuidString)", isDirectory: true)
+        let minimaxProject = root.appendingPathComponent("project", isDirectory: true)
+        let lobsterProject = root.appendingPathComponent("lobsterai-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: minimaxProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: lobsterProject, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let minimaxLocator = minimaxProject.appendingPathComponent("minimax.jsonl")
+        let lobsterLocator = lobsterProject.appendingPathComponent("claude.jsonl")
+        try claudeFixture(sessionId: "minimax-session", model: "minimax-m1").write(
+            to: minimaxLocator,
+            atomically: true,
+            encoding: .utf8
+        )
+        try claudeFixture(sessionId: "lobster-session", model: "claude-sonnet").write(
+            to: lobsterLocator,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let minimax = ClaudeCodeDerivedSourceAdapter(source: .minimax, projectsRoot: root.path)
+        let lobster = ClaudeCodeDerivedSourceAdapter(source: .lobsterai, projectsRoot: root.path)
+
+        let minimaxLocators = try await minimax.listSessionLocators()
+        let lobsterLocators = try await lobster.listSessionLocators()
+        XCTAssertEqual(minimaxLocators.map(standardizedPath), [standardizedPath(minimaxLocator.path)])
+        XCTAssertEqual(lobsterLocators.map(standardizedPath), [standardizedPath(lobsterLocator.path)])
+        guard case .success(let minimaxInfo) = try await minimax.parseSessionInfo(locator: minimaxLocator.path) else {
+            return XCTFail("minimax fixture did not parse")
+        }
+        guard case .success(let lobsterInfo) = try await lobster.parseSessionInfo(locator: lobsterLocator.path) else {
+            return XCTFail("lobster fixture did not parse")
+        }
+        XCTAssertEqual(minimaxInfo.source, .minimax)
+        XCTAssertEqual(lobsterInfo.source, .lobsterai)
+    }
+
     func testParserLimitsUseStage2ProductionThresholdsAndIdentityChecks() throws {
         XCTAssertEqual(ParserLimits.default.maxFileBytes, 100 * 1024 * 1024)
         XCTAssertEqual(ParserLimits.default.maxLineBytes, 8 * 1024 * 1024)
@@ -158,9 +205,22 @@ final class AdapterParityTests: XCTestCase {
             )
             XCTAssertEqual(result.failure, golden.failure, golden.source.rawValue)
             XCTAssertNil(result.failure, golden.source.rawValue)
-            XCTAssertEqual(result.sessionInfo, harness.expectedSessionInfo(for: golden), golden.source.rawValue)
-            XCTAssertEqual(result.messages, golden.messages ?? [], golden.source.rawValue)
-            XCTAssertEqual(result.toolCalls, golden.toolCalls ?? [], golden.source.rawValue)
+            let expectedInfo = harness.expectedSessionInfo(for: golden)
+            XCTAssertEqual(
+                result.sessionInfo,
+                expectedInfo,
+                fieldDiff("sessionInfo", source: golden.source, expected: expectedInfo, actual: result.sessionInfo)
+            )
+            XCTAssertEqual(
+                result.messages,
+                golden.messages ?? [],
+                fieldDiff("messages", source: golden.source, expected: golden.messages ?? [], actual: result.messages)
+            )
+            XCTAssertEqual(
+                result.toolCalls,
+                golden.toolCalls ?? [],
+                fieldDiff("toolCalls", source: golden.source, expected: golden.toolCalls ?? [], actual: result.toolCalls)
+            )
             XCTAssertEqual(
                 result.usageTotals,
                 golden.usageTotals ?? TokenUsage(
@@ -172,5 +232,37 @@ final class AdapterParityTests: XCTestCase {
                 golden.source.rawValue
             )
         }
+    }
+
+    private func fieldDiff<T: Encodable>(
+        _ field: String,
+        source: SourceName,
+        expected: T,
+        actual: T
+    ) -> String {
+        "\(source.rawValue) \(field) mismatch\nexpected: \(stableJSON(expected))\nactual: \(stableJSON(actual))"
+    }
+
+    private func stableJSON<T: Encodable>(_ value: T) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(value),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return String(describing: value)
+        }
+        return text
+    }
+
+    private func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    }
+
+    private func claudeFixture(sessionId: String, model: String) -> String {
+        """
+        {"type":"user","sessionId":"\(sessionId)","cwd":"/repo","timestamp":"2026-04-24T01:00:00.000Z","message":{"content":"hello"}}
+        {"type":"assistant","sessionId":"\(sessionId)","cwd":"/repo","timestamp":"2026-04-24T01:01:00.000Z","message":{"model":"\(model)","content":[{"type":"text","text":"done"}]}}
+
+        """
     }
 }

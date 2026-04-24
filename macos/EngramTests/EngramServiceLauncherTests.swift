@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import Engram
 
@@ -79,4 +80,64 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertEqual(config.socketPath, "/tmp/engram-home/.engram/run/engram-service.sock")
         XCTAssertEqual(config.databasePath, "/tmp/custom.sqlite")
     }
+
+    @MainActor
+    func testHealthMonitorRestartsThenMarksDegradedAfterBudget() async throws {
+        let executable = try makeSleeperExecutable()
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 1
+        )
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: "/tmp/engram-health.sock",
+            databasePath: "/tmp/engram-health.sqlite",
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+
+        launcher.startHealthMonitor(
+            configuration: config,
+            statusProbe: {
+                throw EngramServiceError.serviceUnavailable(message: "probe failed")
+            },
+            onStatus: { status in
+                recorder.append(status)
+            }
+        )
+
+        try await Task.sleep(nanoseconds: 80_000_000)
+        launcher.stopIfOwned()
+
+        XCTAssertTrue(recorder.statuses.contains(.starting))
+        XCTAssertTrue(recorder.statuses.contains { status in
+            if case .degraded(let message) = status {
+                return message.contains("after 1 restart attempts")
+            }
+            return false
+        })
+    }
+}
+
+@MainActor
+private final class ServiceStatusRecorder {
+    private(set) var statuses: [EngramServiceStatus] = []
+
+    func append(_ status: EngramServiceStatus) {
+        statuses.append(status)
+    }
+}
+
+private func makeSleeperExecutable() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-service-launcher-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    let executable = directory.appendingPathComponent("sleeper.sh")
+    try "#!/bin/sh\nsleep 5\n".write(to: executable, atomically: true, encoding: .utf8)
+    chmod(executable.path, 0o700)
+    return executable
 }

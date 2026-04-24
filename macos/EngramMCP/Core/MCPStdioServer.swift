@@ -10,10 +10,9 @@ final class MCPStdioServer {
     - get_memory: Retrieve previously saved insights and cross-session knowledge
     - get_session: Read full conversation transcript of any session
     - list_sessions: Browse sessions with filters (source, project, date)
-    - project_move / project_archive / project_undo: move or rename a project directory
-        while keeping all AI session history reachable (patches cwd in 6 tool stores,
-        renames Claude Code encoded dir, updates DB, creates alias). Use dry_run:true
-        first to preview impact.
+    - project_list_migrations / project_recover / project_review: inspect project
+        migration history. Native project move/archive/undo commands are not
+        exposed by the Swift-only MCP runtime until the migration pipeline is ported.
 
     Best practices:
     1. Call get_context at the start of a task to see what's been done before

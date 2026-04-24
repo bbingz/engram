@@ -36,6 +36,19 @@ final class ServiceWriterGateTests: XCTestCase {
         }
     }
 
+    func testGlobalDatabaseLockRejectsSecondRuntimeDirectory() throws {
+        let first = try makeGatePaths()
+        let second = try makeGatePaths()
+        let firstGate = try ServiceWriterGate(databasePath: first.database.path, runtimeDirectory: first.runtime)
+        _ = firstGate
+
+        XCTAssertThrowsError(try ServiceWriterGate(databasePath: first.database.path, runtimeDirectory: second.runtime)) { error in
+            guard case EngramServiceError.writerBusy = error else {
+                return XCTFail("Expected writerBusy, got \(error)")
+            }
+        }
+    }
+
     func testConcurrentWriteCommandsExecuteSerially() async throws {
         let paths = try makeGatePaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)

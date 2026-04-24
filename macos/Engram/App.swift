@@ -71,8 +71,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if environment.autoStartService {
             serviceStatusStore.apply(.starting)
             do {
-                try serviceLauncher.start(configuration: environment.serviceLaunchConfiguration())
+                let serviceConfiguration = environment.serviceLaunchConfiguration()
+                try serviceLauncher.start(configuration: serviceConfiguration)
                 startServiceStatusObservation()
+                serviceLauncher.startHealthMonitor(
+                    configuration: serviceConfiguration,
+                    statusProbe: { [serviceClient] in
+                        try await serviceClient.status()
+                    },
+                    onStatus: { [serviceStatusStore] status in
+                        serviceStatusStore.apply(status)
+                    }
+                )
             } catch {
                 serviceStatusStore.apply(.error(message: error.localizedDescription))
                 print("EngramService launch error:", error)

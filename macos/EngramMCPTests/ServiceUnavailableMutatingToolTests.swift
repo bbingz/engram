@@ -27,7 +27,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath), "save_insight must not open or write the DB")
     }
 
-    func testProjectMoveDryRunFailsClosedWithoutServiceSocket() throws {
+    func testProjectMoveDryRunIsUnavailableInSwiftOnlyRuntime() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let dbPath = temp.appendingPathComponent("should-not-exist.sqlite").path
@@ -50,7 +50,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             ]
         )
 
-        assertServiceUnavailable(result, tool: "project_move", socketPath: socketPath)
+        assertNativeProjectOperationUnavailable(result, tool: "project_move")
         XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath), "project_move dry_run must not open or write the DB")
         XCTAssertFalse(FileManager.default.fileExists(atPath: src), "project_move dry_run must not create source paths")
         XCTAssertFalse(FileManager.default.fileExists(atPath: dst), "project_move dry_run must not create destination paths")
@@ -118,7 +118,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: exportDir.path), "export must not create files without service")
     }
 
-    func testProjectArchiveFailsClosedWithoutServiceSocket() throws {
+    func testProjectArchiveIsUnavailableInSwiftOnlyRuntime() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let socketPath = temp.appendingPathComponent("missing-service.sock").path
@@ -135,10 +135,10 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             ]
         )
 
-        assertServiceUnavailable(result, tool: "project_archive", socketPath: socketPath)
+        assertNativeProjectOperationUnavailable(result, tool: "project_archive")
     }
 
-    func testProjectUndoFailsClosedWithoutServiceSocket() throws {
+    func testProjectUndoIsUnavailableInSwiftOnlyRuntime() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let socketPath = temp.appendingPathComponent("missing-service.sock").path
@@ -154,10 +154,10 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             ]
         )
 
-        assertServiceUnavailable(result, tool: "project_undo", socketPath: socketPath)
+        assertNativeProjectOperationUnavailable(result, tool: "project_undo")
     }
 
-    func testProjectMoveBatchFailsClosedWithoutServiceSocket() throws {
+    func testProjectMoveBatchIsUnavailableInSwiftOnlyRuntime() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let socketPath = temp.appendingPathComponent("missing-service.sock").path
@@ -174,7 +174,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             ]
         )
 
-        assertServiceUnavailable(result, tool: "project_move_batch", socketPath: socketPath)
+        assertNativeProjectOperationUnavailable(result, tool: "project_move_batch")
     }
 
     func testSaveInsightFailsClosedWithNonEngramSocket() throws {
@@ -263,6 +263,19 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             file: file,
             line: line
         )
+    }
+
+    private func assertNativeProjectOperationUnavailable(
+        _ result: [String: Any],
+        tool: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(result["isError"] as? Bool, true, file: file, line: line)
+        let content = result["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String
+        XCTAssertTrue(text?.contains(tool) == true, file: file, line: line)
+        XCTAssertTrue(text?.contains("Swift-only runtime") == true, file: file, line: line)
     }
 
     private func executableURL() -> URL {

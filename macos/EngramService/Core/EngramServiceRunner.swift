@@ -23,13 +23,19 @@ public enum EngramServiceRunner {
                 .appendingPathComponent("index.sqlite")
                 .path
 
-        let socketURL = URL(fileURLWithPath: socketPath)
-        let runtimeDirectory = socketURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: runtimeDirectory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        let defaultSocketPath = UnixSocketEngramServiceTransport.defaultSocketPath()
+        let runtimeDirectory: URL
+        if socketPath == defaultSocketPath {
+            runtimeDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory()
+        } else {
+            let socketURL = URL(fileURLWithPath: socketPath)
+            runtimeDirectory = socketURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: runtimeDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
         try FileManager.default.createDirectory(
             at: URL(fileURLWithPath: databasePath).deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -44,6 +50,19 @@ public enum EngramServiceRunner {
             await handler.handle(request)
         }
         try server.start()
+        let checkpointTask = Task {
+            while !Task.isCancelled {
+                try await Task.sleep(nanoseconds: 20_000_000_000)
+                do {
+                    try await gate.checkpointWal()
+                    print(#"{"event":"checkpoint","mode":"PASSIVE","ok":true}"#)
+                    fflush(stdout)
+                } catch {
+                    print(#"{"event":"checkpoint","mode":"PASSIVE","ok":false,"error":"\#(error.localizedDescription)"}"#)
+                    fflush(stdout)
+                }
+            }
+        }
 
         print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
         fflush(stdout)
@@ -51,6 +70,7 @@ public enum EngramServiceRunner {
         while !Task.isCancelled {
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
+        checkpointTask.cancel()
         server.stop()
     }
 }

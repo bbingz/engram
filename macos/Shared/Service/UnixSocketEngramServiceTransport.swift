@@ -51,36 +51,49 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
 
     @discardableResult
     static func secureRuntimeDirectory(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> URL {
+        let rootDirectory = homeDirectory.appendingPathComponent(".engram", isDirectory: true)
         let runDirectory = homeDirectory
             .appendingPathComponent(".engram", isDirectory: true)
             .appendingPathComponent("run", isDirectory: true)
         let fileManager = FileManager.default
 
-        if !fileManager.fileExists(atPath: runDirectory.path) {
+        if !fileManager.fileExists(atPath: rootDirectory.path) {
             try fileManager.createDirectory(
-                at: runDirectory,
-                withIntermediateDirectories: true,
+                at: rootDirectory,
+                withIntermediateDirectories: false,
                 attributes: [.posixPermissions: 0o700]
             )
         }
+        try validateRuntimeDirectory(rootDirectory, label: "service root directory")
 
+        if !fileManager.fileExists(atPath: runDirectory.path) {
+            try fileManager.createDirectory(
+                at: runDirectory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
+        try validateRuntimeDirectory(runDirectory, label: "service runtime directory")
+        return runDirectory
+    }
+
+    private static func validateRuntimeDirectory(_ directory: URL, label: String) throws {
         var info = stat()
-        guard lstat(runDirectory.path, &info) == 0 else {
-            throw EngramServiceError.serviceUnavailable(message: "Cannot stat service runtime directory")
+        guard lstat(directory.path, &info) == 0 else {
+            throw EngramServiceError.serviceUnavailable(message: "Cannot stat \(label)")
         }
         guard (info.st_mode & S_IFMT) == S_IFDIR else {
-            throw EngramServiceError.serviceUnavailable(message: "Service runtime path is not a directory")
+            throw EngramServiceError.serviceUnavailable(message: "\(label.capitalized) path is not a directory")
         }
         guard (info.st_mode & S_IFLNK) == 0 else {
-            throw EngramServiceError.serviceUnavailable(message: "Service runtime directory must not be a symlink")
+            throw EngramServiceError.serviceUnavailable(message: "\(label.capitalized) must not be a symlink")
         }
         guard info.st_uid == geteuid() else {
-            throw EngramServiceError.serviceUnavailable(message: "Service runtime directory is owned by another user")
+            throw EngramServiceError.serviceUnavailable(message: "\(label.capitalized) is owned by another user")
         }
         guard (info.st_mode & 0o077) == 0 else {
-            throw EngramServiceError.serviceUnavailable(message: "Service runtime directory must be mode 0700")
+            throw EngramServiceError.serviceUnavailable(message: "\(label.capitalized) must be mode 0700")
         }
-        return runDirectory
     }
 
     static func writeFrame(_ data: Data, to fd: Int32) throws {
@@ -159,13 +172,19 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
     }
 
     static func bindSocket(path: String) throws -> Int32 {
+        let socketURL = URL(fileURLWithPath: path)
+        let parentDirectory = socketURL.deletingLastPathComponent()
+        try validateRuntimeDirectory(parentDirectory, label: "service socket directory")
+        try removeStaleSocket(at: path)
+        try validateRuntimeDirectory(parentDirectory, label: "service socket directory")
+
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw EngramServiceError.serviceUnavailable(message: "Cannot create service socket")
         }
         do {
-            try? FileManager.default.removeItem(atPath: path)
             try withSockAddr(path: path) { pointer, length in
+                try validateRuntimeDirectory(parentDirectory, label: "service socket directory")
                 guard Darwin.bind(fd, pointer, length) == 0 else {
                     throw EngramServiceError.serviceUnavailable(message: "Cannot bind EngramService socket")
                 }
@@ -178,6 +197,20 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
             Darwin.close(fd)
             throw error
         }
+    }
+
+    private static func removeStaleSocket(at path: String) throws {
+        var info = stat()
+        if lstat(path, &info) != 0 {
+            guard errno == ENOENT else {
+                throw EngramServiceError.serviceUnavailable(message: "Cannot inspect existing service socket")
+            }
+            return
+        }
+        guard (info.st_mode & S_IFMT) == S_IFSOCK else {
+            throw EngramServiceError.serviceUnavailable(message: "Refusing to remove non-socket service path")
+        }
+        try FileManager.default.removeItem(atPath: path)
     }
 
     private static func writeAll(_ buffer: UnsafeRawBufferPointer, to fd: Int32) throws {

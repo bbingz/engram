@@ -4,13 +4,7 @@
 // Example:  TZ=UTC ./node_modules/.bin/tsx scripts/gen-mcp-contract-fixtures.ts
 // Without TZ=UTC the generator emits host-local times (e.g. +08:00 CST) while
 // xctest outputs UTC — 5 goldens with timestamps would silently diverge.
-import {
-  copyFileSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CodexAdapter } from '../src/adapters/codex.js';
@@ -28,13 +22,9 @@ import { handleLintConfig } from '../src/tools/lint_config.js';
 import { handleListSessions } from '../src/tools/list_sessions.js';
 import { handleLiveSessions } from '../src/tools/live_sessions.js';
 import {
-  handleProjectArchive,
   handleProjectListMigrations,
-  handleProjectMove,
-  handleProjectMoveBatch,
   handleProjectRecover,
   handleProjectReview,
-  handleProjectUndo,
 } from '../src/tools/project.js';
 import { handleProjectTimeline } from '../src/tools/project_timeline.js';
 import { handleSaveInsight } from '../src/tools/save_insight.js';
@@ -52,8 +42,12 @@ const linkTargetDir = resolve(runtimeDir, 'engram');
 const reviewHomeDir = resolve(runtimeDir, 'review-home');
 const transcriptDir = resolve(runtimeDir, 'transcripts');
 const exportHomeDir = resolve(runtimeDir, 'export-home');
-const writeHomeDir = resolve(runtimeDir, 'write-home');
-const writeDbPath = resolve(runtimeDir, 'mcp-write.sqlite');
+const swiftUnavailableProjectOperationTools = new Set([
+  'project_move',
+  'project_archive',
+  'project_undo',
+  'project_move_batch',
+]);
 
 rmSync(fixtureDbPath, { force: true });
 rmSync(`${fixtureDbPath}-wal`, { force: true });
@@ -63,7 +57,6 @@ rmSync(runtimeDir, { recursive: true, force: true });
 mkdirSync(goldenDir, { recursive: true });
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(transcriptDir, { recursive: true });
-mkdirSync(writeHomeDir, { recursive: true });
 
 const db = new Database(fixtureDbPath);
 const raw = db.getRawDb();
@@ -783,78 +776,12 @@ const goldens: Record<string, unknown> = {
   ),
 };
 
-const writeGoldens = await (async () => {
-  const previousHome = process.env.HOME;
-  process.env.HOME = writeHomeDir;
-  try {
-    copyFileSync(fixtureDbPath, writeDbPath);
-    const writeDb = new Database(writeDbPath);
-
-    mkdirSync(resolve(writeHomeDir, 'proj2'), { recursive: true });
-    writeFileSync(resolve(writeHomeDir, 'proj2/a.txt'), 'x\n');
-
-    mkdirSync(resolve(writeHomeDir, 'arch-me'), { recursive: true });
-    writeFileSync(resolve(writeHomeDir, 'arch-me/README.md'), '# fixture\n');
-
-    mkdirSync(resolve(writeHomeDir, 'undo-src'), { recursive: true });
-    writeFileSync(resolve(writeHomeDir, 'undo-src/a.txt'), 'x\n');
-
-    mkdirSync(resolve(writeHomeDir, 'batch-src'), { recursive: true });
-    writeFileSync(resolve(writeHomeDir, 'batch-src/a.txt'), 'x\n');
-
-    const projectMove = normalizeDynamic(
-      await handleProjectMove(writeDb, {
-        src: '~/proj2',
-        dst: '~/proj2-renamed',
-        dry_run: true,
-        note: 'fixture move dry run',
-      }),
-    );
-    const projectArchive = normalizeDynamic(
-      await handleProjectArchive(writeDb, {
-        src: '~/arch-me',
-        dry_run: true,
-        note: 'fixture archive dry run',
-      }),
-    );
-    const forward = await handleProjectMove(writeDb, {
-      src: '~/undo-src',
-      dst: '~/undo-dst',
-      note: 'fixture forward move',
-    });
-    const projectUndo = normalizeDynamic(
-      await handleProjectUndo(writeDb, {
-        migration_id: forward.migrationId,
-      }),
-    );
-    const projectMoveBatch = normalizeDynamic(
-      await handleProjectMoveBatch(writeDb, {
-        yaml: `
-version: 1
-defaults: { dry_run: false }
-operations:
-  - { src: ~/batch-src, dst: ~/batch-dst, note: fixture batch }
-`,
-        dry_run: true,
-      }),
-    );
-
-    return {
-      'generate_summary.fixture': earlyWithMetadata(
-        'Fixture summary: Phase C ports the stdio MCP shim and forwards writes through daemon HTTP.',
-        { sessionId: 'mcp-fixture-01' },
-      ),
-      'project_move.dry_run': success(projectMove),
-      'project_archive.dry_run': success(projectArchive),
-      'project_undo.fixture': success(projectUndo),
-      'project_move_batch.dry_run': success(projectMoveBatch),
-    };
-  } finally {
-    process.env.HOME = previousHome;
-  }
-})();
-
-Object.assign(goldens, writeGoldens);
+Object.assign(goldens, {
+  'generate_summary.fixture': earlyWithMetadata(
+    'Fixture summary: Phase C ports the stdio MCP shim and forwards writes through daemon HTTP.',
+    { sessionId: 'mcp-fixture-01' },
+  ),
+});
 
 for (const [name, payload] of Object.entries(goldens)) {
   writeFileSync(
@@ -915,7 +842,8 @@ function extractToolNamesFromIndex(): string[] {
   return entries
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
-    .map((entry) => resolveToolName(entry, importMap));
+    .map((entry) => resolveToolName(entry, importMap))
+    .filter((toolName) => !swiftUnavailableProjectOperationTools.has(toolName));
 }
 
 function extractInitializeResultFromIndex(): Record<string, unknown> {

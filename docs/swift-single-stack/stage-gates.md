@@ -49,6 +49,11 @@ These gates define when each migration stage can advance. They are intentionally
 
 ## Stage5 Node Removal
 
+Current status on 2026-04-24: not complete. The macOS product no longer ships
+the Node daemon bundle, but the repository still retains TypeScript `src/**`,
+Node fixture/build tooling, and project move/archive/undo/batch is explicitly
+disabled in the Swift MCP/UI until a native migration pipeline is ported.
+
 - Product clean checkout can build/package without running npm or shipping `node_modules`.
 - Bundle scan proves no `Contents/Resources/node/**`, `node/daemon.js`, `dist/index.js`, or Node launcher phase.
 - `src/**` product runtime and Node build phases are deleted or archived as non-shipped fixture reference.

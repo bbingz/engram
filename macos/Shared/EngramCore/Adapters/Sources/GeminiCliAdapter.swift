@@ -143,7 +143,7 @@ final class GeminiCliAdapter: SessionAdapter {
                     filePath: locator,
                     sizeBytes: Phase4AdapterSupport.fileSize(locator),
                     indexedAt: nil,
-                    agentRole: originator == "claude-code" ? "dispatched" : nil,
+                    agentRole: OriginatorClassifier.isClaudeCode(originator) ? "dispatched" : nil,
                     originator: originator,
                     origin: nil,
                     summaryMessageCount: nil,

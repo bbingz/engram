@@ -78,6 +78,8 @@ struct MessageParser {
             adapters: [
                 CodexAdapter(),
                 ClaudeCodeAdapter(),
+                ClaudeCodeDerivedSourceAdapter(source: .minimax),
+                ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
                 GeminiCliAdapter(),
                 OpenCodeAdapter(),
                 IflowAdapter(),

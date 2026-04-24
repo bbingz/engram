@@ -297,6 +297,18 @@ enum EngramMigrations {
               insight_id UNINDEXED,
               content
             );
+
+            CREATE TABLE IF NOT EXISTS memory_insights (
+              id TEXT PRIMARY KEY,
+              content TEXT NOT NULL,
+              wing TEXT,
+              room TEXT,
+              source_session_id TEXT,
+              importance INTEGER DEFAULT 5,
+              model TEXT NOT NULL DEFAULT 'unknown',
+              created_at TEXT DEFAULT (datetime('now')),
+              deleted_at TEXT
+            );
         """)
     }
 

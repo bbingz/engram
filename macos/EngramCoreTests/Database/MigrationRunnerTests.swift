@@ -30,6 +30,21 @@ final class MigrationRunnerTests: XCTestCase {
 
         XCTAssertTrue(SchemaManifest.baseTables.isSubset(of: snapshot.tableNames))
         XCTAssertTrue(SchemaManifest.requiredMetadataKeys.isSubset(of: snapshot.metadataKeys))
+
+        let memoryInsightColumns = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('memory_insights') ORDER BY cid")
+        }
+        XCTAssertEqual(memoryInsightColumns, [
+            "id",
+            "content",
+            "wing",
+            "room",
+            "source_session_id",
+            "importance",
+            "model",
+            "created_at",
+            "deleted_at",
+        ])
     }
 
     func testMigrationIsIdempotentAcrossRepeatedRuns() throws {

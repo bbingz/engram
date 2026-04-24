@@ -11,7 +11,14 @@ public enum FTSRebuildPolicy {
         )
         guard current != expectedVersion else { return }
 
-        try db.execute(sql: "DELETE FROM sessions_fts")
+        try db.execute(sql: "DROP TABLE IF EXISTS sessions_fts")
+        try db.execute(sql: """
+            CREATE VIRTUAL TABLE sessions_fts USING fts5(
+              session_id UNINDEXED,
+              content,
+              tokenize='trigram case_sensitive 0'
+            )
+        """)
         try db.execute(sql: "UPDATE sessions SET size_bytes = 0")
         if try tableExists(db, "session_embeddings") {
             try db.execute(sql: "DELETE FROM session_embeddings")

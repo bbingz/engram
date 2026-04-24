@@ -100,6 +100,9 @@ jobs:
             2>&1 | tee xcodebuild.log
           grep -q '** TEST SUCCEEDED **' xcodebuild.log
 
+      - name: Check Swift/Node schema compatibility
+        run: npx tsx scripts/db/check-swift-schema-compat.ts --fixture-root tests/fixtures
+
   fixture-check:
     runs-on: macos-15
     timeout-minutes: 5

@@ -13,6 +13,8 @@ public actor ServiceWriterGate {
     public let databasePath: String
     private let lockFD: Int32
     private let lockPath: String
+    private let databaseLockFD: Int32
+    private let databaseLockPath: String
     private let writer: EngramDatabaseWriter
     private let writeSemaphore = ServiceAsyncSemaphore(value: 1)
     private var databaseGeneration = 0
@@ -26,10 +28,23 @@ public actor ServiceWriterGate {
         self.databasePath = databasePath
         lockPath = runtimeDirectory.appendingPathComponent("engram-service.lock").path
         lockFD = try Self.acquireProcessLock(path: lockPath)
+        databaseLockPath = URL(fileURLWithPath: databasePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent(".lock")
+            .path
+        do {
+            databaseLockFD = try Self.acquireProcessLock(path: databaseLockPath)
+        } catch {
+            flock(lockFD, LOCK_UN)
+            close(lockFD)
+            throw error
+        }
 
         do {
             writer = try writerFactory(databasePath)
         } catch {
+            flock(databaseLockFD, LOCK_UN)
+            close(databaseLockFD)
             flock(lockFD, LOCK_UN)
             close(lockFD)
             throw error
@@ -37,6 +52,8 @@ public actor ServiceWriterGate {
     }
 
     deinit {
+        flock(databaseLockFD, LOCK_UN)
+        close(databaseLockFD)
         flock(lockFD, LOCK_UN)
         close(lockFD)
     }
@@ -51,6 +68,17 @@ public actor ServiceWriterGate {
             databaseGeneration += 1
             await writeSemaphore.signal()
             return ServiceWriterGateResult(value: value, databaseGeneration: databaseGeneration)
+        } catch {
+            await writeSemaphore.signal()
+            throw error
+        }
+    }
+
+    public func checkpointWal() async throws {
+        await writeSemaphore.wait()
+        do {
+            try writer.checkpointPassive()
+            await writeSemaphore.signal()
         } catch {
             await writeSemaphore.signal()
             throw error

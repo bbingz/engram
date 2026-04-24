@@ -4,7 +4,7 @@ Date: 2026-04-24
 
 ## Gate Status
 
-Stage 5 risk closure completed for the remaining app-side SQLite writer, Node app packaging, service-internal compatibility bridge, and Swift 6 warning surfaces found in the App scheme build.
+Stage 5 is partially closed, not fully complete. The remaining app-side SQLite writer, Node app packaging, service-internal compatibility bridge, and Swift 6 warning surfaces found in the App scheme build were closed, but the repository still retains TypeScript `src/**` and Node fixture tooling as development/reference material.
 
 Closed:
 
@@ -12,6 +12,7 @@ Closed:
 - `ServiceWriterGate` owns App session metadata mutation commands: `setFavorite`, `renameSession`, `setSessionHidden`, and `hideEmptySessions`.
 - `ServiceWriterGate` also owns `saveInsight` and `manageProjectAlias`; both now write native Swift/GRDB tables without invoking the Node compatibility bridge.
 - `LegacyDaemonBridge` is deleted. Former bridge commands now either run in Swift service code (`hygiene`, `handoff`, `generateSummary`, `regenerateAllTitles`, `triggerSync`) or fail closed with `UnsupportedNativeCommand` and `retry_policy = never` (`projectMove`, `projectArchive`, `projectUndo`, `projectMoveBatch`).
+- Swift MCP and App UI no longer expose project move/archive/undo/batch entrypoints. Direct MCP calls return an explicit unavailable error until the native Swift project migration pipeline is ported.
 - XcodeGen no longer emits the `Bundle Node.js Daemon` phase.
 - `macos/scripts/build-node-bundle.sh` is deleted.
 - Root `package.json` and `package-lock.json` no longer expose `dist/index.js` or `dist/cli/index.js` as shipped `main`/`bin` entrypoints.
@@ -21,6 +22,7 @@ Still intentionally retained:
 
 - Project move/archive/undo/batch execution is not reimplemented in Swift yet; the service rejects these commands explicitly instead of forwarding to a daemon bridge.
 - TypeScript `src/**` and fixture scripts remain dev/reference material only; they are not copied into the macOS app bundle.
+- A clean checkout still needs npm for fixture/schema parity checks in CI; full Stage 5 requires deleting or archiving Node source/runtime scripts rather than retaining them as active development tools.
 
 ## Recorded Verification
 

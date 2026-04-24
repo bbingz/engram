@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GRDB
 
@@ -36,13 +37,45 @@ enum TranscriptExportService {
     }
 
     private static func outputHome(from requestedHome: String?) throws -> String {
+        let serviceHome = URL(
+            fileURLWithPath: ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory(),
+            isDirectory: true
+        ).standardizedFileURL
         guard let requestedHome, !requestedHome.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+            return serviceHome.path
         }
-        guard requestedHome.hasPrefix("/") else {
+        let trimmed = requestedHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawURL = URL(fileURLWithPath: trimmed, isDirectory: true)
+        guard trimmed.hasPrefix("/") else {
             throw EngramServiceError.invalidRequest(message: "output_home must be an absolute path")
         }
-        return requestedHome
+        guard !trimmed.split(separator: "/").contains("..") else {
+            throw EngramServiceError.invalidRequest(message: "output_home must not contain '..'")
+        }
+        let outputURL = rawURL.standardizedFileURL
+        guard outputURL.path == serviceHome.path || outputURL.path.hasPrefix(serviceHome.path + "/") else {
+            throw EngramServiceError.invalidRequest(message: "output_home must be within HOME")
+        }
+        try rejectSymlinkAncestors(from: outputURL, through: serviceHome)
+        return outputURL.path
+    }
+
+    private static func rejectSymlinkAncestors(from outputURL: URL, through homeURL: URL) throws {
+        var current = outputURL
+        while current.path.hasPrefix(homeURL.path) {
+            var info = stat()
+            if lstat(current.path, &info) == 0 {
+                guard (info.st_mode & S_IFMT) != S_IFLNK else {
+                    throw EngramServiceError.invalidRequest(message: "output_home must not traverse symlinks")
+                }
+            } else if errno != ENOENT {
+                throw EngramServiceError.invalidRequest(message: "Cannot inspect output_home")
+            }
+            if current.path == homeURL.path { break }
+            let parent = current.deletingLastPathComponent()
+            guard parent.path != current.path else { break }
+            current = parent
+        }
     }
 
     private static func fetchSession(id: String, queue: DatabaseQueue) throws -> ServiceExportSessionRecord? {

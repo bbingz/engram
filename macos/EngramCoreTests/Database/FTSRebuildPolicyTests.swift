@@ -38,6 +38,7 @@ final class FTSRebuildPolicyTests: XCTestCase {
         XCTAssertEqual(counts.insights, 1)
         XCTAssertEqual(counts.insightsFts, 1)
         XCTAssertEqual(counts.ftsVersion, "3")
+        XCTAssertTrue((try tableSQL(writer, "sessions_fts") ?? "").contains("CREATE VIRTUAL TABLE sessions_fts"))
     }
 
     func testCurrentFTSVersionIsNoOp() throws {
@@ -103,5 +104,15 @@ final class FTSRebuildPolicyTests: XCTestCase {
 
     private func databasePath(_ name: String) -> String {
         tempDir.appendingPathComponent(name).path
+    }
+
+    private func tableSQL(_ writer: EngramDatabaseWriter, _ name: String) throws -> String? {
+        try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                arguments: [name]
+            )
+        }
     }
 }
