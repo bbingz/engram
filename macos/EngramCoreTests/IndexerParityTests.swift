@@ -177,6 +177,23 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(sink.batchSizes, [100, 100, 5])
     }
 
+    func testStreamSnapshotsExposesBoundedConsumerPath() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [SyntheticSessionAdapter(count: 3)]
+        )
+        var ids: [String] = []
+
+        for try await snapshot in indexer.streamSnapshots() {
+            ids.append(snapshot.id)
+            if ids.count == 2 {
+                break
+            }
+        }
+
+        XCTAssertEqual(ids, ["synthetic-0", "synthetic-1"])
+    }
+
     private func makeSnapshot(
         id: String,
         syncVersion: Int = 1,

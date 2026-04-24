@@ -35,7 +35,7 @@ public final class SwiftIndexer {
         var batch: [AuthoritativeSessionSnapshot] = []
         var indexed = 0
 
-        for try await snapshot in snapshotStream(sources: sources) {
+        for try await snapshot in streamSnapshots(sources: sources) {
             batch.append(snapshot)
             if batch.count >= Self.writeBatchSize {
                 _ = try sink.upsertBatch(batch, reason: .initialScan)
@@ -57,17 +57,17 @@ public final class SwiftIndexer {
 
     public func collectSnapshots(sources: Set<SourceName>? = nil) async throws -> [AuthoritativeSessionSnapshot] {
         var snapshots: [AuthoritativeSessionSnapshot] = []
-        for try await snapshot in snapshotStream(sources: sources) {
+        for try await snapshot in streamSnapshots(sources: sources) {
             snapshots.append(snapshot)
         }
         return snapshots
     }
 
-    private func snapshotStream(
+    public func streamSnapshots(
         sources: Set<SourceName>? = nil
     ) -> AsyncThrowingStream<AuthoritativeSessionSnapshot, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let scanTask = Task {
                 do {
                     try await scanSnapshots(sources: sources) { snapshot in
                         continuation.yield(snapshot)
@@ -77,6 +77,9 @@ public final class SwiftIndexer {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in
+                scanTask.cancel()
+            }
         }
     }
 
@@ -85,10 +88,12 @@ public final class SwiftIndexer {
         yield: (AuthoritativeSessionSnapshot) -> Void
     ) async throws {
         for adapter in adapters {
+            try Task.checkCancellation()
             if let sources, !sources.contains(adapter.source) { continue }
             guard await adapter.detect() else { continue }
 
             for locator in try await adapter.listSessionLocators() {
+                try Task.checkCancellation()
                 switch try await adapter.parseSessionInfo(locator: locator) {
                 case .failure:
                     continue
