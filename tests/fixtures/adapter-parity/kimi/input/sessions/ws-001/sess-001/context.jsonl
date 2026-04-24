@@ -1,0 +1,5 @@
+{"role": "_checkpoint", "id": 0}
+{"role": "user", "content": "帮我排查内存泄漏"}
+{"role": "_checkpoint", "id": 1}
+{"role": "assistant", "content": "我来帮你分析内存使用情况。"}
+{"role": "user", "content": "找到了，谢谢"}

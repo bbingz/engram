@@ -2,6 +2,8 @@
 import SwiftUI
 
 struct AISettingsSection: View {
+    @Environment(EngramServiceClient.self) var serviceClient
+
     // Provider
     @State private var aiProtocol: String = "openai"
     @State private var aiBaseURL: String = ""
@@ -294,17 +296,10 @@ struct AISettingsSection: View {
 
                         Button("Regenerate All") {
                             titleRegenerateStatus = "Queued…"
-                            let port = readEngramSettings()?["httpPort"] as? Int ?? 3457
                             Task {
                                 do {
-                                    var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/titles/regenerate-all")!)
-                                    req.httpMethod = "POST"
-                                    if let token = readEngramSettings()?["httpBearerToken"] as? String {
-                                        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                                    }
-                                    let (data, _) = try await URLSession.shared.data(for: req)
-                                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                                    titleRegenerateStatus = (json?["status"] as? String) ?? "Started"
+                                    let response = try await serviceClient.regenerateAllTitles()
+                                    titleRegenerateStatus = response.status
                                 } catch {
                                     titleRegenerateStatus = "Error"
                                 }

@@ -170,10 +170,19 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(messages[3].systemCategory, .agentComm)
     }
 
+    func testParseWithOffsetAndLimit() throws {
+        let path = try fixturePath("codex.jsonl")
+        let messages = MessageParser.parse(filePath: path, source: "codex", offset: 1, limit: 1)
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, "assistant")
+        XCTAssertEqual(messages[0].content, "Codex response here")
+    }
+
     /// 13. Unknown source returns empty array
     func testUnknownSourceReturnsEmpty() throws {
         let path = try fixturePath("valid.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "vscode")
+        let messages = MessageParser.parse(filePath: path, source: "unknown-source")
         XCTAssertTrue(messages.isEmpty)
     }
 

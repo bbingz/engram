@@ -23,6 +23,22 @@ struct MCPToolDefinition {
 }
 
 enum MCPToolRegistry {
+    enum ToolCategory: String {
+        case readOnly
+        case mutating
+        case operational
+        case longRunningRead
+
+        var requiresServiceSocket: Bool {
+            switch self {
+            case .readOnly:
+                return false
+            case .mutating, .operational, .longRunningRead:
+                return true
+            }
+        }
+    }
+
     static let tools: [MCPToolDefinition] = [
         MCPToolDefinition(
             name: "list_sessions",
@@ -690,6 +706,15 @@ enum MCPToolRegistry {
         arguments: [String: JSONValue],
         config: MCPConfig
     ) async throws -> OrderedJSONValue {
+        let category = toolCategory(name: name, arguments: arguments)
+        if category.requiresServiceSocket, !(await config.canReachEngramService()) {
+            return .serviceUnavailable(
+                tool: name,
+                category: category.rawValue,
+                socketPath: config.serviceSocketPath
+            )
+        }
+
         switch name {
         case "list_sessions":
             let database = try MCPDatabase(path: config.dbPath)
@@ -779,6 +804,7 @@ enum MCPToolRegistry {
                 cwd: try requiredString("cwd", in: arguments),
                 task: arguments["task"]?.stringValue,
                 maxTokens: arguments["max_tokens"]?.intValue ?? 4000,
+                detail: arguments["detail"]?.stringValue ?? "full",
                 sortBy: arguments["sort_by"]?.stringValue ?? "recency",
                 includeEnvironment: arguments["include_environment"]?.boolValue ?? true
             )
@@ -793,11 +819,19 @@ enum MCPToolRegistry {
         case "lint_config":
             return .toolSuccess(MCPFileTools.lintConfig(cwd: try requiredString("cwd", in: arguments)))
         case "link_sessions":
-            let database = try MCPDatabase(path: config.dbPath)
-            let structured = try MCPFileTools.linkSessions(
-                database: database,
-                targetDir: try requiredString("targetDir", in: arguments)
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
+            let response = try await serviceClient.linkSessions(
+                EngramServiceLinkSessionsRequest(
+                    targetDir: try requiredString("targetDir", in: arguments),
+                    actor: "mcp"
+                )
             )
+            let structured = orderedLinkSessionsResult(from: response)
             return .toolSuccess(structured)
         case "project_review":
             let structured = MCPFileTools.projectReview(
@@ -816,12 +850,21 @@ enum MCPToolRegistry {
             )
             return .toolSuccess(structured)
         case "export":
-            let database = try MCPDatabase(path: config.dbPath)
-            let structured = try MCPTranscriptTools.exportSession(
-                database: database,
-                id: try requiredString("id", in: arguments),
-                format: arguments["format"]?.stringValue ?? "markdown"
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
+            let response = try await serviceClient.exportSession(
+                EngramServiceExportSessionRequest(
+                    id: try requiredString("id", in: arguments),
+                    format: arguments["format"]?.stringValue ?? "markdown",
+                    outputHome: ProcessInfo.processInfo.environment["HOME"],
+                    actor: "mcp"
+                )
             )
+            let structured = orderedExportSessionResult(from: response)
             return .toolSuccess(structured)
         case "handoff":
             let database = try MCPDatabase(path: config.dbPath)
@@ -833,15 +876,16 @@ enum MCPToolRegistry {
             )
             return .toolSuccess(structured)
         case "generate_summary":
-            let body = GenerateSummaryBody(
-                actor: "mcp",
-                sessionId: try requiredString("sessionId", in: arguments)
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
+            let sessionId = try requiredString("sessionId", in: arguments)
+            let response = try await serviceClient.generateSummary(
+                EngramServiceGenerateSummaryRequest(sessionId: sessionId)
             )
-            let client = DaemonHTTPClientCore(
-                baseURL: config.daemonBaseURL,
-                bearerTokenProvider: { config.bearerToken }
-            )
-            let response: GenerateSummaryResponse = try await client.post("/api/summary", body: body)
             return .object([
                 ("content", .array([
                     .object([
@@ -850,24 +894,27 @@ enum MCPToolRegistry {
                     ]),
                 ])),
                 ("metadata", .object([
-                    ("sessionId", .string(body.sessionId)),
+                    ("sessionId", .string(sessionId)),
                 ])),
             ])
         case "save_insight":
-            let body = SaveInsightBody(
-                actor: "mcp",
-                content: try requiredString("content", in: arguments),
-                wing: arguments["wing"]?.stringValue,
-                room: arguments["room"]?.stringValue,
-                importance: arguments["importance"]?.doubleValue,
-                sourceSessionID: arguments["source_session_id"]?.stringValue
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
+            let raw = try await serviceClient.saveInsight(
+                EngramServiceSaveInsightRequest(
+                    content: try requiredString("content", in: arguments),
+                    wing: arguments["wing"]?.stringValue,
+                    room: arguments["room"]?.stringValue,
+                    importance: arguments["importance"]?.doubleValue,
+                    sourceSessionId: arguments["source_session_id"]?.stringValue,
+                    actor: "mcp"
+                )
             )
-            let client = DaemonHTTPClientCore(
-                baseURL: config.daemonBaseURL,
-                bearerTokenProvider: { config.bearerToken }
-            )
-            let raw: JSONValue = try await client.post("/api/insight", body: body)
-            let structured = orderedSaveInsight(from: raw)
+            let structured = orderedSaveInsight(from: jsonValue(raw))
             return .toolSuccess(structured)
         case "manage_project_alias":
             let action = try requiredString("action", in: arguments)
@@ -876,105 +923,100 @@ enum MCPToolRegistry {
                 let database = try MCPDatabase(path: config.dbPath)
                 return .toolSuccess(try database.listProjectAliases())
             case "add", "remove":
-                let alias = try requiredString("old_project", in: arguments)
-                let canonical = try requiredString("new_project", in: arguments)
-                let body = ProjectAliasBody(
-                    actor: "mcp",
-                    alias: alias,
-                    canonical: canonical
-                )
-                let client = DaemonHTTPClientCore(
-                    baseURL: config.daemonBaseURL,
-                    bearerTokenProvider: { config.bearerToken }
-                )
-                if action == "add" {
-                    let _: JSONValue = try await client.post("/api/project-aliases", body: body)
-                    return .toolSuccess(
-                        .object([
-                            ("added", .object([
-                                ("alias", .string(alias)),
-                                ("canonical", .string(canonical)),
-                            ])),
-                        ])
-                    )
-                } else {
-                    let _: JSONValue = try await client.delete("/api/project-aliases", body: body)
-                    return .toolSuccess(
-                        .object([
-                            ("removed", .object([
-                                ("alias", .string(alias)),
-                                ("canonical", .string(canonical)),
-                            ])),
-                        ])
-                    )
+                let serviceClient = makeServiceClient(config: config)
+                defer {
+                    Task {
+                        await serviceClient.close()
+                    }
                 }
+                let raw = try await serviceClient.manageProjectAlias(
+                    EngramServiceProjectAliasRequest(
+                        action: action,
+                        oldProject: try requiredString("old_project", in: arguments),
+                        newProject: try requiredString("new_project", in: arguments),
+                        actor: "mcp"
+                    )
+                )
+                return .toolSuccess(OrderedJSONValue(jsonValue(raw)))
             default:
                 return .toolError(message: "Unknown action: \(action)")
             }
         case "project_move":
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
             let originalSrc = try requiredString("src", in: arguments)
             let originalDst = try requiredString("dst", in: arguments)
             let src = expandHomePath(originalSrc)
             let dst = expandHomePath(originalDst)
-            let body = ProjectMoveBody(
-                actor: "mcp",
-                src: src,
-                dst: dst,
-                dryRun: arguments["dry_run"]?.boolValue ?? false,
-                force: arguments["force"]?.boolValue ?? false,
-                auditNote: arguments["note"]?.stringValue
+            let response = try await serviceClient.projectMove(
+                EngramServiceProjectMoveRequest(
+                    src: src,
+                    dst: dst,
+                    dryRun: arguments["dry_run"]?.boolValue ?? false,
+                    force: arguments["force"]?.boolValue ?? false,
+                    auditNote: arguments["note"]?.stringValue,
+                    actor: "mcp"
+                )
             )
-            let client = DaemonHTTPClientCore(
-                baseURL: config.daemonBaseURL,
-                bearerTokenProvider: { config.bearerToken }
-            )
-            let raw: JSONValue = try await client.post("/api/project/move", body: body)
             let resolved: (src: String, dst: String)? = (src != originalSrc || dst != originalDst)
                 ? (src, dst)
                 : nil
-            let ordered = orderedProjectMoveResult(from: raw, resolved: resolved)
+            let ordered = orderedProjectMoveResult(from: response, resolved: resolved)
             return .toolSuccess(ordered)
         case "project_archive":
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
             let src = expandHomePath(try requiredString("src", in: arguments))
-            let body = ProjectArchiveBody(
-                actor: "mcp",
-                src: src,
-                archiveTo: arguments["to"]?.stringValue,
-                dryRun: arguments["dry_run"]?.boolValue ?? false,
-                force: arguments["force"]?.boolValue ?? false,
-                auditNote: arguments["note"]?.stringValue
+            let response = try await serviceClient.projectArchive(
+                EngramServiceProjectArchiveRequest(
+                    src: src,
+                    archiveTo: arguments["to"]?.stringValue,
+                    dryRun: arguments["dry_run"]?.boolValue ?? false,
+                    force: arguments["force"]?.boolValue ?? false,
+                    auditNote: arguments["note"]?.stringValue,
+                    actor: "mcp"
+                )
             )
-            let client = DaemonHTTPClientCore(
-                baseURL: config.daemonBaseURL,
-                bearerTokenProvider: { config.bearerToken }
-            )
-            let raw: JSONValue = try await client.post("/api/project/archive", body: body)
-            return .toolSuccess(orderedProjectArchiveResult(from: raw))
+            return .toolSuccess(orderedProjectArchiveResult(from: response))
         case "project_undo":
-            let body = ProjectUndoBody(
-                actor: "mcp",
-                migrationId: try requiredString("migration_id", in: arguments),
-                force: arguments["force"]?.boolValue ?? false
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
+            let response = try await serviceClient.projectUndo(
+                EngramServiceProjectUndoRequest(
+                    migrationId: try requiredString("migration_id", in: arguments),
+                    force: arguments["force"]?.boolValue ?? false,
+                    actor: "mcp"
+                )
             )
-            let client = DaemonHTTPClientCore(
-                baseURL: config.daemonBaseURL,
-                bearerTokenProvider: { config.bearerToken }
-            )
-            let raw: JSONValue = try await client.post("/api/project/undo", body: body)
-            return .toolSuccess(orderedPipelineResult(from: raw))
+            return .toolSuccess(orderedPipelineResult(from: response))
         case "project_move_batch":
-            let body = ProjectMoveBatchBody(
-                actor: "mcp",
-                yaml: try requiredString("yaml", in: arguments),
-                dryRun: arguments["dry_run"]?.boolValue ?? false,
-                force: arguments["force"]?.boolValue ?? false
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
+            let raw = try await serviceClient.projectMoveBatch(
+                EngramServiceProjectMoveBatchRequest(
+                    yaml: try requiredString("yaml", in: arguments),
+                    dryRun: arguments["dry_run"]?.boolValue ?? false,
+                    force: arguments["force"]?.boolValue ?? false,
+                    actor: "mcp"
+                )
             )
-            let client = DaemonHTTPClientCore(
-                baseURL: config.daemonBaseURL,
-                bearerTokenProvider: { config.bearerToken }
-            )
-            let raw: JSONValue = try await client.post("/api/project/move-batch", body: body)
-            return .toolSuccess(orderedProjectMoveBatchResult(from: raw))
+            return .toolSuccess(orderedProjectMoveBatchResult(from: jsonValue(raw)))
         case "project_recover":
             let database = try MCPDatabase(path: config.dbPath)
             let structured = try database.projectRecover(
@@ -987,6 +1029,44 @@ enum MCPToolRegistry {
         }
     }
 
+    static func toolCategory(name: String, arguments: [String: JSONValue] = [:]) -> ToolCategory {
+        switch name {
+        case "list_sessions",
+             "stats",
+             "get_costs",
+             "tool_analytics",
+             "file_activity",
+             "project_timeline",
+             "project_list_migrations",
+             "live_sessions",
+             "get_memory",
+             "search",
+             "get_context",
+             "get_insights",
+             "lint_config",
+             "project_review",
+             "get_session",
+             "handoff",
+             "project_recover":
+            return .readOnly
+        case "generate_summary":
+            return .longRunningRead
+        case "save_insight",
+             "export",
+             "link_sessions":
+            return .mutating
+        case "manage_project_alias":
+            return arguments["action"]?.stringValue == "list" ? .readOnly : .mutating
+        case "project_move",
+             "project_archive",
+             "project_undo",
+             "project_move_batch":
+            return .operational
+        default:
+            return .readOnly
+        }
+    }
+
     private static func requiredString(
         _ key: String,
         in arguments: [String: JSONValue]
@@ -996,6 +1076,12 @@ enum MCPToolRegistry {
         }
         return value
     }
+}
+
+private func makeServiceClient(config: MCPConfig) -> EngramServiceClient {
+    EngramServiceClient(
+        transport: UnixSocketEngramServiceTransport(socketPath: config.serviceSocketPath)
+    )
 }
 
 private func orderedSaveInsight(from raw: JSONValue) -> OrderedJSONValue {
@@ -1012,12 +1098,51 @@ private func orderedSaveInsight(from raw: JSONValue) -> OrderedJSONValue {
     return .object(entries)
 }
 
+private func orderedLinkSessionsResult(from response: EngramServiceLinkSessionsResponse) -> OrderedJSONValue {
+    var entries: [(String, OrderedJSONValue)] = [
+        ("created", .int(response.created)),
+        ("skipped", .int(response.skipped)),
+        ("errors", .array(response.errors.map(OrderedJSONValue.string))),
+        ("targetDir", .string(response.targetDir)),
+        ("projectNames", .array(response.projectNames.map(OrderedJSONValue.string))),
+    ]
+    if let truncated = response.truncated {
+        entries.append(("truncated", .bool(truncated)))
+    }
+    return .object(entries)
+}
+
+private func orderedExportSessionResult(from response: EngramServiceExportSessionResponse) -> OrderedJSONValue {
+    .object([
+        ("outputPath", .string(response.outputPath)),
+        ("format", .string(response.format)),
+        ("messageCount", .int(response.messageCount)),
+    ])
+}
+
 private func orderedProjectMoveResult(
     from raw: JSONValue,
     resolved: (src: String, dst: String)?
 ) -> OrderedJSONValue {
     guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
     var entries = orderedPipelineEntries(from: object)
+    if let resolved {
+        entries.append((
+            "resolved",
+            .object([
+                ("src", .string(resolved.src)),
+                ("dst", .string(resolved.dst)),
+            ])
+        ))
+    }
+    return .object(entries)
+}
+
+private func orderedProjectMoveResult(
+    from result: EngramServiceProjectMoveResult,
+    resolved: (src: String, dst: String)?
+) -> OrderedJSONValue {
+    var entries = orderedPipelineEntries(from: result)
     if let resolved {
         entries.append((
             "resolved",
@@ -1041,6 +1166,14 @@ private func orderedProjectArchiveResult(from raw: JSONValue) -> OrderedJSONValu
     return .object(entries)
 }
 
+private func orderedProjectArchiveResult(from result: EngramServiceProjectMoveResult) -> OrderedJSONValue {
+    var entries = orderedPipelineEntries(from: result)
+    if let suggestion = result.suggestion {
+        entries.append(("archive", orderedArchiveSuggestion(suggestion)))
+    }
+    return .object(entries)
+}
+
 private func orderedProjectMoveBatchResult(from raw: JSONValue) -> OrderedJSONValue {
     guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
     return .object([
@@ -1053,6 +1186,10 @@ private func orderedProjectMoveBatchResult(from raw: JSONValue) -> OrderedJSONVa
 private func orderedPipelineResult(from raw: JSONValue) -> OrderedJSONValue {
     guard case .object(let object) = raw else { return OrderedJSONValue(raw) }
     return .object(orderedPipelineEntries(from: object))
+}
+
+private func orderedPipelineResult(from result: EngramServiceProjectMoveResult) -> OrderedJSONValue {
+    .object(orderedPipelineEntries(from: result))
 }
 
 private func orderedPipelineResultWithoutExtras(_ raw: JSONValue) -> OrderedJSONValue {
@@ -1149,6 +1286,101 @@ private func orderedArchiveSuggestion(from raw: JSONValue) -> OrderedJSONValue {
     ])
 }
 
+private func orderedPipelineEntries(from result: EngramServiceProjectMoveResult) -> [(String, OrderedJSONValue)] {
+    var entries: [(String, OrderedJSONValue)] = [
+        ("migrationId", .string(result.migrationId)),
+        ("state", .string(result.state)),
+    ]
+    if let moveStrategy = result.moveStrategy {
+        entries.append(("moveStrategy", .string(moveStrategy)))
+    }
+    entries.append(("ccDirRenamed", .bool(result.ccDirRenamed)))
+    if let renamedDirs = result.renamedDirs {
+        entries.append(("renamedDirs", OrderedJSONValue.jsonArray(renamedDirs)))
+    }
+    if let skippedDirs = result.skippedDirs {
+        entries.append(("skippedDirs", .array(skippedDirs.map(orderedSkippedDir))))
+    }
+    if let perSource = result.perSource {
+        entries.append(("perSource", .array(perSource.map(orderedPerSourceResult))))
+    }
+    entries.append(("totalFilesPatched", .int(result.totalFilesPatched)))
+    entries.append(("totalOccurrences", .int(result.totalOccurrences)))
+    entries.append(("sessionsUpdated", .int(result.sessionsUpdated)))
+    entries.append(("aliasCreated", .bool(result.aliasCreated)))
+    entries.append((
+        "review",
+        .object([
+            ("own", OrderedJSONValue.jsonArray(result.review.own)),
+            ("other", OrderedJSONValue.jsonArray(result.review.other)),
+        ])
+    ))
+    if let git = result.git {
+        entries.append((
+            "git",
+            .object([
+                ("isGitRepo", .bool(git.isGitRepo)),
+                ("dirty", .bool(git.dirty)),
+                ("untrackedOnly", .bool(git.untrackedOnly)),
+                ("porcelain", .string(git.porcelain)),
+            ])
+        ))
+    }
+    if let manifest = result.manifest {
+        entries.append(("manifest", .array(manifest.map(orderedManifestEntry))))
+    }
+    return entries
+}
+
+private func orderedManifestEntry(_ entry: EngramServiceProjectMoveResult.ManifestEntry) -> OrderedJSONValue {
+    .object([
+        ("path", .string(entry.path)),
+        ("occurrences", .int(entry.occurrences)),
+    ])
+}
+
+private func orderedSkippedDir(_ item: EngramServiceProjectMoveResult.SkippedDir) -> OrderedJSONValue {
+    .object([
+        ("sourceId", .string(item.sourceId)),
+        ("reason", .string(item.reason)),
+    ])
+}
+
+private func orderedPerSourceResult(_ item: EngramServiceProjectMoveResult.PerSource) -> OrderedJSONValue {
+    .object([
+        ("id", .string(item.id)),
+        ("root", .string(item.root)),
+        ("filesPatched", .int(item.filesPatched)),
+        ("occurrences", .int(item.occurrences)),
+        ("issues", .array((item.issues ?? []).map(orderedWalkIssue))),
+    ])
+}
+
+private func orderedWalkIssue(_ item: EngramServiceProjectMoveResult.PerSource.WalkIssue) -> OrderedJSONValue {
+    var entries: [(String, OrderedJSONValue)] = [
+        ("path", .string(item.path)),
+        ("reason", .string(item.reason)),
+    ]
+    if let detail = item.detail {
+        entries.append(("detail", .string(detail)))
+    }
+    return .object(entries)
+}
+
+private func orderedArchiveSuggestion(_ suggestion: EngramServiceProjectMoveResult.ArchiveSuggestion) -> OrderedJSONValue {
+    .object([
+        ("category", suggestion.category.map(OrderedJSONValue.string) ?? .null),
+        ("reason", .string(suggestion.reason)),
+        ("dst", .string(suggestion.dst)),
+    ])
+}
+
+private extension OrderedJSONValue {
+    static func jsonArray(_ values: [String]) -> OrderedJSONValue {
+        .array(values.map(OrderedJSONValue.string))
+    }
+}
+
 private func expandHomePath(_ path: String) -> String {
     let homePath = ProcessInfo.processInfo.environment["HOME"]
         .flatMap { $0.isEmpty ? nil : $0 }
@@ -1162,6 +1394,28 @@ private func expandHomePath(_ path: String) -> String {
             .path
     }
     return path
+}
+
+private func jsonValue(_ value: EngramServiceJSONValue) -> JSONValue {
+    switch value {
+    case .string(let string):
+        return .string(string)
+    case .number(let number):
+        if number.rounded(.towardZero) == number,
+           number >= Double(Int.min),
+           number <= Double(Int.max) {
+            return .int(Int(number))
+        }
+        return .double(number)
+    case .bool(let bool):
+        return .bool(bool)
+    case .object(let object):
+        return .object(object.mapValues(jsonValue))
+    case .array(let array):
+        return .array(array.map(jsonValue))
+    case .null:
+        return .null
+    }
 }
 
 private struct SaveInsightBody: Encodable {
@@ -1260,6 +1514,31 @@ extension OrderedJSONValue {
                     ("text", .string(message)),
                 ]),
             ])),
+            ("isError", .bool(true)),
+        ])
+    }
+
+    static func serviceUnavailable(
+        tool: String,
+        category: String,
+        socketPath: String
+    ) -> OrderedJSONValue {
+        let message = "EngramService is unavailable; mutating and operational MCP tools fail closed until the service socket is available."
+        let structured: OrderedJSONValue = .object([
+            ("code", .string("serviceUnavailable")),
+            ("tool", .string(tool)),
+            ("category", .string(category)),
+            ("socketPath", .string(socketPath)),
+            ("message", .string(message)),
+        ])
+        return .object([
+            ("content", .array([
+                .object([
+                    ("type", .string("text")),
+                    ("text", .string(message)),
+                ]),
+            ])),
+            ("structuredContent", structured),
             ("isError", .bool(true)),
         ])
     }

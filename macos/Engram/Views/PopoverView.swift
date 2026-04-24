@@ -3,14 +3,12 @@ import SwiftUI
 
 struct PopoverView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(IndexerProcess.self) var indexer
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
 
     @State private var sourceCount = 0
     @State private var projectCount = 0
     @State private var dbSize: Int64 = 0
     @State private var recentSessions: [Session] = []
-    @State private var embeddingAvailable = false
-    @State private var embeddingProgress: Int?
     @State private var activeSourceCount: Int = 0
     @State private var totalSourceCount: Int = 0
     @State private var lastIndexedAgo: String = ""
@@ -22,7 +20,7 @@ struct PopoverView: View {
             healthSummary
             Divider()
             timelineSection
-            PopoverUsageSection(usageData: indexer.usageData)
+            PopoverUsageSection(usageData: serviceStatusStore.usageData)
                 .padding(.horizontal, 12)
             footerSection
         }
@@ -49,12 +47,12 @@ struct PopoverView: View {
             }
             HStack(spacing: 10) {
                 statusDot(
-                    color: indexer.port != nil ? .green : .red,
-                    label: indexer.port.map { "Web :\($0)" } ?? "Web"
+                    color: serviceStatusStore.endpointPort != nil ? .green : .red,
+                    label: serviceStatusStore.endpointPort.map { "Web :\($0)" } ?? "Web"
                 )
                 .accessibilityIdentifier("popover_status_web")
                 statusDot(
-                    color: indexer.status.isRunning ? .green : .red,
+                    color: serviceStatusStore.isRunning ? .green : .red,
                     label: "MCP"
                 )
                 .accessibilityIdentifier("popover_status_mcp")
@@ -67,10 +65,10 @@ struct PopoverView: View {
 
     private var embeddingStatusView: some View {
         Group {
-            if !embeddingAvailable && embeddingProgress == nil {
+            if serviceStatusStore.embeddingStatus == nil {
                 statusDot(color: .secondary, label: "Embedding", hollow: true)
-            } else if let pct = embeddingProgress, pct < 100 {
-                statusDot(color: .orange, label: "Embedding \(pct)%")
+            } else if serviceStatusStore.embeddingStatus == "unavailable" {
+                statusDot(color: .red, label: "Embedding")
             } else {
                 statusDot(color: .green, label: "Embedding")
             }
@@ -82,7 +80,7 @@ struct PopoverView: View {
     private var statsSection: some View {
         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
             GridRow {
-                statRow("Today", "\(indexer.todayParentSessions)")
+                statRow("Today", "\(serviceStatusStore.todayParentSessions)")
                 statRow("Sources", "\(sourceCount)")
             }
             GridRow {
@@ -107,8 +105,6 @@ struct PopoverView: View {
 
     // MARK: - Health Summary
 
-    @AppStorage("httpPort") private var httpPort: Int = 3456
-
     private var healthSummary: some View {
         HStack(spacing: 4) {
             Text("\(activeSourceCount)/\(totalSourceCount) sources active")
@@ -123,10 +119,16 @@ struct PopoverView: View {
         }
         .padding(.horizontal, 10)
         .onTapGesture {
-            if let url = URL(string: "http://localhost:\(httpPort)/health") {
+            if let url = serviceHealthURL {
                 NSWorkspace.shared.open(url)
             }
         }
+    }
+
+    private var serviceHealthURL: URL? {
+        guard let port = serviceStatusStore.endpointPort else { return nil }
+        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
+        return URL(string: "http://\(host):\(port)/health")
     }
 
     // MARK: - Timeline
@@ -233,7 +235,6 @@ struct PopoverView: View {
         projectCount = result.1
         dbSize = result.3
         recentSessions = Array(result.2.prefix(15))
-        await fetchEmbeddingStatus()
 
         // Health summary
         let stats = (try? db.sourceStats()) ?? []
@@ -258,26 +259,6 @@ struct PopoverView: View {
             else { lastIndexedAgo = "\(Int(interval / 86400))d" }
         } else {
             lastIndexedAgo = "—"
-        }
-    }
-
-    private func fetchEmbeddingStatus() async {
-        let port = indexer.port ?? 3457
-        guard let url = URL(string: "http://127.0.0.1:\(port)/api/search/status") else { return }
-        do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 5
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let status = try JSONDecoder().decode(EmbeddingStatusResponse.self, from: data)
-            embeddingAvailable = status.available
-            if status.available, let p = status.progress, p < 100 {
-                embeddingProgress = p
-            } else {
-                embeddingProgress = nil
-            }
-        } catch {
-            embeddingAvailable = false
-            embeddingProgress = nil
         }
     }
 
@@ -336,7 +317,7 @@ struct PopoverView: View {
     }
 
     // Read noise filter setting from ~/.engram/settings.json
-    private static func readNoiseFilter() -> String {
+    nonisolated private static func readNoiseFilter() -> String {
         let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".engram/settings.json")
         guard let data = try? Data(contentsOf: path),
               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {

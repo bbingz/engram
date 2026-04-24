@@ -9,7 +9,7 @@ struct GeneralSettingsSection: View {
     @AppStorage("httpPort") var httpPort: Int = 3456
     @AppStorage("nodejsPath") var nodejsPath: String = "/usr/local/bin/node"
 
-    @Environment(IndexerProcess.self) var indexer
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
 
     @State private var noiseFilter: String = "hide-skip"
 
@@ -66,33 +66,44 @@ struct GeneralSettingsSection: View {
             }
 
             // Infrastructure
-            GroupBox("Infrastructure") {
+            GroupBox("Runtime Infrastructure") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("HTTP Port")
+                        Text("Swift Service")
+                        Spacer()
+                        Text(verbatim: serviceStatusStore.displayString)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Primary runtime for the macOS app. Settings, search, indexing, and operational actions should use Swift service IPC during Stage 3.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                    Text("Legacy Node rollback settings")
+                        .font(.caption.bold())
+                    Text("Kept for Stage 3 rollback and compatibility only. New setup should use the Swift service and bundled Swift stdio MCP helper.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Text("Legacy HTTP Port")
                         Spacer()
                         TextField("3456", value: $httpPort, format: .number)
                             .frame(width: 80)
                             .multilineTextAlignment(.trailing)
                     }
                     HStack {
-                        Text("MCP HTTP endpoint")
+                        Text("Legacy MCP HTTP endpoint")
                         Spacer()
-                        Text(verbatim: "http://localhost:\(httpPort)/mcp")
+                        Text(verbatim: mcpEndpointText)
                             .foregroundStyle(.secondary)
                             .font(.caption)
                     }
                     HStack {
-                        Text("Node.js Path")
+                        Text("Legacy Node.js Path")
                         Spacer()
                         TextField("/usr/local/bin/node", text: $nodejsPath)
                             .frame(width: 260)
-                    }
-                    HStack {
-                        Text("Status")
-                        Spacer()
-                        Text(verbatim: indexer.status.displayString)
-                            .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.vertical, 4)
@@ -127,6 +138,14 @@ struct GeneralSettingsSection: View {
         case "hide-noise": return "Hide agents, empty sessions, and low-signal sessions"
         default: return "Hide sub-agents and trivial sessions (default)"
         }
+    }
+
+    private var mcpEndpointText: String {
+        guard let port = serviceStatusStore.endpointPort else {
+            return "Swift service MCP endpoint unavailable"
+        }
+        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
+        return "http://\(host):\(port)/mcp"
     }
 
     private func saveNoiseSettings() {

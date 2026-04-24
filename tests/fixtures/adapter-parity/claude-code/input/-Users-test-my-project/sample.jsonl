@@ -1,0 +1,4 @@
+{"type":"user","cwd":"/Users/test/my-project","sessionId":"cc-session-001","version":"2.1.58","message":{"role":"user","content":"请帮我添加用户注册功能"},"uuid":"msg-001","timestamp":"2026-01-20T09:00:00.000Z","todos":[],"permissionMode":"default"}
+{"type":"assistant","cwd":"/Users/test/my-project","sessionId":"cc-session-001","version":"2.1.58","message":{"id":"resp-001","type":"message","role":"assistant","content":[{"type":"text","text":"好的，我来帮你实现用户注册功能。"}]},"uuid":"msg-002","timestamp":"2026-01-20T09:00:05.000Z"}
+{"type":"user","cwd":"/Users/test/my-project","sessionId":"cc-session-001","version":"2.1.58","message":{"role":"user","content":"需要邮件验证吗？"},"uuid":"msg-003","timestamp":"2026-01-20T09:01:00.000Z","todos":[],"permissionMode":"default"}
+{"type":"file-history-snapshot","messageId":"msg-snap","snapshot":{"trackedFileBackups":{},"timestamp":"2026-01-20T09:01:30.000Z"},"isSnapshotUpdate":false}

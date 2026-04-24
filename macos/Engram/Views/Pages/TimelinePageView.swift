@@ -3,7 +3,6 @@ import SwiftUI
 
 struct TimelinePageView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(DaemonClient.self) var daemonClient
     @State private var timeline: [(date: String, sessions: [Session])] = []
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
@@ -40,20 +39,6 @@ struct TimelinePageView: View {
                                         },
                                         onChildTap: { child in
                                             NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
-                                        },
-                                        onConfirmSuggestion: { child in
-                                            Task {
-                                                try? await daemonClient.confirmSuggestion(sessionId: child.id)
-                                                await loadData()
-                                            }
-                                        },
-                                        onDismissSuggestion: { child in
-                                            Task {
-                                                if let suggestedId = child.suggestedParentId {
-                                                    try? await daemonClient.dismissSuggestion(sessionId: child.id, suggestedParentId: suggestedId)
-                                                }
-                                                await loadData()
-                                            }
                                         }
                                     )
                                 }
@@ -72,12 +57,13 @@ struct TimelinePageView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let data = try await Task.detached {
-                let tl = try db.sessionTimeline(days: 30)
+            let database = db
+            let data = try await Task.detached { [database] in
+                let tl = try database.sessionTimeline(days: 30)
                 let allSessions = tl.flatMap(\.sessions)
                 let parentIds = allSessions.map(\.id)
-                let confirmed = try db.childCount(parentIds: parentIds)
-                let suggested = try db.suggestedChildCount(parentIds: parentIds)
+                let confirmed = try database.childCount(parentIds: parentIds)
+                let suggested = try database.suggestedChildCount(parentIds: parentIds)
                 return (tl, confirmed, suggested)
             }.value
             timeline = data.0

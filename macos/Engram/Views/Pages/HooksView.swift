@@ -2,13 +2,13 @@
 import SwiftUI
 
 struct HooksView: View {
-    @Environment(DaemonClient.self) var daemonClient
-    @State private var hooks: [HookInfo] = []
+    @Environment(EngramServiceClient.self) var serviceClient
+    @State private var hooks: [EngramServiceHookInfo] = []
     @State private var isLoading = true
     @State private var error: String? = nil
 
-    private var globalHooks: [HookInfo] { hooks.filter { $0.scope == "global" } }
-    private var projectHooks: [HookInfo] { hooks.filter { $0.scope == "project" } }
+    private var globalHooks: [EngramServiceHookInfo] { hooks.filter { $0.scope == "global" } }
+    private var projectHooks: [EngramServiceHookInfo] { hooks.filter { $0.scope == "project" } }
 
     var body: some View {
         ScrollView {
@@ -33,7 +33,7 @@ struct HooksView: View {
         .task { await loadData() }
     }
 
-    private func hookRow(_ hook: HookInfo) -> some View {
+    private func hookRow(_ hook: EngramServiceHookInfo) -> some View {
         HStack(spacing: 12) {
             Text(hook.event)
                 .font(.caption).fontWeight(.medium)
@@ -56,7 +56,7 @@ struct HooksView: View {
     private func loadData() async {
         isLoading = true; error = nil
         defer { isLoading = false }
-        do { hooks = try await daemonClient.fetch("/api/hooks") }
+        do { hooks = try await serviceClient.hooks() }
         catch { self.error = "Could not load hooks: \(error.localizedDescription)" }
     }
 }

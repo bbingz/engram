@@ -9,7 +9,6 @@ private let isoFormatter: ISO8601DateFormatter = {
 
 struct SessionsPageView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(DaemonClient.self) var daemonClient
 
     @State private var sessions: [Session] = []
     @State private var confirmedCounts: [String: Int] = [:]
@@ -69,23 +68,6 @@ struct SessionsPageView: View {
                                 },
                                 onChildTap: { child in
                                     NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
-                                },
-                                onConfirmSuggestion: { child in
-                                    Task {
-                                        try? await daemonClient.confirmSuggestion(sessionId: child.id)
-                                        await loadData()
-                                    }
-                                },
-                                onDismissSuggestion: { child in
-                                    Task {
-                                        if let suggestedId = child.suggestedParentId {
-                                            try? await daemonClient.dismissSuggestion(
-                                                sessionId: child.id,
-                                                suggestedParentId: suggestedId
-                                            )
-                                        }
-                                        await loadData()
-                                    }
                                 }
                             )
                             .accessibilityIdentifier("sessions_row_\(index)")

@@ -27,64 +27,6 @@ enum MCPTranscriptTools {
         ])
     }
 
-    static func exportSession(
-        database: MCPDatabase,
-        id: String,
-        format: String
-    ) throws -> OrderedJSONValue {
-        guard let session = try database.sessionRecord(id: id) else {
-            throw MCPToolError.invalidArguments("Session not found: \(id)")
-        }
-
-        let messages = MCPTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
-        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
-        let outputDir = URL(fileURLWithPath: home).appendingPathComponent("codex-exports")
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-
-        let safeId = String(session.id.prefix(8))
-        let date = toLocalDate(session.startTime)
-        let ext = format == "json" ? "json" : "md"
-        let outputURL = outputDir.appendingPathComponent("\(session.source)-\(safeId)-\(date).\(ext)")
-
-        let content: String
-        if format == "json" {
-            let payload = OrderedJSONValue.object([
-                ("session", session.orderedJSONValue),
-                ("messages", .array(messages.map(messageJSON))),
-            ])
-            content = payload.prettyJSONString() + "\n"
-        } else {
-            var lines: [String] = [
-                "# Session: \(session.id)",
-                "",
-                "**Source:** \(session.source)",
-                "**Date:** \(toLocalDateTime(session.startTime))",
-                "**Project:** \(session.project ?? session.cwd)",
-                "**Messages:** \(session.messageCount)",
-                "",
-                "---",
-                "",
-            ]
-            for message in messages {
-                lines.append("### \(message.role == "user" ? "👤 User" : "🤖 Assistant")")
-                lines.append("")
-                lines.append(message.content)
-                lines.append("")
-                lines.append("---")
-                lines.append("")
-            }
-            content = lines.joined(separator: "\n")
-        }
-
-        try content.write(to: outputURL, atomically: true, encoding: .utf8)
-
-        return .object([
-            ("outputPath", .string(outputURL.path)),
-            ("format", .string(format)),
-            ("messageCount", .int(messages.count)),
-        ])
-    }
-
     static func handoff(
         database: MCPDatabase,
         cwd: String,

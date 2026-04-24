@@ -3,7 +3,8 @@ import SwiftUI
 
 struct GlobalSearchOverlay: View {
     @Binding var isVisible: Bool
-    @Environment(IndexerProcess.self) var indexer
+    @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceClient.self) var serviceClient
     @State private var query = ""
     @State private var results: [SearchHit] = []
     @State private var isSearching = false
@@ -91,29 +92,37 @@ struct GlobalSearchOverlay: View {
     }
 
     func performSearch() {
-        guard !query.isEmpty, let port = indexer.port else { return }
+        guard !query.isEmpty else { return }
         isSearching = true
+        let q = query
+        let db = self.db
         Task {
             do {
-                let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-                let url = URL(string: "http://127.0.0.1:\(port)/api/search?q=\(encoded)&limit=10")!
-                let (data, _) = try await URLSession.shared.data(from: url)
-                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let rawResults = json["results"] as? [[String: Any]] {
-                    results = rawResults.compactMap { r in
-                        guard let session = r["session"] as? [String: Any],
-                              let id = session["id"] as? String else { return nil }
-                        return SearchHit(
-                            id: id,
-                            title: (session["summary"] as? String) ?? (session["project"] as? String) ?? "Untitled",
-                            source: (session["source"] as? String) ?? "",
-                            snippet: (r["snippet"] as? String) ?? "",
-                            date: (session["startTime"] as? String).map { String($0.prefix(10)) } ?? ""
-                        )
-                    }
+                let response = try await serviceClient.search(
+                    EngramServiceSearchRequest(query: q, mode: "hybrid", limit: 10)
+                )
+                results = response.items.map { item in
+                    SearchHit(
+                        id: item.id,
+                        title: item.title ?? item.summary ?? item.project ?? "Untitled",
+                        source: item.source ?? "",
+                        snippet: item.snippet ?? "",
+                        date: item.startTime.map { String($0.prefix(10)) } ?? ""
+                    )
                 }
             } catch {
-                // silently fail
+                let sessions = (try? await Task.detached {
+                    try db.search(query: q, limit: 10)
+                }.value) ?? []
+                results = sessions.map { session in
+                    SearchHit(
+                        id: session.id,
+                        title: session.displayTitle,
+                        source: session.source,
+                        snippet: "",
+                        date: session.displayDate
+                    )
+                }
             }
             isSearching = false
         }

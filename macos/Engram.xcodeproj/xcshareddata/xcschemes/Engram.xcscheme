@@ -43,6 +43,34 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "9FCF956C8AC992AD35121793"
+               BuildableName = "EngramCoreRead.framework"
+               BlueprintName = "EngramCoreRead"
+               ReferencedContainer = "container:Engram.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "66715EBDF64143B4B7424B90"
+               BuildableName = "EngramCoreWrite.framework"
+               BlueprintName = "EngramCoreWrite"
+               ReferencedContainer = "container:Engram.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "790D3733722391768E6E845B"
                BuildableName = "EngramMCP"
                BlueprintName = "EngramMCP"
@@ -67,6 +95,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "625906E26599963CA0363FA5"
+               BuildableName = "EngramCoreTests.xctest"
+               BlueprintName = "EngramCoreTests"
+               ReferencedContainer = "container:Engram.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
          <TestableReference
             skipped = "NO"
             parallelizable = "NO">

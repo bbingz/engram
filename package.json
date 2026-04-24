@@ -3,10 +3,6 @@
   "version": "0.1.0",
   "description": "MCP Server: 读取多个 AI 编程助手的会话日志，实现跨工具历史上下文共享",
   "type": "module",
-  "main": "dist/index.js",
-  "bin": {
-    "engram": "dist/cli/index.js"
-  },
   "engines": {
     "node": ">=20"
   },
@@ -18,6 +14,10 @@
     "test:coverage": "vitest run --coverage",
     "generate:fixtures": "tsx scripts/generate-test-fixtures.ts",
     "generate:mcp-contract-fixtures": "TZ=UTC tsx scripts/gen-mcp-contract-fixtures.ts",
+    "generate:adapter-parity-fixtures": "tsx scripts/gen-adapter-parity-fixtures.ts",
+    "check:adapter-parity-fixtures": "tsx scripts/check-adapter-parity-fixtures.ts",
+    "generate:parent-detection-fixtures": "tsx scripts/gen-parent-detection-fixtures.ts",
+    "generate:indexer-parity-fixtures": "tsx scripts/gen-indexer-parity-fixtures.ts",
     "check:fixtures": "tsx scripts/check-fixture-schema.ts",
     "screenshots:compare": "tsx scripts/screenshot-compare.ts",
     "baselines:generate": "tsx scripts/baselines-generate.ts",

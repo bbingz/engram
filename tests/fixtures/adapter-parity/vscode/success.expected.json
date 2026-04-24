@@ -1,0 +1,81 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "vscode/input/ws-abc123/chatSessions/sess-001.jsonl",
+  "insightFields": {
+    "firstUserSummary": "How do I use async/await in TypeScript?",
+    "messageCount": 4,
+    "toolCallCount": 0
+  },
+  "locator": "vscode/input/ws-abc123/chatSessions/sess-001.jsonl",
+  "messages": [
+    {
+      "content": "How do I use async/await in TypeScript?",
+      "role": "user",
+      "timestamp": "2026-02-18T05:20:05.000Z"
+    },
+    {
+      "content": "Use the `async` keyword on functions and `await` before Promises.",
+      "role": "assistant",
+      "timestamp": "2026-02-18T05:20:05.000Z"
+    },
+    {
+      "content": "Can you show an example?",
+      "role": "user",
+      "timestamp": "2026-02-18T05:20:15.000Z"
+    },
+    {
+      "content": "Here is an example:\n\n```typescript\nasync function fetchData() {\n  const data = await fetch('/api');\n  return data.json();\n}\n```",
+      "role": "assistant",
+      "timestamp": "2026-02-18T05:20:15.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "",
+    "project": null,
+    "source": "vscode"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "How do I use async/await in TypeScript?\nUse the `async` keyword on functions and `await` before Promises.\nCan you show an example?\nHere is an example:\n\n```typescript\nasync function fetchData() {\n  const data = await fetch('/api');\n  return data.json();\n}\n```",
+    "contentSha256InputBytes": 258,
+    "roles": [
+      "user",
+      "assistant",
+      "user",
+      "assistant"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 2,
+    "cwd": "",
+    "endTime": "2026-02-18T05:20:15.000Z",
+    "filePath": "<fixtureRoot>/vscode/input/ws-abc123/chatSessions/sess-001.jsonl",
+    "id": "sess-001",
+    "messageCount": 4,
+    "sizeBytes": 779,
+    "source": "vscode",
+    "startTime": "2026-02-18T05:20:00.000Z",
+    "summary": "How do I use async/await in TypeScript?",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "source": "vscode",
+  "statsFields": {
+    "assistantMessageCount": 2,
+    "messageCount": 4,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

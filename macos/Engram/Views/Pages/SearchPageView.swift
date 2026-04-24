@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SearchPageView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
 
     @State private var query = ""
     @State private var selectedMode: SearchMode = .hybrid
@@ -151,28 +151,14 @@ struct SearchPageView: View {
         isSearching = true
         defer { isSearching = false }
 
-        let port = UserDefaults.standard.integer(forKey: "httpPort")
-        let webPort = port > 0 ? port : 3457
-
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "http://127.0.0.1:\(webPort)/api/search?q=\(encoded)&mode=\(selectedMode.rawValue)&limit=30") else { return }
-
         do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 15
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let response = try JSONDecoder().decode(SearchAPIResponse.self, from: data)
+            let response = try await serviceClient.search(
+                EngramServiceSearchRequest(query: query, mode: selectedMode.rawValue, limit: 30)
+            )
 
             searchModes = response.searchModes ?? []
             warning = response.warning
-            results = (response.results ?? []).compactMap { r in
-                guard let sess = r.session else { return nil }
-                return sess.toSearchResult(
-                    snippet: r.snippet ?? "",
-                    matchType: r.matchType ?? "keyword",
-                    score: r.score ?? 0
-                )
-            }
+            results = response.items.map(\.searchResult)
         } catch {
             // Fallback to local FTS
             do {
@@ -191,20 +177,14 @@ struct SearchPageView: View {
     // MARK: - Embedding Status
 
     private func loadEmbeddingStatus() async {
-        let port = UserDefaults.standard.integer(forKey: "httpPort")
-        let webPort = port > 0 ? port : 3457
-        guard let url = URL(string: "http://127.0.0.1:\(webPort)/api/search/status") else { return }
         do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 5
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let resp = try JSONDecoder().decode(EmbeddingStatusResponse.self, from: data)
+            let resp = try await serviceClient.embeddingStatus()
             embeddingStatus = EmbeddingStatus(
                 available: resp.available,
                 model: resp.model,
-                embeddedCount: resp.embeddedCount ?? 0,
-                totalSessions: resp.totalSessions ?? 0,
-                progress: resp.progress ?? 0
+                embeddedCount: resp.embeddedCount,
+                totalSessions: resp.totalSessions,
+                progress: resp.progress
             )
         } catch {
             embeddingStatus = nil

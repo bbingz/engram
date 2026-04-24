@@ -1,0 +1,123 @@
+{
+  "fixtureRoot": "tests/fixtures/indexer-parity/fixture-root",
+  "indexedCount": 1,
+  "parentLinkColumns": {
+    "rows": [
+      {
+        "id": "codex-session-001",
+        "link_source": null,
+        "parent_session_id": null,
+        "suggested_parent_id": null
+      }
+    ]
+  },
+  "schemaVersion": 1,
+  "sourceCommit": "571fd97",
+  "tables": {
+    "metadata": {
+      "count": 2,
+      "rows": {
+        "fts_version": "3",
+        "schema_version": "1"
+      },
+      "sha256": "4a01ebb7877d628e0f5a64efca89b1354b35c3c0288ecaf0792f0d3740163c7d"
+    },
+    "session_costs": {
+      "count": 1,
+      "rows": [
+        {
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "computed_at": "<volatile>",
+          "cost_usd": 0,
+          "input_tokens": 0,
+          "model": "openai",
+          "output_tokens": 0,
+          "session_id": "codex-session-001"
+        }
+      ],
+      "sha256": "7c14a47249a90410ef59b4bbe26019e23b53a72073cae115b01362f835443380"
+    },
+    "session_files": {
+      "count": 0,
+      "rows": [],
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "session_index_jobs": {
+      "count": 2,
+      "rows": [
+        {
+          "created_at": "<volatile>",
+          "id": "codex-session-001:1:embedding",
+          "job_kind": "embedding",
+          "last_error": null,
+          "retry_count": 0,
+          "session_id": "codex-session-001",
+          "status": "pending",
+          "target_sync_version": 1,
+          "updated_at": "<volatile>"
+        },
+        {
+          "created_at": "<volatile>",
+          "id": "codex-session-001:1:fts",
+          "job_kind": "fts",
+          "last_error": null,
+          "retry_count": 0,
+          "session_id": "codex-session-001",
+          "status": "pending",
+          "target_sync_version": 1,
+          "updated_at": "<volatile>"
+        }
+      ],
+      "sha256": "011f712d2832df1e029f157994b44599ac2f366ffe7f1ae56826f245c7866dae"
+    },
+    "session_tools": {
+      "count": 0,
+      "rows": [],
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "sessions": {
+      "count": 1,
+      "rows": [
+        {
+          "agent_role": null,
+          "assistant_message_count": 1,
+          "authoritative_node": "fixture-node",
+          "custom_name": null,
+          "cwd": "/Users/test/my-project",
+          "end_time": "2026-01-15T10:00:10.000Z",
+          "file_path": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
+          "generated_title": null,
+          "hidden_at": null,
+          "id": "codex-session-001",
+          "indexed_at": "<volatile>",
+          "link_checked_at": "<volatile>",
+          "link_source": null,
+          "message_count": 3,
+          "model": "openai",
+          "origin": "fixture-node",
+          "orphan_reason": null,
+          "orphan_since": null,
+          "orphan_status": null,
+          "parent_session_id": null,
+          "project": "my-project",
+          "quality_score": 26,
+          "size_bytes": 1199,
+          "snapshot_hash": "c7450f8df0cc537034d612f35970f8571cc136fc8b17d8f15b3569368c4311bb",
+          "source": "codex",
+          "source_locator": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
+          "start_time": "2026-01-15T10:00:00.000Z",
+          "suggested_parent_id": null,
+          "summary": "帮我修复登录 bug，用户无法登录",
+          "summary_message_count": 3,
+          "sync_version": 1,
+          "system_message_count": 0,
+          "tier": "normal",
+          "tool_message_count": 0,
+          "user_message_count": 2
+        }
+      ],
+      "sha256": "588574109d18482e45ffd55733a0380a7e4f563f8da1de868c806115335e7a64"
+    }
+  }
+}

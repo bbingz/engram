@@ -3,20 +3,20 @@ import SwiftUI
 
 struct SourcePulseView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
 
-    @State private var sources: [SourceInfo] = []
+    @State private var sources: [EngramServiceSourceInfo] = []
     @State private var sourceDist: [(source: String, count: Int)] = []
-    @State private var liveSessions: [LiveSessionInfo] = []
+    @State private var liveSessions: [EngramServiceLiveSessionInfo] = []
     @State private var isLoading = true
     @State private var error: String? = nil
     @State private var liveTimer: Timer?
     @State private var expandedGroups: Set<String> = []
 
     private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
-    private var activeSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "active" } }
-    private var idleSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "idle" } }
-    private var recentSessions: [LiveSessionInfo] { liveSessions.filter { $0.activityLevel == "recent" || $0.activityLevel == nil } }
+    private var activeSessions: [EngramServiceLiveSessionInfo] { liveSessions.filter { $0.activityLevel == "active" } }
+    private var idleSessions: [EngramServiceLiveSessionInfo] { liveSessions.filter { $0.activityLevel == "idle" } }
+    private var recentSessions: [EngramServiceLiveSessionInfo] { liveSessions.filter { $0.activityLevel == "recent" || $0.activityLevel == nil } }
 
     var body: some View {
         ScrollView {
@@ -96,7 +96,7 @@ struct SourcePulseView: View {
 
     private func loadLiveSessions() async {
         do {
-            let response: LiveSessionsResponse = try await daemonClient.fetch("/api/live")
+            let response = try await serviceClient.liveSessions()
             liveSessions = response.sessions
         } catch {
             liveSessions = []
@@ -107,19 +107,19 @@ struct SourcePulseView: View {
         isLoading = true; error = nil
         defer { isLoading = false }
         do {
-            sources = try await daemonClient.fetch("/api/sources")
+            sources = try await serviceClient.sources()
         } catch {
             self.error = error.localizedDescription
             do {
                 sourceDist = try db.sourceDistribution()
-                sources = sourceDist.map { SourceInfo(name: $0.source, sessionCount: $0.count, latestIndexed: nil) }
+                sources = sourceDist.map { EngramServiceSourceInfo(name: $0.source, sessionCount: $0.count, latestIndexed: nil) }
             } catch {}
         }
         do { sourceDist = try db.sourceDistribution() } catch {}
     }
 
     @ViewBuilder
-    private func sessionGroup(_ label: String, color: Color, sessions: [LiveSessionInfo]) -> some View {
+    private func sessionGroup(_ label: String, color: Color, sessions: [EngramServiceLiveSessionInfo]) -> some View {
         if !sessions.isEmpty {
             let isExpanded = expandedGroups.contains(label)
             let shown = isExpanded ? sessions : Array(sessions.prefix(10))

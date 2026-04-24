@@ -8,8 +8,7 @@ struct SessionDetailView: View {
     let session: Session
     var onBack: (() -> Void)? = nil
     @Environment(DatabaseManager.self) var db
-    @Environment(IndexerProcess.self) var indexer
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
     @State private var isFavorite = false
     @State private var handoffStatus: String? = nil
     @State private var showReplay = false
@@ -71,12 +70,15 @@ struct SessionDetailView: View {
                 typeVisibility: typeVisibility,
                 navPositions: navPositions,
                 onToggleFavorite: {
-                    if isFavorite {
-                        try? db.removeFavorite(sessionId: session.id)
-                    } else {
-                        try? db.addFavorite(sessionId: session.id)
+                    Task {
+                        let next = !isFavorite
+                        do {
+                            try await serviceClient.setFavorite(sessionId: session.id, favorite: next)
+                            isFavorite = next
+                        } catch {
+                            logger.error("Failed to toggle favorite: \(error.localizedDescription)")
+                        }
                     }
-                    isFavorite.toggle()
                 },
                 onCopyAll: { copyAllTranscript() },
                 onToggleFind: { showFind.toggle() },
@@ -165,27 +167,9 @@ struct SessionDetailView: View {
                         .lineLimit(1)
                         .foregroundStyle(Theme.tertiaryText)
 
-                    Button("Confirm") {
-                        Task {
-                            try? await daemonClient.confirmSuggestion(sessionId: session.id)
-                            loadParentInfo()
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(Theme.accent)
-                    .buttonStyle(.plain)
-
-                    Button("Dismiss") {
-                        Task {
-                            if let suggestedId = session.suggestedParentId {
-                                try? await daemonClient.dismissSuggestion(sessionId: session.id, suggestedParentId: suggestedId)
-                            }
-                            loadParentInfo()
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(Theme.tertiaryText)
-                    .buttonStyle(.plain)
+                    Text("Suggested")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.tertiaryText)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
@@ -314,7 +298,6 @@ struct SessionDetailView: View {
         .onChange(of: searchText) { _, _ in updateMatchIndices() }
         .sheet(isPresented: $showReplay) {
             SessionReplayView(sessionId: session.id)
-                .environment(daemonClient)
                 .frame(minWidth: 600, minHeight: 450)
         }
     }
@@ -398,12 +381,12 @@ struct SessionDetailView: View {
     func performHandoff() {
         Task {
             do {
-                struct HandoffRequest: Encodable {
-                    let cwd: String
-                }
-                let response: HandoffResponse = try await daemonClient.post(
-                    "/api/handoff",
-                    body: HandoffRequest(cwd: session.cwd)
+                let response = try await serviceClient.handoff(
+                    EngramServiceHandoffRequest(
+                        cwd: session.cwd,
+                        sessionId: session.id,
+                        format: "markdown"
+                    )
                 )
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(response.brief, forType: .string)
@@ -441,43 +424,20 @@ struct SessionDetailView: View {
         guard !messages.isEmpty else { return }
         isSummarizing = true
         summaryError = nil
-
-        let daemonPort = indexer.port ?? 3457
-        guard let url = URL(string: "http://127.0.0.1:\(daemonPort)/api/summary") else {
-            summaryError = "Invalid daemon URL"
-            isSummarizing = false
-            return
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
-
-        let payload: [String: String] = ["sessionId": session.id]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        defer { isSummarizing = false }
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let httpResponse = response as? HTTPURLResponse
-
-            if let httpResponse, httpResponse.statusCode == 200 {
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let summary = json["summary"] as? String, !summary.isEmpty {
-                    currentSummary = summary
-                } else {
-                    summaryError = "Empty response from AI"
-                }
+            let response = try await serviceClient.generateSummary(
+                EngramServiceGenerateSummaryRequest(sessionId: session.id)
+            )
+            if response.summary.isEmpty {
+                summaryError = "Empty response from AI"
             } else {
-                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                let errorMsg = json?["error"] as? String ?? "Unknown error (HTTP \(httpResponse?.statusCode ?? 0))"
-                summaryError = errorMsg
+                currentSummary = response.summary
             }
         } catch {
-            summaryError = "Network error: \(error.localizedDescription)"
+            summaryError = "Summary failed: \(error.localizedDescription)"
         }
-
-        isSummarizing = false
     }
 }
 

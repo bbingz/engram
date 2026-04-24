@@ -5,7 +5,7 @@
 // picker (rare but possible when two dirs share a basename); if none,
 // disable because there's no physical path to move.
 //
-// Calls POST /api/project/move via DaemonClient. Shows a dry-run preview
+// Calls project move through EngramService. Shows a dry-run preview
 // first so the user sees the impact (file count + residual warnings)
 // before committing. On success, posts a .projectsDidChange notification
 // that ProjectsView observes to refresh.
@@ -14,7 +14,7 @@ import SwiftUI
 
 struct RenameSheet: View {
     let projectName: String
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
     @Environment(\.dismiss) var dismiss
 
     @State private var availableCwds: [String] = []
@@ -23,7 +23,7 @@ struct RenameSheet: View {
     @State private var isLoadingCwds = true
     @State private var isPreviewLoading = false
     @State private var isExecuting = false
-    @State private var previewResult: ProjectMoveResult?
+    @State private var previewResult: EngramServiceProjectMoveResult?
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
@@ -35,7 +35,7 @@ struct RenameSheet: View {
     /// Structured error details (Round 4): DirCollisionError / SharedEncoding
     /// carry sourceId + dir paths so the UI can show exactly which path
     /// conflicts instead of forcing users to parse the error message.
-    @State private var errorDetails: ProjectMoveAPIError.Details?
+    @State private var errorDetails: ProjectMoveServiceErrorDetails?
     /// Round 4: keep the previous preview visible (dimmed) when the
     /// user edits the path, rather than hard-clearing it — the abrupt
     /// visual jump was called out as disorienting (Gemini Minor).
@@ -219,7 +219,7 @@ struct RenameSheet: View {
     // MARK: - Preview / action subviews
 
     @ViewBuilder
-    private func previewBox(_ preview: ProjectMoveResult) -> some View {
+    private func previewBox(_ preview: EngramServiceProjectMoveResult) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "doc.text.magnifyingglass")
@@ -427,7 +427,7 @@ struct RenameSheet: View {
     }
 
     @ViewBuilder
-    private func errorDetailsView(_ details: ProjectMoveAPIError.Details) -> some View {
+    private func errorDetailsView(_ details: ProjectMoveServiceErrorDetails) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             if let src = details.sourceId {
                 HStack(spacing: 6) {
@@ -466,9 +466,9 @@ struct RenameSheet: View {
         isLoadingCwds = true
         defer { isLoadingCwds = false }
         do {
-            let cwds = try await daemonClient.projectCwds(forProject: projectName)
-            availableCwds = cwds
-            selectedCwd = cwds.first ?? ""
+            let response = try await serviceClient.projectCwds(project: projectName)
+            availableCwds = response.cwds
+            selectedCwd = response.cwds.first ?? ""
         } catch {
             errorMessage = "Failed to load project paths: \(error.localizedDescription)"
         }
@@ -480,24 +480,24 @@ struct RenameSheet: View {
         isPreviewLoading = true
         defer { isPreviewLoading = false; activeTask = nil }
         do {
-            let res = try await daemonClient.projectMove(
-                src: selectedCwd,
-                dst: newPath,
-                dryRun: true,
-                force: false
+            let res = try await serviceClient.projectMove(
+                EngramServiceProjectMoveRequest(
+                    src: selectedCwd,
+                    dst: newPath,
+                    dryRun: true,
+                    force: false,
+                    auditNote: nil,
+                    actor: "app"
+                )
             )
             if Task.isCancelled { return }
             previewResult = res
             previewStale = false
-        } catch let apiErr as ProjectMoveAPIError {
-            if Task.isCancelled { return }
-            errorMessage = apiErr.message
-            retryPolicy = apiErr.retryPolicy
-            errorDetails = apiErr.details
         } catch {
             if Task.isCancelled { return }
-            errorMessage = error.localizedDescription
-            errorDetails = nil
+            errorMessage = projectMoveErrorMessage(error)
+            retryPolicy = projectMoveRetryPolicy(error)
+            errorDetails = projectMoveErrorDetails(error)
         }
     }
 
@@ -508,11 +508,15 @@ struct RenameSheet: View {
         isExecuting = true
         defer { isExecuting = false; activeTask = nil }
         do {
-            let res = try await daemonClient.projectMove(
-                src: selectedCwd,
-                dst: newPath,
-                dryRun: false,
-                force: false
+            let res = try await serviceClient.projectMove(
+                EngramServiceProjectMoveRequest(
+                    src: selectedCwd,
+                    dst: newPath,
+                    dryRun: false,
+                    force: false,
+                    auditNote: nil,
+                    actor: "app"
+                )
             )
             if Task.isCancelled { return }
             if res.state == "committed" {
@@ -529,15 +533,11 @@ struct RenameSheet: View {
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }
-        } catch let apiErr as ProjectMoveAPIError {
-            if Task.isCancelled { return }
-            errorMessage = apiErr.message
-            retryPolicy = apiErr.retryPolicy
-            errorDetails = apiErr.details
         } catch {
             if Task.isCancelled { return }
-            errorMessage = error.localizedDescription
-            errorDetails = nil
+            errorMessage = projectMoveErrorMessage(error)
+            retryPolicy = projectMoveRetryPolicy(error)
+            errorDetails = projectMoveErrorDetails(error)
         }
     }
 }

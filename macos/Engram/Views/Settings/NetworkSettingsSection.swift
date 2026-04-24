@@ -2,6 +2,8 @@
 import SwiftUI
 
 struct NetworkSettingsSection: View {
+    @Environment(EngramServiceClient.self) var serviceClient
+
     // Sync
     @State private var syncEnabled: Bool = false
     @State private var syncNodeName: String = ""
@@ -10,7 +12,8 @@ struct NetworkSettingsSection: View {
     @State private var syncStatus: String = ""
     @State private var isSyncing: Bool = false
 
-    // MCP (Phase B — daemon single-writer)
+    // MCP service single-writer policy. The legacy Node daemon rollback path
+    // still exists during Stage 3, but Swift service IPC is the primary writer.
     @State private var mcpStrictSingleWriter: Bool = false
 
     @State private var isLoadingSettings: Bool = false
@@ -149,15 +152,14 @@ struct NetworkSettingsSection: View {
                 .padding(.vertical, 4)
             }
 
-            // MCP single-writer policy — Phase B. When ON, MCP write tools fail
-            // fast if the daemon is unreachable instead of falling back to a
-            // direct DB write. Default OFF = soft single-writer (resilient but
-            // allows brief concurrent-write windows during daemon restarts).
+            // MCP single-writer policy. When ON, MCP write tools fail fast if
+            // the Swift service is unreachable instead of falling back to a
+            // direct DB write. Default OFF preserves Stage 3 rollback behavior.
             GroupBox("MCP") {
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle("Strict single writer", isOn: $mcpStrictSingleWriter)
                         .onChange(of: mcpStrictSingleWriter) { saveMcpSettings() }
-                    Text("When on, MCP write tools (save_insight, project_move, …) fail if the daemon can't be reached, instead of falling back to a direct DB write. Reduces lock contention to zero; requires a running daemon. Takes effect on the next MCP spawn.")
+                    Text("When on, MCP write tools (save_insight, project_move, …) fail if the Swift service can't be reached, instead of falling back to a direct DB write. Reduces lock contention to zero; requires the service IPC socket. Takes effect on the next Swift MCP spawn.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -203,38 +205,31 @@ struct NetworkSettingsSection: View {
     private func triggerSync() {
         isSyncing = true
         syncStatus = "Syncing..."
-
-        let webPort: Int = (readEngramSettings()?["httpPort"] as? Int) ?? 3457
-
-        guard let url = URL(string: "http://localhost:\(webPort)/api/sync/trigger") else {
-            syncStatus = "Failed"
-            isSyncing = false
-            return
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = readEngramSettings()?["httpBearerToken"] as? String {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-
-        URLSession.shared.dataTask(with: request) { _, response, error in
-            DispatchQueue.main.async {
+        Task {
+            do {
+                let response = try await serviceClient.triggerSync(
+                    EngramServiceTriggerSyncRequest(peer: nil)
+                )
                 isSyncing = false
-                if let error = error {
-                    syncStatus = "Failed"
-                    print("Sync error: \(error.localizedDescription)")
-                } else if let httpResponse = response as? HTTPURLResponse,
-                          (200...299).contains(httpResponse.statusCode) {
-                    syncStatus = "Synced!"
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        if syncStatus == "Synced!" { syncStatus = "" }
+                let failed = response.results.contains { item in
+                    if let ok = item.ok {
+                        return !ok
                     }
-                } else {
-                    syncStatus = "Failed"
+                    return item.error != nil
                 }
+                if failed {
+                    syncStatus = "Failed"
+                    return
+                }
+                syncStatus = "Synced!"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    if syncStatus == "Synced!" { syncStatus = "" }
+                }
+            } catch {
+                isSyncing = false
+                syncStatus = "Failed"
+                print("Sync error: \(error.localizedDescription)")
             }
-        }.resume()
+        }
     }
 }

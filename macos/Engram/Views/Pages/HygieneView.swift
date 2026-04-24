@@ -1,29 +1,11 @@
 // macos/Engram/Views/Pages/HygieneView.swift
 import SwiftUI
 
-// MARK: - Data Models
-
-struct HygieneIssue: Codable, Identifiable {
-    var id: String { "\(kind)-\(message.prefix(40))" }
-    let kind: String
-    let severity: String
-    let message: String
-    let detail: String?
-    let repo: String?
-    let action: String?
-}
-
-struct HygieneCheckResult: Codable {
-    let issues: [HygieneIssue]
-    let score: Int
-    let checkedAt: String
-}
-
 // MARK: - Main View
 
 struct HygieneView: View {
-    @Environment(DaemonClient.self) private var daemon
-    @State private var result: HygieneCheckResult? = nil
+    @Environment(EngramServiceClient.self) private var serviceClient
+    @State private var result: EngramServiceHygieneResponse? = nil
     @State private var isLoading = true
     @State private var isRefreshing = false
     @State private var error: String? = nil
@@ -31,13 +13,13 @@ struct HygieneView: View {
     @State private var warningsExpanded = true
     @State private var infoExpanded = false
 
-    private var errorIssues: [HygieneIssue] {
+    private var errorIssues: [EngramServiceHygieneIssue] {
         result?.issues.filter { $0.severity == "error" } ?? []
     }
-    private var warningIssues: [HygieneIssue] {
+    private var warningIssues: [EngramServiceHygieneIssue] {
         result?.issues.filter { $0.severity == "warning" } ?? []
     }
-    private var infoIssues: [HygieneIssue] {
+    private var infoIssues: [EngramServiceHygieneIssue] {
         result?.issues.filter { $0.severity == "info" } ?? []
     }
 
@@ -204,7 +186,7 @@ struct HygieneView: View {
             isRefreshing = false
         }
         do {
-            result = try await daemon.fetchHygieneChecks(force: force)
+            result = try await serviceClient.hygiene(force: force)
         } catch {
             self.error = "Could not load hygiene data: \(error.localizedDescription)"
         }
@@ -213,7 +195,7 @@ struct HygieneView: View {
     // MARK: - Helpers
 
     private func formatRelativeTime(_ iso: String) -> String {
-        var formatter = ISO8601DateFormatter()
+        let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var date = formatter.date(from: iso)
         if date == nil {
@@ -235,7 +217,7 @@ private struct IssueSection: View {
     let title: String
     let count: Int
     let severity: String
-    let issues: [HygieneIssue]
+    let issues: [EngramServiceHygieneIssue]
     @Binding var isExpanded: Bool
 
     var body: some View {
@@ -285,7 +267,7 @@ private struct IssueSection: View {
 // MARK: - IssueCard
 
 private struct IssueCard: View {
-    let issue: HygieneIssue
+    let issue: EngramServiceHygieneIssue
     @State private var copied = false
 
     private var severityColor: Color {

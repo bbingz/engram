@@ -2,20 +2,20 @@
 import SwiftUI
 
 struct MemoryView: View {
-    @Environment(DaemonClient.self) var daemonClient
-    @State private var memoryFiles: [MemoryFile] = []
+    @Environment(EngramServiceClient.self) var serviceClient
+    @State private var memoryFiles: [EngramServiceMemoryFile] = []
     @State private var searchText = ""
-    @State private var selectedFile: MemoryFile? = nil
+    @State private var selectedFile: EngramServiceMemoryFile? = nil
     @State private var isLoading = true
     @State private var error: String? = nil
 
-    private var filteredFiles: [MemoryFile] {
+    private var filteredFiles: [EngramServiceMemoryFile] {
         if searchText.isEmpty { return memoryFiles }
         let q = searchText.lowercased()
         return memoryFiles.filter { $0.name.lowercased().contains(q) || $0.project.lowercased().contains(q) || $0.preview.lowercased().contains(q) }
     }
 
-    private var groupedByProject: [(project: String, files: [MemoryFile])] {
+    private var groupedByProject: [(project: String, files: [EngramServiceMemoryFile])] {
         let grouped = Dictionary(grouping: filteredFiles) { $0.project }
         return grouped.sorted { $0.key < $1.key }.map { (project: $0.key, files: $0.value) }
     }
@@ -90,7 +90,7 @@ struct MemoryView: View {
     private func loadData() async {
         isLoading = true; error = nil
         defer { isLoading = false }
-        do { memoryFiles = try await daemonClient.fetch("/api/memory") }
+        do { memoryFiles = try await serviceClient.memoryFiles() }
         catch { self.error = "Could not load memory: \(error.localizedDescription)" }
     }
 

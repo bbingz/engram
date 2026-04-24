@@ -3,7 +3,7 @@ import SwiftUI
 
 struct ResumeDialog: View {
     let session: Session
-    @Environment(IndexerProcess.self) var indexer
+    @Environment(EngramServiceClient.self) var serviceClient
     @Environment(\.dismiss) var dismiss
     @State private var resumeResult: ResumeInfo?
     @State private var isLoading = true
@@ -88,33 +88,25 @@ struct ResumeDialog: View {
     }
 
     func fetchResumeInfo() async {
-        guard let port = indexer.port else {
-            errorMessage = "Daemon not connected"
-            isLoading = false
-            return
-        }
         do {
-            let url = URL(string: "http://127.0.0.1:\(port)/api/session/\(session.id)/resume")!
-            var req = URLRequest(url: url)
-            req.httpMethod = "POST"
-            let (data, _) = try await URLSession.shared.data(for: req)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let error = json["error"] as? String {
-                    errorMessage = error
-                    if let hint = json["hint"] as? String, !hint.isEmpty {
-                        errorMessage = "\(error)\n\(hint)"
-                    }
-                } else if let command = json["command"] as? String {
-                    resumeResult = ResumeInfo(
-                        tool: (json["tool"] as? String) ?? session.source,
-                        command: command,
-                        args: (json["args"] as? [String]) ?? [],
-                        cwd: (json["cwd"] as? String) ?? ""
-                    )
+            let response = try await serviceClient.resumeCommand(sessionId: session.id)
+            if let error = response.error {
+                errorMessage = error
+                if let hint = response.hint, !hint.isEmpty {
+                    errorMessage = "\(error)\n\(hint)"
                 }
+            } else if let command = response.command {
+                resumeResult = ResumeInfo(
+                    tool: response.tool ?? session.source,
+                    command: command,
+                    args: response.args,
+                    cwd: response.cwd ?? ""
+                )
+            } else {
+                errorMessage = "Resume command unavailable"
             }
         } catch {
-            errorMessage = "Failed to connect to daemon"
+            errorMessage = "Failed to build resume command"
         }
         isLoading = false
     }

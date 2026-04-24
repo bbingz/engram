@@ -2,19 +2,19 @@
 import SwiftUI
 
 struct SkillsView: View {
-    @Environment(DaemonClient.self) var daemonClient
-    @State private var skills: [SkillInfo] = []
+    @Environment(EngramServiceClient.self) var serviceClient
+    @State private var skills: [EngramServiceSkillInfo] = []
     @State private var searchText = ""
     @State private var isLoading = true
     @State private var error: String? = nil
 
-    private var filteredSkills: [SkillInfo] {
+    private var filteredSkills: [EngramServiceSkillInfo] {
         if searchText.isEmpty { return skills }
         let q = searchText.lowercased()
         return skills.filter { $0.name.lowercased().contains(q) || $0.description.lowercased().contains(q) }
     }
-    private var globalSkills: [SkillInfo] { filteredSkills.filter { $0.scope == "global" } }
-    private var pluginSkills: [SkillInfo] { filteredSkills.filter { $0.scope == "plugin" } }
+    private var globalSkills: [EngramServiceSkillInfo] { filteredSkills.filter { $0.scope == "global" } }
+    private var pluginSkills: [EngramServiceSkillInfo] { filteredSkills.filter { $0.scope == "plugin" } }
 
     var body: some View {
         ScrollView {
@@ -48,7 +48,7 @@ struct SkillsView: View {
         .task { await loadData() }
     }
 
-    private func skillRow(_ skill: SkillInfo) -> some View {
+    private func skillRow(_ skill: EngramServiceSkillInfo) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(skill.name).font(.callout).fontWeight(.medium).foregroundStyle(Theme.primaryText)
             if !skill.description.isEmpty {
@@ -66,7 +66,7 @@ struct SkillsView: View {
     private func loadData() async {
         isLoading = true; error = nil
         defer { isLoading = false }
-        do { skills = try await daemonClient.fetch("/api/skills") }
+        do { skills = try await serviceClient.skills() }
         catch { self.error = "Could not load skills: \(error.localizedDescription)" }
     }
 }

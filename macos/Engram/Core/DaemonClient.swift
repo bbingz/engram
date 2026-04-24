@@ -22,6 +22,8 @@ final class DaemonClient {
     func fetch<T: Decodable>(_ path: String) async throws -> T {
         do {
             return try await core.fetch(path)
+        } catch let error as DaemonHTTPError {
+            throw DaemonClientError.httpError(error.httpStatus)
         } catch let error as DaemonHTTPTransportError {
             throw mapTransportError(error)
         }
@@ -30,6 +32,8 @@ final class DaemonClient {
     func post<T: Decodable>(_ path: String, body: (any Encodable)? = nil) async throws -> T {
         do {
             return try await core.post(path, body: body)
+        } catch let error as DaemonHTTPError {
+            throw DaemonClientError.httpError(error.httpStatus)
         } catch let error as DaemonHTTPTransportError {
             throw mapTransportError(error)
         }
@@ -38,6 +42,8 @@ final class DaemonClient {
     func postRaw(_ path: String, body: (any Encodable)? = nil) async throws {
         do {
             try await core.postRaw(path, body: body)
+        } catch let error as DaemonHTTPError {
+            throw DaemonClientError.httpError(error.httpStatus)
         } catch let error as DaemonHTTPTransportError {
             throw mapTransportError(error)
         }
@@ -46,6 +52,8 @@ final class DaemonClient {
     func delete(_ path: String) async throws {
         do {
             try await core.delete(path)
+        } catch let error as DaemonHTTPError {
+            throw DaemonClientError.httpError(error.httpStatus)
         } catch let error as DaemonHTTPTransportError {
             throw mapTransportError(error)
         }
@@ -197,7 +205,7 @@ extension DaemonClient {
 // MARK: - Hygiene API
 
 extension DaemonClient {
-    func fetchHygieneChecks(force: Bool = false) async throws -> HygieneCheckResult {
+    func fetchHygieneChecks(force: Bool = false) async throws -> EngramServiceHygieneResponse {
         let path = force ? "/api/hygiene?force=true" : "/api/hygiene"
         return try await fetch(path)
     }

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-04-23T02:58:12.716Z",
+  "captureMode": "node-direct-tools-v1",
+  "gitCommit": "571fd979b422ea700984e598a46d6aac67e0c8ed",
+  "macOSVersion": "26.4.1",
+  "cpuArchitecture": "arm64",
+  "nodeVersion": "v25.9.0",
+  "fixtureDbPath": "tests/fixtures/mcp-contract.sqlite",
+  "fixtureCorpusPath": "tests/fixtures",
+  "fixtureDbSha256": "75ccd6c507af229a865c7d25c05f7af4029e0b18f445e7db1b9aa82ce99ab2b7",
+  "iterationCount": 50,
+  "coldAppLaunchToDaemonReadyMs": 13.689,
+  "coldDbOpenMs": 3.429,
+  "idleRssMB": 107.641,
+  "initialFixtureIndexingMs": 48.788,
+  "incrementalIndexingMs": 0.035,
+  "mcpSearchP50Ms": 2.646,
+  "mcpSearchP95Ms": 4.442,
+  "mcpGetContextP50Ms": 1.598,
+  "mcpGetContextP95Ms": 3.256
+}

@@ -1,11 +1,6 @@
 import Foundation
 import GRDB
 
-struct MCPSessionLinkRecord {
-    let source: String
-    let filePath: String
-}
-
 struct MCPSessionRecord {
     let id: String
     let source: String
@@ -526,6 +521,7 @@ final class MCPDatabase {
     ) throws -> OrderedJSONValue {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let cappedLimit = min(max(limit, 1), 50)
+        let normalizedMode = mode.isEmpty ? "hybrid" : mode
 
         if isUUID(normalizedQuery) {
             if let row = try fetchSessionRow(id: normalizedQuery) {
@@ -551,7 +547,7 @@ final class MCPDatabase {
             ])
         }
 
-        guard mode != "semantic", normalizedQuery.count >= 3 else {
+        guard normalizedMode != "semantic", normalizedQuery.count >= 3 else {
             var entries: [(String, OrderedJSONValue)] = [
                 ("results", .array([])),
                 ("query", .string(query)),
@@ -591,17 +587,35 @@ final class MCPDatabase {
             ])
         }
 
-        return .object([
+        var entries: [(String, OrderedJSONValue)] = [
             ("results", .array(resultRows)),
             ("query", .string(query)),
             ("searchModes", .array([.string("keyword")])),
-        ])
+        ]
+
+        if normalizedQuery.count >= 3 {
+            let insightRows = try searchInsightsFTS(query: normalizedQuery, limit: 5)
+            let insightResults = insightRows.compactMap { row -> OrderedJSONValue? in
+                guard let content = stringValue(row["content"]), !content.isEmpty else { return nil }
+                return .string(content)
+            }
+            if !insightResults.isEmpty {
+                entries.append(("insightResults", .array(insightResults)))
+            }
+        }
+
+        if normalizedMode == "semantic" || normalizedMode == "hybrid" {
+            entries.append(("warning", .string("Embedding provider unavailable — results are keyword-only (FTS).")))
+        }
+
+        return .object(entries)
     }
 
     func getContext(
         cwd: String,
         task: String?,
         maxTokens: Int,
+        detail: String,
         sortBy: String,
         includeEnvironment: Bool
     ) throws -> String {
@@ -618,11 +632,24 @@ final class MCPDatabase {
         var parts: [String] = []
         var totalChars = 0
         var selectedCount = 0
+        var memoryCount = 0
 
         if let task, !task.isEmpty {
             let line = "当前任务：\(task)\n"
             parts.append(line)
             totalChars += line.count
+        }
+
+        if let task, task.count >= 3 {
+            let insightRows = try searchInsightsFTS(query: task, limit: 5)
+            for row in insightRows {
+                guard let content = stringValue(row["content"]), !content.isEmpty else { continue }
+                let line = "[memory] \(content)\n"
+                if totalChars + line.count > maxChars { break }
+                parts.append(line)
+                totalChars += line.count
+                memoryCount += 1
+            }
         }
 
         for row in sessions {
@@ -636,11 +663,12 @@ final class MCPDatabase {
             selectedCount += 1
         }
 
-        let footer = "\n— \(selectedCount) sessions, ~\(Int(ceil(Double(totalChars) / 4.0))) tokens"
+        let memoryNote = memoryCount > 0 ? " + \(memoryCount) memories" : ""
+        let footer = "\n— \(selectedCount) sessions\(memoryNote), ~\(Int(ceil(Double(totalChars) / 4.0))) tokens"
         parts.append(footer)
 
         if includeEnvironment {
-            // TODO(mcp-get-context-env): port environment/status addenda after read-tool parity lands.
+            parts.append(try contextEnvironmentSection(detail: detail, maxTokens: maxTokens))
         }
 
         return parts.joined()
@@ -665,38 +693,6 @@ final class MCPDatabase {
         try resolveProjectAliases([project])
     }
 
-    func listSessionLinkRecords(project: String, limit: Int) throws -> (projectNames: [String], sessions: [MCPSessionLinkRecord], truncated: Bool) {
-        let projectNames = try resolveProjectAliases([project])
-        let cappedLimit = min(max(limit, 1), 10_000)
-        let rows = try queue.read { db in
-            let placeholders = Array(repeating: "?", count: max(projectNames.count, 1)).joined(separator: ",")
-            let sql = """
-            SELECT s.source, COALESCE(ls.local_readable_path, s.file_path) AS file_path
-            FROM sessions s
-            LEFT JOIN session_local_state ls ON ls.session_id = s.id
-            WHERE s.hidden_at IS NULL
-              AND s.orphan_status IS NULL
-              AND s.project IN (\(placeholders))
-            ORDER BY s.start_time DESC
-            LIMIT ?
-            """
-            let values: [DatabaseValueConvertible?] = (projectNames.isEmpty ? [project] : projectNames) + [cappedLimit]
-            let arguments = StatementArguments(values)
-            return try Row.fetchAll(db, sql: sql, arguments: arguments)
-        }
-
-        return (
-            projectNames,
-            rows.map { row in
-                MCPSessionLinkRecord(
-                    source: stringValue(row["source"]) ?? "unknown",
-                    filePath: stringValue(row["file_path"]) ?? ""
-                )
-            },
-            rows.count == cappedLimit
-        )
-    }
-
     func totalCostSince(_ since: String) throws -> Double {
         try queue.read { db in
             let row = try Row.fetchOne(
@@ -713,9 +709,88 @@ final class MCPDatabase {
         }
     }
 
+    private func contextEnvironmentSection(detail: String, maxTokens: Int) throws -> String {
+        let normalizedDetail: String
+        switch detail {
+        case "abstract", "overview", "full":
+            normalizedDetail = detail
+        default:
+            normalizedDetail = "full"
+        }
+
+        let now = contextNow()
+        let calendar = Calendar(identifier: .gregorian)
+        let startOfToday = calendar.startOfDay(for: now)
+        let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday) ?? now
+        let startOfSevenDayWindow = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+
+        var sections: [String] = []
+        let todayCost = try totalCostBetween(
+            start: iso8601Timestamp(startOfToday),
+            end: iso8601Timestamp(startOfTomorrow)
+        )
+        if todayCost > 0 {
+            sections.append(String(format: "Cost today: $%.2f", locale: Locale(identifier: "en_US_POSIX"), todayCost))
+        }
+
+        if normalizedDetail != "abstract" {
+            let toolLimit = normalizedDetail == "overview" ? 5 : 10
+            let topTools = try topToolsSince(iso8601Timestamp(startOfSevenDayWindow), limit: toolLimit)
+            if !topTools.isEmpty {
+                let lines = topTools.map { "  \($0.name): \($0.callCount) calls" }.joined(separator: "\n")
+                sections.append("Top tools (7d):\n\(lines)")
+            }
+        }
+
+        let maxEnvChars = Double(maxTokens * 4) * 0.3
+        if normalizedDetail == "full", sections.joined(separator: "\n").count > Int(maxEnvChars) {
+            sections.removeAll { $0.hasPrefix("Top tools (7d):") }
+        }
+
+        guard !sections.isEmpty else { return "" }
+        return "\n\n## Environment\n" + sections.joined(separator: "\n")
+    }
+
     func sessionRecord(id: String) throws -> MCPSessionRecord? {
         guard let row = try fetchSessionRow(id: id) else { return nil }
         return makeSessionRecord(from: row)
+    }
+
+    private func totalCostBetween(start: String, end: String) throws -> Double {
+        try queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT SUM(cost_usd) AS cost
+                FROM session_costs
+                WHERE computed_at >= ? AND computed_at < ?
+                """,
+                arguments: [start, end]
+            )
+            return doubleValue(row?["cost"])
+        }
+    }
+
+    private func topToolsSince(_ since: String, limit: Int) throws -> [(name: String, callCount: Int)] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT t.tool_name AS name, SUM(t.call_count) AS call_count
+                FROM session_tools t
+                JOIN sessions s ON s.id = t.session_id
+                WHERE s.start_time >= ?
+                GROUP BY t.tool_name
+                ORDER BY call_count DESC, name ASC
+                LIMIT ?
+                """,
+                arguments: [since, limit]
+            )
+            return rows.compactMap { row in
+                guard let name = stringValue(row["name"]), !name.isEmpty else { return nil }
+                return (name, intValue(row["call_count"]))
+            }
+        }
     }
 
     private func searchInsightsFTS(query: String, limit: Int) throws -> [Row] {
@@ -1123,6 +1198,25 @@ private func stringValue(_ value: DatabaseValueConvertible?) -> String? {
     default:
         return nil
     }
+}
+
+private func contextNow() -> Date {
+    if let raw = ProcessInfo.processInfo.environment["ENGRAM_MCP_NOW"] {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallback = ISO8601DateFormatter()
+        if let date = formatter.date(from: raw) ?? fallback.date(from: raw) {
+            return date
+        }
+    }
+    return Date()
+}
+
+private func iso8601Timestamp(_ date: Date) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: date)
 }
 
 func toLocalDateTime(_ value: String?) -> String {

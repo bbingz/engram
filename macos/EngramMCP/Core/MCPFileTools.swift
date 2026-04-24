@@ -16,68 +16,6 @@ enum MCPFileTools {
         ])
     }
 
-    static func linkSessions(database: MCPDatabase, targetDir: String) throws -> OrderedJSONValue {
-        let normalizedTargetDir = trimTrailingSlash(targetDir)
-        guard normalizedTargetDir.hasPrefix("/") else {
-            return .object([
-                ("created", .int(0)),
-                ("skipped", .int(0)),
-                ("errors", .array([.string("targetDir must be an absolute path")])),
-                ("targetDir", .string(normalizedTargetDir)),
-                ("projectNames", .array([])),
-            ])
-        }
-
-        let projectName = URL(fileURLWithPath: normalizedTargetDir).lastPathComponent
-        let result = try database.listSessionLinkRecords(project: projectName, limit: 10_000)
-        let fileManager = FileManager.default
-
-        var created = 0
-        var skipped = 0
-        var errors: [OrderedJSONValue] = []
-        var createdDirs = Set<String>()
-
-        for session in result.sessions {
-            let fileName = URL(fileURLWithPath: session.filePath).lastPathComponent
-            let linkDir = URL(fileURLWithPath: normalizedTargetDir)
-                .appendingPathComponent("conversation_log")
-                .appendingPathComponent(session.source)
-                .path
-            let linkPath = URL(fileURLWithPath: linkDir).appendingPathComponent(fileName).path
-
-            do {
-                if let existing = try? fileManager.destinationOfSymbolicLink(atPath: linkPath) {
-                    if existing == session.filePath {
-                        skipped += 1
-                        continue
-                    }
-                    try fileManager.removeItem(atPath: linkPath)
-                }
-
-                if !createdDirs.contains(linkDir) {
-                    try fileManager.createDirectory(atPath: linkDir, withIntermediateDirectories: true)
-                    createdDirs.insert(linkDir)
-                }
-                try fileManager.createSymbolicLink(atPath: linkPath, withDestinationPath: session.filePath)
-                created += 1
-            } catch {
-                errors.append(.string("\(linkPath): \(error.localizedDescription)"))
-            }
-        }
-
-        var entries: [(String, OrderedJSONValue)] = [
-            ("created", .int(created)),
-            ("skipped", .int(skipped)),
-            ("errors", .array(errors)),
-            ("targetDir", .string(normalizedTargetDir)),
-            ("projectNames", .array(result.projectNames.map(OrderedJSONValue.string))),
-        ]
-        if result.truncated {
-            entries.append(("truncated", .bool(true)))
-        }
-        return .object(entries)
-    }
-
     static func projectReview(
         oldPath: String,
         newPath: String,

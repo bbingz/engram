@@ -2,6 +2,25 @@ import Foundation
 
 final class MCPStdioServer {
     private let config = MCPConfig.load()
+    private static let instructions = """
+    Engram is a cross-tool AI session aggregator. Key tools:
+    - search: Full-text + semantic search across all AI coding sessions (15+ tools)
+    - get_context: Auto-extract relevant project history for your current task
+    - save_insight: Save important decisions, lessons, and knowledge for future sessions
+    - get_memory: Retrieve previously saved insights and cross-session knowledge
+    - get_session: Read full conversation transcript of any session
+    - list_sessions: Browse sessions with filters (source, project, date)
+    - project_move / project_archive / project_undo: move or rename a project directory
+        while keeping all AI session history reachable (patches cwd in 6 tool stores,
+        renames Claude Code encoded dir, updates DB, creates alias). Use dry_run:true
+        first to preview impact.
+
+    Best practices:
+    1. Call get_context at the start of a task to see what's been done before
+    2. Use save_insight to preserve important decisions that should persist
+    3. Verify facts from memory before acting on them — memories can be stale
+    4. Cite session IDs when referencing past work
+    """
 
     func run() {
         while let line = readLine(strippingNewline: true) {
@@ -27,14 +46,13 @@ final class MCPStdioServer {
                     // TODO(mcp-version-negotiation): read params.protocolVersion and negotiate.
                     ("protocolVersion", .string("2025-03-26")),
                     ("capabilities", .object([
-                        ("tools", .object([
-                            ("listChanged", .bool(false)),
-                        ])),
+                        ("tools", .object([])),
                     ])),
                     ("serverInfo", .object([
                         ("name", .string("engram")),
                         ("version", .string("0.1.0")),
                     ])),
+                    ("instructions", .string(Self.instructions)),
                 ])
             )
         case "notifications/initialized":

@@ -311,10 +311,10 @@ async function cmdList(args: string[]): Promise<void> {
     for (const r of rows) {
       const marker =
         r.state === 'committed'
-          ? COLOR.green + '✓'
+          ? `${COLOR.green}✓`
           : r.state === 'failed'
-            ? COLOR.red + '✗'
-            : COLOR.yellow + '…';
+            ? `${COLOR.red}✗`
+            : `${COLOR.yellow}…`;
       log(
         `${marker}${COLOR.reset} ${r.id.slice(0, 8)}  ${r.state.padEnd(11)}  ${r.oldBasename} → ${r.newBasename}  ${COLOR.dim}${r.startedAt}${COLOR.reset}`,
       );

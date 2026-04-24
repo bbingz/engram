@@ -8,7 +8,7 @@ import SwiftUI
 
 struct ArchiveSheet: View {
     let projectName: String
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
     @Environment(\.dismiss) var dismiss
 
     @State private var availableCwds: [String] = []
@@ -20,7 +20,7 @@ struct ArchiveSheet: View {
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
     @State private var residualRefCount: Int?
-    @State private var errorDetails: ProjectMoveAPIError.Details?
+    @State private var errorDetails: ProjectMoveServiceErrorDetails?
     @State private var showConfirmDialog: Bool = false
 
     // English aliases match the MCP tool's canonical enum; labels in the
@@ -254,9 +254,9 @@ struct ArchiveSheet: View {
         isLoadingCwds = true
         defer { isLoadingCwds = false }
         do {
-            let cwds = try await daemonClient.projectCwds(forProject: projectName)
-            availableCwds = cwds
-            selectedCwd = cwds.first ?? ""
+            let response = try await serviceClient.projectCwds(project: projectName)
+            availableCwds = response.cwds
+            selectedCwd = response.cwds.first ?? ""
         } catch {
             errorMessage = "Failed to load project paths: \(error.localizedDescription)"
         }
@@ -269,9 +269,15 @@ struct ArchiveSheet: View {
         isExecuting = true
         defer { isExecuting = false; activeTask = nil }
         do {
-            let res = try await daemonClient.projectArchive(
-                src: selectedCwd,
-                archiveTo: category.isEmpty ? nil : category
+            let res = try await serviceClient.projectArchive(
+                EngramServiceProjectArchiveRequest(
+                    src: selectedCwd,
+                    archiveTo: category.isEmpty ? nil : category,
+                    dryRun: false,
+                    force: false,
+                    auditNote: nil,
+                    actor: "app"
+                )
             )
             if Task.isCancelled { return }
             if res.state == "committed" {
@@ -284,15 +290,11 @@ struct ArchiveSheet: View {
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }
-        } catch let apiErr as ProjectMoveAPIError {
-            if Task.isCancelled { return }
-            errorMessage = apiErr.message
-            retryPolicy = apiErr.retryPolicy
-            errorDetails = apiErr.details
         } catch {
             if Task.isCancelled { return }
-            errorMessage = error.localizedDescription
-            errorDetails = nil
+            errorMessage = projectMoveErrorMessage(error)
+            retryPolicy = projectMoveRetryPolicy(error)
+            errorDetails = projectMoveErrorDetails(error)
         }
     }
 }

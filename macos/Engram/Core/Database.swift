@@ -24,7 +24,6 @@ enum GroupingMode: String, CaseIterable {
 final class DatabaseManager {
     @ObservationIgnored private let dbPath: String
     @ObservationIgnored nonisolated(unsafe) private var pool: DatabasePool?
-    @ObservationIgnored private var writerPool: DatabasePool?
 
     /// File path to the SQLite database (nonisolated for background FileManager access)
     nonisolated var path: String { dbPath }
@@ -42,33 +41,9 @@ final class DatabaseManager {
     }
 
     func open() throws {
-        // Single pool for both reads and writes
-        // (read-only DatabasePool can't reliably access WAL-mode DBs written by daemon)
-        pool = try DatabasePool(path: dbPath)
-        writerPool = pool
-        try writerPool!.write { db in
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS favorites (
-                    session_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS tags (
-                    session_id TEXT NOT NULL,
-                    tag        TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY (session_id, tag)
-                );
-            """)
-            // Idempotent column additions for hide/rename
-            let existing = try Set(Row.fetchAll(db, sql: "PRAGMA table_info(sessions)").map {
-                $0["name"] as String
-            })
-            for (name, def) in [("hidden_at", "TEXT"), ("custom_name", "TEXT")] {
-                if !existing.contains(name) {
-                    try db.execute(sql: "ALTER TABLE sessions ADD COLUMN \(name) \(def)")
-                }
-            }
-        }
+        var configuration = Configuration()
+        configuration.readonly = true
+        pool = try DatabasePool(path: dbPath, configuration: configuration)
     }
 
     // MARK: - list_sessions
@@ -226,7 +201,7 @@ final class DatabaseManager {
 
     /// SQLite trigram tokenizer uses byte-level 3-byte windows — CJK chars (3 bytes each)
     /// produce cross-character garbage trigrams. Detect CJK and fall back to LIKE.
-    private static func containsCJK(_ text: String) -> Bool {
+    nonisolated private static func containsCJK(_ text: String) -> Bool {
         text.unicodeScalars.contains { s in
             (0x2E80...0x9FFF).contains(s.value) ||
             (0xF900...0xFAFF).contains(s.value) ||
@@ -234,13 +209,21 @@ final class DatabaseManager {
         }
     }
 
-    func search(query: String, limit: Int = 10) throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
+    private static func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
+        let count = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            arguments: [table]
+        ) ?? 0
+        return count > 0
+    }
+
+    nonisolated func search(query: String, limit: Int = 10) throws -> [Session] {
         guard query.count >= 2 else { return [] }
 
         // CJK: use LIKE fallback (trigram MATCH broken for CJK)
         if Self.containsCJK(query) {
-            return try pool.read { db in
+            return try readInBackground { db in
                 try Session.fetchAll(db, sql: """
                     SELECT DISTINCT s.* FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
@@ -253,7 +236,7 @@ final class DatabaseManager {
 
         // ASCII/Latin: use fast FTS MATCH
         guard query.count >= 3 else { return [] }
-        return try pool.read { db in
+        return try readInBackground { db in
             let matches = try FtsMatch.fetchAll(db,
                 sql: "SELECT session_id, content FROM sessions_fts WHERE sessions_fts MATCH ? ORDER BY rank LIMIT ?",
                 arguments: [query, limit * 3])
@@ -332,29 +315,12 @@ final class DatabaseManager {
         }
     }
 
-    // MARK: - Favorites (writable extension table)
-    func addFavorite(sessionId: String) throws {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        try writer.write { db in
-            try db.execute(sql: """
-                INSERT OR IGNORE INTO favorites (session_id, created_at)
-                VALUES (?, datetime('now'))
-            """, arguments: [sessionId])
-        }
-    }
-
-    func removeFavorite(sessionId: String) throws {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        try writer.write { db in
-            try db.execute(sql: "DELETE FROM favorites WHERE session_id = ?",
-                           arguments: [sessionId])
-        }
-    }
-
+    // MARK: - Favorites (service-owned extension table)
     func listFavorites() throws -> [Session] {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
-            try Session.fetchAll(db, sql: """
+            guard try Self.tableExists("favorites", db: db) else { return [] }
+            return try Session.fetchAll(db, sql: """
                 SELECT s.* FROM sessions s
                 JOIN favorites f ON f.session_id = s.id
                 WHERE s.hidden_at IS NULL
@@ -366,66 +332,10 @@ final class DatabaseManager {
     func isFavorite(sessionId: String) throws -> Bool {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
-            try Favorite.fetchOne(db,
+            guard try Self.tableExists("favorites", db: db) else { return false }
+            return try Favorite.fetchOne(db,
                 sql: "SELECT * FROM favorites WHERE session_id = ?",
                 arguments: [sessionId]) != nil
-        }
-    }
-
-    // MARK: - Hide / Unhide / Rename (writable — sessions table)
-
-    func hideSession(id: String) throws {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        try writer.write { db in
-            try db.execute(
-                sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE id = ?",
-                arguments: [id])
-        }
-    }
-
-    func unhideSession(id: String) throws {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        try writer.write { db in
-            try db.execute(
-                sql: "UPDATE sessions SET hidden_at = NULL WHERE id = ?",
-                arguments: [id])
-        }
-    }
-
-    func renameSession(id: String, name: String?) throws {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        try writer.write { db in
-            try db.execute(
-                sql: "UPDATE sessions SET custom_name = ? WHERE id = ?",
-                arguments: [name, id])
-        }
-    }
-
-    func moveSessionToProject(id: String, project: String) throws {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        try writer.write { db in
-            try db.execute(
-                sql: "UPDATE sessions SET project = ? WHERE id = ?",
-                arguments: [project, id])
-        }
-    }
-
-    func renameProject(from oldName: String, to newName: String) throws {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        try writer.write { db in
-            try db.execute(
-                sql: "UPDATE sessions SET project = ? WHERE project = ?",
-                arguments: [newName, oldName])
-        }
-    }
-
-    /// Hide truly empty sessions (0 messages AND < 1 KB). Returns count hidden.
-    func hideEmptySessions() throws -> Int {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        return try writer.write { db in
-            try db.execute(
-                sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE message_count = 0 AND size_bytes < 1024 AND hidden_at IS NULL")
-            return db.changesCount
         }
     }
 
@@ -444,17 +354,6 @@ final class DatabaseManager {
         guard let pool else { throw DatabaseError.notOpen }
         return try pool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NOT NULL") ?? 0
-        }
-    }
-
-    // MARK: - Update session summary
-    func updateSessionSummary(id: String, summary: String) throws {
-        guard let writer = writerPool else { throw DatabaseError.notOpen }
-        try writer.write { db in
-            try db.execute(
-                sql: "UPDATE sessions SET summary = ? WHERE id = ?",
-                arguments: [summary, id]
-            )
         }
     }
 
@@ -716,9 +615,8 @@ final class DatabaseManager {
         }
     }
 
-    func sessionTimeline(days: Int = 30) throws -> [(date: String, sessions: [Session])] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func sessionTimeline(days: Int = 30) throws -> [(date: String, sessions: [Session])] {
+        try readInBackground { db in
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE hidden_at IS NULL

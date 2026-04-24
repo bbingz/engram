@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SessionReplayView: View {
     let sessionId: String
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
     @State private var replayState = ReplayState()
 
     var body: some View {
@@ -237,10 +237,18 @@ struct SessionReplayView: View {
         defer { replayState.isLoading = false }
 
         do {
-            let response: ReplayTimelineResponse = try await daemonClient.fetch(
-                "/api/sessions/\(sessionId)/timeline?limit=500"
-            )
-            replayState.entries = response.entries
+            let response = try await serviceClient.replayTimeline(sessionId: sessionId, limit: 500)
+            replayState.entries = response.entries.map { entry in
+                ReplayTimelineEntry(
+                    index: entry.index,
+                    role: entry.role,
+                    type: entry.type,
+                    preview: entry.preview,
+                    timestamp: entry.timestamp,
+                    tokens: entry.tokens.map { $0.input + $0.output },
+                    durationToNextMs: entry.durationToNextMs
+                )
+            }
         } catch {
             replayState.error = error.localizedDescription
         }

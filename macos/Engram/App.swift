@@ -9,8 +9,8 @@ struct EngramApp: App {
         Settings {
             SettingsView()
                 .environment(appDelegate.db)
-                .environment(appDelegate.indexer)
-                .environment(appDelegate.daemonClient)
+                .environment(appDelegate.serviceStatusStore)
+                .environment(appDelegate.serviceClient)
         }
     }
 }
@@ -19,30 +19,22 @@ struct EngramApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     let environment: AppEnvironment
     let db: DatabaseManager
-    let indexer: IndexerProcess
-    let daemonClient: DaemonClient
+    let serviceStatusStore: EngramServiceStatusStore
+    let serviceClient: EngramServiceClient
+    let serviceLauncher: EngramServiceLauncher
+    private var serviceStatusTask: Task<Void, Never>?
     private var menuBarController: MenuBarController?
-    private var mcpServer: MCPServer?
     private var onboardingWindow: NSWindow?
     private var popoverWindow: NSWindow?
 
     override init() {
         self.environment = AppEnvironment.fromCommandLine()
         self.db = DatabaseManager(path: environment.dbPath)
-        self.indexer = IndexerProcess()
-        #if DEBUG
-        if environment.mockDaemon {
-            MockURLProtocol.requestHandler = { request in
-                MockDaemonFixtures.response(for: request.url!.path)
-            }
-            let mockSession = createMockSession()
-            self.daemonClient = DaemonClient(port: 9999, session: mockSession)
-        } else {
-            self.daemonClient = DaemonClient(port: environment.daemonPort)
-        }
-        #else
-        self.daemonClient = DaemonClient(port: environment.daemonPort)
-        #endif
+        self.serviceStatusStore = EngramServiceStatusStore()
+        self.serviceClient = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: environment.serviceSocketPath)
+        )
+        self.serviceLauncher = EngramServiceLauncher()
         super.init()
     }
 
@@ -76,30 +68,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Open SQLite
         do { try db.open() } catch { print("DB error:", error) }
 
-        // Start MCP server
-        let tools = MCPTools(db: db)
-        mcpServer = MCPServer(tools: tools)
-        mcpServer?.start()
-
-        // Start Node.js indexer
-        // Look for daemon.js in the bundle Resources/node/ directory
-        let nodePath = UserDefaults.standard.string(forKey: "nodejsPath") ?? "/usr/local/bin/node"
-        let resolvedNodePath: String
-        if FileManager.default.fileExists(atPath: nodePath) {
-            resolvedNodePath = nodePath
-        } else if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/node") {
-            resolvedNodePath = "/opt/homebrew/bin/node"
-        } else {
-            resolvedNodePath = nodePath  // fall back, will fail with a clear error
-        }
-        let portPref = UserDefaults.standard.integer(forKey: "httpPort")
-        let _ = portPref > 0 ? portPref : 3456  // reserved for future MCPServer port wiring
-        let scriptPath = Bundle.main.path(forResource: "daemon", ofType: "js", inDirectory: "node") ?? ""
-
-        if environment.autoStartDaemon && !scriptPath.isEmpty {
-            indexer.start(nodePath: resolvedNodePath, scriptPath: scriptPath)
-        } else if scriptPath.isEmpty {
-            print("Warning: daemon.js not bundled — indexer disabled (normal during development)")
+        if environment.autoStartService {
+            serviceStatusStore.apply(.starting)
+            do {
+                try serviceLauncher.start(configuration: environment.serviceLaunchConfiguration())
+                startServiceStatusObservation()
+            } catch {
+                serviceStatusStore.apply(.error(message: error.localizedDescription))
+                print("EngramService launch error:", error)
+            }
         }
 
         // Setup menu bar (or standalone popover window in test mode)
@@ -112,8 +89,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             )
             window.contentView = NSHostingView(rootView: PopoverView()
                 .environment(db)
-                .environment(indexer)
-                .environment(daemonClient))
+                .environment(serviceStatusStore)
+                .environment(serviceClient))
             window.title = "Popover Preview"
             window.center()
             window.makeKeyAndOrderFront(nil)
@@ -121,7 +98,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.styleMask.remove(.resizable)
             self.popoverWindow = window
         } else {
-            menuBarController = MenuBarController(db: db, indexer: indexer, daemonClient: daemonClient, windowSize: environment.windowSize)
+            menuBarController = MenuBarController(
+                db: db,
+                serviceStatusStore: serviceStatusStore,
+                serviceClient: serviceClient,
+                windowSize: environment.windowSize
+            )
 
             // In test mode with a window size, auto-open the main window so UI tests can find the sidebar
             if environment.windowSize != nil {
@@ -131,7 +113,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // First-run onboarding (skip in test mode)
         let isTestMode = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || !environment.autoStartDaemon
+            || !environment.autoStartService
         if !isTestMode {
             if !UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
                 showOnboarding()
@@ -147,8 +129,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        indexer.stop()
-        mcpServer?.stop()
+        serviceStatusTask?.cancel()
+        serviceLauncher.stopIfOwned()
+        Task.detached { [serviceClient] in
+            await serviceClient.close()
+        }
+    }
+
+    private func startServiceStatusObservation() {
+        serviceStatusTask?.cancel()
+        serviceStatusTask = Task { [serviceClient, serviceStatusStore] in
+            do {
+                let status = try await serviceClient.status()
+                await MainActor.run {
+                    serviceStatusStore.apply(status)
+                }
+            } catch {
+                await MainActor.run {
+                    serviceStatusStore.apply(.error(message: error.localizedDescription))
+                }
+                return
+            }
+
+            do {
+                for try await event in serviceClient.events() {
+                    await MainActor.run {
+                        serviceStatusStore.apply(event)
+                    }
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    serviceStatusStore.apply(.degraded(message: error.localizedDescription))
+                }
+            }
+        }
     }
 
     // MARK: - Onboarding

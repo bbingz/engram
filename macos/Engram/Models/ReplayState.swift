@@ -128,9 +128,11 @@ class ReplayState {
 
         playTimer?.invalidate()
         playTimer = Timer.scheduledTimer(withTimeInterval: max(0.1, cappedDelay), repeats: false) { [weak self] _ in
-            guard let self, self.isPlaying else { return }
-            self.currentIndex += 1
-            self.scheduleNext()
+            Task { @MainActor [weak self] in
+                guard let self, self.isPlaying else { return }
+                self.currentIndex += 1
+                self.scheduleNext()
+            }
         }
     }
 

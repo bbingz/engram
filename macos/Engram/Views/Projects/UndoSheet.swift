@@ -38,10 +38,10 @@ private func humanizeMigrationTimestamp(_ raw: String) -> String {
 }
 
 struct UndoSheet: View {
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
     @Environment(\.dismiss) var dismiss
 
-    @State private var migrations: [MigrationLogEntry] = []
+    @State private var migrations: [EngramServiceMigrationLogEntry] = []
     @State private var selectedMigrationId: String?
     @State private var isLoading = true
     @State private var isExecuting = false
@@ -151,7 +151,7 @@ struct UndoSheet: View {
     }
 
     @ViewBuilder
-    private func migrationRow(_ m: MigrationLogEntry) -> some View {
+    private func migrationRow(_ m: EngramServiceMigrationLogEntry) -> some View {
         Button(action: {
             if !disabledMigrationIds.contains(m.id) {
                 selectedMigrationId = m.id
@@ -232,10 +232,10 @@ struct UndoSheet: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            migrations = try await daemonClient.listProjectMigrations(
-                state: "committed",
-                limit: 5
+            let response = try await serviceClient.projectMigrations(
+                EngramServiceProjectMigrationsRequest(state: "committed", limit: 5)
             )
+            migrations = response.migrations
         } catch {
             errorMessage = "Failed to load migrations: \(error.localizedDescription)"
         }
@@ -247,7 +247,13 @@ struct UndoSheet: View {
         isExecuting = true
         defer { isExecuting = false; activeTask = nil }
         do {
-            let res = try await daemonClient.projectUndo(migrationId: id, force: false)
+            let res = try await serviceClient.projectUndo(
+                EngramServiceProjectUndoRequest(
+                    migrationId: id,
+                    force: false,
+                    actor: "app"
+                )
+            )
             if Task.isCancelled { return }
             if res.state == "committed" {
                 if !res.review.own.isEmpty {
@@ -265,21 +271,18 @@ struct UndoSheet: View {
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }
-        } catch let apiErr as ProjectMoveAPIError {
+        } catch {
             if Task.isCancelled { return }
-            errorMessage = apiErr.message
-            retryPolicy = apiErr.retryPolicy
+            errorMessage = projectMoveErrorMessage(error)
+            retryPolicy = projectMoveRetryPolicy(error)
             // Codex minor #5: on a 'never' policy (UndoStale, etc.), mark
             // this specific migration as disabled so the user can't retry
             // the same stale row. They can still try a different one.
-            if apiErr.retryPolicy == "never" {
+            if retryPolicy == "never" {
                 disabledMigrationIds.insert(id)
-                disabledReasons[id] = apiErr.message
+                disabledReasons[id] = errorMessage ?? "Undo failed"
                 selectedMigrationId = nil
             }
-        } catch {
-            if Task.isCancelled { return }
-            errorMessage = error.localizedDescription
         }
     }
 }

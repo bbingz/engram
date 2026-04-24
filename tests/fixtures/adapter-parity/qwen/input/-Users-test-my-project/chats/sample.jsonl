@@ -1,0 +1,3 @@
+{"uuid":"q-001","parentUuid":null,"sessionId":"qwen-session-001","timestamp":"2026-01-20T09:00:00.000Z","type":"user","cwd":"/Users/test/my-project","version":"0.10.5","message":{"role":"user","parts":[{"text":"帮我重构这个模块"}]}}
+{"uuid":"q-002","parentUuid":"q-001","sessionId":"qwen-session-001","timestamp":"2026-01-20T09:00:08.000Z","type":"assistant","cwd":"/Users/test/my-project","version":"0.10.5","model":"qwen3.5-plus","message":{"role":"model","parts":[{"text":"好的，我来帮你重构这个模块。"}]}}
+{"uuid":"q-003","parentUuid":"q-002","sessionId":"qwen-session-001","timestamp":"2026-01-20T09:01:00.000Z","type":"user","cwd":"/Users/test/my-project","version":"0.10.5","message":{"role":"user","parts":[{"text":"谢谢"}]}}

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Network
 import XCTest
@@ -34,7 +35,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(actual, expected)
     }
 
-    func testInitializeReturnsServerCapabilities() throws {
+    func testInitializeMatchesGolden() throws {
         let capture = try rpc(
             """
             {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"XCTest","version":"1.0"}}}
@@ -43,7 +44,10 @@ final class EngramMCPExecutableTests: XCTestCase {
 
         let response = capture.response
         XCTAssertEqual(response.error?.code, nil)
-        XCTAssertNotNil(response.result)
+        XCTAssertEqual(
+            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
+            try String(contentsOfFile: fixturePath("mcp-golden/initialize.result.json"), encoding: .utf8)
+        )
     }
 
     func testStatsMatchesGolden() throws {
@@ -144,6 +148,26 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testSearchHybridNoEmbeddingMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "search",
+            arguments: """
+            {"query":"single writer daemon HTTP","mode":"hybrid","limit":5}
+            """,
+            goldenFixture: "mcp-golden/search.hybrid.keyword_only.json"
+        )
+    }
+
+    func testSearchSemanticShortQueryMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "search",
+            arguments: """
+            {"query":"ab","mode":"semantic","limit":5}
+            """,
+            goldenFixture: "mcp-golden/search.semantic.short_query.json"
+        )
+    }
+
     func testGetContextMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "get_context",
@@ -151,6 +175,29 @@ final class EngramMCPExecutableTests: XCTestCase {
             {"cwd":"/Users/test/work/engram","task":"port engram mcp shim to swift","include_environment":false,"sort_by":"score"}
             """,
             goldenFixture: "mcp-golden/get_context.engram.json"
+        )
+    }
+
+    func testGetContextWithMemoryMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "get_context",
+            arguments: """
+            {"cwd":"/Users/test/work/engram","task":"daemon HTTP single writer","include_environment":false,"sort_by":"score"}
+            """,
+            goldenFixture: "mcp-golden/get_context.engram.with_memory.json"
+        )
+    }
+
+    func testGetContextAbstractEnvironmentMatchesGolden() throws {
+        try assertToolCallMatchesGolden(
+            tool: "get_context",
+            arguments: """
+            {"cwd":"/Users/test/work/engram","detail":"abstract","include_environment":true,"sort_by":"score"}
+            """,
+            goldenFixture: "mcp-golden/get_context.engram.abstract_environment.json",
+            environment: [
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+            ]
         )
     }
 
@@ -177,12 +224,43 @@ final class EngramMCPExecutableTests: XCTestCase {
     func testLinkSessionsMatchesGolden() throws {
         let conversationLogDir = fixturePath("mcp-runtime/engram/conversation_log")
         try? FileManager.default.removeItem(atPath: conversationLogDir)
+        let goldenPath = fixturePath("mcp-golden/link_sessions.engram.json")
+        let goldenData = try Data(contentsOf: URL(fileURLWithPath: goldenPath))
+        let goldenObject = try JSONDecoder().decode(TestJSONValue.self, from: goldenData)
+        let structured = try XCTUnwrap(goldenObject["structuredContent"])
+        let service = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "linkSessions":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(
+                    body["targetDir"]?.stringValue,
+                    self.fixturePath("mcp-runtime/engram")
+                )
+                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+                return try request.success(structured, databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 99)
+            }
+        }
+        try service.start()
+        defer { service.stop() }
         try assertToolCallMatchesGolden(
             tool: "link_sessions",
             arguments: """
             {"targetDir":"\(fixturePath("mcp-runtime/engram"))"}
             """,
-            goldenFixture: "mcp-golden/link_sessions.engram.json"
+            goldenFixture: "mcp-golden/link_sessions.engram.json",
+            environment: [
+                "ENGRAM_MCP_SERVICE_SOCKET": service.socketPath,
+            ]
         )
     }
 
@@ -212,6 +290,9 @@ final class EngramMCPExecutableTests: XCTestCase {
     func testExportMatchesGolden() throws {
         let exportDir = fixturePath("mcp-runtime/export-home/codex-exports")
         try? FileManager.default.removeItem(atPath: exportDir)
+        let service = try makeReachableServiceSocketServer()
+        try service.start()
+        defer { service.stop() }
         try assertToolCallMatchesGolden(
             tool: "export",
             arguments: """
@@ -220,6 +301,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             goldenFixture: "mcp-golden/export.transcript.json",
             environment: [
                 "HOME": fixturePath("mcp-runtime/export-home"),
+                "ENGRAM_MCP_SERVICE_SOCKET": service.socketPath,
             ]
         )
     }
@@ -244,20 +326,30 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    func testSaveInsightMatchesGoldenViaDaemonHTTP() throws {
+    func testSaveInsightMatchesGoldenViaServiceSocket() throws {
         let goldenPath = fixturePath("mcp-golden/save_insight.text_only.json")
         let goldenData = try Data(contentsOf: URL(fileURLWithPath: goldenPath))
         let goldenObject = try JSONDecoder().decode(TestJSONValue.self, from: goldenData)
         let structured = try XCTUnwrap(goldenObject["structuredContent"])
-
-        let server = try MockDaemonServer { request in
-            XCTAssertEqual(request.method, "POST")
-            XCTAssertEqual(request.path, "/api/insight")
-            let body = try request.decodeBody([String: TestJSONValue].self)
-            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-            XCTAssertEqual(body["wing"]?.stringValue, "engram")
-            XCTAssertEqual(body["room"]?.stringValue, "mcp-swift")
-            return .json(statusCode: 200, body: structured)
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "saveInsight":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+                XCTAssertEqual(body["wing"]?.stringValue, "engram")
+                XCTAssertEqual(body["room"]?.stringValue, "mcp-swift")
+                return try request.success(structured, databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 101)
+            }
         }
         try server.start()
         defer { server.stop() }
@@ -268,7 +360,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
 
@@ -296,20 +388,33 @@ final class EngramMCPExecutableTests: XCTestCase {
         let addStructured = try XCTUnwrap(try JSONDecoder().decode(TestJSONValue.self, from: addGolden)["structuredContent"])
         let removeGolden = try Data(contentsOf: URL(fileURLWithPath: fixturePath("mcp-golden/manage_project_alias.remove.json")))
         let removeStructured = try XCTUnwrap(try JSONDecoder().decode(TestJSONValue.self, from: removeGolden)["structuredContent"])
-        var seenPaths: [String] = []
-
-        let server = try MockDaemonServer { request in
-            seenPaths.append("\(request.method) \(request.path)")
-            let body = try request.decodeBody([String: TestJSONValue].self)
-            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-            switch (request.method, request.path) {
-            case ("POST", "/api/project-aliases"):
-                return .json(statusCode: 200, body: addStructured)
-            case ("DELETE", "/api/project-aliases"):
-                return .json(statusCode: 200, body: removeStructured)
+        var seenActions: [String] = []
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "manageProjectAlias":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+                let action = body["action"]?.stringValue ?? "unknown"
+                seenActions.append(action)
+                switch action {
+                case "add":
+                    return try request.success(addStructured, databaseGeneration: 1)
+                case "remove":
+                    return try request.success(removeStructured, databaseGeneration: 2)
+                default:
+                    throw NSError(domain: "MockServiceSocketServer", code: 102)
+                }
             default:
-                XCTFail("Unexpected request \(request.method) \(request.path)")
-                return .json(statusCode: 500, body: .object([:]))
+                XCTFail("Unexpected command \(request.command)")
+                return try request.success(.object([:]))
             }
         }
         try server.start()
@@ -321,7 +426,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": fixtureDB,
-                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
         XCTAssertEqual(
@@ -335,30 +440,40 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": fixtureDB,
-                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
         XCTAssertEqual(
             try prettyJSONString(from: XCTUnwrap(removeCapture.ordered["result"])),
             try String(contentsOfFile: fixturePath("mcp-golden/manage_project_alias.remove.json"), encoding: .utf8)
         )
-        XCTAssertEqual(seenPaths, ["POST /api/project-aliases", "DELETE /api/project-aliases"])
+        XCTAssertEqual(seenActions, ["add", "remove"])
     }
 
-    func testGenerateSummaryMatchesGoldenViaDaemonHTTP() throws {
+    func testGenerateSummaryMatchesGoldenViaServiceSocket() throws {
         let goldenPath = fixturePath("mcp-golden/generate_summary.fixture.json")
-        let server = try MockDaemonServer { request in
-            XCTAssertEqual(request.method, "POST")
-            XCTAssertEqual(request.path, "/api/summary")
-            let body = try request.decodeBody([String: TestJSONValue].self)
-            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-            XCTAssertEqual(body["sessionId"]?.stringValue, "mcp-fixture-01")
-            return .json(
-                statusCode: 200,
-                body: .object([
-                    "summary": .string("Fixture summary: Phase C ports the stdio MCP shim and forwards writes through daemon HTTP."),
-                ])
-            )
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "generateSummary":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["sessionId"]?.stringValue, "mcp-fixture-01")
+                return try request.success(
+                    .object([
+                        "summary": .string("Fixture summary: Phase C ports the stdio MCP shim and forwards writes through daemon HTTP."),
+                    ]),
+                    databaseGeneration: 1
+                )
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 100)
+            }
         }
         try server.start()
         defer { server.stop() }
@@ -369,7 +484,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
         XCTAssertEqual(
@@ -378,20 +493,31 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    func testProjectMoveMatchesGoldenViaDaemonHTTP() throws {
+    func testProjectMoveMatchesGoldenViaServiceSocket() throws {
         let golden = try loadGoldenJSON("mcp-golden/project_move.dry_run.json")
-        let raw = try daemonProjectMovePayload(from: golden)
-        let server = try MockDaemonServer { request in
-            XCTAssertEqual(request.method, "POST")
-            XCTAssertEqual(request.path, "/api/project/move")
-            let body = try request.decodeBody([String: TestJSONValue].self)
-            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-            XCTAssertEqual(body["dryRun"]?.boolValue, true)
-            XCTAssertEqual(body["force"]?.boolValue, false)
-            XCTAssertEqual(body["auditNote"]?.stringValue, "fixture move dry run")
-            XCTAssertTrue(body["src"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/proj2") == true)
-            XCTAssertTrue(body["dst"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/proj2-renamed") == true)
-            return .json(statusCode: 200, body: raw)
+        let structured = try XCTUnwrap(golden["structuredContent"])
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "projectMove":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+                XCTAssertEqual(body["dryRun"]?.boolValue, true)
+                XCTAssertEqual(body["force"]?.boolValue, false)
+                XCTAssertEqual(body["auditNote"]?.stringValue, "fixture move dry run")
+                XCTAssertTrue(body["src"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/proj2") == true)
+                XCTAssertTrue(body["dst"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/proj2-renamed") == true)
+                return try request.success(structured, databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 101)
+            }
         }
         try server.start()
         defer { server.stop() }
@@ -402,7 +528,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
                 "HOME": fixturePath("mcp-runtime/write-home"),
             ]
         )
@@ -412,20 +538,31 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    func testProjectArchiveMatchesGoldenViaDaemonHTTP() throws {
+    func testProjectArchiveMatchesGoldenViaServiceSocket() throws {
         let golden = try loadGoldenJSON("mcp-golden/project_archive.dry_run.json")
-        let raw = try daemonProjectArchivePayload(from: golden)
-        let server = try MockDaemonServer { request in
-            XCTAssertEqual(request.method, "POST")
-            XCTAssertEqual(request.path, "/api/project/archive")
-            let body = try request.decodeBody([String: TestJSONValue].self)
-            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-            XCTAssertEqual(body["dryRun"]?.boolValue, true)
-            XCTAssertEqual(body["force"]?.boolValue, false)
-            XCTAssertEqual(body["auditNote"]?.stringValue, "fixture archive dry run")
-            XCTAssertEqual(body["archiveTo"], nil)
-            XCTAssertTrue(body["src"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/arch-me") == true)
-            return .json(statusCode: 200, body: raw)
+        let structured = try XCTUnwrap(golden["structuredContent"])
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "projectArchive":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+                XCTAssertEqual(body["dryRun"]?.boolValue, true)
+                XCTAssertEqual(body["force"]?.boolValue, false)
+                XCTAssertEqual(body["auditNote"]?.stringValue, "fixture archive dry run")
+                XCTAssertEqual(body["archiveTo"], nil)
+                XCTAssertTrue(body["src"]?.stringValue?.hasSuffix("/tests/fixtures/mcp-runtime/write-home/arch-me") == true)
+                return try request.success(structured, databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 102)
+            }
         }
         try server.start()
         defer { server.stop() }
@@ -436,7 +573,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
                 "HOME": fixturePath("mcp-runtime/write-home"),
             ]
         )
@@ -446,17 +583,28 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    func testProjectUndoMatchesGoldenViaDaemonHTTP() throws {
+    func testProjectUndoMatchesGoldenViaServiceSocket() throws {
         let golden = try loadGoldenJSON("mcp-golden/project_undo.fixture.json")
         let structured = try XCTUnwrap(golden["structuredContent"])
-        let server = try MockDaemonServer { request in
-            XCTAssertEqual(request.method, "POST")
-            XCTAssertEqual(request.path, "/api/project/undo")
-            let body = try request.decodeBody([String: TestJSONValue].self)
-            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-            XCTAssertEqual(body["force"]?.boolValue, false)
-            XCTAssertEqual(body["migrationId"]?.stringValue, "<generated-uuid>")
-            return .json(statusCode: 200, body: structured)
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "projectUndo":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+                XCTAssertEqual(body["force"]?.boolValue, false)
+                XCTAssertEqual(body["migrationId"]?.stringValue, "<generated-uuid>")
+                return try request.success(structured, databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 103)
+            }
         }
         try server.start()
         defer { server.stop() }
@@ -467,7 +615,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
         let actual = try normalizeUUIDs(in: prettyJSONString(from: XCTUnwrap(capture.ordered["result"])))
@@ -475,7 +623,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(actual, expected)
     }
 
-    func testProjectMoveBatchMatchesGoldenViaDaemonHTTP() throws {
+    func testProjectMoveBatchMatchesGoldenViaServiceSocket() throws {
         let golden = try loadGoldenJSON("mcp-golden/project_move_batch.dry_run.json")
         let structured = try XCTUnwrap(golden["structuredContent"])
         let yaml = """
@@ -484,15 +632,26 @@ final class EngramMCPExecutableTests: XCTestCase {
         operations:
           - { src: ~/batch-src, dst: ~/batch-dst, note: fixture batch }
         """
-        let server = try MockDaemonServer { request in
-            XCTAssertEqual(request.method, "POST")
-            XCTAssertEqual(request.path, "/api/project/move-batch")
-            let body = try request.decodeBody([String: TestJSONValue].self)
-            XCTAssertEqual(body["actor"]?.stringValue, "mcp")
-            XCTAssertEqual(body["dryRun"]?.boolValue, true)
-            XCTAssertEqual(body["force"]?.boolValue, false)
-            XCTAssertEqual(body["yaml"]?.stringValue, yaml)
-            return .json(statusCode: 200, body: structured)
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "projectMoveBatch":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["actor"]?.stringValue, "mcp")
+                XCTAssertEqual(body["dry_run"]?.boolValue, true)
+                XCTAssertEqual(body["force"]?.boolValue, false)
+                XCTAssertEqual(body["yaml"]?.stringValue, yaml)
+                return try request.success(structured, databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 104)
+            }
         }
         try server.start()
         defer { server.stop() }
@@ -503,7 +662,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_DAEMON_BASE_URL": server.baseURL.absoluteString,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
         XCTAssertEqual(
@@ -596,30 +755,31 @@ final class EngramMCPExecutableTests: XCTestCase {
         return try JSONDecoder().decode(TestJSONValue.self, from: data)
     }
 
-    private func daemonProjectMovePayload(from golden: TestJSONValue) throws -> TestJSONValue {
-        guard case .object(let topLevel) = golden,
-              let structured = topLevel["structuredContent"],
-              case .object(let structuredObject) = structured else {
-            throw NSError(domain: "EngramMCPTests", code: 10)
+    private func makeReachableServiceSocketServer() throws -> MockServiceSocketServer {
+        try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "exportSession":
+                return try request.success(
+                    .object([
+                        "outputPath": .string(self.fixturePath("mcp-runtime/export-home/codex-exports/codex-mcp-tran-2026-01-15.json")),
+                        "format": .string("json"),
+                        "messageCount": .int(3),
+                    ])
+                )
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 104)
+            }
         }
-        var payload = structuredObject
-        payload.removeValue(forKey: "resolved")
-        return .object(payload)
     }
 
-    private func daemonProjectArchivePayload(from golden: TestJSONValue) throws -> TestJSONValue {
-        guard case .object(let topLevel) = golden,
-              let structured = topLevel["structuredContent"],
-              case .object(let structuredObject) = structured else {
-            throw NSError(domain: "EngramMCPTests", code: 11)
-        }
-        var payload = structuredObject
-        guard let archive = payload.removeValue(forKey: "archive") else {
-            throw NSError(domain: "EngramMCPTests", code: 12)
-        }
-        payload["suggestion"] = archive
-        return .object(payload)
-    }
 }
 
 private final class MockDaemonServer {
@@ -754,6 +914,213 @@ private final class MockDaemonServer {
         connection.send(content: payload, completion: .contentProcessed { _ in
             connection.cancel()
         })
+    }
+}
+
+private final class MockServiceSocketServer {
+    struct RequestEnvelope: Decodable {
+        let requestId: String
+        let kind: String
+        let command: String
+        let payload: Data?
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+            case kind
+            case command
+            case payload
+        }
+
+        func decodePayload<T: Decodable>(_ type: T.Type) throws -> T {
+            try JSONDecoder().decode(type, from: try XCTUnwrap(payload))
+        }
+
+        func success(_ result: TestJSONValue, databaseGeneration: Int? = nil) throws -> Data {
+            let resultData = try JSONEncoder().encode(result)
+            let response = SuccessEnvelope(
+                requestId: requestId,
+                result: resultData,
+                databaseGeneration: databaseGeneration
+            )
+            return try JSONEncoder().encode(response)
+        }
+    }
+
+    private struct SuccessEnvelope: Encodable {
+        let requestId: String
+        let kind: String = "response"
+        let ok: Bool = true
+        let result: Data
+        let databaseGeneration: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+            case kind
+            case ok
+            case result
+            case databaseGeneration = "database_generation"
+        }
+    }
+
+    private struct FailureEnvelope: Encodable {
+        let requestId: String
+        let kind: String = "response"
+        let ok: Bool = false
+        let error: FailureBody
+
+        struct FailureBody: Encodable {
+            let name: String
+            let message: String
+            let retryPolicy: String
+
+            enum CodingKeys: String, CodingKey {
+                case name
+                case message
+                case retryPolicy = "retry_policy"
+            }
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+            case kind
+            case ok
+            case error
+        }
+    }
+
+    let socketPath: String
+
+    private let handler: (RequestEnvelope) throws -> Data
+    private let queue = DispatchQueue(label: "MockServiceSocketServer")
+    private var socketFD: Int32 = -1
+    private var acceptWorkItem: DispatchWorkItem?
+
+    init(handler: @escaping (RequestEnvelope) throws -> Data) throws {
+        self.socketPath = "/tmp/egmcp-\(UUID().uuidString.prefix(8)).sock"
+        self.handler = handler
+    }
+
+    func start() throws {
+        socketFD = try Self.bindSocket(path: socketPath)
+        let socketFD = self.socketFD
+        let handler = self.handler
+        let workItem = DispatchWorkItem {
+            while true {
+                let client = accept(socketFD, nil, nil)
+                if client < 0 { break }
+                var requestID = "unknown"
+                do {
+                    let frame = try Self.readFrame(from: client)
+                    let request = try JSONDecoder().decode(RequestEnvelope.self, from: frame)
+                    requestID = request.requestId
+                    let response = try handler(request)
+                    try Self.writeFrame(response, to: client)
+                } catch {
+                    let fallback = try? JSONEncoder().encode(
+                        FailureEnvelope(
+                            requestId: requestID,
+                            error: .init(
+                                name: "InvalidRequest",
+                                message: error.localizedDescription,
+                                retryPolicy: "never"
+                            )
+                        )
+                    )
+                    if let fallback {
+                        try? Self.writeFrame(fallback, to: client)
+                    }
+                }
+                Darwin.close(client)
+            }
+        }
+        acceptWorkItem = workItem
+        queue.async(execute: workItem)
+    }
+
+    func stop() {
+        acceptWorkItem?.cancel()
+        acceptWorkItem = nil
+        if socketFD >= 0 {
+            Darwin.close(socketFD)
+            socketFD = -1
+        }
+        try? FileManager.default.removeItem(atPath: socketPath)
+    }
+
+    private static func bindSocket(path: String) throws -> Int32 {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw NSError(domain: "MockServiceSocketServer", code: 1) }
+        try? FileManager.default.removeItem(atPath: path)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let maxPathLength = MemoryLayout.size(ofValue: address.sun_path)
+        guard path.utf8.count < maxPathLength else {
+            Darwin.close(fd)
+            throw NSError(domain: "MockServiceSocketServer", code: 2)
+        }
+        path.withCString { source in
+            withUnsafeMutablePointer(to: &address.sun_path) { tuplePointer in
+                tuplePointer.withMemoryRebound(to: CChar.self, capacity: maxPathLength) { destination in
+                    memset(destination, 0, maxPathLength)
+                    strncpy(destination, source, maxPathLength - 1)
+                }
+            }
+        }
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bindResult == 0, listen(fd, 16) == 0 else {
+            Darwin.close(fd)
+            throw NSError(domain: "MockServiceSocketServer", code: 3)
+        }
+        return fd
+    }
+
+    private static func writeFrame(_ data: Data, to fd: Int32) throws {
+        var length = UInt32(data.count).bigEndian
+        try withUnsafeBytes(of: &length) { buffer in
+            try writeAll(buffer, to: fd)
+        }
+        try data.withUnsafeBytes { buffer in
+            try writeAll(buffer, to: fd)
+        }
+    }
+
+    private static func readFrame(from fd: Int32) throws -> Data {
+        let lengthData = try readExact(count: 4, from: fd)
+        let length = lengthData.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        guard length > 0, length <= 32 * 1024 * 1024 else {
+            throw NSError(domain: "MockServiceSocketServer", code: 4)
+        }
+        return try readExact(count: Int(length), from: fd)
+    }
+
+    private static func writeAll(_ buffer: UnsafeRawBufferPointer, to fd: Int32) throws {
+        var offset = 0
+        while offset < buffer.count {
+            let written = Darwin.write(fd, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+            guard written > 0 else {
+                throw NSError(domain: "MockServiceSocketServer", code: 5)
+            }
+            offset += written
+        }
+    }
+
+    private static func readExact(count: Int, from fd: Int32) throws -> Data {
+        var data = Data(count: count)
+        try data.withUnsafeMutableBytes { buffer in
+            var offset = 0
+            while offset < count {
+                let readCount = Darwin.read(fd, buffer.baseAddress!.advanced(by: offset), count - offset)
+                guard readCount > 0 else {
+                    throw NSError(domain: "MockServiceSocketServer", code: 6)
+                }
+                offset += readCount
+            }
+        }
+        return data
     }
 }
 

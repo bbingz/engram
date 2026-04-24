@@ -12,19 +12,24 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     // Stored so openWindow() can inject them into the standalone window
     private let db: DatabaseManager
-    private let indexer: IndexerProcess
-    private let daemonClient: DaemonClient
+    private let serviceStatusStore: EngramServiceStatusStore
+    private let serviceClient: EngramServiceClient
     private var clickTimer: Timer?
     private var badgeTimer: Timer?
     private var dockIconObserver: NSObjectProtocol?
     private var lastShowDockIcon: Bool?
     private let windowSize: NSSize
 
-    init(db: DatabaseManager, indexer: IndexerProcess, daemonClient: DaemonClient, windowSize: NSSize? = nil) {
+    init(
+        db: DatabaseManager,
+        serviceStatusStore: EngramServiceStatusStore,
+        serviceClient: EngramServiceClient,
+        windowSize: NSSize? = nil
+    ) {
         self.windowSize = windowSize ?? NSSize(width: 900, height: 640)
         self.db = db
-        self.indexer = indexer
-        self.daemonClient = daemonClient
+        self.serviceStatusStore = serviceStatusStore
+        self.serviceClient = serviceClient
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover    = NSPopover()
@@ -34,8 +39,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         popover.contentViewController = NSHostingController(
             rootView: PopoverView()
                 .environment(db)
-                .environment(indexer)
-                .environment(daemonClient)
+                .environment(serviceStatusStore)
+                .environment(serviceClient)
         )
 
         super.init()
@@ -169,8 +174,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         let hostingController = NSHostingController(
             rootView: SettingsView()
                 .environment(db)
-                .environment(indexer)
-                .environment(daemonClient)
+                .environment(serviceStatusStore)
+                .environment(serviceClient)
         )
 
         let win = NSWindow(contentViewController: hostingController)
@@ -224,8 +229,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         let hostingController = NSHostingController(
             rootView: MainWindowView()
                 .environment(db)
-                .environment(indexer)
-                .environment(daemonClient)
+                .environment(serviceStatusStore)
+                .environment(serviceClient)
         )
 
         let win = NSWindow(contentViewController: hostingController)
@@ -278,8 +283,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     private func observeTotalSessions() {
         withObservationTracking {
-            _ = indexer.totalSessions
-            _ = indexer.todayParentSessions
+            _ = serviceStatusStore.totalSessions
+            _ = serviceStatusStore.todayParentSessions
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 self?.updateBadge()
@@ -298,11 +303,11 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
 
     private func updateBadge() {
-        let today = indexer.todayParentSessions
+        let today = serviceStatusStore.todayParentSessions
         Task {
             do {
-                let response: LiveSessionsResponse = try await daemonClient.fetch("/api/live")
-                    let live = response.sessions.filter { $0.activityLevel == "active" }
+                let response = try await serviceClient.liveSessions()
+                let live = response.sessions.filter { $0.activityLevel == "active" }
                 if live.isEmpty {
                     self.statusItem.button?.title = today > 0 ? " \(today)" : ""
                 } else {

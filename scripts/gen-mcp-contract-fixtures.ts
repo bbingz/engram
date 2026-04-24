@@ -4,7 +4,6 @@
 // Example:  TZ=UTC ./node_modules/.bin/tsx scripts/gen-mcp-contract-fixtures.ts
 // Without TZ=UTC the generator emits host-local times (e.g. +08:00 CST) while
 // xctest outputs UTC — 5 goldens with timestamps would silently diverge.
-import { randomUUID } from 'node:crypto';
 import {
   copyFileSync,
   mkdirSync,
@@ -397,19 +396,17 @@ mkdirSync(reviewOtherDir, { recursive: true });
 mkdirSync(reviewCodexDir, { recursive: true });
 writeFileSync(
   resolve(reviewOwnDir, 'session-own.jsonl'),
-  JSON.stringify({ old: '/Users/test/work/engram-old', note: 'own scope' }) +
-    '\n',
+  `${JSON.stringify({ old: '/Users/test/work/engram-old', note: 'own scope' })}\n`,
 );
 writeFileSync(
   resolve(reviewOtherDir, 'session-other.jsonl'),
-  JSON.stringify({ old: '/Users/test/work/engram-old', note: 'other scope' }) +
-    '\n',
+  `${JSON.stringify({ old: '/Users/test/work/engram-old', note: 'other scope' })}\n`,
 );
 writeFileSync(
   resolve(reviewCodexDir, 'rollout-review.jsonl'),
-  JSON.stringify({
+  `${JSON.stringify({
     note: 'codex still references /Users/test/work/engram-old',
-  }) + '\n',
+  })}\n`,
 );
 
 const transcriptPath = resolve(
@@ -542,7 +539,37 @@ function normalizeDynamic(value: unknown): unknown {
   return json;
 }
 
+async function withMockedNow<T>(isoTimestamp: string, run: () => Promise<T>) {
+  const RealDate = Date;
+  const fixedTime = new RealDate(isoTimestamp).getTime();
+  class MockDate extends RealDate {
+    constructor(value?: string | number | Date) {
+      super(value === undefined ? fixedTime : value);
+    }
+
+    static now() {
+      return fixedTime;
+    }
+
+    static parse(text: string) {
+      return RealDate.parse(text);
+    }
+
+    static UTC(...args: Parameters<typeof RealDate.UTC>) {
+      return RealDate.UTC(...args);
+    }
+  }
+
+  globalThis.Date = MockDate as unknown as DateConstructor;
+  try {
+    return await run();
+  } finally {
+    globalThis.Date = RealDate;
+  }
+}
+
 const goldens: Record<string, unknown> = {
+  'initialize.result': extractInitializeResultFromIndex(),
   'stats.source': success(
     await handleStats(db, {
       group_by: 'source',
@@ -553,6 +580,20 @@ const goldens: Record<string, unknown> = {
     await handleSearch(db, {
       query: 'Swift MCP shim',
       mode: 'keyword',
+      limit: 5,
+    }),
+  ),
+  'search.hybrid.keyword_only': success(
+    await handleSearch(db, {
+      query: 'single writer daemon HTTP',
+      mode: 'hybrid',
+      limit: 5,
+    }),
+  ),
+  'search.semantic.short_query': success(
+    await handleSearch(db, {
+      query: 'ab',
+      mode: 'semantic',
       limit: 5,
     }),
   ),
@@ -567,6 +608,36 @@ const goldens: Record<string, unknown> = {
           sort_by: 'score',
         },
         {},
+      )
+    ).contextText,
+  ),
+  'get_context.engram.with_memory': early(
+    (
+      await handleGetContext(
+        db,
+        {
+          cwd: '/Users/test/work/engram',
+          task: 'daemon HTTP single writer',
+          include_environment: false,
+          sort_by: 'score',
+        },
+        {},
+      )
+    ).contextText,
+  ),
+  'get_context.engram.abstract_environment': early(
+    (
+      await withMockedNow('2026-01-09T12:00:00.000Z', async () =>
+        handleGetContext(
+          db,
+          {
+            cwd: '/Users/test/work/engram',
+            detail: 'abstract',
+            include_environment: true,
+            sort_by: 'score',
+          },
+          {},
+        ),
       )
     ).contextText,
   ),
@@ -845,6 +916,27 @@ function extractToolNamesFromIndex(): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
     .map((entry) => resolveToolName(entry, importMap));
+}
+
+function extractInitializeResultFromIndex(): Record<string, unknown> {
+  const indexPath = resolve(repoRoot, 'src/index.ts');
+  const indexSource = readFileSync(indexPath, 'utf8');
+  const instructionsMatch = indexSource.match(
+    /const ENGRAM_INSTRUCTIONS = `([\s\S]*?)`;/,
+  );
+
+  if (!instructionsMatch) {
+    throw new Error(
+      'Unable to locate ENGRAM_INSTRUCTIONS template literal in src/index.ts',
+    );
+  }
+
+  return {
+    protocolVersion: '2025-03-26',
+    capabilities: { tools: {} },
+    serverInfo: { name: 'engram', version: '0.1.0' },
+    instructions: instructionsMatch[1],
+  };
 }
 
 function splitTopLevelEntries(block: string): string[] {

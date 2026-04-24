@@ -19,7 +19,15 @@ struct ChatMessage: Identifiable {
 
 struct MessageParser {
 
-    static func parse(filePath: String, source: String) -> [ChatMessage] {
+    static func parse(filePath: String, source: String, offset: Int? = nil, limit: Int? = nil) -> [ChatMessage] {
+        if let adapterMessages = parseWithAdapterRegistry(filePath: filePath, source: source, offset: offset, limit: limit),
+           !adapterMessages.isEmpty {
+            return adapterMessages
+        }
+        return applyWindow(parseLegacy(filePath: filePath, source: source), offset: offset, limit: limit)
+    }
+
+    private static func parseLegacy(filePath: String, source: String) -> [ChatMessage] {
         switch source {
         case "claude-code", "qwen", "iflow", "lobsterai", "minimax":
             return parseTypeMessageFormat(filePath: filePath, source: source)
@@ -43,6 +51,90 @@ struct MessageParser {
             // vscode — not yet supported
             return []
         }
+    }
+
+    private static func parseWithAdapterRegistry(
+        filePath: String,
+        source: String,
+        offset: Int?,
+        limit: Int?
+    ) -> [ChatMessage]? {
+        guard let sourceName = SourceName(rawValue: source),
+              let adapter = uiAdapterRegistry().adapter(for: sourceName)
+        else {
+            return nil
+        }
+
+        return blockingAdapterMessages(
+            adapter: adapter,
+            locator: filePath,
+            source: source,
+            options: StreamMessagesOptions(offset: offset, limit: limit)
+        )
+    }
+
+    private static func uiAdapterRegistry() -> AdapterRegistry {
+        AdapterRegistry(
+            adapters: [
+                CodexAdapter(),
+                ClaudeCodeAdapter(),
+                GeminiCliAdapter(),
+                OpenCodeAdapter(),
+                IflowAdapter(),
+                QwenAdapter(),
+                KimiAdapter(),
+                ClineAdapter(),
+                CursorAdapter(),
+                VsCodeAdapter(),
+                WindsurfAdapter(enableLiveSync: false),
+                AntigravityAdapter(enableLiveSync: false),
+                CopilotAdapter()
+            ]
+        )
+    }
+
+    private static func blockingAdapterMessages(
+        adapter: any SessionAdapter,
+        locator: String,
+        source: String,
+        options: StreamMessagesOptions
+    ) -> [ChatMessage]? {
+        let semaphore = DispatchSemaphore(value: 0)
+        final class Box: @unchecked Sendable {
+            var messages: [ChatMessage]?
+        }
+        let box = Box()
+
+        Task.detached {
+            do {
+                let stream = try await adapter.streamMessages(locator: locator, options: options)
+                var messages: [ChatMessage] = []
+                for try await message in stream {
+                    guard message.role == .user || message.role == .assistant,
+                          !message.content.isEmpty
+                    else {
+                        continue
+                    }
+                    let role = message.role == .user ? "user" : "assistant"
+                    let category = message.role == .user ? classifySystem(content: message.content, source: source) : .none
+                    messages.append(ChatMessage(role: role, content: message.content, systemCategory: category))
+                }
+                box.messages = messages
+            } catch {
+                box.messages = nil
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+        return box.messages
+    }
+
+    private static func applyWindow(_ messages: [ChatMessage], offset: Int?, limit: Int?) -> [ChatMessage] {
+        let offset = max(offset ?? 0, 0)
+        let suffix = offset >= messages.count ? [] : Array(messages.dropFirst(offset))
+        guard let limit else { return suffix }
+        return Array(suffix.prefix(max(limit, 0)))
     }
 
     // MARK: - claude-code / qwen / iflow

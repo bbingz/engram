@@ -27,12 +27,12 @@ final class DatabaseManagerTests: XCTestCase {
 
     // MARK: - Basic open/close
 
-    func testOpenCreatesExtensionTables() throws {
+    func testOpenDoesNotCreateServiceOwnedExtensionTables() throws {
         let tables = try db.readInBackground { db in
             try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
         }
-        XCTAssertTrue(tables.contains("favorites"), "favorites table should exist")
-        XCTAssertTrue(tables.contains("tags"), "tags table should exist")
+        XCTAssertFalse(tables.contains("favorites"), "App read model must not create favorites")
+        XCTAssertFalse(tables.contains("tags"), "App read model must not create tags")
     }
 
     func testPathReturnsCorrectPath() throws {
@@ -52,12 +52,12 @@ final class DatabaseManagerTests: XCTestCase {
     // MARK: - Favorites
 
     @MainActor
-    func testAddAndRemoveFavorite() throws {
+    func testIsFavoriteReadsServiceOwnedFavorite() throws {
         try insertTestSession(at: dbPath)
-        try db.addFavorite(sessionId: "test-session-001")
+        try insertFavorite(at: dbPath, sessionId: "test-session-001")
         XCTAssertTrue(try db.isFavorite(sessionId: "test-session-001"))
 
-        try db.removeFavorite(sessionId: "test-session-001")
+        try deleteFavorite(at: dbPath, sessionId: "test-session-001")
         XCTAssertFalse(try db.isFavorite(sessionId: "test-session-001"))
     }
 
@@ -65,8 +65,8 @@ final class DatabaseManagerTests: XCTestCase {
     func testListFavorites() throws {
         try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
         try insertTestSession(at: dbPath, id: "s2", source: "cursor")
-        try db.addFavorite(sessionId: "s1")
-        try db.addFavorite(sessionId: "s2")
+        try insertFavorite(at: dbPath, sessionId: "s1")
+        try insertFavorite(at: dbPath, sessionId: "s2")
 
         let favorites = try db.listFavorites()
         XCTAssertEqual(favorites.count, 2)
@@ -177,7 +177,7 @@ final class DatabaseManagerTests: XCTestCase {
     func testHideAndUnhideSession() throws {
         try insertTestSession(at: dbPath, id: "s1")
 
-        try db.hideSession(id: "s1")
+        try setHidden(at: dbPath, sessionId: "s1", hidden: true)
         // Hidden sessions should not appear in normal queries
         let sessions = try db.listSessions()
         XCTAssertEqual(sessions.count, 0)
@@ -186,7 +186,7 @@ final class DatabaseManagerTests: XCTestCase {
         let hidden = try db.listHiddenSessions()
         XCTAssertEqual(hidden.count, 1)
 
-        try db.unhideSession(id: "s1")
+        try setHidden(at: dbPath, sessionId: "s1", hidden: false)
         let restored = try db.listSessions()
         XCTAssertEqual(restored.count, 1)
     }
@@ -195,7 +195,7 @@ final class DatabaseManagerTests: XCTestCase {
     func testCountHiddenSessions() throws {
         try insertTestSession(at: dbPath, id: "s1")
         try insertTestSession(at: dbPath, id: "s2")
-        try db.hideSession(id: "s1")
+        try setHidden(at: dbPath, sessionId: "s1", hidden: true)
 
         let count = try db.countHiddenSessions()
         XCTAssertEqual(count, 1)
@@ -206,7 +206,7 @@ final class DatabaseManagerTests: XCTestCase {
     @MainActor
     func testRenameSession() throws {
         try insertTestSession(at: dbPath, id: "s1")
-        try db.renameSession(id: "s1", name: "My Custom Name")
+        try setCustomName(at: dbPath, sessionId: "s1", name: "My Custom Name")
 
         let session = try db.getSession(id: "s1")
         XCTAssertEqual(session?.customName, "My Custom Name")
@@ -270,7 +270,7 @@ final class DatabaseManagerTests: XCTestCase {
         try insertTestSession(at: dbPath, id: "s-hidden", source: "claude-code")
         try insertFTSContent(at: dbPath, sessionId: "s-visible", content: "visible session with search terms")
         try insertFTSContent(at: dbPath, sessionId: "s-hidden", content: "hidden session with search terms")
-        try db.hideSession(id: "s-hidden")
+        try setHidden(at: dbPath, sessionId: "s-hidden", hidden: true)
 
         let results = try db.search(query: "search terms")
         XCTAssertEqual(results.count, 1)

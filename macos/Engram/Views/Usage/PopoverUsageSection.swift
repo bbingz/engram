@@ -2,10 +2,10 @@
 import SwiftUI
 
 struct PopoverUsageSection: View {
-    let usageData: [IndexerProcess.UsageItem]
+    let usageData: [EngramServiceUsageItem]
     @State private var showAll = false
 
-    private var groupedBySource: [(source: String, items: [IndexerProcess.UsageItem])] {
+    private var groupedBySource: [(source: String, items: [EngramServiceUsageItem])] {
         let grouped = Dictionary(grouping: usageData, by: \.source)
         return grouped.sorted { $0.key < $1.key }.map { (source: $0.key, items: $0.value) }
     }

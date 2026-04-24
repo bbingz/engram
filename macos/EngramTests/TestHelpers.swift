@@ -170,6 +170,46 @@ func insertFTSContent(at path: String,
     }
 }
 
+func insertFavorite(at path: String, sessionId: String) throws {
+    let queue = try DatabaseQueue(path: path)
+    try queue.write { db in
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS favorites (
+                session_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        try db.execute(sql: "INSERT OR IGNORE INTO favorites (session_id) VALUES (?)", arguments: [sessionId])
+    }
+}
+
+func deleteFavorite(at path: String, sessionId: String) throws {
+    let queue = try DatabaseQueue(path: path)
+    try queue.write { db in
+        try db.execute(sql: "DELETE FROM favorites WHERE session_id = ?", arguments: [sessionId])
+    }
+}
+
+func setHidden(at path: String, sessionId: String, hidden: Bool) throws {
+    let queue = try DatabaseQueue(path: path)
+    try queue.write { db in
+        try db.execute(
+            sql: "UPDATE sessions SET hidden_at = \(hidden ? "datetime('now')" : "NULL") WHERE id = ?",
+            arguments: [sessionId]
+        )
+    }
+}
+
+func setCustomName(at path: String, sessionId: String, name: String?) throws {
+    let queue = try DatabaseQueue(path: path)
+    try queue.write { db in
+        try db.execute(
+            sql: "UPDATE sessions SET custom_name = ? WHERE id = ?",
+            arguments: [name, sessionId]
+        )
+    }
+}
+
 // MARK: - Convenience
 
 /// Create a temporary database with the sessions table already set up,

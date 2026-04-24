@@ -1,0 +1,58 @@
+{
+  "detectionVersion": 4,
+  "dispatchCases": [
+    {
+      "input": "Review this repository implementation",
+      "isDispatch": true
+    },
+    {
+      "input": "What is 2+2?",
+      "isDispatch": true
+    },
+    {
+      "input": "ok",
+      "isDispatch": false
+    },
+    {
+      "input": "",
+      "isDispatch": true
+    }
+  ],
+  "pickBestCases": [
+    {
+      "bestParentId": "parent-b",
+      "input": [
+        {
+          "parentId": "parent-a",
+          "score": 0.2
+        },
+        {
+          "parentId": "parent-b",
+          "score": 0.8
+        }
+      ]
+    },
+    {
+      "bestParentId": null,
+      "input": [
+        {
+          "parentId": "parent-zero",
+          "score": 0
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 1,
+  "scoreCases": [
+    {
+      "name": "same-project-active-parent",
+      "score": 0.9755136742654827
+    },
+    {
+      "name": "agent-before-parent",
+      "score": 0
+    }
+  ],
+  "sourceCommit": "571fd97",
+  "sourceFile": "src/core/parent-detection.ts"
+}

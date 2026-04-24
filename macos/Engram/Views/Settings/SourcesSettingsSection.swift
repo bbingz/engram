@@ -24,8 +24,6 @@ private let dataSources: [DataSourceDef] = [
 ]
 
 struct SourcesSettingsSection: View {
-    @AppStorage("nodejsPath") var nodejsPath: String = "/usr/local/bin/node"
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(icon: "folder", title: "Data Sources")
@@ -40,7 +38,7 @@ struct SourcesSettingsSection: View {
             }
 
             GroupBox("MCP Client Setup") {
-                MCPSetupGuideView(nodejsPath: nodejsPath)
+                MCPSetupGuideView()
                     .padding(.vertical, 4)
             }
         }
@@ -115,33 +113,32 @@ struct DataSourceRow: View {
 struct MCPClientDef {
     let name: String
     let configPath: String
-    let snippet: (String, String) -> String
+    let snippet: (String) -> String
 }
 
 struct MCPSetupGuideView: View {
-    let nodejsPath: String
-    @AppStorage("mcpScriptPath") var scriptPath: String = "~/.engram/dist/index.js"
+    @AppStorage("mcpHelperPath") var helperPath: String = "/Applications/Engram.app/Contents/Helpers/EngramMCP"
 
-    private var resolvedScript: String {
-        (scriptPath as NSString).expandingTildeInPath
+    private var resolvedHelperPath: String {
+        (helperPath as NSString).expandingTildeInPath
     }
 
     private static let clients: [MCPClientDef] = [
         MCPClientDef(
             name: "Claude Code",
             configPath: "~/.claude.json or: claude mcp add",
-            snippet: { node, script in
-                "claude mcp add engram \(node) \(script)"
+            snippet: { helper in
+                "claude mcp add engram \(helper)"
             }
         ),
         MCPClientDef(
             name: "Gemini CLI",
             configPath: "~/.gemini/settings.json",
-            snippet: { node, script in
+            snippet: { helper in
                 """
                 "engram": {
-                  "command": "\(node)",
-                  "args": ["\(script)"],
+                  "command": "\(helper)",
+                  "args": [],
                   "trust": true
                 }
                 """
@@ -150,18 +147,18 @@ struct MCPSetupGuideView: View {
         MCPClientDef(
             name: "Codex CLI",
             configPath: "~/.codex/config.yaml or: codex --mcp",
-            snippet: { node, script in
-                "codex --mcp-server \(node) \(script)"
+            snippet: { helper in
+                "codex --mcp-server \(helper)"
             }
         ),
         MCPClientDef(
             name: "Cursor / VS Code",
             configPath: ".cursor/mcp.json or .vscode/mcp.json",
-            snippet: { node, script in
+            snippet: { helper in
                 """
                 "engram": {
-                  "command": "\(node)",
-                  "args": ["\(script)"]
+                  "command": "\(helper)",
+                  "args": []
                 }
                 """
             }
@@ -171,19 +168,24 @@ struct MCPSetupGuideView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("MCP Script")
+                Text("Swift MCP Helper")
                     .frame(width: 90, alignment: .leading)
-                TextField("~/.engram/dist/index.js", text: $scriptPath)
+                TextField("/Applications/Engram.app/Contents/Helpers/EngramMCP", text: $helperPath)
                     .font(.caption)
                     .textFieldStyle(.roundedBorder)
-                PathExistsIndicator(path: resolvedScript)
+                PathExistsIndicator(path: resolvedHelperPath)
             }
-            Text("Add engram to your MCP clients using the configurations below.")
+            Text("Primary setup: point MCP clients directly at the bundled Swift stdio helper. Mutating tools use Swift service IPC and fail closed when the service is unavailable.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Node MCP and daemon HTTP settings are legacy rollback paths for Stage 3; keep them only for advanced compatibility.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
 
             ForEach(Self.clients, id: \.name) { client in
-                MCPClientRow(client: client, nodePath: nodejsPath, scriptPath: resolvedScript)
+                MCPClientRow(client: client, helperPath: resolvedHelperPath)
             }
         }
     }
@@ -191,12 +193,11 @@ struct MCPSetupGuideView: View {
 
 struct MCPClientRow: View {
     let client: MCPClientDef
-    let nodePath: String
-    let scriptPath: String
+    let helperPath: String
     @State private var copied = false
 
     private var snippet: String {
-        client.snippet(nodePath, scriptPath)
+        client.snippet(helperPath)
     }
 
     var body: some View {

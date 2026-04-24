@@ -1,0 +1,174 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"results\": [\n    {\n      \"session\": {\n        \"id\": \"mcp-fixture-20\",\n        \"source\": \"codex\",\n        \"startTime\": \"2026-01-02T10:00:00.000Z\",\n        \"endTime\": \"2026-01-02T10:35:00.000Z\",\n        \"cwd\": \"/Users/test/work/nova\",\n        \"project\": \"nova\",\n        \"model\": \"gpt-5.4\",\n        \"messageCount\": 18,\n        \"userMessageCount\": 7,\n        \"assistantMessageCount\": 10,\n        \"toolMessageCount\": 2,\n        \"systemMessageCount\": 1,\n        \"summary\": \"nova codex session 20: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n        \"filePath\": \"/Users/test/work/nova/.fixtures/mcp-fixture-20.jsonl\",\n        \"sizeBytes\": 30740,\n        \"indexedAt\": \"2026-01-02T10:40:00.000Z\",\n        \"agentRole\": null,\n        \"origin\": \"local\",\n        \"summaryMessageCount\": null,\n        \"tier\": \"normal\",\n        \"qualityScore\": 60,\n        \"parentSessionId\": null,\n        \"suggestedParentId\": null\n      },\n      \"snippet\": \"…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…\",\n      \"matchType\": \"keyword\",\n      \"score\": 0.01639344262295082\n    },\n    {\n      \"session\": {\n        \"id\": \"mcp-fixture-23\",\n        \"source\": \"iflow\",\n        \"startTime\": \"2026-01-05T13:00:00.000Z\",\n        \"endTime\": \"2026-01-05T13:35:00.000Z\",\n        \"cwd\": \"/Users/test/work/nova\",\n        \"project\": \"nova\",\n        \"model\": \"qwen-plus\",\n        \"messageCount\": 21,\n        \"userMessageCount\": 10,\n        \"assistantMessageCount\": 10,\n        \"toolMessageCount\": 3,\n        \"systemMessageCount\": 1,\n        \"summary\": \"nova iflow session 23: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n        \"filePath\": \"/Users/test/work/nova/.fixtures/mcp-fixture-23.jsonl\",\n        \"sizeBytes\": 31151,\n        \"indexedAt\": \"2026-01-05T13:40:00.000Z\",\n        \"agentRole\": null,\n        \"origin\": \"local\",\n        \"summaryMessageCount\": null,\n        \"tier\": \"normal\",\n        \"qualityScore\": 63,\n        \"parentSessionId\": null,\n        \"suggestedParentId\": null\n      },\n      \"snippet\": \"…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…\",\n      \"matchType\": \"keyword\",\n      \"score\": 0.016129032258064516\n    },\n    {\n      \"session\": {\n        \"id\": \"mcp-fixture-02\",\n        \"source\": \"codex\",\n        \"startTime\": \"2026-01-02T12:00:00.000Z\",\n        \"endTime\": \"2026-01-02T12:35:00.000Z\",\n        \"cwd\": \"/Users/test/work/engram\",\n        \"project\": \"engram\",\n        \"model\": \"gpt-5.4\",\n        \"messageCount\": 20,\n        \"userMessageCount\": 9,\n        \"assistantMessageCount\": 10,\n        \"toolMessageCount\": 2,\n        \"systemMessageCount\": 1,\n        \"summary\": \"engram codex session 2: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n        \"filePath\": \"/Users/test/work/engram/.fixtures/mcp-fixture-02.jsonl\",\n        \"sizeBytes\": 28274,\n        \"indexedAt\": \"2026-01-02T12:40:00.000Z\",\n        \"agentRole\": null,\n        \"origin\": \"local\",\n        \"summaryMessageCount\": null,\n        \"tier\": \"normal\",\n        \"qualityScore\": 42,\n        \"parentSessionId\": null,\n        \"suggestedParentId\": null\n      },\n      \"snippet\": \"…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…\",\n      \"matchType\": \"keyword\",\n      \"score\": 0.015873015873015872\n    },\n    {\n      \"session\": {\n        \"id\": \"mcp-fixture-05\",\n        \"source\": \"iflow\",\n        \"startTime\": \"2026-01-05T15:00:00.000Z\",\n        \"endTime\": \"2026-01-05T15:35:00.000Z\",\n        \"cwd\": \"/Users/test/work/engram\",\n        \"project\": \"engram\",\n        \"model\": \"qwen-plus\",\n        \"messageCount\": 18,\n        \"userMessageCount\": 8,\n        \"assistantMessageCount\": 10,\n        \"toolMessageCount\": 3,\n        \"systemMessageCount\": 1,\n        \"summary\": \"engram iflow session 5: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n        \"filePath\": \"/Users/test/work/engram/.fixtures/mcp-fixture-05.jsonl\",\n        \"sizeBytes\": 28685,\n        \"indexedAt\": \"2026-01-05T15:40:00.000Z\",\n        \"agentRole\": null,\n        \"origin\": \"local\",\n        \"summaryMessageCount\": null,\n        \"tier\": \"normal\",\n        \"qualityScore\": 45,\n        \"parentSessionId\": null,\n        \"suggestedParentId\": null\n      },\n      \"snippet\": \"…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…\",\n      \"matchType\": \"keyword\",\n      \"score\": 0.015625\n    },\n    {\n      \"session\": {\n        \"id\": \"mcp-fixture-08\",\n        \"source\": \"codex\",\n        \"startTime\": \"2026-01-08T18:00:00.000Z\",\n        \"endTime\": \"2026-01-08T18:35:00.000Z\",\n        \"cwd\": \"/Users/test/work/apollo\",\n        \"project\": \"apollo\",\n        \"model\": \"gpt-5.4\",\n        \"messageCount\": 21,\n        \"userMessageCount\": 7,\n        \"assistantMessageCount\": 10,\n        \"toolMessageCount\": 2,\n        \"systemMessageCount\": 1,\n        \"summary\": \"apollo codex session 8: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n        \"filePath\": \"/Users/test/work/apollo/.fixtures/mcp-fixture-08.jsonl\",\n        \"sizeBytes\": 29096,\n        \"indexedAt\": \"2026-01-08T18:40:00.000Z\",\n        \"agentRole\": null,\n        \"origin\": \"local\",\n        \"summaryMessageCount\": null,\n        \"tier\": \"normal\",\n        \"qualityScore\": 48,\n        \"parentSessionId\": null,\n        \"suggestedParentId\": null\n      },\n      \"snippet\": \"…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…\",\n      \"matchType\": \"keyword\",\n      \"score\": 0.015384615384615385\n    }\n  ],\n  \"query\": \"single writer daemon HTTP\",\n  \"searchModes\": [\n    \"keyword\"\n  ],\n  \"insightResults\": [\n    \"Insight 1: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n    \"Insight 2: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n    \"Insight 3: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n    \"Insight 4: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n    \"Insight 5: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\"\n  ],\n  \"warning\": \"Embedding provider unavailable — results are keyword-only (FTS).\"\n}"
+    }
+  ],
+  "structuredContent": {
+    "results": [
+      {
+        "session": {
+          "id": "mcp-fixture-20",
+          "source": "codex",
+          "startTime": "2026-01-02T10:00:00.000Z",
+          "endTime": "2026-01-02T10:35:00.000Z",
+          "cwd": "/Users/test/work/nova",
+          "project": "nova",
+          "model": "gpt-5.4",
+          "messageCount": 18,
+          "userMessageCount": 7,
+          "assistantMessageCount": 10,
+          "toolMessageCount": 2,
+          "systemMessageCount": 1,
+          "summary": "nova codex session 20: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+          "filePath": "/Users/test/work/nova/.fixtures/mcp-fixture-20.jsonl",
+          "sizeBytes": 30740,
+          "indexedAt": "2026-01-02T10:40:00.000Z",
+          "agentRole": null,
+          "origin": "local",
+          "summaryMessageCount": null,
+          "tier": "normal",
+          "qualityScore": 60,
+          "parentSessionId": null,
+          "suggestedParentId": null
+        },
+        "snippet": "…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…",
+        "matchType": "keyword",
+        "score": 0.01639344262295082
+      },
+      {
+        "session": {
+          "id": "mcp-fixture-23",
+          "source": "iflow",
+          "startTime": "2026-01-05T13:00:00.000Z",
+          "endTime": "2026-01-05T13:35:00.000Z",
+          "cwd": "/Users/test/work/nova",
+          "project": "nova",
+          "model": "qwen-plus",
+          "messageCount": 21,
+          "userMessageCount": 10,
+          "assistantMessageCount": 10,
+          "toolMessageCount": 3,
+          "systemMessageCount": 1,
+          "summary": "nova iflow session 23: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+          "filePath": "/Users/test/work/nova/.fixtures/mcp-fixture-23.jsonl",
+          "sizeBytes": 31151,
+          "indexedAt": "2026-01-05T13:40:00.000Z",
+          "agentRole": null,
+          "origin": "local",
+          "summaryMessageCount": null,
+          "tier": "normal",
+          "qualityScore": 63,
+          "parentSessionId": null,
+          "suggestedParentId": null
+        },
+        "snippet": "…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…",
+        "matchType": "keyword",
+        "score": 0.016129032258064516
+      },
+      {
+        "session": {
+          "id": "mcp-fixture-02",
+          "source": "codex",
+          "startTime": "2026-01-02T12:00:00.000Z",
+          "endTime": "2026-01-02T12:35:00.000Z",
+          "cwd": "/Users/test/work/engram",
+          "project": "engram",
+          "model": "gpt-5.4",
+          "messageCount": 20,
+          "userMessageCount": 9,
+          "assistantMessageCount": 10,
+          "toolMessageCount": 2,
+          "systemMessageCount": 1,
+          "summary": "engram codex session 2: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+          "filePath": "/Users/test/work/engram/.fixtures/mcp-fixture-02.jsonl",
+          "sizeBytes": 28274,
+          "indexedAt": "2026-01-02T12:40:00.000Z",
+          "agentRole": null,
+          "origin": "local",
+          "summaryMessageCount": null,
+          "tier": "normal",
+          "qualityScore": 42,
+          "parentSessionId": null,
+          "suggestedParentId": null
+        },
+        "snippet": "…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…",
+        "matchType": "keyword",
+        "score": 0.015873015873015872
+      },
+      {
+        "session": {
+          "id": "mcp-fixture-05",
+          "source": "iflow",
+          "startTime": "2026-01-05T15:00:00.000Z",
+          "endTime": "2026-01-05T15:35:00.000Z",
+          "cwd": "/Users/test/work/engram",
+          "project": "engram",
+          "model": "qwen-plus",
+          "messageCount": 18,
+          "userMessageCount": 8,
+          "assistantMessageCount": 10,
+          "toolMessageCount": 3,
+          "systemMessageCount": 1,
+          "summary": "engram iflow session 5: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+          "filePath": "/Users/test/work/engram/.fixtures/mcp-fixture-05.jsonl",
+          "sizeBytes": 28685,
+          "indexedAt": "2026-01-05T15:40:00.000Z",
+          "agentRole": null,
+          "origin": "local",
+          "summaryMessageCount": null,
+          "tier": "normal",
+          "qualityScore": 45,
+          "parentSessionId": null,
+          "suggestedParentId": null
+        },
+        "snippet": "…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…",
+        "matchType": "keyword",
+        "score": 0.015625
+      },
+      {
+        "session": {
+          "id": "mcp-fixture-08",
+          "source": "codex",
+          "startTime": "2026-01-08T18:00:00.000Z",
+          "endTime": "2026-01-08T18:35:00.000Z",
+          "cwd": "/Users/test/work/apollo",
+          "project": "apollo",
+          "model": "gpt-5.4",
+          "messageCount": 21,
+          "userMessageCount": 7,
+          "assistantMessageCount": 10,
+          "toolMessageCount": 2,
+          "systemMessageCount": 1,
+          "summary": "apollo codex session 8: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+          "filePath": "/Users/test/work/apollo/.fixtures/mcp-fixture-08.jsonl",
+          "sizeBytes": 29096,
+          "indexedAt": "2026-01-08T18:40:00.000Z",
+          "agentRole": null,
+          "origin": "local",
+          "summaryMessageCount": null,
+          "tier": "normal",
+          "qualityScore": 48,
+          "parentSessionId": null,
+          "suggestedParentId": null
+        },
+        "snippet": "…aemon <mark>HTTP</mark> forwarding, strict <mark>sing</mark>…",
+        "matchType": "keyword",
+        "score": 0.015384615384615385
+      }
+    ],
+    "query": "single writer daemon HTTP",
+    "searchModes": [
+      "keyword"
+    ],
+    "insightResults": [
+      "Insight 1: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+      "Insight 2: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+      "Insight 3: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+      "Insight 4: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+      "Insight 5: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics."
+    ],
+    "warning": "Embedding provider unavailable — results are keyword-only (FTS)."
+  }
+}

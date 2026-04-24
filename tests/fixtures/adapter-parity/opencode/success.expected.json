@@ -1,0 +1,69 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "opencode/input/sample.db::ses_test001",
+  "insightFields": {
+    "firstUserSummary": "实现用户登录功能",
+    "messageCount": 2,
+    "toolCallCount": 0
+  },
+  "locator": "opencode/input/sample.db::ses_test001",
+  "messages": [
+    {
+      "content": "帮我实现登录功能",
+      "role": "user",
+      "timestamp": "2026-02-02T02:40:01.000Z"
+    },
+    {
+      "content": "好的，我来实现登录功能。",
+      "role": "assistant",
+      "timestamp": "2026-02-02T02:40:10.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": null,
+    "source": "opencode"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "帮我实现登录功能\n好的，我来实现登录功能。",
+    "contentSha256InputBytes": 61,
+    "roles": [
+      "user",
+      "assistant"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-02-02T02:40:10.000Z",
+    "filePath": "<fixtureRoot>/opencode/input/sample.db::ses_test001",
+    "id": "ses_test001",
+    "messageCount": 2,
+    "sizeBytes": 28672,
+    "source": "opencode",
+    "startTime": "2026-02-02T02:40:01.000Z",
+    "summary": "实现用户登录功能",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "source": "opencode",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 2,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

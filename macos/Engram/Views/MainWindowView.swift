@@ -10,8 +10,6 @@ struct MainWindowView: View {
     @State private var paletteItems: [PaletteItem] = []
     @State private var paletteSelection: Int = 0
     @Environment(DatabaseManager.self) var db
-    @Environment(IndexerProcess.self) var indexer
-    @Environment(DaemonClient.self) var daemonClient
 
     var body: some View {
         NavigationSplitView {
@@ -83,7 +81,6 @@ struct MainWindowView: View {
         .sheet(isPresented: $showResume) {
             if let session = selectedSession {
                 ResumeDialog(session: session)
-                    .environment(indexer)
             }
         }
         .sheet(isPresented: $showPalette) {
@@ -98,7 +95,6 @@ struct MainWindowView: View {
                 }
             )
             .environment(db)
-            .environment(indexer)
             .frame(width: 480, height: 360)
         }
     }

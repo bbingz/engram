@@ -1,0 +1,7 @@
+{"timestamp":"2026-01-15T10:00:00.000Z","type":"session_meta","payload":{"id":"codex-session-001","timestamp":"2026-01-15T10:00:00.000Z","cwd":"/Users/test/my-project","originator":"codex_cli_rs","cli_version":"0.60.1","source":"cli","model_provider":"openai"}}
+{"timestamp":"2026-01-15T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我修复登录 bug，用户无法登录"}]}}
+{"timestamp":"2026-01-15T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"我来看看登录相关的代码"}]}}
+{"timestamp":"2026-01-15T10:00:06.000Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":{"path":"src/auth.ts"}}}
+{"timestamp":"2026-01-15T10:00:07.000Z","type":"response_item","payload":{"type":"function_call_output","output":"// auth.ts content..."}}
+{"timestamp":"2026-01-15T10:00:10.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"好的，谢谢"}]}}
+{"timestamp":"2026-01-15T10:05:00.000Z","type":"event_msg","payload":{"type":"task_complete"}}

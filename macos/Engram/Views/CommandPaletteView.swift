@@ -6,7 +6,7 @@ struct CommandPaletteView: View {
     let onSelectSession: (String) -> Void
 
     @Environment(DatabaseManager.self) var db
-    @Environment(IndexerProcess.self) var indexer
+    @Environment(EngramServiceClient.self) var serviceClient
 
     @State private var query = ""
     @State private var sessionResults: [SessionHit] = []
@@ -175,27 +175,36 @@ struct CommandPaletteView: View {
     }
 
     private func performSearch() {
-        guard !query.isEmpty, let port = indexer.port else { return }
+        guard !query.isEmpty else { return }
         isSearching = true
+        let q = query
+        let db = self.db
         Task {
             do {
-                let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-                let url = URL(string: "http://127.0.0.1:\(port)/api/search?q=\(encoded)&limit=10")!
-                let (data, _) = try await URLSession.shared.data(from: url)
-                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let rawResults = json["results"] as? [[String: Any]] {
-                    sessionResults = rawResults.compactMap { r in
-                        guard let session = r["session"] as? [String: Any],
-                              let id = session["id"] as? String else { return nil }
-                        return SessionHit(
-                            id: id,
-                            title: (session["generatedTitle"] as? String) ?? (session["summary"] as? String) ?? (session["project"] as? String) ?? "Untitled",
-                            snippet: (r["snippet"] as? String) ?? "",
-                            date: (session["startTime"] as? String).map { String($0.prefix(10)) } ?? ""
-                        )
-                    }
+                let response = try await serviceClient.search(
+                    EngramServiceSearchRequest(query: q, mode: "hybrid", limit: 10)
+                )
+                sessionResults = response.items.map { item in
+                    SessionHit(
+                        id: item.id,
+                        title: item.generatedTitle ?? item.title ?? item.summary ?? item.project ?? "Untitled",
+                        snippet: item.snippet ?? "",
+                        date: item.startTime.map { String($0.prefix(10)) } ?? ""
+                    )
                 }
-            } catch {}
+            } catch {
+                let sessions = (try? await Task.detached {
+                    try db.search(query: q, limit: 10)
+                }.value) ?? []
+                sessionResults = sessions.map { session in
+                    SessionHit(
+                        id: session.id,
+                        title: session.displayTitle,
+                        snippet: "",
+                        date: session.displayDate
+                    )
+                }
+            }
             isSearching = false
         }
     }

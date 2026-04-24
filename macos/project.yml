@@ -20,6 +20,129 @@ packages:
     majorVersion: 1.0.0
 
 targets:
+  EngramCoreRead:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCoreRead
+      - path: Shared/EngramCore
+      - path: Shared/MCP
+    dependencies:
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-read
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCoreWrite:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCoreWrite
+    dependencies:
+      - target: EngramCoreRead
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-write
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCoreTests
+    dependencies:
+      - target: EngramCoreRead
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCoreSchemaTool:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCoreSchemaTool
+    dependencies:
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-schema-tool
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramServiceCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramService/Core
+      - path: EngramService/IPC
+      - path: Shared/Service
+    dependencies:
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.service-core
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramServiceCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramServiceCoreTests
+    dependencies:
+      - target: EngramServiceCore
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramService:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramService/main.swift
+    dependencies:
+      - target: EngramServiceCore
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.service
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
   Engram:
     type: application
     platform: macOS
@@ -37,16 +160,15 @@ targets:
       - target: EngramMCP
         link: false
         embed: false
-    prebuildScripts:
-      - name: Bundle Node.js Daemon
-        script: "${SRCROOT}/scripts/build-node-bundle.sh"
-        outputFiles:
-          - $(DERIVED_FILE_DIR)/node-bundle.stamp
-        runForInstallBuildsOnly: false
-        basedOnDependencyAnalysis: false
+      - target: EngramService
+        link: false
+        embed: false
     postbuildScripts:
       - name: Bundle EngramMCP helper
         script: "${SRCROOT}/scripts/copy-mcp-helper.sh"
+        basedOnDependencyAnalysis: false
+      - name: Bundle EngramService helper
+        script: "${SRCROOT}/scripts/copy-service-helper.sh"
         basedOnDependencyAnalysis: false
       - name: Replace AppIcon.icns with complete version
         script: |
@@ -113,6 +235,8 @@ targets:
         buildPhase: resources
     dependencies:
       - target: Engram
+      - package: GRDB
+        product: GRDB
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
@@ -157,6 +281,8 @@ schemes:
   Engram:
     build:
       targets:
+        EngramCoreRead: all
+        EngramCoreWrite: all
         Engram: all
         EngramCLI: all
         EngramMCP: all
@@ -165,6 +291,7 @@ schemes:
     test:
       config: Debug
       targets:
+        - EngramCoreTests
         - EngramTests
         - EngramUITests
       environmentVariables: []
@@ -184,6 +311,21 @@ schemes:
       config: Debug
       targets:
         - EngramMCPTests
+  EngramService:
+    build:
+      targets:
+        EngramService: all
+    run:
+      config: Debug
+  EngramServiceCore:
+    build:
+      targets:
+        EngramServiceCore: all
+        EngramServiceCoreTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramServiceCoreTests
   EngramMCPTests:
     build:
       targets:
@@ -193,3 +335,19 @@ schemes:
       config: Debug
       targets:
         - EngramMCPTests
+  EngramCoreTests:
+    build:
+      targets:
+        EngramCoreRead: all
+        EngramCoreWrite: all
+        EngramCoreTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramCoreTests
+  EngramCoreSchemaTool:
+    build:
+      targets:
+        EngramCoreSchemaTool: all
+    run:
+      config: Debug

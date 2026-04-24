@@ -9,7 +9,7 @@ private let isoFormatter: ISO8601DateFormatter = {
 
 struct ProjectsView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
     @State private var selectedProject: DatabaseManager.ProjectGroup? = nil
     @State private var isLoading = true
@@ -215,11 +215,10 @@ struct ProjectsView: View {
         // truthy value — the user deserves an honest "daemon unreachable"
         // indicator rather than a stale optimistic one.
         do {
-            let migrations = try await daemonClient.listProjectMigrations(
-                state: "committed",
-                limit: 1
+            let response = try await serviceClient.projectMigrations(
+                EngramServiceProjectMigrationsRequest(state: "committed", limit: 1)
             )
-            hasRecentMigrations = !migrations.isEmpty
+            hasRecentMigrations = !response.migrations.isEmpty
         } catch {
             print("ProjectsView: listProjectMigrations failed:", error)
             hasRecentMigrations = nil

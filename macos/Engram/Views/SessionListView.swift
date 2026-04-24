@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SessionListView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(DaemonClient.self) var daemonClient
+    @Environment(EngramServiceClient.self) var serviceClient
     @Binding var deepLinkSession: Session?
 
     // MARK: - Persisted state
@@ -249,8 +249,10 @@ struct SessionListView: View {
             if !showingTrash {
                 Button {
                     Task {
-                        if let n = try? db.hideEmptySessions(), n > 0 {
+                        if let response = try? await serviceClient.hideEmptySessions(),
+                           response.hiddenCount > 0 {
                             await loadSessions()
+                            updateFilteredSessions()
                         }
                     }
                 } label: {
@@ -294,9 +296,16 @@ struct SessionListView: View {
             Button("Save") {
                 guard let target = renameTarget else { return }
                 let name = renameText.trimmingCharacters(in: .whitespaces)
-                try? db.renameSession(id: target.id, name: name.isEmpty ? nil : name)
-                renameTarget = nil
-                refreshTrigger = UUID()
+                Task {
+                    try? await serviceClient.renameSession(
+                        sessionId: target.id,
+                        name: name.isEmpty ? nil : name
+                    )
+                    renameTarget = nil
+                    refreshTrigger = UUID()
+                    await loadSessions()
+                    updateFilteredSessions()
+                }
             }
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
@@ -343,23 +352,32 @@ struct SessionListView: View {
     // MARK: - Actions
 
     private func toggleFavorite(id: String, current: Bool) {
-        if current {
-            try? db.removeFavorite(sessionId: id)
-            favoriteIds.remove(id)
-        } else {
-            try? db.addFavorite(sessionId: id)
-            favoriteIds.insert(id)
+        Task {
+            let next = !current
+            do {
+                try await serviceClient.setFavorite(sessionId: id, favorite: next)
+                if next {
+                    favoriteIds.insert(id)
+                } else {
+                    favoriteIds.remove(id)
+                }
+            } catch {
+                print("[SessionListView] error toggling favorite:", error)
+            }
         }
     }
 
     private func deleteSession(_ id: String) {
-        if showingTrash {
-            try? db.unhideSession(id: id)
-        } else {
-            try? db.hideSession(id: id)
+        Task {
+            do {
+                try await serviceClient.setSessionHidden(sessionId: id, hidden: !showingTrash)
+                refreshTrigger = UUID()
+                await loadSessions()
+                updateFilteredSessions()
+            } catch {
+                print("[SessionListView] error updating hidden state:", error)
+            }
         }
-        refreshTrigger = UUID()
-        Task { await loadSessions() }
     }
 
     private func handleDeepLink(_ session: Session?) {
@@ -383,7 +401,7 @@ struct SessionListView: View {
 
     private func confirmSuggestion(_ child: Session) {
         Task {
-            _ = try? await daemonClient.confirmSuggestion(sessionId: child.id)
+            _ = try? await serviceClient.confirmSuggestion(sessionId: child.id)
             await loadSessions()
             updateFilteredSessions()
         }
@@ -392,7 +410,10 @@ struct SessionListView: View {
     private func dismissSuggestion(_ child: Session) {
         Task {
             if let suggestedId = child.suggestedParentId {
-                try? await daemonClient.dismissSuggestion(sessionId: child.id, suggestedParentId: suggestedId)
+                try? await serviceClient.dismissSuggestion(
+                    sessionId: child.id,
+                    suggestedParentId: suggestedId
+                )
             }
             await loadSessions()
             updateFilteredSessions()

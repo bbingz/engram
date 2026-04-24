@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct LiveSessionCard: View {
-    let session: LiveSessionInfo
+    let session: EngramServiceLiveSessionInfo
 
     @State private var isPulsing = false
 

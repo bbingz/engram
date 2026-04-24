@@ -1,0 +1,75 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "cline/input/tasks/1770000000000/ui_messages.json",
+  "insightFields": {
+    "firstUserSummary": "帮我写单元测试",
+    "messageCount": 3,
+    "toolCallCount": 0
+  },
+  "locator": "cline/input/tasks/1770000000000/ui_messages.json",
+  "messages": [
+    {
+      "content": "帮我写单元测试",
+      "role": "user",
+      "timestamp": "2026-02-02T02:40:00.000Z"
+    },
+    {
+      "content": "好的，我来帮你写单元测试。",
+      "role": "assistant",
+      "timestamp": "2026-02-02T02:40:05.000Z"
+    },
+    {
+      "content": "谢谢",
+      "role": "user",
+      "timestamp": "2026-02-02T02:41:00.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": null,
+    "source": "cline"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "帮我写单元测试\n好的，我来帮你写单元测试。\n谢谢",
+    "contentSha256InputBytes": 68,
+    "roles": [
+      "user",
+      "assistant",
+      "user"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-02-02T02:41:00.000Z",
+    "filePath": "<fixtureRoot>/cline/input/tasks/1770000000000/ui_messages.json",
+    "id": "1770000000000",
+    "messageCount": 3,
+    "sizeBytes": 835,
+    "source": "cline",
+    "startTime": "2026-02-02T02:40:00.000Z",
+    "summary": "帮我写单元测试",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "source": "cline",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 3,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

@@ -38,7 +38,7 @@ enum AppTab: Int, CaseIterable {
 
 struct ContentView: View {
     @Environment(DatabaseManager.self) var db
-    @Environment(IndexerProcess.self) var indexer
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @State private var selectedTab: AppTab = .sessions
     @State private var deepLinkSession: Session?
 
@@ -84,7 +84,7 @@ struct ContentView: View {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 7, height: 7)
-                Text(indexer.status.displayString)
+                Text(serviceStatusStore.displayString)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -104,9 +104,10 @@ struct ContentView: View {
     }
 
     var statusColor: Color {
-        switch indexer.status {
+        switch serviceStatusStore.status {
         case .running:  return .green
         case .starting: return .yellow
+        case .degraded: return .orange
         case .error:    return .red
         case .stopped:  return .gray
         }

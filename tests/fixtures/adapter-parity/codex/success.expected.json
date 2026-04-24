@@ -1,0 +1,77 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "codex/input/2026/01/15/rollout-sample.jsonl",
+  "insightFields": {
+    "firstUserSummary": "帮我修复登录 bug，用户无法登录",
+    "messageCount": 3,
+    "toolCallCount": 0
+  },
+  "locator": "codex/input/2026/01/15/rollout-sample.jsonl",
+  "messages": [
+    {
+      "content": "帮我修复登录 bug，用户无法登录",
+      "role": "user",
+      "timestamp": "2026-01-15T10:00:01.000Z"
+    },
+    {
+      "content": "我来看看登录相关的代码",
+      "role": "assistant",
+      "timestamp": "2026-01-15T10:00:05.000Z"
+    },
+    {
+      "content": "好的，谢谢",
+      "role": "user",
+      "timestamp": "2026-01-15T10:00:10.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": null,
+    "source": "codex"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "帮我修复登录 bug，用户无法登录\n我来看看登录相关的代码\n好的，谢谢",
+    "contentSha256InputBytes": 93,
+    "roles": [
+      "user",
+      "assistant",
+      "user"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-01-15T10:00:10.000Z",
+    "filePath": "<fixtureRoot>/codex/input/2026/01/15/rollout-sample.jsonl",
+    "id": "codex-session-001",
+    "messageCount": 3,
+    "model": "openai",
+    "originator": "codex_cli_rs",
+    "sizeBytes": 1199,
+    "source": "codex",
+    "startTime": "2026-01-15T10:00:00.000Z",
+    "summary": "帮我修复登录 bug，用户无法登录",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "source": "codex",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 3,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

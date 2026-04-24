@@ -23,6 +23,7 @@ struct SearchResult: Identifiable {
 
 struct SearchView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceClient.self) var serviceClient
     @State private var query = ""
     @State private var results: [SearchResult] = []
     @State private var searchModes: [String] = []
@@ -31,8 +32,6 @@ struct SearchView: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var selectedMode: SearchMode = .hybrid
     @State private var embeddingStatus: EmbeddingStatus?
-
-    @State private var webPort: Int = 3457
 
     var body: some View {
         VStack(spacing: 0) {
@@ -163,15 +162,6 @@ struct SearchView: View {
             }
         }
         .onAppear { loadEmbeddingStatus() }
-        .task {
-            let configPath = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".engram/settings.json")
-            if let data = try? Data(contentsOf: configPath),
-               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let port = settings["httpPort"] as? Int {
-                webPort = port
-            }
-        }
     }
 
     // MARK: - Embedding status bar
@@ -207,24 +197,19 @@ struct SearchView: View {
         }
     }
 
-    // MARK: - Network
+    // MARK: - Service
 
     func loadEmbeddingStatus() {
-        let port = webPort
         Task {
-            guard let url = URL(string: "http://127.0.0.1:\(port)/api/search/status") else { return }
             do {
-                var request = URLRequest(url: url)
-                request.timeoutInterval = 5
-                let (data, _) = try await URLSession.shared.data(for: request)
-                let resp = try JSONDecoder().decode(EmbeddingStatusResponse.self, from: data)
+                let resp = try await serviceClient.embeddingStatus()
                 await MainActor.run {
                     embeddingStatus = EmbeddingStatus(
                         available: resp.available,
                         model: resp.model,
-                        embeddedCount: resp.embeddedCount ?? 0,
-                        totalSessions: resp.totalSessions ?? 0,
-                        progress: resp.progress ?? 0
+                        embeddedCount: resp.embeddedCount,
+                        totalSessions: resp.totalSessions,
+                        progress: resp.progress
                     )
                 }
             } catch {
@@ -240,31 +225,19 @@ struct SearchView: View {
         isSearching = true
 
         let q = query
-        let port = webPort
         let mode = selectedMode.rawValue
         Task {
             defer { isSearching = false }
 
-            guard let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                  let url = URL(string: "http://127.0.0.1:\(port)/api/search?q=\(encoded)&mode=\(mode)&limit=20") else { return }
-
             do {
-                var request = URLRequest(url: url)
-                request.timeoutInterval = 15
-                let (data, _) = try await URLSession.shared.data(for: request)
-                let response = try JSONDecoder().decode(SearchAPIResponse.self, from: data)
+                let response = try await serviceClient.search(
+                    EngramServiceSearchRequest(query: q, mode: mode, limit: 20)
+                )
 
                 await MainActor.run {
                     searchModes = response.searchModes ?? []
                     warning = response.warning
-                    results = (response.results ?? []).compactMap { r in
-                        guard let sess = r.session else { return nil }
-                        return sess.toSearchResult(
-                            snippet: r.snippet ?? "",
-                            matchType: r.matchType ?? "keyword",
-                            score: r.score ?? 0
-                        )
-                    }
+                    results = response.items.map(\.searchResult)
                 }
             } catch {
                 // Fallback to local FTS — run query off main thread
@@ -330,48 +303,12 @@ struct SearchView: View {
     }
 }
 
-// MARK: - API response types
-
-struct EmbeddingStatusResponse: Decodable {
-    let available: Bool
-    let model: String?
-    let embeddedCount: Int?
-    let totalSessions: Int?
-    let progress: Int?
-}
-
-struct SearchAPIResponse: Decodable {
-    let results: [SearchAPIResult]?
-    let searchModes: [String]?
-    let warning: String?
-}
-
-struct SearchAPIResult: Decodable {
-    let session: SearchAPISession?
-    let snippet: String?
-    let matchType: String?
-    let score: Double?
-}
-
-struct SearchAPISession: Decodable {
-    let id: String
-    let source: String?
-    let startTime: String?
-    let endTime: String?
-    let cwd: String?
-    let project: String?
-    let model: String?
-    let messageCount: Int?
-    let userMessageCount: Int?
-    let assistantMessageCount: Int?
-    let systemMessageCount: Int?
-    let summary: String?
-    let filePath: String?
-    let sizeBytes: Int?
-    let indexedAt: String?
-    let agentRole: String?
-
-    func toSearchResult(snippet: String, matchType: String, score: Double) -> SearchResult {
+extension EngramServiceSearchResponse.Item {
+    var searchResult: SearchResult {
+        let totalMessages = messageCount
+            ?? [userMessageCount, assistantMessageCount, systemMessageCount, toolMessageCount]
+                .compactMap(\.self)
+                .reduce(0, +)
         let session = Session(
             id: id,
             source: source ?? "unknown",
@@ -380,31 +317,31 @@ struct SearchAPISession: Decodable {
             cwd: cwd ?? "",
             project: project,
             model: model,
-            messageCount: messageCount ?? 0,
+            messageCount: totalMessages,
             userMessageCount: userMessageCount ?? 0,
             assistantMessageCount: assistantMessageCount ?? 0,
             systemMessageCount: systemMessageCount ?? 0,
-            summary: summary,
+            summary: summary ?? title,
             filePath: filePath ?? "",
-            sourceLocator: nil,
+            sourceLocator: sourceLocator,
             sizeBytes: sizeBytes ?? 0,
             indexedAt: indexedAt ?? "",
             agentRole: agentRole,
             hiddenAt: nil,
-            customName: nil,
-            tier: nil,
-            toolMessageCount: 0,
-            generatedTitle: nil,
-            parentSessionId: nil,
-            suggestedParentId: nil,
-            linkSource: nil
+            customName: customName,
+            tier: tier,
+            toolMessageCount: toolMessageCount ?? 0,
+            generatedTitle: generatedTitle ?? title,
+            parentSessionId: parentSessionId,
+            suggestedParentId: suggestedParentId,
+            linkSource: linkSource
         )
         return SearchResult(
             id: id,
             session: session,
-            snippet: snippet,
-            matchType: matchType,
-            score: score
+            snippet: snippet ?? "",
+            matchType: matchType ?? "keyword",
+            score: score ?? 0
         )
     }
 }

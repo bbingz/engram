@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**", "tests/**", "scripts/*.ts"]
+    "includes": ["src/**", "tests/**", "scripts/*.ts", "!tests/fixtures"]
   },
   "formatter": {
     "enabled": true,
@@ -32,6 +32,18 @@
       "quoteStyle": "single"
     }
   },
+  "overrides": [
+    {
+      "includes": ["tests/**", "scripts/*.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          }
+        }
+      }
+    }
+  ],
   "assist": {
     "enabled": true,
     "actions": {

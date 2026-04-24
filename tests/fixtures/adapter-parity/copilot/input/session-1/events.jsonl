@@ -1,0 +1,3 @@
+{"type":"session.start","timestamp":"2026-01-01T00:00:00Z","data":{"startTime":"2026-01-01T00:00:00Z","context":{"cwd":"/tmp/test-project"}}}
+{"type":"user.message","timestamp":"2026-01-01T00:01:00Z","data":{"content":"Help me fix the bug"}}
+{"type":"assistant.message","timestamp":"2026-01-01T00:02:00Z","data":{"content":"I'll look into that."}}
