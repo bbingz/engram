@@ -100,29 +100,48 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
         let runDirectory = homeDirectory
             .appendingPathComponent(".engram", isDirectory: true)
             .appendingPathComponent("run", isDirectory: true)
-        let fileManager = FileManager.default
 
-        if !fileManager.fileExists(atPath: rootDirectory.path) {
-            try fileManager.createDirectory(
-                at: rootDirectory,
-                withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700]
-            )
-        }
-        try validateRuntimeDirectory(rootDirectory, label: "service root directory")
-
-        if !fileManager.fileExists(atPath: runDirectory.path) {
-            try fileManager.createDirectory(
-                at: runDirectory,
-                withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700]
-            )
-        }
-        try validateRuntimeDirectory(runDirectory, label: "service runtime directory")
+        try ensureSecureRuntimeDirectory(rootDirectory, label: "service root directory")
+        try ensureSecureRuntimeDirectory(runDirectory, label: "service runtime directory")
         return runDirectory
     }
 
+    private static func ensureSecureRuntimeDirectory(_ directory: URL, label: String) throws {
+        let fileManager = FileManager.default
+
+        if !fileManager.fileExists(atPath: directory.path) {
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try validateRuntimeDirectory(directory, label: label)
+            return
+        }
+
+        try validateRuntimeDirectoryShapeAndOwner(directory, label: label)
+        var info = stat()
+        guard lstat(directory.path, &info) == 0 else {
+            throw EngramServiceError.serviceUnavailable(message: "Cannot stat \(label)")
+        }
+        if (info.st_mode & 0o077) != 0 {
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+        try validateRuntimeDirectory(directory, label: label)
+    }
+
     private static func validateRuntimeDirectory(_ directory: URL, label: String) throws {
+        try validateRuntimeDirectoryShapeAndOwner(directory, label: label)
+        var info = stat()
+        guard lstat(directory.path, &info) == 0 else {
+            throw EngramServiceError.serviceUnavailable(message: "Cannot stat \(label)")
+        }
+        guard (info.st_mode & 0o077) == 0 else {
+            throw EngramServiceError.serviceUnavailable(message: "\(label.capitalized) must be mode 0700")
+        }
+    }
+
+    private static func validateRuntimeDirectoryShapeAndOwner(_ directory: URL, label: String) throws {
         var info = stat()
         guard lstat(directory.path, &info) == 0 else {
             throw EngramServiceError.serviceUnavailable(message: "Cannot stat \(label)")
@@ -135,9 +154,6 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
         }
         guard info.st_uid == geteuid() else {
             throw EngramServiceError.serviceUnavailable(message: "\(label.capitalized) is owned by another user")
-        }
-        guard (info.st_mode & 0o077) == 0 else {
-            throw EngramServiceError.serviceUnavailable(message: "\(label.capitalized) must be mode 0700")
         }
     }
 

@@ -18,20 +18,35 @@ final class UnixSocketTransportTests: XCTestCase {
         }
     }
 
-    func testSecureRuntimeDirectoryCreates0700DirectoryAndRejectsWorldWritableMode() throws {
+    func testSecureRuntimeDirectoryCreatesFreshWith0700() throws {
         let home = temporaryDirectory()
         let runDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home)
 
         var info = stat()
         XCTAssertEqual(lstat(runDirectory.path, &info), 0)
         XCTAssertEqual(info.st_mode & 0o077, 0)
+    }
 
+    func testSecureRuntimeDirectoryRepairsLegacyPermissions() throws {
+        let home = temporaryDirectory()
+        let rootDirectory = home.appendingPathComponent(".engram", isDirectory: true)
+        let runDirectory = rootDirectory.appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o755]
+        )
+        chmod(rootDirectory.path, 0o755)
         chmod(runDirectory.path, 0o755)
-        XCTAssertThrowsError(try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home)) { error in
-            guard case EngramServiceError.serviceUnavailable = error else {
-                return XCTFail("Expected serviceUnavailable, got \(error)")
-            }
-        }
+
+        XCTAssertEqual(try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home), runDirectory)
+
+        var rootInfo = stat()
+        var runInfo = stat()
+        XCTAssertEqual(lstat(rootDirectory.path, &rootInfo), 0)
+        XCTAssertEqual(lstat(runDirectory.path, &runInfo), 0)
+        XCTAssertEqual(rootInfo.st_mode & 0o077, 0)
+        XCTAssertEqual(runInfo.st_mode & 0o077, 0)
     }
 
     func testBindSocketRejectsNonSocketPath() throws {
