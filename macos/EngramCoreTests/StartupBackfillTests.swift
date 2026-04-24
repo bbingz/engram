@@ -96,18 +96,27 @@ final class StartupBackfillTests: XCTestCase {
     func testBackfillCodexOriginatorMarksClaudeLaunchedCodexSessions() throws {
         let codexFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-originator-\(UUID().uuidString).jsonl")
+        let nativeCodexFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-native-originator-\(UUID().uuidString).jsonl")
         try #"{"type":"session_meta","payload":{"id":"codex-1","originator":"Claude Code"}}"#
             .appending("\n")
             .write(to: codexFile, atomically: true, encoding: .utf8)
+        try #"{"type":"session_meta","payload":{"id":"codex-2","originator":"Codex CLI"}}"#
+            .appending("\n")
+            .write(to: nativeCodexFile, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: codexFile) }
+        defer { try? FileManager.default.removeItem(at: nativeCodexFile) }
 
         try writer.write { db in
             try insertSession(db, id: "codex-1", source: "codex", filePath: codexFile.path)
+            try insertSession(db, id: "codex-2", source: "codex", filePath: nativeCodexFile.path)
 
             let updated = try StartupBackfills.backfillCodexOriginator(db)
             XCTAssertEqual(updated, 1)
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'codex-1'"), "dispatched")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'codex-1'"), "skip")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'codex-2'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'codex-2'"))
         }
     }
 
@@ -291,21 +300,63 @@ final class StartupBackfillTests: XCTestCase {
     }
 
     func testBackfillScoresMatchesNodeQualityScoringForEligibleSessions() throws {
-        try writer.write { db in
-            try insertSession(
-                db,
-                id: "needs-score",
-                source: "codex",
-                startTime: "2026-04-23T10:00:00.000Z",
-                endTime: "2026-04-23T10:10:00.000Z",
-                project: "engram",
-                tier: "normal",
-                userMessageCount: 3,
-                assistantMessageCount: 3,
-                toolMessageCount: 2,
-                systemMessageCount: 1,
-                qualityScore: 0
+        struct ScoreCase {
+            let id: String
+            let userCount: Int
+            let assistantCount: Int
+            let toolCount: Int
+            let systemCount: Int
+            let durationMinutes: Int
+            let project: String?
+        }
+
+        let cases = [
+            ScoreCase(
+                id: "balanced-tool-session",
+                userCount: 3,
+                assistantCount: 3,
+                toolCount: 2,
+                systemCount: 1,
+                durationMinutes: 10,
+                project: "engram"
+            ),
+            ScoreCase(
+                id: "short-chat-no-tools",
+                userCount: 1,
+                assistantCount: 1,
+                toolCount: 0,
+                systemCount: 0,
+                durationMinutes: 2,
+                project: nil
+            ),
+            ScoreCase(
+                id: "long-tool-heavy-session",
+                userCount: 8,
+                assistantCount: 6,
+                toolCount: 12,
+                systemCount: 2,
+                durationMinutes: 240,
+                project: "infra"
             )
+        ]
+
+        try writer.write { db in
+            for scoreCase in cases {
+                try insertSession(
+                    db,
+                    id: scoreCase.id,
+                    source: "codex",
+                    startTime: "2026-04-23T10:00:00.000Z",
+                    endTime: endTime(minutesAfterStart: scoreCase.durationMinutes),
+                    project: scoreCase.project,
+                    tier: "normal",
+                    userMessageCount: scoreCase.userCount,
+                    assistantMessageCount: scoreCase.assistantCount,
+                    toolMessageCount: scoreCase.toolCount,
+                    systemMessageCount: scoreCase.systemCount,
+                    qualityScore: 0
+                )
+            }
             try insertSession(
                 db,
                 id: "skip-tier",
@@ -318,8 +369,21 @@ final class StartupBackfillTests: XCTestCase {
 
             let changed = try StartupBackfills.backfillScores(db)
 
-            XCTAssertEqual(changed, 1)
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT quality_score FROM sessions WHERE id = 'needs-score'"), 72)
+            XCTAssertEqual(changed, cases.count)
+            for scoreCase in cases {
+                XCTAssertEqual(
+                    try Int.fetchOne(db, sql: "SELECT quality_score FROM sessions WHERE id = ?", arguments: [scoreCase.id]),
+                    expectedQualityScore(
+                        userCount: scoreCase.userCount,
+                        assistantCount: scoreCase.assistantCount,
+                        toolCount: scoreCase.toolCount,
+                        systemCount: scoreCase.systemCount,
+                        durationMinutes: Double(scoreCase.durationMinutes),
+                        hasProject: scoreCase.project != nil
+                    ),
+                    scoreCase.id
+                )
+            }
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT quality_score FROM sessions WHERE id = 'skip-tier'"), 0)
         }
     }
@@ -395,6 +459,51 @@ final class StartupBackfillTests: XCTestCase {
                 qualityScore
             ]
         )
+    }
+
+    private func endTime(minutesAfterStart: Int) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let start = formatter.date(from: "2026-04-23T10:00:00.000Z")!
+        let end = start.addingTimeInterval(TimeInterval(minutesAfterStart * 60))
+        return formatter.string(from: end)
+    }
+
+    private func expectedQualityScore(
+        userCount: Int,
+        assistantCount: Int,
+        toolCount: Int,
+        systemCount: Int,
+        durationMinutes: Double,
+        hasProject: Bool
+    ) -> Int {
+        let totalMessages = userCount + assistantCount + toolCount + systemCount
+        var turnScore = 0.0
+        if userCount > 0, assistantCount > 0, totalMessages > 0 {
+            turnScore = min(30, (Double(min(userCount, assistantCount)) / Double(totalMessages)) * 30)
+        }
+
+        var toolScore = 0.0
+        if assistantCount > 0 {
+            toolScore = min(25, (Double(toolCount) / Double(assistantCount)) * 50)
+        }
+
+        let densityScore: Double
+        if durationMinutes < 1 {
+            densityScore = 0
+        } else if durationMinutes <= 5 {
+            densityScore = (durationMinutes / 5) * 20
+        } else if durationMinutes <= 60 {
+            densityScore = 20
+        } else if durationMinutes <= 180 {
+            densityScore = 20 - ((durationMinutes - 60) / 120) * 10
+        } else {
+            densityScore = 10
+        }
+
+        let projectScore = hasProject ? 15.0 : 0.0
+        let volumeScore = min(10, Double(userCount + assistantCount + toolCount) / 5)
+        return max(0, min(100, Int((turnScore + toolScore + densityScore + projectScore + volumeScore).rounded())))
     }
 }
 
