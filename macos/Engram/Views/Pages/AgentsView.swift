@@ -45,6 +45,10 @@ struct AgentsView: View {
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
-        do { agentSessions = try db.listSessions(subAgent: true, limit: 200) } catch { print("AgentsView error:", error) }
+        do {
+            agentSessions = try db.listSessions(subAgent: true, limit: 200)
+        } catch {
+            EngramLogger.error("AgentsView load failed", module: .ui, error: error)
+        }
     }
 }

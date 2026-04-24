@@ -106,7 +106,7 @@ struct SessionsPageView: View {
             totalMessages = sessions.reduce(0) { $0 + $1.messageCount }
             availableSources = Array(Set(sessions.map(\.source))).sorted()
         } catch {
-            print("SessionsPage error:", error)
+            EngramLogger.error("SessionsPage load failed", module: .ui, error: error)
         }
     }
 

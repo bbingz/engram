@@ -117,6 +117,29 @@ final class EngramServiceLauncherTests: XCTestCase {
             return false
         })
     }
+
+    @MainActor
+    func testLauncherDrainsServiceOutputPipes() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-service-output-\(UUID().uuidString)")
+        let executable = try makeNoisyExecutable(marker: marker)
+        let launcher = EngramServiceLauncher()
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: "/tmp/engram-output.sock",
+            databasePath: "/tmp/engram-output.sqlite",
+            foreground: false
+        )
+
+        try launcher.start(configuration: config)
+        let deadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: marker.path), Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        launcher.stopIfOwned()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    }
 }
 
 @MainActor
@@ -138,6 +161,29 @@ private func makeSleeperExecutable() throws -> URL {
     )
     let executable = directory.appendingPathComponent("sleeper.sh")
     try "#!/bin/sh\nsleep 5\n".write(to: executable, atomically: true, encoding: .utf8)
+    chmod(executable.path, 0o700)
+    return executable
+}
+
+private func makeNoisyExecutable(marker: URL) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-service-noisy-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    let executable = directory.appendingPathComponent("noisy.sh")
+    try """
+    #!/bin/sh
+    i=0
+    while [ "$i" -lt 5000 ]; do
+      printf '%0200d\\n' "$i"
+      i=$((i + 1))
+    done
+    touch "\(marker.path)"
+    sleep 5
+    """.write(to: executable, atomically: true, encoding: .utf8)
     chmod(executable.path, 0o700)
     return executable
 }

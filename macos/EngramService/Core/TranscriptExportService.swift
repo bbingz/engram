@@ -28,6 +28,7 @@ enum TranscriptExportService {
         let outputURL = outputDir.appendingPathComponent("\(session.source)-\(safeId)-\(date).\(ext)")
         let content = try exportContent(session: session, messages: messages, format: request.format)
         try content.write(to: outputURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
 
         return EngramServiceExportSessionResponse(
             outputPath: outputURL.path,
@@ -102,10 +103,17 @@ enum TranscriptExportService {
         messages: [ServiceTranscriptMessage],
         format: String
     ) throws -> String {
+        let redactedMessages = messages.map { message in
+            ServiceTranscriptMessage(
+                role: message.role,
+                content: redactSensitiveContent(message.content),
+                timestamp: message.timestamp
+            )
+        }
         if format == "json" {
             let payload: [String: Any] = [
                 "session": session.jsonObject,
-                "messages": messages.map(\.jsonObject),
+                "messages": redactedMessages.map(\.jsonObject),
             ]
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
             return (String(data: data, encoding: .utf8) ?? "{}") + "\n"
@@ -122,7 +130,7 @@ enum TranscriptExportService {
             "---",
             "",
         ]
-        for message in messages {
+        for message in redactedMessages {
             lines.append("### \(message.role == "user" ? "👤 User" : "🤖 Assistant")")
             lines.append("")
             lines.append(message.content)
@@ -131,6 +139,24 @@ enum TranscriptExportService {
             lines.append("")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func redactSensitiveContent(_ content: String) -> String {
+        let patterns = [
+            #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_\-+=/.]{10,}["']?"#,
+            #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#,
+            #"\b(sk-[A-Za-z0-9_\-]{10,}|ghp_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"#,
+        ]
+        return patterns.reduce(content) { current, pattern in
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return current }
+            let range = NSRange(current.startIndex..<current.endIndex, in: current)
+            return regex.stringByReplacingMatches(
+                in: current,
+                options: [],
+                range: range,
+                withTemplate: "[REDACTED]"
+            )
+        }
     }
 }
 

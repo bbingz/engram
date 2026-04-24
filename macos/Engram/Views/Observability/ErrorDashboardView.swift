@@ -93,7 +93,7 @@ struct ErrorDashboardView: View {
             errorsByModule = try db.errorsByModule24h()
             recentErrors = try db.recentErrors(limit: 20)
         } catch {
-            print("ErrorDashboardView error:", error)
+            EngramLogger.error("ErrorDashboardView load failed", module: .ui, error: error)
         }
     }
 

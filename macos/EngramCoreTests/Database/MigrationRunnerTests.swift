@@ -45,6 +45,29 @@ final class MigrationRunnerTests: XCTestCase {
             "created_at",
             "deleted_at",
         ])
+
+        let sessionToolColumns = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('session_tools') ORDER BY cid")
+        }
+        XCTAssertEqual(sessionToolColumns, ["session_id", "tool_name", "call_count"])
+
+        let observabilityColumns = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('logs') ORDER BY cid")
+        }
+        XCTAssertEqual(observabilityColumns, [
+            "id",
+            "ts",
+            "level",
+            "module",
+            "trace_id",
+            "span_id",
+            "message",
+            "data",
+            "error_name",
+            "error_message",
+            "error_stack",
+            "source",
+        ])
     }
 
     func testMigrationIsIdempotentAcrossRepeatedRuns() throws {

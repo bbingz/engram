@@ -54,6 +54,8 @@ struct ActivityView: View {
             let weekAgo = ISO8601DateFormatter().string(from: Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date())
             todayCount = try db.countSessionsSince(today)
             weekCount = try db.countSessionsSince(weekAgo)
-        } catch { print("ActivityView error:", error) }
+        } catch {
+            EngramLogger.error("ActivityView load failed", module: .ui, error: error)
+        }
     }
 }

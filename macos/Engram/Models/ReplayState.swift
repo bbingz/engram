@@ -1,6 +1,17 @@
 // macos/Engram/Models/ReplayState.swift
 import Foundation
 
+struct ReplayTimelineEntry: Equatable, Identifiable, Sendable {
+    var id: Int { index }
+    let index: Int
+    let role: String
+    let type: String
+    let preview: String
+    let timestamp: String?
+    let tokens: Int?
+    let durationToNextMs: Int?
+}
+
 @MainActor
 @Observable
 class ReplayState {

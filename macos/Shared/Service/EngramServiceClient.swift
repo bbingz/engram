@@ -6,21 +6,13 @@ final class EngramServiceClient: EngramServiceClientProtocol, @unchecked Sendabl
     @ObservationIgnored
     private let transport: any EngramServiceTransport
     @ObservationIgnored
-    private let encoder: JSONEncoder
-    @ObservationIgnored
-    private let decoder: JSONDecoder
-    @ObservationIgnored
     private let defaultTimeout: TimeInterval
 
     init(
         transport: any EngramServiceTransport,
-        encoder: JSONEncoder = JSONEncoder(),
-        decoder: JSONDecoder = JSONDecoder(),
         defaultTimeout: TimeInterval = 30
     ) {
         self.transport = transport
-        self.encoder = encoder
-        self.decoder = decoder
         self.defaultTimeout = defaultTimeout
     }
 
@@ -195,7 +187,7 @@ final class EngramServiceClient: EngramServiceClientProtocol, @unchecked Sendabl
     ) async throws -> Response {
         let request = try EngramServiceRequestEnvelope(
             command: name,
-            payload: encoder.encode(payload)
+            payload: JSONEncoder().encode(payload)
         )
         let response = try await transport.send(request, timeout: timeout ?? defaultTimeout)
         guard response.requestId == request.requestId else {
@@ -206,7 +198,7 @@ final class EngramServiceClient: EngramServiceClientProtocol, @unchecked Sendabl
 
         switch response {
         case .success(_, let result, _):
-            return try decoder.decode(Response.self, from: result)
+            return try JSONDecoder().decode(Response.self, from: result)
         case .failure(_, let error):
             throw error.asError()
         }

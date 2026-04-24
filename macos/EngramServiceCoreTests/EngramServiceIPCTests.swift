@@ -176,6 +176,53 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: response.outputPath))
     }
 
+    func testExportSessionRedactsSecretsAndWritesOwnerOnlyFile() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("s1-secret.jsonl")
+        try """
+        {"timestamp":"2026-04-23T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Authorization: Bearer sk-test-secret-token-123456789"}]}}
+        {"timestamp":"2026-04-23T01:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"password = hunter2hunter2"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [transcript.path])
+        }
+
+        let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("HOME", exportHome.path, 1)
+        defer {
+            if let oldHome {
+                setenv("HOME", oldHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let response = try await client.exportSession(
+            EngramServiceExportSessionRequest(id: "s1", format: "markdown", outputHome: exportHome.path, actor: "test")
+        )
+
+        let content = try String(contentsOfFile: response.outputPath, encoding: .utf8)
+        XCTAssertTrue(content.contains("[REDACTED]"))
+        XCTAssertFalse(content.contains("sk-test-secret-token"))
+        XCTAssertFalse(content.contains("hunter2hunter2"))
+
+        var info = stat()
+        XCTAssertEqual(lstat(response.outputPath, &info), 0)
+        XCTAssertEqual(info.st_mode & 0o077, 0)
+    }
+
     func testExportSessionUsesRequestedHomeInsteadOfServiceHome() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -384,6 +431,56 @@ final class EngramServiceIPCTests: XCTestCase {
             XCTAssertNil(row?["parent_session_id"] as String?)
             XCTAssertNil(row?["suggested_parent_id"] as String?)
         }
+    }
+
+    func testLinkSessionsRejectsPathsOutsideKnownSessionRoots() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let allowedDir = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        let deniedDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        try FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: deniedDir, withIntermediateDirectories: true)
+        let allowedFile = allowedDir.appendingPathComponent("allowed.jsonl")
+        let deniedFile = deniedDir.appendingPathComponent("id_rsa")
+        try "{}\n".write(to: allowedFile, atomically: true, encoding: .utf8)
+        try "secret\n".write(to: deniedFile, atomically: true, encoding: .utf8)
+
+        let oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("HOME", home.path, 1)
+        defer {
+            if let oldHome {
+                setenv("HOME", oldHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [allowedFile.path])
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's2'", arguments: [deniedFile.path])
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let targetDir = home.appendingPathComponent("engram", isDirectory: true)
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let response = try await client.linkSessions(
+            EngramServiceLinkSessionsRequest(targetDir: targetDir.path, actor: "test")
+        )
+
+        XCTAssertEqual(response.created, 1)
+        XCTAssertEqual(response.errors.count, 1)
+        XCTAssertTrue(response.errors[0].contains("refusing to link path outside known session roots"))
+        let linkPath = targetDir.appendingPathComponent("conversation_log/codex/allowed.jsonl").path
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: linkPath), allowedFile.path)
     }
 
     func testAppSessionMetadataMutationsAreOwnedByServiceWriterGate() async throws {
@@ -732,6 +829,7 @@ private func seedSearchFixture(at path: String) throws {
               suggested_parent_id TEXT,
               link_source TEXT,
               link_checked_at TEXT,
+              orphan_status TEXT,
               has_embedding INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE session_local_state (
@@ -750,6 +848,12 @@ private func seedSearchFixture(at path: String) throws {
               archived INTEGER NOT NULL DEFAULT 0,
               audit_note TEXT,
               actor TEXT NOT NULL DEFAULT 'app'
+            );
+            CREATE TABLE project_aliases (
+              alias TEXT NOT NULL,
+              canonical TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (alias, canonical)
             );
             CREATE VIRTUAL TABLE sessions_fts USING fts5(
               session_id UNINDEXED,

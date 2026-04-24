@@ -66,7 +66,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Open SQLite
-        do { try db.open() } catch { print("DB error:", error) }
+        do {
+            try db.open()
+        } catch {
+            EngramLogger.error("Database open failed", module: .database, error: error)
+        }
 
         if environment.autoStartService {
             serviceStatusStore.apply(.starting)
@@ -85,7 +89,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             } catch {
                 serviceStatusStore.apply(.error(message: error.localizedDescription))
-                print("EngramService launch error:", error)
+                EngramLogger.error("EngramService launch failed", module: .daemon, error: error)
             }
         }
 

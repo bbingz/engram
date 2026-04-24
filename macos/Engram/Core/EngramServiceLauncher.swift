@@ -31,6 +31,8 @@ final class EngramServiceLauncher {
     typealias StatusSink = @MainActor @Sendable (EngramServiceStatus) -> Void
 
     private var process: Process?
+    private var stdoutPipe: Pipe?
+    private var stderrPipe: Pipe?
     private var healthTask: Task<Void, Never>?
     private let healthIntervalNanoseconds: UInt64
     private let maximumRestartAttempts: Int
@@ -63,10 +65,16 @@ final class EngramServiceLauncher {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: configuration.executablePath)
         proc.arguments = Self.arguments(for: configuration)
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        proc.standardOutput = stdoutPipe
+        proc.standardError = stderrPipe
+        drain(pipe: stdoutPipe, level: "stdout")
+        drain(pipe: stderrPipe, level: "stderr")
         try proc.run()
         process = proc
+        self.stdoutPipe = stdoutPipe
+        self.stderrPipe = stderrPipe
     }
 
     func startHealthMonitor(
@@ -126,7 +134,30 @@ final class EngramServiceLauncher {
     }
 
     private func stopProcessOnly() {
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        stdoutPipe = nil
+        stderrPipe = nil
         process?.terminate()
         process = nil
+    }
+
+    private func drain(pipe: Pipe, level: String) {
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !text.isEmpty
+            else { return }
+            if level == "stderr" {
+                EngramLogger.error("EngramService stderr: \(text)", module: .daemon)
+            } else {
+                EngramLogger.debug("EngramService stdout: \(text)", module: .daemon)
+            }
+        }
     }
 }

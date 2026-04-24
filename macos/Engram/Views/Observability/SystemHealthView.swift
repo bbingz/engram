@@ -71,7 +71,7 @@ struct SystemHealthView: View {
         do {
             tableCounts = try db.observabilityTableCounts()
         } catch {
-            print("SystemHealthView error:", error)
+            EngramLogger.error("SystemHealthView load failed", module: .ui, error: error)
         }
     }
 

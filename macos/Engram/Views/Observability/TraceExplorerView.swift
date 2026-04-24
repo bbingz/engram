@@ -140,7 +140,7 @@ struct TraceExplorerView: View {
         do {
             traces = try db.fetchTraces(nameFilter: nameFilter, limit: 100)
         } catch {
-            print("TraceExplorerView error:", error)
+            EngramLogger.error("TraceExplorerView load failed", module: .ui, error: error)
         }
     }
 

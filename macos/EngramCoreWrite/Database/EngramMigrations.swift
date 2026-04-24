@@ -157,7 +157,8 @@ enum EngramMigrations {
               last_commit_hash TEXT,
               last_commit_msg TEXT,
               last_commit_at TEXT,
-              updated_at TEXT NOT NULL
+              session_count INTEGER DEFAULT 0,
+              probed_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS session_costs (
@@ -168,13 +169,13 @@ enum EngramMigrations {
               cache_read_tokens INTEGER DEFAULT 0,
               cache_creation_tokens INTEGER DEFAULT 0,
               cost_usd REAL DEFAULT 0,
-              computed_at TEXT NOT NULL
+              computed_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS session_tools (
               session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
               tool_name TEXT NOT NULL,
-              count INTEGER NOT NULL DEFAULT 0,
+              call_count INTEGER DEFAULT 0,
               PRIMARY KEY (session_id, tool_name)
             );
             CREATE INDEX IF NOT EXISTS idx_session_tools_name ON session_tools(tool_name);
@@ -182,23 +183,25 @@ enum EngramMigrations {
             CREATE TABLE IF NOT EXISTS session_files (
               session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
               file_path TEXT NOT NULL,
-              action TEXT,
-              count INTEGER NOT NULL DEFAULT 0,
+              action TEXT NOT NULL,
+              count INTEGER DEFAULT 1,
               PRIMARY KEY (session_id, file_path, action)
             );
             CREATE INDEX IF NOT EXISTS idx_session_files_path ON session_files(file_path);
 
             CREATE TABLE IF NOT EXISTS logs (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              ts TEXT NOT NULL,
+              ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
               level TEXT NOT NULL CHECK (level IN ('debug','info','warn','error')),
               module TEXT NOT NULL,
+              trace_id TEXT,
+              span_id TEXT,
               message TEXT NOT NULL,
               data TEXT,
-              trace_id TEXT,
-              request_id TEXT,
-              request_source TEXT,
-              source TEXT NOT NULL DEFAULT 'daemon'
+              error_name TEXT,
+              error_message TEXT,
+              error_stack TEXT,
+              source TEXT NOT NULL CHECK (source IN ('daemon', 'app'))
             );
             CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
             CREATE INDEX IF NOT EXISTS idx_logs_level_ts ON logs(level, ts);
@@ -207,16 +210,18 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_logs_source_ts ON logs(source, ts);
 
             CREATE TABLE IF NOT EXISTS traces (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
               trace_id TEXT NOT NULL,
-              span_id TEXT PRIMARY KEY,
+              span_id TEXT NOT NULL UNIQUE,
               parent_span_id TEXT,
               name TEXT NOT NULL,
-              kind TEXT NOT NULL,
+              module TEXT NOT NULL,
               start_ts TEXT NOT NULL,
               end_ts TEXT,
-              duration_ms REAL,
+              duration_ms INTEGER,
+              status TEXT NOT NULL DEFAULT 'ok',
               attributes TEXT,
-              status TEXT
+              source TEXT NOT NULL CHECK (source IN ('daemon', 'app'))
             );
             CREATE INDEX IF NOT EXISTS idx_traces_span_id ON traces(span_id);
             CREATE INDEX IF NOT EXISTS idx_traces_trace_id ON traces(trace_id);
@@ -236,44 +241,55 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_metrics_name_type ON metrics(name, type);
 
             CREATE TABLE IF NOT EXISTS metrics_hourly (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
               name TEXT NOT NULL,
+              type TEXT NOT NULL,
               hour TEXT NOT NULL,
-              count INTEGER NOT NULL DEFAULT 0,
-              sum REAL NOT NULL DEFAULT 0,
-              min REAL,
-              max REAL,
-              p50 REAL,
+              count INTEGER NOT NULL,
+              sum REAL NOT NULL,
+              min REAL NOT NULL,
+              max REAL NOT NULL,
               p95 REAL,
-              p99 REAL,
-              PRIMARY KEY (name, hour)
+              tags TEXT,
+              UNIQUE(name, type, hour, tags)
             );
             CREATE INDEX IF NOT EXISTS idx_metrics_hourly_name ON metrics_hourly(name, hour);
 
             CREATE TABLE IF NOT EXISTS alerts (
-              id TEXT PRIMARY KEY,
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
               rule TEXT NOT NULL,
-              severity TEXT NOT NULL,
+              severity TEXT NOT NULL CHECK (severity IN ('warning','critical')),
               message TEXT NOT NULL,
-              data TEXT,
-              ts TEXT NOT NULL,
+              value REAL,
+              threshold REAL,
+              dismissed_at TEXT,
               resolved_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
             CREATE INDEX IF NOT EXISTS idx_alerts_rule ON alerts(rule, ts);
 
             CREATE TABLE IF NOT EXISTS ai_audit_log (
-              id TEXT PRIMARY KEY,
-              ts TEXT NOT NULL,
-              caller TEXT NOT NULL,
-              model TEXT,
-              request TEXT,
-              response TEXT,
-              input_tokens INTEGER DEFAULT 0,
-              output_tokens INTEGER DEFAULT 0,
-              cost_usd REAL DEFAULT 0,
-              session_id TEXT,
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
               trace_id TEXT,
-              error TEXT
+              caller TEXT NOT NULL,
+              operation TEXT NOT NULL,
+              request_source TEXT,
+              method TEXT,
+              url TEXT,
+              status_code INTEGER,
+              duration_ms INTEGER,
+              model TEXT,
+              provider TEXT,
+              prompt_tokens INTEGER,
+              completion_tokens INTEGER,
+              total_tokens INTEGER,
+              request_body TEXT,
+              response_body TEXT,
+              error TEXT,
+              session_id TEXT,
+              meta TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_ai_audit_ts ON ai_audit_log(ts);
             CREATE INDEX IF NOT EXISTS idx_ai_audit_caller ON ai_audit_log(caller, ts);
@@ -289,8 +305,7 @@ enum EngramMigrations {
               source_session_id TEXT,
               importance INTEGER DEFAULT 5,
               has_embedding INTEGER DEFAULT 0,
-              created_at TEXT NOT NULL DEFAULT (datetime('now')),
-              deleted_at TEXT
+              created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_insights_wing ON insights(wing);
             CREATE VIRTUAL TABLE IF NOT EXISTS insights_fts USING fts5(

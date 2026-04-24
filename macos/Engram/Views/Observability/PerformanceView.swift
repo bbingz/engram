@@ -93,7 +93,7 @@ struct PerformanceView: View {
             hourlyMetrics = try db.recentHourlyMetrics(limit: 50)
             slowTraces = try db.slowTraces(minDurationMs: 1000, limit: 20)
         } catch {
-            print("PerformanceView error:", error)
+            EngramLogger.error("PerformanceView load failed", module: .ui, error: error)
         }
     }
 }

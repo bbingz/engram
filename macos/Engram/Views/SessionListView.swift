@@ -327,7 +327,7 @@ struct SessionListView: View {
                     limit: 2000
                 )
             } catch {
-                print("[SessionListView] error loading sessions:", error)
+                EngramLogger.error("SessionListView load failed", module: .ui, error: error)
                 sessions = []
             }
         }
@@ -362,7 +362,7 @@ struct SessionListView: View {
                     favoriteIds.remove(id)
                 }
             } catch {
-                print("[SessionListView] error toggling favorite:", error)
+                EngramLogger.error("SessionListView favorite update failed", module: .ui, error: error)
             }
         }
     }
@@ -375,7 +375,7 @@ struct SessionListView: View {
                 await loadSessions()
                 updateFilteredSessions()
             } catch {
-                print("[SessionListView] error updating hidden state:", error)
+                EngramLogger.error("SessionListView hidden-state update failed", module: .ui, error: error)
             }
         }
     }

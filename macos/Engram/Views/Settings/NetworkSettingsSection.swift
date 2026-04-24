@@ -228,7 +228,7 @@ struct NetworkSettingsSection: View {
             } catch {
                 isSyncing = false
                 syncStatus = "Failed"
-                print("Sync error: \(error.localizedDescription)")
+                EngramLogger.error("Network sync failed", module: .network, error: error)
             }
         }
     }

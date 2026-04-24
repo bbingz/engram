@@ -61,7 +61,7 @@ Decision values:
 | App/MCP stats/costs/tool analytics | `/api/stats`, `/api/costs`, `/api/costs/sessions`, `/api/file-activity`, `/api/tool-analytics`, `/api/usage` | stats/cost/usage DTOs | `stats(_:)`, `costs(_:)`, `fileActivity(_:)`, `toolAnalytics(_:)`, `usageStatus()` | App if surfaced | MCP read parity remains read repository | read repository |
 | App repository list | `/api/repos` | repo list DTO | `repositories()` | App if surfaced | none | service command |
 | App AI audit views | `/api/ai/audit`, `/api/ai/audit/:id`, `/api/ai/stats` | audit rows/detail/stats | `aiAudit(_:)`, `aiAuditDetail(id:)`, `aiStats()` | App if surfaced | none | read repository |
-| App log forwarding | `/api/log` | empty/ok | `recordLog(_:)` or OSLog-only before service ready | App | none | service command |
+| App log forwarding | `/api/log` | empty/ok | OSLog-only | App | none | removed with documented deprecation |
 | Dev mock routes | `/api/dev/mock` POST/DELETE | mock result | none | none | none | removed with documented deprecation |
 | Browser-only HTML routes | `/`, `/search`, `/stats`, `/settings`, `/session/:id`, `/goto` | HTML | none | none | none | removed with documented deprecation |
 | App-local MCP bridge | `MCPServer("/mcp")`, `MCPTools` | Hummingbird HTTP MCP | none in production startup | none | Stage 5 deletion | removed with documented deprecation |
@@ -85,7 +85,7 @@ Decision values:
 - Resume command: `resumeCommand(sessionId:)`.
 - Save insight: service command.
 - Link sessions: service command with MCP fail-closed coverage.
-- Log forwarding: `recordLog(_:)` or OSLog-only while service is unavailable.
+- Log forwarding: OSLog-only. The old `/api/log` forwarding path is removed.
 - Health: `health()`.
 
 ## Stage 5 Debt Snapshot
@@ -94,7 +94,8 @@ Decision values:
 - `LegacyDaemonBridge` has been deleted. No service-internal command forwards to retained daemon endpoints.
 - Project move/archive/undo/batch are intentionally fail-closed service commands until a native Swift migration pipeline replaces the old Node orchestrator.
 - MCP direct daemon HTTP compatibility has been removed from the routed mutation/operational paths in `macos/EngramMCP/Core/MCPToolRegistry.swift`.
-- `DaemonClient`, `DaemonHTTPClientCore`, and `EngramLogger` remain as compatibility files until native Swift parity deletes the last callers.
+- `DaemonClient` and `DaemonHTTPClientCore` have been deleted from production targets. `EngramLogger` remains as an OSLog-only utility and no longer posts to `/api/log`.
+- `UnixSocketEngramServiceTransport.events()` now polls service status over the Unix socket instead of returning an immediately empty stream.
 
 ## Stage 3 Gate Commands
 

@@ -1,12 +1,14 @@
 # Engram Security
 
-**Last updated**: 2026-04-16
+**Last updated**: 2026-04-24
 
 ## Architecture
 
-Engram runs as two local processes:
-1. **Node.js daemon** — indexes sessions, serves HTTP API, runs background tasks
-2. **SwiftUI app** — menu bar UI, communicates with daemon via localhost HTTP
+Engram's macOS runtime runs as two local Swift processes:
+1. **EngramService** — owns indexing, SQLite writes, background tasks, and service commands
+2. **SwiftUI app** — menu bar UI, communicates with EngramService over a Unix domain socket
+
+Node/TypeScript code is retained as development, fixture, and migration reference material. It is not bundled into the default macOS app runtime.
 
 ## Credential Storage
 
@@ -16,17 +18,16 @@ Legacy plaintext keys are automatically migrated to Keychain on first launch aft
 
 ## Network Security
 
-### Default (localhost)
-- Daemon binds to `127.0.0.1:3457` — accessible only from the local machine
-- No authentication required for localhost connections
+### Default (local Unix socket)
+- EngramService listens on a Unix domain socket under `~/.engram/run/engram-service.sock`
+- The default macOS app runtime does not expose a localhost HTTP API
+- The socket is local to the current user account and is not reachable from the network
 
-### Non-localhost Binding
-When configured with `httpHost: "0.0.0.0"`:
-- **CIDR whitelist required** — daemon refuses to start if `httpAllowCIDR` is empty
-- **Bearer token authentication** — all write endpoints (POST/PUT/DELETE/PATCH) require `Authorization: Bearer <token>`
-- Token is auto-generated on first non-localhost startup and stored in `settings.json`
-- **CORS protection** — cross-origin requests from non-localhost origins are rejected
-- Origin validation uses `URL` parsing (not prefix matching) to prevent bypass
+### Optional legacy HTTP tooling
+Some retained development/reference tooling still understands the older HTTP settings. Do not rely on those paths for the default macOS app runtime. If any local HTTP tool is explicitly enabled for development, keep it bound to localhost unless the following controls are present:
+- **CIDR whitelist** for non-localhost binding
+- **Bearer token authentication** for write endpoints
+- **CORS protection** for browser-originated requests
 
 ### Content Filtering
 Before transmitting data to external AI providers, content is filtered:
@@ -37,8 +38,9 @@ Before transmitting data to external AI providers, content is filtered:
 ## Database
 
 - SQLite in WAL mode at `~/.engram/index.sqlite`
-- Node owns the schema; Swift reads via GRDB (read-only pool)
-- Swift writes only to extension tables (`favorites`, `tags`)
+- EngramService owns data-plane writes through `ServiceWriterGate`
+- The SwiftUI app and MCP tools route mutating operations through the service boundary
+- App-local settings, Keychain items, and launch-agent registration remain app-owned
 - All SQL queries use parameterized statements (no string interpolation)
 
 ## Code Signing

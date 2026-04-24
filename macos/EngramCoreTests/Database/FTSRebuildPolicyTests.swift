@@ -20,7 +20,7 @@ final class FTSRebuildPolicyTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testOldFTSVersionMatchesNodeRebuildSideEffects() throws {
+    func testOldFTSVersionRebuildPreservesSessionMetadata() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("old-fts.sqlite"))
         try writer.migrate()
         try seedRebuildState(writer, ftsVersion: "2")
@@ -31,7 +31,7 @@ final class FTSRebuildPolicyTests: XCTestCase {
 
         let counts = try readCounts(writer)
         XCTAssertEqual(counts.ftsRows, 0)
-        XCTAssertEqual(counts.sessionsWithSize, 0)
+        XCTAssertEqual(counts.sessionsWithSize, 1)
         XCTAssertEqual(counts.sessionEmbeddings, 0)
         XCTAssertEqual(counts.vecSessions, 0)
         XCTAssertEqual(counts.sessionChunks, 1)

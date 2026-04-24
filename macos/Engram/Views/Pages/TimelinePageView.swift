@@ -70,7 +70,7 @@ struct TimelinePageView: View {
             confirmedCounts = data.1
             suggestedCounts = data.2
         } catch {
-            print("TimelinePage error:", error)
+            EngramLogger.error("TimelinePage load failed", module: .ui, error: error)
         }
     }
 

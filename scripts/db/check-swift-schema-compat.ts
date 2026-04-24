@@ -17,6 +17,46 @@ interface SqliteNameRow {
   name: string;
 }
 
+interface ColumnInfoRow {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+  pk: number;
+}
+
+interface ColumnSignature {
+  name: string;
+  type: string;
+  notnull: number;
+  defaultValue: string | null;
+  pk: number;
+}
+
+const nodeCompatibleTables = [
+  'sessions',
+  'sync_state',
+  'metadata',
+  'project_aliases',
+  'session_local_state',
+  'session_index_jobs',
+  'migration_log',
+  'usage_snapshots',
+  'git_repos',
+  'session_costs',
+  'session_tools',
+  'session_files',
+  'logs',
+  'traces',
+  'metrics',
+  'metrics_hourly',
+  'alerts',
+  'ai_audit_log',
+  'insights',
+  'memory_insights',
+] as const;
+
 function parseArgs(argv: string[]): Args {
   let fixtureRoot = '';
   let schemaTool = '';
@@ -104,6 +144,29 @@ function runSwiftMigration(schemaTool: string, dbPath: string): void {
   });
 }
 
+function prepareNodeReferenceDatabase(dbPath: string): void {
+  const db = new EngramDatabase(dbPath);
+  db.close();
+  const raw = new BetterSqlite3(dbPath);
+  try {
+    raw.exec(`
+      CREATE TABLE IF NOT EXISTS memory_insights (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        wing TEXT,
+        room TEXT,
+        source_session_id TEXT,
+        importance INTEGER DEFAULT 5,
+        model TEXT NOT NULL DEFAULT 'unknown',
+        created_at TEXT DEFAULT (datetime('now')),
+        deleted_at TEXT
+      );
+    `);
+  } finally {
+    raw.close();
+  }
+}
+
 function tableNames(dbPath: string): Set<string> {
   const db = new BetterSqlite3(dbPath, { readonly: true });
   try {
@@ -116,6 +179,30 @@ function tableNames(dbPath: string): Set<string> {
   }
 }
 
+function tableColumns(dbPath: string, table: string): ColumnSignature[] {
+  const db = new BetterSqlite3(dbPath, { readonly: true });
+  try {
+    const rows = db
+      .prepare(`PRAGMA table_info(${JSON.stringify(table)})`)
+      .all() as ColumnInfoRow[];
+    return rows
+      .sort((a, b) => a.cid - b.cid)
+      .map((row) => ({
+        name: row.name,
+        type: row.type,
+        notnull: row.notnull,
+        defaultValue: normalizeDefault(row.dflt_value),
+        pk: row.pk,
+      }));
+  } finally {
+    db.close();
+  }
+}
+
+function normalizeDefault(value: string | null): string | null {
+  return value?.replace(/\s+/g, ' ').trim() ?? null;
+}
+
 function metadataValue(dbPath: string, key: string): string | undefined {
   const db = new BetterSqlite3(dbPath, { readonly: true });
   try {
@@ -125,6 +212,24 @@ function metadataValue(dbPath: string, key: string): string | undefined {
       .get(key) as string | undefined;
   } finally {
     db.close();
+  }
+}
+
+function assertNodeColumnCompatibility(
+  swiftDbPath: string,
+  nodeDbPath: string,
+  label: string,
+): void {
+  for (const table of nodeCompatibleTables) {
+    const swiftColumns = tableColumns(swiftDbPath, table);
+    const nodeColumns = tableColumns(nodeDbPath, table);
+    if (JSON.stringify(swiftColumns) !== JSON.stringify(nodeColumns)) {
+      throw new Error(
+        `${label}: Swift/Node schema drift for ${table}\n` +
+          `Swift: ${JSON.stringify(swiftColumns)}\n` +
+          `Node:  ${JSON.stringify(nodeColumns)}`,
+      );
+    }
   }
 }
 
@@ -192,10 +297,13 @@ function run(args: Args): void {
       throw new Error('--skip-build requires --schema-tool');
     }
     const schemaTool = args.schemaTool || buildSchemaTool(repoRoot, buildRoot);
+    const nodeReferenceDb = join(tempRoot, 'node-reference.sqlite');
+    prepareNodeReferenceDatabase(nodeReferenceDb);
 
     const freshDb = join(tempRoot, 'fresh-swift.sqlite');
     runSwiftMigration(schemaTool, freshDb);
     assertSwiftSchemaBeforeNode(freshDb, 'fresh');
+    assertNodeColumnCompatibility(freshDb, nodeReferenceDb, 'fresh');
     assertNodeCanRead(freshDb, 'fresh');
 
     const migratedDb = join(tempRoot, 'migrated-swift.sqlite');

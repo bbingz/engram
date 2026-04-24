@@ -89,7 +89,7 @@ struct LogStreamView: View {
                 module: module,
                 limit: 200,
                 onError: { error in
-                    print("LogStreamView observation error:", error)
+                    EngramLogger.error("LogStreamView observation failed", module: .ui, error: error)
                 },
                 onChange: { result in
                     Task { @MainActor in
@@ -102,7 +102,7 @@ struct LogStreamView: View {
                 }
             )
         } catch {
-            print("LogStreamView error starting observation:", error)
+            EngramLogger.error("LogStreamView observation start failed", module: .ui, error: error)
             isLoading = false
         }
     }

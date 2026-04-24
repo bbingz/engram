@@ -2,10 +2,10 @@ import Darwin
 import Foundation
 
 final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked Sendable {
+    static let maximumFrameLength = 256 * 1024
+
     private let socketPath: String
     private let connectTimeout: TimeInterval
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
 
     init(socketPath: String = UnixSocketEngramServiceTransport.defaultSocketPath(), connectTimeout: TimeInterval = 2) {
         self.socketPath = socketPath
@@ -22,11 +22,11 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
             defer { Darwin.close(fd) }
             try Self.setSocketTimeout(fd, seconds: socketTimeout)
 
-            let encoded = try self.encoder.encode(request)
+            let encoded = try JSONEncoder().encode(request)
             try Self.writeFrame(encoded, to: fd)
             let responseData = try Self.readFrame(from: fd)
             do {
-                return try self.decoder.decode(EngramServiceResponseEnvelope.self, from: responseData)
+                return try JSONDecoder().decode(EngramServiceResponseEnvelope.self, from: responseData)
             } catch {
                 throw EngramServiceError.invalidRequest(message: "Malformed service response: \(error.localizedDescription)")
             }
@@ -35,11 +35,56 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
 
     func events() -> AsyncThrowingStream<EngramServiceEvent, Error> {
         AsyncThrowingStream { continuation in
-            continuation.finish()
+            let task = Task {
+                while !Task.isCancelled {
+                    do {
+                        let request = EngramServiceRequestEnvelope(command: "status")
+                        let response = try await send(request, timeout: connectTimeout)
+                        guard response.requestId == request.requestId else {
+                            throw EngramServiceError.invalidRequest(
+                                message: "Response request id \(response.requestId) did not match \(request.requestId)"
+                            )
+                        }
+                        switch response {
+                        case .success(_, let result, _):
+                            let status = try JSONDecoder().decode(EngramServiceStatus.self, from: result)
+                            continuation.yield(Self.event(from: status))
+                        case .failure(_, let error):
+                            throw error.asError()
+                        }
+                        try await Task.sleep(nanoseconds: 5_000_000_000)
+                    } catch is CancellationError {
+                        continuation.finish()
+                        return
+                    } catch {
+                        continuation.finish(throwing: error)
+                        return
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
+            }
         }
     }
 
     func close() async {}
+
+    private static func event(from status: EngramServiceStatus) -> EngramServiceEvent {
+        switch status {
+        case .running(let total, let todayParents):
+            return EngramServiceEvent(event: "indexed", total: total, todayParents: todayParents)
+        case .degraded(let message):
+            return EngramServiceEvent(event: "warning", message: message)
+        case .error(let message):
+            return EngramServiceEvent(event: "error", message: message)
+        case .starting:
+            return EngramServiceEvent(event: "warning", message: "Service starting")
+        case .stopped:
+            return EngramServiceEvent(event: "error", message: "Service stopped")
+        }
+    }
 
     static func defaultSocketPath(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
         homeDirectory
@@ -107,7 +152,7 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
         let length = lengthData.reduce(UInt32(0)) { partial, byte in
             (partial << 8) | UInt32(byte)
         }
-        guard length > 0, length <= 32 * 1024 * 1024 else {
+        guard length > 0, length <= maximumFrameLength else {
             throw EngramServiceError.invalidRequest(message: "Invalid service frame length \(length)")
         }
         return try readExact(count: Int(length), from: fd)

@@ -14,7 +14,7 @@ enum LaunchAgent {
                 if enabled { try SMAppService.mainApp.register() }
                 else       { try SMAppService.mainApp.unregister() }
             } catch {
-                print("LaunchAgent error:", error)
+                EngramLogger.error("LaunchAgent update failed", module: .ui, error: error)
             }
         } else {
             setLegacy(enabled)

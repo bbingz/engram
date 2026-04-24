@@ -203,7 +203,7 @@ struct HomeView: View {
             suggestedCounts = data.7
             alertMessage = nil
         } catch {
-            print("HomeView load error:", error)
+            EngramLogger.error("HomeView load failed", module: .ui, error: error)
         }
     }
 

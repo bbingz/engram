@@ -103,45 +103,20 @@ Recorded result:
 
 ## Stage 5 Compatibility Debt
 
-- Retained service bridge:
-  - `macos/EngramService/Core/LegacyDaemonBridge.swift`
-  - `macos/EngramService/Core/EngramServiceCommandHandler.swift`
-- Retained app compatibility surfaces:
-  - `macos/Engram/Core/DaemonClient.swift`
-  - `macos/Shared/Networking/DaemonHTTPClientCore.swift`
-  - `macos/Engram/Core/EngramLogger.swift`
-- Retained app DB writer debt:
-  - `macos/Engram/Core/Database.swift`
-  - Current allowed writes include favorites, hide/unhide, rename/project updates, bulk hygiene hide, and summary persistence.
-  - Stage 5 must route these through typed service commands or explicitly move app-local-only metadata outside `index.sqlite`.
-- Retained MCP/service gaps:
-  - `macos/EngramMCP/Core/MCPToolRegistry.swift`
-  - `macos/EngramMCP/Core/MCPConfig.swift`
-- Retained CLI compatibility surface:
-  - `macos/EngramCLI/main.swift`
-- Retained Node build/package surfaces:
-  - `macos/project.yml` `Bundle Node.js Daemon` prebuild phase
-  - `macos/scripts/build-node-bundle.sh`
-  - `package.json` Node CLI/bin/build scripts
-  - generated `dist/` and shipped `Resources/node`/`node_modules` until Stage 5 deletion
+- `LegacyDaemonBridge` is deleted. Remaining service commands either use native Swift implementations or fail closed for unsupported project migration execution.
+- `DaemonClient` and `DaemonHTTPClientCore` are deleted from production targets. `EngramLogger` remains only as an OSLog utility and no longer forwards to `/api/log`.
+- App `DatabaseManager` is read-only. Favorites, hide/unhide, rename, summary persistence, and empty-session cleanup route through typed service commands.
+- Project move/archive/undo/batch execution remains intentionally unavailable in the Swift runtime until the native migration pipeline is ported.
+- `macos/EngramCLI/main.swift` remains a compatibility stdio surface.
+- TypeScript `src/**`, fixture tooling, and schema compatibility scripts remain development/reference material. They are not bundled into the default macOS app runtime.
 
 ## Remaining Stage 5 Work
 
-- Remove app `index.sqlite` writers from `macos/Engram/Core/Database.swift` or move app-local-only metadata to a non-shared store.
-- Replace `LegacyDaemonBridge` endpoints with native Swift service implementations for:
-  - `hygiene`
-  - `handoff`
-  - `generateSummary`
-  - `triggerSync`
-  - `regenerateAllTitles`
-  - `saveInsight`
-  - `manageProjectAlias`
+- Port native Swift project migration execution for:
   - `projectMove`
   - `projectArchive`
   - `projectUndo`
   - `projectMoveBatch`
 - Keep `exportSession` native in service and extend it only if adapter parity gaps appear.
-- Remove remaining app compatibility clients once no caller depends on them.
 - Replace current `EngramCLI` bridge with a real Swift CLI or delete it after MCP clients use `EngramMCP` directly.
-- Remove Node bundle/build/package surfaces only after native service/CLI parity is verified.
-- Keep Node daemon deletion out of scope until the above parity is verified.
+- Delete or archive retained TypeScript development/reference surfaces after fixture/schema parity and CLI replacement no longer depend on them.

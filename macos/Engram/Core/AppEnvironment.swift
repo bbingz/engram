@@ -3,7 +3,6 @@ import Foundation
 
 struct AppEnvironment {
     let dbPath: String
-    let daemonPort: Int
     let serviceSocketPath: String
     let autoStartDaemon: Bool
     let autoStartService: Bool
@@ -16,7 +15,6 @@ struct AppEnvironment {
     static let production = AppEnvironment(
         dbPath: FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".engram/index.sqlite").path,
-        daemonPort: 3457, // matches DaemonClient default
         serviceSocketPath: UnixSocketEngramServiceTransport.defaultSocketPath(),
         autoStartDaemon: false,
         autoStartService: true,
@@ -30,7 +28,6 @@ struct AppEnvironment {
     static func test(fixturePath: String) -> AppEnvironment {
         AppEnvironment(
             dbPath: fixturePath,
-            daemonPort: 0, // no real daemon
             serviceSocketPath: URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("engram-test-service.sock").path,
             autoStartDaemon: false,
@@ -85,7 +82,6 @@ struct AppEnvironment {
 
             return AppEnvironment(
                 dbPath: fixturePath,
-                daemonPort: 0,
                 serviceSocketPath: URL(fileURLWithPath: NSTemporaryDirectory())
                     .appendingPathComponent("engram-test-service.sock").path,
                 autoStartDaemon: false,
@@ -101,7 +97,6 @@ struct AppEnvironment {
             .flatMap({ idx in args.indices.contains(idx + 1) ? args[idx + 1] : nil }) {
             return AppEnvironment(
                 dbPath: "\(dataDir)/index.sqlite",
-                daemonPort: AppEnvironment.production.daemonPort,
                 serviceSocketPath: AppEnvironment.production.serviceSocketPath,
                 autoStartDaemon: AppEnvironment.production.autoStartDaemon,
                 autoStartService: AppEnvironment.production.autoStartService,

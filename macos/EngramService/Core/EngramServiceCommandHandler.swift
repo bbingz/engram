@@ -5,8 +5,6 @@ import EngramCoreWrite
 
 final class EngramServiceCommandHandler: @unchecked Sendable {
     private let writerGate: ServiceWriterGate
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
     private let readProvider: any EngramServiceReadProvider
 
     init(
@@ -23,66 +21,66 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             case "status":
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(EngramServiceStatus.running(total: 0, todayParents: 0))
+                    result: try Self.encode(EngramServiceStatus.running(total: 0, todayParents: 0))
                 )
             case "search":
                 let payload = try decodePayload(EngramServiceSearchRequest.self, from: request)
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.search(payload))
+                    result: try Self.encode(try await readProvider.search(payload))
                 )
             case "health":
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.health())
+                    result: try Self.encode(try await readProvider.health())
                 )
             case "liveSessions":
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.liveSessions())
+                    result: try Self.encode(try await readProvider.liveSessions())
                 )
             case "sources":
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.sources())
+                    result: try Self.encode(try await readProvider.sources())
                 )
             case "skills":
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.skills())
+                    result: try Self.encode(try await readProvider.skills())
                 )
             case "memoryFiles":
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.memoryFiles())
+                    result: try Self.encode(try await readProvider.memoryFiles())
                 )
             case "hooks":
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.hooks())
+                    result: try Self.encode(try await readProvider.hooks())
                 )
             case "hygiene":
                 let payload = try decodePayload(EngramServiceHygieneRequest.self, from: request)
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try Self.hygiene(payload))
+                    result: try Self.encode(try Self.hygiene(payload))
                 )
             case "handoff":
                 let payload = try decodePayload(EngramServiceHandoffRequest.self, from: request)
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try Self.handoff(payload, databasePath: writerGate.databasePath))
+                    result: try Self.encode(try Self.handoff(payload, databasePath: writerGate.databasePath))
                 )
             case "replayTimeline":
                 let payload = try decodePayload(EngramServiceReplayTimelineRequest.self, from: request)
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.replayTimeline(payload))
+                    result: try Self.encode(try await readProvider.replayTimeline(payload))
                 )
             case "embeddingStatus":
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.embeddingStatus())
+                    result: try Self.encode(try await readProvider.embeddingStatus())
                 )
             case "generateSummary":
                 let payload = try decodePayload(EngramServiceGenerateSummaryRequest.self, from: request)
@@ -91,7 +89,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "saveInsight":
@@ -101,7 +99,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "manageProjectAlias":
@@ -111,14 +109,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "resumeCommand":
                 let payload = try decodePayload(EngramServiceResumeCommandRequest.self, from: request)
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.resumeCommand(payload))
+                    result: try Self.encode(try await readProvider.resumeCommand(payload))
                 )
             case "confirmSuggestion":
                 let payload = try decodePayload(EngramServiceConfirmSuggestionRequest.self, from: request)
@@ -127,7 +125,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "dismissSuggestion":
@@ -137,20 +135,20 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "projectMigrations":
                 let payload = try decodePayload(EngramServiceProjectMigrationsRequest.self, from: request)
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.projectMigrations(payload))
+                    result: try Self.encode(try await readProvider.projectMigrations(payload))
                 )
             case "projectCwds":
                 let payload = try decodePayload(EngramServiceProjectCwdsRequest.self, from: request)
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(try await readProvider.projectCwds(payload))
+                    result: try Self.encode(try await readProvider.projectCwds(payload))
                 )
             case "triggerSync":
                 let payload = try decodePayload(EngramServiceTriggerSyncRequest.self, from: request)
@@ -159,7 +157,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "regenerateAllTitles":
@@ -168,7 +166,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "projectMove":
@@ -178,7 +176,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "projectArchive":
@@ -188,7 +186,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "projectUndo":
@@ -198,7 +196,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "projectMoveBatch":
@@ -208,7 +206,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "setFavorite":
@@ -218,7 +216,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "setSessionHidden":
@@ -228,7 +226,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "renameSession":
@@ -238,7 +236,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "hideEmptySessions":
@@ -247,7 +245,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "linkSessions":
@@ -257,7 +255,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "exportSession":
@@ -267,7 +265,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             case "test.write_intent":
@@ -276,7 +274,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(
                     requestId: request.requestId,
-                    result: try encoder.encode(result.value),
+                    result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
             default:
@@ -311,7 +309,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         guard let payload = request.payload else {
             throw EngramServiceError.invalidRequest(message: "Missing payload for \(request.command)")
         }
-        return try decoder.decode(type, from: payload)
+        return try JSONDecoder().decode(type, from: payload)
+    }
+
+    private static func encode<T: Encodable>(_ value: T) throws -> Data {
+        try JSONEncoder().encode(value)
     }
 
     private static func errorEnvelope(_ error: EngramServiceError) -> EngramServiceErrorEnvelope {
@@ -489,8 +491,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
               source_session_id TEXT,
               importance INTEGER DEFAULT 5,
               has_embedding INTEGER DEFAULT 0,
-              created_at TEXT NOT NULL DEFAULT (datetime('now')),
-              deleted_at TEXT
+              created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_insights_wing ON insights(wing);
             CREATE VIRTUAL TABLE IF NOT EXISTS insights_fts USING fts5(
@@ -677,8 +678,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                       wing = excluded.wing,
                       room = excluded.room,
                       importance = excluded.importance,
-                      source_session_id = excluded.source_session_id,
-                      deleted_at = NULL
+                      source_session_id = excluded.source_session_id
                 """,
                 arguments: StatementArguments(arguments)
             )
@@ -757,7 +757,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 sql: """
                     SELECT id, content, wing, room, importance
                     FROM insights
-                    WHERE deleted_at IS NULL AND wing = ?
+                    WHERE wing = ?
                     ORDER BY created_at DESC
                     LIMIT 200
                 """,
@@ -769,7 +769,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 sql: """
                     SELECT id, content, wing, room, importance
                     FROM insights
-                    WHERE deleted_at IS NULL AND wing IS NULL
+                    WHERE wing IS NULL
                     ORDER BY created_at DESC
                     LIMIT 200
                 """
@@ -883,6 +883,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         for row in rows {
             let source = row["source"] as String? ?? "unknown"
             let filePath = row["file_path"] as String? ?? ""
+            guard isAllowedSessionFilePath(filePath, source: source) else {
+                errors.append("\(filePath): refusing to link path outside known session roots")
+                continue
+            }
             let fileName = URL(fileURLWithPath: filePath).lastPathComponent
             let linkDir = URL(fileURLWithPath: normalizedTargetDir)
                 .appendingPathComponent("conversation_log")
@@ -918,6 +922,72 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             projectNames: projectNames,
             truncated: rows.count == 10_000 ? true : nil
         )
+    }
+
+    private static func isAllowedSessionFilePath(_ path: String, source: String) -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let home = URL(
+            fileURLWithPath: ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory(),
+            isDirectory: true
+        ).standardizedFileURL.path
+        guard standardizedPath == home || standardizedPath.hasPrefix(home + "/") else {
+            return false
+        }
+
+        if containsSensitivePathComponent(standardizedPath, home: home) {
+            return false
+        }
+
+        let suffixesBySource: [String: [String]] = [
+            "codex": [".codex/sessions", ".codex/logs"],
+            "claude-code": [".claude/projects"],
+            "qwen": [".qwen"],
+            "iflow": [".iflow"],
+            "gemini-cli": [".gemini"],
+            "cursor": [
+                ".cursor",
+                "Library/Application Support/Cursor",
+                ".config/Cursor",
+            ],
+            "windsurf": [
+                ".windsurf",
+                "Library/Application Support/Windsurf",
+                ".config/Windsurf",
+            ],
+            "vscode": [
+                "Library/Application Support/Code/User/globalStorage",
+                ".config/Code/User/globalStorage",
+            ],
+            "cline": [
+                "Library/Application Support/Code/User/globalStorage",
+                ".config/Code/User/globalStorage",
+            ],
+            "copilot": [
+                "Library/Application Support/Code/User/globalStorage",
+                ".config/Code/User/globalStorage",
+            ],
+            "opencode": [".opencode"],
+            "antigravity": [".antigravity"],
+            "kimi": [".kimi"],
+            "minimax": [".claude/projects", ".minimax"],
+            "lobsterai": [".claude/projects", ".lobsterai"],
+        ]
+
+        let suffixes = suffixesBySource[source] ?? []
+        return suffixes.contains { suffix in
+            let allowedRoot = URL(fileURLWithPath: home, isDirectory: true)
+                .appendingPathComponent(suffix)
+                .standardizedFileURL
+                .path
+            return standardizedPath == allowedRoot || standardizedPath.hasPrefix(allowedRoot + "/")
+        }
+    }
+
+    private static func containsSensitivePathComponent(_ path: String, home: String) -> Bool {
+        let relative = path.dropFirst(home.count).split(separator: "/").map(String.init)
+        let sensitive = Set([".ssh", ".aws", ".gnupg", ".kube", ".docker", ".1password", "Library/Keychains"])
+        return relative.contains { sensitive.contains($0) }
     }
 
     private static func handoffMarkdownBrief(projectName: String, cwd: String, rows: [Row]) -> String {

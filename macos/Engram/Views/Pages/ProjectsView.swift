@@ -215,7 +215,11 @@ struct ProjectsView: View {
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
-        do { projectGroups = try db.listSessionsByProject() } catch { print("ProjectsView error:", error) }
+        do {
+            projectGroups = try db.listSessionsByProject()
+        } catch {
+            EngramLogger.error("ProjectsView load failed", module: .ui, error: error)
+        }
         guard nativeProjectMigrationCommandsEnabled else {
             hasRecentMigrations = false
             return
@@ -230,7 +234,7 @@ struct ProjectsView: View {
             )
             hasRecentMigrations = !response.migrations.isEmpty
         } catch {
-            print("ProjectsView: listProjectMigrations failed:", error)
+            EngramLogger.error("ProjectsView migration list failed", module: .ui, error: error)
             hasRecentMigrations = nil
         }
     }

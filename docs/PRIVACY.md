@@ -1,6 +1,6 @@
 # Engram Privacy Policy
 
-**Last updated**: 2026-04-16
+**Last updated**: 2026-04-24
 
 ## Overview
 
@@ -42,19 +42,16 @@ Engram never modifies your AI tool session files.
 
 Data is local by default. Network calls are made by: peer sync, AI summaries, title generation, and embedding providers — all optional and user-configured.
 
-By default, Engram listens on `127.0.0.1:3457` (localhost only). No external network connections are made unless you explicitly configure:
+By default, the macOS app talks to EngramService over a Unix domain socket under `~/.engram/run/engram-service.sock`. The default app runtime does not expose a localhost HTTP API. No external network connections are made unless you explicitly configure:
 
 - **Peer Sync** (optional): Pulls session metadata (not message content) from configured peer Engram instances on your network.
 - **AI Summary** (optional): Sends session excerpts to your configured AI provider (OpenAI/Anthropic/Gemini/Ollama) for summary generation.
 - **Title Generation** (optional): Sends session excerpts to your configured AI provider for automatic title generation.
 - **Embedding Providers** (optional): Sends message content to Ollama (local or remote) or OpenAI for vector embedding generation used in semantic search.
 
-## Non-localhost Binding
+## Optional legacy HTTP tooling
 
-If you configure `httpHost: "0.0.0.0"` to expose the API beyond localhost:
-- CIDR whitelist (`httpAllowCIDR`) is **required** — the daemon will refuse to start without it
-- Write endpoints are protected by an auto-generated bearer token
-- Cross-origin requests are rejected
+Retained development/reference tooling may still understand older HTTP settings. Those paths are not used by the default macOS app runtime. If any local HTTP tool is explicitly exposed beyond localhost, it must use a CIDR whitelist, bearer-token protection for write endpoints, and CORS rejection for untrusted origins.
 
 ## Third-party Services
 

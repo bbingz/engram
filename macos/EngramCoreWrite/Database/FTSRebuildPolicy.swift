@@ -19,7 +19,6 @@ public enum FTSRebuildPolicy {
               tokenize='trigram case_sensitive 0'
             )
         """)
-        try db.execute(sql: "UPDATE sessions SET size_bytes = 0")
         if try tableExists(db, "session_embeddings") {
             try db.execute(sql: "DELETE FROM session_embeddings")
         }

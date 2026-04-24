@@ -73,6 +73,26 @@ final class UnixSocketTransportTests: XCTestCase {
         XCTAssertEqual(status, .running(total: 9, todayParents: 2))
     }
 
+    func testEventsPollStatusInsteadOfFinishingEmpty() async throws {
+        let socketPath = temporarySocketPath()
+        let server = try UnixSocketFixtureServer(socketPath: socketPath) { request in
+            let status = try JSONEncoder().encode(EngramServiceStatus.running(total: 12, todayParents: 3))
+            return try JSONEncoder().encode(
+                EngramServiceResponseEnvelope.success(requestId: request.requestId, result: status)
+            )
+        }
+        defer { server.stop() }
+
+        let transport = UnixSocketEngramServiceTransport(socketPath: socketPath)
+        var iterator = transport.events().makeAsyncIterator()
+        let event = try await iterator.next()
+
+        XCTAssertEqual(event?.event, "indexed")
+        XCTAssertEqual(event?.total, 12)
+        XCTAssertEqual(event?.todayParents, 3)
+        await transport.close()
+    }
+
     func testLargeResponseCrossesFrameBoundary() async throws {
         let socketPath = temporarySocketPath()
         let largeTitle = String(repeating: "a", count: 128 * 1024)
@@ -129,6 +149,26 @@ final class UnixSocketTransportTests: XCTestCase {
             XCTFail("Expected invalidRequest")
         } catch let error as EngramServiceError {
             guard case .invalidRequest = error else {
+                return XCTFail("Expected invalidRequest, got \(error)")
+            }
+        }
+    }
+
+    func testReadFrameRejectsOversizedPayloadBeforeReadingBody() throws {
+        var fds: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        defer {
+            close(fds[0])
+            close(fds[1])
+        }
+
+        var length = UInt32(UnixSocketEngramServiceTransport.maximumFrameLength + 1).bigEndian
+        try withUnsafeBytes(of: &length) { buffer in
+            XCTAssertEqual(write(fds[0], buffer.baseAddress, buffer.count), buffer.count)
+        }
+
+        XCTAssertThrowsError(try UnixSocketEngramServiceTransport.readFrame(from: fds[1])) { error in
+            guard case EngramServiceError.invalidRequest = error else {
                 return XCTFail("Expected invalidRequest, got \(error)")
             }
         }

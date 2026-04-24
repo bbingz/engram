@@ -169,7 +169,7 @@ struct SearchPageView: View {
                     SearchResult(id: s.id, session: s, snippet: "", matchType: "keyword", score: 0)
                 }
             } catch {
-                print("SearchPage error:", error)
+                EngramLogger.error("SearchPage fallback search failed", module: .ui, error: error)
             }
         }
     }
