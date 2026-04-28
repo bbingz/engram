@@ -49,6 +49,7 @@
 		1AEC2686135447EA6B47D94C /* SettingsIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A3841D86B13AA2C3546896 /* SettingsIO.swift */; };
 		1BCB6E37963F04F922E4DD74 /* ResumeDialog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1674C58778D54E2BE615C932 /* ResumeDialog.swift */; };
 		1BE342FC10416EFE087AA56D /* EngramMigrationRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3C5D4AEF0E38DABDCBB9D0C /* EngramMigrationRunner.swift */; };
+		1C9C7D8C936928F07798FC17 /* Orchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B67BF6414C7AC42FB518BBE0 /* Orchestrator.swift */; };
 		1D9A26ABFB68C1D240DD3943 /* IndexingWriteSink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C545ECFD21D5B29D9410B7 /* IndexingWriteSink.swift */; };
 		1DD4480FE49554AA1F8A1F19 /* MCPProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67732E532A4FF2BA35D84743 /* MCPProtocol.swift */; };
 		1DEBBEA1C1CC4DA429D3783A /* ServiceLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14A1BB125FD97BF99C1B78C6 /* ServiceLogger.swift */; };
@@ -265,6 +266,7 @@
 		9F7671F0CBD87F13D02DE67E /* Paths.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715C11A57A36B97963F665AB /* Paths.swift */; };
 		A304A4BDB73D6EB4865CCDFA /* CascadeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5706AAA46EE67DDD8535D2E0 /* CascadeClient.swift */; };
 		A381E085155C3E104D2E0AAA /* EngramDatabaseReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A83770047B9A2B3DE0B6157E /* EngramDatabaseReader.swift */; };
+		A48346CCA6B09E6F84FE538F /* OrchestratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88EA774C0E22D92186D71C95 /* OrchestratorTests.swift */; };
 		A69DC5D41B74B5EA7F240B02 /* EngramServiceStatusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE7C13C1E701E692FE1174D5 /* EngramServiceStatusStore.swift */; };
 		A6BDE22549CBF5C6338F83C5 /* SessionSourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C32F2A1E56699BE4EC0F6CF /* SessionSourcesTests.swift */; };
 		A784F578EE979B2F25D37577 /* SettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62F47966A5E1F2ABF9B12170 /* SettingsTests.swift */; };
@@ -703,6 +705,7 @@
 		86B79EEC60447188C7D8C605 /* test-fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "test-fixtures"; sourceTree = SOURCE_ROOT; };
 		8722957481AB78DD18E8B42A /* FsOpsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FsOpsTests.swift; sourceTree = "<group>"; };
 		8753A2A6C91F93C84DA15022 /* ActivitySmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivitySmokeTests.swift; sourceTree = "<group>"; };
+		88EA774C0E22D92186D71C95 /* OrchestratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrchestratorTests.swift; sourceTree = "<group>"; };
 		8AE97438B5ED4B533E8F2A9E /* EngramMCPExecutableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramMCPExecutableTests.swift; sourceTree = "<group>"; };
 		8AF97989227CEE7D2D9CC5AC /* AppSearchServiceCutoverScanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSearchServiceCutoverScanTests.swift; sourceTree = "<group>"; };
 		8B7A037AF6CE1B976C19AEB9 /* EngramServiceClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramServiceClientTests.swift; sourceTree = "<group>"; };
@@ -755,6 +758,7 @@
 		B4B94C3E09D20F677BFE6355 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		B56D7E78932B9DFDD9A96741 /* HeatmapGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeatmapGrid.swift; sourceTree = "<group>"; };
 		B573C84157B60E6150907386 /* WorkGraphScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkGraphScreen.swift; sourceTree = "<group>"; };
+		B67BF6414C7AC42FB518BBE0 /* Orchestrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Orchestrator.swift; sourceTree = "<group>"; };
 		B6D1640672D7F1BD80E91A28 /* SessionsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsScreen.swift; sourceTree = "<group>"; };
 		B717F130A3A96DE3442EF1FF /* MigrationLogReadersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MigrationLogReadersTests.swift; sourceTree = "<group>"; };
 		B771FAB5DA8D579D4BA2FAE5 /* VsCodeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VsCodeAdapter.swift; sourceTree = "<group>"; };
@@ -1119,6 +1123,7 @@
 				C2EDBF86D121484D79F1CA3B /* MigrationLogReaders.swift */,
 				9AD899DACF17DA6C23B636A3 /* MigrationLogStore.swift */,
 				CBDDA6A9CE816D562C45A31A /* MigrationLogTypes.swift */,
+				B67BF6414C7AC42FB518BBE0 /* Orchestrator.swift */,
 				715C11A57A36B97963F665AB /* Paths.swift */,
 				75E2A2D55B2E95FAF80817AF /* RecoverMigrations.swift */,
 				91B6CAB1D9889FF36210C27E /* RetryPolicy.swift */,
@@ -1259,6 +1264,7 @@
 				8F547EF42DB3D0C89AC643C7 /* MigrationLockTests.swift */,
 				B717F130A3A96DE3442EF1FF /* MigrationLogReadersTests.swift */,
 				5D26B79EFC58AD776FFF1A4A /* MigrationLogStoreTests.swift */,
+				88EA774C0E22D92186D71C95 /* OrchestratorTests.swift */,
 				FD7A0FB5E1D8A94BE13FE6DC /* PathsTests.swift */,
 				6657485996BD6F4F23A89F71 /* RecoverMigrationsTests.swift */,
 				E61DD5DF2FACBA0A03E0A2D3 /* RetryPolicyTests.swift */,
@@ -2191,6 +2197,7 @@
 				E1EEA90DBBD617D2738C42A8 /* MigrationLogStoreTests.swift in Sources */,
 				15AEFAD02513485CD2E79FF6 /* MigrationRunnerTests.swift in Sources */,
 				FFBE6A0D3326FA2ED0A57BA4 /* ModuleBoundaryTests.swift in Sources */,
+				A48346CCA6B09E6F84FE538F /* OrchestratorTests.swift in Sources */,
 				04ADD2DF6CBEF02BC4DB595C /* PathsTests.swift in Sources */,
 				6361B7DF493AC6F069659BE2 /* RecoverMigrationsTests.swift in Sources */,
 				B9AF5F214534CBF18FF4A046 /* RetryPolicyTests.swift in Sources */,
@@ -2456,6 +2463,7 @@
 				9A519AF4D18B6436A3F7F6ED /* MigrationLogStore.swift in Sources */,
 				8007EDFC8AF2BF5FE6B21327 /* MigrationLogTypes.swift in Sources */,
 				2F6E648CB897EFF072EACA91 /* NonWatchableSourceRescanner.swift in Sources */,
+				1C9C7D8C936928F07798FC17 /* Orchestrator.swift in Sources */,
 				9F7671F0CBD87F13D02DE67E /* Paths.swift in Sources */,
 				5FA36CD259380DFDFB158C6C /* RecoverMigrations.swift in Sources */,
 				745EE616335ACCB8F4CA79A1 /* RetryPolicy.swift in Sources */,
