@@ -41,36 +41,15 @@ public enum EngramServiceRunner {
             withIntermediateDirectories: true
         )
 
+        let socketBasename = URL(fileURLWithPath: socketPath).lastPathComponent
+        let databaseBasename = URL(fileURLWithPath: databasePath).lastPathComponent
+
         ServiceLogger.info(
-            "starting service: socket=\(socketPath) database=\(databasePath)",
+            "starting service: socket=\(socketBasename) database=\(databaseBasename)",
             category: .runner
         )
 
         let gate = try ServiceWriterGate(databasePath: databasePath, runtimeDirectory: runtimeDirectory)
-
-        // One-shot TRUNCATE checkpoint at startup: PASSIVE never shrinks the
-        // WAL file on disk, so without this the file grows monotonically.
-        // Best-effort — busy/failed is fine, the 20s PASSIVE timer keeps running.
-        do {
-            let result = try await gate.checkpointTruncate()
-            if result.busy == 0 {
-                ServiceLogger.notice(
-                    "startup wal truncate succeeded: log=\(result.logFrames) checkpointed=\(result.checkpointed)",
-                    category: .checkpoint
-                )
-            } else {
-                ServiceLogger.info(
-                    "startup wal truncate skipped (reader busy): log=\(result.logFrames) checkpointed=\(result.checkpointed)",
-                    category: .checkpoint
-                )
-            }
-        } catch {
-            ServiceLogger.warn(
-                "startup wal truncate failed; falling back to periodic PASSIVE: \(error.localizedDescription)",
-                category: .checkpoint
-            )
-        }
-
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
             readProvider: SQLiteEngramServiceReadProvider(databasePath: databasePath)
@@ -79,6 +58,35 @@ public enum EngramServiceRunner {
             await handler.handle(request)
         }
         try server.start()
+
+        // Best-effort startup TRUNCATE: PASSIVE never shrinks the WAL file on
+        // disk, so without this the file grows monotonically. Run AFTER ready
+        // so a reader-busy stall (TRUNCATE invokes the writer's busy_handler,
+        // unlike PASSIVE) cannot block the launcher's 5s health probe and
+        // trigger a restart loop. The gate's writeSemaphore serializes this
+        // with any incoming write commands, and busy != 0 is a normal outcome.
+        let truncateTask = Task {
+            do {
+                let result = try await gate.checkpointTruncate()
+                if result.busy == 0 {
+                    ServiceLogger.notice(
+                        "startup wal truncate succeeded: log=\(result.logFrames) checkpointed=\(result.checkpointed)",
+                        category: .checkpoint
+                    )
+                } else {
+                    ServiceLogger.info(
+                        "startup wal truncate skipped (reader busy): log=\(result.logFrames) checkpointed=\(result.checkpointed)",
+                        category: .checkpoint
+                    )
+                }
+            } catch {
+                ServiceLogger.warn(
+                    "startup wal truncate failed; falling back to periodic PASSIVE: \(error.localizedDescription)",
+                    category: .checkpoint
+                )
+            }
+        }
+
         let checkpointTask = Task {
             while !Task.isCancelled {
                 try await Task.sleep(nanoseconds: 20_000_000_000)
@@ -99,13 +107,14 @@ public enum EngramServiceRunner {
             }
         }
 
-        ServiceLogger.notice("service ready, listening on \(socketPath)", category: .runner)
+        ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
         print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
         fflush(stdout)
 
         while !Task.isCancelled {
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
+        truncateTask.cancel()
         checkpointTask.cancel()
         server.stop()
     }
