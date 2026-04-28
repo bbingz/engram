@@ -70,10 +70,25 @@ public struct ArchiveOptions {
     }
 }
 
-public enum ArchiveError: Error, Equatable {
+public enum ArchiveError: Error, Equatable, LocalizedError {
     case unknownForceCategory(String)
     case cannotReadSource(String)
     case ambiguousProject(src: String, nonDotEntries: Int, hasGit: Bool)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unknownForceCategory(let v):
+            return "suggestArchiveTarget: unknown forceCategory '\(v)'. " +
+                "Expected 历史脚本 / 空项目 / 归档完成 or " +
+                "historical-scripts / empty-project / archived-done."
+        case .cannotReadSource(let path):
+            return "suggestArchiveTarget: cannot read \(path) — please pass --to explicitly"
+        case .ambiguousProject(let src, let nonDot, let hasGit):
+            return "suggestArchiveTarget: cannot auto-categorize \(src) " +
+                "(\(nonDot) non-dot entries, hasGit=\(hasGit)). " +
+                "Please pass --to explicitly (e.g. --to 历史脚本)."
+        }
+    }
 }
 
 public enum Archive {
