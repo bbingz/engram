@@ -17,6 +17,7 @@ interface UiMessage {
   ask?: string;
   text?: string;
   partial?: boolean;
+  modelInfo?: { providerId?: string; modelId?: string; mode?: string };
 }
 
 export class ClineAdapter implements SessionAdapter {
@@ -65,6 +66,7 @@ export class ClineAdapter implements SessionAdapter {
       const taskMsg = msgs.find((m) => m.say === 'task');
       const summary = taskMsg?.text?.slice(0, 200);
       const cwd = this.extractCwd(msgs);
+      const model = msgs.find((m) => m.modelInfo?.modelId)?.modelInfo?.modelId;
 
       const userMsgs = msgs.filter(
         (m) => m.say === 'task' || m.say === 'user_feedback',
@@ -80,6 +82,7 @@ export class ClineAdapter implements SessionAdapter {
             ? new Date(lastMsg.ts).toISOString()
             : undefined,
         cwd,
+        model,
         messageCount: userMsgs.length + assistantMsgs.length,
         userMessageCount: userMsgs.length,
         assistantMessageCount: assistantMsgs.length,

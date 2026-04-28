@@ -1,7 +1,7 @@
 // src/adapters/vscode.ts
 import { glob, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { isFileAccessible } from './_accessible.js';
 import type {
   Message,
@@ -80,9 +80,15 @@ export class VsCodeAdapter implements SessionAdapter {
       const userMessages = session.requests
         .map((r) => this.extractUserText(r))
         .filter(Boolean);
+      // Some response kinds (progressTask, toolUse) carry no markdown text;
+      // count only requests that yield real assistant content.
+      const assistantTexts = session.requests
+        .map((r) => this.extractAssistantText(r))
+        .filter(Boolean);
       const lastReq = session.requests[session.requests.length - 1];
-
-      const assistantMessageCount = session.requests.length; // 1:1 mapping with user
+      const userMessageCount = userMessages.length;
+      const assistantMessageCount = assistantTexts.length;
+      const cwd = await this.readWorkspaceCwd(filePath);
 
       return {
         id: session.sessionId || basename(filePath, '.jsonl'),
@@ -92,9 +98,9 @@ export class VsCodeAdapter implements SessionAdapter {
           lastReq.timestamp && lastReq.timestamp !== session.creationDate
             ? new Date(lastReq.timestamp).toISOString()
             : undefined,
-        cwd: '',
-        messageCount: session.requests.length + assistantMessageCount,
-        userMessageCount: session.requests.length,
+        cwd,
+        messageCount: userMessageCount + assistantMessageCount,
+        userMessageCount,
         assistantMessageCount,
         toolMessageCount: 0,
         systemMessageCount: 0,
@@ -104,6 +110,28 @@ export class VsCodeAdapter implements SessionAdapter {
       };
     } catch {
       return null;
+    }
+  }
+
+  // VS Code stores the workspace identity in workspaceStorage/<hash>/workspace.json
+  // alongside the chatSessions/ folder. Both single-folder and code-workspace
+  // shapes are supported here.
+  private async readWorkspaceCwd(filePath: string): Promise<string> {
+    try {
+      const hashDir = dirname(dirname(filePath)); // .../<hash>/
+      const wsJsonPath = join(hashDir, 'workspace.json');
+      const raw = await readFile(wsJsonPath, 'utf8');
+      const data = JSON.parse(raw) as {
+        folder?: string;
+        configuration?: string;
+      };
+      const target = data.folder ?? data.configuration ?? '';
+      if (target.startsWith('file://')) {
+        return decodeURIComponent(target.slice('file://'.length));
+      }
+      return target;
+    } catch {
+      return '';
     }
   }
 

@@ -14,6 +14,10 @@ const TOOL_FIXTURE = join(
   __dirname,
   '../fixtures/claude-code/with-tools.jsonl',
 );
+const NEW_TYPES_FIXTURE = join(
+  __dirname,
+  '../fixtures/claude-code/new-types.jsonl',
+);
 const FMT_FIXTURE = join(
   __dirname,
   '../fixtures/claude-code/tool-formatting.jsonl',
@@ -40,16 +44,47 @@ describe('ClaudeCodeAdapter', () => {
     expect(info?.summary).toBe('请帮我添加用户注册功能');
   });
 
-  it('streamMessages filters only user and assistant', async () => {
+  it('streamMessages filters only user/assistant/tool', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(FIXTURE)) {
       messages.push(msg);
     }
     expect(
-      messages.every((m) => m.role === 'user' || m.role === 'assistant'),
+      messages.every(
+        (m) => m.role === 'user' || m.role === 'assistant' || m.role === 'tool',
+      ),
     ).toBe(true);
     expect(messages[0].role).toBe('user');
     expect(messages[0].content).toBe('请帮我添加用户注册功能');
+  });
+
+  it('streamMessages yields role="tool" for tool_result records', async () => {
+    const messages = [];
+    for await (const msg of adapter.streamMessages(TOOL_FIXTURE)) {
+      messages.push(msg);
+    }
+    // with-tools fixture line 3 is type=user wrapping tool_result content;
+    // it must surface as role='tool' so stream agrees with toolMessageCount.
+    const toolMsgs = messages.filter((m) => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(1);
+    // Content for non-"User has answered" tool_results is filtered to '',
+    // matching formatToolResult behavior. The role itself is what we care about.
+    expect(messages[2].role).toBe('tool');
+  });
+
+  it('ignores non-message record types (attachment, permission-mode, etc.)', async () => {
+    const info = await adapter.parseSessionInfo(NEW_TYPES_FIXTURE);
+    expect(info).not.toBeNull();
+    expect(info?.id).toBe('new-types-001');
+    expect(info?.userMessageCount).toBe(1);
+    expect(info?.assistantMessageCount).toBe(1);
+    expect(info?.messageCount).toBe(2);
+
+    const messages = [];
+    for await (const msg of adapter.streamMessages(NEW_TYPES_FIXTURE)) {
+      messages.push(msg);
+    }
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant']);
   });
 
   it('counts tool_result messages separately from user messages', async () => {
@@ -91,7 +126,7 @@ describe('ClaudeCodeAdapter', () => {
       }
       // msg-003 is tool_result — should produce empty content (no "User has answered" prefix)
       const toolResultMsg = messages[2];
-      expect(toolResultMsg.role).toBe('user');
+      expect(toolResultMsg.role).toBe('tool');
       // tool_result content without "User has answered" is filtered out
       expect(toolResultMsg.content).toBe('');
     });

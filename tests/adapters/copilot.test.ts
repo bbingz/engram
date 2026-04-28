@@ -1,8 +1,10 @@
 // tests/adapters/copilot.test.ts
 
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CopilotAdapter } from '../../src/adapters/copilot.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,5 +48,44 @@ describe('CopilotAdapter', () => {
     }
     expect(messages).toHaveLength(1);
     expect(messages[0].role).toBe('user');
+  });
+
+  describe('YAML quoted values', () => {
+    const tmpRoot = join(tmpdir(), `engram-copilot-yaml-${Date.now()}`);
+    const sessionDir = join(tmpRoot, 'session-quoted');
+    const eventsPath = join(sessionDir, 'events.jsonl');
+
+    beforeAll(() => {
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(
+        join(sessionDir, 'workspace.yaml'),
+        [
+          'id: "quoted-id"',
+          'cwd: "/tmp/path with space"',
+          "created_at: '2026-01-01T00:00:00Z'",
+          'updated_at: 2026-01-01T00:05:00Z',
+        ].join('\n'),
+      );
+      // Need a real user/assistant pair so parseSessionInfo doesn't bail on
+      // totalCount === 0; we only care about the metadata under test.
+      writeFileSync(
+        eventsPath,
+        [
+          '{"type":"user.message","timestamp":"2026-01-01T00:01:00Z","data":{"content":"hi"}}',
+          '{"type":"assistant.message","timestamp":"2026-01-01T00:02:00Z","data":{"content":"ok"}}',
+          '',
+        ].join('\n'),
+      );
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('strips matched quote pairs from cwd / id / timestamps', async () => {
+      const a = new CopilotAdapter(tmpRoot);
+      const info = await a.parseSessionInfo(eventsPath);
+      expect(info?.id).toBe('quoted-id');
+      expect(info?.cwd).toBe('/tmp/path with space');
+      expect(info?.startTime).toBe('2026-01-01T00:00:00Z');
+    });
   });
 });

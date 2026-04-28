@@ -46,13 +46,21 @@ export class CodexAdapter implements SessionAdapter {
       let meta: Record<string, unknown> | null = null;
       let userCount = 0;
       let assistantCount = 0;
+      let toolCount = 0;
       let systemCount = 0;
       let firstUserText = '';
       let lastTimestamp = '';
+      let detectedModel: string | undefined;
 
       for await (const line of this.readLines(filePath)) {
         const obj = this.parseLine(line);
         if (!obj) continue;
+
+        // Update lastTimestamp on any line carrying a timestamp so endTime
+        // reflects the true tail (function_call_output, event_msg, etc.).
+        if (obj.timestamp) {
+          lastTimestamp = obj.timestamp as string;
+        }
 
         if (obj.type === 'session_meta' && !meta) {
           meta = obj.payload as Record<string, unknown>;
@@ -60,6 +68,11 @@ export class CodexAdapter implements SessionAdapter {
 
         if (obj.type === 'response_item') {
           const payload = obj.payload as Record<string, unknown>;
+          // The real model name lives on response_item.payload.model
+          // (e.g. "gpt-5.3-codex"); session_meta only carries provider name.
+          if (!detectedModel && typeof payload.model === 'string') {
+            detectedModel = payload.model;
+          }
           if (payload.type === 'message') {
             const role = payload.role as string;
             if (role === 'user') {
@@ -75,9 +88,11 @@ export class CodexAdapter implements SessionAdapter {
             } else if (role === 'assistant') {
               assistantCount++;
             }
-            if (obj.timestamp) {
-              lastTimestamp = obj.timestamp as string;
-            }
+          } else if (
+            payload.type === 'function_call' ||
+            payload.type === 'function_call_output'
+          ) {
+            toolCount++;
           }
         }
       }
@@ -97,11 +112,11 @@ export class CodexAdapter implements SessionAdapter {
         startTime: payload.timestamp as string,
         endTime: lastTimestamp || undefined,
         cwd: (payload.cwd as string) || '',
-        model: payload.model_provider as string | undefined,
-        messageCount: userCount + assistantCount,
+        model: detectedModel || (payload.model_provider as string | undefined),
+        messageCount: userCount + assistantCount + toolCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
-        toolMessageCount: 0,
+        toolMessageCount: toolCount,
         systemMessageCount: systemCount,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
@@ -130,22 +145,63 @@ export class CodexAdapter implements SessionAdapter {
       if (obj.type !== 'response_item') continue;
 
       const payload = obj.payload as Record<string, unknown>;
-      if (payload.type !== 'message') continue;
+      const timestamp = obj.timestamp as string | undefined;
+      let msg: Message | null = null;
 
-      const role = payload.role as string;
-      if (role !== 'user' && role !== 'assistant') continue;
+      if (payload.type === 'message') {
+        const role = payload.role as string;
+        if (role !== 'user' && role !== 'assistant') continue;
+        const built: Message = {
+          role: role as 'user' | 'assistant',
+          content: this.extractText(payload.content as unknown[]),
+          timestamp,
+        };
+        if (role === 'assistant') {
+          const rawUsage = payload.usage as Record<string, unknown> | undefined;
+          if (rawUsage && typeof rawUsage === 'object') {
+            built.usage = {
+              inputTokens: (rawUsage.input_tokens as number) ?? 0,
+              outputTokens: (rawUsage.output_tokens as number) ?? 0,
+              cacheReadTokens: rawUsage.cache_read_input_tokens as
+                | number
+                | undefined,
+              cacheCreationTokens: rawUsage.cache_creation_input_tokens as
+                | number
+                | undefined,
+            };
+          }
+        }
+        msg = built;
+      } else if (payload.type === 'function_call') {
+        const name = (payload.name as string) || '';
+        const args = payload.arguments;
+        const argsStr =
+          args !== undefined ? JSON.stringify(args).slice(0, 500) : '';
+        msg = {
+          role: 'tool',
+          content: argsStr ? `${name} ${argsStr}` : name,
+          timestamp,
+          toolCalls: [{ name, input: argsStr || undefined }],
+        };
+      } else if (payload.type === 'function_call_output') {
+        msg = {
+          role: 'tool',
+          content:
+            typeof payload.output === 'string'
+              ? payload.output
+              : JSON.stringify(payload.output ?? '').slice(0, 2000),
+          timestamp,
+        };
+      }
+
+      if (!msg) continue;
 
       if (count < offset) {
         count++;
         continue;
       }
       count++;
-
-      yield {
-        role: role as 'user' | 'assistant',
-        content: this.extractText(payload.content as unknown[]),
-        timestamp: obj.timestamp as string | undefined,
-      };
+      yield msg;
       yielded++;
     }
   }

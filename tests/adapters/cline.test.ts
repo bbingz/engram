@@ -29,6 +29,7 @@ describe('ClineAdapter', () => {
     expect(info?.cwd).toBe('/Users/test/my-project');
     expect(info?.summary).toBe('帮我写单元测试');
     expect(info?.userMessageCount).toBe(2);
+    expect(info?.model).toBe('glm-5');
   });
 
   it('streamMessages yields user and assistant', async () => {

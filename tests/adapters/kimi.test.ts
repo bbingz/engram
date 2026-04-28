@@ -43,4 +43,15 @@ describe('KimiAdapter', () => {
     expect(messages[0].content).toBe('帮我排查内存泄漏');
     expect(messages[1].role).toBe('assistant');
   });
+
+  it('streamMessages aligns user msg with wire TurnBegin and assistant with TurnEnd', async () => {
+    const messages = [];
+    for await (const msg of adapter.streamMessages(FIXTURE_CONTEXT))
+      messages.push(msg);
+    // wire.jsonl has TurnBegin@1770000001 (user) + TurnEnd@1770000060 (assistant)
+    const firstUser = messages.find((m) => m.role === 'user');
+    const firstAsst = messages.find((m) => m.role === 'assistant');
+    expect(firstUser?.timestamp).toBe('2026-02-02T02:40:01.000Z');
+    expect(firstAsst?.timestamp).toBe('2026-02-02T02:41:00.000Z');
+  });
 });

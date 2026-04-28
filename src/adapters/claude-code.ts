@@ -18,6 +18,12 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   readonly name = 'claude-code' as const;
   private projectsRoot: string;
 
+  // Message-bearing record types. Everything else (attachment, queue-operation,
+  // permission-mode, last-prompt, file-history-snapshot, summary, system, ...)
+  // is metadata and is intentionally skipped. If Claude Code introduces a new
+  // user-visible message type, add it here.
+  private static MESSAGE_TYPES = new Set(['user', 'assistant']);
+
   constructor(projectsRoot?: string) {
     this.projectsRoot = projectsRoot ?? join(homedir(), '.claude', 'projects');
   }
@@ -85,9 +91,11 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         if (!obj) continue;
 
         const type = obj.type as string;
-        if (type !== 'user' && type !== 'assistant') continue;
-
+        // sessionId can live on non-message records too (permission-mode, etc.)
+        // — capture it before filtering so single-record sessions still parse.
         if (!sessionId && obj.sessionId) sessionId = obj.sessionId as string;
+        if (!ClaudeCodeAdapter.MESSAGE_TYPES.has(type)) continue;
+
         if (!agentId && obj.agentId) agentId = obj.agentId as string;
         if (!cwd && obj.cwd) cwd = obj.cwd as string;
         if (!startTime && obj.timestamp) startTime = obj.timestamp as string;
@@ -184,7 +192,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       if (!obj) continue;
 
       const type = obj.type as string;
-      if (type !== 'user' && type !== 'assistant') continue;
+      if (!ClaudeCodeAdapter.MESSAGE_TYPES.has(type)) continue;
 
       if (count < offset) {
         count++;
@@ -193,7 +201,13 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       count++;
 
       const msg = obj.message as Record<string, unknown>;
-      const role = type as 'user' | 'assistant';
+      // user-typed records carrying tool_result content are tool messages;
+      // parseSessionInfo already counts them under toolMessageCount, so the
+      // streamed role must agree to keep stream + counts in sync.
+      const role: 'user' | 'assistant' | 'tool' =
+        type === 'user' && this.isToolResult(msg?.content)
+          ? 'tool'
+          : (type as 'user' | 'assistant');
       const content = this.extractContent(msg?.content);
       const timestamp = obj.timestamp as string | undefined;
 

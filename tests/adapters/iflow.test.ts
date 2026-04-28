@@ -24,6 +24,11 @@ describe('IflowAdapter', () => {
     expect(info?.summary).toBe('帮我优化数据库查询');
   });
 
+  it('parseSessionInfo extracts model from assistant message', async () => {
+    const info = await adapter.parseSessionInfo(FIXTURE);
+    expect(info?.model).toBe('glm-5');
+  });
+
   it('streamMessages yields user and assistant', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(FIXTURE)) {

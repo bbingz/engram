@@ -64,7 +64,7 @@ export class CopilotAdapter implements SessionAdapter {
         );
         for (const line of yamlContent.split('\n')) {
           const m = line.match(/^(\w+):\s*(.+)$/);
-          if (m) workspace[m[1]] = m[2].trim();
+          if (m) workspace[m[1]] = stripYamlQuotes(m[2].trim());
         }
       } catch {
         /* no workspace.yaml */
@@ -186,4 +186,16 @@ export class CopilotAdapter implements SessionAdapter {
   async isAccessible(locator: string): Promise<boolean> {
     return isFileAccessible(locator);
   }
+}
+
+// Strip a single matched pair of YAML quote chars from a value.
+// `"/path with space"` → `/path with space`. Mismatched or absent → unchanged.
+function stripYamlQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === '"' || first === "'") && first === last) {
+    return value.slice(1, -1);
+  }
+  return value;
 }

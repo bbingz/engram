@@ -73,11 +73,13 @@ export class KimiAdapter implements SessionAdapter {
       const sessionId = basename(dirname(filePath));
 
       const cwd = await this.resolveCwd(sessionId);
-      const { startTime, endTime } = await this.readTimestamps(filePath);
+      const wireTs = await this.readTimestamps(filePath);
 
       let userCount = 0;
       let assistantCount = 0;
       let firstUserText = '';
+      let firstLineTs = '';
+      let lastLineTs = '';
       let totalSize = fileStat.size;
 
       // Read all context files: context.jsonl + context_sub_*.jsonl
@@ -90,6 +92,12 @@ export class KimiAdapter implements SessionAdapter {
           for await (const line of this.readLines(file)) {
             const obj = this.parseLine(line);
             if (!obj) continue;
+
+            const lineTs = this.extractLineTimestamp(obj);
+            if (lineTs) {
+              if (!firstLineTs) firstLineTs = lineTs;
+              lastLineTs = lineTs;
+            }
 
             const role = obj.role as string;
             if (role === '_checkpoint') continue;
@@ -109,12 +117,19 @@ export class KimiAdapter implements SessionAdapter {
         }
       }
 
+      // Prefer wire.jsonl turn timestamps; fall back to line-level timestamps
+      // before resorting to file mtime.
+      const startTime =
+        wireTs.startTime ||
+        firstLineTs ||
+        new Date(fileStat.mtimeMs - 60000).toISOString();
+      const endTime = wireTs.endTime || lastLineTs || startTime;
+
       return {
         id: sessionId,
         source: 'kimi',
-        startTime:
-          startTime || new Date(fileStat.mtimeMs - 60000).toISOString(),
-        endTime: endTime !== startTime ? endTime : undefined,
+        startTime,
+        endTime: endTime && endTime !== startTime ? endTime : undefined,
         cwd,
         messageCount: userCount + assistantCount,
         userMessageCount: userCount,
@@ -139,6 +154,12 @@ export class KimiAdapter implements SessionAdapter {
     let count = 0;
     let yielded = 0;
 
+    // Pull turn-level timestamps from wire.jsonl so messages can be aligned
+    // back to wall-clock time (kimi context.jsonl rows have no ts of their own).
+    const turns = await this.readTurnTimestamps(filePath);
+    let userIdx = 0;
+    let asstIdx = 0;
+
     // Stream from all context files in order
     for (const file of await this.getAllContextFiles(filePath)) {
       if (yielded >= limit) break;
@@ -152,6 +173,12 @@ export class KimiAdapter implements SessionAdapter {
           if (role === '_checkpoint') continue;
           if (role !== 'user' && role !== 'assistant') continue;
 
+          const lineTs = this.extractLineTimestamp(obj);
+          const wireTs =
+            role === 'user' ? turns.begins[userIdx] : turns.ends[asstIdx];
+          if (role === 'user') userIdx++;
+          else asstIdx++;
+
           if (count < offset) {
             count++;
             continue;
@@ -161,6 +188,7 @@ export class KimiAdapter implements SessionAdapter {
           yield {
             role: role as 'user' | 'assistant',
             content: typeof obj.content === 'string' ? obj.content : '',
+            timestamp: lineTs || wireTs,
           };
           yielded++;
         }
@@ -168,6 +196,14 @@ export class KimiAdapter implements SessionAdapter {
         // skip unreadable sub files
       }
     }
+  }
+
+  private extractLineTimestamp(obj: Record<string, unknown>): string {
+    if (typeof obj.timestamp === 'number') {
+      return new Date(obj.timestamp * 1000).toISOString();
+    }
+    if (typeof obj.timestamp === 'string') return obj.timestamp;
+    return '';
   }
 
   /**
@@ -238,6 +274,28 @@ export class KimiAdapter implements SessionAdapter {
     }
 
     return { startTime, endTime };
+  }
+
+  private async readTurnTimestamps(
+    contextPath: string,
+  ): Promise<{ begins: string[]; ends: string[] }> {
+    const wirePath = join(dirname(contextPath), 'wire.jsonl');
+    const begins: string[] = [];
+    const ends: string[] = [];
+    try {
+      for await (const line of this.readLines(wirePath)) {
+        const obj = this.parseLine(line);
+        if (!obj || typeof obj.timestamp !== 'number') continue;
+        const iso = new Date(obj.timestamp * 1000).toISOString();
+        const message = obj.message as Record<string, unknown> | undefined;
+        const type = message?.type;
+        if (type === 'TurnBegin') begins.push(iso);
+        else if (type === 'TurnEnd') ends.push(iso);
+      }
+    } catch {
+      // wire.jsonl not found or unreadable
+    }
+    return { begins, ends };
   }
 
   private async *readLines(filePath: string): AsyncGenerator<string> {

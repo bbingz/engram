@@ -5,6 +5,7 @@ import { QwenAdapter } from '../../src/adapters/qwen.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(__dirname, '../fixtures/qwen/sample.jsonl');
+const DRIFT_FIXTURE = join(__dirname, '../fixtures/qwen/schema_drift.jsonl');
 
 describe('QwenAdapter', () => {
   const adapter = new QwenAdapter();
@@ -30,6 +31,11 @@ describe('QwenAdapter', () => {
     }
     expect(messages[0].role).toBe('user');
     expect(messages[1].role).toBe('assistant');
+  });
+
+  it('parseSessionInfo falls back to message.model when top-level model is absent', async () => {
+    const info = await adapter.parseSessionInfo(DRIFT_FIXTURE);
+    expect(info?.model).toBe('qwen3-coder');
   });
 
   it('streamMessages respects limit', async () => {

@@ -2,7 +2,7 @@
 
 import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import type {
   Message,
@@ -16,6 +16,10 @@ interface ComposerData {
   createdAt: number;
   lastUpdatedAt: number;
   latestConversationSummary?: { summary?: string };
+  context?: {
+    fileSelections?: { uri?: { fsPath?: string } }[];
+    folderSelections?: { uri?: { fsPath?: string } }[];
+  };
 }
 
 interface BubbleData {
@@ -130,7 +134,7 @@ export class CursorAdapter implements SessionAdapter {
             data.lastUpdatedAt !== data.createdAt
               ? new Date(data.lastUpdatedAt).toISOString()
               : undefined,
-          cwd: '',
+          cwd: this.inferCwd(data),
           messageCount: userMessageCount + assistantMessageCount,
           userMessageCount,
           assistantMessageCount,
@@ -220,6 +224,17 @@ export class CursorAdapter implements SessionAdapter {
     } catch {
       /* db not found */
     }
+  }
+
+  // Cursor doesn't bind composers to a workspace. Best signal is the first
+  // attached folder, or the parent of the first selected file. Heuristic;
+  // returns '' when nothing usable is present.
+  private inferCwd(data: ComposerData): string {
+    const folder = data.context?.folderSelections?.[0]?.uri?.fsPath;
+    if (folder) return folder;
+    const file = data.context?.fileSelections?.[0]?.uri?.fsPath;
+    if (file) return dirname(file);
+    return '';
   }
 
   private parsePath(filePath: string): {

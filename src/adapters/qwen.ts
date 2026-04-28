@@ -72,15 +72,19 @@ export class QwenAdapter implements SessionAdapter {
 
         if (!sessionId && obj.sessionId) sessionId = obj.sessionId as string;
         if (!cwd && obj.cwd) cwd = obj.cwd as string;
-        if (!model && obj.model) model = obj.model as string;
         if (!startTime && obj.timestamp) startTime = obj.timestamp as string;
         if (obj.timestamp) endTime = obj.timestamp as string;
+
+        const msg = obj.message as Record<string, unknown> | undefined;
+        if (!model) {
+          if (typeof obj.model === 'string') model = obj.model;
+          else if (typeof msg?.model === 'string') model = msg.model;
+        }
 
         if (type === 'assistant') {
           assistantCount++;
         } else if (type === 'user') {
-          const msg = obj.message as Record<string, unknown>;
-          const text = this.extractContent(msg);
+          const text = this.extractContent(msg ?? {});
           if (this.isSystemInjection(text)) {
             systemCount++;
           } else {
@@ -176,14 +180,19 @@ export class QwenAdapter implements SessionAdapter {
 
   // Extract text content from Qwen message object
   // Qwen format: message.parts[].text (not message.content)
+  // All text parts are joined so multi-part messages keep their full body —
+  // matches the gemini-cli adapter so the same conversation looks identical
+  // across sources.
   private extractContent(message: Record<string, unknown>): string {
     if (!message) return '';
     const parts = message.parts;
     if (Array.isArray(parts)) {
+      const texts: string[] = [];
       for (const part of parts) {
         const p = part as Record<string, unknown>;
-        if (typeof p.text === 'string' && p.text) return p.text;
+        if (typeof p.text === 'string' && p.text) texts.push(p.text);
       }
+      return texts.join('\n');
     }
     return '';
   }

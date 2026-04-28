@@ -210,7 +210,12 @@ export class AntigravityAdapter implements SessionAdapter {
       const firstLine = await readFirstLine(filePath);
       if (!firstLine) return null;
 
-      const meta = JSON.parse(firstLine) as CacheMetaLine;
+      let meta: CacheMetaLine;
+      try {
+        meta = JSON.parse(firstLine) as CacheMetaLine;
+      } catch {
+        return null;
+      }
       if (!meta.id) return null;
 
       // Use .pb file size (the real conversation).
@@ -338,8 +343,13 @@ export class AntigravityAdapter implements SessionAdapter {
   private async *readLines(filePath: string): AsyncGenerator<string> {
     const stream = createReadStream(filePath, { encoding: 'utf8' });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (line.trim()) yield line;
+    try {
+      for await (const line of rl) {
+        if (line.trim()) yield line;
+      }
+    } finally {
+      rl.close();
+      stream.destroy();
     }
   }
 

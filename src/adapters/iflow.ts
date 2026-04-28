@@ -61,6 +61,7 @@ export class IflowAdapter implements SessionAdapter {
       let assistantCount = 0;
       let systemCount = 0;
       let firstUserText = '';
+      let detectedModel: string | undefined;
 
       for await (const line of this.readLines(filePath)) {
         const obj = this.parseLine(line);
@@ -74,10 +75,14 @@ export class IflowAdapter implements SessionAdapter {
         if (!startTime && obj.timestamp) startTime = obj.timestamp as string;
         if (obj.timestamp) endTime = obj.timestamp as string;
 
+        const msg = obj.message as Record<string, unknown> | undefined;
+        if (!detectedModel && typeof msg?.model === 'string') {
+          detectedModel = msg.model;
+        }
+
         if (type === 'assistant') {
           assistantCount++;
         } else if (type === 'user') {
-          const msg = obj.message as Record<string, unknown>;
           const text = this.extractContent(msg?.content);
           if (this.isSystemInjection(text)) {
             systemCount++;
@@ -98,6 +103,7 @@ export class IflowAdapter implements SessionAdapter {
         startTime,
         endTime: endTime !== startTime ? endTime : undefined,
         cwd,
+        model: detectedModel,
         messageCount: userCount + assistantCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
@@ -180,10 +186,14 @@ export class IflowAdapter implements SessionAdapter {
   private extractContent(content: unknown): string {
     if (typeof content === 'string') return content;
     if (Array.isArray(content)) {
+      const texts: string[] = [];
       for (const item of content) {
         const c = item as Record<string, unknown>;
-        if (c.type === 'text' && c.text) return c.text as string;
+        if (c.type === 'text' && typeof c.text === 'string' && c.text) {
+          texts.push(c.text);
+        }
       }
+      return texts.join('\n');
     }
     return '';
   }

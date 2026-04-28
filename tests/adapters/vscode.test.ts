@@ -32,6 +32,26 @@ describe('VsCodeAdapter', () => {
     expect(info?.summary).toContain('async/await');
   });
 
+  it('parseSessionInfo decodes cwd from workspaceStorage/<hash>/workspace.json', async () => {
+    const jsonlPath = join(
+      FIXTURE_DIR,
+      'ws-abc123/chatSessions/sess-001.jsonl',
+    );
+    const info = await adapter.parseSessionInfo(jsonlPath);
+    expect(info?.cwd).toBe('/Users/test/my-project');
+  });
+
+  it('messageCount equals real user+assistant text counts (no 1:1 padding)', async () => {
+    const jsonlPath = join(
+      FIXTURE_DIR,
+      'ws-abc123/chatSessions/sess-001.jsonl',
+    );
+    const info = await adapter.parseSessionInfo(jsonlPath);
+    expect(info?.messageCount).toBe(
+      (info?.userMessageCount ?? 0) + (info?.assistantMessageCount ?? 0),
+    );
+  });
+
   it('streamMessages yields user and assistant alternating', async () => {
     const jsonlPath = join(
       FIXTURE_DIR,
