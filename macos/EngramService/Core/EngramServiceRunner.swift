@@ -59,12 +59,17 @@ public enum EngramServiceRunner {
         }
         try server.start()
 
+        ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
+        print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
+        fflush(stdout)
+
         // Best-effort startup TRUNCATE: PASSIVE never shrinks the WAL file on
-        // disk, so without this the file grows monotonically. Run AFTER ready
-        // so a reader-busy stall (TRUNCATE invokes the writer's busy_handler,
-        // unlike PASSIVE) cannot block the launcher's 5s health probe and
-        // trigger a restart loop. The gate's writeSemaphore serializes this
-        // with any incoming write commands, and busy != 0 is a normal outcome.
+        // disk, so without this the file grows monotonically. Created AFTER
+        // ready is emitted on stdout/os_log so a reader-busy stall (TRUNCATE
+        // invokes the writer's busy_handler, unlike PASSIVE) cannot delay the
+        // launcher's 5s health probe and trigger a restart loop. The gate's
+        // writeSemaphore serializes this with any incoming write commands;
+        // busy != 0 is a normal outcome.
         let truncateTask = Task {
             do {
                 let result = try await gate.checkpointTruncate()
@@ -107,14 +112,14 @@ public enum EngramServiceRunner {
             }
         }
 
-        ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
-        print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
-        fflush(stdout)
-
         while !Task.isCancelled {
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        truncateTask.cancel()
+        // Wait for the startup truncate to finish before tearing down the gate.
+        // SQLite's PRAGMA call doesn't observe Task cancellation, so the value
+        // wait is what guarantees we don't drop the writer mid-checkpoint.
+        // Bound by busy_timeout (30s) in the worst case; in practice <1s.
+        await truncateTask.value
         checkpointTask.cancel()
         server.stop()
     }
