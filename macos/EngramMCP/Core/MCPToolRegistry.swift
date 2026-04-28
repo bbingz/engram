@@ -39,12 +39,10 @@ enum MCPToolRegistry {
         }
     }
 
-    private static let unavailableNativeProjectOperationTools: Set<String> = [
-        "project_move",
-        "project_archive",
-        "project_undo",
-        "project_move_batch",
-    ]
+    /// Reserved hook for tools that need to be filtered out of `tools/list`
+    /// without removing their schema. Empty since Stage 4 wired the four
+    /// project_* commands through to the Swift pipeline.
+    private static let unavailableNativeProjectOperationTools: Set<String> = []
 
     static let tools: [MCPToolDefinition] = allToolDefinitions.filter {
         !unavailableNativeProjectOperationTools.contains($0.name)
@@ -640,14 +638,14 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "project_move_batch",
-            description: "⚠️ Cannot run concurrently with other project_* tools; execute sequentially. Run multiple project moves sequentially from an inline YAML document.",
+            description: "⚠️ Cannot run concurrently with other project_* tools; execute sequentially. Run multiple project moves sequentially from an inline JSON document.",
             inputSchema: .object([
                 "type": .string("object"),
                 "required": .array([.string("yaml")]),
                 "properties": .object([
                     "yaml": .object([
                         "type": .string("string"),
-                        "description": .string("Inline YAML document conforming to schema v1"),
+                        "description": .string("Inline JSON document conforming to schema v1. Field name `yaml` is preserved for IPC compatibility but the Swift runtime accepts JSON only."),
                     ]),
                     "dry_run": .object([
                         "type": .string("boolean"),

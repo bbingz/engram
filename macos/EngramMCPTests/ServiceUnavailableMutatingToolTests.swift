@@ -27,7 +27,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath), "save_insight must not open or write the DB")
     }
 
-    func testProjectMoveDryRunIsUnavailableInSwiftOnlyRuntime() throws {
+    func testProjectMoveDryRunFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let dbPath = temp.appendingPathComponent("should-not-exist.sqlite").path
@@ -50,7 +50,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             ]
         )
 
-        assertNativeProjectOperationUnavailable(result, tool: "project_move")
+        assertServiceUnavailable(result, tool: "project_move", socketPath: socketPath)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath), "project_move dry_run must not open or write the DB")
         XCTAssertFalse(FileManager.default.fileExists(atPath: src), "project_move dry_run must not create source paths")
         XCTAssertFalse(FileManager.default.fileExists(atPath: dst), "project_move dry_run must not create destination paths")
@@ -118,7 +118,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: exportDir.path), "export must not create files without service")
     }
 
-    func testProjectArchiveIsUnavailableInSwiftOnlyRuntime() throws {
+    func testProjectArchiveFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let socketPath = temp.appendingPathComponent("missing-service.sock").path
@@ -135,10 +135,10 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             ]
         )
 
-        assertNativeProjectOperationUnavailable(result, tool: "project_archive")
+        assertServiceUnavailable(result, tool: "project_archive", socketPath: socketPath)
     }
 
-    func testProjectUndoIsUnavailableInSwiftOnlyRuntime() throws {
+    func testProjectUndoFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let socketPath = temp.appendingPathComponent("missing-service.sock").path
@@ -154,10 +154,10 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             ]
         )
 
-        assertNativeProjectOperationUnavailable(result, tool: "project_undo")
+        assertServiceUnavailable(result, tool: "project_undo", socketPath: socketPath)
     }
 
-    func testProjectMoveBatchIsUnavailableInSwiftOnlyRuntime() throws {
+    func testProjectMoveBatchFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let socketPath = temp.appendingPathComponent("missing-service.sock").path
@@ -165,7 +165,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         let result = try callTool(
             name: "project_move_batch",
             arguments: [
-                "yaml": "version: 1\noperations:\n  - src: ~/Old\n    dst: ~/New\n",
+                "yaml": #"{"version":1,"operations":[{"src":"~/Old","dst":"~/New"}]}"#,
                 "dry_run": true,
             ],
             environment: [
@@ -174,7 +174,7 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             ]
         )
 
-        assertNativeProjectOperationUnavailable(result, tool: "project_move_batch")
+        assertServiceUnavailable(result, tool: "project_move_batch", socketPath: socketPath)
     }
 
     func testSaveInsightFailsClosedWithNonEngramSocket() throws {
@@ -263,19 +263,6 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             file: file,
             line: line
         )
-    }
-
-    private func assertNativeProjectOperationUnavailable(
-        _ result: [String: Any],
-        tool: String,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        XCTAssertEqual(result["isError"] as? Bool, true, file: file, line: line)
-        let content = result["content"] as? [[String: Any]]
-        let text = content?.first?["text"] as? String
-        XCTAssertTrue(text?.contains(tool) == true, file: file, line: line)
-        XCTAssertTrue(text?.contains("Swift-only runtime") == true, file: file, line: line)
     }
 
     private func executableURL() -> URL {

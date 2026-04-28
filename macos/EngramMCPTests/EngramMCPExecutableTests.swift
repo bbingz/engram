@@ -15,7 +15,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             XCTFail("Expected tools/list result.tools array")
             return
         }
-        XCTAssertEqual(tools.count, 22)
+        XCTAssertEqual(tools.count, 26)
     }
 
     func testToolNameParityMatchesNodeAllTools() throws {
@@ -489,7 +489,15 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    func testNativeProjectOperationsAreExplicitlyUnavailable() throws {
+    func testNativeProjectOperationsRouteThroughTheService() throws {
+        // Stage 4 ships the four project_* tools natively. Without a
+        // service socket they MUST fall through to the standard
+        // serviceUnavailable response (operational category) — not the
+        // legacy "Swift-only runtime" filter, which has been removed.
+        // Point ENGRAM_MCP_SERVICE_SOCKET at a path that doesn't exist so
+        // the test runs reliably on a dev box where the user's real
+        // service might be live.
+        let bogusSocket = "/tmp/engram-mcp-tests-no-such-\(UUID().uuidString).sock"
         for (index, tool) in ["project_move", "project_archive", "project_undo", "project_move_batch"].enumerated() {
             let capture = try rpc(
                 """
@@ -497,13 +505,16 @@ final class EngramMCPExecutableTests: XCTestCase {
                 """,
                 environment: [
                     "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                    "ENGRAM_MCP_SERVICE_SOCKET": bogusSocket,
+                    "ENGRAM_MCP_DAEMON_BASE_URL": "http://127.0.0.1:9",
                 ]
             )
             let result = try XCTUnwrap(capture.ordered["result"]?.objectValue)
             XCTAssertEqual(result["isError"]?.boolValue, true)
-            let text = result["content"]?.arrayValue?.first?.objectValue?["text"]?.stringValue
-            XCTAssertTrue(text?.contains(tool) == true)
-            XCTAssertTrue(text?.contains("Swift-only runtime") == true)
+            let structured = result["structuredContent"]?.objectValue
+            XCTAssertEqual(structured?["code"]?.stringValue, "serviceUnavailable",
+                           "\(tool) must surface serviceUnavailable, not the legacy unavailable-tool filter")
+            XCTAssertEqual(structured?["tool"]?.stringValue, tool)
         }
     }
 

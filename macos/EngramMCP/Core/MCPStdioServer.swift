@@ -11,8 +11,9 @@ final class MCPStdioServer {
     - get_session: Read full conversation transcript of any session
     - list_sessions: Browse sessions with filters (source, project, date)
     - project_list_migrations / project_recover / project_review: inspect project
-        migration history. Native project move/archive/undo commands are not
-        exposed by the Swift-only MCP runtime until the migration pipeline is ported.
+        migration history.
+    - project_move / project_archive / project_undo / project_move_batch: rewrite
+        AI session paths when a project moves on disk. ⚠️ run sequentially.
 
     Best practices:
     1. Call get_context at the start of a task to see what's been done before
