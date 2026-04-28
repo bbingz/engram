@@ -49,7 +49,7 @@ public enum RecoverMigrations {
         options: RecoverOptions = RecoverOptions(),
         probePath: (String) -> PathProbe = defaultProbePath,
         readDirectory: (String) throws -> [String] = defaultReadDirectory
-    ) -> [RecoverDiagnosis] {
+    ) throws -> [RecoverDiagnosis] {
         let states: [String] = options.includeCommitted
             ? [
                 MigrationLogState.fsPending.rawValue,
@@ -62,7 +62,7 @@ public enum RecoverMigrations {
                 MigrationLogState.fsDone.rawValue,
                 MigrationLogState.failed.rawValue,
             ]
-        let rows = log.list(states: states, since: options.since)
+        let rows = try log.list(states: states, since: options.since)
 
         return rows.map { row in
             let oldProbe = probePath(row.oldPath)

@@ -9,17 +9,17 @@ final class RecoverMigrationsTests: XCTestCase {
 
     // MARK: - state filter
 
-    func testExcludesCommittedByDefault() {
+    func testExcludesCommittedByDefault() throws {
         var capturedStates: [String] = []
         let log = StubLog(records: []) { states, _ in capturedStates = states }
-        _ = RecoverMigrations.diagnose(log: log)
+        _ = try RecoverMigrations.diagnose(log: log)
         XCTAssertEqual(capturedStates, ["fs_pending", "fs_done", "failed"])
     }
 
-    func testIncludesCommittedWhenRequested() {
+    func testIncludesCommittedWhenRequested() throws {
         var capturedStates: [String] = []
         let log = StubLog(records: []) { states, _ in capturedStates = states }
-        _ = RecoverMigrations.diagnose(
+        _ = try RecoverMigrations.diagnose(
             log: log,
             options: RecoverOptions(includeCommitted: true)
         )
@@ -82,7 +82,7 @@ final class RecoverMigrationsTests: XCTestCase {
 
     // MARK: - probe + temp-artifact wiring
 
-    func testDiagnosisRoundTripsFieldsFromLog() {
+    func testDiagnosisRoundTripsFieldsFromLog() throws {
         let row = MigrationLogRecord(
             id: "m-7",
             state: "fs_done",
@@ -94,7 +94,7 @@ final class RecoverMigrationsTests: XCTestCase {
             rolledBackOf: nil
         )
         let log = StubLog(records: [row])
-        let diagnoses = RecoverMigrations.diagnose(
+        let diagnoses = try RecoverMigrations.diagnose(
             log: log,
             probePath: { _ in .absent },
             readDirectory: { _ in [] }
@@ -110,7 +110,7 @@ final class RecoverMigrationsTests: XCTestCase {
         XCTAssertEqual(d.newPathProbe, .absent)
     }
 
-    func testTempArtifactScanFlagsKnownPrefixes() {
+    func testTempArtifactScanFlagsKnownPrefixes() throws {
         let row = MigrationLogRecord(
             id: "m-1",
             state: "failed",
@@ -119,7 +119,7 @@ final class RecoverMigrationsTests: XCTestCase {
             startedAt: "T0"
         )
         let log = StubLog(records: [row])
-        let diagnoses = RecoverMigrations.diagnose(
+        let diagnoses = try RecoverMigrations.diagnose(
             log: log,
             probePath: { _ in .absent },
             readDirectory: { dir in
@@ -144,7 +144,7 @@ final class RecoverMigrationsTests: XCTestCase {
         XCTAssertFalse(artifacts.contains { $0.hasSuffix("/unrelated.txt") })
     }
 
-    func testTempArtifactScanReportsErrorsWithoutCrashing() {
+    func testTempArtifactScanReportsErrorsWithoutCrashing() throws {
         let row = MigrationLogRecord(
             id: "m-1",
             state: "failed",
@@ -153,7 +153,7 @@ final class RecoverMigrationsTests: XCTestCase {
             startedAt: "T0"
         )
         let log = StubLog(records: [row])
-        let diagnoses = RecoverMigrations.diagnose(
+        let diagnoses = try RecoverMigrations.diagnose(
             log: log,
             probePath: { _ in .absent },
             readDirectory: { dir in
@@ -170,7 +170,7 @@ final class RecoverMigrationsTests: XCTestCase {
         XCTAssertTrue(diagnoses[0].probeError?.contains("denied") ?? false)
     }
 
-    func testRootParentsAreFilteredOut() {
+    func testRootParentsAreFilteredOut() throws {
         // Both paths share root parent "/" — must not get scanned.
         let row = MigrationLogRecord(
             id: "m-1",
@@ -181,7 +181,7 @@ final class RecoverMigrationsTests: XCTestCase {
         )
         let log = StubLog(records: [row])
         var dirsScanned: [String] = []
-        _ = RecoverMigrations.diagnose(
+        _ = try RecoverMigrations.diagnose(
             log: log,
             probePath: { _ in .absent },
             readDirectory: { dir in
@@ -220,7 +220,7 @@ final class RecoverMigrationsTests: XCTestCase {
             startedAt: "T0"
         )
         let log = StubLog(records: [row])
-        let d = RecoverMigrations.diagnose(
+        let d = (try? RecoverMigrations.diagnose(
             log: log,
             options: RecoverOptions(includeCommitted: true),
             probePath: { path in
@@ -229,7 +229,7 @@ final class RecoverMigrationsTests: XCTestCase {
                 return .absent
             },
             readDirectory: { _ in [] }
-        )
+        )) ?? []
         return d.first?.recommendation ?? ""
     }
 }
@@ -243,11 +243,11 @@ private struct StubLog: MigrationLogReader {
         self.onList = onList
     }
 
-    func find(migrationId: String) -> MigrationLogRecord? {
+    func find(migrationId: String) throws -> MigrationLogRecord? {
         records.first { $0.id == migrationId }
     }
 
-    func list(states: [String], since: Date?) -> [MigrationLogRecord] {
+    func list(states: [String], since: Date?) throws -> [MigrationLogRecord] {
         onList?(states, since)
         // Pass-through so tests can probe both the state-filter contract
         // (via `onList` capture) AND the recommendation builder's

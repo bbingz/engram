@@ -53,8 +53,8 @@ public struct MigrationLogRecord: Equatable, Sendable {
 }
 
 public protocol MigrationLogReader: Sendable {
-    func find(migrationId: String) -> MigrationLogRecord?
-    func list(states: [String], since: Date?) -> [MigrationLogRecord]
+    func find(migrationId: String) throws -> MigrationLogRecord?
+    func list(states: [String], since: Date?) throws -> [MigrationLogRecord]
 }
 
 public struct SessionSnapshot: Equatable, Sendable {
@@ -68,5 +68,5 @@ public struct SessionSnapshot: Equatable, Sendable {
 }
 
 public protocol SessionByIdReader: Sendable {
-    func session(id: String) -> SessionSnapshot?
+    func session(id: String) throws -> SessionSnapshot?
 }

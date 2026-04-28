@@ -82,7 +82,7 @@ public enum UndoMigration {
         sessions: SessionByIdReader,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) throws -> ReverseMoveRequest {
-        guard let original = log.find(migrationId: migrationId) else {
+        guard let original = try log.find(migrationId: migrationId) else {
             throw UndoMigrationError.notFound(migrationId: migrationId)
         }
         if original.state != MigrationLogState.committed.rawValue {
@@ -98,7 +98,7 @@ public enum UndoMigration {
         }
 
         if let firstAffected = original.affectedSessionIds.first {
-            if let snapshot = sessions.session(id: firstAffected),
+            if let snapshot = try sessions.session(id: firstAffected),
                let cwd = snapshot.cwd,
                cwd != original.newPath {
                 let preview = String(firstAffected.prefix(8))

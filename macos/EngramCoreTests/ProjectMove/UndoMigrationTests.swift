@@ -210,13 +210,13 @@ final class UndoMigrationTests: XCTestCase {
 
 private struct StubMigrationLog: MigrationLogReader {
     let records: [String: MigrationLogRecord]
-    func find(migrationId: String) -> MigrationLogRecord? { records[migrationId] }
-    func list(states: [String], since: Date?) -> [MigrationLogRecord] {
+    func find(migrationId: String) throws -> MigrationLogRecord? { records[migrationId] }
+    func list(states: [String], since: Date?) throws -> [MigrationLogRecord] {
         records.values.filter { states.contains($0.state) }
     }
 }
 
 private struct StubSessionReader: SessionByIdReader {
     let sessions: [String: SessionSnapshot]
-    func session(id: String) -> SessionSnapshot? { sessions[id] }
+    func session(id: String) throws -> SessionSnapshot? { sessions[id] }
 }
