@@ -678,7 +678,11 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(titles.total, 1)
     }
 
-    func testProjectMigrationCommandsFailClosedWithoutLegacyBridge() async throws {
+    func testProjectMigrationCommandsSurfacePipelineErrors() async throws {
+        // Stage 4 ships native project move/archive/undo/move-batch handlers
+        // wired through ProjectMoveOrchestrator. The previous fail-closed
+        // contract (UnsupportedNativeCommand / retryPolicy=never) is gone;
+        // commands now reach the pipeline and surface its real errors.
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -691,44 +695,78 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
 
-        try await assertUnsupportedNativeCommand("projectMove") {
+        // 1. projectMove: missing src is OrchestratorError (not unsupported).
+        do {
             _ = try await client.projectMove(
                 EngramServiceProjectMoveRequest(
-                    src: "/tmp/old-engram",
-                    dst: "/tmp/new-engram",
-                    dryRun: true,
+                    src: "/tmp/no-such-engram-src-\(UUID().uuidString)",
+                    dst: "/tmp/no-such-engram-dst-\(UUID().uuidString)",
+                    dryRun: false,
                     force: false,
                     auditNote: "fixture",
                     actor: "test"
                 )
             )
+            XCTFail("projectMove on absent src should fail")
+        } catch let error as EngramServiceError {
+            guard case .commandFailed(let name, _, _, _) = error else {
+                XCTFail("expected commandFailed, got \(error)")
+                return
+            }
+            XCTAssertNotEqual(name, "UnsupportedNativeCommand", "command must reach the pipeline")
         }
-        try await assertUnsupportedNativeCommand("projectArchive") {
-            _ = try await client.projectArchive(
-                EngramServiceProjectArchiveRequest(
-                    src: "/tmp/old-engram",
-                    archiveTo: "archived-done",
-                    dryRun: true,
-                    force: false,
-                    auditNote: "fixture",
-                    actor: "test"
-                )
-            )
-        }
-        try await assertUnsupportedNativeCommand("projectUndo") {
+
+        // 2. projectUndo: missing migration id surfaces UndoMigrationError.
+        do {
             _ = try await client.projectUndo(
-                EngramServiceProjectUndoRequest(migrationId: "mig-1", force: false, actor: "test")
+                EngramServiceProjectUndoRequest(migrationId: "missing-id", force: false, actor: "test")
             )
+            XCTFail("projectUndo on missing id should fail")
+        } catch let error as EngramServiceError {
+            guard case .commandFailed(let name, _, _, _) = error else {
+                XCTFail("expected commandFailed, got \(error)")
+                return
+            }
+            XCTAssertNotEqual(name, "UnsupportedNativeCommand")
         }
-        try await assertUnsupportedNativeCommand("projectMoveBatch") {
+
+        // 3. projectMoveBatch: empty JSON document is a valid no-op.
+        let emptyBatch = try await client.projectMoveBatch(
+            EngramServiceProjectMoveBatchRequest(
+                yaml: #"{"version":1,"operations":[]}"#,
+                dryRun: true,
+                force: false,
+                actor: "test"
+            )
+        )
+        // empty batch → completed=[], failed=[], skipped=[]
+        guard case .object(let obj) = emptyBatch else {
+            XCTFail("expected object batch result, got \(emptyBatch)")
+            return
+        }
+        if case .array(let completed) = obj["completed"] ?? .null {
+            XCTAssertTrue(completed.isEmpty)
+        } else {
+            XCTFail("expected `completed` array")
+        }
+
+        // 4. projectMoveBatch: malformed JSON surfaces BatchError as commandFailed.
+        do {
             _ = try await client.projectMoveBatch(
                 EngramServiceProjectMoveBatchRequest(
-                    yaml: "version: 1\noperations: []\n",
-                    dryRun: true,
+                    yaml: "{ not json",
+                    dryRun: false,
                     force: false,
                     actor: "test"
                 )
             )
+            XCTFail("malformed json should fail")
+        } catch let error as EngramServiceError {
+            guard case .commandFailed(let name, _, _, _) = error else {
+                XCTFail("expected commandFailed, got \(error)")
+                return
+            }
+            XCTAssertNotEqual(name, "UnsupportedNativeCommand")
         }
     }
 }
