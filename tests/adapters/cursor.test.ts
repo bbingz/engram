@@ -169,4 +169,66 @@ describe('CursorAdapter', () => {
       expect(info?.cwd).toBe('src');
     });
   });
+
+  describe('cwd inference: more edge cases', () => {
+    const tmpDir = join(tmpdir(), `engram-cursor-cwd-edge2-${Date.now()}`);
+    const dbPath = join(tmpDir, 'state.vscdb');
+
+    beforeAll(() => {
+      mkdirSync(tmpDir, { recursive: true });
+      const db = new BetterSqlite3(dbPath);
+      db.exec(`CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)`);
+
+      // First folderSelection empty, second has fsPath. Adapter currently only
+      // looks at [0] — documents that behavior so a future change is intentional.
+      const secondFolderHasPath = {
+        composerId: 'second-folder',
+        createdAt: 1771392000000,
+        lastUpdatedAt: 1771392005000,
+        context: {
+          folderSelections: [{ uri: {} }, { uri: { fsPath: '/Users/me/p2' } }],
+          fileSelections: [{ uri: { fsPath: '/Users/me/file-fb/main.ts' } }],
+        },
+        conversation: [{ type: 1, text: 'hi' }],
+      };
+
+      // Symlink-style fsPath: adapter does not resolve; passes through verbatim.
+      const symlinkFolder = {
+        composerId: 'symlink',
+        createdAt: 1771392000000,
+        lastUpdatedAt: 1771392005000,
+        context: {
+          folderSelections: [
+            { uri: { fsPath: '/Users/me/symlink-to-real-proj' } },
+          ],
+        },
+        conversation: [{ type: 1, text: 'hi' }],
+      };
+
+      const ins = db.prepare(
+        'INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)',
+      );
+      ins.run(
+        'composerData:second-folder',
+        JSON.stringify(secondFolderHasPath),
+      );
+      ins.run('composerData:symlink', JSON.stringify(symlinkFolder));
+      db.close();
+    });
+
+    afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+    it('does not scan past folderSelections[0] — falls through to fileSelections', async () => {
+      const a = new CursorAdapter(dbPath);
+      const info = await a.parseSessionInfo(`${dbPath}?composer=second-folder`);
+      // [1].fsPath = /Users/me/p2 is ignored; falls through to file dirname
+      expect(info?.cwd).toBe('/Users/me/file-fb');
+    });
+
+    it('returns symlink path verbatim without realpath resolution', async () => {
+      const a = new CursorAdapter(dbPath);
+      const info = await a.parseSessionInfo(`${dbPath}?composer=symlink`);
+      expect(info?.cwd).toBe('/Users/me/symlink-to-real-proj');
+    });
+  });
 });

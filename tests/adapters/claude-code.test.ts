@@ -106,6 +106,30 @@ describe('ClaudeCodeAdapter', () => {
     }
   });
 
+  it('falls back to file mtime when message records carry no timestamps', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cc-no-ts-${Date.now()}`);
+    const filePath = join(tmpRoot, 'no-ts.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        '{"type":"user","cwd":"/proj","sessionId":"no-ts-1","message":{"role":"user","content":"hello"}}',
+        '{"type":"assistant","sessionId":"no-ts-1","message":{"id":"r","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}}',
+      ].join('\n'),
+    );
+    try {
+      const info = await adapter.parseSessionInfo(filePath);
+      expect(info).not.toBeNull();
+      expect(info?.id).toBe('no-ts-1');
+      // startTime must be a real ISO string (not '') so downstream Date math works
+      expect(info?.startTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.assistantMessageCount).toBe(1);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('counts tool_result messages separately from user messages', async () => {
     const info = await adapter.parseSessionInfo(TOOL_FIXTURE);
     expect(info).not.toBeNull();

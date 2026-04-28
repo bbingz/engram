@@ -245,6 +245,76 @@ describe('VsCodeAdapter', () => {
         rmSync(tmpRoot, { recursive: true, force: true });
       }
     });
+
+    it('decodes Windows-style file:///C%3A/path URIs', async () => {
+      const { tmpRoot, sessPath } = makeFixture(
+        JSON.stringify({ folder: 'file:///C%3A/Users/me/proj' }),
+      );
+      try {
+        const a = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+        const info = await a.parseSessionInfo(sessPath);
+        expect(info?.cwd).toBe('/C:/Users/me/proj');
+      } finally {
+        rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('.code-workspace folders[].uri form', () => {
+    const tmpRoot = join(tmpdir(), `engram-vscode-uri-folder-${Date.now()}`);
+    const wsFile = join(tmpRoot, 'multi.code-workspace');
+    const hashDir = join(tmpRoot, 'workspaceStorage', 'hash-uri');
+    const sessPath = join(hashDir, 'chatSessions', 'sess.jsonl');
+
+    beforeAll(() => {
+      mkdirSync(dirname(sessPath), { recursive: true });
+      writeFileSync(
+        wsFile,
+        JSON.stringify({
+          folders: [
+            { uri: 'file:///Users/me/uri-form-proj' },
+            { path: 'second-folder' },
+          ],
+        }),
+      );
+      writeFileSync(
+        join(hashDir, 'workspace.json'),
+        JSON.stringify({ configuration: `file://${wsFile}` }),
+      );
+      writeFileSync(
+        sessPath,
+        `${JSON.stringify({
+          kind: 0,
+          v: {
+            version: 3,
+            sessionId: 'uri-1',
+            creationDate: 1771392000000,
+            requests: [
+              {
+                requestId: 'r1',
+                message: { text: 'hi' },
+                response: [
+                  {
+                    value: {
+                      kind: 'markdownContent',
+                      content: { value: 'hi' },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        })}\n`,
+      );
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('resolves cwd from folders[0].uri when present', async () => {
+      const a = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+      const info = await a.parseSessionInfo(sessPath);
+      expect(info?.cwd).toBe('/Users/me/uri-form-proj');
+    });
   });
 
   it('streamMessages yields user and assistant alternating', async () => {

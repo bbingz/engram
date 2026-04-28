@@ -107,6 +107,82 @@ describe('KimiAdapter', () => {
     });
   });
 
+  describe('same-role-consecutive sequences', () => {
+    const tmpRoot = join(tmpdir(), `engram-kimi-consec-${Date.now()}`);
+    const sessionsRoot = join(tmpRoot, 'sessions');
+
+    function makeSession(name: string, contextLines: string[]): string {
+      const sessDir = join(sessionsRoot, 'ws', name);
+      mkdirSync(sessDir, { recursive: true });
+      writeFileSync(join(sessDir, 'context.jsonl'), contextLines.join('\n'));
+      // 3 wire turns: 10/20, 30/40, 50/60
+      writeFileSync(
+        join(sessDir, 'wire.jsonl'),
+        [
+          '{"timestamp":1770000010,"message":{"type":"TurnBegin"}}',
+          '{"timestamp":1770000020,"message":{"type":"TurnEnd"}}',
+          '{"timestamp":1770000030,"message":{"type":"TurnBegin"}}',
+          '{"timestamp":1770000040,"message":{"type":"TurnEnd"}}',
+          '{"timestamp":1770000050,"message":{"type":"TurnBegin"}}',
+          '{"timestamp":1770000060,"message":{"type":"TurnEnd"}}',
+        ].join('\n'),
+      );
+      return join(sessDir, 'context.jsonl');
+    }
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('user→user advances to next turn (second user binds turn[1].begin)', async () => {
+      const ctx = makeSession('uu-a', [
+        '{"role":"user","content":"q1"}',
+        '{"role":"user","content":"q1b"}',
+        '{"role":"assistant","content":"a"}',
+      ]);
+      const a = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const msgs = [];
+      for await (const m of a.streamMessages(ctx)) msgs.push(m);
+      expect(msgs[0].timestamp).toBe('2026-02-02T02:40:10.000Z'); // turn0 begin
+      expect(msgs[1].timestamp).toBe('2026-02-02T02:40:30.000Z'); // turn1 begin
+      // assistant binds turn[1].end (not turn[1].end which would skip turn1's existence)
+      expect(msgs[2].timestamp).toBe('2026-02-02T02:40:40.000Z'); // turn1 end
+    });
+
+    it('assistant→assistant advances to next turn (second asst binds turn[1].end)', async () => {
+      const ctx = makeSession('u-aa', [
+        '{"role":"user","content":"q"}',
+        '{"role":"assistant","content":"a1"}',
+        '{"role":"assistant","content":"a2"}',
+      ]);
+      const a = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const msgs = [];
+      for await (const m of a.streamMessages(ctx)) msgs.push(m);
+      expect(msgs[0].timestamp).toBe('2026-02-02T02:40:10.000Z'); // turn0 begin
+      expect(msgs[1].timestamp).toBe('2026-02-02T02:40:20.000Z'); // turn0 end
+      expect(msgs[2].timestamp).toBe('2026-02-02T02:40:40.000Z'); // turn1 end
+    });
+
+    it('mixed u-a-a-u stays correctly aligned across the consecutive-asst boundary', async () => {
+      const ctx = makeSession('uaau', [
+        '{"role":"user","content":"q1"}',
+        '{"role":"assistant","content":"a1"}',
+        '{"role":"assistant","content":"a1b"}',
+        '{"role":"user","content":"q2"}',
+        '{"role":"assistant","content":"a2"}',
+      ]);
+      const a = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const msgs = [];
+      for await (const m of a.streamMessages(ctx)) msgs.push(m);
+      // turn0: begin=10, end=20
+      // turn1: begin=30, end=40 (asst-after-asst pushes here)
+      // turn2: begin=50, end=60 (next user pushes here)
+      expect(msgs[0].timestamp).toBe('2026-02-02T02:40:10.000Z');
+      expect(msgs[1].timestamp).toBe('2026-02-02T02:40:20.000Z');
+      expect(msgs[2].timestamp).toBe('2026-02-02T02:40:40.000Z');
+      expect(msgs[3].timestamp).toBe('2026-02-02T02:40:50.000Z');
+      expect(msgs[4].timestamp).toBe('2026-02-02T02:41:00.000Z');
+    });
+  });
+
   describe('no wire.jsonl — fall back to context line timestamps', () => {
     const tmpRoot = join(tmpdir(), `engram-kimi-nowire-${Date.now()}`);
     const sessionsRoot = join(tmpRoot, 'sessions');

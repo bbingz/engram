@@ -129,7 +129,15 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       // can still resolve, but a file with NO message records (only permission-
       // mode / attachment / etc.) yields nothing useful — keep parity with the
       // pre-Batch-3 behavior of returning null instead of an empty-startTime row.
-      if (!sessionId || !startTime) return null;
+      const totalMessages = userCount + assistantCount + toolCount;
+      if (!sessionId || totalMessages === 0) return null;
+
+      // Fall back to file mtime when message records exist but none carry a
+      // timestamp. Without this, sessions with valid content would silently
+      // drop just because the producer hadn't written timestamps.
+      const safeStartTime =
+        startTime || new Date(fileStat.mtimeMs).toISOString();
+      const safeEndTime = endTime || safeStartTime;
 
       const isSubagent = filePath.includes('/subagents/');
       // Subagent files share sessionId with the parent — use agentId as the unique DB key
@@ -146,8 +154,8 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       return {
         id,
         source,
-        startTime,
-        endTime: endTime !== startTime ? endTime : undefined,
+        startTime: safeStartTime,
+        endTime: safeEndTime !== safeStartTime ? safeEndTime : undefined,
         cwd,
         model: detectedModel || undefined,
         messageCount: userCount + assistantCount + toolCount,

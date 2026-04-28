@@ -207,4 +207,82 @@ describe('CodexAdapter', () => {
       expect(sliced[1]).toEqual(all[2]);
     });
   });
+
+  describe('repeated function_call / function_call_output records', () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-dup-${Date.now()}`);
+    const dupPath = join(tmpRoot, 'rollout-dup.jsonl');
+
+    beforeAll(() => {
+      mkdirSync(tmpRoot, { recursive: true });
+      writeFileSync(
+        dupPath,
+        [
+          JSON.stringify({
+            timestamp: '2026-01-15T10:00:00.000Z',
+            type: 'session_meta',
+            payload: {
+              id: 'dup',
+              timestamp: '2026-01-15T10:00:00.000Z',
+              cwd: '/x',
+              model_provider: 'openai',
+            },
+          }),
+          // Same call_id appears twice (e.g. retry), each with its output
+          JSON.stringify({
+            timestamp: '2026-01-15T10:00:01.000Z',
+            type: 'response_item',
+            payload: {
+              type: 'function_call',
+              name: 'shell',
+              call_id: 'c1',
+              arguments: { cmd: 'ls' },
+            },
+          }),
+          JSON.stringify({
+            timestamp: '2026-01-15T10:00:02.000Z',
+            type: 'response_item',
+            payload: {
+              type: 'function_call_output',
+              call_id: 'c1',
+              output: 'r1',
+            },
+          }),
+          JSON.stringify({
+            timestamp: '2026-01-15T10:00:03.000Z',
+            type: 'response_item',
+            payload: {
+              type: 'function_call',
+              name: 'shell',
+              call_id: 'c1',
+              arguments: { cmd: 'ls' },
+            },
+          }),
+          JSON.stringify({
+            timestamp: '2026-01-15T10:00:04.000Z',
+            type: 'response_item',
+            payload: {
+              type: 'function_call_output',
+              call_id: 'c1',
+              output: 'r2',
+            },
+          }),
+        ].join('\n'),
+      );
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('counts and emits each repeated call/output independently (no dedup)', async () => {
+      const info = await adapter.parseSessionInfo(dupPath);
+      expect(info?.toolMessageCount).toBe(4);
+
+      const messages = [];
+      for await (const m of adapter.streamMessages(dupPath)) messages.push(m);
+      const tools = messages.filter((m) => m.role === 'tool');
+      expect(tools).toHaveLength(4);
+      // Outputs surface in order, both retries preserved
+      const outputs = tools.filter((t) => !t.toolCalls).map((t) => t.content);
+      expect(outputs).toEqual(['r1', 'r2']);
+    });
+  });
 });

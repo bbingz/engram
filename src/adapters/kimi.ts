@@ -163,8 +163,14 @@ export class KimiAdapter implements SessionAdapter {
     // independent arrays) keeps assistant timestamps aligned even if a turn's
     // TurnEnd is missing — the affected turn just falls back to its begin.
     const turns = await this.readTurnTimestamps(filePath);
+    // State machine: each wire turn binds at most one user (begin) + one
+    // assistant (end). When the next message would re-bind a slot already
+    // claimed in the current turn, we advance to the next turn. This handles
+    // user→user, assistant→assistant, and any mixed sequence safely; missing
+    // turns produce undefined timestamps rather than misaligned ones.
     let turnIdx = 0;
-    let lastRole: 'user' | 'assistant' | null = null;
+    let userBoundInTurn = false;
+    let asstBoundInTurn = false;
 
     // Stream from all context files in order
     for (const file of await this.getAllContextFiles(filePath)) {
@@ -180,18 +186,23 @@ export class KimiAdapter implements SessionAdapter {
           if (role !== 'user' && role !== 'assistant') continue;
 
           const lineTs = this.extractLineTimestamp(obj);
-          // Advance the turn cursor when a new turn starts: a user message
-          // begins a turn; an assistant message after another assistant means
-          // the previous turn never closed but a new turn is implied.
-          if (role === 'user' && lastRole !== null) {
+          // A user always opens a new turn unless we're still on the very
+          // first turn with no bindings yet. An assistant only advances when
+          // the current turn's assistant slot is already taken.
+          const advance =
+            role === 'user'
+              ? userBoundInTurn || asstBoundInTurn
+              : asstBoundInTurn;
+          if (advance) {
             turnIdx++;
-          } else if (role === 'assistant' && lastRole === 'assistant') {
-            turnIdx++;
+            userBoundInTurn = false;
+            asstBoundInTurn = false;
           }
           const turn = turns[turnIdx];
           const wireTs =
             role === 'user' ? turn?.begin : (turn?.end ?? turn?.begin);
-          lastRole = role as 'user' | 'assistant';
+          if (role === 'user') userBoundInTurn = true;
+          else asstBoundInTurn = true;
 
           if (count < offset) {
             count++;

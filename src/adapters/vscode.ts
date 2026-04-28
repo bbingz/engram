@@ -143,11 +143,20 @@ export class VsCodeAdapter implements SessionAdapter {
   private async readCodeWorkspaceFirstFolder(wsFile: string): Promise<string> {
     try {
       const raw = await readFile(wsFile, 'utf8');
-      const ws = JSON.parse(raw) as { folders?: { path?: string }[] };
-      const first = ws.folders?.[0]?.path;
+      const ws = JSON.parse(raw) as {
+        folders?: { path?: string; uri?: string }[];
+      };
+      const first = ws.folders?.[0];
       if (!first) return '';
-      // Absolute → use as-is. Relative → resolve against .code-workspace dir.
-      return first.startsWith('/') ? first : join(dirname(wsFile), first);
+      // VS Code accepts either { path } or { uri } per folder entry.
+      if (first.uri) return decodeFileUri(first.uri);
+      if (first.path) {
+        // Absolute → use as-is. Relative → resolve against .code-workspace dir.
+        return first.path.startsWith('/')
+          ? first.path
+          : join(dirname(wsFile), first.path);
+      }
+      return '';
     } catch {
       return '';
     }
