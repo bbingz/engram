@@ -114,4 +114,59 @@ describe('CursorAdapter', () => {
       expect(info?.cwd).toBe('');
     });
   });
+
+  describe('cwd inference edge cases', () => {
+    const tmpDir = join(tmpdir(), `engram-cursor-cwd-edges-${Date.now()}`);
+    const dbPath = join(tmpDir, 'state.vscdb');
+
+    beforeAll(() => {
+      mkdirSync(tmpDir, { recursive: true });
+      const db = new BetterSqlite3(dbPath);
+      db.exec(`CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)`);
+      // First folderSelection has no fsPath; should fall through to file
+      const folderEmpty = {
+        composerId: 'folder-empty',
+        createdAt: 1771392000000,
+        lastUpdatedAt: 1771392005000,
+        context: {
+          folderSelections: [{ uri: {} }],
+          fileSelections: [
+            { uri: { fsPath: '/Users/me/proj-root/src/index.ts' } },
+          ],
+        },
+        conversation: [{ type: 1, text: 'hi' }],
+      };
+      // Relative fsPath — adapter is best-effort; documents current behavior
+      const relativeFile = {
+        composerId: 'rel-file',
+        createdAt: 1771392000000,
+        lastUpdatedAt: 1771392005000,
+        context: {
+          fileSelections: [{ uri: { fsPath: 'src/index.ts' } }],
+        },
+        conversation: [{ type: 1, text: 'hi' }],
+      };
+      const ins = db.prepare(
+        'INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)',
+      );
+      ins.run('composerData:folder-empty', JSON.stringify(folderEmpty));
+      ins.run('composerData:rel-file', JSON.stringify(relativeFile));
+      db.close();
+    });
+
+    afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+    it('falls through to fileSelections when first folderSelection has no fsPath', async () => {
+      const a = new CursorAdapter(dbPath);
+      const info = await a.parseSessionInfo(`${dbPath}?composer=folder-empty`);
+      expect(info?.cwd).toBe('/Users/me/proj-root/src');
+    });
+
+    it('passes relative fsPath through dirname() without resolving', async () => {
+      const a = new CursorAdapter(dbPath);
+      const info = await a.parseSessionInfo(`${dbPath}?composer=rel-file`);
+      // dirname('src/index.ts') === 'src' — best-effort heuristic, not abs
+      expect(info?.cwd).toBe('src');
+    });
+  });
 });

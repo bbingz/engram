@@ -1,8 +1,10 @@
 // tests/adapters/codex.test.ts
 
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CodexAdapter } from '../../src/adapters/codex.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,5 +98,113 @@ describe('CodexAdapter', () => {
     }
     expect(messages).toHaveLength(1);
     expect(messages[0].role).toBe('assistant');
+  });
+
+  describe('function_call edge cases', () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-fc-${Date.now()}`);
+    const fcPath = join(tmpRoot, 'rollout-fc.jsonl');
+
+    beforeAll(() => {
+      mkdirSync(tmpRoot, { recursive: true });
+      const lines = [
+        // session_meta
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:00.000Z',
+          type: 'session_meta',
+          payload: {
+            id: 'fc-edge',
+            timestamp: '2026-01-15T10:00:00.000Z',
+            cwd: '/x',
+            model_provider: 'openai',
+          },
+        }),
+        // user
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:01.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'go' }],
+          },
+        }),
+        // function_call with no arguments and empty name
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:02.000Z',
+          type: 'response_item',
+          payload: { type: 'function_call' },
+        }),
+        // orphan function_call_output (no preceding call)
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:03.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'function_call_output',
+            output: 'orphan-out',
+          },
+        }),
+        // function_call with pre-serialized arguments string
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:04.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'function_call',
+            name: 'shell',
+            arguments: '{"cmd":"ls"}',
+          },
+        }),
+      ];
+      writeFileSync(fcPath, `${lines.join('\n')}\n`);
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('handles missing arguments + empty tool name without throwing', async () => {
+      const messages = [];
+      for await (const m of adapter.streamMessages(fcPath)) messages.push(m);
+      const tools = messages.filter((m) => m.role === 'tool');
+      expect(tools.length).toBe(3);
+      // First tool entry: empty name + no arguments → name == '', input undefined
+      expect(tools[0].toolCalls?.[0]?.name).toBe('');
+      expect(tools[0].toolCalls?.[0]?.input).toBeUndefined();
+    });
+
+    it('streams orphan function_call_output as a tool message', async () => {
+      const messages = [];
+      for await (const m of adapter.streamMessages(fcPath)) messages.push(m);
+      const orphan = messages.find((m) => m.content === 'orphan-out');
+      expect(orphan?.role).toBe('tool');
+    });
+
+    it('preserves pre-serialized string arguments instead of double-encoding', async () => {
+      const messages = [];
+      for await (const m of adapter.streamMessages(fcPath)) messages.push(m);
+      // String args are passed through JSON.stringify → wrapped in quotes.
+      // Document the current behavior so a future change is intentional.
+      const shellCall = messages.find(
+        (m) => m.toolCalls?.[0]?.name === 'shell',
+      );
+      expect(shellCall?.toolCalls?.[0]?.input).toBe('"{\\"cmd\\":\\"ls\\"}"');
+    });
+
+    it('counts every function_call / function_call_output as a tool message', async () => {
+      const info = await adapter.parseSessionInfo(fcPath);
+      expect(info?.toolMessageCount).toBe(3);
+    });
+
+    it('offset/limit treat tool messages the same as user/assistant', async () => {
+      const all = [];
+      for await (const m of adapter.streamMessages(fcPath)) all.push(m);
+      // user + 3 tools → offset=1, limit=2 → tools[0], tools[1]
+      const sliced = [];
+      for await (const m of adapter.streamMessages(fcPath, {
+        offset: 1,
+        limit: 2,
+      }))
+        sliced.push(m);
+      expect(sliced).toHaveLength(2);
+      expect(sliced[0]).toEqual(all[1]);
+      expect(sliced[1]).toEqual(all[2]);
+    });
   });
 });

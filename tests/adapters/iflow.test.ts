@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -38,6 +40,40 @@ describe('IflowAdapter', () => {
     expect(messages[0].role).toBe('user');
     expect(messages[0].content).toBe('帮我优化数据库查询');
     expect(messages[1].role).toBe('assistant');
+  });
+
+  it('extractContent joins all text parts in array content', async () => {
+    const tmpRoot = join(tmpdir(), `engram-iflow-multi-${Date.now()}`);
+    const filePath = join(tmpRoot, 'multi.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 'u1',
+          parentUuid: null,
+          sessionId: 'iflow-multi',
+          timestamp: '2026-04-01T00:00:00.000Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'first' },
+              { type: 'image', data: 'xx' },
+              { type: 'text', text: 'second' },
+            ],
+          },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+      expect(messages[0].content).toBe('first\nsecond');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it('streamMessages respects limit', async () => {

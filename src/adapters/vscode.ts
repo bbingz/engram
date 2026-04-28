@@ -243,9 +243,17 @@ export class VsCodeAdapter implements SessionAdapter {
   }
 }
 
+// Decode a file:// URI to a local path. Non-file URIs (vscode-remote://,
+// vsls://, ...) and malformed percent-encoding both return '' — using a
+// remote URI as cwd would be worse than no cwd at all.
 function decodeFileUri(uri: string): string {
-  if (uri.startsWith('file://')) {
-    return decodeURIComponent(uri.slice('file://'.length));
+  if (!uri.startsWith('file://')) return '';
+  let path = uri.slice('file://'.length);
+  // Strip optional "localhost" authority — "file://localhost/path" → "/path".
+  if (path.startsWith('localhost/')) path = path.slice('localhost'.length);
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return '';
   }
-  return uri;
 }

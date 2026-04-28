@@ -106,4 +106,42 @@ describe('KimiAdapter', () => {
       expect(assts[1].timestamp).toBe('2026-02-02T02:40:30.000Z');
     });
   });
+
+  describe('no wire.jsonl — fall back to context line timestamps', () => {
+    const tmpRoot = join(tmpdir(), `engram-kimi-nowire-${Date.now()}`);
+    const sessionsRoot = join(tmpRoot, 'sessions');
+    const sessDir = join(sessionsRoot, 'ws-z', 'sess-no-wire');
+    const ctxPath = join(sessDir, 'context.jsonl');
+
+    beforeAll(() => {
+      mkdirSync(sessDir, { recursive: true });
+      writeFileSync(
+        ctxPath,
+        [
+          // mix of numeric and ISO-string timestamps to cover both branches
+          '{"role":"user","content":"q","timestamp":1770000100}',
+          '{"role":"assistant","content":"a","timestamp":"2026-02-02T02:42:00.000Z"}',
+        ].join('\n'),
+      );
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('parseSessionInfo uses line timestamps when wire.jsonl is absent', async () => {
+      const a = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const info = await a.parseSessionInfo(ctxPath);
+      // First line ts is numeric epoch seconds → 1770000100 = 02:41:40Z
+      expect(info?.startTime).toBe('2026-02-02T02:41:40.000Z');
+      // Last line ts is the ISO string, passed through verbatim
+      expect(info?.endTime).toBe('2026-02-02T02:42:00.000Z');
+    });
+
+    it('streamMessages emits per-line timestamps for both numeric and string', async () => {
+      const a = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const msgs = [];
+      for await (const m of a.streamMessages(ctxPath)) msgs.push(m);
+      expect(msgs[0].timestamp).toBe('2026-02-02T02:41:40.000Z');
+      expect(msgs[1].timestamp).toBe('2026-02-02T02:42:00.000Z');
+    });
+  });
 });

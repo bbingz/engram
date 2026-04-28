@@ -152,6 +152,101 @@ describe('VsCodeAdapter', () => {
     }
   });
 
+  describe('workspace.json edge cases', () => {
+    function makeFixture(wsJsonContent: string): {
+      tmpRoot: string;
+      sessPath: string;
+    } {
+      const tmpRoot = join(
+        tmpdir(),
+        `engram-vscode-edge-${Date.now()}-${Math.random()}`,
+      );
+      const hashDir = join(tmpRoot, 'workspaceStorage', 'h');
+      const sessPath = join(hashDir, 'chatSessions', 'sess.jsonl');
+      mkdirSync(dirname(sessPath), { recursive: true });
+      writeFileSync(join(hashDir, 'workspace.json'), wsJsonContent);
+      writeFileSync(
+        sessPath,
+        `${JSON.stringify({
+          kind: 0,
+          v: {
+            version: 3,
+            sessionId: 'edge',
+            creationDate: 1771392000000,
+            requests: [
+              {
+                requestId: 'r1',
+                message: { text: 'hi' },
+                response: [
+                  {
+                    value: {
+                      kind: 'markdownContent',
+                      content: { value: 'hi' },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        })}\n`,
+      );
+      return { tmpRoot, sessPath };
+    }
+
+    it('strips localhost authority from file://localhost/path URIs', async () => {
+      const { tmpRoot, sessPath } = makeFixture(
+        JSON.stringify({ folder: 'file://localhost/Users/me/proj' }),
+      );
+      try {
+        const a = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+        const info = await a.parseSessionInfo(sessPath);
+        expect(info?.cwd).toBe('/Users/me/proj');
+      } finally {
+        rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('returns empty cwd for non-file URIs (vscode-remote://, vsls://, ...)', async () => {
+      const { tmpRoot, sessPath } = makeFixture(
+        JSON.stringify({
+          folder: 'vscode-remote://ssh-remote+host/Users/me/proj',
+        }),
+      );
+      try {
+        const a = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+        const info = await a.parseSessionInfo(sessPath);
+        expect(info?.cwd).toBe('');
+      } finally {
+        rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('returns empty cwd for malformed percent-encoding', async () => {
+      const { tmpRoot, sessPath } = makeFixture(
+        // %2 is an incomplete escape — decodeURIComponent throws
+        JSON.stringify({ folder: 'file:///bad/%2' }),
+      );
+      try {
+        const a = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+        const info = await a.parseSessionInfo(sessPath);
+        expect(info?.cwd).toBe('');
+      } finally {
+        rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('returns empty cwd when workspace.json is corrupt JSON', async () => {
+      const { tmpRoot, sessPath } = makeFixture('{not valid json');
+      try {
+        const a = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+        const info = await a.parseSessionInfo(sessPath);
+        expect(info?.cwd).toBe('');
+      } finally {
+        rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('streamMessages yields user and assistant alternating', async () => {
     const jsonlPath = join(
       FIXTURE_DIR,

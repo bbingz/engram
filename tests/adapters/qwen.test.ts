@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -36,6 +38,40 @@ describe('QwenAdapter', () => {
   it('parseSessionInfo falls back to message.model when top-level model is absent', async () => {
     const info = await adapter.parseSessionInfo(DRIFT_FIXTURE);
     expect(info?.model).toBe('qwen3-coder');
+  });
+
+  it('extractContent joins all text parts (multi-part messages keep full body)', async () => {
+    const tmpRoot = join(tmpdir(), `engram-qwen-multi-${Date.now()}`);
+    const filePath = join(tmpRoot, 'multi.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 'u1',
+          parentUuid: null,
+          sessionId: 'multi-001',
+          timestamp: '2026-04-01T00:00:00Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            parts: [
+              { text: 'first chunk' },
+              { type: 'image', data: 'abc' },
+              { text: 'second chunk' },
+            ],
+          },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+      expect(messages[0].content).toBe('first chunk\nsecond chunk');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it('streamMessages respects limit', async () => {
