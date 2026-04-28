@@ -49,6 +49,48 @@ final class ServiceWriterGateTests: XCTestCase {
         }
     }
 
+    func testCheckpointTruncateShrinksWalAfterPendingWrites() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let walPath = paths.database.path + "-wal"
+        let fileManager = FileManager.default
+
+        // Create a table and insert enough rows to grow the WAL.
+        _ = try await gate.performWriteCommand(name: "seed_table") { writer in
+            try writer.write { db in
+                try db.execute(sql: "CREATE TABLE IF NOT EXISTS payload(id INTEGER PRIMARY KEY, data BLOB)")
+            }
+        }
+        for batch in 0..<8 {
+            _ = try await gate.performWriteCommand(name: "seed_rows_\(batch)") { writer in
+                try writer.write { db in
+                    for i in 0..<200 {
+                        try db.execute(
+                            sql: "INSERT INTO payload(data) VALUES (?)",
+                            arguments: [Data(repeating: UInt8(i & 0xff), count: 4096)]
+                        )
+                    }
+                }
+            }
+        }
+
+        // PASSIVE alone should leave the WAL file size > 0.
+        try await gate.checkpointWal()
+        let walSizeAfterPassive = try Self.fileSize(walPath, fileManager: fileManager)
+        XCTAssertGreaterThan(walSizeAfterPassive, 0, "PASSIVE checkpoint must not shrink WAL file")
+
+        // TRUNCATE should bring it down to 0.
+        let result = try await gate.checkpointTruncate()
+        XCTAssertEqual(result.busy, 0, "no concurrent reader, truncate must succeed")
+        let walSizeAfterTruncate = try Self.fileSize(walPath, fileManager: fileManager)
+        XCTAssertEqual(walSizeAfterTruncate, 0, "TRUNCATE must shrink WAL file to 0 bytes")
+    }
+
+    private static func fileSize(_ path: String, fileManager: FileManager) throws -> UInt64 {
+        let attrs = try fileManager.attributesOfItem(atPath: path)
+        return (attrs[.size] as? UInt64) ?? 0
+    }
+
     func testConcurrentWriteCommandsExecuteSerially() async throws {
         let paths = try makeGatePaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)

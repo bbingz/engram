@@ -26,6 +26,20 @@ public final class EngramDatabaseWriter {
         }
     }
 
+    /// Truncates the WAL file on disk. Returns `(busy, log, checkpointed)` from
+    /// SQLite. May block on `busy_timeout` if a reader holds a frame; caller is
+    /// responsible for tolerating failures (e.g. continuing to rely on PASSIVE).
+    @discardableResult
+    public func checkpointTruncate() throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
+        try pool.write { db in
+            let row = try Row.fetchOne(db, sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            let busy = row?["busy"] as Int64? ?? 1
+            let log = row?["log"] as Int64? ?? 0
+            let chk = row?["checkpointed"] as Int64? ?? 0
+            return (busy, log, chk)
+        }
+    }
+
     public func migrate() throws {
         try pool.write { db in
             try EngramMigrationRunner.migrate(db)

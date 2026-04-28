@@ -41,7 +41,36 @@ public enum EngramServiceRunner {
             withIntermediateDirectories: true
         )
 
+        ServiceLogger.info(
+            "starting service: socket=\(socketPath) database=\(databasePath)",
+            category: .runner
+        )
+
         let gate = try ServiceWriterGate(databasePath: databasePath, runtimeDirectory: runtimeDirectory)
+
+        // One-shot TRUNCATE checkpoint at startup: PASSIVE never shrinks the
+        // WAL file on disk, so without this the file grows monotonically.
+        // Best-effort — busy/failed is fine, the 20s PASSIVE timer keeps running.
+        do {
+            let result = try await gate.checkpointTruncate()
+            if result.busy == 0 {
+                ServiceLogger.notice(
+                    "startup wal truncate succeeded: log=\(result.logFrames) checkpointed=\(result.checkpointed)",
+                    category: .checkpoint
+                )
+            } else {
+                ServiceLogger.info(
+                    "startup wal truncate skipped (reader busy): log=\(result.logFrames) checkpointed=\(result.checkpointed)",
+                    category: .checkpoint
+                )
+            }
+        } catch {
+            ServiceLogger.warn(
+                "startup wal truncate failed; falling back to periodic PASSIVE: \(error.localizedDescription)",
+                category: .checkpoint
+            )
+        }
+
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
             readProvider: SQLiteEngramServiceReadProvider(databasePath: databasePath)
@@ -55,15 +84,22 @@ public enum EngramServiceRunner {
                 try await Task.sleep(nanoseconds: 20_000_000_000)
                 do {
                     try await gate.checkpointWal()
+                    ServiceLogger.info("wal checkpoint succeeded (mode=PASSIVE)", category: .checkpoint)
                     print(#"{"event":"checkpoint","mode":"PASSIVE","ok":true}"#)
                     fflush(stdout)
                 } catch {
+                    ServiceLogger.error(
+                        "wal checkpoint failed (mode=PASSIVE)",
+                        category: .checkpoint,
+                        error: error
+                    )
                     print(#"{"event":"checkpoint","mode":"PASSIVE","ok":false,"error":"\#(error.localizedDescription)"}"#)
                     fflush(stdout)
                 }
             }
         }
 
+        ServiceLogger.notice("service ready, listening on \(socketPath)", category: .runner)
         print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
         fflush(stdout)
 

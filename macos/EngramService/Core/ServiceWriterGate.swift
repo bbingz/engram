@@ -85,6 +85,23 @@ public actor ServiceWriterGate {
         }
     }
 
+    /// Best-effort TRUNCATE checkpoint. Returns the SQLite result tuple so the
+    /// caller can decide whether to log/retry. Throws only if the underlying
+    /// pool write fails outright; a `busy=1` result is considered a normal
+    /// outcome (a reader held the WAL) — caller inspects the tuple.
+    @discardableResult
+    public func checkpointTruncate() async throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
+        await writeSemaphore.wait()
+        do {
+            let result = try writer.checkpointTruncate()
+            await writeSemaphore.signal()
+            return result
+        } catch {
+            await writeSemaphore.signal()
+            throw error
+        }
+    }
+
     private static func validateRuntimeDirectory(_ directory: URL) throws {
         var info = stat()
         guard lstat(directory.path, &info) == 0 else {

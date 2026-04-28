@@ -114,3 +114,37 @@ func mutateEngramSettings(_ transform: (inout [String: Any]) -> Void) {
         try? data.write(to: engramSettingsPath)
     }
 }
+
+// MARK: - One-time scrub of deprecated settings keys
+
+/// Settings keys + Keychain accounts kept around for users upgrading from a
+/// version that wrote them, but whose backing feature has been removed.
+/// Add new entries here whenever a setting/feature is retired.
+enum DeprecatedSettings {
+    static let jsonKeys: [String] = ["viking"]
+    static let keychainAccounts: [String] = ["vikingApiKey"]
+
+    /// Removes deprecated keys from the given settings dict in place.
+    /// Returns true if any key was removed.
+    @discardableResult
+    static func scrub(_ settings: inout [String: Any]) -> Bool {
+        var changed = false
+        for key in jsonKeys where settings.removeValue(forKey: key) != nil {
+            changed = true
+        }
+        return changed
+    }
+}
+
+/// Idempotent: removes settings.json keys + Keychain entries left behind by
+/// features that have been removed from the codebase. Safe to call on every launch.
+func removeDeprecatedSettingsKeysIfNeeded() {
+    for account in DeprecatedSettings.keychainAccounts where KeychainHelper.get(account) != nil {
+        KeychainHelper.delete(account)
+    }
+    guard var settings = readEngramSettings() else { return }
+    guard DeprecatedSettings.scrub(&settings) else { return }
+    if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
+        try? data.write(to: engramSettingsPath)
+    }
+}

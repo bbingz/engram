@@ -41,6 +41,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One-time: migrate plaintext API keys from settings.json to Keychain
         migrateKeysToKeychainIfNeeded()
+        // One-time: scrub settings + Keychain entries for removed features (e.g. Viking)
+        removeDeprecatedSettingsKeysIfNeeded()
 
         // Hide from Dock — menu bar only (keep .regular for test/popover so XCUITest can see the window)
         if environment.popoverStandalone || environment.windowSize != nil {
