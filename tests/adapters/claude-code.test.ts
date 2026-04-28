@@ -87,6 +87,25 @@ describe('ClaudeCodeAdapter', () => {
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant']);
   });
 
+  it('returns null for files with sessionId but no user/assistant records', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cc-metaonly-${Date.now()}`);
+    const filePath = join(tmpRoot, 'meta-only.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        '{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"meta-only-1"}',
+        '{"type":"attachment","sessionId":"meta-only-1","attachment":{"type":"hook_success","hookName":"SessionStart"}}',
+      ].join('\n'),
+    );
+    try {
+      const info = await adapter.parseSessionInfo(filePath);
+      expect(info).toBeNull();
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('counts tool_result messages separately from user messages', async () => {
     const info = await adapter.parseSessionInfo(TOOL_FIXTURE);
     expect(info).not.toBeNull();

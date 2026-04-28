@@ -1,6 +1,8 @@
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { KimiAdapter } from '../../src/adapters/kimi.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,5 +55,55 @@ describe('KimiAdapter', () => {
     const firstAsst = messages.find((m) => m.role === 'assistant');
     expect(firstUser?.timestamp).toBe('2026-02-02T02:40:01.000Z');
     expect(firstAsst?.timestamp).toBe('2026-02-02T02:41:00.000Z');
+  });
+
+  describe('turn-pair robustness when a TurnEnd is missing', () => {
+    const tmpRoot = join(tmpdir(), `engram-kimi-turns-${Date.now()}`);
+    const sessionsRoot = join(tmpRoot, 'sessions');
+    const sessDir = join(sessionsRoot, 'ws-x', 'sess-y');
+    const ctxPath = join(sessDir, 'context.jsonl');
+    const wirePath = join(sessDir, 'wire.jsonl');
+
+    beforeAll(() => {
+      mkdirSync(sessDir, { recursive: true });
+      writeFileSync(
+        ctxPath,
+        [
+          '{"role":"_checkpoint","id":0}',
+          '{"role":"user","content":"q1"}',
+          '{"role":"assistant","content":"a1"}',
+          '{"role":"user","content":"q2"}',
+          '{"role":"assistant","content":"a2"}',
+        ].join('\n'),
+      );
+      // turn 1: TurnBegin@10, TurnEnd@20
+      // turn 2: TurnBegin@30 (NO TurnEnd — simulates incomplete session)
+      writeFileSync(
+        wirePath,
+        [
+          '{"timestamp":1770000010,"message":{"type":"TurnBegin"}}',
+          '{"timestamp":1770000020,"message":{"type":"TurnEnd"}}',
+          '{"timestamp":1770000030,"message":{"type":"TurnBegin"}}',
+        ].join('\n'),
+      );
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('turn 2 assistant falls back to its own begin, not turn 1 end', async () => {
+      const a = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const messages = [];
+      for await (const msg of a.streamMessages(ctxPath)) messages.push(msg);
+      const users = messages.filter((m) => m.role === 'user');
+      const assts = messages.filter((m) => m.role === 'assistant');
+      // turn 1 begin = 1770000010 → 2026-02-02T02:40:10.000Z
+      expect(users[0].timestamp).toBe('2026-02-02T02:40:10.000Z');
+      // turn 1 end = 1770000020 → 2026-02-02T02:40:20.000Z
+      expect(assts[0].timestamp).toBe('2026-02-02T02:40:20.000Z');
+      // turn 2 begin = 1770000030 → user2 ts; assistant2 has no TurnEnd, must
+      // fall back to turn 2's begin (NOT to turn 1's end at 02:40:20).
+      expect(users[1].timestamp).toBe('2026-02-02T02:40:30.000Z');
+      expect(assts[1].timestamp).toBe('2026-02-02T02:40:30.000Z');
+    });
   });
 });

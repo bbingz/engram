@@ -114,8 +114,12 @@ export class VsCodeAdapter implements SessionAdapter {
   }
 
   // VS Code stores the workspace identity in workspaceStorage/<hash>/workspace.json
-  // alongside the chatSessions/ folder. Both single-folder and code-workspace
-  // shapes are supported here.
+  // alongside the chatSessions/ folder. Two shapes:
+  //   - single-folder: { "folder": "file:///path/to/proj" }
+  //   - multi-root:    { "configuration": "file:///path/to/foo.code-workspace" }
+  // For the latter, the configuration file itself is NOT a usable cwd — we
+  // open it and pull folders[0].path (resolving relative paths against the
+  // .code-workspace file's directory, per VS Code spec).
   private async readWorkspaceCwd(filePath: string): Promise<string> {
     try {
       const hashDir = dirname(dirname(filePath)); // .../<hash>/
@@ -125,11 +129,25 @@ export class VsCodeAdapter implements SessionAdapter {
         folder?: string;
         configuration?: string;
       };
-      const target = data.folder ?? data.configuration ?? '';
-      if (target.startsWith('file://')) {
-        return decodeURIComponent(target.slice('file://'.length));
+      if (data.folder) return decodeFileUri(data.folder);
+      if (data.configuration) {
+        const wsFile = decodeFileUri(data.configuration);
+        return await this.readCodeWorkspaceFirstFolder(wsFile);
       }
-      return target;
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
+  private async readCodeWorkspaceFirstFolder(wsFile: string): Promise<string> {
+    try {
+      const raw = await readFile(wsFile, 'utf8');
+      const ws = JSON.parse(raw) as { folders?: { path?: string }[] };
+      const first = ws.folders?.[0]?.path;
+      if (!first) return '';
+      // Absolute → use as-is. Relative → resolve against .code-workspace dir.
+      return first.startsWith('/') ? first : join(dirname(wsFile), first);
     } catch {
       return '';
     }
@@ -223,4 +241,11 @@ export class VsCodeAdapter implements SessionAdapter {
   async isAccessible(locator: string): Promise<boolean> {
     return isFileAccessible(locator);
   }
+}
+
+function decodeFileUri(uri: string): string {
+  if (uri.startsWith('file://')) {
+    return decodeURIComponent(uri.slice('file://'.length));
+  }
+  return uri;
 }

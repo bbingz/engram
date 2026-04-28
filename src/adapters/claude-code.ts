@@ -125,7 +125,11 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         }
       }
 
-      if (!sessionId) return null;
+      // sessionId is captured before the type filter so single-record sessions
+      // can still resolve, but a file with NO message records (only permission-
+      // mode / attachment / etc.) yields nothing useful — keep parity with the
+      // pre-Batch-3 behavior of returning null instead of an empty-startTime row.
+      if (!sessionId || !startTime) return null;
 
       const isSubagent = filePath.includes('/subagents/');
       // Subagent files share sessionId with the parent — use agentId as the unique DB key

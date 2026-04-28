@@ -73,7 +73,12 @@ export class KimiAdapter implements SessionAdapter {
       const sessionId = basename(dirname(filePath));
 
       const cwd = await this.resolveCwd(sessionId);
-      const wireTs = await this.readTimestamps(filePath);
+      const turns = await this.readTurnTimestamps(filePath);
+      const wireStart = turns[0]?.begin ?? '';
+      const wireEnd =
+        turns.length > 0
+          ? (turns[turns.length - 1].end ?? turns[turns.length - 1].begin)
+          : '';
 
       let userCount = 0;
       let assistantCount = 0;
@@ -117,13 +122,13 @@ export class KimiAdapter implements SessionAdapter {
         }
       }
 
-      // Prefer wire.jsonl turn timestamps; fall back to line-level timestamps
-      // before resorting to file mtime.
+      // Prefer wire.jsonl turn boundaries (skips heartbeats / metadata);
+      // fall back to line-level timestamps before resorting to file mtime.
       const startTime =
-        wireTs.startTime ||
+        wireStart ||
         firstLineTs ||
         new Date(fileStat.mtimeMs - 60000).toISOString();
-      const endTime = wireTs.endTime || lastLineTs || startTime;
+      const endTime = wireEnd || lastLineTs || startTime;
 
       return {
         id: sessionId,
@@ -154,11 +159,12 @@ export class KimiAdapter implements SessionAdapter {
     let count = 0;
     let yielded = 0;
 
-    // Pull turn-level timestamps from wire.jsonl so messages can be aligned
-    // back to wall-clock time (kimi context.jsonl rows have no ts of their own).
+    // Pull paired turn timestamps from wire.jsonl. Pairing (rather than two
+    // independent arrays) keeps assistant timestamps aligned even if a turn's
+    // TurnEnd is missing — the affected turn just falls back to its begin.
     const turns = await this.readTurnTimestamps(filePath);
-    let userIdx = 0;
-    let asstIdx = 0;
+    let turnIdx = 0;
+    let lastRole: 'user' | 'assistant' | null = null;
 
     // Stream from all context files in order
     for (const file of await this.getAllContextFiles(filePath)) {
@@ -174,10 +180,18 @@ export class KimiAdapter implements SessionAdapter {
           if (role !== 'user' && role !== 'assistant') continue;
 
           const lineTs = this.extractLineTimestamp(obj);
+          // Advance the turn cursor when a new turn starts: a user message
+          // begins a turn; an assistant message after another assistant means
+          // the previous turn never closed but a new turn is implied.
+          if (role === 'user' && lastRole !== null) {
+            turnIdx++;
+          } else if (role === 'assistant' && lastRole === 'assistant') {
+            turnIdx++;
+          }
+          const turn = turns[turnIdx];
           const wireTs =
-            role === 'user' ? turns.begins[userIdx] : turns.ends[asstIdx];
-          if (role === 'user') userIdx++;
-          else asstIdx++;
+            role === 'user' ? turn?.begin : (turn?.end ?? turn?.begin);
+          lastRole = role as 'user' | 'assistant';
 
           if (count < offset) {
             count++;
@@ -252,36 +266,14 @@ export class KimiAdapter implements SessionAdapter {
     return '';
   }
 
-  private async readTimestamps(
-    contextPath: string,
-  ): Promise<{ startTime: string; endTime: string }> {
-    const wirePath = join(dirname(contextPath), 'wire.jsonl');
-    let startTime = '';
-    let endTime = '';
-
-    try {
-      for await (const line of this.readLines(wirePath)) {
-        const obj = this.parseLine(line);
-        if (!obj) continue;
-        if (typeof obj.timestamp !== 'number') continue;
-
-        const iso = new Date(obj.timestamp * 1000).toISOString();
-        if (!startTime) startTime = iso;
-        endTime = iso;
-      }
-    } catch {
-      // wire.jsonl not found or unreadable
-    }
-
-    return { startTime, endTime };
-  }
-
+  // Walk wire.jsonl and pair every TurnBegin with the next TurnEnd, keeping
+  // them as one record. This way a missing TurnEnd only drops the end of one
+  // turn — it doesn't shift subsequent assistants onto the wrong wall-clock.
   private async readTurnTimestamps(
     contextPath: string,
-  ): Promise<{ begins: string[]; ends: string[] }> {
+  ): Promise<{ begin: string; end?: string }[]> {
     const wirePath = join(dirname(contextPath), 'wire.jsonl');
-    const begins: string[] = [];
-    const ends: string[] = [];
+    const turns: { begin: string; end?: string }[] = [];
     try {
       for await (const line of this.readLines(wirePath)) {
         const obj = this.parseLine(line);
@@ -289,13 +281,17 @@ export class KimiAdapter implements SessionAdapter {
         const iso = new Date(obj.timestamp * 1000).toISOString();
         const message = obj.message as Record<string, unknown> | undefined;
         const type = message?.type;
-        if (type === 'TurnBegin') begins.push(iso);
-        else if (type === 'TurnEnd') ends.push(iso);
+        if (type === 'TurnBegin') {
+          turns.push({ begin: iso });
+        } else if (type === 'TurnEnd' && turns.length > 0) {
+          const last = turns[turns.length - 1];
+          if (!last.end) last.end = iso;
+        }
       }
     } catch {
       // wire.jsonl not found or unreadable
     }
-    return { begins, ends };
+    return turns;
   }
 
   private async *readLines(filePath: string): AsyncGenerator<string> {
