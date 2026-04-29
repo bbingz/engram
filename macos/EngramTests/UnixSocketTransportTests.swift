@@ -222,8 +222,10 @@ final class UnixSocketTransportTests: XCTestCase {
 private final class UnixSocketFixtureServer: @unchecked Sendable {
     private let socketPath: String
     private let fd: Int32
-    private let task: Task<Void, Never>
+    private let queue: DispatchQueue
     private let decoder = JSONDecoder()
+    private var stopped = false
+    private let stoppedLock = NSLock()
 
     init(
         socketPath: String,
@@ -231,13 +233,22 @@ private final class UnixSocketFixtureServer: @unchecked Sendable {
     ) throws {
         self.socketPath = socketPath
         self.fd = try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)
+        self.queue = DispatchQueue(label: "engram.unix-socket-fixture.\(UUID().uuidString)", attributes: .concurrent)
         let fd = self.fd
         let decoder = self.decoder
-        self.task = Task.detached {
-            while !Task.isCancelled {
+        let queue = self.queue
+        let isStopped: @Sendable () -> Bool = { [weak self] in
+            guard let self else { return true }
+            self.stoppedLock.lock()
+            defer { self.stoppedLock.unlock() }
+            return self.stopped
+        }
+
+        queue.async {
+            while !isStopped() {
                 let client = accept(fd, nil, nil)
                 if client < 0 { break }
-                Task.detached {
+                queue.async {
                     defer { close(client) }
                     do {
                         let data = try UnixSocketEngramServiceTransport.readFrame(from: client)
@@ -252,7 +263,9 @@ private final class UnixSocketFixtureServer: @unchecked Sendable {
     }
 
     func stop() {
-        task.cancel()
+        stoppedLock.lock()
+        stopped = true
+        stoppedLock.unlock()
         close(fd)
         try? FileManager.default.removeItem(atPath: socketPath)
     }

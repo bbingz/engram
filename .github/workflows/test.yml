@@ -89,6 +89,11 @@ jobs:
           npm ci
           npm run build
           npm run generate:fixtures
+          adapter_tmp="$(mktemp -d)"
+          npm run generate:adapter-parity-fixtures -- --out "$adapter_tmp"
+          mkdir -p tests/fixtures/adapter-parity/opencode/input
+          cp "$adapter_tmp/opencode/input/sample.db" tests/fixtures/adapter-parity/opencode/input/sample.db
+          rm -rf "$adapter_tmp"
 
       - name: Run Swift unit tests
         run: |
