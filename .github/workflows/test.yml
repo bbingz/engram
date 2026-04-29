@@ -98,7 +98,7 @@ jobs:
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee xcodebuild.log
-          grep -q '** TEST SUCCEEDED **' xcodebuild.log
+          grep -q '\*\* TEST SUCCEEDED \*\*' xcodebuild.log
 
       - name: Check Swift/Node schema compatibility
         run: npx tsx scripts/db/check-swift-schema-compat.ts --fixture-root tests/fixtures
@@ -131,7 +131,7 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
+      SCREENSHOTS_DIR: /tmp/engram-screenshots
     steps:
       - uses: actions/checkout@v4
         with:
@@ -170,14 +170,14 @@ jobs:
         run: |
           # XCUITest runner writes to sandbox temp dir — find and copy to known location
           SANDBOX_DIR="$HOME/Library/Containers/com.engram.EngramUITests.xctrunner/Data/tmp/engram-screenshots"
-          mkdir -p $SCREENSHOTS_DIR
+          mkdir -p "$SCREENSHOTS_DIR"
           if [ -d "$SANDBOX_DIR" ]; then
             cp -R "$SANDBOX_DIR"/* "$SCREENSHOTS_DIR"/ 2>/dev/null || true
           fi
       - name: Compare screenshots
         if: always()
         env:
-          SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
+          SCREENSHOTS_DIR: /tmp/engram-screenshots
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload diff artifacts
@@ -186,8 +186,8 @@ jobs:
         with:
           name: screenshot-diffs
           path: |
-            ${{ runner.temp }}/screenshots/diffs/
-            ${{ runner.temp }}/screenshots/comparison-report.json
+            /tmp/engram-screenshots/diffs/
+            /tmp/engram-screenshots/comparison-report.json
           retention-days: 14
       - name: Comment on PR
         if: failure()
@@ -224,7 +224,7 @@ jobs:
     timeout-minutes: 20
     needs: [typescript, swift-unit]
     env:
-      SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
+      SCREENSHOTS_DIR: /tmp/engram-screenshots
     steps:
       - uses: actions/checkout@v4
         with:
@@ -256,7 +256,7 @@ jobs:
         if: always()
         run: |
           SANDBOX_DIR="$HOME/Library/Containers/com.engram.EngramUITests.xctrunner/Data/tmp/engram-screenshots"
-          mkdir -p $SCREENSHOTS_DIR
+          mkdir -p "$SCREENSHOTS_DIR"
           if [ -d "$SANDBOX_DIR" ]; then
             cp -R "$SANDBOX_DIR"/* "$SCREENSHOTS_DIR"/ 2>/dev/null || true
           fi
@@ -269,6 +269,6 @@ jobs:
         with:
           name: screenshot-diffs-full
           path: |
-            ${{ runner.temp }}/screenshots/diffs/
-            ${{ runner.temp }}/screenshots/comparison-report.json
+            /tmp/engram-screenshots/diffs/
+            /tmp/engram-screenshots/comparison-report.json
           retention-days: 30
