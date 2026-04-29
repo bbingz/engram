@@ -5,7 +5,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
-## [Unreleased]
+## [1.0.1] - 2026-04-29
 
 ### Fixed — Pi Coding Agent sessions now index as `pi` (2026-04-29)
 

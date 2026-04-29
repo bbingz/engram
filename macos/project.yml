@@ -185,6 +185,8 @@ targets:
       properties:
         LSUIElement: true
         CFBundleDisplayName: Engram
+        CFBundleShortVersionString: "1.0.1"
+        CFBundleVersion: "2"
         NSPrincipalClass: NSApplication
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.app
