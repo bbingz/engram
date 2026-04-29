@@ -13,13 +13,30 @@ function runScript(path: string): string {
   });
 }
 
+function hasXcodegen(): boolean {
+  try {
+    execFileSync('xcodegen', ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe('Swift module boundary scripts', () => {
-  it('enforces app, MCP, and CLI cannot depend on EngramCoreWrite', () => {
-    const script = resolve(
-      repoRoot,
-      'scripts/check-swift-module-boundaries.sh',
-    );
-    expect(existsSync(script)).toBe(true);
-    expect(runScript(script)).toContain('swift module boundaries ok');
-  });
+  const boundaryTest = hasXcodegen() ? it : it.skip;
+
+  boundaryTest(
+    'enforces app, MCP, and CLI cannot depend on EngramCoreWrite',
+    () => {
+      const script = resolve(
+        repoRoot,
+        'scripts/check-swift-module-boundaries.sh',
+      );
+      expect(existsSync(script)).toBe(true);
+      expect(runScript(script)).toContain('swift module boundaries ok');
+    },
+  );
 });
