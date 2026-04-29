@@ -53,7 +53,7 @@ final class DarkModeTests: XCTestCase {
     func testSettingsDark() {
         let sidebar = SidebarScreen(app: app)
         sidebar.waitForLoad()
-        sidebar.settingsItem.click()
+        sidebar.navigateToSettings()
 
         let settings = SettingsScreen(app: app)
         settings.waitForLoad()

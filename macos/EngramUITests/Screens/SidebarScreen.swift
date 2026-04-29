@@ -36,6 +36,17 @@ struct SidebarScreen {
         button.click()
     }
 
+    func navigateToSettings() {
+        XCTAssertTrue(settingsItem.waitForExistence(timeout: 10),
+                      "Settings sidebar item should exist")
+
+        if !settingsItem.isHittable {
+            settingsItem.scrollToVisible(in: container)
+        }
+
+        settingsItem.click()
+    }
+
     func allItems() -> [XCUIElement] {
         Self.pages.map { item(for: $0) }
     }

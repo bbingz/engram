@@ -68,12 +68,13 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// Sidebar sections (Settings excluded — it's pinned to bottom)
+    /// Sidebar sections
     enum Section: String, CaseIterable {
         case overview  = "OVERVIEW"
         case monitor   = "MONITOR"
         case workspace = "WORKSPACE"
         case config    = "CONFIG"
+        case system    = "SYSTEM"
 
         var screens: [Screen] {
             switch self {
@@ -81,6 +82,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
             case .monitor:   return [.sessions, .timeline, .activity, .observability, .hygiene]
             case .workspace: return [.projects, .sourcePulse, .repos, .workGraph]
             case .config:    return [.skills, .agents, .memory, .hooks]
+            case .system:    return [.settings]
             }
         }
     }

@@ -31,11 +31,7 @@ final class NavigationTests: XCTestCase {
     func testSettingsReachable() {
         let sidebar = SidebarScreen(app: app)
         sidebar.waitForLoad()
-
-        let settingsButton = sidebar.settingsItem
-        XCTAssertTrue(settingsButton.waitForExistence(timeout: 3),
-                      "Settings button should exist in sidebar")
-        settingsButton.click()
+        sidebar.navigateToSettings()
 
         let settings = SettingsScreen(app: app)
         XCTAssertTrue(settings.container.waitForExistence(timeout: 5),

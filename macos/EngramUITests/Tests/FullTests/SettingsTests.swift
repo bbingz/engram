@@ -18,10 +18,7 @@ final class SettingsTests: XCTestCase {
     private func openSettings() {
         let sidebar = SidebarScreen(app: app)
         sidebar.waitForLoad()
-        let settingsButton = sidebar.settingsItem
-        XCTAssertTrue(settingsButton.waitForExistence(timeout: 3),
-                      "Settings sidebar item should exist")
-        settingsButton.click()
+        sidebar.navigateToSettings()
     }
 
     func testFiveSectionTabs() {
