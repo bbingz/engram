@@ -21,6 +21,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let sizeBytes: Int
     let indexedAt: String
     let agentRole: String?
+    let origin: String?
     let hiddenAt: String?
     let customName: String?
     let tier: String?
@@ -43,6 +44,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case sizeBytes        = "size_bytes"
         case indexedAt        = "indexed_at"
         case agentRole        = "agent_role"
+        case origin
         case hiddenAt         = "hidden_at"
         case customName       = "custom_name"
         case tier
@@ -73,6 +75,10 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     var displayDate: String        { String(startTime.prefix(10)) }
     var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }
     var isSubAgent: Bool           { agentRole != nil }
+    var remoteOrigin: String? {
+        guard let origin, !origin.isEmpty, origin != "local" else { return nil }
+        return origin
+    }
     var hasParent: Bool { parentSessionId != nil }
     var hasSuggestedParent: Bool { suggestedParentId != nil && parentSessionId == nil }
     var formattedSize: String {

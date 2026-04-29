@@ -12,8 +12,8 @@ export const statsTool = {
       until: { type: 'string' },
       group_by: {
         type: 'string',
-        enum: ['source', 'project', 'day', 'week'],
-        description: '按维度分组，默认 source',
+        enum: ['source', 'project', 'origin', 'node', 'day', 'week'],
+        description: '按维度分组，默认 source；origin/node 用于按同步节点统计',
       },
     },
     additionalProperties: false,

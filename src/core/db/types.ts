@@ -6,6 +6,8 @@ export interface ListSessionsOptions {
   sources?: string[];
   project?: string;
   projects?: string[];
+  origin?: string;
+  origins?: string[];
   since?: string;
   until?: string;
   limit?: number;

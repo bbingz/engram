@@ -119,6 +119,8 @@ function applyFilters(
     | 'sources'
     | 'project'
     | 'projects'
+    | 'origin'
+    | 'origins'
     | 'since'
     | 'until'
     | 'agents'
@@ -158,6 +160,23 @@ function applyFilters(
       return `@p${i}`;
     });
     conditions.push(`project IN (${placeholders.join(',')})`);
+  }
+  const effectiveOrigins = opts.origins?.length
+    ? opts.origins
+    : opts.origin
+      ? [opts.origin]
+      : [];
+  if (effectiveOrigins.length === 1) {
+    conditions.push("COALESCE(NULLIF(origin, ''), 'local') = @origin");
+    params.origin = effectiveOrigins[0];
+  } else if (effectiveOrigins.length > 1) {
+    const placeholders = effectiveOrigins.map((o, i) => {
+      params[`o${i}`] = o;
+      return `@o${i}`;
+    });
+    conditions.push(
+      `COALESCE(NULLIF(origin, ''), 'local') IN (${placeholders.join(',')})`,
+    );
   }
   if ('since' in opts && opts.since) {
     conditions.push('start_time >= @since');
@@ -391,7 +410,13 @@ export function countSessions(
   db: BetterSqlite3.Database,
   opts: Pick<
     ListSessionsOptions,
-    'source' | 'sources' | 'project' | 'projects' | 'agents'
+    | 'source'
+    | 'sources'
+    | 'project'
+    | 'projects'
+    | 'origin'
+    | 'origins'
+    | 'agents'
   >,
   noiseFilter: NoiseFilter,
   resolveAliases: (projects: string[]) => string[],
@@ -443,6 +468,15 @@ export function listSources(db: BetterSqlite3.Database): string[] {
     )
     .all() as { source: string }[];
   return rows.map((r) => r.source);
+}
+
+export function listOrigins(db: BetterSqlite3.Database): string[] {
+  const rows = db
+    .prepare(
+      "SELECT DISTINCT COALESCE(NULLIF(origin, ''), 'local') as origin FROM sessions WHERE hidden_at IS NULL ORDER BY origin",
+    )
+    .all() as { origin: string }[];
+  return rows.map((r) => r.origin);
 }
 
 export function getSourceStats(db: BetterSqlite3.Database): {

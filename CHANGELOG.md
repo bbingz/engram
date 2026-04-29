@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — Remote node visibility for Pi sync (2026-04-29)
+
+- Added `origin` / `node` statistics grouping so synced Raspberry Pi sessions can be counted by device instead of being hidden inside their tool source.
+- Added `origin` filtering to session APIs and the Web UI session list, plus non-local node labels on Web/macOS session cards.
+- Confirmed current local database has only `local` origin rows; Pi sessions require a configured and reachable sync peer before they can appear.
+
 ### Changed — GitHub public presentation refresh (2026-04-29)
 
 - Reworked [README.md](README.md) as an English public landing page with badges, release/source install paths, MCP setup examples, privacy positioning, and Mermaid flow diagrams.

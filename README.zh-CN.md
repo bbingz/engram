@@ -121,6 +121,8 @@ node dist/daemon.js
 
 macOS 菜单栏应用和 macOS-only 集成不能在 Raspberry Pi 上运行；MCP server、daemon、Web UI、索引、搜索、记忆和项目整理工具可以通过 Node.js 20+ 源码构建运行。
 
+如果要在另一台机器上看到 Pi 的会话，需要把 Pi 配成 sync peer 并从那台机器拉取。同步后的行仍保留原工具来源，例如 `codex` 或 `claude-code`，节点名写在 `origin`；在 Stats → By Node，或调用 `stats({ "group_by": "origin" })`，可以单独统计 Pi 活动。
+
 ## 注册为 MCP Server
 
 源码构建完成后，把 MCP 客户端指向 `dist/index.js`。

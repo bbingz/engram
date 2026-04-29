@@ -481,6 +481,7 @@ export function createApp(
   app.get('/api/sessions', (c) => {
     const source = c.req.query('source') as SourceName | undefined;
     const project = c.req.query('project');
+    const origin = c.req.query('origin');
     const since = c.req.query('since');
     const until = c.req.query('until');
     const limitParam = c.req.query('limit');
@@ -492,6 +493,7 @@ export function createApp(
     const sessions = db.listSessions({
       source,
       project,
+      origin,
       since,
       until,
       limit,
@@ -1666,11 +1668,15 @@ export function createApp(
   app.get('/', (c) => {
     const sourceParam = c.req.query('source') || '';
     const projectParam = c.req.query('project') || '';
+    const originParam = c.req.query('origin') || '';
     const selectedSources = sourceParam
       ? sourceParam.split(',').filter(Boolean)
       : [];
     const selectedProjects = projectParam
       ? projectParam.split(',').filter(Boolean)
+      : [];
+    const selectedOrigins = originParam
+      ? originParam.split(',').filter(Boolean)
       : [];
     const limitParam = c.req.query('limit');
     const offsetParam = c.req.query('offset');
@@ -1691,6 +1697,7 @@ export function createApp(
     const sessions = db.listSessions({
       sources: selectedSources,
       projects: selectedProjects,
+      origins: selectedOrigins,
       limit,
       offset,
       agents,
@@ -1698,10 +1705,12 @@ export function createApp(
     const total = db.countSessions({
       sources: selectedSources,
       projects: selectedProjects,
+      origins: selectedOrigins,
       agents,
     });
     const sources = db.listSources();
     const projects = db.listProjects();
+    const origins = db.listOrigins();
 
     return c.html(
       sessionListPage(sessions, {
@@ -1714,6 +1723,8 @@ export function createApp(
         agents,
         selectedProjects,
         projects,
+        selectedOrigins,
+        origins,
       }),
     );
   });

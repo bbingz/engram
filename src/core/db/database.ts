@@ -154,7 +154,13 @@ export class Database {
   countSessions(
     opts: Pick<
       ListSessionsOptions,
-      'source' | 'sources' | 'project' | 'projects' | 'agents'
+      | 'source'
+      | 'sources'
+      | 'project'
+      | 'projects'
+      | 'origin'
+      | 'origins'
+      | 'agents'
     > = {},
   ): number {
     return sessions.countSessions(this.db, opts, this.noiseFilter, (p) =>
@@ -171,6 +177,9 @@ export class Database {
   }
   listSources(): string[] {
     return sessions.listSources(this.db);
+  }
+  listOrigins(): string[] {
+    return sessions.listOrigins(this.db);
   }
   getSourceStats(): {
     source: string;

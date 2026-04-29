@@ -384,6 +384,8 @@ interface SessionListOpts {
   sources: string[];
   selectedProjects: string[];
   projects: string[];
+  selectedOrigins: string[];
+  origins: string[];
   agents?: 'hide' | 'only';
 }
 
@@ -399,6 +401,8 @@ export function sessionListPage(
     sources,
     selectedProjects,
     projects,
+    selectedOrigins,
+    origins,
     agents,
   } = opts;
 
@@ -421,11 +425,19 @@ export function sessionListPage(
             : [overrides.projects]
           ).filter(Boolean)
         : selectedProjects;
+    const orgs =
+      overrides.origins !== undefined
+        ? (Array.isArray(overrides.origins)
+            ? overrides.origins
+            : [overrides.origins]
+          ).filter(Boolean)
+        : selectedOrigins;
     const ag = (
       overrides.agents !== undefined ? overrides.agents : (agents ?? 'hide')
     ) as string;
     if (srcs.length) p.set('source', srcs.join(','));
     if (prjs.length) p.set('project', prjs.join(','));
+    if (orgs.length) p.set('origin', orgs.join(','));
     if (ag && ag !== 'hide') p.set('agents', ag);
     const qs = p.toString();
     return qs ? `/?${qs}` : '/';
@@ -469,6 +481,23 @@ export function sessionListPage(
         ? selectedProjects[0]
         : `${selectedProjects.length} projects`;
 
+  const originCheckboxes = origins
+    .map((o) => {
+      const checked = selectedOrigins.includes(o) ? ' checked' : '';
+      return `<label class="ms-option" data-value="${escapeHtml(o)}">
+      <input type="checkbox"${checked} onchange="updateMultiFilter('origin')">
+      ${escapeHtml(o)}
+    </label>`;
+    })
+    .join('');
+
+  const originTriggerLabel =
+    selectedOrigins.length === 0
+      ? 'All nodes'
+      : selectedOrigins.length === 1
+        ? selectedOrigins[0]
+        : `${selectedOrigins.length} nodes`;
+
   // Agent filter chips
   const chipAll = `<a href="${filterUrl({ agents: 'all' })}" class="chip${!agents ? ' active' : ''}" title="Show all sessions">All</a>`;
   const chipHide = `<a href="${filterUrl({ agents: '' })}" class="chip${agents === 'hide' ? ' active' : ''}" title="Hide agent/subagent sessions">Hide Agents</a>`;
@@ -497,6 +526,16 @@ export function sessionListPage(
           ${projectCheckboxes}
         </div>
       </div>
+      <div class="ms" id="ms-origin">
+        <button type="button" class="ms-trigger${selectedOrigins.length ? ' ms-has-sel' : ''}" onclick="toggleDropdown('ms-origin')">
+          ${escapeHtml(originTriggerLabel)}
+          <span class="ms-arrow">&#9662;</span>
+        </button>
+        <div class="ms-dropdown">
+          ${selectedOrigins.length ? '<a class="ms-clear" onclick="clearFilter(\'origin\')">Clear</a>' : ''}
+          ${originCheckboxes}
+        </div>
+      </div>
       <div class="chip-group">${chipAll}${chipHide}${chipOnly}</div>
       <form action="/goto" method="get" class="goto-form">
         <input type="text" name="id" class="goto-input" placeholder="Session ID…" title="Paste a session UUID to jump to it">
@@ -517,11 +556,16 @@ export function sessionListPage(
       const proj = s.project
         ? `<span>${escapeHtml(s.project)}</span><span class="sep">&middot;</span>`
         : '';
+      const origin =
+        s.origin && s.origin !== 'local'
+          ? `<span>${escapeHtml(s.origin)}</span><span class="sep">&middot;</span>`
+          : '';
       return `<a href="/session/${encodeURIComponent(s.id)}" class="session-card">
       <div class="title">${title}</div>
       <div class="meta">
         ${sourceBadge(s.source)} ${agentTag}
         <span class="sep">&middot;</span>
+        ${origin}
         ${proj}
         <span title="${escapeHtml(fullDate)}">${escapeHtml(date)}</span>
         <span class="sep">&middot;</span>
@@ -538,6 +582,7 @@ export function sessionListPage(
     p.set('limit', String(limit));
     if (selectedSources.length) p.set('source', selectedSources.join(','));
     if (selectedProjects.length) p.set('project', selectedProjects.join(','));
+    if (selectedOrigins.length) p.set('origin', selectedOrigins.join(','));
     if (agents && agents !== 'hide') p.set('agents', agents);
     return `/?${p.toString()}`;
   }
@@ -810,7 +855,7 @@ export function statsPage(
     })
     .join('\n');
 
-  const tabs = ['source', 'project', 'day']
+  const tabs = ['source', 'project', 'origin', 'day']
     .map((g) => {
       const active = g === groupBy ? ' active' : '';
       const label =
@@ -818,7 +863,9 @@ export function statsPage(
           ? 'By Source'
           : g === 'project'
             ? 'By Project'
-            : 'By Day';
+            : g === 'origin'
+              ? 'By Node'
+              : 'By Day';
       return `<a href="/stats?group_by=${g}&exclude_noise=${excludeNoise ? '1' : '0'}" class="stat-tabs-item${active}">${label}</a>`;
     })
     .join('');

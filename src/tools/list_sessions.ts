@@ -31,6 +31,7 @@ export const listSessionsTool = {
         description: '过滤特定工具的会话',
       },
       project: { type: 'string', description: '过滤特定项目（部分匹配）' },
+      origin: { type: 'string', description: '过滤特定同步节点，例如 pi' },
       since: { type: 'string', description: '开始时间（ISO 8601）' },
       until: { type: 'string', description: '结束时间（ISO 8601）' },
       limit: { type: 'number', description: '最多返回条数，默认 20，最大 100' },
@@ -45,6 +46,7 @@ export async function handleListSessions(
   params: {
     source?: SourceName;
     project?: string;
+    origin?: string;
     since?: string;
     until?: string;
     limit?: number;
@@ -55,6 +57,7 @@ export async function handleListSessions(
   opts2?.log?.info('list_sessions invoked', {
     source: params.source,
     project: params.project,
+    origin: params.origin,
     limit: params.limit,
   });
   const opts: ListSessionsOptions = {
@@ -76,6 +79,7 @@ export async function handleListSessions(
       endTime: toLocalDateTime(s.endTime),
       cwd: s.cwd,
       project: s.project,
+      origin: s.origin,
       model: s.model,
       messageCount: s.messageCount,
       userMessageCount: s.userMessageCount,

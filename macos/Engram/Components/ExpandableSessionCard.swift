@@ -70,6 +70,13 @@ struct ExpandableSessionCard: View {
                             ProjectBadge(project: project, source: session.source)
                         }
 
+                        if let origin = session.remoteOrigin {
+                            Text(origin)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                                .lineLimit(1)
+                        }
+
                         // Child count badge
                         if totalChildCount > 0 {
                             childCountBadge

@@ -19,6 +19,9 @@ export function statsGroupBy(
 ): StatsGroup[] {
   let groupExpr: string;
   if (groupBy === 'project') groupExpr = "COALESCE(project, '(unknown)')";
+  else if (groupBy === 'origin' || groupBy === 'node')
+    groupExpr =
+      "COALESCE(NULLIF(origin, ''), NULLIF(authoritative_node, ''), 'local')";
   else if (groupBy === 'day') groupExpr = "date(start_time, 'localtime')";
   else if (groupBy === 'week')
     groupExpr = "date(start_time, 'localtime', 'weekday 0', '-6 days')";

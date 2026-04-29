@@ -327,6 +327,7 @@ extension EngramServiceSearchResponse.Item {
             sizeBytes: sizeBytes ?? 0,
             indexedAt: indexedAt ?? "",
             agentRole: agentRole,
+            origin: nil,
             hiddenAt: nil,
             customName: customName,
             tier: tier,

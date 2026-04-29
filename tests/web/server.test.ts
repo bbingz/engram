@@ -74,6 +74,20 @@ describe('Web Server', () => {
     expect(body.sessions[0].source).toBe('codex');
   });
 
+  it('GET /api/sessions supports origin filter', async () => {
+    db.upsertSession({ ...mockSession, origin: 'local' });
+    db.upsertSession({
+      ...mockSession,
+      id: 'session-pi',
+      origin: 'pi',
+    });
+    const res = await app.request('/api/sessions?origin=pi');
+    const body = await res.json();
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0].id).toBe('session-pi');
+    expect(body.sessions[0].origin).toBe('pi');
+  });
+
   it('GET /api/sessions/:id returns single session', async () => {
     db.upsertSession(mockSession);
     const res = await app.request('/api/sessions/session-001');
@@ -119,6 +133,24 @@ describe('Web Server', () => {
     const body = await res.json();
     expect(body.groups.length).toBeGreaterThan(0);
     expect(body.totalSessions).toBe(2);
+  });
+
+  it('GET /api/stats can group by origin node', async () => {
+    db.upsertSession({ ...mockSession, origin: 'local' });
+    db.upsertSession({
+      ...mockSession,
+      id: 'session-pi',
+      origin: 'pi',
+      messageCount: 8,
+      userMessageCount: 4,
+    });
+    const res = await app.request('/api/stats?group_by=origin');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.groups.map((g: { key: string }) => g.key).sort()).toEqual([
+      'local',
+      'pi',
+    ]);
   });
 
   it('GET /api/sync/sessions returns sessions since timestamp', async () => {
@@ -835,9 +867,11 @@ describe('HTML routes', () => {
 
   it('GET /stats supports group_by parameter', async () => {
     db.upsertSession(mockSession);
-    const res = await app.request('/stats?group_by=project');
+    const res = await app.request('/stats?group_by=origin');
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain('<!DOCTYPE html>');
+    const html = await res.text();
+    expect(html).toContain('<!DOCTYPE html>');
+    expect(html).toContain('By Node');
   });
 
   it('GET /settings returns settings page HTML', async () => {

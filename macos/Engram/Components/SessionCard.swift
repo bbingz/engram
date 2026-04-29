@@ -28,6 +28,13 @@ struct SessionCard: View {
                     ProjectBadge(project: project, source: session.source)
                 }
 
+                if let origin = session.remoteOrigin {
+                    Text(origin)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                        .lineLimit(1)
+                }
+
                 Text("\(session.messageCount) msgs")
                     .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)
