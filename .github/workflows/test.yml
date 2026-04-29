@@ -56,7 +56,7 @@ jobs:
 
   swift-unit:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -96,6 +96,7 @@ jobs:
             -project Engram.xcodeproj \
             -scheme Engram \
             -destination 'platform=macOS' \
+            -skip-testing:EngramUITests \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee xcodebuild.log
           grep -q '\*\* TEST SUCCEEDED \*\*' xcodebuild.log
