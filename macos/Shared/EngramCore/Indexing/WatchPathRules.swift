@@ -49,6 +49,7 @@ public enum WatchPathRules {
     public static func watchEntries(home: String) -> [WatchEntry] {
         [
             WatchEntry(path: join(home, ".codex", "sessions"), source: .codex),
+            WatchEntry(path: join(home, ".codex", "archived_sessions"), source: .codex),
             WatchEntry(path: join(home, ".claude", "projects"), source: .claudeCode),
             WatchEntry(path: join(home, ".gemini", "tmp"), source: .geminiCli),
             WatchEntry(path: join(home, ".gemini", "antigravity"), source: .antigravity),

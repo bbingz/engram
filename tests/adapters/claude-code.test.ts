@@ -44,6 +44,42 @@ describe('ClaudeCodeAdapter', () => {
     expect(info?.summary).toBe('请帮我添加用户注册功能');
   });
 
+  it('keeps Claude project sessions as claude-code when the model is routed through another CLI provider', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cc-routed-model-${Date.now()}`);
+    const filePath = join(tmpRoot, 'routed-model.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: '/proj',
+          sessionId: 'routed-model-session',
+          timestamp: '2026-04-29T10:00:00.000Z',
+          message: { role: 'user', content: 'hello' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'routed-model-session',
+          timestamp: '2026-04-29T10:00:01.000Z',
+          message: {
+            role: 'assistant',
+            model: 'kimi-k2',
+            content: [{ type: 'text', text: 'hi' }],
+          },
+        }),
+      ].join('\n'),
+    );
+
+    try {
+      const info = await adapter.parseSessionInfo(filePath);
+      expect(info?.source).toBe('claude-code');
+      expect(info?.model).toBe('kimi-k2');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('streamMessages filters only user/assistant/tool', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(FIXTURE)) {
@@ -179,8 +215,8 @@ describe('ClaudeCodeAdapter', () => {
     // 规则：-- 是 -，单 - 是 /
     // 注：编码方式是 / → -，字面量 - 保持不变，因此 -- 可能是 /- 或 -/，解码有歧义
     // 算法：先替换 -- 为占位符，再替换单 - 为 /，再恢复占位符为 -
-    expect(ClaudeCodeAdapter.decodeCwd('-Users-bing--Code--project')).toBe(
-      '/Users/bing-Code-project',
+    expect(ClaudeCodeAdapter.decodeCwd('-Users-example--Code--project')).toBe(
+      '/Users/example-Code-project',
     );
   });
 

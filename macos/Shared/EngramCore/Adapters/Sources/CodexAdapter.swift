@@ -138,7 +138,7 @@ enum JSONLAdapterSupport {
 
 final class CodexAdapter: SessionAdapter {
     let source: SourceName = .codex
-    private let sessionsRoot: URL
+    private let sessionRoots: [URL]
     private let limits: ParserLimits
 
     init(
@@ -147,18 +147,22 @@ final class CodexAdapter: SessionAdapter {
             .path,
         limits: ParserLimits = .default
     ) {
-        self.sessionsRoot = URL(fileURLWithPath: sessionsRoot)
+        self.sessionRoots = Self.expandSessionRoots(URL(fileURLWithPath: sessionsRoot))
         self.limits = limits
     }
 
     func detect() async -> Bool {
-        JSONLAdapterSupport.isDirectory(sessionsRoot)
+        sessionRoots.contains { JSONLAdapterSupport.isDirectory($0) }
     }
 
     func listSessionLocators() async throws -> [String] {
-        JSONLAdapterSupport.recursiveFiles(under: sessionsRoot) { url in
-            url.lastPathComponent.hasPrefix("rollout-") && url.pathExtension == "jsonl"
-        }
+        sessionRoots
+            .flatMap { root in
+                JSONLAdapterSupport.recursiveFiles(under: root) { url in
+                    url.lastPathComponent.hasPrefix("rollout-") && url.pathExtension == "jsonl"
+                }
+            }
+            .sorted()
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -259,6 +263,14 @@ final class CodexAdapter: SessionAdapter {
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
+    }
+
+    private static func expandSessionRoots(_ root: URL) -> [URL] {
+        guard root.lastPathComponent == "sessions" else { return [root] }
+        return [
+            root,
+            root.deletingLastPathComponent().appendingPathComponent("archived_sessions", isDirectory: true)
+        ]
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {

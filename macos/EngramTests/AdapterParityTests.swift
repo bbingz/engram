@@ -105,6 +105,53 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(lobsterInfo.source, .lobsterai)
     }
 
+    func testClaudeAdapterKeepsRoutedProviderModelsUnderClaudeCodeSource() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-routed-provider-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = project.appendingPathComponent("kimi.jsonl")
+        try claudeFixture(sessionId: "routed-provider-session", model: "kimi-k2").write(
+            to: locator,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("routed provider fixture did not parse")
+        }
+
+        XCTAssertEqual(info.source, .claudeCode)
+        XCTAssertEqual(info.model, "kimi-k2")
+    }
+
+    func testCodexAdapterListsArchivedSessionsNextToSessionsRoot() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-archive-\(UUID().uuidString)", isDirectory: true)
+        let sessions = root.appendingPathComponent("sessions", isDirectory: true)
+        let archived = root.appendingPathComponent("archived_sessions", isDirectory: true)
+        let activeDir = sessions.appendingPathComponent("2026/04/29", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archived, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let activeLocator = activeDir.appendingPathComponent("rollout-active.jsonl")
+        let archivedLocator = archived.appendingPathComponent("rollout-archived.jsonl")
+        try codexFixture(sessionId: "active").write(to: activeLocator, atomically: true, encoding: .utf8)
+        try codexFixture(sessionId: "archived").write(to: archivedLocator, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: sessions.path)
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+
+        XCTAssertEqual(
+            locators.sorted(),
+            [activeLocator.path, archivedLocator.path].map(standardizedPath).sorted()
+        )
+    }
+
     func testParserLimitsUseStage2ProductionThresholdsAndIdentityChecks() throws {
         XCTAssertEqual(ParserLimits.default.maxFileBytes, 100 * 1024 * 1024)
         XCTAssertEqual(ParserLimits.default.maxLineBytes, 8 * 1024 * 1024)
@@ -262,6 +309,14 @@ final class AdapterParityTests: XCTestCase {
         """
         {"type":"user","sessionId":"\(sessionId)","cwd":"/repo","timestamp":"2026-04-24T01:00:00.000Z","message":{"content":"hello"}}
         {"type":"assistant","sessionId":"\(sessionId)","cwd":"/repo","timestamp":"2026-04-24T01:01:00.000Z","message":{"model":"\(model)","content":[{"type":"text","text":"done"}]}}
+
+        """
+    }
+
+    private func codexFixture(sessionId: String) -> String {
+        """
+        {"timestamp":"2026-04-29T00:00:00.000Z","type":"session_meta","payload":{"id":"\(sessionId)","timestamp":"2026-04-29T00:00:00.000Z","cwd":"/repo","originator":"Codex Desktop","model_provider":"openai"}}
+        {"timestamp":"2026-04-29T00:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}
 
         """
     }

@@ -2,7 +2,7 @@
 import { createReadStream } from 'node:fs';
 import { glob, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
 import type {
@@ -14,30 +14,41 @@ import type {
 
 export class CodexAdapter implements SessionAdapter {
   readonly name = 'codex' as const;
-  private sessionsRoot: string;
+  private sessionRoots: string[];
 
   constructor(sessionsRoot?: string) {
-    this.sessionsRoot = sessionsRoot ?? join(homedir(), '.codex', 'sessions');
+    const root = sessionsRoot ?? join(homedir(), '.codex', 'sessions');
+    this.sessionRoots = this.expandSessionRoots(root);
   }
 
   async detect(): Promise<boolean> {
-    try {
-      await stat(this.sessionsRoot);
-      return true;
-    } catch {
-      return false;
+    for (const root of this.sessionRoots) {
+      try {
+        await stat(root);
+        return true;
+      } catch {
+        // try next root
+      }
     }
+    return false;
   }
 
   async *listSessionFiles(): AsyncGenerator<string> {
-    try {
-      const pattern = join(this.sessionsRoot, '**', 'rollout-*.jsonl');
-      for await (const file of glob(pattern)) {
-        yield file;
+    for (const root of this.sessionRoots) {
+      try {
+        const pattern = join(root, '**', 'rollout-*.jsonl');
+        for await (const file of glob(pattern)) {
+          yield file;
+        }
+      } catch {
+        // sessions root 不存在时静默返回
       }
-    } catch {
-      // sessions root 不存在时静默返回
     }
+  }
+
+  private expandSessionRoots(root: string): string[] {
+    if (basename(root) !== 'sessions') return [root];
+    return [root, join(dirname(root), 'archived_sessions')];
   }
 
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {

@@ -11,6 +11,7 @@ final class WatcherSemanticsTests: XCTestCase {
             WatchPathRules.watchEntries(home: home),
             [
                 WatchEntry(path: "/tmp/engram-home/.codex/sessions", source: .codex),
+                WatchEntry(path: "/tmp/engram-home/.codex/archived_sessions", source: .codex),
                 WatchEntry(path: "/tmp/engram-home/.claude/projects", source: .claudeCode),
                 WatchEntry(path: "/tmp/engram-home/.gemini/tmp", source: .geminiCli),
                 WatchEntry(path: "/tmp/engram-home/.gemini/antigravity", source: .antigravity),
@@ -26,6 +27,7 @@ final class WatcherSemanticsTests: XCTestCase {
         XCTAssertTrue(WatchPathRules.isIgnored("/tmp/repo/node_modules/pkg/index.js"))
         XCTAssertTrue(WatchPathRules.isIgnored("/tmp/repo/.DS_Store"))
         XCTAssertFalse(WatchPathRules.isIgnored("/tmp/engram-home/.codex/sessions/session.jsonl"))
+        XCTAssertEqual(WatchPathRules.source(for: "/tmp/engram-home/.codex/archived_sessions/rollout.jsonl", home: home), .codex)
 
         let fixture = try WatchBatchConfig.load(
             from: repoRoot().appendingPathComponent("tests/fixtures/adapter-parity/batch-sizes.json")

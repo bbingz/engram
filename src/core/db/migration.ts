@@ -15,6 +15,20 @@ export function runMigrations(
   }[];
   if (cols.length > 0) {
     const colNames = new Set(cols.map((c) => c.name));
+    if (!colNames.has('end_time'))
+      db.exec('ALTER TABLE sessions ADD COLUMN end_time TEXT');
+    if (!colNames.has('project'))
+      db.exec('ALTER TABLE sessions ADD COLUMN project TEXT');
+    if (!colNames.has('model'))
+      db.exec('ALTER TABLE sessions ADD COLUMN model TEXT');
+    if (!colNames.has('message_count'))
+      db.exec(
+        'ALTER TABLE sessions ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0',
+      );
+    if (!colNames.has('user_message_count'))
+      db.exec(
+        'ALTER TABLE sessions ADD COLUMN user_message_count INTEGER NOT NULL DEFAULT 0',
+      );
     if (!colNames.has('agent_role'))
       db.exec('ALTER TABLE sessions ADD COLUMN agent_role TEXT');
     if (!colNames.has('hidden_at'))
@@ -35,8 +49,18 @@ export function runMigrations(
       db.exec(
         'ALTER TABLE sessions ADD COLUMN tool_message_count INTEGER NOT NULL DEFAULT 0',
       );
+    if (!colNames.has('summary'))
+      db.exec('ALTER TABLE sessions ADD COLUMN summary TEXT');
     if (!colNames.has('summary_message_count'))
       db.exec('ALTER TABLE sessions ADD COLUMN summary_message_count INTEGER');
+    if (!colNames.has('size_bytes'))
+      db.exec(
+        'ALTER TABLE sessions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0',
+      );
+    if (!colNames.has('indexed_at'))
+      db.exec(
+        "ALTER TABLE sessions ADD COLUMN indexed_at TEXT NOT NULL DEFAULT ''",
+      );
     if (!colNames.has('authoritative_node'))
       db.exec('ALTER TABLE sessions ADD COLUMN authoritative_node TEXT');
     if (!colNames.has('source_locator'))
@@ -51,6 +75,8 @@ export function runMigrations(
       db.exec('ALTER TABLE sessions ADD COLUMN tier TEXT');
       db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier)');
     }
+    if (!colNames.has('generated_title'))
+      db.exec('ALTER TABLE sessions ADD COLUMN generated_title TEXT');
     if (!colNames.has('quality_score')) {
       db.exec(
         'ALTER TABLE sessions ADD COLUMN quality_score INTEGER DEFAULT 0',
@@ -70,7 +96,7 @@ export function runMigrations(
       db.exec('ALTER TABLE sessions ADD COLUMN orphan_since TEXT');
     if (!colNames.has('orphan_reason'))
       db.exec('ALTER TABLE sessions ADD COLUMN orphan_reason TEXT');
-    // Drop Viking columns if they exist (removed in local-semantic-search migration)
+    // Drop external semantic search columns if they exist (removed in local-semantic-search migration)
     // SQLite doesn't support DROP COLUMN before 3.35.0; columns are left harmless
   }
 
@@ -203,6 +229,13 @@ export function runMigrations(
     CREATE INDEX IF NOT EXISTS idx_migration_log_started_at ON migration_log(started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_migration_log_paths ON migration_log(old_path, new_path);
     CREATE INDEX IF NOT EXISTS idx_migration_log_state ON migration_log(state);
+  `);
+
+  db.exec(`
+    UPDATE sessions
+    SET source = 'claude-code'
+    WHERE source IN ('kimi', 'qwen', 'gemini-cli')
+      AND file_path LIKE '%/.claude/projects/%';
   `);
 
   const syncCols = db.prepare('PRAGMA table_info(sync_state)').all() as {

@@ -107,6 +107,12 @@ final class MigrationRunnerTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions WHERE id = 'legacy-1'") ?? 0
         }
         XCTAssertEqual(rowCount, 1)
+
+        let indexedAtColumn = try writer.read { db in
+            try Row.fetchAll(db, sql: "PRAGMA table_info(sessions)")
+                .first { ($0["name"] as String) == "indexed_at" }
+        }
+        XCTAssertNotNil(indexedAtColumn)
     }
 
     func testMigratesLegacyAuxiliaryTablesToCurrentWritableSchema() throws {

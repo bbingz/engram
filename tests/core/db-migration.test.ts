@@ -216,4 +216,46 @@ describe('Database migration', () => {
 
     db3.close();
   });
+
+  it('reassigns Claude project rows that were misclassified as routed provider sources', () => {
+    const dbPath = makeTmpDb();
+
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT,
+        cwd TEXT NOT NULL DEFAULT '',
+        project TEXT,
+        model TEXT,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        user_message_count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT,
+        file_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes)
+      VALUES
+        ('claude-kimi', 'kimi', '2026-04-29T00:00:00Z', '/proj', '/Users/me/.claude/projects/proj/session.jsonl', 10),
+        ('native-kimi', 'kimi', '2026-04-29T00:00:00Z', '/proj', '/Users/me/.kimi/sessions/session.jsonl', 10),
+        ('claude-minimax', 'minimax', '2026-04-29T00:00:00Z', '/proj', '/Users/me/.claude/projects/proj/minimax.jsonl', 10);
+    `);
+    rawDb.close();
+
+    const db = new Database(dbPath);
+    const rows = db.raw
+      .prepare('SELECT id, source FROM sessions ORDER BY id')
+      .all() as { id: string; source: string }[];
+
+    expect(rows).toEqual([
+      { id: 'claude-kimi', source: 'claude-code' },
+      { id: 'claude-minimax', source: 'minimax' },
+      { id: 'native-kimi', source: 'kimi' },
+    ]);
+
+    db.close();
+  });
 });

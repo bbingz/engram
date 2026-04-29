@@ -165,10 +165,9 @@ final class ClaudeCodeAdapter: SessionAdapter {
         }
 
         let lowercased = model.lowercased()
-        if lowercased.contains("qwen") { return .qwen }
-        if lowercased.contains("kimi") { return .kimi }
-        if lowercased.contains("gemini") { return .geminiCli }
         if lowercased.contains("minimax") { return .minimax }
+        // Qwen/Kimi/Gemini models can be routed through Claude-compatible clients,
+        // but the session file is still owned by Claude Code's on-disk format.
         return .claudeCode
     }
 

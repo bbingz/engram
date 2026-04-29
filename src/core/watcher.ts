@@ -52,6 +52,7 @@ export function getWatchEntries(home?: string): Array<[string, SourceName]> {
   const h = home ?? homedir();
   return [
     [join(h, '.codex', 'sessions'), 'codex'],
+    [join(h, '.codex', 'archived_sessions'), 'codex'],
     [join(h, '.claude', 'projects'), 'claude-code'],
     [join(h, '.gemini', 'tmp'), 'gemini-cli'],
     [join(h, '.gemini', 'antigravity'), 'antigravity'],

@@ -100,6 +100,53 @@ describe('CodexAdapter', () => {
     expect(messages[0].role).toBe('assistant');
   });
 
+  it('lists rollout files from archived_sessions next to sessions', async () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-archive-${Date.now()}`);
+    const sessionsDir = join(tmpRoot, 'sessions');
+    const archivedDir = join(tmpRoot, 'archived_sessions');
+    const activePath = join(sessionsDir, '2026/04/29/rollout-active.jsonl');
+    const archivedPath = join(archivedDir, 'rollout-archived.jsonl');
+    mkdirSync(dirname(activePath), { recursive: true });
+    mkdirSync(archivedDir, { recursive: true });
+    const fixture = (id: string) =>
+      [
+        JSON.stringify({
+          timestamp: '2026-04-29T00:00:00.000Z',
+          type: 'session_meta',
+          payload: {
+            id,
+            timestamp: '2026-04-29T00:00:00.000Z',
+            cwd: '/repo',
+            originator: 'Codex Desktop',
+            model_provider: 'openai',
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-04-29T00:00:01.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'hello' }],
+          },
+        }),
+      ].join('\n');
+    writeFileSync(activePath, `${fixture('active')}\n`);
+    writeFileSync(archivedPath, `${fixture('archived')}\n`);
+
+    const archiveAdapter = new CodexAdapter(sessionsDir);
+    const files = [];
+    try {
+      for await (const file of archiveAdapter.listSessionFiles()) {
+        files.push(file);
+      }
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+
+    expect(files.sort()).toEqual([archivedPath, activePath].sort());
+  });
+
   describe('function_call edge cases', () => {
     const tmpRoot = join(tmpdir(), `engram-codex-fc-${Date.now()}`);
     const fcPath = join(tmpRoot, 'rollout-fc.jsonl');

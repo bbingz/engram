@@ -174,18 +174,16 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     }
   }
 
-  /** Map model string + file path to source name. Non-Claude models get their own source. */
+  /** Map Claude-compatible project files to Engram's derived Claude sources. */
   static detectSource(model: string, filePath?: string): SessionInfo['source'] {
     // Lobster AI writes to ~/.claude/projects/ with its own project dirs
     if (filePath?.includes('lobsterai')) return 'lobsterai';
     if (!model || model.startsWith('claude') || model.startsWith('<'))
       return 'claude-code';
     const m = model.toLowerCase();
-    if (m.includes('qwen')) return 'qwen';
-    if (m.includes('kimi')) return 'kimi';
-    if (m.includes('gemini')) return 'gemini-cli';
     if (m.includes('minimax')) return 'minimax';
-    // Unknown non-Claude model — still file is in ~/.claude, keep as claude-code
+    // Qwen/Kimi/Gemini models can be routed through Claude-compatible clients,
+    // but the session file is still owned by Claude Code's on-disk format.
     return 'claude-code';
   }
 
@@ -279,7 +277,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     );
   }
 
-  // 解码 Claude Code 目录名：-Users-bing--Code--project → /Users/bing/-Code-/project
+  // 解码 Claude Code 目录名：-Users-example--Code--project → /Users/example/-Code-/project
   static decodeCwd(encoded: string): string {
     return encoded
       .replace(/--/g, '\x00')
