@@ -70,11 +70,15 @@ echo "[3/5] Archiving Release build..."
 xcodebuild archive \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
+  -destination "generic/platform=macOS" \
   -configuration Release \
   -archivePath "$ARCHIVE_PATH" \
+  -hideShellScriptEnvironment \
   "DEVELOPMENT_TEAM=$TEAM_ID" \
   CODE_SIGN_STYLE=Automatic \
   ENABLE_HARDENED_RUNTIME=YES \
+  ENABLE_APP_INTENTS_METADATA_PROCESSING=NO \
+  STRIP_INSTALLED_PRODUCT=NO \
   "ARCHS=$RELEASE_ARCHS" \
   ONLY_ACTIVE_ARCH=NO \
   SWIFT_COMPILATION_MODE=singlefile

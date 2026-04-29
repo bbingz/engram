@@ -5,6 +5,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [1.0.2] - 2026-04-29
+
+### Fixed — macOS release builds are warning-clean (2026-04-29)
+
+- Cleared Swift concurrency warnings in the project-move database writer/test helpers.
+- Declared the AppIntents SDK dependency for release-built macOS targets so Xcode's metadata extractor stops emitting false-positive warnings.
+- Added script phase inputs/outputs and restored dependency analysis for helper/icon bundling, removing Xcode build phase notes from release archives.
+
+---
+
 ## [1.0.1] - 2026-04-29
 
 ### Fixed — Pi Coding Agent sessions now index as `pi` (2026-04-29)

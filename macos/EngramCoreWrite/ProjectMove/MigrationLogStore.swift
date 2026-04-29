@@ -58,7 +58,7 @@ public struct StartMigrationInput: Sendable {
     }
 }
 
-public struct MarkFsDoneInput: Sendable {
+public struct MarkFsDoneInput {
     public var id: String
     public var filesPatched: Int
     public var occurrences: Int

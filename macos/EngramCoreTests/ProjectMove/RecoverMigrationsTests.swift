@@ -10,21 +10,21 @@ final class RecoverMigrationsTests: XCTestCase {
     // MARK: - state filter
 
     func testExcludesCommittedByDefault() throws {
-        var capturedStates: [String] = []
-        let log = StubLog(records: []) { states, _ in capturedStates = states }
+        let capturedStates = CapturedStates()
+        let log = StubLog(records: []) { states, _ in capturedStates.set(states) }
         _ = try RecoverMigrations.diagnose(log: log)
-        XCTAssertEqual(capturedStates, ["fs_pending", "fs_done", "failed"])
+        XCTAssertEqual(capturedStates.value, ["fs_pending", "fs_done", "failed"])
     }
 
     func testIncludesCommittedWhenRequested() throws {
-        var capturedStates: [String] = []
-        let log = StubLog(records: []) { states, _ in capturedStates = states }
+        let capturedStates = CapturedStates()
+        let log = StubLog(records: []) { states, _ in capturedStates.set(states) }
         _ = try RecoverMigrations.diagnose(
             log: log,
             options: RecoverOptions(includeCommitted: true)
         )
         XCTAssertEqual(
-            capturedStates,
+            capturedStates.value,
             ["fs_pending", "fs_done", "failed", "committed"]
         )
     }
@@ -234,11 +234,26 @@ final class RecoverMigrationsTests: XCTestCase {
     }
 }
 
+private final class CapturedStates: @unchecked Sendable {
+    private let lock = NSLock()
+    private var states: [String] = []
+
+    var value: [String] {
+        lock.withLock { states }
+    }
+
+    func set(_ states: [String]) {
+        lock.withLock {
+            self.states = states
+        }
+    }
+}
+
 private struct StubLog: MigrationLogReader {
     let records: [MigrationLogRecord]
-    let onList: (([String], Date?) -> Void)?
+    let onList: (@Sendable ([String], Date?) -> Void)?
 
-    init(records: [MigrationLogRecord], onList: (([String], Date?) -> Void)? = nil) {
+    init(records: [MigrationLogRecord], onList: (@Sendable ([String], Date?) -> Void)? = nil) {
         self.records = records
         self.onList = onList
     }

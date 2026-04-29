@@ -8,6 +8,9 @@ options:
   createIntermediateGroups: true
   defaultLocalization: en
 
+settings:
+  ENABLE_APP_INTENTS_METADATA_PROCESSING: NO
+
 packages:
   GRDB:
     url: https://github.com/groue/GRDB.swift
@@ -29,6 +32,7 @@ targets:
       - path: Shared/EngramCore
       - path: Shared/MCP
     dependencies:
+      - sdk: AppIntents.framework
       - package: GRDB
         product: GRDB
     settings:
@@ -47,6 +51,7 @@ targets:
       - path: EngramCoreWrite
     dependencies:
       - target: EngramCoreRead
+      - sdk: AppIntents.framework
       - package: GRDB
         product: GRDB
     settings:
@@ -101,6 +106,7 @@ targets:
       - path: Shared/Service
     dependencies:
       - target: EngramCoreWrite
+      - sdk: AppIntents.framework
       - package: GRDB
         product: GRDB
     settings:
@@ -154,6 +160,7 @@ targets:
     resources:
       - path: Engram/Resources/Assets.xcassets
     dependencies:
+      - sdk: AppIntents.framework
       - package: GRDB
         product: GRDB
       - package: Hummingbird
@@ -167,10 +174,24 @@ targets:
     postbuildScripts:
       - name: Bundle EngramMCP helper
         script: "${SRCROOT}/scripts/copy-mcp-helper.sh"
-        basedOnDependencyAnalysis: false
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - "$(BUILT_PRODUCTS_DIR)/EngramMCP"
+        outputFiles:
+          - "$(BUILT_PRODUCTS_DIR)/$(FULL_PRODUCT_NAME)/Contents/Helpers/EngramMCP"
       - name: Bundle EngramService helper
         script: "${SRCROOT}/scripts/copy-service-helper.sh"
-        basedOnDependencyAnalysis: false
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - "$(BUILT_PRODUCTS_DIR)/EngramService"
+          - "$(BUILT_PRODUCTS_DIR)/EngramServiceCore.framework"
+          - "$(BUILT_PRODUCTS_DIR)/EngramCoreRead.framework"
+          - "$(BUILT_PRODUCTS_DIR)/EngramCoreWrite.framework"
+        outputFiles:
+          - "$(BUILT_PRODUCTS_DIR)/$(FULL_PRODUCT_NAME)/Contents/Helpers/EngramService"
+          - "$(BUILT_PRODUCTS_DIR)/$(FULL_PRODUCT_NAME)/Contents/Frameworks/EngramServiceCore.framework"
+          - "$(BUILT_PRODUCTS_DIR)/$(FULL_PRODUCT_NAME)/Contents/Frameworks/EngramCoreRead.framework"
+          - "$(BUILT_PRODUCTS_DIR)/$(FULL_PRODUCT_NAME)/Contents/Frameworks/EngramCoreWrite.framework"
       - name: Replace AppIcon.icns with complete version
         script: |
           # Xcode only generates icns with 16+128 sizes; replace with our pre-built complete icns
@@ -179,14 +200,19 @@ targets:
           if [ -f "$ICNS_SRC" ]; then
             cp "$ICNS_SRC" "$ICNS_DST"
           fi
-        basedOnDependencyAnalysis: false
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - "$(SRCROOT)/Engram/Resources/AppIcon.icns"
+        outputFiles:
+          - "$(BUILT_PRODUCTS_DIR)/$(FULL_PRODUCT_NAME)/Contents/Resources/AppIcon.icns"
     info:
       path: Engram/Info.plist
       properties:
         LSUIElement: true
         CFBundleDisplayName: Engram
-        CFBundleShortVersionString: "1.0.1"
-        CFBundleVersion: "2"
+        CFBundleShortVersionString: "1.0.2"
+        CFBundleVersion: "3"
+        LSApplicationCategoryType: public.app-category.developer-tools
         NSPrincipalClass: NSApplication
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.app
@@ -197,6 +223,7 @@ targets:
       DEVELOPMENT_TEAM: YOUR_TEAM_ID
       CODE_SIGN_ENTITLEMENTS: Engram/Engram.entitlements
       ENABLE_HARDENED_RUNTIME: YES
+      STRIP_INSTALLED_PRODUCT: NO
 
   EngramCLI:
     type: tool
