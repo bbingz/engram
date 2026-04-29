@@ -7,6 +7,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Shipped — Open-source clean-history publication (2026-04-29)
+
+- **公开仓库切到干净单提交历史** —— 从已清理工作树创建 orphan `public-main`,并 force-push 为远端 `main`(`dadd3362 Initial public release`)。公开前删除旧远端 feature/fix 分支,并把 `v1.0` tag 移到同一个干净提交,避免 release 下载入口继续指向私有历史 refs。
+- **Release + 仓库设置已核验** —— `bbingz/engram` 现在是 public repo,默认分支 `main`,description 已更新,GitHub secret scanning + push protection 已开启。`v1.0` release asset 保留;`Engram-1.0-universal.zip` SHA256 仍为 `0ca9e48bc60d62469bf50c90f57e33d4921582089c6987c21bfcc7087c61268e`。
+- **公开前安全检查** —— public branch 只有 1 个 root commit;origin 上只保留 `main` 和 `v1.0`。HEAD 敏感字符串扫描未发现个人路径、Apple Team ID、旧私网 IP、Viking/OpenViking 残留或 credential material,仅命中预期的 redaction regex/docs。`npm run lint`、完整 `npm test`(113 files / 1276 tests)、unsigned macOS Debug build 均通过。
+- **私有历史只保留在本地** —— 发布前完整历史已备份到 `/Users/bing/codex-exports/engram-private-full-history-20260429.bundle`;本地 private-history branches 不得推送到 public remote。
+
 ### Shipped — Adapter parser hardening via 3-way review + 2 codex follow-ups (2026-04-28)
 
 - **4 commit 闭环修补 14 个 session adapter** —— 起因是用户问"所有解析器是否都能正确解析 AI sessions 内容"。流程:并行 3-way 静态 review(Claude general-purpose + Codex/GPT + Gemini→挂→Qwen→挂)+ 主对话覆盖度审查 + 真实 `~/.claude` `~/.codex` 数据 cross-check → 13 P1/P2 ship → Codex review 出 3 medium + 1 low → 修 → 再 review 出 3 partial + 1 low + 6 gaps → 再修。最终 `1206 → 1244` tests, biome clean。
