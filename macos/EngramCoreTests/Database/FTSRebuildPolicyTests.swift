@@ -89,15 +89,24 @@ final class FTSRebuildPolicyTests: XCTestCase {
         ftsVersion: String?
     ) {
         try writer.read { db in
-            (
-                try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts") ?? 0,
-                try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions WHERE size_bytes > 0") ?? 0,
-                try Int.fetchOne(db, sql: "SELECT count(*) FROM session_embeddings") ?? 0,
-                try Int.fetchOne(db, sql: "SELECT count(*) FROM vec_sessions") ?? 0,
-                try Int.fetchOne(db, sql: "SELECT count(*) FROM session_chunks") ?? 0,
-                try Int.fetchOne(db, sql: "SELECT count(*) FROM insights") ?? 0,
-                try Int.fetchOne(db, sql: "SELECT count(*) FROM insights_fts") ?? 0,
-                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_version'")
+            let ftsRows = try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts") ?? 0
+            let sessionsWithSize = try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions WHERE size_bytes > 0") ?? 0
+            let sessionEmbeddings = try Int.fetchOne(db, sql: "SELECT count(*) FROM session_embeddings") ?? 0
+            let vecSessions = try Int.fetchOne(db, sql: "SELECT count(*) FROM vec_sessions") ?? 0
+            let sessionChunks = try Int.fetchOne(db, sql: "SELECT count(*) FROM session_chunks") ?? 0
+            let insights = try Int.fetchOne(db, sql: "SELECT count(*) FROM insights") ?? 0
+            let insightsFts = try Int.fetchOne(db, sql: "SELECT count(*) FROM insights_fts") ?? 0
+            let ftsVersion = try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_version'")
+
+            return (
+                ftsRows: ftsRows,
+                sessionsWithSize: sessionsWithSize,
+                sessionEmbeddings: sessionEmbeddings,
+                vecSessions: vecSessions,
+                sessionChunks: sessionChunks,
+                insights: insights,
+                insightsFts: insightsFts,
+                ftsVersion: ftsVersion
             )
         }
     }
