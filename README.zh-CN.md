@@ -7,6 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-339933)](package.json)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000)](macos/project.yml)
+[![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-server%20%2B%20web-C51A4A)](#raspberry-pi--linux-headless)
 
 [English](README.md) | [隐私](docs/PRIVACY.md) | [安全](docs/SECURITY.md) | [贡献指南](CONTRIBUTING.md) | [MCP 工具](docs/mcp-tools.md)
 
@@ -16,7 +17,7 @@
 
 AI 编程工具各自保存自己的历史，但它们之间不共享记忆。一个项目可能从 Codex 开始，在 Claude Code 里继续，在 Cursor 里调试，几天后又从 Gemini CLI 接上。没有统一记忆层时，每个助手都像第一次见到这个项目。
 
-Engram 会读取这些本地会话日志，建立私有 SQLite 索引，并通过 MCP 工具和 macOS 菜单栏应用把历史上下文重新交给当前助手。
+Engram 会读取这些本地会话日志，建立私有 SQLite 索引，并通过 MCP 工具、Web UI 和 macOS 菜单栏应用把历史上下文重新交给当前助手。
 
 ```mermaid
 flowchart LR
@@ -34,9 +35,11 @@ flowchart LR
 
   indexer --> sqlite[("~/.engram/index.sqlite")]
   sqlite --> mcp["MCP 工具"]
+  sqlite --> web["Web UI"]
   sqlite --> app["macOS 菜单栏应用"]
 
   mcp --> agents["当前 AI 助手"]
+  web --> browser["浏览器"]
   app --> you["你"]
 ```
 
@@ -46,6 +49,7 @@ flowchart LR
 - **混合搜索**：SQLite FTS5 关键词搜索 + 可选 sqlite-vec 语义搜索。
 - **项目交接**：切换工具或机器前生成一份项目 handoff brief。
 - **持久记忆**：用 `save_insight` 保存关键知识，再用 `get_memory` 或 `get_context` 找回。
+- **Web 控制台**：在本地浏览器里浏览会话、搜索、查看统计、配置同步和检查项目时间线。
 - **用量洞察**：查看会话数量、成本、工具调用、文件热点和时间线。
 - **本地优先隐私**：源日志只读，索引存放在 `~/.engram/`，不收集遥测。
 
@@ -89,6 +93,33 @@ cd engram
 npm install
 npm run build
 ```
+
+### Raspberry Pi / Linux headless
+
+Engram 的 TypeScript server 可以脱离 macOS 应用运行。Raspberry Pi、家用服务器或 Linux 机器可以使用 MCP server + daemon + Web UI 来索引本机会话日志。
+
+```bash
+git clone https://github.com/bbingz/engram.git
+cd engram
+npm install
+npm run build
+node dist/daemon.js
+```
+
+然后在这台机器上打开 `http://127.0.0.1:3457`。
+
+如果要从局域网访问，必须在 `~/.engram/settings.json` 里显式配置 host、CIDR allowlist 和 bearer token：
+
+```json
+{
+  "httpHost": "0.0.0.0",
+  "httpPort": 3457,
+  "httpAllowCIDR": ["192.168.0.0/16"],
+  "httpBearerToken": "replace-with-a-long-random-token"
+}
+```
+
+macOS 菜单栏应用和 macOS-only 集成不能在 Raspberry Pi 上运行；MCP server、daemon、Web UI、索引、搜索、记忆和项目整理工具可以通过 Node.js 20+ 源码构建运行。
 
 ## 注册为 MCP Server
 
@@ -143,6 +174,28 @@ args = ["/absolute/path/to/engram/dist/index.js"]
 
 完整列表见 [MCP tools reference](docs/mcp-tools.md)。
 
+## Web UI
+
+daemon 默认会启动本地 Web UI：
+
+```bash
+node dist/daemon.js
+```
+
+打开 `http://127.0.0.1:3457`。
+
+Web UI 包含：
+
+- 按来源、项目和时间筛选会话
+- 查看完整 transcript，并渲染 Markdown
+- 跨会话混合搜索
+- 查看和使用已保存 insights / memory
+- 查看统计、成本、工具分析和文件活跃度
+- 项目时间线和项目别名管理
+- 同步状态和手动同步触发
+
+默认只绑定 localhost。如果要绑定到局域网地址，必须配置 `httpAllowCIDR`；非 localhost 写接口需要 bearer token 保护。
+
 ## 运行架构
 
 ```mermaid
@@ -162,6 +215,7 @@ flowchart TB
 
   subgraph Interfaces["使用入口"]
     mcp["MCP server"]
+    web["Web UI / HTTP API"]
     service["macOS service"]
     ui["SwiftUI 菜单栏应用"]
   end
@@ -173,6 +227,7 @@ flowchart TB
   indexer --> vec
   indexer --> parent
   db --> mcp
+  db --> web
   db --> service
   service --> ui
 ```

@@ -11,6 +11,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 - Reworked [README.md](README.md) as an English public landing page with badges, release/source install paths, MCP setup examples, privacy positioning, and Mermaid flow diagrams.
 - Added [README.zh-CN.md](README.zh-CN.md) as the Chinese mirror, plus standard MIT [LICENSE](LICENSE) and GitHub issue templates for bug reports and feature requests.
+- Restored explicit Web UI documentation and added Raspberry Pi / Linux headless guidance for running the Node daemon, MCP server, and Web UI without the macOS app.
 - Updated public-facing metadata and stale docs copy: package description is now English, `CONTRIBUTING.md` no longer carries an old fixed test count, and `docs/mcp-tools.md` reports the current 26-tool surface.
 
 ### Shipped — Open-source clean-history publication (2026-04-29)
