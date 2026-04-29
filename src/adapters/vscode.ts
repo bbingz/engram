@@ -1,5 +1,5 @@
 // src/adapters/vscode.ts
-import { glob, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { isFileAccessible } from './_accessible.js';
@@ -57,14 +57,26 @@ export class VsCodeAdapter implements SessionAdapter {
 
   async *listSessionFiles(): AsyncGenerator<string> {
     try {
-      const pattern = join(
-        this.workspaceStorageDir,
-        '*',
-        'chatSessions',
-        '*.jsonl',
-      );
-      for await (const file of glob(pattern)) {
-        yield file;
+      const workspaces = await readdir(this.workspaceStorageDir, {
+        withFileTypes: true,
+      });
+      workspaces.sort((a, b) => a.name.localeCompare(b.name));
+      for (const workspace of workspaces) {
+        if (!workspace.isDirectory()) continue;
+        const chatDir = join(
+          this.workspaceStorageDir,
+          workspace.name,
+          'chatSessions',
+        );
+        const files = await readdir(chatDir, { withFileTypes: true }).catch(
+          () => [],
+        );
+        files.sort((a, b) => a.name.localeCompare(b.name));
+        for (const file of files) {
+          if (file.isFile() && file.name.endsWith('.jsonl')) {
+            yield join(chatDir, file.name);
+          }
+        }
       }
     } catch {
       /* dir not found */

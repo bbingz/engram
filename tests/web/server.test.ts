@@ -545,7 +545,7 @@ describe('Hono API server — additional endpoints', () => {
   });
 
   it('POST /api/session/:id/resume returns resume command for existing session', async () => {
-    db.upsertSession(mockSession);
+    db.upsertSession({ ...mockSession, source: 'cursor' });
     const res = await app.request('/api/session/session-001/resume', {
       method: 'POST',
     });

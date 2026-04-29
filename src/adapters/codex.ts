@@ -1,6 +1,6 @@
 // src/adapters/codex.ts
 import { createReadStream } from 'node:fs';
-import { glob, stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -36,8 +36,7 @@ export class CodexAdapter implements SessionAdapter {
   async *listSessionFiles(): AsyncGenerator<string> {
     for (const root of this.sessionRoots) {
       try {
-        const pattern = join(root, '**', 'rollout-*.jsonl');
-        for await (const file of glob(pattern)) {
+        for await (const file of this.walkRolloutFiles(root)) {
           yield file;
         }
       } catch {
@@ -49,6 +48,23 @@ export class CodexAdapter implements SessionAdapter {
   private expandSessionRoots(root: string): string[] {
     if (basename(root) !== 'sessions') return [root];
     return [root, join(dirname(root), 'archived_sessions')];
+  }
+
+  private async *walkRolloutFiles(dir: string): AsyncGenerator<string> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        yield* this.walkRolloutFiles(fullPath);
+      } else if (
+        entry.isFile() &&
+        entry.name.startsWith('rollout-') &&
+        entry.name.endsWith('.jsonl')
+      ) {
+        yield fullPath;
+      }
+    }
   }
 
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
