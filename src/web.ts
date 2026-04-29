@@ -1416,6 +1416,7 @@ export function createApp(
   const SOURCE_PATHS: Record<string, string> = {
     'claude-code': join(HOME, '.claude/projects'),
     codex: join(HOME, '.codex/sessions'),
+    pi: join(HOME, '.pi/agent/sessions'),
     'gemini-cli': join(HOME, '.gemini/tmp'),
     opencode: join(HOME, '.local/share/opencode/opencode.db'),
     iflow: join(HOME, '.iflow/projects'),

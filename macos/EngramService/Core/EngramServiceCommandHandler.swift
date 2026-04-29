@@ -1143,6 +1143,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         let suffixesBySource: [String: [String]] = [
             "codex": [".codex/sessions", ".codex/logs"],
             "claude-code": [".claude/projects"],
+            "pi": [".pi/agent/sessions"],
             "qwen": [".qwen"],
             "iflow": [".iflow"],
             "gemini-cli": [".gemini"],

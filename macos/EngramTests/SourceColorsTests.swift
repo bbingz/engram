@@ -5,10 +5,10 @@ import SwiftUI
 
 final class SourceColorsTests: XCTestCase {
 
-    // All 15 known sources from SourceColors.color(for:)
+    // All known sources from SourceColors.color(for:)
     private let allSources = [
         "claude-code", "cursor", "codex", "gemini-cli", "windsurf",
-        "cline", "vscode", "antigravity", "copilot", "opencode",
+        "cline", "vscode", "antigravity", "copilot", "pi", "opencode",
         "iflow", "qwen", "kimi", "minimax", "lobsterai"
     ]
 
@@ -39,9 +39,9 @@ final class SourceColorsTests: XCTestCase {
         )
     }
 
-    func testAll15SourceNamesCovered() {
-        // Verify we test the exact 15 sources defined in the switch statement
-        XCTAssertEqual(allSources.count, 15)
+    func testAllSourceNamesCovered() {
+        // Verify we test the exact sources defined in the switch statement
+        XCTAssertEqual(allSources.count, 16)
 
         // Each should have a corresponding label (not the default pass-through)
         for source in allSources {

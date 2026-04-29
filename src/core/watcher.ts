@@ -41,6 +41,7 @@ export const WATCHED_SOURCES = new Set([
   'iflow',
   'qwen',
   'kimi',
+  'pi',
   'cline',
   // Derived sources that share claude-code's directory
   'lobsterai',
@@ -59,6 +60,7 @@ export function getWatchEntries(home?: string): Array<[string, SourceName]> {
     [join(h, '.iflow', 'projects'), 'iflow'],
     [join(h, '.qwen', 'projects'), 'qwen'],
     [join(h, '.kimi', 'sessions'), 'kimi'],
+    [join(h, '.pi', 'agent', 'sessions'), 'pi'],
     [join(h, '.cline', 'data', 'tasks'), 'cline'],
   ];
 }

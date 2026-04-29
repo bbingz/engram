@@ -60,6 +60,7 @@ enum MCPToolRegistry {
                         "enum": .array([
                             .string("codex"),
                             .string("claude-code"),
+                            .string("pi"),
                             .string("gemini-cli"),
                             .string("opencode"),
                             .string("iflow"),
@@ -76,6 +77,10 @@ enum MCPToolRegistry {
                     "project": .object([
                         "type": .string("string"),
                         "description": .string("过滤特定项目（部分匹配）"),
+                    ]),
+                    "origin": .object([
+                        "type": .string("string"),
+                        "description": .string("过滤特定同步节点，例如 pi"),
                     ]),
                     "since": .object([
                         "type": .string("string"),
@@ -110,10 +115,12 @@ enum MCPToolRegistry {
                         "enum": .array([
                             .string("source"),
                             .string("project"),
+                            .string("origin"),
+                            .string("node"),
                             .string("day"),
                             .string("week"),
                         ]),
-                        "description": .string("按维度分组，默认 source"),
+                        "description": .string("按维度分组，默认 source；origin/node 用于按同步节点统计"),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
@@ -271,6 +278,7 @@ enum MCPToolRegistry {
                         "enum": .array([
                             .string("codex"),
                             .string("claude-code"),
+                            .string("pi"),
                             .string("gemini-cli"),
                             .string("opencode"),
                             .string("iflow"),
@@ -392,7 +400,7 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "project_review",
-            description: "Scan all 7 AI session roots for residual references to an old project path. Classifies hits into `own` (in the migrated project's own spaces — real leftovers) vs `other` (historical mentions in unrelated conversations — left alone by design).",
+            description: "Scan all AI session roots for residual references to an old project path. Classifies hits into `own` (in the migrated project's own spaces — real leftovers) vs `other` (historical mentions in unrelated conversations — left alone by design).",
             inputSchema: .object([
                 "type": .string("object"),
                 "required": .array([.string("old_path"), .string("new_path")]),
@@ -736,6 +744,7 @@ enum MCPToolRegistry {
             let structured = try database.listSessions(
                 source: arguments["source"]?.stringValue,
                 project: arguments["project"]?.stringValue,
+                origin: arguments["origin"]?.stringValue,
                 since: arguments["since"]?.stringValue,
                 until: arguments["until"]?.stringValue,
                 limit: min(arguments["limit"]?.intValue ?? 20, 100),

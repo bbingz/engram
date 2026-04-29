@@ -63,6 +63,7 @@ flowchart LR
 | Cursor | `~/Library/Application Support/Cursor/.../state.vscdb` | 支持 |
 | VS Code Copilot | `~/Library/Application Support/Code/.../chatSessions/` | 支持 |
 | GitHub Copilot | `~/.copilot/session-state/<uuid>/events.jsonl` | 支持 |
+| Pi Coding Agent | `~/.pi/agent/sessions/<encoded-cwd>/*.jsonl` | 支持 |
 | Cline | `~/.cline/data/tasks/` | 支持 |
 | OpenCode | `~/.local/share/opencode/opencode.db` | 支持 |
 | iflow | `~/.iflow/projects/` | 支持 |
@@ -120,6 +121,8 @@ node dist/daemon.js
 ```
 
 macOS 菜单栏应用和 macOS-only 集成不能在 Raspberry Pi 上运行；MCP server、daemon、Web UI、索引、搜索、记忆和项目整理工具可以通过 Node.js 20+ 源码构建运行。
+
+这和 Pi Coding Agent CLI（`pi`）不是一回事；`pi` 的本机会话会作为 `pi` source 从 `~/.pi/agent/sessions` 索引。
 
 如果要在另一台机器上看到 Pi 的会话，需要把 Pi 配成 sync peer 并从那台机器拉取。同步后的行仍保留原工具来源，例如 `codex` 或 `claude-code`，节点名写在 `origin`；在 Stats → By Node，或调用 `stats({ "group_by": "origin" })`，可以单独统计 Pi 活动。
 

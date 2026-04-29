@@ -274,6 +274,8 @@ private enum ServiceTranscriptReader {
             return parseRoleDirectFormat(filePath: filePath)
         case "codex":
             return parseCodexFormat(filePath: filePath)
+        case "pi":
+            return parsePiFormat(filePath: filePath)
         case "copilot":
             return parseCopilotFormat(filePath: filePath)
         case "gemini-cli":
@@ -338,6 +340,22 @@ private enum ServiceTranscriptReader {
                 return nil
             }
             let content = extractTextArray(payload["content"])
+            guard !content.isEmpty else { return nil }
+            return ServiceTranscriptMessage(role: role, content: content, timestamp: object["timestamp"] as? String)
+        }
+    }
+
+    private static func parsePiFormat(filePath: String) -> [ServiceTranscriptMessage] {
+        readJSONLines(filePath: filePath).compactMap { object in
+            guard
+                object["type"] as? String == "message",
+                let message = object["message"] as? [String: Any],
+                let role = message["role"] as? String,
+                role == "user" || role == "assistant"
+            else {
+                return nil
+            }
+            let content = extractTextArray(message["content"])
             guard !content.isEmpty else { return nil }
             return ServiceTranscriptMessage(role: role, content: content, timestamp: object["timestamp"] as? String)
         }

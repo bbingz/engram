@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — Pi Coding Agent sessions now index as `pi` (2026-04-29)
+
+- Added a first-class `pi` adapter for `@mariozechner/pi-coding-agent` transcripts under `~/.pi/agent/sessions`.
+- Registered `pi` across Node scanning, file watching, MCP/search/list-session schemas, Web/macOS labels, transcript readers, and project-move source roots.
+- Verified the local machine now indexes 177 Pi sessions, including `Plants-vs-Zombies` and `polycli`.
+
 ### Fixed — Remote node visibility for Pi sync (2026-04-29)
 
 - Added `origin` / `node` statistics grouping so synced Raspberry Pi sessions can be counted by device instead of being hidden inside their tool source.

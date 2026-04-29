@@ -63,6 +63,7 @@ flowchart LR
 | Cursor | `~/Library/Application Support/Cursor/.../state.vscdb` | Supported |
 | VS Code Copilot | `~/Library/Application Support/Code/.../chatSessions/` | Supported |
 | GitHub Copilot | `~/.copilot/session-state/<uuid>/events.jsonl` | Supported |
+| Pi Coding Agent | `~/.pi/agent/sessions/<encoded-cwd>/*.jsonl` | Supported |
 | Cline | `~/.cline/data/tasks/` | Supported |
 | OpenCode | `~/.local/share/opencode/opencode.db` | Supported |
 | iflow | `~/.iflow/projects/` | Supported |
@@ -120,6 +121,8 @@ For LAN access, set an explicit host, CIDR allowlist, and bearer token in `~/.en
 ```
 
 The macOS menu bar app and macOS-only integrations are not available on Raspberry Pi, but the MCP server, daemon, Web UI, indexing, search, memory, and project tools are available from source builds on Node.js 20+.
+
+This is separate from the Pi Coding Agent CLI (`pi`), whose local transcripts are indexed as source `pi` from `~/.pi/agent/sessions`.
 
 To see Pi sessions on another machine, configure that machine to pull from the Pi as a sync peer. Synced rows keep their original tool source, such as `codex` or `claude-code`, and use the peer name in `origin`; use Stats → By Node or `stats({ "group_by": "origin" })` to count Pi activity separately.
 

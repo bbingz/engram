@@ -85,6 +85,7 @@ struct MessageParser {
                 IflowAdapter(),
                 QwenAdapter(),
                 KimiAdapter(),
+                PiAdapter(),
                 ClineAdapter(),
                 CursorAdapter(),
                 VsCodeAdapter(),

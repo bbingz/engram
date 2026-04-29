@@ -4,6 +4,7 @@ public enum SourceName: String, CaseIterable, Codable, Sendable {
     case codex
     case claudeCode = "claude-code"
     case copilot
+    case pi
     case geminiCli = "gemini-cli"
     case opencode
     case iflow

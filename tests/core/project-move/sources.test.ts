@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   encodeIflow,
+  encodePi,
   findReferencingFiles,
   getSourceRoots,
   type WalkIssue,
@@ -17,7 +18,7 @@ import {
 } from '../../../src/core/project-move/sources.js';
 
 describe('getSourceRoots', () => {
-  it('returns the 7 canonical AI session roots (includes iflow + copilot)', () => {
+  it('returns the 8 canonical AI session roots (includes pi)', () => {
     const roots = getSourceRoots('/home/test');
     const ids = roots.map((r) => r.id);
     expect(ids).toEqual([
@@ -25,6 +26,7 @@ describe('getSourceRoots', () => {
       'codex',
       'gemini-cli',
       'iflow',
+      'pi',
       'opencode',
       'antigravity',
       'copilot',
@@ -36,6 +38,9 @@ describe('getSourceRoots', () => {
     expect(roots.find((r) => r.id === 'iflow')?.path).toBe(
       '/home/test/.iflow/projects',
     );
+    expect(roots.find((r) => r.id === 'pi')?.path).toBe(
+      '/home/test/.pi/agent/sessions',
+    );
   });
 
   it('encodeProjectDir is set exactly for sources with project-grouped dirs', () => {
@@ -43,7 +48,7 @@ describe('getSourceRoots', () => {
     const withEncoder = roots
       .filter((r) => r.encodeProjectDir !== null)
       .map((r) => r.id);
-    expect(withEncoder).toEqual(['claude-code', 'gemini-cli', 'iflow']);
+    expect(withEncoder).toEqual(['claude-code', 'gemini-cli', 'iflow', 'pi']);
     // Spot check each encoding rule.
     const ccRoot = roots.find((r) => r.id === 'claude-code');
     expect(ccRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
@@ -54,6 +59,18 @@ describe('getSourceRoots', () => {
     const iflowRoot = roots.find((r) => r.id === 'iflow');
     expect(iflowRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
       '-Users-a-b-proj',
+    );
+    const piRoot = roots.find((r) => r.id === 'pi');
+    expect(piRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
+      '--Users-a-b-proj--',
+    );
+  });
+});
+
+describe('encodePi', () => {
+  it('mirrors Pi CLI session directory encoding', () => {
+    expect(encodePi('/Users/example/-Code-/polycli')).toBe(
+      '--Users-example--Code--polycli--',
     );
   });
 });

@@ -31,7 +31,7 @@ struct TimelineView: View {
         return f
     }()
 
-    let allSources = ["claude-code", "codex", "copilot", "cursor", "gemini-cli",
+    let allSources = ["claude-code", "codex", "copilot", "pi", "cursor", "gemini-cli",
                       "opencode", "iflow", "qwen", "kimi", "minimax",
                       "lobsterai", "cline", "vscode", "antigravity", "windsurf"]
 

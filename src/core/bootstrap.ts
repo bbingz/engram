@@ -14,6 +14,7 @@ import { GeminiCliAdapter } from '../adapters/gemini-cli.js';
 import { IflowAdapter } from '../adapters/iflow.js';
 import { KimiAdapter } from '../adapters/kimi.js';
 import { OpenCodeAdapter } from '../adapters/opencode.js';
+import { PiAdapter } from '../adapters/pi.js';
 import { QwenAdapter } from '../adapters/qwen.js';
 import type { SessionAdapter, SourceName } from '../adapters/types.js';
 import { VsCodeAdapter } from '../adapters/vscode.js';
@@ -54,6 +55,7 @@ function createAdapters(): SessionAdapter[] {
     new QwenAdapter(),
     new KimiAdapter(),
     new CopilotAdapter(),
+    new PiAdapter(),
     new ClineAdapter(),
     new CursorAdapter(),
     new VsCodeAdapter(),

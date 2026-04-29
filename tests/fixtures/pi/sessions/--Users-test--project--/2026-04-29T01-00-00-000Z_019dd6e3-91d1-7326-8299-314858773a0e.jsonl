@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"019dd6e3-91d1-7326-8299-314858773a0e","timestamp":"2026-04-29T01:00:00.000Z","cwd":"/Users/test/project"}
+{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-04-29T01:00:01.000Z","provider":"openai-codex","modelId":"gpt-5.4"}
+{"type":"message","id":"u1","parentId":"m1","timestamp":"2026-04-29T01:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"Fix the Pi parser"}],"timestamp":1777424402000}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-04-29T01:00:03.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"/Users/test/project/package.json"}},{"type":"text","text":"I will inspect it."}],"provider":"openai-codex","model":"gpt-5.4","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"totalTokens":15}}}
+{"type":"message","id":"t1","parentId":"a1","timestamp":"2026-04-29T01:00:04.000Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"{\"name\":\"fixture\"}"}],"isError":false,"timestamp":1777424404000}}
+{"type":"message","id":"u2","parentId":"t1","timestamp":"2026-04-29T01:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"Thanks"}],"timestamp":1777424405000}}

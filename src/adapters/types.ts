@@ -4,6 +4,7 @@ export type SourceName =
   | 'codex'
   | 'claude-code'
   | 'copilot'
+  | 'pi'
   | 'gemini-cli'
   | 'opencode'
   | 'iflow'

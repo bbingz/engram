@@ -41,6 +41,7 @@ public enum WatchPathRules {
         .iflow,
         .qwen,
         .kimi,
+        .pi,
         .cline,
         .lobsterai,
         .minimax
@@ -56,6 +57,7 @@ public enum WatchPathRules {
             WatchEntry(path: join(home, ".iflow", "projects"), source: .iflow),
             WatchEntry(path: join(home, ".qwen", "projects"), source: .qwen),
             WatchEntry(path: join(home, ".kimi", "sessions"), source: .kimi),
+            WatchEntry(path: join(home, ".pi", "agent", "sessions"), source: .pi),
             WatchEntry(path: join(home, ".cline", "data", "tasks"), source: .cline)
         ]
     }

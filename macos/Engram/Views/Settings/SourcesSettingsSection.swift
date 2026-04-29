@@ -11,6 +11,7 @@ private let dataSources: [DataSourceDef] = [
     .init(name: "Claude Code",  key: "path.claude-code",  defaultPath: "~/.claude/projects"),
     .init(name: "Codex",        key: "path.codex",        defaultPath: "~/.codex/sessions"),
     .init(name: "Copilot CLI",  key: "path.copilot",      defaultPath: "~/.copilot/session-state"),
+    .init(name: "Pi",           key: "path.pi",           defaultPath: "~/.pi/agent/sessions"),
     .init(name: "Gemini CLI",   key: "path.gemini-cli",   defaultPath: "~/.gemini/tmp"),
     .init(name: "OpenCode",     key: "path.opencode",     defaultPath: "~/.local/share/opencode/opencode.db"),
     .init(name: "iFlow",        key: "path.iflow",        defaultPath: "~/.iflow/projects"),

@@ -10,6 +10,7 @@ public enum DefaultSessionAdapters {
             IflowAdapter(),
             QwenAdapter(),
             KimiAdapter(),
+            PiAdapter(),
             ClineAdapter(),
             CursorAdapter(),
             VsCodeAdapter(),

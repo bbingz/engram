@@ -38,6 +38,7 @@ enum MCPTranscriptTools {
         let sessions = try database.listSessions(
             source: nil,
             project: projectNames.first ?? projectName,
+            origin: nil,
             since: nil,
             until: nil,
             limit: 10,

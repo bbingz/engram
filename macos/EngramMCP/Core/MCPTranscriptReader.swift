@@ -15,6 +15,8 @@ enum MCPTranscriptReader {
             return parseRoleDirectFormat(filePath: filePath)
         case "codex":
             return parseCodexFormat(filePath: filePath)
+        case "pi":
+            return parsePiFormat(filePath: filePath)
         case "gemini-cli":
             return parseGeminiFormat(filePath: filePath)
         default:
@@ -83,6 +85,22 @@ enum MCPTranscriptReader {
                 content: content,
                 timestamp: obj["timestamp"] as? String
             )
+        }
+    }
+
+    private static func parsePiFormat(filePath: String) -> [MCPTranscriptMessage] {
+        readJSONLines(filePath: filePath).compactMap { obj in
+            guard
+                obj["type"] as? String == "message",
+                let message = obj["message"] as? [String: Any],
+                let role = message["role"] as? String,
+                role == "user" || role == "assistant"
+            else {
+                return nil
+            }
+            let content = extractTextArray(message["content"])
+            guard !content.isEmpty else { return nil }
+            return MCPTranscriptMessage(role: role, content: content, timestamp: obj["timestamp"] as? String)
         }
     }
 

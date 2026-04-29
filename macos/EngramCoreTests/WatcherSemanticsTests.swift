@@ -18,6 +18,7 @@ final class WatcherSemanticsTests: XCTestCase {
                 WatchEntry(path: "/tmp/engram-home/.iflow/projects", source: .iflow),
                 WatchEntry(path: "/tmp/engram-home/.qwen/projects", source: .qwen),
                 WatchEntry(path: "/tmp/engram-home/.kimi/sessions", source: .kimi),
+                WatchEntry(path: "/tmp/engram-home/.pi/agent/sessions", source: .pi),
                 WatchEntry(path: "/tmp/engram-home/.cline/data/tasks", source: .cline)
             ]
         )

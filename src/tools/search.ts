@@ -40,6 +40,7 @@ export const searchTool = {
         enum: [
           'codex',
           'claude-code',
+          'pi',
           'gemini-cli',
           'opencode',
           'iflow',

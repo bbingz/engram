@@ -17,6 +17,7 @@ export const listSessionsTool = {
         enum: [
           'codex',
           'claude-code',
+          'pi',
           'gemini-cli',
           'opencode',
           'iflow',
@@ -63,6 +64,7 @@ export async function handleListSessions(
   const opts: ListSessionsOptions = {
     source: params.source,
     project: params.project,
+    origin: params.origin,
     since: params.since,
     until: params.until,
     limit: Math.min(params.limit ?? 20, 100),

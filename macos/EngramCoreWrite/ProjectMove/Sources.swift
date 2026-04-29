@@ -1,7 +1,7 @@
 // macos/EngramCoreWrite/ProjectMove/Sources.swift
 // Mirrors src/core/project-move/sources.ts (Node parity baseline).
 //
-// Enumerates the 7 AI session root directories a project move must scan +
+// Enumerates the AI session root directories a project move must scan +
 // patch, plus the per-source `cwd → directory-name` encoding rules. Also
 // supplies the recursive walk + literal-substring grep used by the
 // orchestrator and the post-move review.
@@ -12,6 +12,7 @@ public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case claudeCode = "claude-code"
     case codex
     case geminiCli = "gemini-cli"
+    case pi
     case iflow
     case opencode
     case antigravity
@@ -58,9 +59,9 @@ public struct WalkIssue: Equatable, Sendable {
 }
 
 public enum SessionSources {
-    /// The 7 session roots a project move must consider. Ordering matches
+    /// The session roots a project move must consider. Ordering matches
     /// Node parity: known-active first (claude-code → codex → gemini-cli →
-    /// iflow), then mvp.py compat tail (opencode → antigravity → copilot).
+    /// iflow → pi), then mvp.py compat tail (opencode → antigravity → copilot).
     public static func roots(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [SourceRoot] {
@@ -85,6 +86,11 @@ public enum SessionSources {
                 id: .iflow,
                 path: (home as NSString).appendingPathComponent(".iflow/projects"),
                 encodeProjectDir: { cwd in encodeIflow(cwd) }
+            ),
+            SourceRoot(
+                id: .pi,
+                path: (home as NSString).appendingPathComponent(".pi/agent/sessions"),
+                encodeProjectDir: { cwd in encodePi(cwd) }
             ),
             SourceRoot(
                 id: .opencode,
@@ -119,6 +125,13 @@ public enum SessionSources {
                 return String(s)
             }
             .joined(separator: "-")
+    }
+
+    public static func encodePi(_ absolutePath: String) -> String {
+        let trimmed = absolutePath
+            .replacingOccurrences(of: #"^[/\\]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"[/\\:]"#, with: "-", options: .regularExpression)
+        return "--\(trimmed)--"
     }
 
     /// Recursively walk `root` invoking `onFile` for each session file

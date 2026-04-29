@@ -69,6 +69,8 @@ final class MCPDatabase {
         switch groupBy {
         case "project":
             groupExpr = "COALESCE(project, '(unknown)')"
+        case "origin", "node":
+            groupExpr = "COALESCE(NULLIF(origin, ''), NULLIF(authoritative_node, ''), 'local')"
         case "day":
             groupExpr = "date(start_time, 'localtime')"
         case "week":
@@ -128,6 +130,7 @@ final class MCPDatabase {
     func listSessions(
         source: String?,
         project: String?,
+        origin: String?,
         since: String?,
         until: String?,
         limit: Int,
@@ -149,6 +152,10 @@ final class MCPDatabase {
                 conditions.append("project IN (\(placeholders))")
                 values.append(contentsOf: projects)
             }
+        }
+        if let origin {
+            conditions.append("COALESCE(NULLIF(origin, ''), 'local') = ?")
+            values.append(origin)
         }
         if let since {
             conditions.append("start_time >= ?")

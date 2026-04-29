@@ -273,6 +273,7 @@ private func sourceRoots(home: String) -> [MCPSourceRoot] {
         MCPSourceRoot(id: "codex", path: "\(home)/.codex/sessions"),
         MCPSourceRoot(id: "gemini-cli", path: "\(home)/.gemini/tmp"),
         MCPSourceRoot(id: "iflow", path: "\(home)/.iflow/projects"),
+        MCPSourceRoot(id: "pi", path: "\(home)/.pi/agent/sessions"),
         MCPSourceRoot(id: "opencode", path: "\(home)/.local/share/opencode"),
         MCPSourceRoot(id: "antigravity", path: "\(home)/.antigravity"),
         MCPSourceRoot(id: "copilot", path: "\(home)/.copilot"),

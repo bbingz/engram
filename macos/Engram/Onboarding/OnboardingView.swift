@@ -174,6 +174,7 @@ private func scanSources() -> [SourceCheck] {
         ("windsurf",     "Windsurf",      ".codeium/windsurf"),
         ("cline",        "Cline",         ".cline/data/tasks"),
         ("copilot",      "Copilot",       ".copilot/session-state"),
+        ("pi",           "Pi",            ".pi/agent/sessions"),
         ("opencode",     "OpenCode",      ".local/share/opencode/opencode.db"),
         ("vscode",       "VS Code",       "Library/Application Support/Code/User/workspaceStorage"),
         ("kimi",         "Kimi",          ".kimi/sessions"),

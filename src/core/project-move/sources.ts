@@ -1,4 +1,4 @@
-// src/core/project-move/sources.ts — enumerate the 7 AI session root dirs
+// src/core/project-move/sources.ts — enumerate the AI session root dirs
 // that a project move must scan + patch.
 //
 // Mirrors mvp.py globals (CC_PROJECTS, CODEX_SESSIONS, GEMINI_TMP,
@@ -40,10 +40,15 @@ export function encodeIflow(abs: string): string {
     .join('-');
 }
 
+export function encodePi(abs: string): string {
+  return `--${abs.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
+}
+
 export type SourceId =
   | 'claude-code'
   | 'codex'
   | 'gemini-cli'
+  | 'pi'
   | 'opencode'
   | 'antigravity'
   | 'copilot'
@@ -62,11 +67,11 @@ interface SourceRoot {
 }
 
 /**
- * The 7 session root directories a project move must consider.
+ * The session root directories a project move must consider.
  * Returns absolute paths rooted at `home` (default: homedir()).
  *
- * Ordering: the first four (claude-code, codex, gemini-cli, iflow) are
- * known-active sources on this machine; the last three (opencode,
+ * Ordering: the first five (claude-code, codex, gemini-cli, iflow, pi) are
+ * known-active sources on this machine; the final three (opencode,
  * antigravity, copilot) are here for compatibility with mvp.py's scan.
  */
 export function getSourceRoots(home?: string): SourceRoot[] {
@@ -94,6 +99,11 @@ export function getSourceRoots(home?: string): SourceRoot[] {
       id: 'iflow',
       path: join(h, '.iflow', 'projects'),
       encodeProjectDir: encodeIflow,
+    },
+    {
+      id: 'pi',
+      path: join(h, '.pi', 'agent', 'sessions'),
+      encodeProjectDir: encodePi,
     },
     {
       id: 'opencode',

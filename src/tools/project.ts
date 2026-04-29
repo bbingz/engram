@@ -262,7 +262,7 @@ export async function handleProjectArchive(
 export const projectReviewTool = {
   name: 'project_review',
   description:
-    'Scan all 7 AI session roots for residual references to an old project ' +
+    'Scan all AI session roots for residual references to an old project ' +
     "path. Classifies hits into `own` (in the migrated project's own spaces " +
     '— real leftovers) vs `other` (historical mentions in unrelated ' +
     'conversations — left alone by design).',
