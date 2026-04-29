@@ -13,7 +13,7 @@ npm install && npm run build
 ## Development
 ```bash
 npm run dev          # run without compile (tsx)
-npm test             # vitest (909 tests)
+npm test             # vitest
 npm run lint         # biome check
 npm run lint:fix     # biome auto-fix
 npx knip             # dead code detection
@@ -32,4 +32,4 @@ We use conventional commits: `feat()`, `fix()`, `chore()`, `refactor()`, `test()
 Husky + lint-staged runs biome check on staged `.ts` files automatically.
 
 ## Architecture
-See `CLAUDE.md` for detailed architecture, patterns, and conventions.
+See `AGENTS.md` and `CLAUDE.md` for detailed architecture, patterns, and conventions.

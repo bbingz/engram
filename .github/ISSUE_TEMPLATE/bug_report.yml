@@ -1,0 +1,66 @@
+name: Bug report
+description: Report something that is broken or behaving unexpectedly.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please include enough detail to reproduce it locally.
+  - type: input
+    id: version
+    attributes:
+      label: Engram version
+      description: Release version, commit SHA, or "source build".
+      placeholder: "v1.0 or 7d62cd6"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options:
+        - macOS app
+        - MCP server
+        - Session adapter
+        - Search / memory
+        - Project move / archive tools
+        - Build / tests
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: List the smallest sequence of steps that triggers the issue.
+      placeholder: |
+        1. Run ...
+        2. Call ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include logs or command output when useful. Remove private paths, secrets, and session content.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        macOS:
+        Node.js:
+        Xcode:
+        AI tool source:
+    validations:
+      required: false

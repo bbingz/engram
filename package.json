@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "version": "0.1.0",
-  "description": "MCP Server: 读取多个 AI 编程助手的会话日志，实现跨工具历史上下文共享",
+  "description": "Local-first memory layer for AI coding tools, exposed through MCP and a macOS menu bar app",
   "type": "module",
   "engines": {
     "node": ">=20"

@@ -2,7 +2,7 @@
 
 > Auto-generated from tool definitions in `src/index.ts` and `src/tools/`.
 >
-> **Total tools: 19** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
+> **Total tools: 26** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
 
 ---
 
@@ -304,3 +304,116 @@ Show most frequently edited/read files across sessions for a project. Helps unde
 | limit | number | no | Max results. Default 50 |
 
 **Notes:** Returns file paths with edit/read counts aggregated across sessions.
+
+---
+
+## project_move
+
+Move a project directory and keep AI session history reachable after the move.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| src | string | **yes** | Absolute source path. `~/...` is accepted and expanded. |
+| dst | string | **yes** | Absolute destination path. `~/...` is accepted and expanded. |
+| dry_run | boolean | no | Plan only, no side effects. Default `false` |
+| force | boolean | no | Bypass git-dirty warning on source. Default `false` |
+| note | string | no | Audit note stored in `migration_log` |
+
+**Notes:** Patches cwd references in supported session stores, updates the Engram database, creates a project alias, and records a migration row. Run with `dry_run: true` first unless the user explicitly asked to perform the move immediately.
+
+---
+
+## project_archive
+
+Archive a local project under `_archive/` while preserving Engram history links.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| src | string | **yes** | Absolute source path. `~/...` is accepted and expanded. |
+| to | string | no | Archive category: `历史脚本`, `空项目`, `归档完成`, or aliases `historical-scripts`, `empty-project`, `archived-done` |
+| dry_run | boolean | no | Plan only, returns suggested target without moving. Default `false` |
+| force | boolean | no | Bypass git-dirty warning. Default `false` |
+| note | string | no | Audit note stored in `migration_log` |
+
+**Notes:** Uses heuristics for one-shot scripts, empty projects, and completed projects. Pass `to` when the category should be explicit.
+
+---
+
+## project_review
+
+Scan session roots for residual references to an old project path.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| old_path | string | **yes** | Absolute old path |
+| new_path | string | **yes** | Absolute new path |
+| max_items | number | no | Cap returned own/other arrays. Default `100` |
+
+**Notes:** Classifies hits into `own` leftovers that likely need attention and `other` historical mentions that are left alone by design.
+
+---
+
+## project_undo
+
+Reverse a committed project-move migration.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| migration_id | string | **yes** | Migration id returned by `project_move` or `project_archive` |
+| force | boolean | no | Bypass git-dirty warning on the current destination. Default `false` |
+
+**Notes:** Creates a new migration row with `rolled_back_of` pointing at the original migration. It refuses stale or non-committed migrations.
+
+---
+
+## project_list_migrations
+
+List recent project-move migrations.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| limit | number | no | Max rows to return. Default `20`, max `200` |
+| since | string | no | ISO timestamp; only rows started after this time |
+
+**Notes:** Use this to find a `migration_id` for review, recovery, or undo.
+
+---
+
+## project_recover
+
+Diagnose stuck or failed migrations.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| since | string | no | ISO timestamp filter |
+| include_committed | boolean | no | Also inspect committed migrations. Default `false` |
+
+**Notes:** Advisory only. It probes filesystem state and recommends next actions but does not modify files or the database.
+
+---
+
+## project_move_batch
+
+Run multiple project moves sequentially from an inline batch document.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| yaml | string | **yes** | Inline batch document. The field name is retained for IPC compatibility. |
+| dry_run | boolean | no | Preview all operations regardless of document defaults. Default `false` |
+| force | boolean | no | Bypass git-dirty warning on every operation. Default `false` |
+
+**Notes:** Executes operations sequentially and stops on the first error by default. In the current native macOS service path, the inline document content is JSON schema v1 even though the transport field remains named `yaml`.
