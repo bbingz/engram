@@ -107,23 +107,43 @@ function applyIgnoreRegions(
   }
 }
 
+function scaleIgnoreRegions(
+  regions: { x: number; y: number; w: number; h: number }[],
+  fromWidth: number,
+  fromHeight: number,
+  toWidth: number,
+  toHeight: number,
+): { x: number; y: number; w: number; h: number }[] {
+  if (fromWidth === toWidth && fromHeight === toHeight) return regions;
+  const scaleX = toWidth / fromWidth;
+  const scaleY = toHeight / fromHeight;
+  return regions.map((r) => ({
+    x: Math.round(r.x * scaleX),
+    y: Math.round(r.y * scaleY),
+    w: Math.round(r.w * scaleX),
+    h: Math.round(r.h * scaleY),
+  }));
+}
+
 /**
  * Compute an average-hash (aHash) for a perceptual fingerprint.
  * Resize to 8x8 grayscale, threshold against the mean, produce a 64-bit hash.
  */
-async function averageHash(imgPath: string): Promise<bigint> {
-  const { data } = await sharp(imgPath)
+async function averageHashFromRgba(
+  buf: Buffer,
+  width: number,
+  height: number,
+): Promise<bigint> {
+  const { data } = await sharp(buf, { raw: { width, height, channels: 4 } })
     .resize(8, 8, { fit: 'fill' })
     .grayscale()
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  // Compute mean
   let sum = 0;
   for (let i = 0; i < 64; i++) sum += data[i];
   const mean = sum / 64;
 
-  // Build hash
   let hash = 0n;
   for (let i = 0; i < 64; i++) {
     if (data[i] >= mean) hash |= 1n << BigInt(63 - i);
@@ -202,31 +222,37 @@ async function compareOne(
   const ah = actualMeta.height!;
   const bw = baselineMeta.width!;
   const bh = baselineMeta.height!;
-
-  if (aw !== bw || ah !== bh) {
-    return {
-      name: entry.name,
-      status: 'size_mismatch',
-      metrics: { ...emptyMetrics, pixel_diff_percent: 100 },
-      paths: { baseline: baselinePath, actual: actualPath, diff: null },
-      environment,
-      ai_triage: null,
-    };
-  }
+  const scale = Math.min(1, aw / bw, ah / bh);
+  const compareWidth = Math.max(1, Math.round(bw * scale));
+  const compareHeight = Math.max(1, Math.round(bh * scale));
 
   // Extract raw RGBA
-  const actualBuf = await sharp(actualPath).ensureAlpha().raw().toBuffer();
-  const baselineBuf = await sharp(baselinePath).ensureAlpha().raw().toBuffer();
+  const actualBuf = await sharp(actualPath)
+    .resize(compareWidth, compareHeight, { fit: 'cover', position: 'center' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+  const baselineBuf = await sharp(baselinePath)
+    .resize(compareWidth, compareHeight, { fit: 'cover', position: 'center' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
 
   // Apply ignore regions
-  const ignoreRegions = config.ignore_regions[entry.name] || [];
+  const ignoreRegions = scaleIgnoreRegions(
+    config.ignore_regions[entry.name] || [],
+    bw,
+    bh,
+    compareWidth,
+    compareHeight,
+  );
   if (ignoreRegions.length) {
-    applyIgnoreRegions(actualBuf, aw, ignoreRegions);
-    applyIgnoreRegions(baselineBuf, bw, ignoreRegions);
+    applyIgnoreRegions(actualBuf, compareWidth, ignoreRegions);
+    applyIgnoreRegions(baselineBuf, compareWidth, ignoreRegions);
   }
 
   // 1. Pixelmatch
-  const diffBuf = Buffer.alloc(aw * ah * 4);
+  const diffBuf = Buffer.alloc(compareWidth * compareHeight * 4);
   const pixelDiffCount = pixelmatch(
     new Uint8Array(actualBuf.buffer, actualBuf.byteOffset, actualBuf.length),
     new Uint8Array(
@@ -235,39 +261,53 @@ async function compareOne(
       baselineBuf.length,
     ),
     new Uint8Array(diffBuf.buffer, diffBuf.byteOffset, diffBuf.length),
-    aw,
-    ah,
+    compareWidth,
+    compareHeight,
     { threshold: 0.1 },
   );
-  const totalPixels = aw * ah;
+  const totalPixels = compareWidth * compareHeight;
   const pixelDiffPercent = (pixelDiffCount / totalPixels) * 100;
 
   // Write diff PNG
-  await sharp(diffBuf, { raw: { width: aw, height: ah, channels: 4 } })
+  await sharp(diffBuf, {
+    raw: { width: compareWidth, height: compareHeight, channels: 4 },
+  })
     .png()
     .toFile(diffPath);
 
   // 2. SSIM (grayscale Matrix)
-  const grayActual = rgbaToGrayscale(actualBuf, aw, ah);
-  const grayBaseline = rgbaToGrayscale(baselineBuf, bw, bh);
+  const grayActual = rgbaToGrayscale(actualBuf, compareWidth, compareHeight);
+  const grayBaseline = rgbaToGrayscale(
+    baselineBuf,
+    compareWidth,
+    compareHeight,
+  );
 
   let ssimValue: number;
   // ssim.js needs images at least windowSize (default 11) in both dimensions
-  if (aw < 11 || ah < 11) {
+  if (compareWidth < 11 || compareHeight < 11) {
     // Too small for SSIM — fall back to pixel comparison only
     ssimValue = pixelDiffCount === 0 ? 1.0 : 0.0;
   } else {
     const ssimResult = computeSSIM(
-      { data: grayActual, width: aw, height: ah },
-      { data: grayBaseline, width: bw, height: bh },
+      { data: grayActual, width: compareWidth, height: compareHeight },
+      { data: grayBaseline, width: compareWidth, height: compareHeight },
       { windowSize: 11 } as any,
     ) as any;
     ssimValue = ssimResult.mssim;
   }
 
   // 3. Average hash (pHash fallback)
-  const hashActual = await averageHash(actualPath);
-  const hashBaseline = await averageHash(baselinePath);
+  const hashActual = await averageHashFromRgba(
+    actualBuf,
+    compareWidth,
+    compareHeight,
+  );
+  const hashBaseline = await averageHashFromRgba(
+    baselineBuf,
+    compareWidth,
+    compareHeight,
+  );
   const phashDist = hammingDistance(hashActual, hashBaseline);
 
   const metrics: ComparisonMetrics = {

@@ -14,6 +14,15 @@ enum TestLaunchConfig {
         if let bundlePath = bundle.path(forResource: "test-index", ofType: "sqlite", inDirectory: "test-fixtures") {
             return bundlePath
         }
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourcePath = repoRoot.appendingPathComponent("test-fixtures/test-index.sqlite").path
+        if FileManager.default.fileExists(atPath: sourcePath) {
+            return sourcePath
+        }
         return "test-fixtures/test-index.sqlite"
     }()
 

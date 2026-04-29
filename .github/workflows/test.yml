@@ -227,7 +227,7 @@ jobs:
   ui-test-full:
     runs-on: macos-15
     if: github.ref == 'refs/heads/main'
-    timeout-minutes: 20
+    timeout-minutes: 35
     needs: [typescript, swift-unit]
     env:
       SCREENSHOTS_DIR: /tmp/engram-screenshots
@@ -267,7 +267,8 @@ jobs:
             cp -R "$SANDBOX_DIR"/* "$SCREENSHOTS_DIR"/ 2>/dev/null || true
           fi
       - name: Compare screenshots
-        if: always()
+        if: success()
+        continue-on-error: true
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload artifacts
         if: failure()

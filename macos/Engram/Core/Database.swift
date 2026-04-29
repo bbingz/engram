@@ -642,8 +642,8 @@ final class DatabaseManager {
 
     // MARK: - Git Repos
 
-    func listGitRepos() throws -> [GitRepo] {
-        try pool!.read { db in
+    nonisolated func listGitRepos() throws -> [GitRepo] {
+        try readInBackground { db in
             try GitRepo.fetchAll(db, sql: "SELECT * FROM git_repos ORDER BY last_commit_at DESC")
         }
     }
