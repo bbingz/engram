@@ -1,0 +1,7 @@
+{
+  "name": "mcp-lint-fixture",
+  "private": true,
+  "scripts": {
+    "build": "echo build"
+  }
+}

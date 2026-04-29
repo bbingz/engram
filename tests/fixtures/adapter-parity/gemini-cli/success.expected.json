@@ -1,0 +1,76 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "gemini-cli/input/tmp/my-project/chats/session-sample.json",
+  "insightFields": {
+    "firstUserSummary": "帮我优化这段 SQL 查询",
+    "messageCount": 3,
+    "toolCallCount": 0
+  },
+  "locator": "gemini-cli/input/tmp/my-project/chats/session-sample.json",
+  "messages": [
+    {
+      "content": "帮我优化这段 SQL 查询",
+      "role": "user",
+      "timestamp": "2026-01-25T14:00:10.000Z"
+    },
+    {
+      "content": "我来分析这段查询...",
+      "role": "assistant",
+      "timestamp": "2026-01-25T14:00:20.000Z"
+    },
+    {
+      "content": "谢谢，还有别的优化建议吗？",
+      "role": "user",
+      "timestamp": "2026-01-25T14:02:00.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": "my-project",
+    "source": "gemini-cli"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "帮我优化这段 SQL 查询\n我来分析这段查询...\n谢谢，还有别的优化建议吗？",
+    "contentSha256InputBytes": 97,
+    "roles": [
+      "user",
+      "assistant",
+      "user"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-01-25T14:30:00.000Z",
+    "filePath": "<fixtureRoot>/gemini-cli/input/tmp/my-project/chats/session-sample.json",
+    "id": "gemini-session-001",
+    "messageCount": 3,
+    "project": "my-project",
+    "sizeBytes": 814,
+    "source": "gemini-cli",
+    "startTime": "2026-01-25T14:00:00.000Z",
+    "summary": "帮我优化这段 SQL 查询",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "source": "gemini-cli",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 3,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

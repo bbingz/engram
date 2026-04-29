@@ -1,0 +1,25 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"files\": [\n    {\n      \"file_path\": \"/Users/test/work/engram/src/index.ts\",\n      \"action\": \"Edit\",\n      \"total_count\": 12,\n      \"session_count\": 6\n    },\n    {\n      \"file_path\": \"/Users/test/work/engram/src/tools/search.ts\",\n      \"action\": \"Read\",\n      \"total_count\": 12,\n      \"session_count\": 6\n    }\n  ],\n  \"totalFiles\": 2\n}"
+    }
+  ],
+  "structuredContent": {
+    "files": [
+      {
+        "file_path": "/Users/test/work/engram/src/index.ts",
+        "action": "Edit",
+        "total_count": 12,
+        "session_count": 6
+      },
+      {
+        "file_path": "/Users/test/work/engram/src/tools/search.ts",
+        "action": "Read",
+        "total_count": 12,
+        "session_count": 6
+      }
+    ],
+    "totalFiles": 2
+  }
+}

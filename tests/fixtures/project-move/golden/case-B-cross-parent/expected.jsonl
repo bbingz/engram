@@ -1,0 +1,2 @@
+{"type":"session_meta","cwd":"/Users/example/-Automations-/foo"}
+{"cmd":"cd /Users/example/-Automations-/foo && npm test"}

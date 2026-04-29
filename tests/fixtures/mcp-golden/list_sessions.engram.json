@@ -1,0 +1,61 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"sessions\": [\n    {\n      \"id\": \"mcp-fixture-06\",\n      \"source\": \"windsurf\",\n      \"startTime\": \"2026-01-06 16:00:00\",\n      \"endTime\": \"2026-01-06 16:35:00\",\n      \"cwd\": \"/Users/test/work/engram\",\n      \"project\": \"engram\",\n      \"model\": \"sonnet\",\n      \"messageCount\": 19,\n      \"userMessageCount\": 9,\n      \"summary\": \"engram windsurf session 6: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\"\n    },\n    {\n      \"id\": \"mcp-fixture-05\",\n      \"source\": \"iflow\",\n      \"startTime\": \"2026-01-05 15:00:00\",\n      \"endTime\": \"2026-01-05 15:35:00\",\n      \"cwd\": \"/Users/test/work/engram\",\n      \"project\": \"engram\",\n      \"model\": \"qwen-plus\",\n      \"messageCount\": 18,\n      \"userMessageCount\": 8,\n      \"summary\": \"engram iflow session 5: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\"\n    },\n    {\n      \"id\": \"mcp-fixture-04\",\n      \"source\": \"cursor\",\n      \"startTime\": \"2026-01-04 14:00:00\",\n      \"endTime\": \"2026-01-04 14:35:00\",\n      \"cwd\": \"/Users/test/work/engram\",\n      \"project\": \"engram\",\n      \"model\": \"gpt-4o\",\n      \"messageCount\": 22,\n      \"userMessageCount\": 7,\n      \"summary\": \"engram cursor session 4: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\"\n    },\n    {\n      \"id\": \"mcp-fixture-03\",\n      \"source\": \"gemini-cli\",\n      \"startTime\": \"2026-01-03 13:00:00\",\n      \"endTime\": \"2026-01-03 13:35:00\",\n      \"cwd\": \"/Users/test/work/engram\",\n      \"project\": \"engram\",\n      \"model\": \"gemini-2.5-pro\",\n      \"messageCount\": 21,\n      \"userMessageCount\": 10,\n      \"summary\": \"engram gemini-cli session 3: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\"\n    }\n  ],\n  \"total\": 4\n}"
+    }
+  ],
+  "structuredContent": {
+    "sessions": [
+      {
+        "id": "mcp-fixture-06",
+        "source": "windsurf",
+        "startTime": "2026-01-06 16:00:00",
+        "endTime": "2026-01-06 16:35:00",
+        "cwd": "/Users/test/work/engram",
+        "project": "engram",
+        "model": "sonnet",
+        "messageCount": 19,
+        "userMessageCount": 9,
+        "summary": "engram windsurf session 6: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding"
+      },
+      {
+        "id": "mcp-fixture-05",
+        "source": "iflow",
+        "startTime": "2026-01-05 15:00:00",
+        "endTime": "2026-01-05 15:35:00",
+        "cwd": "/Users/test/work/engram",
+        "project": "engram",
+        "model": "qwen-plus",
+        "messageCount": 18,
+        "userMessageCount": 8,
+        "summary": "engram iflow session 5: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding"
+      },
+      {
+        "id": "mcp-fixture-04",
+        "source": "cursor",
+        "startTime": "2026-01-04 14:00:00",
+        "endTime": "2026-01-04 14:35:00",
+        "cwd": "/Users/test/work/engram",
+        "project": "engram",
+        "model": "gpt-4o",
+        "messageCount": 22,
+        "userMessageCount": 7,
+        "summary": "engram cursor session 4: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding"
+      },
+      {
+        "id": "mcp-fixture-03",
+        "source": "gemini-cli",
+        "startTime": "2026-01-03 13:00:00",
+        "endTime": "2026-01-03 13:35:00",
+        "cwd": "/Users/test/work/engram",
+        "project": "engram",
+        "model": "gemini-2.5-pro",
+        "messageCount": 21,
+        "userMessageCount": 10,
+        "summary": "engram gemini-cli session 3: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding"
+      }
+    ],
+    "total": 4
+  }
+}

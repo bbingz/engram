@@ -1,0 +1,69 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "copilot/input/session-1/events.jsonl",
+  "insightFields": {
+    "firstUserSummary": "Help me fix the bug",
+    "messageCount": 2,
+    "toolCallCount": 0
+  },
+  "locator": "copilot/input/session-1/events.jsonl",
+  "messages": [
+    {
+      "content": "Help me fix the bug",
+      "role": "user",
+      "timestamp": "2026-01-01T00:01:00Z"
+    },
+    {
+      "content": "I'll look into that.",
+      "role": "assistant",
+      "timestamp": "2026-01-01T00:02:00Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "/tmp/test-project",
+    "project": null,
+    "source": "copilot"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "Help me fix the bug\nI'll look into that.",
+    "contentSha256InputBytes": 40,
+    "roles": [
+      "user",
+      "assistant"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/tmp/test-project",
+    "endTime": "2026-01-01T00:05:00Z",
+    "filePath": "<fixtureRoot>/copilot/input/session-1/events.jsonl",
+    "id": "test-session-1",
+    "messageCount": 2,
+    "sizeBytes": 348,
+    "source": "copilot",
+    "startTime": "2026-01-01T00:00:00Z",
+    "summary": "Help me fix the bug",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "source": "copilot",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 2,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

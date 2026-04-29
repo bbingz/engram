@@ -1,0 +1,42 @@
+syntax = "proto3";
+package exa.language_server_pb;
+
+service LanguageServerService {
+  rpc GetAllCascadeTrajectories(GetAllCascadeTrajectoriesRequest) returns (GetAllCascadeTrajectoriesResponse);
+  rpc ConvertTrajectoryToMarkdown(ConvertTrajectoryToMarkdownRequest) returns (ConvertTrajectoryToMarkdownResponse);
+}
+
+message GetAllCascadeTrajectoriesRequest {}
+
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+
+message ConversationAnnotations {
+  string title = 1;
+}
+
+message CascadeTrajectorySummary {
+  string summary = 1;
+  string trajectory_id = 4;
+  Timestamp created_time = 7;
+  Timestamp last_modified_time = 3;
+  ConversationAnnotations annotations = 15;
+}
+
+message GetAllCascadeTrajectoriesResponse {
+  map<string, CascadeTrajectorySummary> trajectory_summaries = 1;
+}
+
+message Trajectory {
+  string cascade_id = 1;
+}
+
+message ConvertTrajectoryToMarkdownRequest {
+  Trajectory trajectory = 1;
+}
+
+message ConvertTrajectoryToMarkdownResponse {
+  string markdown = 1;
+}

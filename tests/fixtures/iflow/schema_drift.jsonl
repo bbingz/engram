@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"Hello","futureUserField":"ignored"},"timestamp":"2026-03-22T10:00:00.000Z","sessionId":"drift-iflow","cwd":"/test","version":"2.0.0","uuid":"uuid-1","newTopField":"data"}
+{"type":"assistant","message":{"role":"assistant","content":"Hi there!","model":"iflow-v2","newAssistantProp":"ignored"},"timestamp":"2026-03-22T10:00:01.000Z","sessionId":"drift-iflow","cwd":"/test","version":"2.0.0","uuid":"uuid-2","responseQuality":{"score":95}}

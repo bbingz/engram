@@ -1,0 +1,69 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "antigravity/input/cache/conv-001.jsonl",
+  "insightFields": {
+    "firstUserSummary": "Fix auth bug",
+    "messageCount": 2,
+    "toolCallCount": 0
+  },
+  "locator": "antigravity/input/cache/conv-001.jsonl",
+  "messages": [
+    {
+      "content": "There's a bug in auth.ts",
+      "role": "user",
+      "timestamp": "2026-02-20T10:00:00.000Z"
+    },
+    {
+      "content": "I can see the issue. The token expiry check is inverted.",
+      "role": "assistant",
+      "timestamp": "2026-02-20T10:00:30.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "",
+    "project": null,
+    "source": "antigravity"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "There's a bug in auth.ts\nI can see the issue. The token expiry check is inverted.",
+    "contentSha256InputBytes": 81,
+    "roles": [
+      "user",
+      "assistant"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "",
+    "endTime": "2026-02-20T10:30:00.000Z",
+    "filePath": "<fixtureRoot>/antigravity/input/cache/conv-001.jsonl",
+    "id": "conv-001",
+    "messageCount": 2,
+    "sizeBytes": 340,
+    "source": "antigravity",
+    "startTime": "2026-02-20T10:00:00.000Z",
+    "summary": "Fix auth bug",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "source": "antigravity",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 2,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

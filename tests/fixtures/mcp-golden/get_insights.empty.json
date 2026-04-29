@@ -1,0 +1,16 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"content\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"## Cost Insights\\n\\n**Period summary:** Spent $0.00 · Projected monthly $0.00\\n\\nNo cost optimization suggestions for this period. Spending looks healthy!\"\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "content": [
+      {
+        "type": "text",
+        "text": "## Cost Insights\n\n**Period summary:** Spent $0.00 · Projected monthly $0.00\n\nNo cost optimization suggestions for this period. Spending looks healthy!"
+      }
+    ]
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"memories\": [\n    {\n      \"id\": \"insight-01\",\n      \"content\": \"Insight 1: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"engram\",\n      \"room\": \"contracts\",\n      \"importance\": 4,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-02\",\n      \"content\": \"Insight 2: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"engram\",\n      \"room\": \"mcp-swift\",\n      \"importance\": 3,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-03\",\n      \"content\": \"Insight 3: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"engram\",\n      \"room\": \"contracts\",\n      \"importance\": 5,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-04\",\n      \"content\": \"Insight 4: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"engram\",\n      \"room\": \"mcp-swift\",\n      \"importance\": 4,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-05\",\n      \"content\": \"Insight 5: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"engram\",\n      \"room\": \"contracts\",\n      \"importance\": 3,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-06\",\n      \"content\": \"Insight 6: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"engram\",\n      \"room\": \"mcp-swift\",\n      \"importance\": 5,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-07\",\n      \"content\": \"Insight 7: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"apollo\",\n      \"room\": \"contracts\",\n      \"importance\": 4,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-08\",\n      \"content\": \"Insight 8: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"apollo\",\n      \"room\": \"mcp-swift\",\n      \"importance\": 3,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-09\",\n      \"content\": \"Insight 9: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"apollo\",\n      \"room\": \"contracts\",\n      \"importance\": 5,\n      \"distance\": 0\n    },\n    {\n      \"id\": \"insight-10\",\n      \"content\": \"Insight 10: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.\",\n      \"wing\": \"apollo\",\n      \"room\": \"mcp-swift\",\n      \"importance\": 4,\n      \"distance\": 0\n    }\n  ],\n  \"warning\": \"No embedding provider — showing keyword-matched insights only.\"\n}"
+    }
+  ],
+  "structuredContent": {
+    "memories": [
+      {
+        "id": "insight-01",
+        "content": "Insight 1: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "engram",
+        "room": "contracts",
+        "importance": 4,
+        "distance": 0
+      },
+      {
+        "id": "insight-02",
+        "content": "Insight 2: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "engram",
+        "room": "mcp-swift",
+        "importance": 3,
+        "distance": 0
+      },
+      {
+        "id": "insight-03",
+        "content": "Insight 3: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "engram",
+        "room": "contracts",
+        "importance": 5,
+        "distance": 0
+      },
+      {
+        "id": "insight-04",
+        "content": "Insight 4: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "engram",
+        "room": "mcp-swift",
+        "importance": 4,
+        "distance": 0
+      },
+      {
+        "id": "insight-05",
+        "content": "Insight 5: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "engram",
+        "room": "contracts",
+        "importance": 3,
+        "distance": 0
+      },
+      {
+        "id": "insight-06",
+        "content": "Insight 6: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "engram",
+        "room": "mcp-swift",
+        "importance": 5,
+        "distance": 0
+      },
+      {
+        "id": "insight-07",
+        "content": "Insight 7: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "apollo",
+        "room": "contracts",
+        "importance": 4,
+        "distance": 0
+      },
+      {
+        "id": "insight-08",
+        "content": "Insight 8: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "apollo",
+        "room": "mcp-swift",
+        "importance": 3,
+        "distance": 0
+      },
+      {
+        "id": "insight-09",
+        "content": "Insight 9: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "apollo",
+        "room": "contracts",
+        "importance": 5,
+        "distance": 0
+      },
+      {
+        "id": "insight-10",
+        "content": "Insight 10: Engram should keep write traffic on daemon HTTP only, with deterministic Swift MCP contract tests and WAL-friendly single-writer semantics.",
+        "wing": "apollo",
+        "room": "mcp-swift",
+        "importance": 4,
+        "distance": 0
+      }
+    ],
+    "warning": "No embedding provider — showing keyword-matched insights only."
+  }
+}

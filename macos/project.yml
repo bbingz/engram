@@ -1,0 +1,357 @@
+name: Engram
+
+options:
+  bundleIdPrefix: com.engram
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+  defaultLocalization: en
+
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    majorVersion: 6.0.0
+  Hummingbird:
+    url: https://github.com/hummingbird-project/hummingbird
+    majorVersion: 2.0.0
+  ArgumentParser:
+    url: https://github.com/apple/swift-argument-parser
+    majorVersion: 1.0.0
+
+targets:
+  EngramCoreRead:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCoreRead
+      - path: Shared/EngramCore
+      - path: Shared/MCP
+    dependencies:
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-read
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCoreWrite:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCoreWrite
+    dependencies:
+      - target: EngramCoreRead
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-write
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCoreTests
+    dependencies:
+      - target: EngramCoreRead
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramCoreSchemaTool:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCoreSchemaTool
+    dependencies:
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-schema-tool
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramServiceCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramService/Core
+      - path: EngramService/IPC
+      - path: Shared/Service
+    dependencies:
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.service-core
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramServiceCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramServiceCoreTests
+    dependencies:
+      - target: EngramServiceCore
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramService:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramService/main.swift
+    dependencies:
+      - target: EngramServiceCore
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.service
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      SKIP_INSTALL: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  Engram:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Engram
+      - path: Shared
+    resources:
+      - path: Engram/Resources/Assets.xcassets
+    dependencies:
+      - package: GRDB
+        product: GRDB
+      - package: Hummingbird
+        product: Hummingbird
+      - target: EngramMCP
+        link: false
+        embed: false
+      - target: EngramService
+        link: false
+        embed: false
+    postbuildScripts:
+      - name: Bundle EngramMCP helper
+        script: "${SRCROOT}/scripts/copy-mcp-helper.sh"
+        basedOnDependencyAnalysis: false
+      - name: Bundle EngramService helper
+        script: "${SRCROOT}/scripts/copy-service-helper.sh"
+        basedOnDependencyAnalysis: false
+      - name: Replace AppIcon.icns with complete version
+        script: |
+          # Xcode only generates icns with 16+128 sizes; replace with our pre-built complete icns
+          ICNS_SRC="${SRCROOT}/Engram/Resources/AppIcon.icns"
+          ICNS_DST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/AppIcon.icns"
+          if [ -f "$ICNS_SRC" ]; then
+            cp "$ICNS_SRC" "$ICNS_DST"
+          fi
+        basedOnDependencyAnalysis: false
+    info:
+      path: Engram/Info.plist
+      properties:
+        LSUIElement: true
+        CFBundleDisplayName: Engram
+        NSPrincipalClass: NSApplication
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.app
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CODE_SIGN_IDENTITY: "Apple Development"
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: YOUR_TEAM_ID
+      CODE_SIGN_ENTITLEMENTS: Engram/Engram.entitlements
+      ENABLE_HARDENED_RUNTIME: YES
+
+  EngramCLI:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramCLI
+      - path: Shared
+    dependencies:
+      - package: ArgumentParser
+        product: ArgumentParser
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.cli
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      SKIP_INSTALL: YES
+
+  EngramMCP:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramMCP
+      - path: Shared
+    dependencies:
+      - package: GRDB
+        product: GRDB
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.mcp
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      SKIP_INSTALL: YES
+
+  EngramTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramTests
+      - path: test-fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: Engram
+      - package: GRDB
+        product: GRDB
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
+      TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
+      BUNDLE_LOADER: "$(TEST_HOST)"
+
+  EngramMCPTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramMCPTests
+      - path: ../tests/fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: EngramMCP
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
+
+  EngramUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: EngramUITests
+        excludes:
+          - "baselines/**"
+      - path: ../tests/fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: Engram
+    settings:
+      TEST_TARGET_NAME: Engram
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_NSPrincipalClass: ScreenshotTestObserver
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+schemes:
+  Engram:
+    build:
+      targets:
+        EngramCoreRead: all
+        EngramCoreWrite: all
+        Engram: all
+        EngramCLI: all
+        EngramMCP: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EngramCoreTests
+        - EngramTests
+        - EngramUITests
+      environmentVariables: []
+  EngramCLI:
+    build:
+      targets:
+        EngramCLI: all
+    run:
+      config: Debug
+  EngramMCP:
+    build:
+      targets:
+        EngramMCP: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EngramMCPTests
+  EngramService:
+    build:
+      targets:
+        EngramService: all
+    run:
+      config: Debug
+  EngramServiceCore:
+    build:
+      targets:
+        EngramServiceCore: all
+        EngramServiceCoreTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramServiceCoreTests
+  EngramMCPTests:
+    build:
+      targets:
+        EngramMCP: all
+        EngramMCPTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramMCPTests
+  EngramCoreTests:
+    build:
+      targets:
+        EngramCoreRead: all
+        EngramCoreWrite: all
+        EngramCoreTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramCoreTests
+  EngramCoreSchemaTool:
+    build:
+      targets:
+        EngramCoreSchemaTool: all
+    run:
+      config: Debug

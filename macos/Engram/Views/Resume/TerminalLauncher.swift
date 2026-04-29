@@ -1,0 +1,78 @@
+// macos/Engram/Views/Resume/TerminalLauncher.swift
+import Foundation
+import AppKit
+
+enum TerminalType: String, CaseIterable, Identifiable {
+    case terminal = "Terminal"
+    case iterm = "iTerm2"
+    case ghostty = "Ghostty"
+    var id: String { rawValue }
+}
+
+struct TerminalLauncher {
+    /// Escape a string for safe interpolation into AppleScript double-quoted strings.
+    /// Internal visibility — used by RepoDetailView and other callers that build AppleScript.
+    static func escapeForAppleScript(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) {
+        let safeCwd = escapeForAppleScript(cwd)
+        let safeCmd = ([command] + args).map { escapeForAppleScript($0) }.joined(separator: " ")
+        let script: String
+        switch terminal {
+        case .terminal:
+            script = """
+            tell application "Terminal"
+                activate
+                do script "cd \\"\(safeCwd)\\" && \(safeCmd)"
+            end tell
+            """
+        case .iterm:
+            script = """
+            tell application "iTerm2"
+                activate
+                set newWindow to (create window with default profile)
+                tell current session of newWindow
+                    write text "cd \\"\(safeCwd)\\" && \(safeCmd)"
+                end tell
+            end tell
+            """
+        case .ghostty:
+            let ghosttyBin = "/Applications/Ghostty.app/Contents/MacOS/ghostty"
+            if FileManager.default.isExecutableFile(atPath: ghosttyBin) {
+                // Launch Ghostty CLI directly with -e flag
+                let escapedCwd = safeCwd.replacingOccurrences(of: "$", with: "\\$")
+                let shellCmd = "cd \"\(escapedCwd)\" && \(safeCmd.replacingOccurrences(of: "$", with: "\\$"))"
+                let logMsg = "[TerminalLauncher] Launching Ghostty: \(ghosttyBin) -e \(shellCmd)\n"
+                try? logMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: ghosttyBin)
+                process.arguments = ["-e", shellCmd]
+                try? process.run()
+                return
+            }
+            // Fallback: just activate via AppleScript if binary not found
+            script = """
+            tell application "Ghostty"
+                activate
+            end tell
+            """
+        }
+        // Log the script for debugging
+        let logMsg = "[TerminalLauncher] Executing script:\n\(script)\n"
+        try? logMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
+
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
+            if let error {
+                let errMsg = "[TerminalLauncher] AppleScript error: \(error)\n"
+                if let data = errMsg.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/engram-terminal.log") {
+                    fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+                }
+            }
+        }
+    }
+}

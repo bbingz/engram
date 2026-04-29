@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/daemon.ts",
+    "src/cli/index.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts"
+  ],
+  "ignoreExportsUsedInFile": {
+    "interface": true,
+    "type": true
+  },
+  "project": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+}

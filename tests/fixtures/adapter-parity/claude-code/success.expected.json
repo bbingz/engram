@@ -1,0 +1,75 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "claude-code/input/-Users-test-my-project/sample.jsonl",
+  "insightFields": {
+    "firstUserSummary": "请帮我添加用户注册功能",
+    "messageCount": 3,
+    "toolCallCount": 0
+  },
+  "locator": "claude-code/input/-Users-test-my-project/sample.jsonl",
+  "messages": [
+    {
+      "content": "请帮我添加用户注册功能",
+      "role": "user",
+      "timestamp": "2026-01-20T09:00:00.000Z"
+    },
+    {
+      "content": "好的，我来帮你实现用户注册功能。",
+      "role": "assistant",
+      "timestamp": "2026-01-20T09:00:05.000Z"
+    },
+    {
+      "content": "需要邮件验证吗？",
+      "role": "user",
+      "timestamp": "2026-01-20T09:01:00.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": null,
+    "source": "claude-code"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "请帮我添加用户注册功能\n好的，我来帮你实现用户注册功能。\n需要邮件验证吗？",
+    "contentSha256InputBytes": 107,
+    "roles": [
+      "user",
+      "assistant",
+      "user"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-01-20T09:01:00.000Z",
+    "filePath": "<fixtureRoot>/claude-code/input/-Users-test-my-project/sample.jsonl",
+    "id": "cc-session-001",
+    "messageCount": 3,
+    "sizeBytes": 976,
+    "source": "claude-code",
+    "startTime": "2026-01-20T09:00:00.000Z",
+    "summary": "请帮我添加用户注册功能",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "source": "claude-code",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 3,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

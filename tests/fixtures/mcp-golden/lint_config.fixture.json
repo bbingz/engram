@@ -1,0 +1,25 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"issues\": [\n    {\n      \"file\": \"/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/lint-project/CLAUDE.md\",\n      \"line\": 4,\n      \"severity\": \"error\",\n      \"message\": \"Referenced file `src/present.ts` does not exist\"\n    },\n    {\n      \"file\": \"/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/lint-project/CLAUDE.md\",\n      \"line\": 4,\n      \"severity\": \"warning\",\n      \"message\": \"npm script `verify` not found in package.json\"\n    }\n  ],\n  \"score\": 87\n}"
+    }
+  ],
+  "structuredContent": {
+    "issues": [
+      {
+        "file": "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/lint-project/CLAUDE.md",
+        "line": 4,
+        "severity": "error",
+        "message": "Referenced file `src/present.ts` does not exist"
+      },
+      {
+        "file": "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/lint-project/CLAUDE.md",
+        "line": 4,
+        "severity": "warning",
+        "message": "npm script `verify` not found in package.json"
+      }
+    ],
+    "score": 87
+  }
+}

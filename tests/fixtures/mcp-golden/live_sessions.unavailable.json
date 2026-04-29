@@ -1,0 +1,13 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"sessions\": [],\n  \"count\": 0,\n  \"note\": \"Live session monitor not available (MCP server mode)\"\n}"
+    }
+  ],
+  "structuredContent": {
+    "sessions": [],
+    "count": 0,
+    "note": "Live session monitor not available (MCP server mode)"
+  }
+}

@@ -1,0 +1,1 @@
+{"messages":[{"type":"user","content":"Hello Gemini"},{"type":"gemini","content":"Hi from Gemini"},{"type":"model","content":[{"text":"Multi-part model response"}]}]}

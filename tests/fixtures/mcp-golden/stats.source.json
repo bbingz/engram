@@ -1,0 +1,62 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"groupBy\": \"source\",\n  \"groups\": [\n    {\n      \"key\": \"codex\",\n      \"sessionCount\": 5,\n      \"messageCount\": 84,\n      \"userMessageCount\": 25,\n      \"assistantMessageCount\": 41,\n      \"toolMessageCount\": 8\n    },\n    {\n      \"key\": \"windsurf\",\n      \"sessionCount\": 4,\n      \"messageCount\": 82,\n      \"userMessageCount\": 32,\n      \"assistantMessageCount\": 32,\n      \"toolMessageCount\": 8\n    },\n    {\n      \"key\": \"iflow\",\n      \"sessionCount\": 4,\n      \"messageCount\": 78,\n      \"userMessageCount\": 36,\n      \"assistantMessageCount\": 40,\n      \"toolMessageCount\": 12\n    },\n    {\n      \"key\": \"gemini-cli\",\n      \"sessionCount\": 4,\n      \"messageCount\": 80,\n      \"userMessageCount\": 28,\n      \"assistantMessageCount\": 32,\n      \"toolMessageCount\": 12\n    },\n    {\n      \"key\": \"cursor\",\n      \"sessionCount\": 4,\n      \"messageCount\": 79,\n      \"userMessageCount\": 32,\n      \"assistantMessageCount\": 36,\n      \"toolMessageCount\": 8\n    },\n    {\n      \"key\": \"claude-code\",\n      \"sessionCount\": 4,\n      \"messageCount\": 82,\n      \"userMessageCount\": 26,\n      \"assistantMessageCount\": 36,\n      \"toolMessageCount\": 12\n    }\n  ],\n  \"totalSessions\": 25\n}"
+    }
+  ],
+  "structuredContent": {
+    "groupBy": "source",
+    "groups": [
+      {
+        "key": "codex",
+        "sessionCount": 5,
+        "messageCount": 84,
+        "userMessageCount": 25,
+        "assistantMessageCount": 41,
+        "toolMessageCount": 8
+      },
+      {
+        "key": "windsurf",
+        "sessionCount": 4,
+        "messageCount": 82,
+        "userMessageCount": 32,
+        "assistantMessageCount": 32,
+        "toolMessageCount": 8
+      },
+      {
+        "key": "iflow",
+        "sessionCount": 4,
+        "messageCount": 78,
+        "userMessageCount": 36,
+        "assistantMessageCount": 40,
+        "toolMessageCount": 12
+      },
+      {
+        "key": "gemini-cli",
+        "sessionCount": 4,
+        "messageCount": 80,
+        "userMessageCount": 28,
+        "assistantMessageCount": 32,
+        "toolMessageCount": 12
+      },
+      {
+        "key": "cursor",
+        "sessionCount": 4,
+        "messageCount": 79,
+        "userMessageCount": 32,
+        "assistantMessageCount": 36,
+        "toolMessageCount": 8
+      },
+      {
+        "key": "claude-code",
+        "sessionCount": 4,
+        "messageCount": 82,
+        "userMessageCount": 26,
+        "assistantMessageCount": 36,
+        "toolMessageCount": 12
+      }
+    ],
+    "totalSessions": 25
+  }
+}

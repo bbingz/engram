@@ -1,0 +1,19 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"created\": 6,\n  \"skipped\": 0,\n  \"errors\": [],\n  \"targetDir\": \"/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/engram\",\n  \"projectNames\": [\n    \"engram\",\n    \"engram-legacy\",\n    \"engram-mcp\"\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "created": 6,
+    "skipped": 0,
+    "errors": [],
+    "targetDir": "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/engram",
+    "projectNames": [
+      "engram",
+      "engram-legacy",
+      "engram-mcp"
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"tools\": [\n    {\n      \"key\": \"Read\",\n      \"callCount\": 72,\n      \"sessionCount\": 24\n    },\n    {\n      \"key\": \"Edit\",\n      \"callCount\": 36,\n      \"sessionCount\": 24\n    },\n    {\n      \"key\": \"Bash\",\n      \"callCount\": 24,\n      \"sessionCount\": 24\n    },\n    {\n      \"key\": \"search\",\n      \"callCount\": 12,\n      \"sessionCount\": 24\n    }\n  ],\n  \"totalCalls\": 144,\n  \"groupCount\": 4\n}"
+    }
+  ],
+  "structuredContent": {
+    "tools": [
+      {
+        "key": "Read",
+        "callCount": 72,
+        "sessionCount": 24
+      },
+      {
+        "key": "Edit",
+        "callCount": 36,
+        "sessionCount": 24
+      },
+      {
+        "key": "Bash",
+        "callCount": 24,
+        "sessionCount": 24
+      },
+      {
+        "key": "search",
+        "callCount": 12,
+        "sessionCount": 24
+      }
+    ],
+    "totalCalls": 144,
+    "groupCount": 4
+  }
+}

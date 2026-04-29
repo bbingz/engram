@@ -1,0 +1,7 @@
+{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"new-types-001"}
+{"type":"user","cwd":"/Users/test/proj","sessionId":"new-types-001","message":{"role":"user","content":"hello"},"uuid":"u-1","timestamp":"2026-04-25T10:00:00.000Z"}
+{"type":"attachment","sessionId":"new-types-001","uuid":"a-1","timestamp":"2026-04-25T10:00:01.000Z","attachment":{"type":"hook_success","hookName":"SessionStart"}}
+{"type":"queue-operation","sessionId":"new-types-001","uuid":"q-1","operation":"enqueue"}
+{"type":"assistant","cwd":"/Users/test/proj","sessionId":"new-types-001","message":{"id":"r-1","type":"message","role":"assistant","content":[{"type":"text","text":"world"}]},"uuid":"a-2","timestamp":"2026-04-25T10:00:02.000Z"}
+{"type":"last-prompt","sessionId":"new-types-001","prompt":"hello"}
+{"type":"file-history-snapshot","sessionId":"new-types-001","files":["src/foo.ts"]}

@@ -1,0 +1,17 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"own\": [\n    \"/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.claude/projects/-Users-test-work-engram-v2/session-own.jsonl\",\n    \"/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.codex/sessions/2026/04/22/rollout-review.jsonl\"\n  ],\n  \"other\": [\n    \"/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.claude/projects/-Users-test-work-other-app/session-other.jsonl\"\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "own": [
+      "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.claude/projects/-Users-test-work-engram-v2/session-own.jsonl",
+      "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.codex/sessions/2026/04/22/rollout-review.jsonl"
+    ],
+    "other": [
+      "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.claude/projects/-Users-test-work-other-app/session-other.jsonl"
+    ]
+  }
+}

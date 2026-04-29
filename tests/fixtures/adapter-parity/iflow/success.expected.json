@@ -1,0 +1,75 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "iflow/input/-Users-test-my-project/session-sample.jsonl",
+  "insightFields": {
+    "firstUserSummary": "帮我优化数据库查询",
+    "messageCount": 3,
+    "toolCallCount": 0
+  },
+  "locator": "iflow/input/-Users-test-my-project/session-sample.jsonl",
+  "messages": [
+    {
+      "content": "帮我优化数据库查询",
+      "role": "user",
+      "timestamp": "2026-01-20T09:00:00.000Z"
+    },
+    {
+      "content": "好的，我来分析数据库查询性能。",
+      "role": "assistant",
+      "timestamp": "2026-01-20T09:00:05.000Z"
+    },
+    {
+      "content": "好的谢谢",
+      "role": "user",
+      "timestamp": "2026-01-20T09:01:00.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": null,
+    "source": "iflow"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "帮我优化数据库查询\n好的，我来分析数据库查询性能。\n好的谢谢",
+    "contentSha256InputBytes": 86,
+    "roles": [
+      "user",
+      "assistant",
+      "user"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-01-20T09:01:00.000Z",
+    "filePath": "<fixtureRoot>/iflow/input/-Users-test-my-project/session-sample.jsonl",
+    "id": "session-iflow-001",
+    "messageCount": 3,
+    "sizeBytes": 1031,
+    "source": "iflow",
+    "startTime": "2026-01-20T09:00:00.000Z",
+    "summary": "帮我优化数据库查询",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "source": "iflow",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 3,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

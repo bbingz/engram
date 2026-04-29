@@ -1,0 +1,4 @@
+{"type":"user","message":{"content":"<system-reminder>You are helpful</system-reminder>"}}
+{"type":"user","message":{"content":"Hello normal message"}}
+{"type":"user","message":{"content":"<environment_context>macOS 14</environment_context>"}}
+{"type":"user","message":{"content":"<local-command-stdout>ls output</local-command-stdout>"}}

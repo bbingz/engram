@@ -1,0 +1,54 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"session\": {\n    \"id\": \"mcp-transcript-01\",\n    \"source\": \"codex\",\n    \"startTime\": \"2026-01-15T09:00:00.000Z\",\n    \"endTime\": \"2026-01-15T09:05:00.000Z\",\n    \"cwd\": \"/Users/test/work/transcript-fixture\",\n    \"project\": \"transcript-fixture\",\n    \"model\": \"gpt-5.4\",\n    \"messageCount\": 3,\n    \"userMessageCount\": 2,\n    \"assistantMessageCount\": 1,\n    \"toolMessageCount\": 0,\n    \"systemMessageCount\": 0,\n    \"summary\": \"Transcript fixture codex session for get_session/export contract tests\",\n    \"filePath\": \"/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl\",\n    \"sizeBytes\": 2048,\n    \"indexedAt\": \"2026-01-15T09:06:00.000Z\",\n    \"agentRole\": null,\n    \"origin\": \"local\",\n    \"summaryMessageCount\": null,\n    \"tier\": \"normal\",\n    \"qualityScore\": 55,\n    \"parentSessionId\": null,\n    \"suggestedParentId\": null\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Summarize the Swift MCP shim scope before implementation.\",\n      \"timestamp\": \"2026-01-15T09:00:00.000Z\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Phase C only ports the MCP stdio shim and daemon forwarding layer.\",\n      \"timestamp\": \"2026-01-15T09:01:00.000Z\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Keep src/index.ts as the fallback entry point.\",\n      \"timestamp\": \"2026-01-15T09:02:00.000Z\"\n    }\n  ],\n  \"totalPages\": 1,\n  \"currentPage\": 1\n}"
+    }
+  ],
+  "structuredContent": {
+    "session": {
+      "id": "mcp-transcript-01",
+      "source": "codex",
+      "startTime": "2026-01-15T09:00:00.000Z",
+      "endTime": "2026-01-15T09:05:00.000Z",
+      "cwd": "/Users/test/work/transcript-fixture",
+      "project": "transcript-fixture",
+      "model": "gpt-5.4",
+      "messageCount": 3,
+      "userMessageCount": 2,
+      "assistantMessageCount": 1,
+      "toolMessageCount": 0,
+      "systemMessageCount": 0,
+      "summary": "Transcript fixture codex session for get_session/export contract tests",
+      "filePath": "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl",
+      "sizeBytes": 2048,
+      "indexedAt": "2026-01-15T09:06:00.000Z",
+      "agentRole": null,
+      "origin": "local",
+      "summaryMessageCount": null,
+      "tier": "normal",
+      "qualityScore": 55,
+      "parentSessionId": null,
+      "suggestedParentId": null
+    },
+    "messages": [
+      {
+        "role": "user",
+        "content": "Summarize the Swift MCP shim scope before implementation.",
+        "timestamp": "2026-01-15T09:00:00.000Z"
+      },
+      {
+        "role": "assistant",
+        "content": "Phase C only ports the MCP stdio shim and daemon forwarding layer.",
+        "timestamp": "2026-01-15T09:01:00.000Z"
+      },
+      {
+        "role": "user",
+        "content": "Keep src/index.ts as the fallback entry point.",
+        "timestamp": "2026-01-15T09:02:00.000Z"
+      }
+    ],
+    "totalPages": 1,
+    "currentPage": 1
+  }
+}

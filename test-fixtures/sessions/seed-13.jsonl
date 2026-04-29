@@ -1,0 +1,4 @@
+{"type":"user","message":{"content":"Help me set up the new feature branch."}}
+{"type":"assistant","message":{"content":"I'll help you create and configure the feature branch. Let me check the current git status first."}}
+{"type":"user","message":{"content":"Also configure the CI pipeline for it."}}
+{"type":"assistant","message":{"content":"Done. The feature branch is created and CI pipeline is configured with the standard test matrix."}}

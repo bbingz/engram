@@ -1,0 +1,11 @@
+{
+  "generatedAtCommit": "571fd97",
+  "schemaVersion": 1,
+  "sourceFiles": [
+    "src/core/watcher.ts",
+    "src/core/db/maintenance.ts"
+  ],
+  "startupParentBackfillLimit": 500,
+  "watchWriteStabilityMs": 2000,
+  "watchWriteStabilityPollMs": 500
+}

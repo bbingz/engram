@@ -1,0 +1,28 @@
+node_modules/
+dist/
+.worktrees/
+*.sqlite
+!test-fixtures/*.sqlite
+!tests/fixtures/mcp-contract.sqlite
+*.db
+
+# Xcode
+macos/build/
+macos/Engram.xcodeproj/xcuserdata/
+macos/Engram.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Coverage
+coverage/
+
+# Local investigation / generated fixture noise
+.tmp-parent-detection.mjs
+tests/fixtures/antigravity/cache/*.jsonl
+!tests/fixtures/antigravity/cache/conv-001.jsonl
+
+# macOS
+.DS_Store
+
+# Local agent memory / generated scratch artifacts
+.memory/
+.superpowers/brainstorm/
+.claude/

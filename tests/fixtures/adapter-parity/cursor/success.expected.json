@@ -1,0 +1,69 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "cursor/input/state.vscdb?composer=abc-123",
+  "insightFields": {
+    "firstUserSummary": "Fix the login bug",
+    "messageCount": 2,
+    "toolCallCount": 0
+  },
+  "locator": "cursor/input/state.vscdb?composer=abc-123",
+  "messages": [
+    {
+      "content": "Fix the login bug",
+      "role": "user",
+      "timestamp": "2026-02-18T05:20:00.000Z"
+    },
+    {
+      "content": "I found the issue in auth.ts",
+      "role": "assistant",
+      "timestamp": "2026-02-18T05:20:30.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "",
+    "project": null,
+    "source": "cursor"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "Fix the login bug\nI found the issue in auth.ts",
+    "contentSha256InputBytes": 46,
+    "roles": [
+      "user",
+      "assistant"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "",
+    "endTime": "2026-02-18T05:21:00.000Z",
+    "filePath": "<fixtureRoot>/cursor/input/state.vscdb?composer=abc-123",
+    "id": "abc-123",
+    "messageCount": 2,
+    "sizeBytes": 12288,
+    "source": "cursor",
+    "startTime": "2026-02-18T05:20:00.000Z",
+    "summary": "Fix the login bug",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "source": "cursor",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 2,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

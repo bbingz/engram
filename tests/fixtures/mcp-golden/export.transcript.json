@@ -1,0 +1,13 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"outputPath\": \"/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/export-home/codex-exports/codex-mcp-tran-2026-01-15.json\",\n  \"format\": \"json\",\n  \"messageCount\": 3\n}"
+    }
+  ],
+  "structuredContent": {
+    "outputPath": "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/export-home/codex-exports/codex-mcp-tran-2026-01-15.json",
+    "format": "json",
+    "messageCount": 3
+  }
+}

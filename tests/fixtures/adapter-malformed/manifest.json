@@ -1,0 +1,51 @@
+{
+  "categories": {
+    "deeplyNestedRecord": {
+      "committedInput": false,
+      "expectedFailure": "deeplyNestedRecord",
+      "generatedInTests": false
+    },
+    "fileModifiedDuringParse": {
+      "committedInput": false,
+      "expectedFailure": "fileModifiedDuringParse",
+      "generatedInTests": false
+    },
+    "fileTooLarge": {
+      "committedInput": false,
+      "expectedFailure": "fileTooLarge",
+      "generatedInTests": true
+    },
+    "invalidUtf8": {
+      "committedInput": false,
+      "expectedFailure": "invalidUtf8",
+      "generatedInTests": false
+    },
+    "malformedJSON": {
+      "committedInput": false,
+      "expectedFailure": "malformedJSON",
+      "generatedInTests": false
+    },
+    "malformedToolCall": {
+      "committedInput": false,
+      "expectedFailure": "malformedToolCall",
+      "generatedInTests": false
+    },
+    "messageLimitExceeded": {
+      "committedInput": false,
+      "expectedFailure": "messageLimitExceeded",
+      "generatedInTests": true
+    },
+    "truncatedJSON": {
+      "committedInput": false,
+      "expectedFailure": "truncatedJSON",
+      "generatedInTests": false
+    },
+    "truncatedJSONL": {
+      "committedInput": false,
+      "expectedFailure": "truncatedJSONL",
+      "generatedInTests": false
+    }
+  },
+  "generatedAtCommit": "571fd97",
+  "schemaVersion": 1
+}

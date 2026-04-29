@@ -1,0 +1,72 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "kimi/input/sessions/ws-001/sess-001/context.jsonl",
+  "insightFields": {
+    "firstUserSummary": "帮我排查内存泄漏",
+    "messageCount": 3,
+    "toolCallCount": 0
+  },
+  "locator": "kimi/input/sessions/ws-001/sess-001/context.jsonl",
+  "messages": [
+    {
+      "content": "帮我排查内存泄漏",
+      "role": "user"
+    },
+    {
+      "content": "我来帮你分析内存使用情况。",
+      "role": "assistant"
+    },
+    {
+      "content": "找到了，谢谢",
+      "role": "user"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": null,
+    "source": "kimi"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "帮我排查内存泄漏\n我来帮你分析内存使用情况。\n找到了，谢谢",
+    "contentSha256InputBytes": 83,
+    "roles": [
+      "user",
+      "assistant",
+      "user"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-02-02T02:41:00.000Z",
+    "filePath": "<fixtureRoot>/kimi/input/sessions/ws-001/sess-001/context.jsonl",
+    "id": "sess-001",
+    "messageCount": 3,
+    "sizeBytes": 248,
+    "source": "kimi",
+    "startTime": "2026-02-02T02:40:01.000Z",
+    "summary": "帮我排查内存泄漏",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "source": "kimi",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 3,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 2
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

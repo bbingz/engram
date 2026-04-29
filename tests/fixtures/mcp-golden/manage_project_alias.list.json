@@ -1,0 +1,22 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "[\n  {\n    \"alias\": \"apollo-old\",\n    \"canonical\": \"apollo\"\n  },\n  {\n    \"alias\": \"engram-legacy\",\n    \"canonical\": \"engram\"\n  },\n  {\n    \"alias\": \"engram-mcp\",\n    \"canonical\": \"engram\"\n  }\n]"
+    }
+  ],
+  "structuredContent": [
+    {
+      "alias": "apollo-old",
+      "canonical": "apollo"
+    },
+    {
+      "alias": "engram-legacy",
+      "canonical": "engram"
+    },
+    {
+      "alias": "engram-mcp",
+      "canonical": "engram"
+    }
+  ]
+}

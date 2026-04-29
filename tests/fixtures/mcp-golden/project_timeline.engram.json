@@ -1,0 +1,56 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"project\": \"engram\",\n  \"timeline\": [\n    {\n      \"time\": \"2026-01-01 11:00:00\",\n      \"source\": \"claude-code\",\n      \"summary\": \"engram claude-code session 1: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n      \"sessionId\": \"mcp-fixture-01\",\n      \"messageCount\": 19\n    },\n    {\n      \"time\": \"2026-01-02 12:00:00\",\n      \"source\": \"codex\",\n      \"summary\": \"engram codex session 2: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n      \"sessionId\": \"mcp-fixture-02\",\n      \"messageCount\": 20\n    },\n    {\n      \"time\": \"2026-01-03 13:00:00\",\n      \"source\": \"gemini-cli\",\n      \"summary\": \"engram gemini-cli session 3: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n      \"sessionId\": \"mcp-fixture-03\",\n      \"messageCount\": 21\n    },\n    {\n      \"time\": \"2026-01-04 14:00:00\",\n      \"source\": \"cursor\",\n      \"summary\": \"engram cursor session 4: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n      \"sessionId\": \"mcp-fixture-04\",\n      \"messageCount\": 22\n    },\n    {\n      \"time\": \"2026-01-05 15:00:00\",\n      \"source\": \"iflow\",\n      \"summary\": \"engram iflow session 5: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n      \"sessionId\": \"mcp-fixture-05\",\n      \"messageCount\": 18\n    },\n    {\n      \"time\": \"2026-01-06 16:00:00\",\n      \"source\": \"windsurf\",\n      \"summary\": \"engram windsurf session 6: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\",\n      \"sessionId\": \"mcp-fixture-06\",\n      \"messageCount\": 19\n    }\n  ],\n  \"total\": 6\n}"
+    }
+  ],
+  "structuredContent": {
+    "project": "engram",
+    "timeline": [
+      {
+        "time": "2026-01-01 11:00:00",
+        "source": "claude-code",
+        "summary": "engram claude-code session 1: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+        "sessionId": "mcp-fixture-01",
+        "messageCount": 19
+      },
+      {
+        "time": "2026-01-02 12:00:00",
+        "source": "codex",
+        "summary": "engram codex session 2: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+        "sessionId": "mcp-fixture-02",
+        "messageCount": 20
+      },
+      {
+        "time": "2026-01-03 13:00:00",
+        "source": "gemini-cli",
+        "summary": "engram gemini-cli session 3: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+        "sessionId": "mcp-fixture-03",
+        "messageCount": 21
+      },
+      {
+        "time": "2026-01-04 14:00:00",
+        "source": "cursor",
+        "summary": "engram cursor session 4: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+        "sessionId": "mcp-fixture-04",
+        "messageCount": 22
+      },
+      {
+        "time": "2026-01-05 15:00:00",
+        "source": "iflow",
+        "summary": "engram iflow session 5: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+        "sessionId": "mcp-fixture-05",
+        "messageCount": 18
+      },
+      {
+        "time": "2026-01-06 16:00:00",
+        "source": "windsurf",
+        "summary": "engram windsurf session 6: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding",
+        "sessionId": "mcp-fixture-06",
+        "messageCount": 19
+      }
+    ],
+    "total": 6
+  }
+}

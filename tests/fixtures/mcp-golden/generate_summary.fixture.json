@@ -1,0 +1,11 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Fixture summary: Phase C ports the stdio MCP shim and forwards writes through daemon HTTP."
+    }
+  ],
+  "metadata": {
+    "sessionId": "mcp-fixture-01"
+  }
+}

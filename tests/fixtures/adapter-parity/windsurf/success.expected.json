@@ -1,0 +1,69 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "571fd97",
+  "inputPath": "windsurf/input/cache/conv-w01.jsonl",
+  "insightFields": {
+    "firstUserSummary": "Refactor the API",
+    "messageCount": 2,
+    "toolCallCount": 0
+  },
+  "locator": "windsurf/input/cache/conv-w01.jsonl",
+  "messages": [
+    {
+      "content": "Refactor the API to use REST",
+      "role": "user",
+      "timestamp": "2026-02-18T09:00:00.000Z"
+    },
+    {
+      "content": "I'll restructure the endpoints.",
+      "role": "assistant",
+      "timestamp": "2026-02-18T09:00:20.000Z"
+    }
+  ],
+  "nodeVersion": "v25.9.0",
+  "projectFields": {
+    "cwd": "",
+    "project": null,
+    "source": "windsurf"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "Refactor the API to use REST\nI'll restructure the endpoints.",
+    "contentSha256InputBytes": 60,
+    "roles": [
+      "user",
+      "assistant"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "",
+    "endTime": "2026-02-18T09:20:00.000Z",
+    "filePath": "<fixtureRoot>/windsurf/input/cache/conv-w01.jsonl",
+    "id": "conv-w01",
+    "messageCount": 2,
+    "sizeBytes": 323,
+    "source": "windsurf",
+    "startTime": "2026-02-18T09:00:00.000Z",
+    "summary": "Refactor the API",
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "source": "windsurf",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 2,
+    "systemMessageCount": 0,
+    "toolMessageCount": 0,
+    "userMessageCount": 1
+  },
+  "toolCalls": [],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}
