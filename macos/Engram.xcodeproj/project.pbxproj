@@ -2182,19 +2182,18 @@
 		};
 		C64DD06E99B4717CA3559D76 /* Replace AppIcon.icns with complete version */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/Engram/Resources/AppIcon.icns",
 			);
 			name = "Replace AppIcon.icns with complete version";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/$(FULL_PRODUCT_NAME)/Contents/Resources/AppIcon.icns",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
