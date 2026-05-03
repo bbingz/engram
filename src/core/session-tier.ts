@@ -14,7 +14,28 @@ export interface TierInput {
   toolCount?: number;
 }
 
-const NOISE_PATTERNS = ['/usage', 'Generate a short, clear title'];
+const NOISE_PATTERNS = [
+  '/usage',
+  'Generate a short, clear title',
+  'Reply exactly:',
+  'Reply with exactly:',
+  'reply with just',
+  '/status/exit',
+];
+
+/** Probe patterns — single-line messages that are tool probes, not real sessions.
+ * Entries MUST be lowercase: the matcher applies `toLowerCase().trim()` first. */
+const PROBE_FIRST_LINES = new Set([
+  'ping',
+  'hi',
+  'hello',
+  'test',
+  'echo',
+  'ok',
+  'hey',
+  'say hello',
+  'reply: t4',
+]);
 
 function durationMinutes(
   startTime: string | null,
@@ -42,6 +63,14 @@ export function computeTier(input: TierInput): SessionTier {
     input.assistantCount !== undefined &&
     input.assistantCount === 0 &&
     (input.toolCount ?? 0) === 0
+  )
+    return 'lite';
+
+  // Probe sessions with very few messages are likely tooling noise.
+  if (
+    input.messageCount <= 3 &&
+    input.summary &&
+    PROBE_FIRST_LINES.has(input.summary.toLowerCase().trim())
   )
     return 'lite';
 

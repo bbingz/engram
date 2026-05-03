@@ -133,6 +133,29 @@ describe('computeTier()', () => {
         ),
       ).toBe('lite');
     });
+
+    it('downgrades short probe sessions matching PROBE_FIRST_LINES (case-insensitive)', () => {
+      for (const summary of [
+        'ping',
+        'PING',
+        'Hi',
+        'Hello',
+        'Say hello',
+        'Reply: T4',
+        '  Say Hello  ',
+      ]) {
+        expect(
+          computeTier(makeInput({ messageCount: 2, summary })),
+          `summary=${JSON.stringify(summary)}`,
+        ).toBe('lite');
+      }
+    });
+
+    it('keeps probe-like summary as normal when messageCount > 3', () => {
+      expect(computeTier(makeInput({ messageCount: 5, summary: 'ping' }))).toBe(
+        'normal',
+      );
+    });
   });
 
   describe('normal tier', () => {
