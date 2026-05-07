@@ -6,7 +6,7 @@ import type { AiAuditConfig } from './config.js';
 import { getRequestContext } from './request-context.js';
 import { applyPatterns } from './sanitizer.js';
 
-interface AiAuditRecord {
+export interface AiAuditRecord {
   id?: number;
   ts?: string;
   traceId?: string;

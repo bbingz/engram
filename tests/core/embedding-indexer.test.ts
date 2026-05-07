@@ -61,6 +61,12 @@ describe('EmbeddingIndexer', () => {
     expect(count).toBe(1);
     expect(mockClient.embed).toHaveBeenCalledOnce();
     expect(mockStore.upsert).toHaveBeenCalledOnce();
+
+    const embedCall = vi.mocked(mockClient.embed).mock.calls[0];
+    expect(embedCall[1]).toMatchObject({
+      sessionId: 's1',
+      textKind: 'session',
+    });
   });
 
   it('skips sessions without FTS content', async () => {
@@ -132,5 +138,11 @@ describe('EmbeddingIndexer', () => {
     const result = await indexer.indexOne('s1');
     expect(result).toBe(true);
     expect(mockStore.upsert).toHaveBeenCalledOnce();
+
+    const embedCall = vi.mocked(mockClient.embed).mock.calls[0];
+    expect(embedCall[1]).toMatchObject({
+      sessionId: 's1',
+      textKind: 'session',
+    });
   });
 });

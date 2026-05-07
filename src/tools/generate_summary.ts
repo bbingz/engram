@@ -108,6 +108,7 @@ export async function handleGenerateSummary(
     const summary = await summarizeConversation(messages, settings, {
       audit: opts?.audit,
       sessionId,
+      trigger: 'manual',
     });
 
     if (!summary) {

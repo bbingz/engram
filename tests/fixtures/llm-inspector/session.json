@@ -1,0 +1,202 @@
+{
+  "scenarios": {
+    "full": {
+      "target": "full-session-1",
+      "sessions": [
+        {
+          "id": "full-session-1",
+          "source": "codex",
+          "startTime": "2026-05-07T08:00:00.000Z",
+          "endTime": "2026-05-07T08:30:00.000Z",
+          "cwd": "/repo/full",
+          "project": "engram",
+          "model": "gpt-5.4",
+          "messageCount": 10,
+          "userMessageCount": 4,
+          "assistantMessageCount": 5,
+          "toolMessageCount": 1,
+          "systemMessageCount": 0,
+          "summary": "Full session summary text",
+          "summaryMessageCount": 10,
+          "filePath": "/repo/full/sess.jsonl",
+          "sizeBytes": 2048,
+          "tier": "normal",
+          "generatedTitle": "Full inspector smoke",
+          "indexedAt": "2026-05-07T08:31:00.000Z"
+        }
+      ],
+      "costs": [
+        {
+          "sessionId": "full-session-1",
+          "model": "gpt-5.4",
+          "inputTokens": 200,
+          "outputTokens": 80,
+          "cacheReadTokens": 10,
+          "cacheCreationTokens": 5,
+          "costUsd": 0.25,
+          "computedAt": "2026-05-07T08:31:00.000Z"
+        }
+      ],
+      "audit": [
+        {
+          "ts": "2026-05-07T08:31:00.000",
+          "caller": "summary",
+          "operation": "summarize",
+          "provider": "openai",
+          "model": "gpt-5.4",
+          "promptTokens": 200,
+          "completionTokens": 50,
+          "totalTokens": 250,
+          "durationMs": 14,
+          "sessionId": "full-session-1",
+          "meta": {
+            "trigger": "manual",
+            "resolvedConfig": {
+              "preset": "standard",
+              "maxTokens": 200,
+              "temperature": 0.3,
+              "sampleFirst": 20,
+              "sampleLast": 30,
+              "truncateChars": 500
+            }
+          }
+        }
+      ]
+    },
+    "missingFacts": {
+      "target": "missing-facts-1",
+      "sessions": [
+        {
+          "id": "missing-facts-1",
+          "source": "cursor",
+          "startTime": "2026-05-07T07:00:00.000Z",
+          "cwd": "/repo/missing",
+          "messageCount": 0,
+          "userMessageCount": 0,
+          "assistantMessageCount": 0,
+          "toolMessageCount": 0,
+          "systemMessageCount": 0,
+          "filePath": "/repo/missing/sess.jsonl",
+          "sizeBytes": 0,
+          "indexedAt": "2026-05-07T08:31:00.000Z"
+        }
+      ]
+    },
+    "childRollup": {
+      "target": "parent-rollup",
+      "sessions": [
+        {
+          "id": "parent-rollup",
+          "source": "codex",
+          "startTime": "2026-05-07T08:00:00.000Z",
+          "endTime": "2026-05-07T08:30:00.000Z",
+          "cwd": "/repo/rollup",
+          "project": "engram",
+          "model": "gpt-5.4",
+          "messageCount": 8,
+          "userMessageCount": 3,
+          "assistantMessageCount": 4,
+          "toolMessageCount": 1,
+          "systemMessageCount": 0,
+          "summary": "Parent rollup summary",
+          "summaryMessageCount": 8,
+          "filePath": "/repo/rollup/parent.jsonl",
+          "sizeBytes": 1500,
+          "tier": "normal",
+          "generatedTitle": "Rollup parent",
+          "indexedAt": "2026-05-07T08:31:00.000Z"
+        },
+        {
+          "id": "rollup-child-codex",
+          "source": "codex",
+          "startTime": "2026-05-07T08:05:00.000Z",
+          "endTime": "2026-05-07T08:10:00.000Z",
+          "cwd": "/repo/rollup",
+          "messageCount": 4,
+          "userMessageCount": 2,
+          "assistantMessageCount": 2,
+          "toolMessageCount": 0,
+          "systemMessageCount": 0,
+          "summary": "Codex child",
+          "filePath": "/repo/rollup/child-a.jsonl",
+          "sizeBytes": 600,
+          "tier": "skip",
+          "agentRole": "dispatched",
+          "parentSessionId": "parent-rollup",
+          "linkSource": "path",
+          "indexedAt": "2026-05-07T08:31:00.000Z"
+        },
+        {
+          "id": "rollup-child-gemini",
+          "source": "gemini-cli",
+          "startTime": "2026-05-07T08:15:00.000Z",
+          "endTime": "2026-05-07T08:20:00.000Z",
+          "cwd": "/repo/rollup",
+          "messageCount": 6,
+          "userMessageCount": 2,
+          "assistantMessageCount": 4,
+          "toolMessageCount": 0,
+          "systemMessageCount": 0,
+          "summary": "Gemini child",
+          "filePath": "/repo/rollup/child-b.jsonl",
+          "sizeBytes": 800,
+          "tier": "skip",
+          "agentRole": "dispatched",
+          "parentSessionId": "parent-rollup",
+          "linkSource": "path",
+          "indexedAt": "2026-05-07T08:31:00.000Z"
+        },
+        {
+          "id": "rollup-suggested",
+          "source": "gemini-cli",
+          "startTime": "2026-05-07T08:25:00.000Z",
+          "cwd": "/repo/rollup",
+          "messageCount": 3,
+          "userMessageCount": 1,
+          "assistantMessageCount": 2,
+          "toolMessageCount": 0,
+          "systemMessageCount": 0,
+          "summary": "Suggested child",
+          "filePath": "/repo/rollup/suggested.jsonl",
+          "sizeBytes": 500,
+          "tier": "skip",
+          "agentRole": "dispatched",
+          "suggestedParentId": "parent-rollup",
+          "indexedAt": "2026-05-07T08:31:00.000Z"
+        }
+      ],
+      "costs": [
+        {
+          "sessionId": "parent-rollup",
+          "model": "gpt-5.4",
+          "inputTokens": 1000,
+          "outputTokens": 500,
+          "cacheReadTokens": 0,
+          "cacheCreationTokens": 0,
+          "costUsd": 0.5,
+          "computedAt": "2026-05-07T08:31:00.000Z"
+        },
+        {
+          "sessionId": "rollup-child-codex",
+          "model": "gpt-5.4",
+          "inputTokens": 100,
+          "outputTokens": 100,
+          "cacheReadTokens": 0,
+          "cacheCreationTokens": 0,
+          "costUsd": 0.125,
+          "computedAt": "2026-05-07T08:31:00.000Z"
+        },
+        {
+          "sessionId": "rollup-child-gemini",
+          "model": "gemini-2.5-pro",
+          "inputTokens": 200,
+          "outputTokens": 200,
+          "cacheReadTokens": 0,
+          "cacheCreationTokens": 0,
+          "costUsd": 0.25,
+          "computedAt": "2026-05-07T08:31:00.000Z"
+        }
+      ]
+    }
+  }
+}

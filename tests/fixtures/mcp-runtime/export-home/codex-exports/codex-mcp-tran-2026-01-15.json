@@ -13,7 +13,7 @@
     "toolMessageCount": 0,
     "systemMessageCount": 0,
     "summary": "Transcript fixture codex session for get_session/export contract tests",
-    "filePath": "/Users/example/-Code-/engram/tests/fixtures/mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl",
+    "filePath": "tests/fixtures/mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl",
     "sizeBytes": 2048,
     "indexedAt": "2026-01-15T09:06:00.000Z",
     "agentRole": null,

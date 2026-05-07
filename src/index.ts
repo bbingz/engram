@@ -37,6 +37,10 @@ import {
 import { getMemoryTool, handleGetMemory } from './tools/get_memory.js';
 import { getSessionTool, handleGetSession } from './tools/get_session.js';
 import { handleHandoff, handoffTool } from './tools/handoff.js';
+import {
+  handleInspectSession,
+  inspectSessionTool,
+} from './tools/inspect_session.js';
 import { handleLinkSessions, linkSessionsTool } from './tools/link_sessions.js';
 import { handleLintConfig, lintConfigTool } from './tools/lint_config.js';
 import { handleListSessions, listSessionsTool } from './tools/list_sessions.js';
@@ -127,6 +131,7 @@ const manageProjectAliasTool = {
 const allTools = [
   listSessionsTool,
   getSessionTool,
+  inspectSessionTool,
   searchTool,
   projectTimelineTool,
   statsTool,
@@ -235,6 +240,11 @@ toolRegistry.set('file_activity', (a) =>
     { log },
   ),
 );
+
+toolRegistry.set('inspect_session', async (a) => ({
+  _early: true,
+  ...(await handleInspectSession(db, a as { id: string })),
+}));
 
 toolRegistry.set('get_session', async (a) => {
   const session = db.getSession(a.id as string);

@@ -45,7 +45,11 @@ Before transmitting data to external AI providers, content is filtered:
 
 ## Code Signing
 
-Development builds use ad-hoc signing (`-`). Production builds should be signed with a Developer ID certificate and notarized via Apple.
+CI and local smoke builds may use ad-hoc signing (`-`) or disable signing with
+`CODE_SIGNING_ALLOWED=NO`. Host-based Swift tests that load `EngramTests.xctest`
+into the hardened-runtime `Engram.app` process may require matching Apple
+Development signing for both the host app and the test bundle. Production builds
+should be signed with a Developer ID certificate and notarized via Apple.
 
 ## Reporting Vulnerabilities
 

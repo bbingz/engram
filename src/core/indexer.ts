@@ -63,7 +63,10 @@ export class Indexer {
     const msgs = messages
       .slice(0, 6)
       .map((m) => ({ role: m.role, content: m.content?.slice(0, 200) || '' }));
-    const title = await titleGenerator.generate(msgs);
+    const title = await titleGenerator.generate(msgs, {
+      sessionId,
+      trigger: 'indexing',
+    });
     if (title) {
       this.db
         .getRawDb()

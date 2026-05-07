@@ -125,7 +125,72 @@ describe('EmbeddingClient audit', () => {
     expect(call.provider).toBe('ollama');
     expect(call.promptTokens).toBe(42);
     expect(call.durationMs).toBeGreaterThanOrEqual(0);
-    expect(call.meta).toEqual({ dimension: 768 });
+    expect(call.meta).toMatchObject({ dimension: 768 });
+  });
+
+  it('Ollama success carries embedding context (sessionId + textKind/chunkIndex)', async () => {
+    const audit = makeAudit();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            embeddings: [[0.1, 0.2, 0.3]],
+            prompt_eval_count: 7,
+          }),
+      }),
+    );
+
+    const client = createEmbeddingClient({
+      ollamaUrl: 'http://localhost:11434',
+      audit,
+    });
+    const result = await client.embed('hello', {
+      sessionId: 'sess-embed',
+      textKind: 'chunk',
+      chunkIndex: 3,
+      chunkId: 'chunk-id-3',
+    });
+    expect(result).toBeInstanceOf(Float32Array);
+
+    const call = audit.record.mock.calls[0][0];
+    expect(call.sessionId).toBe('sess-embed');
+    expect(call.meta).toMatchObject({
+      dimension: 768,
+      textKind: 'chunk',
+      chunkIndex: 3,
+      chunkId: 'chunk-id-3',
+    });
+  });
+
+  it('Ollama error path forwards embedding context', async () => {
+    const audit = makeAudit();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({}),
+      }),
+    );
+
+    const client = createEmbeddingClient({
+      ollamaUrl: 'http://localhost:11434',
+      audit,
+    });
+    await client.embed('hello', {
+      sessionId: 'sess-embed-err',
+      textKind: 'session',
+    });
+
+    const call = audit.record.mock.calls[0][0];
+    expect(call.sessionId).toBe('sess-embed-err');
+    expect(call.error).toBe('HTTP 500');
+    expect(call.meta).toMatchObject({
+      dimension: 768,
+      textKind: 'session',
+    });
   });
 
   it('Ollama error records audit with error field', async () => {

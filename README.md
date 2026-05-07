@@ -95,6 +95,15 @@ npm install
 npm run build
 ```
 
+#### macOS signing for local tests and forks
+
+The `EngramTests` bundle is loaded into the hardened-runtime `Engram.app` host.
+When running host-based Swift tests with signing enabled, the test bundle and
+host app must use the same Apple Developer Team. This repo's checked-in
+`macos/project.yml` uses the project owner's team for `EngramTests`; forks should
+mirror their own host app team there, or pass `DEVELOPMENT_TEAM=<TEAM_ID>` to
+`xcodebuild` for local signed test runs.
+
 ### Raspberry Pi / Linux headless
 
 Engram's TypeScript server can run without the macOS app. This is useful for Raspberry Pi, home servers, or any Linux box where you want MCP + Web UI access to local session logs.

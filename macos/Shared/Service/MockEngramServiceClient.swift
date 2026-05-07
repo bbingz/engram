@@ -17,6 +17,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
     var saveInsightResult: Result<EngramServiceJSONValue, Error>
     var manageProjectAliasResult: Result<EngramServiceJSONValue, Error>
     var resumeCommandResult: Result<EngramServiceResumeCommandResponse, Error>
+    var inspectSessionResult: Result<EngramServiceSessionInspector, Error>
     var confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
     var dismissSuggestionResult: Result<Void, Error>
     var triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
@@ -55,6 +56,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
             args: ["--resume", "mock-session"],
             cwd: "/tmp/mock-session"
         ),
+        inspectSession: EngramServiceSessionInspector = MockEngramServiceClient.defaultInspector,
         confirmSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         triggerSync: EngramServiceTriggerSyncResponse = EngramServiceTriggerSyncResponse(results: []),
         regenerateAllTitles: EngramServiceRegenerateTitlesResponse = EngramServiceRegenerateTitlesResponse(
@@ -91,6 +93,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
         self.saveInsightResult = .success(saveInsight)
         self.manageProjectAliasResult = .success(manageProjectAlias)
         self.resumeCommandResult = .success(resumeCommand)
+        self.inspectSessionResult = .success(inspectSession)
         self.confirmSuggestionResult = .success(confirmSuggestion)
         self.dismissSuggestionResult = .success(())
         self.triggerSyncResult = .success(triggerSync)
@@ -156,6 +159,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
         try resumeCommandResult.get()
     }
 
+    func inspectSession(id: String) async throws -> EngramServiceSessionInspector {
+        try inspectSessionResult.get()
+    }
+
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse {
         try confirmSuggestionResult.get()
     }
@@ -217,6 +224,87 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
     }
 
     func close() async {}
+
+    private static let defaultInspector = EngramServiceSessionInspector(
+        session: EngramServiceSessionInspector.Session(
+            id: "mock-session",
+            source: "codex",
+            messageCount: 0,
+            project: nil,
+            cwd: nil,
+            model: nil,
+            startTime: nil,
+            endTime: nil,
+            filePath: nil,
+            tier: nil,
+            agentRole: nil
+        ),
+        provenance: EngramServiceSessionInspector.Provenance(
+            transcript: "missing",
+            title: "fallback",
+            cost: "unknown",
+            parentLink: "unknown"
+        ),
+        summaries: EngramServiceSessionInspector.Summaries(
+            provenance: EngramServiceSessionInspector.SummaryProvenance(
+                firstMessageSummary: "unknown",
+                storedSummary: "unknown",
+                llmSummary: "unknown",
+                compactSummary: "unknown"
+            ),
+            displayTitle: nil,
+            firstMessageSummary: nil,
+            storedSummary: nil,
+            llmSummary: nil,
+            compactSummary: nil,
+            summaryMessageCount: nil,
+            isSummaryStale: nil
+        ),
+        status: EngramServiceSessionInspector.Status(
+            label: "unknown",
+            confidence: "low",
+            source: "fallback",
+            basisTags: [],
+            observedAt: nil
+        ),
+        agentGraph: EngramServiceSessionInspector.AgentGraph(
+            parentSessionId: nil,
+            suggestedParentId: nil,
+            linkSource: nil,
+            childCount: 0,
+            suggestedChildCount: 0,
+            childRollup: nil
+        ),
+        llm: EngramServiceSessionInspector.LLM(
+            auditRecordCount: 0,
+            lastAuditAt: nil,
+            callers: [],
+            lastError: nil,
+            promptVersion: nil,
+            resolvedSummaryConfig: nil,
+            trigger: nil
+        ),
+        resume: EngramServiceSessionInspector.Resume(
+            capability: "unsupported",
+            tool: nil,
+            command: nil,
+            args: nil,
+            cwd: nil,
+            evidence: "fallback",
+            warning: nil
+        ),
+        cost: EngramServiceSessionInspector.Cost(
+            inputTokens: nil,
+            outputTokens: nil,
+            cacheReadTokens: nil,
+            cacheCreationTokens: nil,
+            estimatedCostUsd: nil,
+            source: "unknown",
+            pricedCoverage: nil,
+            unknownModelCount: nil,
+            warning: "No cost data available"
+        )
+    )
 
     private static let defaultProjectMoveResult = EngramServiceProjectMoveResult(
         migrationId: "mock",

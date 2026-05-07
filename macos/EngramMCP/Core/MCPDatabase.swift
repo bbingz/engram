@@ -56,12 +56,27 @@ struct MCPSessionRecord {
 }
 
 final class MCPDatabase {
+    private let path: String
     private let queue: DatabaseQueue
 
     init(path: String) throws {
+        self.path = path
         var configuration = Configuration()
         configuration.readonly = true
         queue = try DatabaseQueue(path: path, configuration: configuration)
+    }
+
+    func resolveSessionFilePath(_ filePath: String) -> String {
+        guard !filePath.hasPrefix("/") else { return filePath }
+
+        let dbDirectory = URL(fileURLWithPath: path).deletingLastPathComponent()
+        let testFixturesRoot = dbDirectory.lastPathComponent == "fixtures"
+            && dbDirectory.deletingLastPathComponent().lastPathComponent == "tests"
+
+        let baseURL = testFixturesRoot
+            ? dbDirectory.deletingLastPathComponent().deletingLastPathComponent()
+            : URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        return baseURL.appendingPathComponent(filePath).path
     }
 
     func stats(groupBy: String, since: String?, until: String?) throws -> OrderedJSONValue {
@@ -1000,6 +1015,7 @@ private func listSessionObject(from row: Row) -> OrderedJSONValue {
         ("endTime", .string(endTime)),
         ("cwd", .string(row["cwd"])),
         ("project", valueOrNull(stringValue(row["project"]))),
+        ("origin", .string(stringValue(row["origin"]) ?? "local")),
         ("model", valueOrNull(stringValue(row["model"]))),
         ("messageCount", .int(row["message_count"])),
         ("userMessageCount", .int(row["user_message_count"])),

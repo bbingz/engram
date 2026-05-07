@@ -1,8 +1,18 @@
 import OpenAI from 'openai';
 import type { AiAuditWriter } from './ai-audit.js';
 
+export interface EmbeddingAuditContext {
+  sessionId?: string;
+  textKind?: 'session' | 'chunk' | 'insight' | 'query';
+  chunkId?: string;
+  chunkIndex?: number;
+}
+
 export interface EmbeddingClient {
-  embed(text: string): Promise<Float32Array | null>;
+  embed(
+    text: string,
+    context?: EmbeddingAuditContext,
+  ): Promise<Float32Array | null>;
   dimension: number;
   model: string;
 }
@@ -16,6 +26,14 @@ interface EmbeddingClientOptions {
   openaiApiKey?: string;
   dimension?: number;
   audit?: AiAuditWriter;
+}
+
+function contextMeta(context?: EmbeddingAuditContext): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (context?.textKind !== undefined) out.textKind = context.textKind;
+  if (context?.chunkId !== undefined) out.chunkId = context.chunkId;
+  if (context?.chunkIndex !== undefined) out.chunkIndex = context.chunkIndex;
+  return out;
 }
 
 /**
@@ -69,6 +87,7 @@ export function createEmbeddingClient(
 
   async function embedWithTransformers(
     text: string,
+    context?: EmbeddingAuditContext,
   ): Promise<Float32Array | null> {
     const start = Date.now();
     try {
@@ -83,7 +102,8 @@ export function createEmbeddingClient(
         model: 'all-MiniLM-L6-v2',
         provider: 'transformers',
         durationMs: Date.now() - start,
-        meta: { dimension: data.length },
+        sessionId: context?.sessionId,
+        meta: { dimension: data.length, ...contextMeta(context) },
       });
       return data;
     } catch (err) {
@@ -94,12 +114,17 @@ export function createEmbeddingClient(
         provider: 'transformers',
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
+        sessionId: context?.sessionId,
+        meta: contextMeta(context),
       });
       return null;
     }
   }
 
-  async function embedWithOllama(text: string): Promise<Float32Array | null> {
+  async function embedWithOllama(
+    text: string,
+    context?: EmbeddingAuditContext,
+  ): Promise<Float32Array | null> {
     if (ollamaDown) return null;
     const start = Date.now();
     try {
@@ -128,7 +153,8 @@ export function createEmbeddingClient(
             provider: 'ollama',
             promptTokens,
             durationMs: Date.now() - start,
-            meta: { dimension },
+            sessionId: context?.sessionId,
+            meta: { dimension, ...contextMeta(context) },
           });
           // Truncate and L2-normalize to match configured dimension
           const vec = raw.length > dimension ? raw.slice(0, dimension) : raw;
@@ -149,7 +175,8 @@ export function createEmbeddingClient(
           provider: 'ollama',
           durationMs: Date.now() - start,
           error: `HTTP ${res.status}`,
-          meta: { dimension },
+          sessionId: context?.sessionId,
+          meta: { dimension, ...contextMeta(context) },
         });
         ollamaDown = true;
         setTimeout(() => {
@@ -166,7 +193,8 @@ export function createEmbeddingClient(
         provider: 'ollama',
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
-        meta: { dimension },
+        sessionId: context?.sessionId,
+        meta: { dimension, ...contextMeta(context) },
       });
       ollamaDown = true;
       setTimeout(() => {
@@ -176,7 +204,10 @@ export function createEmbeddingClient(
     return null;
   }
 
-  async function embedWithOpenAI(text: string): Promise<Float32Array | null> {
+  async function embedWithOpenAI(
+    text: string,
+    context?: EmbeddingAuditContext,
+  ): Promise<Float32Array | null> {
     if (!openaiClient) return null;
     const start = Date.now();
     try {
@@ -195,7 +226,8 @@ export function createEmbeddingClient(
           provider: 'openai',
           promptTokens,
           durationMs: Date.now() - start,
-          meta: { dimension },
+          sessionId: context?.sessionId,
+          meta: { dimension, ...contextMeta(context) },
         });
         return new Float32Array(res.data[0].embedding);
       }
@@ -207,7 +239,8 @@ export function createEmbeddingClient(
         provider: 'openai',
         durationMs: Date.now() - start,
         error: err instanceof Error ? err.message : String(err),
-        meta: { dimension },
+        sessionId: context?.sessionId,
+        meta: { dimension, ...contextMeta(context) },
       });
     }
     return null;
@@ -219,18 +252,21 @@ export function createEmbeddingClient(
       return lastUsedModel;
     },
 
-    async embed(text: string): Promise<Float32Array | null> {
+    async embed(
+      text: string,
+      context?: EmbeddingAuditContext,
+    ): Promise<Float32Array | null> {
       // Explicit provider selection — no auto fallback chain to avoid
       // mixing vectors from different models in the same vector space
       if (provider === 'transformers') {
-        return embedWithTransformers(text);
+        return embedWithTransformers(text, context);
       }
       if (provider === 'openai') {
-        return embedWithOpenAI(text);
+        return embedWithOpenAI(text, context);
       }
       // Default: Ollama only — no cross-model fallback to avoid
       // mixing incompatible embedding spaces in the same vector index
-      return embedWithOllama(text);
+      return embedWithOllama(text, context);
     },
   };
 }

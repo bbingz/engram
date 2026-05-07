@@ -1,0 +1,50 @@
+{
+  "session": {
+    "id": "missing-facts-1",
+    "source": "cursor",
+    "messageCount": 0,
+    "cwd": "/repo/missing",
+    "startTime": "2026-05-07T07:00:00.000Z",
+    "filePath": "/repo/missing/sess.jsonl"
+  },
+  "provenance": {
+    "transcript": "local_file",
+    "title": "fallback",
+    "cost": "unknown",
+    "parentLink": "unknown"
+  },
+  "summaries": {
+    "provenance": {
+      "firstMessageSummary": "unknown",
+      "storedSummary": "unknown",
+      "llmSummary": "unknown",
+      "compactSummary": "unknown"
+    }
+  },
+  "status": {
+    "label": "unknown",
+    "confidence": "low",
+    "source": "rule",
+    "basisTags": ["no_messages"]
+  },
+  "agentGraph": {
+    "childCount": 0,
+    "suggestedChildCount": 0
+  },
+  "llm": {
+    "auditRecordCount": 0,
+    "callers": []
+  },
+  "resume": {
+    "capability": "fallback",
+    "tool": "cursor",
+    "command": "open",
+    "args": ["-a", "Cursor", "/repo/missing"],
+    "cwd": "/repo/missing",
+    "evidence": "fallback"
+  },
+  "cost": {
+    "source": "unknown",
+    "warning": "No cost data available"
+  }
+}

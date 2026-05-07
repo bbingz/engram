@@ -303,6 +303,49 @@ export function getSession(
   return row ? rowToSession(row) : null;
 }
 
+export interface InspectorSessionRow extends SessionInfo {
+  customName?: string;
+  generatedTitle?: string;
+  linkSource?: 'path' | 'manual';
+}
+
+export function getSessionInspectorSession(
+  db: BetterSqlite3.Database,
+  id: string,
+): InspectorSessionRow | null {
+  const row = db
+    .prepare(`
+      SELECT s.*, ls.local_readable_path, ls.custom_name
+      FROM sessions s
+      LEFT JOIN session_local_state ls ON ls.session_id = s.id
+      WHERE s.id = ?
+    `)
+    .get(id) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const session = rowToSession(row);
+  return {
+    ...session,
+    customName: (row.custom_name as string | null) ?? undefined,
+    generatedTitle: (row.generated_title as string | null) ?? undefined,
+    linkSource:
+      ((row.link_source as 'path' | 'manual' | null) ?? undefined) || undefined,
+  };
+}
+
+export function getChildSourceBreakdown(
+  db: BetterSqlite3.Database,
+  parentId: string,
+): Record<string, number> {
+  const rows = db
+    .prepare(
+      'SELECT source, COUNT(*) as cnt FROM sessions WHERE parent_session_id = ? GROUP BY source',
+    )
+    .all(parentId) as { source: string; cnt: number }[];
+  const result: Record<string, number> = {};
+  for (const r of rows) result[r.source] = r.cnt;
+  return result;
+}
+
 export function listSessions(
   db: BetterSqlite3.Database,
   opts: ListSessionsOptions,

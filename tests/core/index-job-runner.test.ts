@@ -73,6 +73,17 @@ describe('IndexJobRunner', () => {
       db.listIndexJobs('sess-1').every((j) => j.status === 'completed'),
     ).toBe(true);
     expect(mockStore.upsert).toHaveBeenCalledOnce();
+
+    // The session-level embed call must carry sessionId + textKind: 'session'.
+    const embedCalls = vi.mocked(mockClient.embed).mock.calls;
+    const sessionLevelCall = embedCalls.find(
+      (c) => c[1]?.textKind === 'session',
+    );
+    expect(sessionLevelCall).toBeDefined();
+    expect(sessionLevelCall?.[1]).toMatchObject({
+      sessionId: 'sess-1',
+      textKind: 'session',
+    });
   });
 
   it('marks embedding jobs not_applicable for metadata-only replicas', async () => {

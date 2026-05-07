@@ -23,6 +23,10 @@ struct SessionDetailView: View {
     @State private var suggestedParent: Session?
     @State private var childrenSessions: [Session] = []
 
+    // Inspector
+    @State private var inspector: EngramServiceSessionInspector?
+    @State private var inspectorError: String?
+
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
 
@@ -225,6 +229,23 @@ struct SessionDetailView: View {
                 }
             }
 
+            // Inspector (read-only)
+            if let inspector {
+                Divider().padding(.horizontal, 16)
+                SessionInspectorPanel(inspector: inspector)
+            } else if let inspectorError {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                    Text("Inspector unavailable: \(inspectorError)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .accessibilityIdentifier("detail_inspector_error")
+            }
+
             // Child session list
             if !childrenSessions.isEmpty {
                 Divider().padding(.horizontal, 16)
@@ -291,6 +312,7 @@ struct SessionDetailView: View {
             updateDisplayIndexed()
             isLoadingMessages = false
             loadParentInfo()
+            await loadInspector()
         }
         .onChange(of: typeVisibility) { _, _ in updateDisplayIndexed() }
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
@@ -420,23 +442,138 @@ struct SessionDetailView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    func generateSummary() async {
-        guard !messages.isEmpty else { return }
-        isSummarizing = true
-        summaryError = nil
-        defer { isSummarizing = false }
-
+    private func loadInspector() async {
+        let id = session.id
+        // Clear prior state so a session switch does not show the previous
+        // session's inspector while the new fetch is in flight.
+        inspector = nil
+        inspectorError = nil
         do {
-            let response = try await serviceClient.generateSummary(
-                EngramServiceGenerateSummaryRequest(sessionId: session.id)
-            )
-            if response.summary.isEmpty {
-                summaryError = "Empty response from AI"
-            } else {
-                currentSummary = response.summary
-            }
+            let result = try await serviceClient.inspectSession(id: id)
+            // Guard against the session changing during the await (`.task(id:)`
+            // cancels and restarts; this is belt-and-braces).
+            guard id == session.id else { return }
+            inspector = result
+            inspectorError = nil
         } catch {
-            summaryError = "Summary failed: \(error.localizedDescription)"
+            guard id == session.id else { return }
+            inspector = nil
+            inspectorError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Inspector panel
+
+struct SessionInspectorPanel: View {
+    let inspector: EngramServiceSessionInspector
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Inspector")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.secondaryText)
+                Text("read-only")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText)
+                Spacer()
+            }
+            statusRow
+            if let title = inspector.summaries.displayTitle {
+                row("Title", value: title, lineLimit: 1)
+            }
+            row(
+                "Stored summary",
+                value: inspector.summaries.storedSummary != nil
+                    ? "present (provenance: \(inspector.summaries.provenance.storedSummary))"
+                    : "absent"
+            )
+            row(
+                "LLM summary",
+                value: "absent (provenance: \(inspector.summaries.provenance.llmSummary))"
+            )
+            if !inspector.llm.callers.isEmpty || inspector.llm.auditRecordCount > 0 {
+                let trigger = inspector.llm.trigger ?? "n/a"
+                row(
+                    "LLM audit",
+                    value: "\(inspector.llm.auditRecordCount) record(s); callers: \(inspector.llm.callers.joined(separator: ", ")); trigger: \(trigger)"
+                )
+            }
+            costRow
+            agentGraphRow
+            resumeRow
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .accessibilityIdentifier("detail_inspector")
+    }
+
+    private var statusRow: some View {
+        let status = inspector.status
+        let label = "\(status.label) (\(status.confidence), source: \(status.source))"
+        return row("Status", value: label)
+    }
+
+    private var costRow: some View {
+        let cost = inspector.cost
+        let value: String
+        if let usd = cost.estimatedCostUsd {
+            value = String(format: "$%.4f (source: %@)", usd, cost.source)
+        } else if let warning = cost.warning {
+            value = "\(cost.source) — \(warning)"
+        } else {
+            value = cost.source
+        }
+        return row("Cost", value: value)
+    }
+
+    private var agentGraphRow: some View {
+        let g = inspector.agentGraph
+        let parts: [String] = [
+            "children: \(g.childCount)",
+            g.suggestedChildCount > 0 ? "suggested: \(g.suggestedChildCount)" : nil,
+            g.childRollup.flatMap { rollup -> String? in
+                guard let cost = rollup.estimatedCostUsd, cost > 0 else {
+                    if let tokens = rollup.tokenTotal, tokens > 0 {
+                        return "rollup tokens: \(tokens)"
+                    }
+                    return nil
+                }
+                return String(format: "rollup: $%.4f", cost)
+            }
+        ].compactMap { $0 }
+        return row("Agents", value: parts.joined(separator: ", "))
+    }
+
+    private var resumeRow: some View {
+        let r = inspector.resume
+        let value: String
+        switch r.capability {
+        case "supported":
+            value = "supported (\(r.tool ?? "unknown"))"
+        case "unsupported":
+            value = "unsupported — \(r.warning ?? "no command resolved")"
+        default:
+            value = "\(r.capability) (\(r.tool ?? "unknown"))"
+        }
+        return row("Resume", value: value)
+    }
+
+    private func row(_ label: String, value: String, lineLimit: Int? = nil) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.caption2.monospaced())
+                .foregroundStyle(Theme.tertiaryText)
+                .frame(width: 110, alignment: .leading)
+            Text(value)
+                .font(.caption2)
+                .foregroundStyle(Theme.secondaryText)
+                .lineLimit(lineLimit)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

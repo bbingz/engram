@@ -214,7 +214,7 @@ function getAutoSummary(): AutoSummaryManager | undefined {
           const summary = await summarizeConversation(
             messages,
             currentSettings,
-            { audit, sessionId },
+            { audit, sessionId, trigger: 'auto' },
           );
           if (summary) {
             db.updateSessionSummary(sessionId, summary, messages.length);
