@@ -275,6 +275,11 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
       BUNDLE_LOADER: "$(TEST_HOST)"
+      # Match the host Engram app's signing identity so the xctest bundle
+      # can be dlopen'd into the hardened-runtime host process.
+      CODE_SIGN_IDENTITY: "Apple Development"
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: J25GS8J4XM
 
   EngramMCPTests:
     type: bundle.unit-test
