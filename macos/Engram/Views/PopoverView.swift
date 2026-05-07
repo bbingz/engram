@@ -131,6 +131,12 @@ struct PopoverView: View {
         return URL(string: "http://\(host):\(port)/health")
     }
 
+    private var webUIURL: URL? {
+        guard let port = serviceStatusStore.endpointPort else { return nil }
+        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
+        return URL(string: "http://\(host):\(port)/")
+    }
+
     // MARK: - Timeline
 
     private var timelineSection: some View {
@@ -183,8 +189,20 @@ struct PopoverView: View {
     // MARK: - Footer
 
     private var footerSection: some View {
-        HStack {
+        HStack(spacing: 14) {
             Spacer()
+            Button {
+                if let url = webUIURL {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                Text("Open Web UI \(Image(systemName: "safari"))")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(webUIURL == nil ? Color.secondary : Color.blue)
+            .disabled(webUIURL == nil)
+
             Button {
                 NotificationCenter.default.post(name: .openWindow, object: nil)
             } label: {

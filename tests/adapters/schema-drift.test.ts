@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.js';
 import { CodexAdapter } from '../../src/adapters/codex.js';
+import { HermesAdapter } from '../../src/adapters/hermes.js';
 import { IflowAdapter } from '../../src/adapters/iflow.js';
 import { KimiAdapter } from '../../src/adapters/kimi.js';
+import { OpenClawAdapter } from '../../src/adapters/openclaw.js';
 import { QwenAdapter } from '../../src/adapters/qwen.js';
 import type { SessionAdapter } from '../../src/adapters/types.js';
 
@@ -53,6 +55,21 @@ const testCases: DriftTestCase[] = [
     name: 'qwen',
     adapter: new QwenAdapter(),
     fixtureDir: 'qwen',
+    expectedMinMessages: 2,
+  },
+  {
+    name: 'openclaw',
+    adapter: new OpenClawAdapter(),
+    fixtureDir: 'openclaw',
+    expectedMinMessages: 2,
+  },
+];
+
+const jsonTestCases: DriftTestCase[] = [
+  {
+    name: 'hermes',
+    adapter: new HermesAdapter(),
+    fixtureDir: 'hermes',
     expectedMinMessages: 2,
   },
 ];
@@ -103,6 +120,55 @@ describe('schema drift: forward compatibility', () => {
           messages.push(msg);
         }
         // Verify no message content contains "[object Object]" (sign of unhandled type)
+        for (const msg of messages) {
+          expect(msg.content).not.toContain('[object Object]');
+        }
+      });
+    });
+  }
+});
+
+describe('schema drift JSON fixture coverage', () => {
+  it('all JSON adapters have schema_drift fixtures', () => {
+    for (const tc of jsonTestCases) {
+      const path = join(fixtureDir, tc.fixtureDir, 'schema_drift.json');
+      expect(
+        existsSync(path),
+        `Missing fixture: ${tc.name}/schema_drift.json`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('schema drift: JSON forward compatibility', () => {
+  for (const tc of jsonTestCases) {
+    const fixturePath = join(fixtureDir, tc.fixtureDir, 'schema_drift.json');
+
+    describe(tc.name, () => {
+      it('parseSessionInfo does not throw on unknown fields', async () => {
+        const info = await tc.adapter.parseSessionInfo(fixturePath);
+        if (info) {
+          expect(info.source).toBeTruthy();
+        }
+      });
+
+      it('streamMessages yields messages despite unknown fields', async () => {
+        const messages = [];
+        for await (const msg of tc.adapter.streamMessages(fixturePath)) {
+          messages.push(msg);
+        }
+        expect(messages.length).toBeGreaterThanOrEqual(tc.expectedMinMessages);
+        for (const msg of messages) {
+          expect(['user', 'assistant', 'system', 'tool']).toContain(msg.role);
+          expect(msg.content).toBeTruthy();
+        }
+      });
+
+      it('unknown content does not leak object strings', async () => {
+        const messages = [];
+        for await (const msg of tc.adapter.streamMessages(fixturePath)) {
+          messages.push(msg);
+        }
         for (const msg of messages) {
           expect(msg.content).not.toContain('[object Object]');
         }

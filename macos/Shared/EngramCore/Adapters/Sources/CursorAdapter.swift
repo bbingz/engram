@@ -22,16 +22,27 @@ final class CursorAdapter: SessionAdapter {
             let rows = try database.query(
                 "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"
             )
-            return rows.compactMap { row in
+            var locators: [String] = []
+            for row in rows {
                 guard let value = row["value"] ?? nil,
-                      let data = Phase4AdapterSupport.jsonObject(from: value),
-                      let composerId = JSONLAdapterSupport.string(data["composerId"]),
-                      !composerId.isEmpty
+                       let data = Phase4AdapterSupport.jsonObject(from: value),
+                       let composerId = JSONLAdapterSupport.string(data["composerId"]),
+                       !composerId.isEmpty
                 else {
-                    return nil
+                    continue
                 }
-                return "\(dbPath)?composer=\(composerId)"
+                let embeddedMessages = JSONLAdapterSupport.array(data["conversation"])?.count ?? 0
+                let bubbleRows = try database.query(
+                    "SELECT count(*) AS count FROM cursorDiskKV WHERE key LIKE ?",
+                    bindings: ["bubbleId:\(composerId):%"]
+                )
+                let bubbleCountText = bubbleRows.first?["count"] ?? nil
+                let bubbleCount = Int(bubbleCountText ?? "0") ?? 0
+                if embeddedMessages > 0 || bubbleCount > 0 {
+                    locators.append("\(dbPath)?composer=\(composerId)")
+                }
             }
+            return locators
         } catch {
             return []
         }
@@ -64,9 +75,7 @@ final class CursorAdapter: SessionAdapter {
             let assistantCount = visibleBubbles.filter { $0.role == .assistant }.count
             let createdAt = Phase4AdapterSupport.double(composerData["createdAt"]) ?? 0
             let lastUpdatedAt = Phase4AdapterSupport.double(composerData["lastUpdatedAt"]) ?? createdAt
-            let summary = JSONLAdapterSupport.string(
-                JSONLAdapterSupport.object(composerData["latestConversationSummary"])?["summary"]
-            )
+            let summary = Self.summaryText(composerData["latestConversationSummary"])
 
             return .success(
                 NormalizedSessionInfo(
@@ -191,6 +200,14 @@ final class CursorAdapter: SessionAdapter {
             guard let value = row["value"] ?? nil else { return nil }
             return Phase4AdapterSupport.jsonObject(from: value)
         }
+    }
+
+    private static func summaryText(_ raw: Any?) -> String? {
+        guard let object = JSONLAdapterSupport.object(raw) else { return nil }
+        if let summary = JSONLAdapterSupport.string(object["summary"]) {
+            return summary
+        }
+        return JSONLAdapterSupport.string(JSONLAdapterSupport.object(object["summary"])?["summary"])
     }
 
     private static func visibleBubble(

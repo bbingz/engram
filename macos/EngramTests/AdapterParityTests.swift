@@ -152,6 +152,121 @@ final class AdapterParityTests: XCTestCase {
         )
     }
 
+    func testOpenClawAdapterParsesNativeAgentSessionShape() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclaw-native-\(UUID().uuidString)", isDirectory: true)
+        let sessions = root.appendingPathComponent("agents/telegram/sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = sessions.appendingPathComponent("abc.jsonl")
+        try """
+        {"type":"session","id":"abc","cwd":"/repo","timestamp":"2026-05-07T12:00:00.000Z"}
+        {"type":"model_change","modelId":"claude-sonnet","timestamp":"2026-05-07T12:00:01.000Z"}
+        {"type":"message","timestamp":"2026-05-07T12:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"[telegram chat] build the report"}]}}
+        {"type":"message","timestamp":"2026-05-07T12:00:03.000Z","message":{"role":"assistant","model":"claude-sonnet","content":[{"type":"thinking","text":"plan"},{"type":"text","text":"done"},{"type":"toolCall","name":"read_file","arguments":{"path":"README.md"},"id":"call_1"}]}}
+
+        """.write(to: locator, atomically: true, encoding: .utf8)
+
+        let adapter = OpenClawAdapter(roots: [root.path])
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(locators, [standardizedPath(locator.path)])
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("openclaw fixture did not parse")
+        }
+        XCTAssertEqual(info.id, "openclaw:telegram:abc")
+        XCTAssertEqual(info.source, .openclaw)
+        XCTAssertEqual(info.cwd, "/repo")
+        XCTAssertEqual(info.project, "telegram")
+        XCTAssertEqual(info.model, "claude-sonnet")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.summary, "[telegram chat] build the report")
+
+        var messages: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(locator: locator.path, options: .init()) {
+            messages.append(message)
+        }
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(messages.last?.toolCalls?.first?.name, "read_file")
+    }
+
+    func testHermesAdapterParsesNativeSessionShapeAndSkipsPreambles() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hermes-native-\(UUID().uuidString)", isDirectory: true)
+        let sessions = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = sessions.appendingPathComponent("session_abc.json")
+        try """
+        {
+          "session_id": "hermes-abc",
+          "session_start": "2026-05-07T12:00:00.000Z",
+          "last_updated": "2026-05-07T12:00:05.000Z",
+          "model": "gpt-5.5",
+          "platform": "terminal",
+          "model_config": {"cwd": "~/repo"},
+          "messages": [
+            {"role": "user", "content": "[system: the user has invoked hermes-agent]"},
+            {"role": "user", "content": "summarize updates"},
+            {"role": "assistant", "content": "done", "tool_calls": [{"function": {"name": "Read", "arguments": "{\\"file\\":\\"README.md\\"}"}}]},
+            {"role": "tool", "content": "ok"}
+          ]
+        }
+        """.write(to: locator, atomically: true, encoding: .utf8)
+
+        let adapter = HermesAdapter(sessionsRoot: sessions.path)
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(locators, [standardizedPath(locator.path)])
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("hermes fixture did not parse")
+        }
+        XCTAssertEqual(info.id, "hermes-abc")
+        XCTAssertEqual(info.source, .hermes)
+        XCTAssertEqual(info.project, "terminal")
+        XCTAssertEqual(info.model, "gpt-5.5")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.systemMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.toolMessageCount, 2)
+        XCTAssertEqual(info.summary, "summarize updates")
+
+        var messages: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(locator: locator.path, options: .init()) {
+            messages.append(message)
+        }
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant, .tool])
+        XCTAssertEqual(messages.first?.content, "summarize updates")
+        XCTAssertEqual(messages.dropFirst().first?.toolCalls?.first?.name, "Read")
+    }
+
+    func testNativeVsCodeAdapterSkipsEmptyChatSessionShells() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vscode-native-empty-\(UUID().uuidString)", isDirectory: true)
+        let emptyDir = root.appendingPathComponent("workspaceStorage/hash-empty/chatSessions", isDirectory: true)
+        let realDir = root.appendingPathComponent("workspaceStorage/hash-real/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let empty = emptyDir.appendingPathComponent("empty.jsonl")
+        let real = realDir.appendingPathComponent("real.jsonl")
+        try """
+        {"kind":0,"v":{"version":3,"sessionId":"empty","creationDate":1771392000000,"requests":[]}}
+
+        """.write(to: empty, atomically: true, encoding: .utf8)
+        try """
+        {"kind":0,"v":{"version":3,"sessionId":"real","creationDate":1771392000000,"requests":[{"requestId":"r1","message":{"text":"hi"},"response":[]}]}}
+
+        """.write(to: real, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(workspaceStorageDir: root.appendingPathComponent("workspaceStorage").path)
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(locators, [standardizedPath(real.path)])
+    }
+
     func testParserLimitsUseStage2ProductionThresholdsAndIdentityChecks() throws {
         XCTAssertEqual(ParserLimits.default.maxFileBytes, 100 * 1024 * 1024)
         XCTAssertEqual(ParserLimits.default.maxLineBytes, 8 * 1024 * 1024)

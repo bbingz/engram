@@ -67,6 +67,29 @@ describe('computeTier()', () => {
         computeTier(makeInput({ agentRole: 'subagent', messageCount: 50 })),
       ).toBe('skip');
     });
+
+    it('returns skip for polycli fan-out review sessions', () => {
+      expect(
+        computeTier(
+          makeInput({
+            messageCount: 12,
+            summary:
+              'You are acting as qwen inside polycli.\nRun a code review.',
+          }),
+        ),
+      ).toBe('skip');
+    });
+
+    it('returns skip for polycli health probes', () => {
+      expect(
+        computeTier(
+          makeInput({
+            messageCount: 2,
+            summary: 'Reply with POLYCLI_HEALTH_OK only.',
+          }),
+        ),
+      ).toBe('skip');
+    });
   });
 
   describe('premium tier', () => {

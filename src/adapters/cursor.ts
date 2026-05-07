@@ -14,8 +14,8 @@ import type {
 interface ComposerData {
   composerId: string;
   createdAt: number;
-  lastUpdatedAt: number;
-  latestConversationSummary?: { summary?: string };
+  lastUpdatedAt?: number;
+  latestConversationSummary?: { summary?: string | { summary?: string } };
   context?: {
     fileSelections?: { uri?: { fsPath?: string } }[];
     folderSelections?: { uri?: { fsPath?: string } }[];
@@ -65,10 +65,28 @@ export class CursorAdapter implements SessionAdapter {
             `SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'`,
           )
           .all() as { key: string; value: string }[];
+        const bubbleCount = db.prepare(
+          `SELECT count(*) AS count FROM cursorDiskKV WHERE key LIKE ?`,
+        );
         for (const row of rows) {
           try {
             const data = JSON.parse(row.value) as ComposerData;
-            if (data.composerId) {
+            const embeddedMessages = Array.isArray(
+              (data as ComposerData & { conversation?: BubbleData[] })
+                .conversation,
+            )
+              ? ((data as ComposerData & { conversation?: BubbleData[] })
+                  .conversation?.length ?? 0)
+              : 0;
+            const bubbleRows = (
+              bubbleCount.get(`bubbleId:${data.composerId}:%`) as
+                | { count: number }
+                | undefined
+            )?.count;
+            if (
+              data.composerId &&
+              (embeddedMessages > 0 || (bubbleRows ?? 0) > 0)
+            ) {
               yield `${this.dbPath}?composer=${data.composerId}`;
             }
           } catch {
@@ -97,6 +115,12 @@ export class CursorAdapter implements SessionAdapter {
           conversation?: BubbleData[];
         };
         const fileStat = await stat(dbPath);
+        const createdAt =
+          typeof data.createdAt === 'number' ? data.createdAt : Date.now();
+        const lastUpdatedAt =
+          typeof data.lastUpdatedAt === 'number'
+            ? data.lastUpdatedAt
+            : createdAt;
 
         // Count messages from conversation array (or fallback to bubbleId keys)
         let bubbles: BubbleData[] = [];
@@ -108,7 +132,10 @@ export class CursorAdapter implements SessionAdapter {
             .all(`bubbleId:${composerId}:%`) as { value: string }[];
           for (const br of bubbleRows) {
             try {
-              bubbles.push(JSON.parse(br.value));
+              const parsed = JSON.parse(br.value);
+              if (parsed && typeof parsed === 'object') {
+                bubbles.push(parsed);
+              }
             } catch {
               /* skip */
             }
@@ -129,10 +156,10 @@ export class CursorAdapter implements SessionAdapter {
         return {
           id: data.composerId,
           source: 'cursor',
-          startTime: new Date(data.createdAt).toISOString(),
+          startTime: new Date(createdAt).toISOString(),
           endTime:
-            data.lastUpdatedAt !== data.createdAt
-              ? new Date(data.lastUpdatedAt).toISOString()
+            lastUpdatedAt !== createdAt
+              ? new Date(lastUpdatedAt).toISOString()
               : undefined,
           cwd: this.inferCwd(data),
           messageCount: userMessageCount + assistantMessageCount,
@@ -140,7 +167,10 @@ export class CursorAdapter implements SessionAdapter {
           assistantMessageCount,
           toolMessageCount: 0,
           systemMessageCount: 0,
-          summary: data.latestConversationSummary?.summary?.slice(0, 200),
+          summary: this.summaryText(data.latestConversationSummary)?.slice(
+            0,
+            200,
+          ),
           filePath,
           sizeBytes: fileStat.size,
         };
@@ -190,7 +220,10 @@ export class CursorAdapter implements SessionAdapter {
             .all(`bubbleId:${composerId}:%`) as { value: string }[];
           for (const row of rows) {
             try {
-              bubbles.push(JSON.parse(row.value));
+              const parsed = JSON.parse(row.value);
+              if (parsed && typeof parsed === 'object') {
+                bubbles.push(parsed);
+              }
             } catch {
               /* skip */
             }
@@ -235,6 +268,15 @@ export class CursorAdapter implements SessionAdapter {
     const file = data.context?.fileSelections?.[0]?.uri?.fsPath;
     if (file) return dirname(file);
     return '';
+  }
+
+  private summaryText(
+    latestConversationSummary: ComposerData['latestConversationSummary'],
+  ): string | undefined {
+    const summary = latestConversationSummary?.summary;
+    if (typeof summary === 'string') return summary;
+    if (summary && typeof summary.summary === 'string') return summary.summary;
+    return undefined;
   }
 
   private parsePath(filePath: string): {

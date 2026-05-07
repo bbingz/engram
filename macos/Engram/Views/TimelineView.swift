@@ -32,8 +32,9 @@ struct TimelineView: View {
     }()
 
     let allSources = ["claude-code", "codex", "copilot", "pi", "cursor", "gemini-cli",
-                      "opencode", "iflow", "qwen", "kimi", "minimax",
-                      "lobsterai", "cline", "vscode", "antigravity", "windsurf"]
+                       "opencode", "iflow", "qwen", "kimi", "minimax",
+                       "lobsterai", "cline", "vscode", "antigravity", "windsurf",
+                       "openclaw", "hermes"]
 
     var body: some View {
         VStack(spacing: 0) {

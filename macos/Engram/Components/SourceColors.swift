@@ -14,6 +14,8 @@ enum SourceColors {
         case "cline":         return Color(hex: 0x30B0C7)  // Teal
         case "vscode":        return Color(hex: 0x00A1F1)  // Cyan
         case "antigravity":   return Color(hex: 0xFF9F0A)  // Orange (same as gemini)
+        case "openclaw":      return Color(hex: 0x34C759)  // Green
+        case "hermes":        return Color(hex: 0xBF5AF2)  // Purple
         case "copilot":       return Color(hex: 0x8E8E93)  // Gray
         case "pi":            return Color(hex: 0x7C3AED)  // Violet
         case "opencode":      return Color(hex: 0x5856D6)  // Indigo
@@ -41,6 +43,8 @@ enum SourceColors {
         case "cursor":        return "Cursor"
         case "windsurf":      return "Windsurf"
         case "antigravity":   return "Antigravity"
+        case "openclaw":      return "OpenClaw"
+        case "hermes":        return "Hermes"
         case "opencode":      return "OpenCode"
         case "iflow":         return "iFlow"
         case "vscode":        return "VS Code"

@@ -181,6 +181,8 @@ private func scanSources() -> [SourceCheck] {
         ("qwen",         "Qwen",          ".qwen/projects"),
         ("iflow",        "iFlow",         ".iflow/projects"),
         ("antigravity",  "Antigravity",   ".gemini/antigravity"),
+        ("openclaw",     "OpenClaw",      ".openclaw/agents"),
+        ("hermes",       "Hermes",        ".hermes/sessions"),
     ]
 
     return specs.map { spec in

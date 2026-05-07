@@ -441,6 +441,10 @@ export class Database {
   downgradeSubagentTiers() {
     return maint.downgradeSubagentTiers(this.db);
   }
+
+  downgradePolycliTiers() {
+    return maint.downgradePolycliTiers(this.db);
+  }
   backfillFilePaths() {
     return maint.backfillFilePaths(this.db);
   }

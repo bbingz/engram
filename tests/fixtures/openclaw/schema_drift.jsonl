@@ -1,0 +1,3 @@
+{"type":"session","version":4,"id":"openclaw-drift-001","timestamp":"2026-05-01T10:00:00.000Z","cwd":"/Users/test/openclaw-project","future":{"nested":[{"x":1}]}}
+{"type":"message","id":"m1","timestamp":"2026-05-01T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Check schema drift handling"},{"type":"image","url":"file://image.png"},{"type":"unknown","payload":{"deep":true}}]}}
+{"type":"message","id":"m2","timestamp":"2026-05-01T10:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Handled safely."},{"type":"tool_call","id":"tc1","name":"inspect","arguments":{"mode":"safe"}},{"type":"futureBlock","value":{"nested":true}}]}}

@@ -43,6 +43,8 @@ export const WATCHED_SOURCES = new Set([
   'kimi',
   'pi',
   'cline',
+  'openclaw',
+  'hermes',
   // Derived sources that share claude-code's directory
   'lobsterai',
   'minimax',
@@ -62,6 +64,9 @@ export function getWatchEntries(home?: string): Array<[string, SourceName]> {
     [join(h, '.kimi', 'sessions'), 'kimi'],
     [join(h, '.pi', 'agent', 'sessions'), 'pi'],
     [join(h, '.cline', 'data', 'tasks'), 'cline'],
+    [join(h, '.openclaw', 'agents'), 'openclaw'],
+    [join(h, '.clawdbot', 'agents'), 'openclaw'],
+    [join(h, '.hermes', 'sessions'), 'hermes'],
   ];
 }
 

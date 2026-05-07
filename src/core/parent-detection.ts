@@ -3,7 +3,7 @@
 // Pure functions — no DB or side effects.
 
 /** Bump this when detection logic changes to trigger re-evaluation of unlinked sessions. */
-export const DETECTION_VERSION = 4;
+export const DETECTION_VERSION = 5;
 
 /** Regex patterns that identify agent dispatch messages (first message of a subagent session). */
 export const DISPATCH_PATTERNS = [
@@ -13,6 +13,7 @@ export const DISPATCH_PATTERNS = [
   /^You are a\b.*\bagent\b/i,
   /^You are a\b.*\bassistant\b/i,
   /^You are (?:implementing|reviewing|debugging|auditing|evaluating|performing)\b/i,
+  /^You are acting as\b.*\binside polycli\b/i,
   /^Review the\b/i,
   /^Review this\b/i,
   /(?:^|\n)\s*(?:Review|Re-review|Perform|Evaluate|Investigate|Audit|Inspect|Check|Verify|Implement(?: Task \d+)?:?|Fix(?: Task \d+)?:?|Final (?:code quality|spec compliance) review)\b.*(?:\/Users\/|git diff|repo|repository|branch|spec|plan|implementation|code|diff|task|files?)/i,
@@ -46,6 +47,8 @@ const PROBE_MESSAGES = new Set([
   'auth login',
   'say: all fixes verified',
   'this prompt will fail',
+  'reply with polycli_health_ok only.',
+  'reply with POLYCLI_HEALTH_OK only.'.toLowerCase(),
 ]);
 
 /** Regex patterns for agent probes that vary in content (e.g. randomized math questions) */
@@ -55,6 +58,7 @@ const PROBE_REGEXES: RegExp[] = [
   /^say exactly:\s*\S.{0,40}$/i, // "Say exactly: streaming works"
   /^echo\b/i, // "echo 'hello'"
   /^(?:reply|respond)\s+with\b/i, // "Reply with just the number"
+  /\bpolycli_health_ok\b/i,
 ];
 
 /**

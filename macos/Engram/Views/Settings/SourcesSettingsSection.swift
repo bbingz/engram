@@ -22,6 +22,8 @@ private let dataSources: [DataSourceDef] = [
     .init(name: "VS Code",      key: "path.vscode",       defaultPath: "~/Library/Application Support/Code/User/workspaceStorage"),
     .init(name: "Antigravity",  key: "path.antigravity",  defaultPath: "~/.gemini/antigravity/daemon"),
     .init(name: "Windsurf",     key: "path.windsurf",     defaultPath: "~/.codeium/windsurf/daemon"),
+    .init(name: "OpenClaw",     key: "path.openclaw",     defaultPath: "~/.openclaw/agents"),
+    .init(name: "Hermes",       key: "path.hermes",       defaultPath: "~/.hermes/sessions"),
 ]
 
 struct SourcesSettingsSection: View {

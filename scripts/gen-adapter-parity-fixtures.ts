@@ -9,8 +9,10 @@ import { CodexAdapter } from '../src/adapters/codex.js';
 import { CopilotAdapter } from '../src/adapters/copilot.js';
 import { CursorAdapter } from '../src/adapters/cursor.js';
 import { GeminiCliAdapter } from '../src/adapters/gemini-cli.js';
+import { HermesAdapter } from '../src/adapters/hermes.js';
 import { IflowAdapter } from '../src/adapters/iflow.js';
 import { KimiAdapter } from '../src/adapters/kimi.js';
+import { OpenClawAdapter } from '../src/adapters/openclaw.js';
 import { OpenCodeAdapter } from '../src/adapters/opencode.js';
 import { QwenAdapter } from '../src/adapters/qwen.js';
 import type {
@@ -58,8 +60,10 @@ const supportedSources = [
   'copilot',
   'cursor',
   'gemini-cli',
+  'hermes',
   'iflow',
   'kimi',
+  'openclaw',
   'opencode',
   'qwen',
   'vscode',
@@ -224,6 +228,20 @@ function makeAdapter(source: SupportedFixtureSource, root: string) {
         ),
         inputRoot,
       };
+    }
+    case 'openclaw': {
+      copyFileFixture(
+        join(sourceFixtureRoot, 'openclaw/sample.jsonl'),
+        join(inputRoot, 'agents/agent-test/sessions/sample.jsonl'),
+      );
+      return { adapter: new OpenClawAdapter([inputRoot]), inputRoot };
+    }
+    case 'hermes': {
+      copyFileFixture(
+        join(sourceFixtureRoot, 'hermes/sample.json'),
+        join(inputRoot, 'session_sample.json'),
+      );
+      return { adapter: new HermesAdapter(inputRoot), inputRoot };
     }
     case 'opencode': {
       const dbPath = join(inputRoot, 'sample.db');

@@ -45,6 +45,10 @@ describe('runInitialScan', () => {
           callOrder.push('downgradeSubagentTiers');
           return 0;
         }),
+        downgradePolycliTiers: vi.fn(() => {
+          callOrder.push('downgradePolycliTiers');
+          return 0;
+        }),
         backfillParentLinks: vi.fn(() => {
           parentBackfillDone = true;
           callOrder.push('backfillParentLinks');
@@ -77,6 +81,7 @@ describe('runInitialScan', () => {
     });
     expect(callOrder).toEqual([
       'downgradeSubagentTiers',
+      'downgradePolycliTiers',
       'backfillParentLinks',
       'ready',
     ]);
