@@ -1,0 +1,71 @@
+{
+  "session": {
+    "id": "full-session-1",
+    "source": "codex",
+    "messageCount": 10,
+    "project": "engram",
+    "cwd": "/repo/full",
+    "model": "gpt-5.4",
+    "startTime": "2026-05-07T08:00:00.000Z",
+    "endTime": "2026-05-07T08:30:00.000Z",
+    "filePath": "/repo/full/sess.jsonl",
+    "tier": "normal"
+  },
+  "provenance": {
+    "transcript": "local_file",
+    "title": "ai_audit",
+    "cost": "database",
+    "parentLink": "unknown"
+  },
+  "summaries": {
+    "displayTitle": "Full inspector smoke",
+    "storedSummary": "Full session summary text",
+    "summaryMessageCount": 10,
+    "provenance": {
+      "firstMessageSummary": "unknown",
+      "storedSummary": "adapter_first_message",
+      "llmSummary": "unknown",
+      "compactSummary": "unknown"
+    }
+  },
+  "status": {
+    "label": "done",
+    "confidence": "high",
+    "source": "rule",
+    "basisTags": ["has_end_time"]
+  },
+  "agentGraph": {
+    "childCount": 0,
+    "suggestedChildCount": 0
+  },
+  "llm": {
+    "auditRecordCount": 1,
+    "callers": ["summary"],
+    "lastAuditAt": "2026-05-07T08:31:00.000",
+    "resolvedSummaryConfig": {
+      "preset": "standard",
+      "maxTokens": 200,
+      "temperature": 0.3,
+      "sampleFirst": 20,
+      "sampleLast": 30,
+      "truncateChars": 500
+    },
+    "trigger": "manual"
+  },
+  "resume": {
+    "capability": "supported",
+    "tool": "codex",
+    "command": "/usr/local/bin/codex",
+    "args": ["resume", "full-session-1"],
+    "cwd": "/repo/full",
+    "evidence": "local_help"
+  },
+  "cost": {
+    "inputTokens": 200,
+    "outputTokens": 80,
+    "cacheReadTokens": 10,
+    "cacheCreationTokens": 5,
+    "estimatedCostUsd": 0.25,
+    "source": "engram_pricing"
+  }
+}

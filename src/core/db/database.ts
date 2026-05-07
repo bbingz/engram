@@ -131,6 +131,12 @@ export class Database {
   getSession(id: string): SessionInfo | null {
     return sessions.getSession(this.db, id);
   }
+  getSessionInspectorSession(id: string): sessions.InspectorSessionRow | null {
+    return sessions.getSessionInspectorSession(this.db, id);
+  }
+  getChildSourceBreakdown(parentId: string): Record<string, number> {
+    return sessions.getChildSourceBreakdown(this.db, parentId);
+  }
   listSessions(opts: ListSessionsOptions = {}): SessionInfo[] {
     return sessions.listSessions(this.db, opts, this.noiseFilter, (p) =>
       this.resolveProjectAliases(p),
@@ -280,6 +286,14 @@ export class Database {
   }
   sessionsWithoutCosts(limit = 100): string[] {
     return metricsRepo.sessionsWithoutCosts(this.db, limit);
+  }
+  getSessionCost(sessionId: string): metricsRepo.SessionCostRow | null {
+    return metricsRepo.getSessionCost(this.db, sessionId);
+  }
+  getChildCostRollup(
+    parentId: string,
+  ): { tokenTotal: number; estimatedCostUsd: number } | null {
+    return metricsRepo.getChildCostRollup(this.db, parentId);
   }
   upsertSessionFiles(
     sessionId: string,

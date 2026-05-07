@@ -133,6 +133,70 @@ export function getCostsSummary(
   return db.prepare(sql).all(...binds) as CostSummaryRow[];
 }
 
+export interface SessionCostRow {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  model: string | null;
+}
+
+export function getSessionCost(
+  db: BetterSqlite3.Database,
+  sessionId: string,
+): SessionCostRow | null {
+  const row = db
+    .prepare(`
+      SELECT input_tokens, output_tokens, cache_read_tokens,
+             cache_creation_tokens, cost_usd, model
+      FROM session_costs
+      WHERE session_id = ?
+    `)
+    .get(sessionId) as
+    | {
+        input_tokens: number | null;
+        output_tokens: number | null;
+        cache_read_tokens: number | null;
+        cache_creation_tokens: number | null;
+        cost_usd: number | null;
+        model: string | null;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    inputTokens: row.input_tokens ?? 0,
+    outputTokens: row.output_tokens ?? 0,
+    cacheReadTokens: row.cache_read_tokens ?? 0,
+    cacheCreationTokens: row.cache_creation_tokens ?? 0,
+    costUsd: row.cost_usd ?? 0,
+    model: row.model,
+  };
+}
+
+export function getChildCostRollup(
+  db: BetterSqlite3.Database,
+  parentId: string,
+): { tokenTotal: number; estimatedCostUsd: number } | null {
+  const row = db
+    .prepare(`
+      SELECT
+        COALESCE(SUM(c.input_tokens), 0) +
+        COALESCE(SUM(c.output_tokens), 0) +
+        COALESCE(SUM(c.cache_read_tokens), 0) +
+        COALESCE(SUM(c.cache_creation_tokens), 0) AS tokenTotal,
+        COALESCE(SUM(c.cost_usd), 0) AS estimatedCostUsd
+      FROM sessions s
+      JOIN session_costs c ON c.session_id = s.id
+      WHERE s.parent_session_id = ?
+    `)
+    .get(parentId) as
+    | { tokenTotal: number; estimatedCostUsd: number }
+    | undefined;
+  if (!row || (row.tokenTotal === 0 && row.estimatedCostUsd === 0)) return null;
+  return row;
+}
+
 export function sessionsWithoutCosts(
   db: BetterSqlite3.Database,
   limit = 100,
