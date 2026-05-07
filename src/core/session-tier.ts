@@ -15,6 +15,11 @@ export interface TierInput {
 }
 
 const NOISE_PATTERNS = ['/usage', 'Generate a short, clear title'];
+const POLYCLI_PATTERNS = [
+  'inside polycli',
+  'POLYCLI_HEALTH_OK',
+  'polycli_health_ok',
+];
 
 function durationMinutes(
   startTime: string | null,
@@ -35,6 +40,13 @@ export function computeTier(input: TierInput): SessionTier {
   if (input.filePath?.includes('/.engram/probes/')) return 'skip';
   if (input.agentRole != null) return 'skip';
   if (input.filePath.includes('/subagents/')) return 'skip';
+  if (
+    input.summary &&
+    POLYCLI_PATTERNS.some((p) =>
+      input.summary?.toLowerCase().includes(p.toLowerCase()),
+    )
+  )
+    return 'skip';
   if (input.messageCount <= 1) return 'skip';
   // No-reply (multiple user messages but no AI response) → lite
   // Only apply when assistantCount is explicitly known (not just absent)

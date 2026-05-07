@@ -1,0 +1,43 @@
+{
+  "session_id": "hermes-drift-001",
+  "model": "future-model",
+  "platform": "Hermes",
+  "session_start": "2026-05-01T10:00:00",
+  "last_updated": "2026-05-01T10:02:00",
+  "model_config": {
+    "cwd": "/Users/test/hermes-project"
+  },
+  "future": {
+    "nested": [
+      {
+        "value": true
+      }
+    ]
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "Check Hermes drift"
+    },
+    {
+      "role": "assistant",
+      "content": "No crash.",
+      "codex_reasoning_items": [
+        {
+          "type": "summary",
+          "text": "hidden"
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "type": "function",
+          "function": {
+            "name": "inspect",
+            "arguments": "{\"safe\":true}"
+          }
+        }
+      ]
+    }
+  ]
+}

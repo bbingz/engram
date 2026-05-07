@@ -21,6 +21,64 @@ describe('VsCodeAdapter', () => {
     expect(files.some((f) => f.endsWith('sess-001.jsonl'))).toBe(true);
   });
 
+  it('listSessionFiles skips empty chat session shells', async () => {
+    const tmpRoot = join(tmpdir(), `engram-vscode-empty-${Date.now()}`);
+    const emptySessPath = join(
+      tmpRoot,
+      'workspaceStorage',
+      'hash-empty',
+      'chatSessions',
+      'empty.jsonl',
+    );
+    const realSessPath = join(
+      tmpRoot,
+      'workspaceStorage',
+      'hash-real',
+      'chatSessions',
+      'real.jsonl',
+    );
+    mkdirSync(dirname(emptySessPath), { recursive: true });
+    mkdirSync(dirname(realSessPath), { recursive: true });
+    writeFileSync(
+      emptySessPath,
+      `${JSON.stringify({
+        kind: 0,
+        v: {
+          version: 3,
+          sessionId: 'empty',
+          creationDate: 1771392000000,
+          requests: [],
+        },
+      })}\n`,
+    );
+    writeFileSync(
+      realSessPath,
+      `${JSON.stringify({
+        kind: 0,
+        v: {
+          version: 3,
+          sessionId: 'real',
+          creationDate: 1771392000000,
+          requests: [
+            {
+              requestId: 'r1',
+              message: { text: 'hi' },
+              response: [],
+            },
+          ],
+        },
+      })}\n`,
+    );
+    try {
+      const a = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+      const files: string[] = [];
+      for await (const file of a.listSessionFiles()) files.push(file);
+      expect(files).toEqual([realSessPath]);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('parseSessionInfo reads from JSONL first line', async () => {
     const jsonlPath = join(
       FIXTURE_DIR,

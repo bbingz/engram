@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — v1.0.3 native adapters, settings, and noise cleanup (2026-05-07)
+
+- Added Swift-native OpenClaw and Hermes adapters and kept matching TypeScript adapters for existing MCP/Node compatibility.
+- Added OpenClaw/Hermes labels, source settings, onboarding coverage, transcript parsing/export support, adapter fixtures, and schema-drift tests.
+- Added visible embedding settings in AI Summary and expanded Settings with language, Web UI, network/security, observability, noise, and advanced runtime controls.
+- Added menu bar, popover, and Settings entry points for the Web UI.
+- Expanded localization coverage and reorganized Settings into a sidebar-based layout with smaller, consistent controls.
+
+### Fixed — v1.0.3 adapter schema and polycli noise pass (2026-05-07)
+
+- Downgraded polycli fan-out/probe sessions to `skip` and added parent-detection/tier tests so dispatched tool noise stays hidden.
+- Fixed Cursor adapter schema drift: empty draft composers are no longer listed, nested `latestConversationSummary.summary` is supported, and JSON `null` bubble rows no longer break separate bubble storage parsing.
+- Fixed VS Code adapter listing to skip empty chat-session shells and aligned Swift message counts with real user/assistant text.
+- Verified all available local adapter sources with a read-only smoke parse and kept OpenClaw/Hermes covered by fixtures plus Swift native tests where local live data was unavailable.
+
 ### Added — Swift-native session inspector parity (Option A) (2026-05-07)
 
 - Added `EngramServiceSessionInspector` DTO under `macos/Shared/Service/EngramServiceModels.swift` that mirrors the TypeScript inspector contract (session/provenance/summaries/status/agentGraph/llm/resume/cost) and is `Codable`/`Sendable`.

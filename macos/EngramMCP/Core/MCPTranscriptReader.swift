@@ -19,6 +19,10 @@ enum MCPTranscriptReader {
             return parsePiFormat(filePath: filePath)
         case "gemini-cli":
             return parseGeminiFormat(filePath: filePath)
+        case "openclaw":
+            return parseOpenClawFormat(filePath: filePath)
+        case "hermes":
+            return parseHermesFormat(filePath: filePath)
         default:
             return []
         }
@@ -143,6 +147,48 @@ enum MCPTranscriptReader {
         }
     }
 
+    private static func parseOpenClawFormat(filePath: String) -> [MCPTranscriptMessage] {
+        readJSONLines(filePath: filePath).compactMap { object in
+            guard
+                normalizedKey(object["type"]) == "message",
+                let message = object["message"] as? [String: Any]
+            else {
+                return nil
+            }
+            let roleKey = normalizedKey(message["role"])
+            let role: String
+            if roleKey == "user" {
+                role = "user"
+            } else if roleKey == "assistant" {
+                role = "assistant"
+            } else {
+                return nil
+            }
+            let content = extractMessageContent(message["content"])
+            guard !content.isEmpty else { return nil }
+            return MCPTranscriptMessage(role: role, content: content, timestamp: object["timestamp"] as? String)
+        }
+    }
+
+    private static func parseHermesFormat(filePath: String) -> [MCPTranscriptMessage] {
+        guard
+            let data = FileManager.default.contents(atPath: filePath),
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let messages = root["messages"] as? [[String: Any]]
+        else {
+            return []
+        }
+        let timestamp = root["last_updated"] as? String ?? root["session_start"] as? String
+        return messages.compactMap { message in
+            guard let rawRole = message["role"] as? String else { return nil }
+            let role = rawRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard role == "user" || role == "assistant" else { return nil }
+            let content = (message["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            return MCPTranscriptMessage(role: role, content: content, timestamp: timestamp)
+        }
+    }
+
     private static func readJSONLines(filePath: String) -> [[String: Any]] {
         guard let text = try? String(contentsOfFile: filePath, encoding: .utf8) else { return [] }
         return text
@@ -173,6 +219,16 @@ enum MCPTranscriptReader {
             return textParts.joined(separator: "\n")
         }
         return thinkingFallback ?? ""
+    }
+
+    private static func normalizedKey(_ value: Any?) -> String {
+        guard let raw = value as? String else { return "" }
+        return raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
     }
 
     private static func extractPartsContent(_ parts: Any?) -> String {

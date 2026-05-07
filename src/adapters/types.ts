@@ -16,7 +16,9 @@ export type SourceName =
   | 'cursor'
   | 'vscode'
   | 'antigravity'
-  | 'windsurf';
+  | 'windsurf'
+  | 'openclaw'
+  | 'hermes';
 
 export interface SessionInfo {
   id: string;

@@ -1447,6 +1447,8 @@ export function createApp(
     antigravity: join(HOME, '.gemini/antigravity/daemon'),
     windsurf: join(HOME, '.codeium/windsurf/daemon'),
     copilot: join(HOME, '.copilot/session-state'),
+    openclaw: join(HOME, '.openclaw/agents'),
+    hermes: join(HOME, '.hermes/sessions'),
   };
   const DERIVED_SOURCES: Record<string, string> = {
     lobsterai: 'claude-code',

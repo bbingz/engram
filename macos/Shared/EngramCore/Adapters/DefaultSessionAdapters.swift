@@ -6,6 +6,8 @@ public enum DefaultSessionAdapters {
             ClaudeCodeDerivedSourceAdapter(source: .minimax),
             ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
             GeminiCliAdapter(),
+            OpenClawAdapter(),
+            HermesAdapter(),
             OpenCodeAdapter(),
             IflowAdapter(),
             QwenAdapter(),

@@ -40,6 +40,7 @@ interface InitialScanDeps {
     };
     backfillFilePaths: () => number;
     downgradeSubagentTiers: () => number;
+    downgradePolycliTiers: () => number;
     backfillParentLinks: () => {
       linked: number;
     };
@@ -154,6 +155,14 @@ export async function runInitialScan({
         event: 'backfill',
         type: 'subagent_tier_downgrade',
         count: downgraded,
+      });
+    }
+    const polycliDowngraded = db.downgradePolycliTiers();
+    if (polycliDowngraded > 0) {
+      emit({
+        event: 'backfill',
+        type: 'polycli_tier_downgrade',
+        count: polycliDowngraded,
       });
     }
     const parentLinks = db.backfillParentLinks();

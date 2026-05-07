@@ -17,6 +17,8 @@ public enum SourceName: String, CaseIterable, Codable, Sendable {
     case vscode
     case antigravity
     case windsurf
+    case openclaw
+    case hermes
 }
 
 public enum OriginatorClassifier {

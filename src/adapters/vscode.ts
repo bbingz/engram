@@ -74,7 +74,11 @@ export class VsCodeAdapter implements SessionAdapter {
         files.sort((a, b) => a.name.localeCompare(b.name));
         for (const file of files) {
           if (file.isFile() && file.name.endsWith('.jsonl')) {
-            yield join(chatDir, file.name);
+            const sessionPath = join(chatDir, file.name);
+            const session = await this.readSession(sessionPath);
+            if (session?.requests.length) {
+              yield sessionPath;
+            }
           }
         }
       }

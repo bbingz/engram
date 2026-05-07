@@ -11,8 +11,10 @@ import { CodexAdapter } from '../adapters/codex.js';
 import { CopilotAdapter } from '../adapters/copilot.js';
 import { CursorAdapter } from '../adapters/cursor.js';
 import { GeminiCliAdapter } from '../adapters/gemini-cli.js';
+import { HermesAdapter } from '../adapters/hermes.js';
 import { IflowAdapter } from '../adapters/iflow.js';
 import { KimiAdapter } from '../adapters/kimi.js';
+import { OpenClawAdapter } from '../adapters/openclaw.js';
 import { OpenCodeAdapter } from '../adapters/opencode.js';
 import { PiAdapter } from '../adapters/pi.js';
 import { QwenAdapter } from '../adapters/qwen.js';
@@ -50,6 +52,8 @@ function createAdapters(): SessionAdapter[] {
     new CodexAdapter(),
     new ClaudeCodeAdapter(),
     new GeminiCliAdapter(),
+    new OpenClawAdapter(),
+    new HermesAdapter(),
     new OpenCodeAdapter(),
     new IflowAdapter(),
     new QwenAdapter(),

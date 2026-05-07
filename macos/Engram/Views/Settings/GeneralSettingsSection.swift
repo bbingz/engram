@@ -2,6 +2,7 @@
 import SwiftUI
 
 struct GeneralSettingsSection: View {
+    @AppStorage("appLanguage") var appLanguage: String = AppLanguage.system.rawValue
     @AppStorage("contentFontSize") var contentFontSize: Double = 14
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
@@ -20,6 +21,18 @@ struct GeneralSettingsSection: View {
             // Display
             GroupBox("Display") {
                 VStack(alignment: .leading, spacing: 10) {
+                    Picker("Interface Language", selection: $appLanguage) {
+                        ForEach(AppLanguage.allCases) { language in
+                            Text(language.label).tag(language.rawValue)
+                        }
+                    }
+                    Text("Choose the language used by the macOS app UI. System follows your macOS language order.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Divider()
+
                     HStack {
                         Text("Content Font Size")
                         Spacer()
@@ -93,7 +106,17 @@ struct GeneralSettingsSection: View {
                             .multilineTextAlignment(.trailing)
                     }
                     HStack {
-                        Text("Legacy MCP HTTP endpoint")
+                        Text("Web UI")
+                        Spacer()
+                        Button("Open Web UI") {
+                            if let url = webUIURL {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .disabled(webUIURL == nil)
+                    }
+                    HStack {
+                        Text("MCP HTTP endpoint")
                         Spacer()
                         Text(verbatim: mcpEndpointText)
                             .foregroundStyle(.secondary)
@@ -132,7 +155,7 @@ struct GeneralSettingsSection: View {
         .onAppear { loadNoiseSettings() }
     }
 
-    private var noiseFilterDescription: String {
+    private var noiseFilterDescription: LocalizedStringKey {
         switch noiseFilter {
         case "all": return "Show all sessions including agents and noise"
         case "hide-noise": return "Hide agents, empty sessions, and low-signal sessions"
@@ -146,6 +169,12 @@ struct GeneralSettingsSection: View {
         }
         let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
         return "http://\(host):\(port)/mcp"
+    }
+
+    private var webUIURL: URL? {
+        guard let port = serviceStatusStore.endpointPort else { return nil }
+        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
+        return URL(string: "http://\(host):\(port)/")
     }
 
     private func saveNoiseSettings() {

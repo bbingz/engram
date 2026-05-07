@@ -41,6 +41,10 @@ struct MessageParser {
             return parseCopilotFormat(filePath: filePath)
         case "gemini-cli":
             return parseGeminiFormat(filePath: filePath)
+        case "openclaw":
+            return parseOpenClawFormat(filePath: filePath)
+        case "hermes":
+            return parseHermesFormat(filePath: filePath)
         case "cline":
             return parseClineFormat(filePath: filePath)
         case "cursor":
@@ -86,6 +90,8 @@ struct MessageParser {
                 QwenAdapter(),
                 KimiAdapter(),
                 PiAdapter(),
+                OpenClawAdapter(),
+                HermesAdapter(),
                 ClineAdapter(),
                 CursorAdapter(),
                 VsCodeAdapter(),
@@ -254,6 +260,48 @@ struct MessageParser {
         }
     }
 
+    private static func parseOpenClawFormat(filePath: String) -> [ChatMessage] {
+        guard let reader = StreamingJSONLReader(filePath: filePath) else { return [] }
+        defer { reader.close() }
+        var messages: [ChatMessage] = []
+        for line in reader {
+            guard let obj = parseJSON(line),
+                  normalizedKey(obj["type"]) == "message",
+                  let message = obj["message"] as? [String: Any] else { continue }
+            let roleKey = normalizedKey(message["role"])
+            let role: String
+            if roleKey == "user" {
+                role = "user"
+            } else if roleKey == "assistant" {
+                role = "assistant"
+            } else {
+                continue
+            }
+            let content = extractMessageContent(message["content"])
+            guard !content.isEmpty else { continue }
+            messages.append(ChatMessage(role: role, content: content, systemCategory: role == "user" ? classifySystem(content: content, source: "openclaw") : .none))
+        }
+        return messages
+    }
+
+    private static func parseHermesFormat(filePath: String) -> [ChatMessage] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let messages = obj["messages"] as? [[String: Any]] else { return [] }
+        return messages.compactMap { message in
+            guard let rawRole = message["role"] as? String else { return nil }
+            let role: String
+            switch rawRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "user": role = "user"
+            case "assistant": role = "assistant"
+            default: return nil
+            }
+            let content = (message["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            return ChatMessage(role: role, content: content, systemCategory: role == "user" ? classifySystem(content: content, source: "hermes") : .none)
+        }
+    }
+
     // MARK: - cline
     // Whole file: [{say:"task"/"user_feedback"/"text", text:"..", partial:bool}]
     private static func parseClineFormat(filePath: String) -> [ChatMessage] {
@@ -396,6 +444,16 @@ struct MessageParser {
         guard let data = s.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return obj
+    }
+
+    private static func normalizedKey(_ value: Any?) -> String {
+        guard let raw = value as? String else { return "" }
+        return raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
     }
 
     private static func extractMessageContent(_ content: Any?) -> String {

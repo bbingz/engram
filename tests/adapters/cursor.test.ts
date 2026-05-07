@@ -85,12 +85,46 @@ describe('CursorAdapter', () => {
         lastUpdatedAt: 1771392005000,
         conversation: [{ type: 1, text: 'hi' }],
       };
+      const draftComposer = {
+        composerId: 'empty-draft',
+        createdAt: 1771392000000,
+        conversation: [],
+      };
+      const nestedSummaryComposer = {
+        composerId: 'nested-summary',
+        createdAt: 1771392000000,
+        lastUpdatedAt: 1771392005000,
+        latestConversationSummary: {
+          summary: { summary: 'Nested Cursor summary' },
+        },
+        conversation: [{ type: 1, text: 'hi' }],
+      };
+      const separateBubblesComposer = {
+        composerId: 'separate-bubbles',
+        createdAt: 1771392000000,
+        lastUpdatedAt: 1771392005000,
+        conversation: [],
+      };
       const ins = db.prepare(
         'INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)',
       );
       ins.run('composerData:with-folder', JSON.stringify(folderComposer));
       ins.run('composerData:with-file', JSON.stringify(fileComposer));
       ins.run('composerData:empty-context', JSON.stringify(emptyComposer));
+      ins.run('composerData:empty-draft', JSON.stringify(draftComposer));
+      ins.run(
+        'composerData:nested-summary',
+        JSON.stringify(nestedSummaryComposer),
+      );
+      ins.run(
+        'composerData:separate-bubbles',
+        JSON.stringify(separateBubblesComposer),
+      );
+      ins.run('bubbleId:separate-bubbles:1', 'null');
+      ins.run(
+        'bubbleId:separate-bubbles:2',
+        JSON.stringify({ type: 1, text: 'bubble row prompt' }),
+      );
       db.close();
     });
 
@@ -112,6 +146,39 @@ describe('CursorAdapter', () => {
       const a = new CursorAdapter(dbPath);
       const info = await a.parseSessionInfo(`${dbPath}?composer=empty-context`);
       expect(info?.cwd).toBe('');
+    });
+
+    it('does not list empty draft composers', async () => {
+      const a = new CursorAdapter(dbPath);
+      const files: string[] = [];
+      for await (const file of a.listSessionFiles()) files.push(file);
+      expect(files.some((file) => file.includes('empty-draft'))).toBe(false);
+    });
+
+    it('reads nested latestConversationSummary objects', async () => {
+      const a = new CursorAdapter(dbPath);
+      const info = await a.parseSessionInfo(
+        `${dbPath}?composer=nested-summary`,
+      );
+      expect(info?.summary).toBe('Nested Cursor summary');
+    });
+
+    it('skips JSON null bubble rows in separate bubble storage', async () => {
+      const a = new CursorAdapter(dbPath);
+      const info = await a.parseSessionInfo(
+        `${dbPath}?composer=separate-bubbles`,
+      );
+      expect(info?.userMessageCount).toBe(1);
+
+      const messages: { role: string; content: string }[] = [];
+      for await (const message of a.streamMessages(
+        `${dbPath}?composer=separate-bubbles`,
+      )) {
+        messages.push(message);
+      }
+      expect(messages).toEqual([
+        { role: 'user', content: 'bubble row prompt' },
+      ]);
     });
   });
 

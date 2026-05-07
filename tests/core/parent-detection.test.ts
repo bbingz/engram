@@ -202,6 +202,15 @@ describe('isDispatchPattern', () => {
       ),
     ).toBe(true);
   });
+
+  it('matches polycli fan-out prompts and health probes', () => {
+    expect(
+      isDispatchPattern(
+        'You are acting as kimi inside polycli.\nRun a code review.',
+      ),
+    ).toBe(true);
+    expect(isDispatchPattern('Reply with POLYCLI_HEALTH_OK only.')).toBe(true);
+  });
 });
 
 describe('scoreCandidate', () => {

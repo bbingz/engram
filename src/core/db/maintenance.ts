@@ -264,6 +264,39 @@ export function downgradeSubagentTiers(db: BetterSqlite3.Database): number {
 }
 
 /**
+ * Hide sessions launched by polycli. Polycli fans out review/probe prompts to
+ * many tools, and those child sessions rarely carry source-specific agent
+ * metadata, so path-only detection misses them.
+ */
+export function downgradePolycliTiers(db: BetterSqlite3.Database): number {
+  const downgraded = db
+    .prepare(
+      `
+    UPDATE sessions
+    SET agent_role = COALESCE(agent_role, 'dispatched'),
+        tier = 'skip',
+        link_checked_at = NULL
+    WHERE (
+        lower(COALESCE(summary, '')) LIKE '%inside polycli%'
+        OR lower(COALESCE(summary, '')) LIKE '%polycli_health_ok%'
+      )
+      AND (agent_role IS NULL OR tier != 'skip')
+  `,
+    )
+    .run().changes;
+
+  db.prepare(
+    `DELETE FROM sessions_fts WHERE session_id IN (
+      SELECT id FROM sessions
+      WHERE lower(COALESCE(summary, '')) LIKE '%inside polycli%'
+         OR lower(COALESCE(summary, '')) LIKE '%polycli_health_ok%'
+    )`,
+  ).run();
+
+  return downgraded;
+}
+
+/**
  * Backfill empty file_path from source_locator.
  * Swift reads file_path directly for message parsing. When file_path is empty
  * but source_locator has the correct path, sessions show "No Messages" in the app.

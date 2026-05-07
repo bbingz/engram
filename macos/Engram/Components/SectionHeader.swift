@@ -12,7 +12,7 @@ struct SectionHeader: View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .foregroundStyle(Theme.tertiaryText)
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.headline)
                 .foregroundStyle(Theme.primaryText)
             if let badge {
@@ -36,7 +36,7 @@ struct SectionHeader: View {
             if let trailing = trailingAction {
                 Button(action: trailing.action) {
                     HStack(spacing: 4) {
-                        Text(trailing.label)
+                        Text(LocalizedStringKey(trailing.label))
                         Image(systemName: "chevron.right")
                     }
                     .font(.caption)
