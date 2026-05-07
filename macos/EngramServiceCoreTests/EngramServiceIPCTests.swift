@@ -769,6 +769,61 @@ final class EngramServiceIPCTests: XCTestCase {
             XCTAssertNotEqual(name, "UnsupportedNativeCommand")
         }
     }
+
+    func testInspectSessionRoundtripDecodesInspectorDTO() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedInspectorIPCFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let dto = try await client.inspectSession(id: "ipc-inspector-parent")
+
+        XCTAssertEqual(dto.session.id, "ipc-inspector-parent")
+        XCTAssertEqual(dto.session.source, "codex")
+        XCTAssertEqual(dto.cost.estimatedCostUsd, 0.5)
+        XCTAssertEqual(dto.llm.auditRecordCount, 1)
+        XCTAssertEqual(dto.llm.callers, ["summary"])
+        XCTAssertEqual(dto.llm.trigger, "manual")
+        // Phase 0 invariant: llmSummary stays absent on the wire.
+        XCTAssertNil(dto.summaries.llmSummary)
+        XCTAssertEqual(dto.summaries.provenance.llmSummary, "unknown")
+        // Default resume capability over IPC: unsupported, no command/args.
+        XCTAssertEqual(dto.resume.capability, "unsupported")
+        XCTAssertNil(dto.resume.command)
+        XCTAssertNil(dto.resume.args)
+    }
+
+    func testInspectSessionMissingSessionPropagatesInvalidRequest() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedInspectorIPCFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        do {
+            _ = try await client.inspectSession(id: "ghost-session")
+            XCTFail("Expected invalidRequest for missing session over IPC")
+        } catch let error as EngramServiceError {
+            XCTAssertEqual(error, .invalidRequest(message: "Session not found: ghost-session"))
+        }
+    }
 }
 
 private extension EngramServiceJSONValue {
@@ -831,6 +886,97 @@ private func makeServiceIPCPaths() throws -> (runtime: URL, socket: URL, databas
         runtime.appendingPathComponent("service.sock"),
         root.appendingPathComponent("service.sqlite")
     )
+}
+
+private func seedInspectorIPCFixture(at path: String) throws {
+    let queue = try DatabaseQueue(path: path)
+    try queue.write { db in
+        try db.execute(sql: """
+            CREATE TABLE sessions (
+              id TEXT PRIMARY KEY,
+              source TEXT NOT NULL,
+              start_time TEXT NOT NULL,
+              end_time TEXT,
+              cwd TEXT NOT NULL DEFAULT '',
+              project TEXT,
+              model TEXT,
+              message_count INTEGER NOT NULL DEFAULT 0,
+              user_message_count INTEGER NOT NULL DEFAULT 0,
+              assistant_message_count INTEGER NOT NULL DEFAULT 0,
+              tool_message_count INTEGER NOT NULL DEFAULT 0,
+              system_message_count INTEGER NOT NULL DEFAULT 0,
+              summary TEXT,
+              file_path TEXT NOT NULL,
+              source_locator TEXT,
+              size_bytes INTEGER NOT NULL DEFAULT 0,
+              indexed_at TEXT NOT NULL,
+              agent_role TEXT,
+              hidden_at TEXT,
+              custom_name TEXT,
+              tier TEXT,
+              origin TEXT,
+              summary_message_count INTEGER,
+              quality_score INTEGER,
+              generated_title TEXT,
+              parent_session_id TEXT,
+              suggested_parent_id TEXT,
+              link_source TEXT,
+              link_checked_at TEXT,
+              orphan_status TEXT,
+              has_embedding INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE session_local_state (
+              session_id TEXT PRIMARY KEY,
+              local_readable_path TEXT,
+              custom_name TEXT
+            );
+            CREATE TABLE session_costs (
+              session_id TEXT PRIMARY KEY,
+              model TEXT,
+              input_tokens INTEGER DEFAULT 0,
+              output_tokens INTEGER DEFAULT 0,
+              cache_read_tokens INTEGER DEFAULT 0,
+              cache_creation_tokens INTEGER DEFAULT 0,
+              cost_usd REAL DEFAULT 0,
+              computed_at TEXT
+            );
+            CREATE TABLE ai_audit_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL,
+              caller TEXT NOT NULL,
+              operation TEXT NOT NULL DEFAULT '',
+              session_id TEXT,
+              error TEXT,
+              meta TEXT
+            );
+            INSERT INTO sessions (
+              id, source, start_time, end_time, cwd, project, model, message_count,
+              file_path, size_bytes, indexed_at, summary, summary_message_count,
+              tier, generated_title
+            ) VALUES (
+              'ipc-inspector-parent', 'codex',
+              '2026-05-07T08:00:00.000Z', '2026-05-07T08:30:00.000Z',
+              '/Users/test/work/engram', 'engram', 'gpt-5.4', 8,
+              '/Users/test/work/engram/.fixtures/ipc-inspector-parent.jsonl', 1024,
+              '2026-05-07T08:30:01.000Z',
+              'Inspector IPC fixture', 8,
+              'normal', 'IPC inspector parent'
+            );
+            INSERT INTO session_costs (
+              session_id, model, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens, cost_usd
+            ) VALUES (
+              'ipc-inspector-parent', 'gpt-5.4', 1000, 500, 0, 0, 0.5
+            );
+            INSERT INTO ai_audit_log (
+              ts, caller, operation, session_id, meta
+            ) VALUES (
+              '2026-05-07T08:31:00.000', 'summary', 'summarize',
+              'ipc-inspector-parent',
+              '{"trigger":"manual","resolvedConfig":{"preset":"standard","maxTokens":200,"temperature":0.3,"sampleFirst":20,"sampleLast":30,"truncateChars":500}}'
+            );
+        """)
+    }
 }
 
 private func seedSearchFixture(at path: String) throws {
