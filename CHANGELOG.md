@@ -5,6 +5,63 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Unreleased]
+
+### Added — Swift-native session inspector parity (Option A) (2026-05-07)
+
+- Added `EngramServiceSessionInspector` DTO under `macos/Shared/Service/EngramServiceModels.swift` that mirrors the TypeScript inspector contract (session/provenance/summaries/status/agentGraph/llm/resume/cost) and is `Codable`/`Sendable`.
+- Wired `inspectSession(id:)` through `EngramServiceClientProtocol`, `EngramServiceClient`, `MockEngramServiceClient`, the IPC `EngramServiceCommandHandler`, and the read-provider hierarchy. `EmptyEngramServiceReadProvider`/`FileSystemEngramServiceReadProvider` reject missing sessions with `EngramServiceError.invalidRequest`; `SQLiteEngramServiceReadProvider` reads via GRDB read-only queries.
+- Phase 0 invariants preserved in Swift: no Process()/which/node/daemon.js/URLSession HTTP bridges, summaries.llmSummary stays absent even when ai_audit_log rows exist, parent cost stays parent-scoped, confirmed child rollup excludes suggested-only children, and resume defaults to `unsupported`/`fallback` with no command/args (no PATH probing in the inspector path).
+- Added `SessionInspectorPanel` to `SessionDetailView` rendering a compact read-only inspector section (status, title, summary provenance, llm audit metadata, cost source/warning, child count/rollup, resume capability). Removed the dead `generateSummary()` method and unreferenced state since no UI affordance was wired to it.
+- New `EngramServiceCoreTests/EngramServiceInspectorTests.swift` covers: missing session error, parent DTO smoke, audit visible without `llmSummary` back-fill, child rollup separating parent/child cost, default resume capability, and contract-golden decoding (`tests/fixtures/mcp-golden/session_inspector.fixture.json`).
+- Decision context: doc-only Task 5a previously marked the legacy TypeScript-bridge plan BLOCKED in `docs/superpowers/plans/2026-05-07-llm-session-inspector-harness.md`; Option A delivers the Swift-native parity called out there without reintroducing a Node bridge.
+- Hardening (Task 6): added `EngramServiceCoreTests/EngramServiceInspectorClientTests.swift` (client-side encoding/decoding via `RecordingTransport`) and two `EngramServiceIPCTests` cases (`testInspectSessionRoundtripDecodesInspectorDTO`, `testInspectSessionMissingSessionPropagatesInvalidRequest`) covering the real Unix-socket → command-handler → SQLite-provider round trip. Final closeout (Task 7) re-verified TS + Swift suites, fixture hermeticity (no `mcp-inspector` rows in shared `mcp-contract.sqlite`, no `/Users/bing` paths or secrets in goldens), and bridge-cleanliness of inspector code paths. Inspector panel `loadInspector()` now clears state up front and guards against session-id changes during the in-flight await so switching sessions cannot show stale data.
+
+### Fixed — P0-P2 app review remediation and project analytics release gate (2026-05-07)
+
+- Closed P0/P1 safety issues: legacy MCP direct DB writes now fail closed unless the explicit rollback-only `mcpAllowDirectWriteFallback` flag is enabled; HTTP content-bearing reads require bearer auth when configured; non-localhost standalone HTTP requires both CIDR allowlist and bearer token.
+- Preserved raw `@keychain` settings sentinels on Node/source settings writes, kept resolved secrets out of `settings.json`, and enforced owner-only `0600` settings writes.
+- Unified primary-visible session semantics across search, FTS, costs, tool analytics, file activity, and parent suggestion backfill so hidden, skip-tier, child, suggested-child, and orphan rows do not leak into default user-facing surfaces.
+- Added the project analytics dashboard with Swift background reads, range/tabs, pricing metadata, cost coverage, source/tool/model breakdowns, accessible KPI cards, and UI smoke coverage.
+- Reduced large-session pressure: file-level in-flight indexing guard, coalesced daemon recovery jobs/rescans, reused one `get_context` embedding, adapter-backed `get_session` windows, and paged Swift transcript loading.
+- Hardened CI/release gates: TypeScript test typecheck, XcodeGen drift gate, EngramMCP/EngramServiceCore tests, project analytics UI smoke, Developer ID release validation, helper linkage checks, Node artifact rejection, and optional required notarization.
+- Fixed the local Gatekeeper damaged-runner failure by removing broken Node fixture symlink resources from `EngramUITests-Runner.app`; `/Applications/Engram.app` was replaced with a Developer ID signed universal release export. The current local package is intentionally unnotarized because the `EngramNotary` keychain profile is not configured.
+
+### Fixed — Audit-driven correctness, performance, and noise pass (2026-05-03)
+
+P0 correctness:
+- L2-normalize OpenAI embedding output (cosine similarity / dedup was off after dimension truncation).
+- NaN guards on every HTTP `limit` / `offset` parser via shared `parseLimit` / `parseOffset` helpers (7 endpoints).
+- Fix `PROBE_FIRST_LINES` matcher: entries `Say hello` and `Reply: T4` were unreachable because lookup applies `toLowerCase()`; entries normalized to lowercase, regression test added.
+
+Performance / runtime:
+- `backfillSuggestedParents`: collapse N+1 candidate-vs-parents query into a single windowed batch, filter in-memory.
+- Replace in-memory `Map`-based p95 rollup with a single SQL window-function pass.
+- O(1) insight dedup via SHA-256 `content_hash` column + index, replacing a 200-row scan.
+- `backfillCodexOriginator`: switch to `node:fs/promises` so the event loop isn't blocked while reading first-16KB of every Codex JSONL.
+- Watcher concurrency limiter (max 3 parallel `indexFile`) to absorb mass-change storms (e.g. git checkouts).
+- Partial indexes on `sessions(project)` and `sessions(origin)`.
+
+Robustness / security:
+- Global `app.onError` 500 envelope; `${err}` interpolation replaced with `err.message` in 4 leak-prone branches.
+- `lint_config` MCP tool now fences `cwd` to under `$HOME`.
+- Watcher `handleChange` wrapped in top-level try/catch (prevents unhandled rejections).
+- `~/.engram/settings.json` written with mode `0o600`.
+- CLI shutdown handler closes the database on `SIGTERM`/`SIGINT`.
+- `npm audit fix`: 3 → 0 advisories.
+
+Functionality:
+- New `delete_insight` MCP tool (removes from both text and vector stores).
+- Layer-2 dispatch detection now includes `opencode` source.
+- Expanded `NOISE_PATTERNS` plus a probe-session classifier (≤3 messages with a known probe summary → `lite`).
+- Chunker keeps fenced code blocks intact when possible.
+
+### Fixed — macOS AppIcon postbuild (2026-05-03)
+
+- `Replace AppIcon.icns with complete version` script no longer declares `outputFiles` — Xcode 16+ rejects two producers of the same file (Assets.xcassets's icon compiler also writes there). Now runs unconditionally; `cp` is cheap.
+
+---
+
 ## [1.0.2] - 2026-04-29
 
 ### Fixed — macOS release builds are warning-clean (2026-04-29)
