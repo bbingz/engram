@@ -4,7 +4,15 @@
 // Example:  TZ=UTC ./node_modules/.bin/tsx scripts/gen-mcp-contract-fixtures.ts
 // Without TZ=UTC the generator emits host-local times (e.g. +08:00 CST) while
 // xctest outputs UTC — 5 goldens with timestamps would silently diverge.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CodexAdapter } from '../src/adapters/codex.js';
@@ -17,6 +25,7 @@ import { handleGetInsights } from '../src/tools/get_insights.js';
 import { handleGetMemory } from '../src/tools/get_memory.js';
 import { handleGetSession } from '../src/tools/get_session.js';
 import { handleHandoff } from '../src/tools/handoff.js';
+import { handleInspectSession } from '../src/tools/inspect_session.js';
 import { handleLinkSessions } from '../src/tools/link_sessions.js';
 import { handleLintConfig } from '../src/tools/lint_config.js';
 import { handleListSessions } from '../src/tools/list_sessions.js';
@@ -42,12 +51,11 @@ const linkTargetDir = resolve(runtimeDir, 'engram');
 const reviewHomeDir = resolve(runtimeDir, 'review-home');
 const transcriptDir = resolve(runtimeDir, 'transcripts');
 const exportHomeDir = resolve(runtimeDir, 'export-home');
-const swiftUnavailableProjectOperationTools = new Set([
-  'project_move',
-  'project_archive',
-  'project_undo',
-  'project_move_batch',
-]);
+// tools.json is a Swift MCP parity fixture, not a Node allTools dump.
+// List tools the Node MCP server exposes that the Swift MCP registry does
+// not (yet) expose, so they get filtered out before writing tools.json.
+// Keep this list narrow: when a Swift counterpart lands, drop the entry.
+const swiftUnavailableTools = new Set(['delete_insight', 'inspect_session']);
 
 rmSync(fixtureDbPath, { force: true });
 rmSync(`${fixtureDbPath}-wal`, { force: true });
@@ -561,6 +569,201 @@ async function withMockedNow<T>(isoTimestamp: string, run: () => Promise<T>) {
   }
 }
 
+// Build the inspector golden in an isolated, throwaway Database so the seed
+// rows (mcp-inspector-parent / child / suggested + cost + audit) never leak
+// into the shared mcp-contract.sqlite that other goldens read from.
+async function buildInspectorGolden(): Promise<MCPResponse> {
+  const tmpRoot = mkdtempSync(resolve(tmpdir(), 'mcp-inspector-golden-'));
+  const tmpDbPath = resolve(tmpRoot, 'inspector.sqlite');
+  const tmpDb = new Database(tmpDbPath);
+  try {
+    const tmpRaw = tmpDb.getRawDb();
+    tmpRaw.pragma('journal_mode = DELETE');
+
+    const insertInspectorSession = tmpRaw.prepare(`
+      INSERT INTO sessions (
+        id, source, start_time, end_time, cwd, project, model,
+        message_count, user_message_count, assistant_message_count,
+        tool_message_count, system_message_count, summary,
+        summary_message_count, file_path, size_bytes, indexed_at,
+        agent_role, origin, tier, generated_title, quality_score,
+        parent_session_id, suggested_parent_id, link_source
+      ) VALUES (
+        @id, @source, @startTime, @endTime, @cwd, @project, @model,
+        @messageCount, @userMessageCount, @assistantMessageCount,
+        @toolMessageCount, @systemMessageCount, @summary,
+        @summaryMessageCount, @filePath, @sizeBytes, @indexedAt,
+        @agentRole, @origin, @tier, @generatedTitle, @qualityScore,
+        @parentSessionId, @suggestedParentId, @linkSource
+      )
+    `);
+
+    insertInspectorSession.run({
+      id: 'mcp-inspector-parent',
+      source: 'codex',
+      startTime: '2026-05-07T08:00:00.000Z',
+      endTime: '2026-05-07T08:30:00.000Z',
+      cwd: '/Users/test/work/engram',
+      project: 'engram',
+      model: 'gpt-5.4',
+      messageCount: 8,
+      userMessageCount: 3,
+      assistantMessageCount: 4,
+      toolMessageCount: 1,
+      systemMessageCount: 0,
+      summary: 'Inspector fixture parent session',
+      summaryMessageCount: 8,
+      filePath: '/Users/test/work/engram/.fixtures/mcp-inspector-parent.jsonl',
+      sizeBytes: 2048,
+      indexedAt: '2026-05-07T08:31:00.000Z',
+      agentRole: null,
+      origin: 'local',
+      tier: 'normal',
+      generatedTitle: 'Inspector golden parent',
+      qualityScore: 60,
+      parentSessionId: null,
+      suggestedParentId: null,
+      linkSource: null,
+    });
+
+    insertInspectorSession.run({
+      id: 'mcp-inspector-child-codex',
+      source: 'codex',
+      startTime: '2026-05-07T08:05:00.000Z',
+      endTime: '2026-05-07T08:10:00.000Z',
+      cwd: '/Users/test/work/engram',
+      project: 'engram',
+      model: 'gpt-5.4',
+      messageCount: 4,
+      userMessageCount: 2,
+      assistantMessageCount: 2,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      summary: 'Inspector fixture confirmed child',
+      summaryMessageCount: null,
+      filePath:
+        '/Users/test/work/engram/.fixtures/mcp-inspector-child-codex.jsonl',
+      sizeBytes: 600,
+      indexedAt: '2026-05-07T08:31:00.000Z',
+      agentRole: 'dispatched',
+      origin: 'local',
+      tier: 'skip',
+      generatedTitle: null,
+      qualityScore: 30,
+      parentSessionId: 'mcp-inspector-parent',
+      suggestedParentId: null,
+      linkSource: 'path',
+    });
+
+    insertInspectorSession.run({
+      id: 'mcp-inspector-suggested-gemini',
+      source: 'gemini-cli',
+      startTime: '2026-05-07T08:25:00.000Z',
+      endTime: null,
+      cwd: '/Users/test/work/engram',
+      project: 'engram',
+      model: 'gemini-2.5-pro',
+      messageCount: 3,
+      userMessageCount: 1,
+      assistantMessageCount: 2,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      summary: 'Inspector fixture suggested child',
+      summaryMessageCount: null,
+      filePath:
+        '/Users/test/work/engram/.fixtures/mcp-inspector-suggested-gemini.jsonl',
+      sizeBytes: 500,
+      indexedAt: '2026-05-07T08:31:00.000Z',
+      agentRole: 'dispatched',
+      origin: 'local',
+      tier: 'skip',
+      generatedTitle: null,
+      qualityScore: 25,
+      parentSessionId: null,
+      suggestedParentId: 'mcp-inspector-parent',
+      linkSource: null,
+    });
+
+    const insertInspectorCost = tmpRaw.prepare(`
+      INSERT INTO session_costs (
+        session_id, model, input_tokens, output_tokens,
+        cache_read_tokens, cache_creation_tokens, cost_usd, computed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertInspectorCost.run(
+      'mcp-inspector-parent',
+      'gpt-5.4',
+      1000,
+      500,
+      0,
+      0,
+      0.5,
+      '2026-05-07T08:31:00.000Z',
+    );
+    insertInspectorCost.run(
+      'mcp-inspector-child-codex',
+      'gpt-5.4',
+      100,
+      100,
+      0,
+      0,
+      0.125,
+      '2026-05-07T08:31:00.000Z',
+    );
+
+    // Redacted summary audit row — request/response bodies left null so the
+    // golden never carries Authorization headers, Gemini URL keys, or any
+    // provider secret. Fixed ts so the golden is byte-stable.
+    tmpRaw
+      .prepare(`
+        INSERT INTO ai_audit_log (
+          ts, trace_id, caller, operation, request_source, method, url,
+          status_code, duration_ms, model, provider,
+          prompt_tokens, completion_tokens, total_tokens,
+          request_body, response_body, error, session_id, meta
+        ) VALUES (
+          @ts, NULL, @caller, @operation, NULL, NULL, NULL, NULL,
+          @durationMs, @model, @provider,
+          @promptTokens, @completionTokens, @totalTokens,
+          NULL, NULL, NULL, @sessionId, @meta
+        )
+      `)
+      .run({
+        ts: '2026-05-07T08:31:00.000',
+        caller: 'summary',
+        operation: 'summarize',
+        durationMs: 14,
+        model: 'gpt-5.4',
+        provider: 'openai',
+        promptTokens: 200,
+        completionTokens: 50,
+        totalTokens: 250,
+        sessionId: 'mcp-inspector-parent',
+        meta: JSON.stringify({
+          trigger: 'manual',
+          messageCount: 8,
+          sampledMessageCount: 8,
+          resolvedConfig: {
+            preset: 'standard',
+            maxTokens: 200,
+            temperature: 0.3,
+            sampleFirst: 20,
+            sampleLast: 30,
+            truncateChars: 500,
+          },
+        }),
+      });
+
+    const result = await handleInspectSession(tmpDb, {
+      id: 'mcp-inspector-parent',
+    });
+    return result as MCPResponse;
+  } finally {
+    tmpDb.close();
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 const goldens: Record<string, unknown> = {
   'initialize.result': extractInitializeResultFromIndex(),
   'stats.source': success(
@@ -774,6 +977,7 @@ const goldens: Record<string, unknown> = {
       since: '2026-03-01T00:00:00.000Z',
     }),
   ),
+  'session_inspector.fixture': await buildInspectorGolden(),
 };
 
 Object.assign(goldens, {
@@ -783,11 +987,41 @@ Object.assign(goldens, {
   ),
 });
 
+// Normalize the host repoRoot so goldens stay byte-stable across machines.
+// Convention: repoRoot → /Users/example/-Code-/engram
+const NORMALIZED_REPO_ROOT = '/Users/example/-Code-/engram';
+function normalizeRepoRoot(text: string): string {
+  return text.split(repoRoot).join(NORMALIZED_REPO_ROOT);
+}
+
 for (const [name, payload] of Object.entries(goldens)) {
+  const json = JSON.stringify(payload, null, 2);
   writeFileSync(
     resolve(goldenDir, `${name}.json`),
-    `${JSON.stringify(payload, null, 2)}\n`,
+    `${normalizeRepoRoot(json)}\n`,
   );
+}
+
+// Post-process tracked runtime artifacts (e.g., codex export written by
+// handleExport above) so they don't carry the local /Users/bing path either.
+// Also ensure a trailing newline to match the on-disk convention for these
+// goldens (the committed version has one; preserving it keeps the diff
+// minimal across regeneration runs).
+const exportArtifactDir = resolve(exportHomeDir, 'codex-exports');
+try {
+  for (const entry of readdirSync(exportArtifactDir)) {
+    const filePath = resolve(exportArtifactDir, entry);
+    const original = readFileSync(filePath, 'utf8');
+    const normalized = normalizeRepoRoot(original);
+    const withTrailingNewline = normalized.endsWith('\n')
+      ? normalized
+      : `${normalized}\n`;
+    if (withTrailingNewline !== original) {
+      writeFileSync(filePath, withTrailingNewline);
+    }
+  }
+} catch {
+  // intentional: handleExport may not have produced any artifact this run
 }
 
 writeFileSync(
@@ -806,6 +1040,8 @@ writeFileSync(
     '- random UUIDs in write-tool responses are replaced with `<generated-uuid>`',
     '- all timestamps come from fixed fixture rows, not `now()`',
     '- fixture DB is `tests/fixtures/mcp-contract.sqlite`; never use `~/.engram/index.sqlite` in contract tests',
+    '- inspector fixtures (`session_inspector.fixture.json`) are produced from local DB facts only — no LLM provider calls, no transcript streaming, no external CLI; `resume.command`/`resume.args` stay absent because no resolver is provided',
+    '- provider secrets, Authorization headers, Gemini URL keys, and secret-like body values must be redacted before entering golden output (audit rows seeded for the inspector golden have request/response bodies set to NULL)',
     '',
   ].join('\n'),
 );
@@ -843,7 +1079,7 @@ function extractToolNamesFromIndex(): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
     .map((entry) => resolveToolName(entry, importMap))
-    .filter((toolName) => !swiftUnavailableProjectOperationTools.has(toolName));
+    .filter((toolName) => !swiftUnavailableTools.has(toolName));
 }
 
 function extractInitializeResultFromIndex(): Record<string, unknown> {

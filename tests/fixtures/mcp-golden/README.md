@@ -6,3 +6,5 @@ Normalization rules:
 - random UUIDs in write-tool responses are replaced with `<generated-uuid>`
 - all timestamps come from fixed fixture rows, not `now()`
 - fixture DB is `tests/fixtures/mcp-contract.sqlite`; never use `~/.engram/index.sqlite` in contract tests
+- inspector fixtures (`session_inspector.fixture.json`) are produced from local DB facts only — no LLM provider calls, no transcript streaming, no external CLI; `resume.command`/`resume.args` stay absent because no resolver is provided
+- provider secrets, Authorization headers, Gemini URL keys, and secret-like body values must be redacted before entering golden output (audit rows seeded for the inspector golden have request/response bodies set to NULL)

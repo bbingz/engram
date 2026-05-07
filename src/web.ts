@@ -24,6 +24,7 @@ import {
 } from './core/project-move/retry-policy.js';
 import { runWithContext } from './core/request-context.js';
 import { buildResumeCommand } from './core/resume-coordinator.js';
+import { buildSessionInspector } from './core/session-inspector.js';
 import type { SyncEngine, SyncPeer } from './core/sync.js';
 import type { TitleGenerator } from './core/title-generator.js';
 import type { Tracer } from './core/tracer.js';
@@ -514,6 +515,17 @@ export function createApp(
       return c.json({ error: 'Session not found' }, 404);
     }
     return c.json(session);
+  });
+
+  // Session inspector — local read-only DTO assembled from existing DB facts.
+  // Does not call LLM providers, stream adapter messages, or invoke external CLIs.
+  app.get('/api/sessions/:id/inspect', (c) => {
+    const sessionId = c.req.param('id');
+    const inspector = buildSessionInspector(db, sessionId);
+    if (!inspector) {
+      return c.json({ error: `Session not found: ${sessionId}` }, 404);
+    }
+    return c.json(inspector);
   });
 
   // --- Parent link management ---
