@@ -1,0 +1,6 @@
+- [Open-source publication state](2026-04-29-open-source-publication.md) — public repo, branch policy, release artifact hashes
+- [macOS signing](macos-signing.md) — use real Developer cert (Team `J25GS8J4XM` from keychain), never ad-hoc by default
+- [macOS app architecture](macos-app-architecture.md) — Swift-native runtime; TS `src/` does NOT ship inside the .app; CLAUDE.md's node-bundle section is stale
+- [App review remediation closeout](2026-05-07-app-review-remediation-closeout.md) — P0-P2 remediation commits, project analytics dashboard, release gate, local Developer ID app, notarization blocker
+- [Session inspector Option A landed](2026-05-07-inspector-option-a.md) — Swift-native inspector parity (no Node/HTTP bridge); golden fixture is the contract
+- [v1.0.3 native adapters release](2026-05-08-v1.0.3-release.md) — OpenClaw/Hermes native adapters, schema smoke fixes, PR #13, notarized release

@@ -7,6 +7,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+---
+
+## [1.0.3] - 2026-05-08
+
 ### Added — v1.0.3 native adapters, settings, and noise cleanup (2026-05-07)
 
 - Added Swift-native OpenClaw and Hermes adapters and kept matching TypeScript adapters for existing MCP/Node compatibility.
@@ -21,6 +25,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Fixed Cursor adapter schema drift: empty draft composers are no longer listed, nested `latestConversationSummary.summary` is supported, and JSON `null` bubble rows no longer break separate bubble storage parsing.
 - Fixed VS Code adapter listing to skip empty chat-session shells and aligned Swift message counts with real user/assistant text.
 - Verified all available local adapter sources with a read-only smoke parse and kept OpenClaw/Hermes covered by fixtures plus Swift native tests where local live data was unavailable.
+
+---
 
 ### Added — Swift-native session inspector parity (Option A) (2026-05-07)
 
