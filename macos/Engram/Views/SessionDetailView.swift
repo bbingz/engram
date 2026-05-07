@@ -27,10 +27,6 @@ struct SessionDetailView: View {
     @State private var inspector: EngramServiceSessionInspector?
     @State private var inspectorError: String?
 
-    // Inspector
-    @State private var inspector: EngramServiceSessionInspector?
-    @State private var inspectorError: String?
-
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
 
