@@ -120,6 +120,10 @@ const insertMigration = raw.prepare(`
     @auditNote, @archived, @actor, @detail, @error
   )
 `);
+const insertProjectAlias = raw.prepare(`
+  INSERT OR IGNORE INTO project_aliases (alias, canonical, created_at)
+  VALUES (?, ?, ?)
+`);
 
 const longBlock = (label: string) =>
   [
@@ -245,9 +249,9 @@ for (let i = 1; i <= 10; i += 1) {
   insertInsightFts.run(id, content);
 }
 
-db.addProjectAlias('engram-mcp', 'engram');
-db.addProjectAlias('engram-legacy', 'engram');
-db.addProjectAlias('apollo-old', 'apollo');
+insertProjectAlias.run('engram-mcp', 'engram', '2026-02-01T09:00:00.000Z');
+insertProjectAlias.run('engram-legacy', 'engram', '2026-02-01T09:00:00.000Z');
+insertProjectAlias.run('apollo-old', 'apollo', '2026-02-01T09:00:00.000Z');
 
 insertMetric.run(
   'search.fts_ms',
@@ -410,10 +414,9 @@ writeFileSync(
   })}\n`,
 );
 
-const transcriptPath = resolve(
-  transcriptDir,
-  'rollout-mcp-transcript-01.jsonl',
-);
+const transcriptRelativePath =
+  'tests/fixtures/mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl';
+const transcriptPath = resolve(repoRoot, transcriptRelativePath);
 writeFileSync(
   transcriptPath,
   [
@@ -478,7 +481,7 @@ insertSession.run({
   systemMessageCount: 0,
   summary:
     'Transcript fixture codex session for get_session/export contract tests',
-  filePath: transcriptPath,
+  filePath: transcriptRelativePath,
   sizeBytes: 2048,
   indexedAt: '2026-01-15T09:06:00.000Z',
   agentRole: null,
@@ -764,6 +767,32 @@ async function buildInspectorGolden(): Promise<MCPResponse> {
   }
 }
 
+// save_insight returns a normalized UUID in the golden output, but the real
+// handler also writes that random UUID into its database. Keep that mutation
+// out of the shared contract DB so mcp-contract.sqlite can be byte-stable.
+async function buildSaveInsightGolden(): Promise<MCPResponse> {
+  const tmpRoot = mkdtempSync(resolve(tmpdir(), 'mcp-save-insight-golden-'));
+  const tmpDbPath = resolve(tmpRoot, 'save-insight.sqlite');
+  const tmpDb = new Database(tmpDbPath);
+  try {
+    const result = await handleSaveInsight(
+      {
+        content:
+          'Swift MCP contract tests should use deterministic fixture databases and byte-stable JSON golden files.',
+        wing: 'engram',
+        room: 'mcp-swift',
+        importance: 5,
+        source_session_id: 'mcp-fixture-01',
+      },
+      { db: tmpDb },
+    );
+    return success(normalizeDynamic(result));
+  } finally {
+    tmpDb.close();
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 const goldens: Record<string, unknown> = {
   'initialize.result': extractInitializeResultFromIndex(),
   'stats.source': success(
@@ -932,7 +961,11 @@ const goldens: Record<string, unknown> = {
   'manage_project_alias.list': success(db.listProjectAliases()),
   'manage_project_alias.add': success(
     (() => {
-      db.addProjectAlias('apollo-next', 'apollo');
+      insertProjectAlias.run(
+        'apollo-next',
+        'apollo',
+        '2026-02-01T09:00:00.000Z',
+      );
       return { added: { alias: 'apollo-next', canonical: 'apollo' } };
     })(),
   ),
@@ -942,21 +975,7 @@ const goldens: Record<string, unknown> = {
       return { removed: { alias: 'apollo-next', canonical: 'apollo' } };
     })(),
   ),
-  'save_insight.text_only': success(
-    normalizeDynamic(
-      await handleSaveInsight(
-        {
-          content:
-            'Swift MCP contract tests should use deterministic fixture databases and byte-stable JSON golden files.',
-          wing: 'engram',
-          room: 'mcp-swift',
-          importance: 5,
-          source_session_id: 'mcp-fixture-01',
-        },
-        { db },
-      ),
-    ),
-  ),
+  'save_insight.text_only': await buildSaveInsightGolden(),
   'project_review.fixture': success(
     await (async () => {
       const previousHome = process.env.HOME;
@@ -1083,23 +1102,30 @@ function extractToolNamesFromIndex(): string[] {
 }
 
 function extractInitializeResultFromIndex(): Record<string, unknown> {
-  const indexPath = resolve(repoRoot, 'src/index.ts');
-  const indexSource = readFileSync(indexPath, 'utf8');
-  const instructionsMatch = indexSource.match(
-    /const ENGRAM_INSTRUCTIONS = `([\s\S]*?)`;/,
+  const swiftServerPath = resolve(
+    repoRoot,
+    'macos/EngramMCP/Core/MCPStdioServer.swift',
+  );
+  const swiftServerSource = readFileSync(swiftServerPath, 'utf8');
+  const instructionsMatch = swiftServerSource.match(
+    /private static let instructions = """\n([\s\S]*?)\n {4}"""/,
   );
 
   if (!instructionsMatch) {
     throw new Error(
-      'Unable to locate ENGRAM_INSTRUCTIONS template literal in src/index.ts',
+      'Unable to locate MCPStdioServer instructions multiline literal',
     );
   }
+  const instructions = instructionsMatch[1]
+    .split('\n')
+    .map((line) => (line.startsWith('    ') ? line.slice(4) : line))
+    .join('\n');
 
   return {
     protocolVersion: '2025-03-26',
     capabilities: { tools: {} },
     serverInfo: { name: 'engram', version: '0.1.0' },
-    instructions: instructionsMatch[1],
+    instructions,
   };
 }
 

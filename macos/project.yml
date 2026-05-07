@@ -276,6 +276,8 @@ targets:
       BUNDLE_LOADER: "$(TEST_HOST)"
       # Match the host Engram app's signing identity so the xctest bundle
       # can be dlopen'd into the hardened-runtime host process.
+      # Forks should mirror their host app team here, or override
+      # DEVELOPMENT_TEAM on the xcodebuild command line.
       CODE_SIGN_IDENTITY: "Apple Development"
       CODE_SIGN_STYLE: Automatic
       DEVELOPMENT_TEAM: J25GS8J4XM

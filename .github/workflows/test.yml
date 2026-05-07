@@ -127,6 +127,9 @@ jobs:
           test -f test-fixtures/test-index.sqlite || (echo "ERROR: fixture not committed" && exit 1)
           npx tsx scripts/generate-test-fixtures.ts
           git diff --exit-code test-fixtures/test-index.sqlite
+          test -f tests/fixtures/mcp-contract.sqlite || (echo "ERROR: MCP contract fixture not committed" && exit 1)
+          npm run generate:mcp-contract-fixtures
+          git diff --exit-code tests/fixtures/mcp-contract.sqlite tests/fixtures/mcp-golden tests/fixtures/mcp-runtime
 
   ui-test-smoke:
     runs-on: macos-15

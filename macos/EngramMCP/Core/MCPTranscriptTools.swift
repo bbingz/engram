@@ -11,7 +11,10 @@ enum MCPTranscriptTools {
             throw MCPToolError.invalidArguments("Session not found: \(id)")
         }
 
-        let allMessages = MCPTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
+        let allMessages = MCPTranscriptReader.readMessages(
+            filePath: database.resolveSessionFilePath(session.filePath),
+            source: session.source
+        )
             .filter { roles == nil || roles!.contains($0.role) }
         let pageSize = 50
         let currentPage = max(page, 1)
