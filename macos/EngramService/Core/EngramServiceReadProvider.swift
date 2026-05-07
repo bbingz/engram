@@ -12,6 +12,7 @@ protocol EngramServiceReadProvider: Sendable {
     func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse
     func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse
     func resumeCommand(_ request: EngramServiceResumeCommandRequest) async throws -> EngramServiceResumeCommandResponse
+    func inspectSession(_ request: EngramServiceSessionInspectorRequest) async throws -> EngramServiceSessionInspector
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse
     func projectCwds(_ request: EngramServiceProjectCwdsRequest) async throws -> EngramServiceProjectCwdsResponse
 }
@@ -72,6 +73,10 @@ struct EmptyEngramServiceReadProvider: EngramServiceReadProvider {
             error: "Resume command unavailable",
             hint: "Session resume requires the SQLite-backed service provider."
         )
+    }
+
+    func inspectSession(_ request: EngramServiceSessionInspectorRequest) async throws -> EngramServiceSessionInspector {
+        throw EngramServiceError.invalidRequest(message: "Session not found: \(request.id)")
     }
 
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse {
@@ -230,6 +235,10 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
             error: "Resume command unavailable",
             hint: "Session resume requires the SQLite-backed service provider."
         )
+    }
+
+    func inspectSession(_ request: EngramServiceSessionInspectorRequest) async throws -> EngramServiceSessionInspector {
+        throw EngramServiceError.invalidRequest(message: "Session not found: \(request.id)")
     }
 
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse {
@@ -544,6 +553,188 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
     }
 
+    func inspectSession(_ request: EngramServiceSessionInspectorRequest) async throws -> EngramServiceSessionInspector {
+        let id = request.id
+        return try read { db in
+            guard let session = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT s.id, s.source, s.project, s.cwd, s.model,
+                           s.start_time, s.end_time, s.message_count,
+                           s.file_path, s.source_locator, s.tier, s.agent_role,
+                           s.summary, s.summary_message_count, s.custom_name,
+                           s.generated_title, s.parent_session_id,
+                           s.suggested_parent_id, s.link_source,
+                           ls.local_readable_path, ls.custom_name AS state_custom_name
+                    FROM sessions s
+                    LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                    WHERE s.id = ?
+                """,
+                arguments: [id]
+            ) else {
+                throw EngramServiceError.invalidRequest(message: "Session not found: \(id)")
+            }
+
+            let source = (session["source"] as String?) ?? ""
+            let cwd = (session["cwd"] as String?) ?? ""
+            let parentSessionId = nonEmpty(session["parent_session_id"] as String?)
+            let suggestedParentId = nonEmpty(session["suggested_parent_id"] as String?)
+            let linkSource = nonEmpty(session["link_source"] as String?)
+            let storedSummary = nonEmpty(session["summary"] as String?)
+            let customName = nonEmpty(session["custom_name"] as String?) ?? nonEmpty(session["state_custom_name"] as String?)
+            let generatedTitle = nonEmpty(session["generated_title"] as String?)
+            let endTime = nonEmpty(session["end_time"] as String?)
+            let messageCount = (session["message_count"] as Int?) ?? 0
+            let filePath = nonEmpty(session["file_path"] as String?) ?? nonEmpty(session["local_readable_path"] as String?)
+
+            let allowedTier: String?
+            switch session["tier"] as String? {
+            case "skip", "lite", "normal", "premium":
+                allowedTier = session["tier"] as String?
+            default:
+                allowedTier = nil
+            }
+
+            let cost = try inspectorCost(db: db, sessionId: id)
+            let childCount = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?",
+                arguments: [id]
+            ) ?? 0
+            let suggestedChildCount = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions WHERE suggested_parent_id = ? AND (parent_session_id IS NULL OR parent_session_id = '')",
+                arguments: [id]
+            ) ?? 0
+
+            var childRollup: EngramServiceSessionInspector.ChildRollup?
+            if childCount > 0 {
+                let sources = try inspectorChildSources(db: db, parentId: id)
+                let rollup = try inspectorChildCostRollup(db: db, parentId: id)
+                childRollup = EngramServiceSessionInspector.ChildRollup(
+                    sources: sources,
+                    tokenTotal: rollup?.tokenTotal,
+                    estimatedCostUsd: rollup?.estimatedCostUsd
+                )
+            }
+
+            let audit = try inspectorAuditCorrelation(db: db, sessionId: id)
+            let resume = inspectorResume(source: source, cwd: cwd)
+            let status = inspectorStatus(endTime: endTime, messageCount: messageCount)
+
+            let titleProv: String
+            if generatedTitle != nil {
+                titleProv = "ai_audit"
+            } else if customName != nil || storedSummary != nil {
+                titleProv = "database"
+            } else {
+                titleProv = "fallback"
+            }
+
+            let parentLinkProv: String
+            if parentSessionId != nil {
+                parentLinkProv = "database"
+            } else if suggestedParentId != nil {
+                parentLinkProv = "heuristic"
+            } else {
+                parentLinkProv = "unknown"
+            }
+
+            let sessionFacts = EngramServiceSessionInspector.Session(
+                id: (session["id"] as String?) ?? id,
+                source: source,
+                messageCount: messageCount,
+                project: nonEmpty(session["project"] as String?),
+                cwd: nonEmpty(cwd),
+                model: nonEmpty(session["model"] as String?),
+                startTime: nonEmpty(session["start_time"] as String?),
+                endTime: endTime,
+                filePath: filePath,
+                tier: allowedTier,
+                agentRole: nonEmpty(session["agent_role"] as String?)
+            )
+
+            let displayTitle = customName ?? generatedTitle ?? storedSummary
+            let summaries = EngramServiceSessionInspector.Summaries(
+                provenance: EngramServiceSessionInspector.SummaryProvenance(
+                    firstMessageSummary: "unknown",
+                    storedSummary: storedSummary != nil ? "adapter_first_message" : "unknown",
+                    llmSummary: "unknown",
+                    compactSummary: "unknown"
+                ),
+                displayTitle: displayTitle,
+                firstMessageSummary: nil,
+                storedSummary: storedSummary,
+                llmSummary: nil,
+                compactSummary: nil,
+                summaryMessageCount: session["summary_message_count"] as Int?,
+                isSummaryStale: nil
+            )
+
+            let agentGraph = EngramServiceSessionInspector.AgentGraph(
+                parentSessionId: parentSessionId,
+                suggestedParentId: suggestedParentId,
+                linkSource: (linkSource == "path" || linkSource == "manual") ? linkSource : nil,
+                childCount: childCount,
+                suggestedChildCount: suggestedChildCount,
+                childRollup: childRollup
+            )
+
+            let llm = EngramServiceSessionInspector.LLM(
+                auditRecordCount: audit.count,
+                lastAuditAt: audit.lastAuditAt,
+                callers: audit.callers,
+                lastError: audit.lastError,
+                promptVersion: audit.promptVersion,
+                resolvedSummaryConfig: audit.resolvedSummaryConfig,
+                trigger: audit.trigger
+            )
+
+            let costFacts: EngramServiceSessionInspector.Cost
+            if let cost {
+                costFacts = EngramServiceSessionInspector.Cost(
+                    inputTokens: cost.inputTokens,
+                    outputTokens: cost.outputTokens,
+                    cacheReadTokens: cost.cacheReadTokens,
+                    cacheCreationTokens: cost.cacheCreationTokens,
+                    estimatedCostUsd: cost.costUsd,
+                    source: "engram_pricing",
+                    pricedCoverage: nil,
+                    unknownModelCount: nil,
+                    warning: nil
+                )
+            } else {
+                costFacts = EngramServiceSessionInspector.Cost(
+                    inputTokens: nil,
+                    outputTokens: nil,
+                    cacheReadTokens: nil,
+                    cacheCreationTokens: nil,
+                    estimatedCostUsd: nil,
+                    source: "unknown",
+                    pricedCoverage: nil,
+                    unknownModelCount: nil,
+                    warning: "No cost data available"
+                )
+            }
+
+            return EngramServiceSessionInspector(
+                session: sessionFacts,
+                provenance: EngramServiceSessionInspector.Provenance(
+                    transcript: filePath != nil ? "local_file" : "database_snapshot",
+                    title: titleProv,
+                    cost: cost != nil ? "database" : "unknown",
+                    parentLink: parentLinkProv
+                ),
+                summaries: summaries,
+                status: status,
+                agentGraph: agentGraph,
+                llm: llm,
+                resume: resume,
+                cost: costFacts
+            )
+        }
+    }
+
     private func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
         var configuration = Configuration()
         configuration.readonly = true
@@ -643,6 +834,262 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
         return nil
     }
+
+    private struct InspectorCost {
+        let inputTokens: Int
+        let outputTokens: Int
+        let cacheReadTokens: Int
+        let cacheCreationTokens: Int
+        let costUsd: Double
+        let model: String?
+    }
+
+    private struct InspectorAudit {
+        var count: Int = 0
+        var lastAuditAt: String?
+        var callers: [String] = []
+        var lastError: String?
+        var promptVersion: String?
+        var resolvedSummaryConfig: EngramServiceSessionInspector.ResolvedSummaryConfig?
+        var trigger: String?
+    }
+
+    private func inspectorCost(db: GRDB.Database, sessionId: String) throws -> InspectorCost? {
+        guard try tableExists("session_costs", db: db) else { return nil }
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT input_tokens, output_tokens, cache_read_tokens,
+                       cache_creation_tokens, cost_usd, model
+                FROM session_costs
+                WHERE session_id = ?
+            """,
+            arguments: [sessionId]
+        ) else {
+            return nil
+        }
+        return InspectorCost(
+            inputTokens: (row["input_tokens"] as Int?) ?? 0,
+            outputTokens: (row["output_tokens"] as Int?) ?? 0,
+            cacheReadTokens: (row["cache_read_tokens"] as Int?) ?? 0,
+            cacheCreationTokens: (row["cache_creation_tokens"] as Int?) ?? 0,
+            costUsd: (row["cost_usd"] as Double?) ?? 0,
+            model: row["model"] as String?
+        )
+    }
+
+    private func inspectorChildSources(db: GRDB.Database, parentId: String) throws -> [String: Int] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: "SELECT source, COUNT(*) AS cnt FROM sessions WHERE parent_session_id = ? GROUP BY source",
+            arguments: [parentId]
+        )
+        var result: [String: Int] = [:]
+        for row in rows {
+            let source = (row["source"] as String?) ?? "unknown"
+            result[source] = (row["cnt"] as Int?) ?? 0
+        }
+        return result
+    }
+
+    private func inspectorChildCostRollup(
+        db: GRDB.Database,
+        parentId: String
+    ) throws -> (tokenTotal: Int, estimatedCostUsd: Double)? {
+        guard try tableExists("session_costs", db: db) else { return nil }
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT
+                  COALESCE(SUM(c.input_tokens), 0)
+                  + COALESCE(SUM(c.output_tokens), 0)
+                  + COALESCE(SUM(c.cache_read_tokens), 0)
+                  + COALESCE(SUM(c.cache_creation_tokens), 0) AS tokenTotal,
+                  COALESCE(SUM(c.cost_usd), 0) AS estimatedCostUsd
+                FROM sessions s
+                JOIN session_costs c ON c.session_id = s.id
+                WHERE s.parent_session_id = ?
+            """,
+            arguments: [parentId]
+        ) else {
+            return nil
+        }
+        let tokenTotal = (row["tokenTotal"] as Int?) ?? 0
+        let estimatedCostUsd = (row["estimatedCostUsd"] as Double?) ?? 0
+        if tokenTotal == 0 && estimatedCostUsd == 0 {
+            return nil
+        }
+        return (tokenTotal, estimatedCostUsd)
+    }
+
+    private func inspectorAuditCorrelation(db: GRDB.Database, sessionId: String) throws -> InspectorAudit {
+        var result = InspectorAudit()
+        guard try tableExists("ai_audit_log", db: db) else { return result }
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT ts, caller, error, meta
+                FROM ai_audit_log
+                WHERE session_id = ?
+                ORDER BY ts DESC
+            """,
+            arguments: [sessionId]
+        )
+        result.count = rows.count
+        guard !rows.isEmpty else { return result }
+
+        var callerSet = Set<String>()
+        var latestSummaryMeta: [String: Any]?
+        for row in rows {
+            let rawCaller = (row["caller"] as String?) ?? ""
+            if let normalized = inspectorNormalizeCaller(rawCaller) {
+                callerSet.insert(normalized)
+            }
+            if result.lastAuditAt == nil, let ts = row["ts"] as String? {
+                result.lastAuditAt = ts
+            }
+            if result.lastError == nil, let err = row["error"] as String?, !err.isEmpty {
+                result.lastError = err
+            }
+            if rawCaller == "summary", latestSummaryMeta == nil,
+               let metaText = row["meta"] as String?,
+               let metaData = metaText.data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: metaData) as? [String: Any] {
+                latestSummaryMeta = parsed
+            }
+        }
+        result.callers = callerSet.sorted()
+
+        if let meta = latestSummaryMeta {
+            if let trigger = meta["trigger"] as? String {
+                if ["manual", "auto", "indexing"].contains(trigger) {
+                    result.trigger = trigger
+                } else {
+                    result.trigger = "unknown"
+                }
+            }
+            if let promptVersion = meta["promptVersion"] as? String {
+                result.promptVersion = promptVersion
+            }
+            if let resolved = meta["resolvedConfig"] as? [String: Any] {
+                let preset = resolved["preset"] as? String
+                let maxTokens = inspectorIntValue(resolved["maxTokens"]) ?? 0
+                let temperature = inspectorDoubleValue(resolved["temperature"]) ?? 0
+                let sampleFirst = inspectorIntValue(resolved["sampleFirst"]) ?? 0
+                let sampleLast = inspectorIntValue(resolved["sampleLast"]) ?? 0
+                let truncateChars = inspectorIntValue(resolved["truncateChars"]) ?? 0
+                result.resolvedSummaryConfig = EngramServiceSessionInspector.ResolvedSummaryConfig(
+                    preset: preset,
+                    maxTokens: maxTokens,
+                    temperature: temperature,
+                    sampleFirst: sampleFirst,
+                    sampleLast: sampleLast,
+                    truncateChars: truncateChars
+                )
+            }
+        }
+        return result
+    }
+
+    private func inspectorNormalizeCaller(_ raw: String) -> String? {
+        switch raw {
+        case "summary": return "summary"
+        case "title": return "title"
+        case "embedding", "embeddings", "semantic_index", "memory":
+            return "embedding"
+        default:
+            return nil
+        }
+    }
+
+    private func inspectorIntValue(_ value: Any?) -> Int? {
+        if let v = value as? Int { return v }
+        if let v = value as? Double { return Int(v) }
+        if let v = value as? NSNumber { return v.intValue }
+        return nil
+    }
+
+    private func inspectorDoubleValue(_ value: Any?) -> Double? {
+        if let v = value as? Double { return v }
+        if let v = value as? Int { return Double(v) }
+        if let v = value as? NSNumber { return v.doubleValue }
+        return nil
+    }
+
+    private func inspectorStatus(endTime: String?, messageCount: Int) -> EngramServiceSessionInspector.Status {
+        if let endTime, !endTime.isEmpty {
+            return EngramServiceSessionInspector.Status(
+                label: "done",
+                confidence: "high",
+                source: "rule",
+                basisTags: ["has_end_time"],
+                observedAt: nil
+            )
+        }
+        if messageCount == 0 {
+            return EngramServiceSessionInspector.Status(
+                label: "unknown",
+                confidence: "low",
+                source: "rule",
+                basisTags: ["no_messages"],
+                observedAt: nil
+            )
+        }
+        return EngramServiceSessionInspector.Status(
+            label: "unknown",
+            confidence: "low",
+            source: "fallback",
+            basisTags: [],
+            observedAt: nil
+        )
+    }
+
+    private func inspectorResume(source: String, cwd: String) -> EngramServiceSessionInspector.Resume {
+        let sourceTool: (cmd: String, tool: String)? = {
+            switch source {
+            case "claude-code": return ("claude", "claude")
+            case "codex": return ("codex", "codex")
+            case "gemini-cli": return ("gemini", "gemini")
+            default: return nil
+            }
+        }()
+        if let mapping = sourceTool {
+            return EngramServiceSessionInspector.Resume(
+                capability: "unsupported",
+                tool: mapping.tool,
+                command: nil,
+                args: nil,
+                cwd: cwd.isEmpty ? nil : cwd,
+                evidence: "fallback",
+                warning: "\(mapping.cmd) command path not resolved (no resolver provided)"
+            )
+        }
+        if source == "cursor" {
+            return EngramServiceSessionInspector.Resume(
+                capability: "fallback",
+                tool: "cursor",
+                command: "open",
+                args: ["-a", "Cursor", cwd],
+                cwd: cwd.isEmpty ? nil : cwd,
+                evidence: "fallback",
+                warning: nil
+            )
+        }
+        return EngramServiceSessionInspector.Resume(
+            capability: "fallback",
+            tool: source,
+            command: "open",
+            args: [cwd],
+            cwd: cwd.isEmpty ? nil : cwd,
+            evidence: "fallback",
+            warning: nil
+        )
+    }
+}
+
+private func nonEmpty(_ value: String?) -> String? {
+    guard let value, !value.isEmpty else { return nil }
+    return value
 }
 
 private extension StringProtocol {

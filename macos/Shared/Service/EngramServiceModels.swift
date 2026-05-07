@@ -641,6 +641,124 @@ struct EngramServiceResumeCommandRequest: Codable, Equatable, Sendable {
     let sessionId: String
 }
 
+struct EngramServiceSessionInspectorRequest: Codable, Equatable, Sendable {
+    let id: String
+}
+
+struct EngramServiceSessionInspector: Codable, Equatable, Sendable {
+    struct Session: Codable, Equatable, Sendable {
+        let id: String
+        let source: String
+        let messageCount: Int
+        let project: String?
+        let cwd: String?
+        let model: String?
+        let startTime: String?
+        let endTime: String?
+        let filePath: String?
+        let tier: String?
+        let agentRole: String?
+    }
+
+    struct Provenance: Codable, Equatable, Sendable {
+        let transcript: String
+        let title: String
+        let cost: String
+        let parentLink: String
+    }
+
+    struct SummaryProvenance: Codable, Equatable, Sendable {
+        let firstMessageSummary: String
+        let storedSummary: String
+        let llmSummary: String
+        let compactSummary: String
+    }
+
+    struct Summaries: Codable, Equatable, Sendable {
+        let provenance: SummaryProvenance
+        let displayTitle: String?
+        let firstMessageSummary: String?
+        let storedSummary: String?
+        let llmSummary: String?
+        let compactSummary: String?
+        let summaryMessageCount: Int?
+        let isSummaryStale: Bool?
+    }
+
+    struct Status: Codable, Equatable, Sendable {
+        let label: String
+        let confidence: String
+        let source: String
+        let basisTags: [String]
+        let observedAt: String?
+    }
+
+    struct ChildRollup: Codable, Equatable, Sendable {
+        let sources: [String: Int]
+        let tokenTotal: Int?
+        let estimatedCostUsd: Double?
+    }
+
+    struct AgentGraph: Codable, Equatable, Sendable {
+        let parentSessionId: String?
+        let suggestedParentId: String?
+        let linkSource: String?
+        let childCount: Int
+        let suggestedChildCount: Int
+        let childRollup: ChildRollup?
+    }
+
+    struct ResolvedSummaryConfig: Codable, Equatable, Sendable {
+        let preset: String?
+        let maxTokens: Int
+        let temperature: Double
+        let sampleFirst: Int
+        let sampleLast: Int
+        let truncateChars: Int
+    }
+
+    struct LLM: Codable, Equatable, Sendable {
+        let auditRecordCount: Int
+        let lastAuditAt: String?
+        let callers: [String]
+        let lastError: String?
+        let promptVersion: String?
+        let resolvedSummaryConfig: ResolvedSummaryConfig?
+        let trigger: String?
+    }
+
+    struct Resume: Codable, Equatable, Sendable {
+        let capability: String
+        let tool: String?
+        let command: String?
+        let args: [String]?
+        let cwd: String?
+        let evidence: String
+        let warning: String?
+    }
+
+    struct Cost: Codable, Equatable, Sendable {
+        let inputTokens: Int?
+        let outputTokens: Int?
+        let cacheReadTokens: Int?
+        let cacheCreationTokens: Int?
+        let estimatedCostUsd: Double?
+        let source: String
+        let pricedCoverage: Double?
+        let unknownModelCount: Int?
+        let warning: String?
+    }
+
+    let session: Session
+    let provenance: Provenance
+    let summaries: Summaries
+    let status: Status
+    let agentGraph: AgentGraph
+    let llm: LLM
+    let resume: Resume
+    let cost: Cost
+}
+
 struct EngramServiceResumeCommandResponse: Codable, Equatable, Sendable {
     let tool: String?
     let command: String?

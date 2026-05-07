@@ -118,6 +118,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(try await readProvider.resumeCommand(payload))
                 )
+            case "inspectSession":
+                let payload = try decodePayload(EngramServiceSessionInspectorRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await readProvider.inspectSession(payload))
+                )
             case "confirmSuggestion":
                 let payload = try decodePayload(EngramServiceConfirmSuggestionRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in

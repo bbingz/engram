@@ -83,6 +83,10 @@ final class EngramServiceClient: EngramServiceClientProtocol, @unchecked Sendabl
         try await command("resumeCommand", payload: EngramServiceResumeCommandRequest(sessionId: sessionId))
     }
 
+    func inspectSession(id: String) async throws -> EngramServiceSessionInspector {
+        try await command("inspectSession", payload: EngramServiceSessionInspectorRequest(id: id))
+    }
+
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse {
         try await command(
             "confirmSuggestion",
