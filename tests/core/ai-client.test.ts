@@ -206,7 +206,7 @@ describe('summarizeConversation audit', () => {
         aiModel: 'gpt-4o-mini',
         aiBaseURL: 'http://localhost:8080',
       },
-      { audit: audit as any, sessionId: 'sess-1' },
+      { audit: audit as any, sessionId: 'sess-1', trigger: 'manual' },
     );
 
     expect(result).toBe('Summary text');
@@ -224,6 +224,18 @@ describe('summarizeConversation audit', () => {
     expect(entry.sessionId).toBe('sess-1');
     expect(entry.durationMs).toBeGreaterThanOrEqual(0);
     expect(entry.url).toContain('/v1/chat/completions');
+    expect(entry.meta).toMatchObject({
+      trigger: 'manual',
+      messageCount: 2,
+      sampledMessageCount: 2,
+      resolvedConfig: {
+        maxTokens: expect.any(Number),
+        temperature: expect.any(Number),
+        sampleFirst: expect.any(Number),
+        sampleLast: expect.any(Number),
+        truncateChars: expect.any(Number),
+      },
+    });
   });
 
   it('anthropic: records audit with usage.input_tokens/output_tokens', async () => {
@@ -315,6 +327,18 @@ describe('summarizeConversation audit', () => {
     expect(entry.statusCode).toBe(429);
     expect(entry.error).toContain('429');
     expect(entry.sessionId).toBe('sess-err');
+    expect(entry.meta).toMatchObject({
+      trigger: 'unknown',
+      messageCount: 2,
+      sampledMessageCount: 2,
+      resolvedConfig: {
+        maxTokens: expect.any(Number),
+        temperature: expect.any(Number),
+        sampleFirst: expect.any(Number),
+        sampleLast: expect.any(Number),
+        truncateChars: expect.any(Number),
+      },
+    });
   });
 
   it('fetch failure: records audit with network error', async () => {
@@ -330,7 +354,7 @@ describe('summarizeConversation audit', () => {
           aiModel: 'gpt-4o-mini',
           aiBaseURL: 'http://localhost:8080',
         },
-        { audit: audit as any },
+        { audit: audit as any, sessionId: 'sess-net', trigger: 'auto' },
       ),
     ).rejects.toThrow('ECONNREFUSED');
 
@@ -339,6 +363,19 @@ describe('summarizeConversation audit', () => {
     expect(entry.caller).toBe('summary');
     expect(entry.error).toBe('ECONNREFUSED');
     expect(entry.statusCode).toBeUndefined();
+    expect(entry.sessionId).toBe('sess-net');
+    expect(entry.meta).toMatchObject({
+      trigger: 'auto',
+      messageCount: 2,
+      sampledMessageCount: 2,
+      resolvedConfig: {
+        maxTokens: expect.any(Number),
+        temperature: expect.any(Number),
+        sampleFirst: expect.any(Number),
+        sampleLast: expect.any(Number),
+        truncateChars: expect.any(Number),
+      },
+    });
   });
 
   it('no audit provided: does not crash', async () => {

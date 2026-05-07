@@ -99,7 +99,10 @@ export class IndexJobRunner {
         this.db.markIndexJobNotApplicable(job.id);
         return;
       }
-      const embedding = await this.client.embed(text);
+      const embedding = await this.client.embed(text, {
+        sessionId: job.sessionId,
+        textKind: 'session',
+      });
       if (!embedding) throw new Error('embedding unavailable');
       // Session-level embedding (legacy, kept for fast session ranking)
       this.store.upsert(job.sessionId, embedding, this.client.model);
@@ -123,7 +126,9 @@ export class IndexJobRunner {
     let count = 0;
     for (const insight of unembedded) {
       try {
-        const embedding = await this.client.embed(insight.content);
+        const embedding = await this.client.embed(insight.content, {
+          textKind: 'insight',
+        });
         if (embedding) {
           this.store.upsertInsight(
             insight.id,
@@ -169,11 +174,17 @@ export class IndexJobRunner {
     }[] = [];
 
     for (const chunk of chunks) {
-      const emb = await this.client.embed(chunk.text);
+      const chunkId = `${sessionId}-c${chunk.chunkIndex}-${randomUUID().slice(0, 8)}`;
+      const emb = await this.client.embed(chunk.text, {
+        sessionId: chunk.sessionId,
+        textKind: 'chunk',
+        chunkId,
+        chunkIndex: chunk.chunkIndex,
+      });
       if (emb) {
         embeddings.push(emb);
         validChunks.push({
-          chunkId: `${sessionId}-c${chunk.chunkIndex}-${randomUUID().slice(0, 8)}`,
+          chunkId,
           sessionId: chunk.sessionId,
           chunkIndex: chunk.chunkIndex,
           text: chunk.text,

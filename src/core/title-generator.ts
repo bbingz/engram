@@ -1,6 +1,7 @@
 // src/core/title-generator.ts
 
 import type { AiAuditWriter } from './ai-audit.js';
+import type { LlmAuditTrigger } from './ai-client.js';
 
 interface TitleGeneratorConfig {
   provider: 'ollama' | 'openai' | 'dashscope' | 'custom';
@@ -9,6 +10,11 @@ interface TitleGeneratorConfig {
   apiKey?: string;
   autoGenerate: boolean;
   audit?: AiAuditWriter;
+}
+
+export interface TitleGenerateOptions {
+  sessionId?: string;
+  trigger?: LlmAuditTrigger;
 }
 
 export class TitleGenerator {
@@ -20,19 +26,23 @@ export class TitleGenerator {
 
   async generate(
     messages: { role: string; content: string }[],
+    opts?: TitleGenerateOptions,
   ): Promise<string | null> {
     if (!this.config.autoGenerate) return null;
     if (messages.length === 0) return null;
     const prompt = buildTitlePrompt(messages.slice(0, 6));
     try {
-      return await this.callLLM(prompt);
+      return await this.callLLM(prompt, opts);
     } catch (err) {
       console.error('[title-gen] Failed:', err); // stderr → os_log in daemon mode
       return null;
     }
   }
 
-  private async callLLM(prompt: string): Promise<string> {
+  private async callLLM(
+    prompt: string,
+    opts?: TitleGenerateOptions,
+  ): Promise<string> {
     const isOllama = this.config.provider === 'ollama';
     const url = isOllama
       ? `${this.config.baseUrl}/api/generate`
@@ -53,6 +63,7 @@ export class TitleGenerator {
     if (this.config.apiKey)
       headers.Authorization = `Bearer ${this.config.apiKey}`;
 
+    const auditMeta = { trigger: opts?.trigger ?? 'unknown' };
     const start = Date.now();
     let res: Response;
     try {
@@ -73,8 +84,35 @@ export class TitleGenerator {
         durationMs: Date.now() - start,
         requestBody: { prompt },
         error: err instanceof Error ? err.message : String(err),
+        sessionId: opts?.sessionId,
+        meta: auditMeta,
       });
       throw err;
+    }
+
+    if (res.status < 200 || res.status >= 300) {
+      let errorBody = '';
+      try {
+        errorBody = await res.text();
+      } catch {
+        /* swallow body-read failure; we still have status + url */
+      }
+      this.audit?.record({
+        caller: 'title',
+        operation: 'generate',
+        method: 'POST',
+        url,
+        statusCode: res.status,
+        model: this.config.model,
+        provider: this.config.provider,
+        durationMs: Date.now() - start,
+        requestBody: { prompt },
+        responseBody: errorBody,
+        error: `AI title request failed (${res.status})`,
+        sessionId: opts?.sessionId,
+        meta: auditMeta,
+      });
+      throw new Error(`AI title request failed (${res.status})`);
     }
 
     // biome-ignore lint/suspicious/noExplicitAny: LLM API response shape varies by provider (Ollama vs OpenAI)
@@ -108,6 +146,8 @@ export class TitleGenerator {
       durationMs: Date.now() - start,
       requestBody: { prompt },
       responseBody: { text: result },
+      sessionId: opts?.sessionId,
+      meta: auditMeta,
     });
 
     return result;

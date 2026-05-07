@@ -180,6 +180,128 @@ describe('TitleGenerator audit', () => {
     expect(title).toBe('No Audit');
   });
 
+  it('passes sessionId and trigger metadata into the audit record', async () => {
+    const audit = makeAudit();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            response: 'Indexed Title',
+            prompt_eval_count: 50,
+            eval_count: 8,
+          }),
+      }),
+    );
+
+    const gen = new TitleGenerator({
+      provider: 'ollama',
+      baseUrl: 'http://localhost:11434',
+      model: 'qwen2.5:3b',
+      autoGenerate: true,
+      audit,
+    });
+    const title = await gen.generate(messages, {
+      sessionId: 'sess-title',
+      trigger: 'indexing',
+    });
+    expect(title).toBe('Indexed Title');
+
+    expect(audit.record).toHaveBeenCalledOnce();
+    const call = audit.record.mock.calls[0][0];
+    expect(call.sessionId).toBe('sess-title');
+    expect(call.meta).toMatchObject({ trigger: 'indexing' });
+  });
+
+  it('records audit with error on non-2xx HTTP response and returns null', async () => {
+    const audit = makeAudit();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: () => Promise.resolve('{"error":"rate limited"}'),
+        json: () => Promise.resolve({ error: 'rate limited' }),
+      }),
+    );
+
+    const gen = new TitleGenerator({
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com',
+      model: 'gpt-4o-mini',
+      apiKey: 'sk-test',
+      autoGenerate: true,
+      audit,
+    });
+    const title = await gen.generate(messages, {
+      sessionId: 'sess-title-429',
+      trigger: 'indexing',
+    });
+    expect(title).toBeNull();
+
+    expect(audit.record).toHaveBeenCalledOnce();
+    const call = audit.record.mock.calls[0][0];
+    expect(call.caller).toBe('title');
+    expect(call.statusCode).toBe(429);
+    expect(call.error).toContain('429');
+    expect(call.sessionId).toBe('sess-title-429');
+    expect(call.meta).toMatchObject({ trigger: 'indexing' });
+    expect(call.url).toContain('/v1/chat/completions');
+    expect(call.method).toBe('POST');
+  });
+
+  it('passes sessionId and trigger metadata on fetch error', async () => {
+    const audit = makeAudit();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+    );
+
+    const gen = new TitleGenerator({
+      provider: 'ollama',
+      baseUrl: 'http://localhost:11434',
+      model: 'qwen2.5:3b',
+      autoGenerate: true,
+      audit,
+    });
+    const title = await gen.generate(messages, {
+      sessionId: 'sess-title-err',
+      trigger: 'indexing',
+    });
+    expect(title).toBeNull();
+
+    expect(audit.record).toHaveBeenCalledOnce();
+    const call = audit.record.mock.calls[0][0];
+    expect(call.sessionId).toBe('sess-title-err');
+    expect(call.meta).toMatchObject({ trigger: 'indexing' });
+    expect(call.error).toBe('ECONNREFUSED');
+  });
+
+  it('defaults trigger to unknown when no opts is provided', async () => {
+    const audit = makeAudit();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        status: 200,
+        json: () => Promise.resolve({ response: 'No Opts' }),
+      }),
+    );
+
+    const gen = new TitleGenerator({
+      provider: 'ollama',
+      baseUrl: 'http://localhost:11434',
+      model: 'qwen2.5:3b',
+      autoGenerate: true,
+      audit,
+    });
+    await gen.generate(messages);
+
+    const call = audit.record.mock.calls[0][0];
+    expect(call.sessionId).toBeUndefined();
+    expect(call.meta).toMatchObject({ trigger: 'unknown' });
+  });
+
   it('records undefined totalTokens when both counts are missing', async () => {
     const audit = makeAudit();
     vi.stubGlobal(

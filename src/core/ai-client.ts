@@ -4,6 +4,14 @@ import type { AiAuditWriter } from './ai-audit.js';
 import type { AiProtocol, FileSettings } from './config.js';
 import { getBaseURL, resolveSummaryConfig } from './config.js';
 
+export type LlmAuditTrigger = 'manual' | 'auto' | 'indexing' | 'unknown';
+
+export interface SummaryAuditOptions {
+  audit?: AiAuditWriter;
+  sessionId?: string;
+  trigger?: LlmAuditTrigger;
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
 interface ConversationMessage {
@@ -110,7 +118,7 @@ export function buildRequestBody(
 export async function summarizeConversation(
   messages: ConversationMessage[],
   settings: FileSettings,
-  opts?: { audit?: AiAuditWriter; sessionId?: string },
+  opts?: SummaryAuditOptions,
 ): Promise<string> {
   const start = Date.now();
   const protocol = settings.aiProtocol || 'openai';
@@ -135,6 +143,20 @@ export async function summarizeConversation(
   const conversationText = sampled
     .map((m) => `[${m.role}] ${m.content}`)
     .join('\n\n');
+
+  const auditMeta = {
+    trigger: opts?.trigger ?? 'unknown',
+    messageCount: messages.length,
+    sampledMessageCount: sampled.length,
+    resolvedConfig: {
+      preset: settings.summaryPreset ?? 'standard',
+      maxTokens: summaryConfig.maxTokens,
+      temperature: summaryConfig.temperature,
+      sampleFirst: summaryConfig.sampleFirst,
+      sampleLast: summaryConfig.sampleLast,
+      truncateChars: summaryConfig.truncateChars,
+    },
+  };
 
   // Build URL
   let url: string;
@@ -194,6 +216,7 @@ export async function summarizeConversation(
       requestBody: body,
       error: err instanceof Error ? err.message : String(err),
       sessionId: opts?.sessionId,
+      meta: auditMeta,
     });
     throw err;
   }
@@ -213,6 +236,7 @@ export async function summarizeConversation(
       responseBody: text,
       error: `AI request failed (${response.status})`,
       sessionId: opts?.sessionId,
+      meta: auditMeta,
     });
     throw new Error(`AI request failed (${response.status}): ${text}`);
   }
@@ -266,6 +290,7 @@ export async function summarizeConversation(
     requestBody: body,
     responseBody: data,
     sessionId: opts?.sessionId,
+    meta: auditMeta,
   });
 
   return result;

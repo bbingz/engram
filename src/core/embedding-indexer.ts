@@ -42,7 +42,10 @@ export class EmbeddingIndexer {
           continue;
         }
 
-        const embedding = await this.client.embed(text);
+        const embedding = await this.client.embed(text, {
+          sessionId: session.id,
+          textKind: 'session',
+        });
         if (!embedding) continue;
 
         this.store.upsert(session.id, embedding, this.client.model);
@@ -61,7 +64,10 @@ export class EmbeddingIndexer {
     const text = this.getSessionText(sessionId);
     if (!text) return false;
 
-    const embedding = await this.client.embed(text);
+    const embedding = await this.client.embed(text, {
+      sessionId,
+      textKind: 'session',
+    });
     if (!embedding) return false;
 
     this.store.upsert(sessionId, embedding, this.client.model);

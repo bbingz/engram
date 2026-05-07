@@ -1163,6 +1163,7 @@ export function createApp(
       const summary = await summarizeConversation(messages, currentSettings, {
         audit: opts?.audit,
         sessionId,
+        trigger: 'manual',
       });
       if (!summary) {
         return c.json({ error: 'Empty response from AI' }, 500);
