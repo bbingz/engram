@@ -84,7 +84,7 @@ struct GeneralSettingsSection: View {
                     HStack {
                         Text("Swift Service")
                         Spacer()
-                        Text(verbatim: serviceStatusStore.displayString)
+                        serviceStatusLabel
                             .foregroundStyle(.secondary)
                     }
                     Text("Primary runtime for the macOS app. Settings, search, indexing, and operational actions should use Swift service IPC during Stage 3.")
@@ -118,9 +118,15 @@ struct GeneralSettingsSection: View {
                     HStack {
                         Text("MCP HTTP endpoint")
                         Spacer()
-                        Text(verbatim: mcpEndpointText)
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
+                        if let mcpEndpointText {
+                            Text(verbatim: mcpEndpointText)
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        } else {
+                            Text("Swift service MCP endpoint unavailable")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
                     }
                     HStack {
                         Text("Legacy Node.js Path")
@@ -163,9 +169,25 @@ struct GeneralSettingsSection: View {
         }
     }
 
-    private var mcpEndpointText: String {
+    @ViewBuilder
+    private var serviceStatusLabel: some View {
+        switch serviceStatusStore.status {
+        case .stopped:
+            Text("Stopped")
+        case .starting:
+            Text("Starting...")
+        case .running(let total, _):
+            Text("\(total) sessions indexed")
+        case .degraded(let message):
+            Text("Degraded: \(message)")
+        case .error(let message):
+            Text("Error: \(message)")
+        }
+    }
+
+    private var mcpEndpointText: String? {
         guard let port = serviceStatusStore.endpointPort else {
-            return "Swift service MCP endpoint unavailable"
+            return nil
         }
         let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
         return "http://\(host):\(port)/mcp"

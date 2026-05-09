@@ -125,6 +125,381 @@
         }
       }
     },
+    "Activity" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "活动" } } }
+    },
+    "Add Peer" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加节点" } } }
+    },
+    "Advanced" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "高级" } } }
+    },
+    "Agents" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "代理" } } }
+    },
+    "AI Summary" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 摘要" } } }
+    },
+    "Allowed CIDRs" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "允许的 CIDR" } } }
+    },
+    "App" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "应用" } } }
+    },
+    "Auto Summary" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动摘要" } } }
+    },
+    "Auto-generate summaries" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动生成摘要" } } }
+    },
+    "Auto-generate titles" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动生成标题" } } }
+    },
+    "Bearer Token" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Bearer Token" } } }
+    },
+    "Clean View" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "干净视图" } } }
+    },
+    "CONFIG" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "配置" } } }
+    },
+    "Custom" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自定义" } } }
+    },
+    "Custom Prompt" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自定义提示词" } } }
+    },
+    "Daily Budget" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "每日预算" } } }
+    },
+    "Dark" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "深色" } } }
+    },
+    "Dashscope" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "DashScope" } } }
+    },
+    "Debug" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "调试" } } }
+    },
+    "Developer Mode" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "开发者模式" } } }
+    },
+    "Dimension" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "维度" } } }
+    },
+    "Display" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示" } } }
+    },
+    "Embedding Model" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "嵌入模型" } } }
+    },
+    "Embeddings" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "向量嵌入" } } }
+    },
+    "Enable AI audit" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用 AI 审计" } } }
+    },
+    "Enable Sync" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用同步" } } }
+    },
+    "Enable background monitor" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用后台监控" } } }
+    },
+    "Error" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误" } } }
+    },
+    "General" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "通用" } } }
+    },
+    "Hide Agents & Noise" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏代理和噪声" } } }
+    },
+    "Hide agents, empty sessions, and low-signal sessions" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏代理、空会话和低信号会话" } } }
+    },
+    "Hide auto-summary prompts" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏自动摘要提示" } } }
+    },
+    "Hide empty sessions" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏空会话" } } }
+    },
+    "Hide sub-agents and trivial sessions (default)" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏子代理和琐碎会话（默认）" } } }
+    },
+    "Hide usage-check sessions" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏用量检查会话" } } }
+    },
+    "Home" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "首页" } } }
+    },
+    "Hooks" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "钩子" } } }
+    },
+    "HTTP Host" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "HTTP 主机" } } }
+    },
+    "Hygiene" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "健康检查" } } }
+    },
+    "Info" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "信息" } } }
+    },
+    "Interface Language" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "界面语言" } } }
+    },
+    "Light" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "浅色" } } }
+    },
+    "Log AI request/response bodies" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "记录 AI 请求/响应正文" } } }
+    },
+    "Log Level" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "日志级别" } } }
+    },
+    "Log Retention" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "日志保留" } } }
+    },
+    "Long Session" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "长会话" } } }
+    },
+    "Max Body Size" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最大正文大小" } } }
+    },
+    "Memory" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "记忆" } } }
+    },
+    "minutes" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分钟" } } }
+    },
+    "MONITOR" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "监控" } } }
+    },
+    "Monitor & Budgets" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "监控和预算" } } }
+    },
+    "Monthly Budget" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "每月预算" } } }
+    },
+    "Network" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络" } } }
+    },
+    "Noise Details" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "噪声细项" } } }
+    },
+    "Observability" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可观测性" } } }
+    },
+    "Observability & AI Audit" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可观测性和 AI 审计" } } }
+    },
+    "Open Web UI" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开 Web UI" } } }
+    },
+    "Optional" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选" } } }
+    },
+    "OVERVIEW" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "概览" } } }
+    },
+    "Provider" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "提供商" } } }
+    },
+    "Projects" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "项目" } } }
+    },
+    "Protocol" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "协议" } } }
+    },
+    "Recent Sessions" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近会话" } } }
+    },
+    "Regenerate All" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部重新生成" } } }
+    },
+    "Repos" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仓库" } } }
+    },
+    "Runtime Infrastructure" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行时基础设施" } } }
+    },
+    "Session Filter" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "会话过滤" } } }
+    },
+    "Settings" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "设置" } } }
+    },
+    "Show Agent Communication" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示代理通信" } } }
+    },
+    "Show All" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部显示" } } }
+    },
+    "Show all sessions including agents and noise" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示所有会话，包括代理和噪声" } } }
+    },
+    "Show Dock Icon" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示 Dock 图标" } } }
+    },
+    "Show System Prompts" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示系统提示" } } }
+    },
+    "Simplified Chinese" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "简体中文" } } }
+    },
+    "Skills" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "技能" } } }
+    },
+    "Sources" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来源" } } }
+    },
+    "Strict single writer" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "严格单写入者" } } }
+    },
+    "Summary Prompt" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "摘要提示词" } } }
+    },
+    "Swift MCP Helper" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Swift MCP Helper" } } }
+    },
+    "Swift Service" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Swift 服务" } } }
+    },
+    "Swift service MCP endpoint unavailable" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Swift 服务 MCP 端点不可用" } } }
+    },
+    "Sync" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "同步" } } }
+    },
+    "System" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "系统" } } }
+    },
+    "Test Connection" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "测试连接" } } }
+    },
+    "Title Generation" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标题生成" } } }
+    },
+    "Transformers" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Transformers" } } }
+    },
+    "Warn" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "警告" } } }
+    },
+    "Web API & Security" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Web API 和安全" } } }
+    },
+    "Web UI" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Web UI" } } }
+    },
+    "WORKSPACE" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "工作区" } } }
+    },
+    "Work Graph" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "工作图谱" } } }
+    },
+    "Adapter Paths" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "适配器路径" } } }
+    },
+    "Add" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加" } } }
+    },
+    "API keys are stored in macOS Keychain" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API 密钥保存在 macOS 钥匙串中" } } }
+    },
+    "Audit Retention" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "审计保留" } } }
+    },
+    "bytes" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "字节" } } }
+    },
+    "Changing provider, model, or dimension can require rebuilding vector indexes." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "更改提供商、模型或维度后，可能需要重建向量索引。" } } }
+    },
+    "Choose the language used by the macOS app UI. System follows your macOS language order." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "选择 macOS 应用界面使用的语言。系统会跟随你的 macOS 语言顺序。" } } }
+    },
+    "days" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "天" } } }
+    },
+    "Default" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "默认" } } }
+    },
+    "Generation" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "生成" } } }
+    },
+    "Keep 127.0.0.1 unless you intentionally expose the legacy HTTP API on your LAN." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "除非你明确要在局域网暴露旧 HTTP API，否则保持 127.0.0.1。" } } }
+    },
+    "Kept for Stage 3 rollback and compatibility only. New setup should use the Swift service and bundled Swift stdio MCP helper." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅为 Stage 3 回滚和兼容保留。新配置应使用 Swift 服务和随附的 Swift stdio MCP helper。" } } }
+    },
+    "Language" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语言" } } }
+    },
+    "Legacy HTTP Port" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "旧版 HTTP 端口" } } }
+    },
+    "Legacy Node rollback settings" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "旧版 Node 回滚设置" } } }
+    },
+    "Legacy Node.js Path" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "旧版 Node.js 路径" } } }
+    },
+    "MCP" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "MCP" } } }
+    },
+    "Node MCP and daemon HTTP settings are legacy rollback paths for Stage 3; keep them only for advanced compatibility." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Node MCP 和 daemon HTTP 设置是 Stage 3 的旧版回滚路径，仅为高级兼容保留。" } } }
+    },
+    "Notify on cost threshold" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "成本达到阈值时通知" } } }
+    },
+    "Notify on long session" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "出现长会话时通知" } } }
+    },
+    "Ollama" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Ollama" } } }
+    },
+    "Ollama URL" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Ollama URL" } } }
+    },
+    "Periodically refresh" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "定期刷新" } } }
+    },
+    "Preset" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预设" } } }
+    },
+    "Primary runtime for the macOS app. Settings, search, indexing, and operational actions should use Swift service IPC during Stage 3." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "macOS 应用的主运行时。Stage 3 期间，设置、搜索、索引和运维操作都应使用 Swift 服务 IPC。" } } }
+    },
+    "Primary setup: point MCP clients directly at the bundled Swift stdio helper. Mutating tools use Swift service IPC and fail closed when the service is unavailable." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "主配置：让 MCP 客户端直接指向随附的 Swift stdio helper。变更类工具使用 Swift 服务 IPC，服务不可用时失败关闭。" } } }
+    },
+    "Required" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "必填" } } }
+    },
+    "These are low-level filters behind the simplified Session Filter control." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这些是简化版会话过滤控件背后的底层过滤项。" } } }
+    },
+    "These settings power semantic search and memory. Changing model or dimension may require rebuilding vector indexes." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这些设置用于语义搜索和记忆。更改模型或维度后，可能需要重建向量索引。" } } }
+    },
+    "Toggle theme: System → Light → Dark" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "切换主题：系统 → 浅色 → 深色" } } }
+    },
+    "USD" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "美元" } } }
+    },
+    "Version" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "版本" } } }
+    },
+    "When on, MCP write tools (save_insight, project_move, …) fail if the Swift service can't be reached, instead of falling back to a direct DB write. Reduces lock contention to zero; requires the service IPC socket. Takes effect on the next Swift MCP spawn." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "开启后，MCP 写入工具（save_insight、project_move 等）在无法连接 Swift 服务时会失败，而不是回退到直接写数据库。这样可将锁竞争降为零；需要服务 IPC socket。下次启动 Swift MCP 时生效。" } } }
+    },
+    "Write APIs should use a bearer token when HTTP is reachable beyond localhost." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当 HTTP 可从 localhost 之外访问时，写入 API 应使用 bearer token。" } } }
+    },
     "Add engram to your MCP clients using the configurations below." : {
       "localizations" : {
         "zh-Hans" : {
@@ -196,10 +571,10 @@
 
     },
     "API Key" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API 密钥" } } }
     },
     "API keys are stored locally in ~/.engram/settings.json" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API 密钥保存在 ~/.engram/settings.json" } } }
     },
     "Back to sessions" : {
       "extractionState" : "stale",
@@ -213,7 +588,7 @@
       }
     },
     "Base URL" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "基础 URL" } } }
     },
     "Cancel" : {
       "extractionState" : "stale",
@@ -227,10 +602,17 @@
       }
     },
     "chars/msg" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "字符/消息" } } }
     },
     "CLAUDE.md, AGENTS.md, environment context, and other injected instructions" : {
-
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CLAUDE.md、AGENTS.md、环境上下文和其他注入指令"
+          }
+        }
+      }
     },
     "Clean" : {
       "extractionState" : "stale",
@@ -265,13 +647,20 @@
       }
     },
     "Clear Filter" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清除筛选" } } }
     },
     "Concise" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "简洁" } } }
     },
     "Content Font Size" : {
-
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内容字号"
+          }
+        }
+      }
     },
     "Copied!" : {
       "extractionState" : "stale",
@@ -351,7 +740,7 @@
       }
     },
     "Detailed" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "详细" } } }
     },
     "Displayed as: note | original title. Leave empty to clear." : {
       "localizations" : {
@@ -375,10 +764,27 @@
       }
     },
     "English" : {
-
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英文"
+          }
+        }
+      }
     },
     "Engram" : {
 
+    },
+    "Degraded: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "降级：%@"
+          }
+        }
+      }
     },
     "Error: %@" : {
       "extractionState" : "stale",
@@ -449,10 +855,17 @@
       }
     },
     "Interval (minutes)" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "间隔（分钟）" } } }
     },
     "Keep the app icon visible in the Dock at all times" : {
-
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "始终在 Dock 中显示应用图标"
+          }
+        }
+      }
     },
     "Launch" : {
       "extractionState" : "stale",
@@ -487,7 +900,7 @@
       }
     },
     "Max Tokens" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最大 Token 数" } } }
     },
     "MCP Client Setup" : {
       "extractionState" : "stale",
@@ -532,13 +945,13 @@
       }
     },
     "messages" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "条消息" } } }
     },
     "Model" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型" } } }
     },
     "Name" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "名称" } } }
     },
     "No favorites yet" : {
       "extractionState" : "stale",
@@ -608,7 +1021,7 @@
       }
     },
     "Node Name" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "节点名称" } } }
     },
     "Node.js Indexer" : {
       "extractionState" : "stale",
@@ -692,7 +1105,14 @@
       }
     },
     "Preview: The quick brown fox jumps over the lazy dog" : {
-
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览：快速的棕色狐狸跳过懒狗"
+          }
+        }
+      }
     },
     "Quit Engram" : {
       "extractionState" : "stale",
@@ -750,10 +1170,10 @@
       }
     },
     "Sample First" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "采样开头" } } }
     },
     "Sample Last" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "采样末尾" } } }
     },
     "Save" : {
       "extractionState" : "stale",
@@ -800,10 +1220,10 @@
       }
     },
     "Select a session to view its conversation." : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "选择一个会话查看对话。" } } }
     },
     "Semantic search unavailable" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语义搜索不可用" } } }
     },
     "Sessions" : {
       "localizations" : {
@@ -848,10 +1268,10 @@
       }
     },
     "Standard" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标准" } } }
     },
     "Star sessions in the Sessions tab to see them here." : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在「会话」页中收藏会话后会显示在这里。" } } }
     },
     "Star sessions in the Sessions tab." : {
       "extractionState" : "stale",
@@ -897,16 +1317,16 @@
       }
     },
     "Style" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "风格" } } }
     },
     "Sync Now" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "立即同步" } } }
     },
     "Sync settings are stored in ~/.engram/settings.json" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "同步设置保存在 ~/.engram/settings.json" } } }
     },
     "Temperature" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "温度" } } }
     },
     "This session is %@ — loading may take a moment" : {
       "localizations" : {
@@ -941,10 +1361,17 @@
       }
     },
     "Tool calls, skill invocations, and command outputs" : {
-
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工具调用、技能调用和命令输出"
+          }
+        }
+      }
     },
     "Truncate" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "截断" } } }
     },
     "Updated" : {
       "extractionState" : "stale",
@@ -958,10 +1385,10 @@
       }
     },
     "URL" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "URL" } } }
     },
     "Variables: {{language}}, {{maxSentences}}, {{style}}" : {
-
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "变量：{{language}}、{{maxSentences}}、{{style}}" } } }
     },
     "You" : {
       "localizations" : {

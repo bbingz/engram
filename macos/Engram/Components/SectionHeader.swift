@@ -12,7 +12,7 @@ struct SectionHeader: View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .foregroundStyle(Theme.tertiaryText)
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.headline)
                 .foregroundStyle(Theme.primaryText)
             if let badge {

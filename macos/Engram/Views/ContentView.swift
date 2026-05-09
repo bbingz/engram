@@ -84,7 +84,7 @@ struct ContentView: View {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 7, height: 7)
-                Text(serviceStatusStore.displayString)
+                serviceStatusLabel
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -110,6 +110,22 @@ struct ContentView: View {
         case .degraded: return .orange
         case .error:    return .red
         case .stopped:  return .gray
+        }
+    }
+
+    @ViewBuilder
+    private var serviceStatusLabel: some View {
+        switch serviceStatusStore.status {
+        case .stopped:
+            Text("Stopped")
+        case .starting:
+            Text("Starting...")
+        case .running(let total, _):
+            Text("\(total) sessions indexed")
+        case .degraded(let message):
+            Text("Degraded: \(message)")
+        case .error(let message):
+            Text("Error: \(message)")
         }
     }
 }
