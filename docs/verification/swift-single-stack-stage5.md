@@ -11,8 +11,8 @@ Closed:
 - App `DatabaseManager` is read-only. Favorites, rename, hide/unhide, and empty-session cleanup now go through typed `EngramServiceClient` commands.
 - `ServiceWriterGate` owns App session metadata mutation commands: `setFavorite`, `renameSession`, `setSessionHidden`, and `hideEmptySessions`.
 - `ServiceWriterGate` also owns `saveInsight` and `manageProjectAlias`; both now write native Swift/GRDB tables without invoking the Node compatibility bridge.
-- `LegacyDaemonBridge` is deleted. Former bridge commands now either run in Swift service code (`hygiene`, `handoff`, `generateSummary`, `regenerateAllTitles`, `triggerSync`) or fail closed with `UnsupportedNativeCommand` and `retry_policy = never` (`projectMove`, `projectArchive`, `projectUndo`, `projectMoveBatch`).
-- Swift MCP and App UI no longer expose project move/archive/undo/batch entrypoints. Direct MCP calls return an explicit unavailable error until the native Swift project migration pipeline is ported.
+- `LegacyDaemonBridge` is deleted. Former bridge commands run in Swift service code, including `hygiene`, `handoff`, `generateSummary`, `regenerateAllTitles`, `triggerSync`, `projectMove`, `projectArchive`, `projectUndo`, and `projectMoveBatch`.
+- Swift MCP and App UI initially failed closed for project move/archive/undo/batch entrypoints during the cutover. A 2026-04-28 follow-up ported those commands to the native Swift service pipeline.
 - XcodeGen no longer emits the `Bundle Node.js Daemon` phase.
 - `macos/scripts/build-node-bundle.sh` is deleted.
 - Root `package.json` and `package-lock.json` no longer expose `dist/index.js` or `dist/cli/index.js` as shipped `main`/`bin` entrypoints.
@@ -20,9 +20,10 @@ Closed:
 
 Still intentionally retained:
 
-- Project move/archive/undo/batch execution is not reimplemented in Swift yet; the service rejects these commands explicitly instead of forwarding to a daemon bridge.
+- Project move/archive/undo/batch execution is now implemented in Swift service code; the earlier fail-closed state is historical.
 - TypeScript `src/**` and fixture scripts remain dev/reference material only; they are not copied into the macOS app bundle.
-- A clean checkout still needs npm for fixture/schema parity checks in CI; full Stage 5 requires deleting or archiving Node source/runtime scripts rather than retaining them as active development tools.
+- A clean checkout still needs npm for TypeScript tests and retained fixture tooling in CI; full Stage 5 requires deleting or archiving Node source/runtime scripts rather than retaining them as active development tools.
+- The old Swift/Node schema compatibility gate was removed on 2026-05-08 because it was a migration-period guard and now incorrectly forces Swift-only schema defaults to match the retired TypeScript DB reference.
 
 ## Recorded Verification
 
@@ -68,3 +69,25 @@ Still intentionally retained:
 - Updated tests to seed service-owned metadata directly and assert read-model behavior.
 - Removed active Node packaging from `macos/project.yml`, regenerated the Xcode project, deleted the Node bundle script, and removed npm package runtime entrypoints.
 - Fixed Swift 6 actor-isolation warnings in timeline/search/popover/replay/service runner/read-provider code paths.
+
+## 2026-05-08 Follow-up
+
+- Deleted `scripts/db/check-swift-schema-compat.ts`.
+- Deleted `tests/scripts/check-swift-schema-compat.test.ts`.
+- Removed the `.github/workflows/test.yml` `Check Swift/Node schema compatibility` step from the `swift-unit` job.
+- Rationale: the check compared Swift schema against the old TypeScript DB reference and failed on `sessions.indexed_at` default drift (`''` vs `datetime('now')`). That was useful during migration, but after the Swift-only product cutover it is stale noise and should not block Swift schema evolution.
+- Verification:
+  - `rg "check-swift-schema-compat" .github package.json scripts tests` returned no active references.
+  - `npm run test` passed: 112 files, 1272 tests.
+  - `npm run build` passed.
+- Next development baseline:
+  - Product runtime is Swift `Engram.app` + `EngramService` + `EngramMCP`.
+  - TypeScript/npm remains dev/reference/fixture tooling, not shipped runtime.
+  - Do not add a Swift-only CI gate that compares Swift schema defaults to the retired TypeScript DB reference.
+  - For adapter/session-grouping work, update Swift adapters/indexer/backfills first; keep TypeScript only where retained fixture tooling still needs parity data.
+
+## 2026-04-28 Follow-up
+
+- Ported `project_move`, `project_archive`, `project_undo`, and `project_move_batch` from the fail-closed Swift cutover state to the native Swift service pipeline.
+- Re-enabled the Swift MCP/UI project migration surfaces after the native pipeline landed.
+- Updated Stage 5 status so project migration is no longer listed as unresolved Node bridge debt.

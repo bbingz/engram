@@ -55,8 +55,16 @@ public final class SessionSnapshotWriter {
         if incoming.syncVersion < current.syncVersion {
             return (.noop, current, SessionChangeSet(flags: []))
         }
-        if incoming.syncVersion == current.syncVersion, incoming.snapshotHash == current.snapshotHash {
+        if incoming.syncVersion == current.syncVersion,
+           incoming.snapshotHash == current.snapshotHash,
+           incoming.sizeBytes == current.sizeBytes {
             return (.noop, current, SessionChangeSet(flags: []))
+        }
+        if incoming.syncVersion == current.syncVersion, incoming.snapshotHash == current.snapshotHash {
+            var merged = current
+            merged.sizeBytes = incoming.sizeBytes
+            merged.indexedAt = incoming.indexedAt
+            return (.merge, merged, SessionChangeSet(flags: [.syncPayloadChanged]))
         }
         if incoming.syncVersion == current.syncVersion, incoming.snapshotHash != current.snapshotHash {
             throw SessionSnapshotWriterError.conflictingSnapshotHash(incoming.id)

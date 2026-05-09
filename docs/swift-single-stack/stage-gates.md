@@ -49,12 +49,14 @@ These gates define when each migration stage can advance. They are intentionally
 
 ## Stage5 Node Removal
 
-Current status on 2026-04-24: not complete. The macOS product no longer ships
-the Node daemon bundle, but the repository still retains TypeScript `src/**`,
-Node fixture/build tooling, and project move/archive/undo/batch is explicitly
-disabled in the Swift MCP/UI until a native migration pipeline is ported.
+Current status on 2026-05-08: partially closed. The macOS product no longer
+ships the Node daemon bundle, project move/archive/undo/batch has since been
+ported to the Swift service path, and the stale Swift/Node schema compatibility
+gate has been removed. The repository still retains TypeScript `src/**` and
+Node fixture/build tooling as development/reference material.
 
 - Product clean checkout can build/package without running npm or shipping `node_modules`.
 - Bundle scan proves no `Contents/Resources/node/**`, `node/daemon.js`, `dist/index.js`, or Node launcher phase.
 - `src/**` product runtime and Node build phases are deleted or archived as non-shipped fixture reference.
+- Active CI must not require Swift schema compatibility with the retired TypeScript DB reference; migration-only Node schema gates belong in history, not current Swift-only validation.
 - Rollback plan lists every changed path and has been verified from a clean checkout.

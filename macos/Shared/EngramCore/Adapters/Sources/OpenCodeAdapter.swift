@@ -162,7 +162,10 @@ final class OpenCodeAdapter: SessionAdapter {
                         return title.isEmpty ? nil : title
                     }(),
                     filePath: locator,
-                    sizeBytes: Phase4AdapterSupport.fileSize(locatorParts.dbPath),
+                    sizeBytes: try Self.sessionPayloadSize(
+                        database: database,
+                        sessionId: locatorParts.sessionId
+                    ),
                     indexedAt: nil,
                     agentRole: nil,
                     originator: nil,
@@ -230,6 +233,37 @@ final class OpenCodeAdapter: SessionAdapter {
             dbPath: String(locator[..<range.lowerBound]),
             sessionId: String(locator[range.upperBound...])
         )
+    }
+
+    private static func sessionPayloadSize(
+        database: Phase4SQLiteDatabase,
+        sessionId: String
+    ) throws -> Int64 {
+        let messageBytes = try queryByteSum(
+            database,
+            sql: "SELECT COALESCE(SUM(length(data)), 0) AS bytes FROM message WHERE session_id = ?",
+            sessionId: sessionId
+        )
+        let partBytes = try queryByteSum(
+            database,
+            sql: """
+            SELECT COALESCE(SUM(length(p.data)), 0) AS bytes
+            FROM part p
+            JOIN message m ON m.id = p.message_id
+            WHERE m.session_id = ?
+            """,
+            sessionId: sessionId
+        )
+        return messageBytes + partBytes
+    }
+
+    private static func queryByteSum(
+        _ database: Phase4SQLiteDatabase,
+        sql: String,
+        sessionId: String
+    ) throws -> Int64 {
+        let raw = try database.query(sql, bindings: [sessionId]).first?["bytes"] ?? nil
+        return Int64(raw ?? "") ?? 0
     }
 
     private static func message(from row: [String: String?]) -> NormalizedMessage? {

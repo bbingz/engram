@@ -7,7 +7,7 @@ Date: 2026-04-24
 The Stage 4 service writer-gate blocker is closed for service-owned MCP/app mutation paths verified in this document.
 App-side legacy `index.sqlite` writers remain explicit Stage 5 debt and are still allowlisted by the boundary scan.
 
-Stage 5 follow-up has since removed the app-side DB writer allowlist and Node app bundle phase. Current closure evidence is recorded in `docs/verification/swift-single-stack-stage5.md`.
+Stage 5 follow-up has since removed the app-side DB writer allowlist, removed the Node app bundle phase, ported project migration commands to Swift service code, and removed the stale Swift/Node schema compatibility gate. Current closure evidence is recorded in `docs/verification/swift-single-stack-stage5.md`.
 
 Recorded passing command:
 
@@ -103,20 +103,16 @@ Recorded result:
 
 ## Stage 5 Compatibility Debt
 
-- `LegacyDaemonBridge` is deleted. Remaining service commands either use native Swift implementations or fail closed for unsupported project migration execution.
+- `LegacyDaemonBridge` is deleted. Stage 5 follow-ups moved the remaining service commands, including project migration execution, to native Swift implementations.
 - `DaemonClient` and `DaemonHTTPClientCore` are deleted from production targets. `EngramLogger` remains only as an OSLog utility and no longer forwards to `/api/log`.
 - App `DatabaseManager` is read-only. Favorites, hide/unhide, rename, summary persistence, and empty-session cleanup route through typed service commands.
-- Project move/archive/undo/batch execution remains intentionally unavailable in the Swift runtime until the native migration pipeline is ported.
+- Project move/archive/undo/batch execution was intentionally unavailable at Stage 4 closure, then ported to the native Swift service pipeline in the 2026-04-28 follow-up.
 - `macos/EngramCLI/main.swift` remains a compatibility stdio surface.
-- TypeScript `src/**`, fixture tooling, and schema compatibility scripts remain development/reference material. They are not bundled into the default macOS app runtime.
+- TypeScript `src/**` and fixture tooling remain development/reference material. The stale Swift/Node schema compatibility script was removed on 2026-05-08. None of these are bundled into the default macOS app runtime.
 
 ## Remaining Stage 5 Work
 
-- Port native Swift project migration execution for:
-  - `projectMove`
-  - `projectArchive`
-  - `projectUndo`
-  - `projectMoveBatch`
 - Keep `exportSession` native in service and extend it only if adapter parity gaps appear.
 - Replace current `EngramCLI` bridge with a real Swift CLI or delete it after MCP clients use `EngramMCP` directly.
-- Delete or archive retained TypeScript development/reference surfaces after fixture/schema parity and CLI replacement no longer depend on them.
+- Delete or archive retained TypeScript development/reference surfaces after retained fixture tooling and CLI replacement no longer depend on them.
+- Keep the removed Swift/Node schema compatibility gate out of active CI unless a current cross-runtime support requirement is explicitly restored.

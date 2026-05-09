@@ -1,0 +1,55 @@
+# Engram Local Memory
+
+## 2026-05-08 — Swift-only cutover: drop stale Node schema compat gate
+
+- The `scripts/db/check-swift-schema-compat.ts` gate was a Stage 0-4 migration
+  guard, not a valid Swift-only correctness condition.
+- It compared Swift-created SQLite schema against the old TypeScript
+  `src/core/db.ts` reference schema and failed on `sessions.indexed_at`
+  default drift (`''` vs `datetime('now')`), effectively forcing Swift to
+  preserve Node defaults after the Node runtime had already been removed from
+  the product path.
+- Resolution: delete `scripts/db/check-swift-schema-compat.ts`, delete its
+  dedicated Vitest coverage, and remove the GitHub Actions step after
+  `swift-unit`.
+- Verification recorded at removal time:
+  - `rg "check-swift-schema-compat" .github package.json scripts tests`
+    returned no active references.
+  - `npm run test` passed: 112 files, 1272 tests.
+  - `npm run build` passed.
+- Keep TypeScript/npm development and fixture tooling separate from product
+  runtime Node. Do not reintroduce Node schema compatibility as a Swift-only
+  gate unless there is an explicit, current cross-runtime support requirement.
+
+## 2026-05-09 — Current next-dev baseline after noise cleanup
+
+- Product runtime baseline: native Swift `Engram.app` + `EngramService` +
+  `EngramMCP`. TypeScript/npm remains development/reference/fixture tooling.
+- Project move/archive/undo/batch are no longer fail-closed Stage 4 debt; they
+  route through the native Swift service migration pipeline.
+- Agent/session grouping work should start in Swift product code:
+  - Swift adapters: `macos/Shared/EngramCore/Adapters/Sources/`
+  - Swift indexing/backfills: `macos/EngramCoreWrite/Indexing/`
+  - Service command surface: `macos/EngramService/Core/`
+  - MCP routing: `macos/EngramMCP/Core/MCPToolRegistry.swift`
+- Polycli provider sessions from `qwen`, `kimi`, `pi`, `copilot`,
+  `opencode`, and `gemini-cli` now have startup/indexer handling for health
+  pings, review probes, stage-fact probes, and same-cwd near-concurrent child
+  sessions. These should be classified as dispatched/skip and, where possible,
+  linked to the host session.
+- OpenCode session size should be per payload/session, not the whole provider
+  SQLite DB file size.
+- Verification baseline for the 2026-05-08/09 cleanup:
+  - Swift targeted tests for startup backfills/indexer parity passed.
+  - `npm run test` passed: 112 files, 1272 tests.
+  - `npm run build` passed.
+
+## 2026-05-09 — Session detail child-agent list must not consume transcript viewport
+
+- `SessionDetailView` must keep the main transcript readable even when a parent
+  session has dozens of child/provider sessions.
+- The Agent Sessions section should default to a compact collapsed header.
+  Expanded content must be bounded by an internal scroll area instead of
+  growing the outer layout and shrinking the transcript.
+- This is especially important for Polycli health/review fan-outs where a
+  single parent can have many qwen/kimi/pi/copilot/opencode child sessions.

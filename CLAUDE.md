@@ -1,14 +1,17 @@
 # Engram
 
-Cross-tool AI session aggregator: TypeScript MCP server + macOS SwiftUI menu bar app.
+Cross-tool AI session aggregator: native macOS SwiftUI app + Swift
+`EngramService`/`EngramMCP` runtime. TypeScript remains development,
+reference, fixture, and regression-test material; it is not the shipped app
+runtime.
 
 ## Quick Reference
 
 ```bash
-# TypeScript
+# TypeScript dev/reference tooling
 npm run build          # tsc → dist/ (ES modules)
-npm test               # vitest: 922 tests, ~5s
-npm run dev            # tsx: run without compile
+npm test               # vitest regression suite
+npm run dev            # tsx dev/reference entrypoint; not shipped app runtime
 npm run lint           # biome check (must pass — pre-commit enforced)
 npm run lint:fix       # biome auto-fix
 npm run knip           # dead code detection
@@ -17,7 +20,7 @@ npm run knip           # dead code detection
 xcodegen generate      # regenerate .xcodeproj from project.yml
 xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 
-# After changing src/, always: npm run build
+# After changing TypeScript dev/reference code: npm run build
 # After adding/removing Swift files: xcodegen generate
 ```
 
@@ -25,18 +28,16 @@ xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
 
 ```
 src/
-  adapters/    # SessionAdapter implementations (15 sources: codex, claude-code, cursor, etc.)
-  core/        # indexer.ts, watcher.ts, config.ts, sync.ts, lifecycle.ts, session-tier.ts, parent-detection.ts, chunker.ts, vector-store.ts, embeddings.ts, bootstrap.ts (factories)
-    db/        # Database modules: database.ts (facade), migration.ts, session-repo.ts, fts-repo.ts, metrics-repo.ts, index-job-repo.ts, sync-repo.ts, maintenance.ts, alias-repo.ts, insight-repo.ts, parent-link-repo.ts
-    db.ts      # ESM re-export shim (preserves `import { Database } from '../core/db.js'`)
-  tools/       # MCP tool handlers (19 tools: get_context, search, save_insight, list_sessions, get_session, get_memory, get_insights, get_costs, stats, tool_analytics, file_activity, etc.)
-  web.ts       # Hono HTTP server + API endpoints
-  index.ts     # MCP server entry — uses createMCPDeps() from bootstrap.ts
-  daemon.ts    # Daemon entry — uses createDaemonDeps() + createShutdownHandler() from bootstrap.ts
+  adapters/    # TypeScript reference parsers and fixture generators
+  core/        # TypeScript reference DB/search/project-move logic and tests
+  tools/       # TypeScript reference MCP tool handlers
+  web.ts       # Historical/dev HTTP API surface
+  index.ts     # Historical/dev MCP entrypoint
+  daemon.ts    # Historical/dev daemon entrypoint
 
 macos/
   Engram/      # SwiftUI app (menu bar + main window)
-    Core/      # IndexerProcess, Database (GRDB), DaemonClient, MCPServer, MessageParser
+    Core/      # App lifecycle, read models, GRDB read facades, service launcher/status
     Views/     # MainWindowView, SidebarView, PopoverView, SessionListView, SessionDetailView, SettingsView
       Pages/   # HomeView, SessionsPageView, SearchPageView, ActivityView, ProjectsView, TimelinePageView, etc.
       Settings/  # GeneralSettingsSection, AISettingsSection, NetworkSettingsSection, SourcesSettingsSection
@@ -44,38 +45,65 @@ macos/
       Workspace/   # ReposView, RepoDetailView, SparklineView, WorkGraphView
     Components/  # Theme, SourceColors, SessionCard, ExpandableSessionCard, FilterPills, KPICard, HeatmapGrid, etc.
     Models/    # Session, GitRepo, IndexedMessage, MessageTypeClassifier, Screen
+  Shared/
+    EngramCore/       # Shared Swift models/adapters
+    Service/          # EngramServiceClient, transport, DTOs, mocks
+  EngramCoreRead/     # GRDB read repositories/facades
+  EngramCoreWrite/    # schema, migrations, indexer, writer-owned maintenance
+  EngramService/      # Unix-socket service helper process
+  EngramMCP/          # Native Swift MCP stdio helper
   project.yml  # xcodegen config → generates Engram.xcodeproj
-  scripts/build-node-bundle.sh  # Xcode prebuild: npm build → copy dist/ into app bundle
 ```
 
 ## Key Patterns
 
 ### Adapter Pattern
-13 adapters (handling 15 sources) implement `SessionAdapter` from `src/adapters/types.ts`:
-- `detect()` — check if tool's session dir exists
-- `listSessionFiles()` — async generator yielding file paths
-- `parseSessionInfo()` — extract metadata from session file
-- `streamMessages()` — async generator yielding messages lazily
+Swift adapters under `macos/Shared/EngramCore/Adapters/Sources/` are the
+current product parsers. TypeScript adapters under `src/adapters/` are retained
+as reference/dev fixtures and regression coverage.
 
-New adapters: create `src/adapters/<name>.ts`, register in `src/core/bootstrap.ts:createAdapters()`.
+New product adapters should be added in Swift first, wired into the Swift
+indexer/bootstrap path, and covered by Swift parity tests. Only update
+TypeScript when a retained fixture generator or regression test still depends
+on the old reference surface.
 
-### Bootstrap Factories
-`src/core/bootstrap.ts` centralizes initialization for both entry points:
-- `createMCPDeps()` — db, adapters, tracer, settings, audit, indexer, vecDeps → used by `index.ts`
-- `createDaemonDeps()` — extends MCPDeps + log, metrics, auditQuery, titleGenerator → used by `daemon.ts`
-- `createShutdownHandler(resources)` — idempotent cleanup of timers, monitors, watcher, web server, db
-- `initVectorDeps()` — sqlite-vec + embedding client + embedding indexer (returns null if unavailable)
+### Service Runtime
+`Engram.app` launches and talks to the native `EngramService` helper over a
+secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
+
+- `EngramServiceRunner` owns service startup, schema/indexing, maintenance, and
+  command dispatch.
+- `EngramServiceCommandHandler` owns service commands, including project
+  move/archive/undo/batch through the Swift project migration pipeline.
+- App and MCP write paths must go through `EngramServiceClient` /
+  `ServiceWriterGate`; do not add new direct app/MCP SQLite writers.
+- `LegacyDaemonBridge`, `DaemonClient`, `DaemonHTTPClientCore`, app-local
+  `MCPServer`, and the Node bundle phase are removed from the product path.
 
 ### Database
-- Node owns schema (`src/core/db.ts:migrate()`). Swift reads via GRDB (read-only pool).
-- Swift writes only to extension tables: `favorites`, `tags`.
-- Schema changes: add idempotent migration in `migrate()` (check `PRAGMA table_info` before `ALTER TABLE`).
+- Swift owns the product schema and writes through `EngramCoreWrite` /
+  `EngramService`.
+- App and read-only MCP paths use `EngramCoreRead` / GRDB read repositories.
+- TypeScript DB code remains reference/dev tooling and tests; do not use it as
+  the source of truth for Swift-only schema defaults.
+- The old `scripts/db/check-swift-schema-compat.ts` gate was deleted on
+  2026-05-08. Do not reintroduce Node schema compatibility as a Swift-only
+  validation gate unless a current cross-runtime support requirement is
+  explicitly restored.
+- Schema changes: add idempotent Swift migrations and focused Swift tests. Keep
+  fixture/dev TypeScript tests updated only where retained tooling depends on
+  them.
 - FTS: trigram tokenizer on `sessions_fts`. Version bump in `FTS_VERSION` forces full re-index.
 
 ### Process Lifecycle
-`setupProcessLifecycle()` MUST be called AFTER `server.connect(transport)` — stdin race with StdioServerTransport.
-- MCP server: `idleTimeoutMs: 0` — Claude Code manages lifecycle via stdin close. Do NOT re-enable idle timeout (causes premature disconnect).
-- Daemon: has its own signal-based shutdown, does NOT use `setupProcessLifecycle`.
+- Product runtime: `Engram.app` launches `EngramService`; MCP clients spawn
+  `EngramMCP`.
+- `EngramService` logs directly through `os_log` subsystem
+  `com.engram.service`.
+- Do not add product startup paths that shell out to `node`, run `npm`, or copy
+  `dist`/`node_modules` into the app bundle.
+- Historical TypeScript MCP lifecycle rules still matter only for dev/reference
+  tests that intentionally exercise `src/index.ts`.
 
 ### Session Tiering
 4 tiers in `src/core/session-tier.ts`: `skip` / `lite` / `normal` / `premium`.
@@ -122,15 +150,28 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - `src/core/db/parent-link-repo.ts`: validation (self-link, existence, depth=1), CRUD, child queries.
 - `src/core/db/session-repo.ts`: `countTodayParentSessions()` for menu bar badge.
 - Daemon startup order: `downgradeSubagentTiers → backfillParentLinks → resetStaleDetections → backfillCodexOriginator → backfillSuggestedParents`.
+- Swift startup/indexing also runs `StartupBackfills.backfillPolycliProviderParents`
+  before suggested-parent scoring. It classifies Polycli-launched provider
+  sessions from `qwen`, `kimi`, `pi`, `copilot`, `opencode`, and `gemini-cli`
+  as dispatched/skip when the prompt is a health ping, review probe, stage-fact
+  probe, or same-cwd near-concurrent provider child.
+- `SwiftIndexer.isSkippableFirstUserMessages` skips known Polycli probe
+  prompts (`ping`, `POLYCLI_HEALTH_OK`, `No tools. Review...`, `No tools.
+  Stage ... facts...`) so provider health/review children do not surface as
+  independent sessions.
+- OpenCode session size is measured per payload/session, not by assigning the
+  whole SQLite DB file size to every session.
 - Swift UI: `ExpandableSessionCard` with disclosure triangle + `CompactChildRow`. Used in HomeView, SessionsPageView, SessionListView, TimelinePageView.
 - All three views filter `parent_session_id IS NULL AND suggested_parent_id IS NULL` for top-level display.
 - Menu bar badge: shows today's parent session count (not total), via `todayParents` field in daemon events.
 
-### Daemon ↔ Swift Communication
-- Daemon writes JSON lines to stdout: `{ event: "ready", indexed: N, total: M, todayParents: P }`
-- Initial `ready.todayParents` must be emitted only after parent-link / tier backfills complete, so the menu bar badge starts with the authoritative parent-session count.
-- Swift `IndexerProcess` parses these events via pipe, exposes `totalSessions` and `todayParentSessions`
-- Daemon stderr → `os_log` (`com.engram.app:daemon`, viewable in Console.app)
+### Service ↔ Swift Communication
+- App and MCP communicate with `EngramService` through framed JSON over a Unix
+  socket via `UnixSocketEngramServiceTransport`.
+- `UnixSocketEngramServiceTransport.events()` polls service status and maps it
+  into app events for indexed counts and `todayParents`.
+- Initial parent-session counts must be emitted only after parent-link / tier /
+  provider-parent backfills complete.
 
 ## Conventions
 
@@ -147,7 +188,8 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 
 - Xcode builds to: `~/Library/Developer/Xcode/DerivedData/Engram-*/Build/Products/{Debug,Release}/Engram.app`
 - Do NOT use `macos/build/` — stale cache, gitignored
-- Bundle includes: `Contents/Resources/node/{daemon.js, ...dist files, node_modules/}`
+- Bundle must not include `Contents/Resources/node`, `node_modules`, `dist`,
+  `daemon.js`, `index.js`, or `web.js`.
 - Deploy to `/Applications`: must `rm -rf` first, then `cp -R`. `cp -R` silently skips running binaries.
 
 ## Data
@@ -170,6 +212,9 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - Don't re-enable idle timeout for MCP server (`idleTimeoutMs` in index.ts) — causes premature disconnect
 - Don't add db methods directly to db.ts — add to the appropriate module in `src/core/db/`, facade in `database.ts` delegates
 - Don't upgrade subagent tier from `skip` — subagent content is accessed through parent sessions, not independently. `setParentSession()` must NOT modify tier
+- Don't add Node schema compatibility or Node bundle checks as current
+  Swift-only gates. Historical migration plans may mention them; active CI must
+  validate the Swift product/runtime path.
 
 ## Skill routing
 

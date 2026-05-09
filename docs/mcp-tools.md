@@ -1,8 +1,8 @@
 # Engram MCP Tools Reference
 
-> Auto-generated from tool definitions in `src/index.ts` and `src/tools/`.
+> Current product runtime is Swift `EngramMCP`; TypeScript tool definitions are retained as development/reference material.
 >
-> **Total tools: 19** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
+> **Total tools: 26** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
 
 ---
 
@@ -304,3 +304,114 @@ Show most frequently edited/read files across sessions for a project. Helps unde
 | limit | number | no | Max results. Default 50 |
 
 **Notes:** Returns file paths with edit/read counts aggregated across sessions.
+
+---
+
+## project_move
+
+Move a project directory while keeping AI session history reachable.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| src | string | **yes** | Absolute source path |
+| dst | string | **yes** | Absolute destination path |
+| dry_run | boolean | no | Plan only; no side effects |
+| force | boolean | no | Bypass git-dirty warning on source |
+| note | string | no | Audit note stored in migration log |
+
+**Notes:** Native Swift service pipeline. It moves the directory, patches known AI session path references, updates Engram DB state, and creates a project alias. The operation is compensating/transactional and records migration-log state.
+
+---
+
+## project_archive
+
+Archive a project by moving it under `_archive/` with an inferred or specified category.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| src | string | **yes** | Absolute source path |
+| to | string | no | Archive category or alias |
+| dry_run | boolean | no | Plan only; no side effects |
+| force | boolean | no | Bypass git-dirty warning |
+| note | string | no | Audit note stored in migration log |
+
+**Notes:** Uses the same native Swift migration pipeline as `project_move`.
+
+---
+
+## project_undo
+
+Reverse a committed project-move migration.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| migration_id | string | **yes** | Migration id returned by a previous project move/archive |
+| force | boolean | no | Bypass git-dirty warning on the current destination |
+
+**Notes:** Prepares a reverse request from the migration log, then runs the native Swift migration pipeline.
+
+---
+
+## project_move_batch
+
+Run multiple project move/archive operations sequentially from an inline JSON document.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| yaml | string | **yes** | Inline JSON document; field name is retained for IPC compatibility |
+| dry_run | boolean | no | Force all operations to run as dry-run |
+| force | boolean | no | Bypass git-dirty warning on every operation |
+
+**Notes:** JSON-only batch runner. `stopOnError` defaults to true in the batch document.
+
+---
+
+## project_list_migrations
+
+List recent project-move migrations with state, paths, counts, and timestamps.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| since | string | no | ISO timestamp; only rows started after this time |
+| limit | number | no | Max rows to return |
+
+---
+
+## project_recover
+
+Diagnose stuck or failed migrations.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| since | string | no | ISO timestamp filter |
+| include_committed | boolean | no | Also inspect committed migrations |
+
+**Notes:** Advisory only; does not modify files or DB state.
+
+---
+
+## project_review
+
+Scan AI session roots for residual references to an old project path.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| old_path | string | **yes** | Absolute old path |
+| new_path | string | **yes** | Absolute new path |
+| max_items | number | no | Cap returned own/other arrays. Default 100 |
+
+**Notes:** Classifies hits into `own` and `other` so migration leftovers are separated from unrelated historical mentions.

@@ -120,6 +120,122 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillPolycliProviderParentsClassifiesPingProbes() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "host-codex",
+                source: "codex",
+                startTime: "2026-05-08T09:00:00.000Z",
+                endTime: "2026-05-08T10:20:00.000Z",
+                cwd: "/repo"
+            )
+            try insertSession(
+                db,
+                id: "qwen-ping",
+                source: "qwen",
+                startTime: "2026-05-08T10:00:00.000Z",
+                cwd: "/repo",
+                summary: "ping"
+            )
+            try insertSession(
+                db,
+                id: "opencode-ping",
+                source: "opencode",
+                startTime: "2026-05-08T10:00:30.000Z",
+                cwd: "/repo",
+                summary: "Quick ping"
+            )
+
+            let result = try StartupBackfills.backfillPolycliProviderParents(db)
+
+            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, linked: 2))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-ping'"),
+                "host-codex"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'opencode-ping'"),
+                "host-codex"
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'qwen-ping'"), "dispatched")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'opencode-ping'"), "skip")
+        }
+    }
+
+    func testBackfillPolycliProviderParentsClassifiesReviewProbes() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "host-codex",
+                source: "codex",
+                startTime: "2026-05-08T09:00:00.000Z",
+                endTime: "2026-05-08T11:00:00.000Z",
+                cwd: "/repo"
+            )
+            try insertSession(
+                db,
+                id: "qwen-review",
+                source: "qwen",
+                startTime: "2026-05-08T10:00:00.000Z",
+                cwd: "/repo",
+                summary: "No tools. Review P7.10 Stage 2 diff for blocking correctness issues. Tests passed."
+            )
+            try insertSession(
+                db,
+                id: "kimi-review",
+                source: "kimi",
+                startTime: "2026-05-08T10:00:01.000Z",
+                summary: "Use only snippets. P7.4 final review. Report only blocking/correctness issues."
+            )
+            try insertSession(
+                db,
+                id: "qwen-stage-facts",
+                source: "qwen",
+                startTime: "2026-05-08T10:00:02.000Z",
+                cwd: "/repo",
+                summary: "No tools. Stage 3 adapter facts: planned Graylog query, stream filter, timeout."
+            )
+            try insertSession(
+                db,
+                id: "qwen-concurrent",
+                source: "qwen",
+                startTime: "2026-05-08T09:00:03.000Z",
+                cwd: "/repo",
+                summary: "请做一次 UI 一致性审查，聚焦保存按钮。"
+            )
+            try insertSession(
+                db,
+                id: "qwen-standalone",
+                source: "qwen",
+                startTime: "2026-05-08T09:10:00.000Z",
+                cwd: "/repo",
+                summary: "What does this function do?"
+            )
+
+            let result = try StartupBackfills.backfillPolycliProviderParents(db)
+
+            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 4, classified: 4, linked: 3))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-review'"),
+                "host-codex"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-stage-facts'"),
+                "host-codex"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-concurrent'"),
+                "host-codex"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'kimi-review'")
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'kimi-review'"), "skip")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'qwen-standalone'"))
+        }
+    }
+
     func testBackfillSuggestedParentsScoresClaudeParentsAndMarksOrphans() throws {
         try writer.write { db in
             try insertSession(
@@ -201,6 +317,7 @@ final class StartupBackfillTests: XCTestCase {
                 "backfillParentLinks",
                 "resetStaleDetections",
                 "backfillCodexOriginator",
+                "backfillPolycliProviderParents",
                 "backfillSuggestedParents",
                 "cleanupStaleMigrations",
                 "countSessions",
@@ -228,6 +345,15 @@ final class StartupBackfillTests: XCTestCase {
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("parent_links"), "linked": .int(10)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("detection_reset"), "count": .int(11)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_originator"), "updated": .int(12)]),
+                StartupBackfillEvent(
+                    event: "backfill",
+                    payload: [
+                        "type": .string("polycli_provider_parents"),
+                        "checked": .int(26),
+                        "classified": .int(27),
+                        "linked": .int(28)
+                    ]
+                ),
                 StartupBackfillEvent(
                     event: "backfill",
                     payload: [
@@ -664,6 +790,11 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
     func backfillCodexOriginator() throws -> Int {
         callOrder.append("backfillCodexOriginator")
         return 12
+    }
+
+    func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult {
+        callOrder.append("backfillPolycliProviderParents")
+        return StartupBackfills.ProviderParentResult(checked: 26, classified: 27, linked: 28)
     }
 
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult {

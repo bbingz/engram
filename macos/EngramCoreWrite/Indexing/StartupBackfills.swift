@@ -84,6 +84,7 @@ public protocol StartupBackfillDatabase: AnyObject {
     func backfillParentLinks() throws -> StartupBackfills.ParentLinkResult
     func resetStaleDetections() throws -> Int
     func backfillCodexOriginator() throws -> Int
+    func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult
     func cleanupStaleMigrations() throws -> Int
 }
@@ -104,6 +105,18 @@ public enum StartupBackfills {
         public init(checked: Int, suggested: Int) {
             self.checked = checked
             self.suggested = suggested
+        }
+    }
+
+    public struct ProviderParentResult: Equatable, Sendable {
+        public var checked: Int
+        public var classified: Int
+        public var linked: Int
+
+        public init(checked: Int, classified: Int, linked: Int) {
+            self.checked = checked
+            self.classified = classified
+            self.linked = linked
         }
     }
 
@@ -197,6 +210,20 @@ public enum StartupBackfills {
             let originatorUpdated = try database.backfillCodexOriginator()
             if originatorUpdated > 0 {
                 emit(StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_originator"), "updated": .int(originatorUpdated)]))
+            }
+            let providerParents = try database.backfillPolycliProviderParents()
+            if providerParents.classified > 0 || providerParents.linked > 0 {
+                emit(
+                    StartupBackfillEvent(
+                        event: "backfill",
+                        payload: [
+                            "type": .string("polycli_provider_parents"),
+                            "checked": .int(providerParents.checked),
+                            "classified": .int(providerParents.classified),
+                            "linked": .int(providerParents.linked)
+                        ]
+                    )
+                )
             }
             let suggestions = try database.backfillSuggestedParents()
             if suggestions.suggested > 0 {
@@ -540,6 +567,130 @@ public enum StartupBackfills {
         return updated
     }
 
+    public static func backfillPolycliProviderParents(_ db: Database) throws -> ProviderParentResult {
+        let candidates = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, source, start_time, cwd, summary, agent_role
+            FROM sessions
+            WHERE parent_session_id IS NULL
+              AND (link_source IS NULL OR link_source != 'manual')
+              AND source IN ('claude-code', 'copilot', 'gemini-cli', 'kimi', 'opencode', 'pi', 'qwen')
+              AND (
+                summary LIKE 'You are acting as % inside polycli.%'
+                OR summary LIKE 'Reply with POLYCLI_HEALTH_OK only.%'
+                OR lower(trim(summary)) IN (
+                  'ping',
+                  'quick ping',
+                  'test ping',
+                  'quick ping check',
+                  'ping-pong test'
+                )
+                OR lower(summary) LIKE '%review%'
+                OR lower(summary) LIKE '%re-review%'
+                OR lower(summary) LIKE 'no tools.%stage %'
+                OR (
+                  source IN ('copilot', 'gemini-cli', 'kimi', 'opencode', 'pi', 'qwen')
+                  AND trim(cwd) != ''
+                )
+              )
+            ORDER BY start_time DESC
+            LIMIT 1000
+            """
+        )
+
+        var checked = 0
+        var classified = 0
+        var linked = 0
+
+        for candidate in candidates {
+            let summary: String? = candidate["summary"]
+            let summaryMatches = isPolycliProviderSummary(summary)
+
+            let id: String = candidate["id"]
+            let agentRole: String? = candidate["agent_role"]
+            let childCwd: String = candidate["cwd"]
+            let childStartTime: String = candidate["start_time"]
+            let scored = try scoredPolycliHosts(
+                db,
+                childId: id,
+                childStartTime: childStartTime,
+                childCwd: childCwd
+            )
+
+            if !summaryMatches {
+                guard let best = scored.first,
+                      best.score >= 7,
+                      try isConcurrentProviderChild(db, childStartTime: childStartTime, parentId: best.parentId)
+                else {
+                    continue
+                }
+            }
+
+            checked += 1
+            if agentRole == nil { classified += 1 }
+
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET agent_role = COALESCE(agent_role, 'dispatched'),
+                    tier = 'skip'
+                WHERE id = ?
+                """,
+                arguments: [id]
+            )
+
+            guard let best = scored.first, best.score >= 4 else { continue }
+            guard try validateParentLink(db, sessionId: id, parentId: best.parentId) else {
+                continue
+            }
+
+            try setParentSession(db, sessionId: id, parentId: best.parentId, linkSource: "path")
+            linked += 1
+        }
+
+        return ProviderParentResult(checked: checked, classified: classified, linked: linked)
+    }
+
+    private static func scoredPolycliHosts(
+        _ db: Database,
+        childId: String,
+        childStartTime: String,
+        childCwd: String
+    ) throws -> [ScoredParent] {
+        guard !childCwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return []
+        }
+        let hosts = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, source, start_time, end_time, cwd
+            FROM sessions
+            WHERE id != ?
+              AND source IN ('codex', 'claude-code', 'claude')
+              AND agent_role IS NULL
+              AND parent_session_id IS NULL
+              AND cwd = ?
+              AND datetime(start_time) <= datetime(?)
+              AND datetime(start_time) >= datetime(?, '-48 hours')
+            """,
+            arguments: [childId, childCwd, childStartTime, childStartTime]
+        )
+
+        return hosts.compactMap { host -> ScoredParent? in
+            let score = scorePolycliHostCandidate(
+                childStartTime: childStartTime,
+                parentSource: host["source"],
+                parentStartTime: host["start_time"],
+                parentEndTime: host["end_time"],
+                parentCwd: host["cwd"],
+                childCwd: childCwd
+            )
+            guard score > 0 else { return nil }
+            return ScoredParent(parentId: host["id"], score: score)
+        }.sorted { $0.score > $1.score }
+    }
+
     public static func backfillSuggestedParents(_ db: Database) throws -> SuggestedParentResult {
         let candidates = try Row.fetchAll(
             db,
@@ -631,6 +782,24 @@ public enum StartupBackfills {
         return parentSessionId == nil
     }
 
+    private static func isConcurrentProviderChild(
+        _ db: Database,
+        childStartTime: String,
+        parentId: String
+    ) throws -> Bool {
+        guard let parentStartTime = try String.fetchOne(
+            db,
+            sql: "SELECT start_time FROM sessions WHERE id = ?",
+            arguments: [parentId]
+        ),
+              let childStart = parseDate(childStartTime),
+              let parentStart = parseDate(parentStartTime)
+        else {
+            return false
+        }
+        return abs(childStart.timeIntervalSince(parentStart)) <= 5
+    }
+
     private static func setParentSession(
         _ db: Database,
         sessionId: String,
@@ -670,6 +839,99 @@ public enum StartupBackfills {
             sql: "UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?",
             arguments: [sessionId]
         )
+    }
+
+    private static func isPolycliProviderSummary(_ summary: String?) -> Bool {
+        guard let summary else { return false }
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        if lower == "ping"
+            || lower == "quick ping"
+            || lower == "test ping"
+            || lower == "quick ping check"
+            || lower == "ping-pong test" {
+            return true
+        }
+        if trimmed.range(of: #"^You are acting as [a-z0-9_-]+ inside polycli\."#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if trimmed.range(of: #"^Reply with POLYCLI_HEALTH_OK only\.?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        return isProviderReviewSummary(trimmed)
+    }
+
+    private static func isProviderReviewSummary(_ summary: String) -> Bool {
+        let lower = summary.lowercased()
+        let isStageFactProbe = lower.hasPrefix("no tools.") &&
+            lower.contains("stage ") &&
+            (lower.contains("facts") || lower.contains("verified") || lower.contains("diff:"))
+        let isScopedInput = lower.contains("no tools") ||
+            lower.contains("use only") ||
+            lower.contains("snippets") ||
+            lower.contains("diff:") ||
+            lower.contains("tests passed") ||
+            lower.contains("tests ") ||
+            lower.range(of: #"\bp\d+(\.\d+)?\b"#, options: .regularExpression) != nil ||
+            lower.contains("stage ")
+        let asksForOnlyFindings = lower.contains("blocking") ||
+            lower.contains("correctness") ||
+            lower.contains("report only") ||
+            lower.contains("any blocking issue")
+        let isReviewProbe = lower.contains("review") || lower.contains("re-review")
+        return isStageFactProbe || (isReviewProbe && isScopedInput && asksForOnlyFindings)
+    }
+
+    private static func scorePolycliHostCandidate(
+        childStartTime: String,
+        parentSource: String,
+        parentStartTime: String,
+        parentEndTime: String?,
+        parentCwd: String,
+        childCwd: String
+    ) -> Double {
+        guard let childStart = parseDate(childStartTime),
+              let parentStart = parseDate(parentStartTime),
+              parentStart <= childStart
+        else {
+            return 0
+        }
+
+        let normalizedChild = childCwd.replacingOccurrences(of: #"/+$"#, with: "", options: .regularExpression)
+        let normalizedParent = parentCwd.replacingOccurrences(of: #"/+$"#, with: "", options: .regularExpression)
+        guard !normalizedChild.isEmpty, normalizedChild == normalizedParent else {
+            return 0
+        }
+
+        var score = 3.0
+        if let parentEndTime, let parentEnd = parseDate(parentEndTime) {
+            if parentEnd >= childStart {
+                score += 3.0
+            } else {
+                let gap = childStart.timeIntervalSince(parentEnd)
+                if gap > 30 * 60 { return 0 }
+                score += 0.8
+            }
+        } else {
+            score += 1.2
+        }
+
+        let ageHours = childStart.timeIntervalSince(parentStart) / (60 * 60)
+        if ageHours <= 6 {
+            score += 2 * (1 - ageHours / 6)
+        } else if ageHours <= 48 {
+            score += max(0, 0.8 * (1 - (ageHours - 6) / 42))
+        } else {
+            return 0
+        }
+
+        if parentSource == "codex" {
+            score += 0.3
+        }
+        if parentSource == "claude-code" || parentSource == "claude" {
+            score += 0.2
+        }
+        return score
     }
 
     private static func readFirstLine(path: String, maxBytes: Int) -> String? {

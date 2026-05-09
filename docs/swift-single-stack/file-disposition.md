@@ -11,8 +11,8 @@ Disposition list for the Node-to-Swift single-stack migration. This file is inte
 | `src/adapters/**/*.ts` | Replace | Port parsers and drift handling to Swift | 2/5 | Adapter fixture parity for all sources |
 | `src/adapters/grpc/cascade-client.ts` | Replace/defer | Select Swift gRPC/protobuf implementation or defer source support explicitly | 2 | Cascade fixture spike accepted |
 | `src/core/indexer.ts`, `src/core/watcher.ts`, `src/core/index-job-runner.ts` | Replace | Port scan/watch/job semantics into service writer | 2/3 | Indexing fixture and non-watchable rescan tests pass |
-| `src/core/project-move/**/*.ts` | Replace | Port move/archive/undo/recover/review to service commands with compensation | 4 | Dry-run/live/undo/recover parity tests pass |
-| `src/tools/**/*.ts` | Replace | Port read tools to Swift MCP/read core; mutating tools to fail-closed service IPC | 4 | MCP golden suite passes |
+| `src/core/project-move/**/*.ts` | Ported, retain dev/reference until final TS cleanup | Native Swift service pipeline now owns move/archive/undo/batch; TypeScript remains reference/test material | 4/5 | Swift service/MCP project migration tests pass |
+| `src/tools/**/*.ts` | Replace/archive | Port read tools to Swift MCP/read core; mutating tools route through service IPC | 4/5 | MCP golden suite passes |
 | `src/cli/**/*.ts` | Replace/remove intentionally | Implement supported commands in `macos/EngramCLI` | 4/5 | Bare `engram` command behavior documented and tested |
 | `src/core/ai-client.ts`, `auto-summary.ts`, `title-generator.ts` | Replace/defer | Port provider requests, settings, keychain/audit behavior | 3 | Summary/title UI and MCP tests pass |
 | `src/core/embeddings.ts`, `embedding-indexer.ts`, `vector-store.ts` | Replace/defer | Port embedding and vector search strategy | 1/3/5 | Semantic/vector parity gate or documented deferral |
@@ -22,6 +22,7 @@ Disposition list for the Node-to-Swift single-stack migration. This file is inte
 | `src/types/huggingface-transformers.d.ts` | Delete | Remove with TS embedding implementation | 5 | No TS product runtime |
 | `scripts/gen-mcp-contract-fixtures.ts` | Keep dev-only or archive | Freeze Node reference generator outside shipped runtime or rewrite in Swift | 5 | Clean product checkout does not require Node |
 | `scripts/perf/capture-node-baseline.ts` | Keep dev-only during migration | Capture Node direct-tool baseline from temp fixture copies | 0/5 | Baseline compare-only passes |
+| `scripts/db/check-swift-schema-compat.ts` | Deleted | Removed stale Swift/Node schema compatibility gate; do not use retired TypeScript DB defaults as Swift-only validation | 5 | Active CI has no `check-swift-schema-compat` reference |
 | `scripts/measure-swift-single-stack-baseline.sh` | Keep dev-only during migration | Wrapper around Node baseline capture | 0/5 | Emits validated JSON |
 | `macos/scripts/build-node-bundle.sh` | Deleted | Removed Node bundle production | 5 | Bundle scan clean |
 | `macos/scripts/copy-mcp-helper.sh` | Keep | Continue bundling Swift `EngramMCP` helper | 4/5 | Helper signing/package gate |

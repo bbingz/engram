@@ -1,6 +1,9 @@
 # DaemonClient to EngramServiceClient Map
 
-Stage 3 owns this inventory. Stage 4 extends it across App callers and the highest-risk MCP/CLI mutations. Retained compatibility shim files may keep legacy names until Stage 4/5, but production callers must move to the service boundary before cutover.
+Stage 3 owned the initial inventory. Stage 4 moved App callers and the
+highest-risk MCP/CLI mutations to the service boundary. Stage 5 follow-ups
+removed the Node bridge/bundle path and ported project migration commands to
+native Swift service code.
 
 ## Stage 4 Gate
 
@@ -51,12 +54,12 @@ Decision values:
 | App monitor alerts | `/api/monitor/alerts`, `/api/monitor/alerts/:id/dismiss` | `MonitorAlert` | `monitorAlerts()`, `dismissMonitorAlert(id:)` | App | none | service command |
 | App project migrations list | `DaemonClient.listProjectMigrations`, `/api/project/migrations` | `[MigrationLogEntry]` | `projectMigrations(_:)` | App | MCP/CLI project ops in Stage 4 | service command |
 | App project CWD lookup | `DaemonClient.projectCwds`, `/api/project/cwds` | `[String]` | `projectCwds(project:)` | App | MCP/CLI project ops in Stage 4 | service command |
-| App project move | `DaemonClient.projectMove`, `/api/project/move` | `ProjectMoveResult` | `projectMove(_:)` | App | App and MCP callers route through service; command fails closed until native migration pipeline exists | service command |
-| App project archive | `DaemonClient.projectArchive`, `/api/project/archive` | `ProjectMoveResult` | `projectArchive(_:)` | App | App and MCP callers route through service; command fails closed until native migration pipeline exists | service command |
-| App project undo | `DaemonClient.projectUndo`, `/api/project/undo` | `ProjectMoveResult` | `projectUndo(_:)` | App | App and MCP callers route through service; command fails closed until native migration pipeline exists | service command |
+| App project move | `DaemonClient.projectMove`, `/api/project/move` | `ProjectMoveResult` | `projectMove(_:)` | App | App and MCP callers route through the native Swift service migration pipeline | service command |
+| App project archive | `DaemonClient.projectArchive`, `/api/project/archive` | `ProjectMoveResult` | `projectArchive(_:)` | App | App and MCP callers route through the native Swift service migration pipeline | service command |
+| App project undo | `DaemonClient.projectUndo`, `/api/project/undo` | `ProjectMoveResult` | `projectUndo(_:)` | App | App and MCP callers route through the native Swift service migration pipeline | service command |
 | MCP save insight | `/api/insight` | raw JSON / insight result | `saveInsight(_:)` | none by default app | Native Swift/GRDB service implementation | service command |
 | MCP manage project aliases | `/api/project-aliases` GET/POST/DELETE | raw JSON | `projectAliases(_:)`, `manageProjectAlias(_:)` | none by default app | list stays read-only; add/remove now route through service | service command |
-| MCP project move batch | `/api/project/move-batch` | raw JSON | `projectMoveBatch(_:)` | none by default app | Routed through service and fails closed until native migration batch pipeline exists | service command |
+| MCP project move batch | `/api/project/move-batch` | raw JSON | `projectMoveBatch(_:)` | none by default app | Routed through the native Swift service batch pipeline | service command |
 | MCP link sessions | `/api/link-sessions` and file/symlink helpers | link result | `linkSessions(_:)` | none by default app | Stage 5 MCP mutation now routed through service; native Swift file operation behind writer gate | service command |
 | App/MCP stats/costs/tool analytics | `/api/stats`, `/api/costs`, `/api/costs/sessions`, `/api/file-activity`, `/api/tool-analytics`, `/api/usage` | stats/cost/usage DTOs | `stats(_:)`, `costs(_:)`, `fileActivity(_:)`, `toolAnalytics(_:)`, `usageStatus()` | App if surfaced | MCP read parity remains read repository | read repository |
 | App repository list | `/api/repos` | repo list DTO | `repositories()` | App if surfaced | none | service command |
@@ -92,10 +95,13 @@ Decision values:
 
 - App UI surfaces no longer call daemon HTTP directly for sync trigger, bulk title regeneration, or project move/archive/undo.
 - `LegacyDaemonBridge` has been deleted. No service-internal command forwards to retained daemon endpoints.
-- Project move/archive/undo/batch are intentionally fail-closed service commands until a native Swift migration pipeline replaces the old Node orchestrator.
+- Project move/archive/undo/batch now use the native Swift migration pipeline.
 - MCP direct daemon HTTP compatibility has been removed from the routed mutation/operational paths in `macos/EngramMCP/Core/MCPToolRegistry.swift`.
 - `DaemonClient` and `DaemonHTTPClientCore` have been deleted from production targets. `EngramLogger` remains as an OSLog-only utility and no longer posts to `/api/log`.
 - `UnixSocketEngramServiceTransport.events()` now polls service status over the Unix socket instead of returning an immediately empty stream.
+- The stale Swift/Node schema compatibility gate was removed from active CI on
+  2026-05-08. Current Swift-only validation must not depend on the retired
+  TypeScript DB reference schema.
 
 ## Stage 3 Gate Commands
 

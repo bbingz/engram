@@ -1,5 +1,14 @@
 # PROGRESS — MCP 多写者锁竞争治理
 
+> 2026-05-09 status: this document is historical background for the original
+> multi-writer lock incident. The product runtime has since moved to native
+> Swift `EngramService`/`EngramMCP`; project move/archive/undo/batch are native
+> Swift service commands, the Node app bundle path is gone, and the stale
+> Swift/Node schema compatibility gate was removed from active CI. For current
+> development baselines, read `CLAUDE.md`,
+> `docs/verification/swift-single-stack-stage5.md`, and
+> `docs/swift-single-stack/daemon-client-map.md`.
+
 **问题起点**（2026-04-22）：用户报"MCP 又挂了"。排查后 MCP 其实 `✓ Connected`，真正的症状是 `database is locked` ——
 近 2h 有 29 条 `indexFile failed` 报错，**全部来自 `src=watcher`**。DB 同时有 3 个 node 进程（daemon + 2 个 MCP）
 持有 `index.sqlite` 写句柄，WAL 涨到 137 MB，`busy_timeout=5s` 被突破。

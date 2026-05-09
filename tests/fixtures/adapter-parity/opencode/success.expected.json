@@ -43,7 +43,7 @@
     "filePath": "<fixtureRoot>/opencode/input/sample.db::ses_test001",
     "id": "ses_test001",
     "messageCount": 2,
-    "sizeBytes": 28672,
+    "sizeBytes": 197,
     "source": "opencode",
     "startTime": "2026-02-02T02:40:01.000Z",
     "summary": "实现用户登录功能",

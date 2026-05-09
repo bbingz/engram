@@ -50,6 +50,7 @@ public final class SwiftIndexer {
         }
 
         if let db {
+            _ = try StartupBackfills.backfillPolycliProviderParents(db)
             _ = try StartupBackfills.backfillSuggestedParents(db)
         }
         return indexed
@@ -153,7 +154,7 @@ public final class SwiftIndexer {
                 startTime: info.startTime,
                 endTime: info.endTime,
                 source: info.source.rawValue,
-                isPreamble: isPreambleOnly(stats.firstUserMessages),
+                isPreamble: isSkippableFirstUserMessages(stats.firstUserMessages),
                 assistantCount: stats.assistantCount,
                 toolCount: stats.toolCount
             )
@@ -211,11 +212,42 @@ public final class SwiftIndexer {
         return String(encoded.dropFirst().dropLast())
     }
 
-    private func isPreambleOnly(_ userMessages: [String]) -> Bool {
+    private func isSkippableFirstUserMessages(_ userMessages: [String]) -> Bool {
         let combined = userMessages.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !combined.isEmpty else { return false }
+        if Self.healthProbePrompts.contains(combined.lowercased()) {
+            return true
+        }
+        if Self.isProviderReviewPrompt(combined) {
+            return true
+        }
         return combined.hasPrefix("# AGENTS.md instructions for ") ||
             combined.contains("<INSTRUCTIONS>") ||
             combined.hasPrefix("<environment_context>")
     }
+
+    private static func isProviderReviewPrompt(_ prompt: String) -> Bool {
+        let lower = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isStageFactProbe = lower.hasPrefix("no tools.") &&
+            lower.contains("stage ") &&
+            (lower.contains("facts") || lower.contains("verified") || lower.contains("diff:"))
+        let isScopedInput = lower.contains("no tools") ||
+            lower.contains("use only") ||
+            lower.contains("snippets") ||
+            lower.contains("diff:") ||
+            lower.contains("tests passed") ||
+            lower.contains("tests ") ||
+            lower.range(of: #"\bp\d+(\.\d+)?\b"#, options: .regularExpression) != nil ||
+            lower.contains("stage ")
+        let asksForOnlyFindings = lower.contains("blocking") ||
+            lower.contains("correctness") ||
+            lower.contains("report only") ||
+            lower.contains("any blocking issue")
+        let isReviewProbe = lower.contains("review") || lower.contains("re-review")
+        return isStageFactProbe || (isReviewProbe && isScopedInput && asksForOnlyFindings)
+    }
+
+    private static let healthProbePrompts: Set<String> = [
+        "ping"
+    ]
 }

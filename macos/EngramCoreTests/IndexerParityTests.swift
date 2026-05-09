@@ -146,6 +146,32 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testSameHashSnapshotCanRefreshSizeBytesOnly() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "size-only", sizeBytes: 128))
+
+            let result = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "size-only",
+                    snapshotHash: "h1",
+                    sizeBytes: 1_198
+                )
+            )
+
+            XCTAssertEqual(result.action, .merge)
+            XCTAssertEqual(result.changeSet.flags, [.syncPayloadChanged])
+            XCTAssertEqual(
+                try Int64.fetchOne(db, sql: "SELECT size_bytes FROM sessions WHERE id = 'size-only'"),
+                1_198
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_index_jobs WHERE session_id = 'size-only'"),
+                2
+            )
+        }
+    }
+
     func testSessionBatchUpsertReportsPerSessionResults() throws {
         try writer.write { db in
             let sink = SessionBatchUpsert(db: db)
@@ -194,11 +220,66 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(ids, ["synthetic-0", "synthetic-1"])
     }
 
+    func testPingHealthProbeSessionsAreSkipped() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [
+                SyntheticSessionAdapter(
+                    count: 1,
+                    userContent: "ping\n",
+                    assistantContent: "pong"
+                )
+            ]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots.first?.tier, .skip)
+    }
+
+    func testProviderReviewProbeSessionsAreSkipped() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [
+                SyntheticSessionAdapter(
+                    count: 1,
+                    userContent: "No tools. Review P7.10 Stage 2 diff for blocking correctness issues. Tests passed.",
+                    assistantContent: "No blocking issues."
+                )
+            ]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots.first?.tier, .skip)
+    }
+
+    func testProviderStageFactProbeSessionsAreSkipped() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [
+                SyntheticSessionAdapter(
+                    count: 1,
+                    userContent: "No tools. Stage 3 adapter facts: planned Graylog query, stream filter, timeout.",
+                    assistantContent: "No blocking issues."
+                )
+            ]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots.first?.tier, .skip)
+    }
+
     private func makeSnapshot(
         id: String,
         syncVersion: Int = 1,
         snapshotHash: String = "h1",
         sourceLocator: String = "/tmp/rollout.jsonl",
+        sizeBytes: Int64 = 128,
         tier: SessionTier = .normal
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
@@ -209,7 +290,7 @@ final class IndexerParityTests: XCTestCase {
             snapshotHash: snapshotHash,
             indexedAt: "2026-03-18T12:00:00Z",
             sourceLocator: sourceLocator,
-            sizeBytes: 128,
+            sizeBytes: sizeBytes,
             startTime: "2026-03-18T11:00:00Z",
             endTime: nil,
             cwd: "/repo",
@@ -329,9 +410,17 @@ private final class RecordingBatchSink: IndexingWriteSink {
 private final class SyntheticSessionAdapter: SessionAdapter {
     let source: SourceName = .codex
     private let count: Int
+    private let userContent: String
+    private let assistantContent: String
 
-    init(count: Int) {
+    init(
+        count: Int,
+        userContent: String = "hello",
+        assistantContent: String = "done"
+    ) {
         self.count = count
+        self.userContent = userContent
+        self.assistantContent = assistantContent
     }
 
     func detect() async -> Bool {
@@ -368,8 +457,8 @@ private final class SyntheticSessionAdapter: SessionAdapter {
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         AsyncThrowingStream { continuation in
-            continuation.yield(NormalizedMessage(role: .user, content: "hello"))
-            continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.yield(NormalizedMessage(role: .user, content: userContent))
+            continuation.yield(NormalizedMessage(role: .assistant, content: assistantContent))
             continuation.finish()
         }
     }
