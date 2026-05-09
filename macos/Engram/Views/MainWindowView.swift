@@ -5,7 +5,6 @@ struct MainWindowView: View {
     @State private var selectedScreen: Screen = .home
     @State private var selectedSession: Session? = nil
     @State private var searchQuery: String = ""
-    @State private var showResume: Bool = false
     @State private var showPalette: Bool = false
     @State private var paletteItems: [PaletteItem] = []
     @State private var paletteSelection: Int = 0
@@ -49,15 +48,6 @@ struct MainWindowView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
-
-                // Resume
-                Button(action: { resumeSelectedSession() }) {
-                    Label("Resume", systemImage: "play.fill")
-                        .font(.system(size: 11))
-                        .labelStyle(.titleAndIcon)
-                }
-                .disabled(selectedSession == nil)
-                .fixedSize()
             }
         }
         .keyboardShortcut("k", modifiers: .command)
@@ -76,11 +66,6 @@ struct MainWindowView: View {
             if let rawValue = notification.object as? String,
                let screen = Screen(rawValue: rawValue) {
                 selectedScreen = screen
-            }
-        }
-        .sheet(isPresented: $showResume) {
-            if let session = selectedSession {
-                ResumeDialog(session: session)
             }
         }
         .sheet(isPresented: $showPalette) {
@@ -166,8 +151,4 @@ struct MainWindowView: View {
         }
     }
 
-    private func resumeSelectedSession() {
-        guard selectedSession != nil else { return }
-        showResume = true
-    }
 }

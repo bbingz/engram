@@ -23,6 +23,7 @@ struct TranscriptToolbar: View {
     let onNavNext: (MessageType) -> Void
     var onHandoff: (() -> Void)? = nil
     var onReplay: (() -> Void)? = nil
+    var onResume: (() -> Void)? = nil
 
     @Binding var viewMode: TranscriptViewMode
     @AppStorage("contentFontSize") var fontSize: Double = 14
@@ -107,6 +108,23 @@ struct TranscriptToolbar: View {
                     }
                     .buttonStyle(.plain)
                     .help("Replay session timeline")
+                }
+
+                if let onResume {
+                    Button(action: onResume) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 10))
+                            Text("Resume")
+                                .font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Resume this session")
                 }
 
                 Spacer()

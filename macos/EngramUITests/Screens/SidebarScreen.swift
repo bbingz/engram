@@ -7,7 +7,11 @@ struct SidebarScreen {
 
     var container: XCUIElement { app.element(id: "sidebar") }
     var themeToggle: XCUIElement { app.element(id: "sidebar_themeToggle") }
-    var settingsItem: XCUIElement { app.element(id: "sidebar_item_settings") }
+    var settingsItem: XCUIElement {
+        let identified = app.element(id: "sidebar_item_settings")
+        if identified.exists { return identified }
+        return app.buttons["Settings"].firstMatch
+    }
 
     // MARK: - Navigation
 
@@ -34,6 +38,17 @@ struct SidebarScreen {
         }
 
         button.click()
+    }
+
+    func navigateToSettings() {
+        XCTAssertTrue(settingsItem.waitForExistence(timeout: 10),
+                      "Settings sidebar item should exist")
+
+        if !settingsItem.isHittable {
+            settingsItem.scrollToVisible(in: container)
+        }
+
+        settingsItem.click()
     }
 
     func allItems() -> [XCUIElement] {

@@ -3,6 +3,8 @@ import SwiftUI
 import os.log
 
 private let logger = Logger(subsystem: "com.engram.app", category: "SessionDetail")
+private let agentSessionPreviewLimit = 20
+private let agentSessionListMaxHeight: CGFloat = 220
 
 struct SessionDetailView: View {
     let session: Session
@@ -12,6 +14,7 @@ struct SessionDetailView: View {
     @State private var isFavorite = false
     @State private var handoffStatus: String? = nil
     @State private var showReplay = false
+    @State private var showResume = false
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
     @State private var isSummarizing = false
@@ -22,6 +25,8 @@ struct SessionDetailView: View {
     @State private var confirmedParent: Session?
     @State private var suggestedParent: Session?
     @State private var childrenSessions: [Session] = []
+    @State private var childrenSessionCount = 0
+    @State private var showAgentSessions = false
 
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
@@ -88,6 +93,7 @@ struct SessionDetailView: View {
                 onNavNext: { type in navigateType(type, direction: 1) },
                 onHandoff: { performHandoff() },
                 onReplay: { showReplay = true },
+                onResume: { showResume = true },
                 viewMode: $viewMode
             )
             .accessibilityElement(children: .contain)
@@ -226,21 +232,53 @@ struct SessionDetailView: View {
             }
 
             // Child session list
-            if !childrenSessions.isEmpty {
+            if childrenSessionCount > 0 {
                 Divider().padding(.horizontal, 16)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Agent Sessions (\(childrenSessions.count))")
-                        .font(.caption)
-                        .foregroundStyle(Theme.secondaryText)
-                        .padding(.horizontal, 16)
+                VStack(alignment: .leading, spacing: 6) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            showAgentSessions.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: showAgentSessions ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Theme.tertiaryText)
+                                .frame(width: 12)
 
-                    ForEach(childrenSessions, id: \.id) { child in
-                        CompactChildRow(
-                            session: child,
-                            isConfirmed: true,
-                            onTap: { navigateToSession(child) }
-                        )
-                        .padding(.horizontal, 12)
+                            Text("Agent Sessions (\(childrenSessionCount))")
+                                .font(.caption)
+                                .foregroundStyle(Theme.secondaryText)
+
+                            if childrenSessionCount > agentSessionPreviewLimit {
+                                Text("showing \(childrenSessions.count)")
+                                    .font(.caption2)
+                                    .foregroundStyle(Theme.tertiaryText)
+                            }
+
+                            Spacer()
+                        }
+                        .padding(.horizontal, 16)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if showAgentSessions {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 2) {
+                                ForEach(childrenSessions, id: \.id) { child in
+                                    CompactChildRow(
+                                        session: child,
+                                        isConfirmed: true,
+                                        onTap: { navigateToSession(child) }
+                                    )
+                                    .padding(.horizontal, 12)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .frame(maxHeight: agentSessionListMaxHeight)
+                        .scrollIndicators(.visible)
                     }
                 }
                 .padding(.vertical, 8)
@@ -272,6 +310,9 @@ struct SessionDetailView: View {
             messages = []
             indexedMessages = []
             typeCounts = [:]
+            childrenSessions = []
+            childrenSessionCount = 0
+            showAgentSessions = false
             var effectivePath = session.effectiveFilePath
             let source = session.source
             // Resolve relative paths against the DB's parent directory (test fixtures)
@@ -300,6 +341,9 @@ struct SessionDetailView: View {
             SessionReplayView(sessionId: session.id)
                 .frame(minWidth: 600, minHeight: 450)
         }
+        .sheet(isPresented: $showResume) {
+            ResumeDialog(session: session)
+        }
     }
 
     // MARK: - Parent/Child Helpers
@@ -325,11 +369,17 @@ struct SessionDetailView: View {
         // childSessions is nonisolated — fetch in background
         let dbRef = db
         Task.detached {
-            let children = try? dbRef.childSessions(parentId: sessionId)
+            let children = try? dbRef.childSessions(
+                parentId: sessionId,
+                limit: agentSessionPreviewLimit
+            )
+            let counts = try? dbRef.childCount(parentIds: [sessionId])
+            let childCount = counts?[sessionId] ?? children?.count ?? 0
             await MainActor.run {
                 confirmedParent = confirmed
                 suggestedParent = suggested
                 childrenSessions = children ?? []
+                childrenSessionCount = childCount
             }
         }
     }

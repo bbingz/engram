@@ -126,6 +126,47 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         }
     }
 
+    func testResumeActionLivesInSessionToolbarNotGlobalWindowToolbar() throws {
+        let mainWindow = try source("macos/Engram/Views/MainWindowView.swift")
+        XCTAssertFalse(
+            mainWindow.contains("Label(\"Resume\", systemImage: \"play.fill\")"),
+            "Resume must not be rendered from the global main window toolbar"
+        )
+        XCTAssertFalse(
+            mainWindow.contains("resumeSelectedSession()"),
+            "MainWindowView should not own the session resume action"
+        )
+        let topBar = try source("macos/Engram/Views/TopBarView.swift")
+        XCTAssertFalse(
+            topBar.contains("Resume"),
+            "TopBarView should not render a global Resume control"
+        )
+
+        let transcriptToolbar = try source("macos/Engram/Views/Transcript/TranscriptToolbar.swift")
+        XCTAssertTrue(
+            transcriptToolbar.contains("var onResume: (() -> Void)? = nil"),
+            "TranscriptToolbar should expose a session-scoped resume action"
+        )
+        XCTAssertTrue(
+            transcriptToolbar.contains("if let onResume"),
+            "TranscriptToolbar should render Resume only when SessionDetailView provides the action"
+        )
+
+        let sessionDetail = try source("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(
+            sessionDetail.contains("@State private var showResume = false"),
+            "SessionDetailView should own the Resume sheet state"
+        )
+        XCTAssertTrue(
+            sessionDetail.contains("onResume: { showResume = true }"),
+            "SessionDetailView should wire Resume into the transcript toolbar"
+        )
+        XCTAssertTrue(
+            sessionDetail.contains("ResumeDialog(session: session)"),
+            "SessionDetailView should present ResumeDialog for the current session"
+        )
+    }
+
     func testStage3ServiceBackedViewsDoNotCallDaemonHttpDirectly() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -162,5 +203,9 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
                 XCTAssertFalse(text.contains(forbidden), "\(expectation.path) must use EngramServiceClient, found \(forbidden)")
             }
         }
+    }
+
+    private func source(_ relativePath: String) throws -> String {
+        try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }
 }

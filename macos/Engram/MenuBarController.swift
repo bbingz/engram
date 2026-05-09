@@ -37,10 +37,12 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         popover.behavior    = .transient
 
         popover.contentViewController = NSHostingController(
-            rootView: PopoverView()
-                .environment(db)
-                .environment(serviceStatusStore)
-                .environment(serviceClient)
+            rootView: LocalizedRoot {
+                PopoverView()
+                    .environment(db)
+                    .environment(serviceStatusStore)
+                    .environment(serviceClient)
+            }
         )
 
         super.init()
@@ -135,6 +137,11 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         openItem.target = self
         menu.addItem(openItem)
 
+        let webItem = NSMenuItem(title: String(localized: "Open Web UI"), action: #selector(openWebUI), keyEquivalent: "")
+        webItem.target = self
+        webItem.isEnabled = serviceStatusStore.endpointPort != nil
+        menu.addItem(webItem)
+
         let settingsItem = NSMenuItem(title: String(localized: "Settings..."), action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
@@ -172,16 +179,19 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
 
         let hostingController = NSHostingController(
-            rootView: SettingsView()
-                .environment(db)
-                .environment(serviceStatusStore)
-                .environment(serviceClient)
+            rootView: LocalizedRoot {
+                SettingsView()
+                    .environment(db)
+                    .environment(serviceStatusStore)
+                    .environment(serviceClient)
+            }
         )
 
         let win = NSWindow(contentViewController: hostingController)
         win.title = String(localized: "Settings")
-        win.setContentSize(NSSize(width: 520, height: 500))
-        win.styleMask = [.titled, .closable]
+        win.setContentSize(NSSize(width: 760, height: 540))
+        win.minSize = NSSize(width: 720, height: 500)
+        win.styleMask = [.titled, .closable, .resizable]
         win.isReleasedWhenClosed = false
         win.delegate = self
         win.center()
@@ -227,14 +237,16 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
 
         let hostingController = NSHostingController(
-            rootView: MainWindowView()
-                .environment(db)
-                .environment(serviceStatusStore)
-                .environment(serviceClient)
+            rootView: LocalizedRoot {
+                MainWindowView()
+                    .environment(db)
+                    .environment(serviceStatusStore)
+                    .environment(serviceClient)
+            }
         )
 
         let win = NSWindow(contentViewController: hostingController)
-        win.title = "Engram"
+        win.title = String(localized: "Engram")
         win.setContentSize(windowSize)
         win.minSize = NSSize(width: 600, height: 400)
         win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -257,6 +269,14 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
         self.window = win
+    }
+
+    @objc private func openWebUI() {
+        guard let port = serviceStatusStore.endpointPort else { return }
+        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
+        if let url = URL(string: "http://\(host):\(port)/") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // When a window closes, check if any windows remain; if not, revert to accessory mode

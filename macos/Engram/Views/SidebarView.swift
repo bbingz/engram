@@ -9,7 +9,7 @@ struct SidebarView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Screen.Section.allCases, id: \.self) { section in
-                        Text(section.rawValue)
+                        Text(LocalizedStringKey(section.rawValue))
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(Theme.tertiaryText)
                             .padding(.horizontal, 12)
@@ -22,7 +22,6 @@ struct SidebarView: View {
                                 isSelected: selectedScreen == screen,
                                 action: { selectedScreen = screen }
                             )
-                            .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")
                         }
                     }
                 }
@@ -95,7 +94,7 @@ private struct ThemeToggleButton: View {
                 Image(systemName: icon)
                     .font(.system(size: 11))
                     .frame(width: 18)
-                Text(label)
+                Text(LocalizedStringKey(label))
                     .font(.system(size: 11))
                 Spacer()
             }
@@ -104,7 +103,7 @@ private struct ThemeToggleButton: View {
             .foregroundStyle(Theme.secondaryText)
         }
         .buttonStyle(.plain)
-        .help("Toggle theme: System → Light → Dark")
+        .help(Text("Toggle theme: System → Light → Dark"))
     }
 }
 
@@ -119,7 +118,7 @@ private struct SidebarItem: View {
                 Image(systemName: screen.icon)
                     .font(.system(size: 11))
                     .frame(width: 18)
-                Text(screen.title)
+                Text(LocalizedStringKey(screen.title))
                     .font(.system(size: 11))
                     .lineLimit(1)
                 Spacer()
@@ -137,6 +136,7 @@ private struct SidebarItem: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")
         .focusEffectDisabled()
         .padding(.horizontal, 8)
     }

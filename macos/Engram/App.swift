@@ -1,16 +1,66 @@
 // macos/Engram/App.swift
 import SwiftUI
 
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case system
+    case english
+    case simplifiedChinese
+
+    var id: String { rawValue }
+
+    var locale: Locale {
+        switch self {
+        case .system:
+            return .autoupdatingCurrent
+        case .english:
+            return Locale(identifier: "en")
+        case .simplifiedChinese:
+            return Locale(identifier: "zh-Hans")
+        }
+    }
+
+    var label: LocalizedStringKey {
+        switch self {
+        case .system:
+            return "System"
+        case .english:
+            return "English"
+        case .simplifiedChinese:
+            return "Simplified Chinese"
+        }
+    }
+
+    static func resolved(from rawValue: String) -> AppLanguage {
+        AppLanguage(rawValue: rawValue) ?? .system
+    }
+}
+
+struct LocalizedRoot<Content: View>: View {
+    @AppStorage("appLanguage") private var appLanguage: String = AppLanguage.system.rawValue
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .environment(\.locale, AppLanguage.resolved(from: appLanguage).locale)
+    }
+}
+
 @main
 struct EngramApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
         Settings {
-            SettingsView()
-                .environment(appDelegate.db)
-                .environment(appDelegate.serviceStatusStore)
-                .environment(appDelegate.serviceClient)
+            LocalizedRoot {
+                SettingsView()
+                    .environment(appDelegate.db)
+                    .environment(appDelegate.serviceStatusStore)
+                    .environment(appDelegate.serviceClient)
+            }
         }
     }
 }
@@ -103,11 +153,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.contentView = NSHostingView(rootView: PopoverView()
-                .environment(db)
-                .environment(serviceStatusStore)
-                .environment(serviceClient))
-            window.title = "Popover Preview"
+            window.contentView = NSHostingView(rootView: LocalizedRoot {
+                PopoverView()
+                    .environment(db)
+                    .environment(serviceStatusStore)
+                    .environment(serviceClient)
+            })
+            window.title = String(localized: "Popover Preview")
             window.center()
             window.makeKeyAndOrderFront(nil)
             window.setContentSize(NSSize(width: 400, height: 600))
@@ -186,13 +238,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Onboarding
 
     private func showOnboarding() {
-        let onboardingView = OnboardingView {
-            self.completeOnboarding()
+        let onboardingView = LocalizedRoot {
+            OnboardingView {
+                self.completeOnboarding()
+            }
         }
         let hostingController = NSHostingController(rootView: onboardingView)
 
         let win = NSWindow(contentViewController: hostingController)
-        win.title = "Welcome to Engram"
+        win.title = String(localized: "Welcome to Engram")
         win.setContentSize(NSSize(width: 460, height: 380))
         win.styleMask = [.titled, .closable, .fullSizeContentView]
         win.titleVisibility = .hidden
