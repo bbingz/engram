@@ -147,3 +147,68 @@ extension NSAppearance {
         bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 }
+
+// MARK: - Scroll chrome
+
+final class ThinScroller: NSScroller {
+    override class func scrollerWidth(for controlSize: NSControl.ControlSize, scrollerStyle: NSScroller.Style) -> CGFloat {
+        6
+    }
+}
+
+struct ModernScrollViewConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { configure(from: view) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { configure(from: view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { configure(from: nsView) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { configure(from: nsView) }
+    }
+
+    private func configure(from view: NSView) {
+        var parent = view.superview
+        while let candidate = parent {
+            if let scrollView = candidate as? NSScrollView {
+                configure(scrollView)
+                return
+            }
+            parent = candidate.superview
+        }
+
+        configureScrollViews(in: view.window?.contentView)
+    }
+
+    private func configureScrollViews(in view: NSView?) {
+        guard let view else { return }
+        if let scrollView = view as? NSScrollView {
+            configure(scrollView)
+        }
+        for subview in view.subviews {
+            configureScrollViews(in: subview)
+        }
+    }
+
+    private func configure(_ scrollView: NSScrollView) {
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerInsets = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 2)
+        if !(scrollView.verticalScroller is ThinScroller) {
+            scrollView.verticalScroller = ThinScroller()
+        }
+        if !(scrollView.horizontalScroller is ThinScroller) {
+            scrollView.horizontalScroller = ThinScroller()
+        }
+        scrollView.verticalScroller?.controlSize = .mini
+        scrollView.horizontalScroller?.controlSize = .mini
+    }
+}
+
+extension View {
+    func modernScrollIndicators() -> some View {
+        background(ModernScrollViewConfigurator())
+    }
+}

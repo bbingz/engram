@@ -27,6 +27,7 @@ struct SidebarView: View {
                 }
                 .padding(.bottom, 8)
             }
+            .modernScrollIndicators()
 
             Divider()
                 .opacity(0.2)

@@ -12,16 +12,16 @@ struct EmptyState: View {
             Image(systemName: icon)
                 .font(.system(size: 40))
                 .foregroundStyle(Theme.tertiaryText)
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.headline)
                 .foregroundStyle(Theme.primaryText)
-            Text(message)
+            Text(LocalizedStringKey(message))
                 .font(.callout)
                 .foregroundStyle(Theme.secondaryText)
                 .multilineTextAlignment(.center)
             if let action {
                 Button(action: action.action) {
-                    Text(action.label)
+                    Text(LocalizedStringKey(action.label))
                         .font(.callout)
                         .foregroundStyle(Theme.accent)
                 }

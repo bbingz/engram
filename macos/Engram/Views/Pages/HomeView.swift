@@ -29,6 +29,7 @@ struct HomeView: View {
             }
             .padding(24)
         }
+        .modernScrollIndicators()
         .accessibilityIdentifier("home_container")
         .task { await loadData() }
     }
@@ -37,7 +38,7 @@ struct HomeView: View {
 
     private var greetingSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(greeting)
+            greetingText
                 .font(.title2)
                 .fontWeight(.bold)
                 .foregroundStyle(Theme.primaryText)
@@ -49,14 +50,15 @@ struct HomeView: View {
         }
     }
 
-    private var greeting: String {
+    @ViewBuilder
+    private var greetingText: some View {
         let hour = Calendar.current.component(.hour, from: Date())
         let name = NSFullUserName().components(separatedBy: " ").first ?? NSUserName()
         switch hour {
-        case 5..<12:  return "Good morning, \(name)"
-        case 12..<17: return "Good afternoon, \(name)"
-        case 17..<22: return "Good evening, \(name)"
-        default:      return "Good night, \(name)"
+        case 5..<12:  Text("Good morning, \(name)")
+        case 12..<17: Text("Good afternoon, \(name)")
+        case 17..<22: Text("Good evening, \(name)")
+        default:      Text("Good night, \(name)")
         }
     }
 

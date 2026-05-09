@@ -51,6 +51,7 @@ struct SettingsView: View {
                 .padding(24)
                 .accessibilityElement(children: .contain)
             }
+            .modernScrollIndicators()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.background)
         }

@@ -44,7 +44,7 @@ struct TierBar: View {
                 ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
                     HStack(spacing: 4) {
                         Circle().fill(seg.color).frame(width: 8, height: 8)
-                        Text("\(seg.name) \(seg.count)")
+                        (Text(LocalizedStringKey(seg.name)) + Text(verbatim: " \(seg.count)"))
                             .font(.caption2)
                             .foregroundStyle(Theme.secondaryText)
                     }

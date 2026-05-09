@@ -212,6 +212,18 @@
     "General" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "通用" } } }
     },
+    "Good afternoon, %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下午好，%@" } } }
+    },
+    "Good evening, %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "晚上好，%@" } } }
+    },
+    "Good morning, %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "早上好，%@" } } }
+    },
+    "Good night, %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "夜深了，%@" } } }
+    },
     "Hide Agents & Noise" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏代理和噪声" } } }
     },
@@ -269,6 +281,9 @@
     "Memory" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "记忆" } } }
     },
+    "Messages" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "消息" } } }
+    },
     "minutes" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分钟" } } }
     },
@@ -283,6 +298,9 @@
     },
     "Network" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络" } } }
+    },
+    "No sessions yet" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无会话" } } }
     },
     "Noise Details" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "噪声细项" } } }
@@ -322,6 +340,9 @@
     },
     "Runtime Infrastructure" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行时基础设施" } } }
+    },
+    "%lld sessions across %lld sources" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个会话，来自 %lld 个来源" } } }
     },
     "Session Filter" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "会话过滤" } } }
@@ -385,6 +406,9 @@
     },
     "Warn" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "警告" } } }
+    },
+    "When You Work" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "工作时段" } } }
     },
     "Web API & Security" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Web API 和安全" } } }
@@ -1175,6 +1199,18 @@
     "Sample Last" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "采样末尾" } } }
     },
+    "premium" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "高级" } } }
+    },
+    "normal" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "普通" } } }
+    },
+    "lite" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "轻量" } } }
+    },
+    "skip" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "跳过" } } }
+    },
     "Save" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1234,6 +1270,9 @@
           }
         }
       }
+    },
+    "Sessions will appear here after indexing" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "索引完成后，会话会显示在这里" } } }
     },
     "Settings..." : {
       "extractionState" : "stale",
@@ -1327,6 +1366,9 @@
     },
     "Temperature" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "温度" } } }
+    },
+    "Tiers" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分层" } } }
     },
     "This session is %@ — loading may take a moment" : {
       "localizations" : {

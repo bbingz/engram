@@ -12,7 +12,7 @@ struct KPICard: View {
             Text(value)
                 .font(.system(size: 28, weight: .bold, design: .rounded))
                 .foregroundStyle(Theme.primaryText)
-            Text(label)
+            Text(LocalizedStringKey(label))
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
             if let delta {
