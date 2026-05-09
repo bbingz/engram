@@ -7,14 +7,14 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     ForEach(Screen.Section.allCases, id: \.self) { section in
                         Text(LocalizedStringKey(section.rawValue))
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(Theme.tertiaryText)
                             .padding(.horizontal, 12)
-                            .padding(.top, section == .overview ? 8 : 12)
-                            .padding(.bottom, 4)
+                            .padding(.top, section == .overview ? 6 : 8)
+                            .padding(.bottom, 2)
 
                         ForEach(section.screens) { screen in
                             SidebarItem(
@@ -25,34 +25,24 @@ struct SidebarView: View {
                         }
                     }
                 }
-                .padding(.bottom, 8)
+                .padding(.bottom, 6)
             }
             .modernScrollIndicators()
 
             Divider()
                 .opacity(0.2)
 
-            // Theme toggle — pinned below scroll area
-            ThemeToggleButton()
+            SidebarFooter(selectedScreen: $selectedScreen)
                 .padding(.horizontal, 8)
-                .padding(.top, 8)
-                .accessibilityIdentifier("sidebar_themeToggle")
-
-            // Settings button — pinned at bottom
-            SidebarItem(
-                screen: .settings,
-                isSelected: selectedScreen == .settings,
-                action: { selectedScreen = .settings }
-            )
-            .accessibilityIdentifier("sidebar_item_settings")
-            .padding(.vertical, 8)
+                .padding(.vertical, 6)
         }
         .frame(minWidth: 160, maxWidth: 160)
         .accessibilityIdentifier("sidebar")
     }
 }
 
-private struct ThemeToggleButton: View {
+private struct SidebarFooter: View {
+    @Binding var selectedScreen: Screen
     @AppStorage("appTheme") var appTheme: String = "system"
 
     private var icon: String {
@@ -60,14 +50,6 @@ private struct ThemeToggleButton: View {
         case "light": return "sun.max.fill"
         case "dark": return "moon.fill"
         default: return "circle.lefthalf.filled"
-        }
-    }
-
-    private var label: String {
-        switch appTheme {
-        case "light": return "Light"
-        case "dark": return "Dark"
-        default: return "System"
         }
     }
 
@@ -82,29 +64,68 @@ private struct ThemeToggleButton: View {
         }
     }
 
+    private func cycleTheme() {
+        switch appTheme {
+        case "system": appTheme = "light"
+        case "light": appTheme = "dark"
+        default: appTheme = "system"
+        }
+        applyTheme(appTheme)
+    }
+
     var body: some View {
-        Button {
-            switch appTheme {
-            case "system": appTheme = "light"
-            case "light": appTheme = "dark"
-            default: appTheme = "system"
-            }
-            applyTheme(appTheme)
-        } label: {
-            HStack(spacing: 8) {
+        HStack(spacing: 0) {
+            footerButton(
+                icon: Screen.settings.icon,
+                title: Screen.settings.title,
+                isSelected: selectedScreen == .settings,
+                accessibilityIdentifier: "sidebar_item_settings",
+                action: { selectedScreen = .settings }
+            )
+
+            Rectangle()
+                .fill(Theme.border)
+                .frame(width: 1, height: 18)
+                .padding(.horizontal, 2)
+
+            footerButton(
+                icon: icon,
+                title: "Theme",
+                isSelected: false,
+                accessibilityIdentifier: "sidebar_themeToggle",
+                action: cycleTheme
+            )
+            .help(Text("Toggle theme: System → Light → Dark"))
+        }
+        .frame(height: 28)
+    }
+
+    private func footerButton(
+        icon: String,
+        title: String,
+        isSelected: Bool,
+        accessibilityIdentifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 11))
-                    .frame(width: 18)
-                Text(LocalizedStringKey(label))
-                    .font(.system(size: 11))
-                Spacer()
+                    .font(.system(size: 10))
+                    .frame(width: 13)
+                Text(LocalizedStringKey(title))
+                    .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .foregroundStyle(Theme.secondaryText)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 5)
+            .foregroundStyle(isSelected ? Theme.sidebarSelectedText : Theme.secondaryText)
+            .background(isSelected ? Theme.sidebarSelection : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(Text("Toggle theme: System → Light → Dark"))
+        .accessibilityIdentifier(accessibilityIdentifier)
+        .focusEffectDisabled()
     }
 }
 
@@ -117,15 +138,15 @@ private struct SidebarItem: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: screen.icon)
-                    .font(.system(size: 11))
-                    .frame(width: 18)
+                    .font(.system(size: 10.5))
+                    .frame(width: 16)
                 Text(LocalizedStringKey(screen.title))
-                    .font(.system(size: 11))
+                    .font(.system(size: 10.5))
                     .lineLimit(1)
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .background(isSelected
@@ -134,7 +155,7 @@ private struct SidebarItem: View {
             .foregroundStyle(isSelected
                 ? Theme.sidebarSelectedText
                 : Theme.secondaryText)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("sidebar_item_\(screen.rawValue)")

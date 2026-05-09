@@ -398,8 +398,14 @@
     "Test Connection" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "测试连接" } } }
     },
+    "Theme" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "深浅" } } }
+    },
     "Title Generation" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标题生成" } } }
+    },
+    "Toggle theme: System → Light → Dark" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "切换深浅模式：系统 → 浅色 → 深色" } } }
     },
     "Transformers" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Transformers" } } }

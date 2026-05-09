@@ -23,34 +23,6 @@ struct MainWindowView: View {
             }
         }
         .navigationTitle("")
-        .toolbar {
-            ToolbarItemGroup(placement: .automatic) {
-                Spacer()
-
-                // Command palette trigger
-                Button { showPalette = true } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        Text("Search or command…")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("⌘K")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .frame(width: 220)
-                    .background(Color.primary.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .keyboardShortcut("k", modifiers: .command)
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
         .onChange(of: selectedScreen) { _, _ in
