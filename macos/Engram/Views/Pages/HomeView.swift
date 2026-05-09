@@ -24,7 +24,6 @@ struct HomeView: View {
                     AlertBanner(message: alertMessage)
                 }
                 chartsSection
-                distributionSection
                 recentSessionsSection
             }
             .padding(24)
@@ -89,52 +88,80 @@ struct HomeView: View {
 
     private var chartsSection: some View {
         HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 10) {
                 SectionHeader(icon: "chart.bar", title: "Activity", badge: "30d")
                 ActivityChart(data: dailyActivity)
                     .frame(height: 140)
+                sourceSummary
             }
             .frame(maxWidth: .infinity)
             .accessibilityIdentifier("home_dailyChart")
 
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 16) {
                 SectionHeader(icon: "clock", title: "When You Work")
                 HeatmapGrid(data: hourlyActivity)
+                tierSummary
             }
             .frame(maxWidth: .infinity)
             .accessibilityIdentifier("home_heatmap")
         }
     }
 
-    // MARK: - Distribution
-
-    private var distributionSection: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading) {
-                SectionHeader(icon: "chart.pie", title: "Sources")
-                BarChart(items: sourceDist.prefix(7).map { item in
-                    BarChartItem(
-                        label: SourceColors.label(for: item.source),
-                        value: item.count,
-                        color: SourceColors.color(for: item.source)
-                    )
-                })
+    private var sourceSummary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "chart.pie")
+                    .foregroundStyle(Theme.tertiaryText)
+                Text("Sources")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.primaryText)
             }
-            .frame(maxWidth: .infinity)
-            .accessibilityIdentifier("home_sourceDistribution")
 
-            VStack(alignment: .leading) {
-                SectionHeader(icon: "square.stack.3d.up", title: "Tiers")
-                TierBar(
-                    premium: tiers.premium,
-                    normal: tiers.normal,
-                    lite: tiers.lite,
-                    skip: tiers.skip
-                )
+            VStack(spacing: 5) {
+                ForEach(Array(sourceDist.prefix(6).enumerated()), id: \.offset) { _, item in
+                    HStack(spacing: 8) {
+                        Text(SourceColors.label(for: item.source))
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondaryText)
+                            .frame(width: 74, alignment: .trailing)
+                        GeometryReader { geo in
+                            let maxValue = max(sourceDist.map(\.count).max() ?? 1, 1)
+                            let width = geo.size.width * CGFloat(item.count) / CGFloat(maxValue)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(SourceColors.color(for: item.source).opacity(0.6))
+                                .frame(width: max(width, 3), height: 12)
+                        }
+                        .frame(height: 12)
+                        Text(formatNumber(item.count))
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                            .frame(width: 44, alignment: .leading)
+                    }
+                }
             }
-            .frame(maxWidth: .infinity)
-            .accessibilityIdentifier("home_tierDistribution")
         }
+        .padding(.top, 2)
+        .accessibilityIdentifier("home_sourceDistribution")
+    }
+
+    private var tierSummary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "square.stack.3d.up")
+                    .foregroundStyle(Theme.tertiaryText)
+                Text("Tiers")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.primaryText)
+            }
+            TierBar(
+                premium: tiers.premium,
+                normal: tiers.normal,
+                lite: tiers.lite,
+                skip: tiers.skip
+            )
+        }
+        .padding(.top, 6)
+        .accessibilityIdentifier("home_tierDistribution")
     }
 
     // MARK: - Recent Sessions
