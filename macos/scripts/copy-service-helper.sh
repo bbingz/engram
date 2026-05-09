@@ -16,6 +16,9 @@ fi
 
 mkdir -p "$DEST_DIR"
 ditto "$SRC" "$DEST"
+if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+  codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DEST"
+fi
 mkdir -p "$FRAMEWORKS_DIR"
 for framework in EngramServiceCore.framework EngramCoreRead.framework EngramCoreWrite.framework; do
   framework_src="${BUILT_PRODUCTS_DIR}/${framework}"

@@ -17,4 +17,7 @@ fi
 
 mkdir -p "$DEST_DIR"
 ditto "$SRC" "$DEST"
+if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+  codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DEST"
+fi
 echo "[copy-mcp-helper] EngramMCP → $DEST"
