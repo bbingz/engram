@@ -549,6 +549,39 @@ final class DatabaseManager {
         }
     }
 
+    nonisolated func dailySourceActivity(days: Int = 30) throws -> [(date: String, segments: [(source: String, count: Int)])] {
+        try readInBackground { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT DATE(start_time) as day, source, COUNT(*) as count
+                FROM sessions
+                WHERE hidden_at IS NULL
+                  AND start_time >= DATE('now', '-\(days) days')
+                GROUP BY day, source
+                ORDER BY day
+            """)
+
+            var result: [(date: String, segments: [(source: String, count: Int)])] = []
+            var currentDay: String?
+            var currentSegments: [(source: String, count: Int)] = []
+
+            for row in rows {
+                let day = row["day"] as String
+                if let currentDay, currentDay != day {
+                    result.append((date: currentDay, segments: currentSegments))
+                    currentSegments = []
+                }
+                currentDay = day
+                currentSegments.append((source: row["source"] as String, count: row["count"] as Int))
+            }
+
+            if let currentDay {
+                result.append((date: currentDay, segments: currentSegments))
+            }
+
+            return result
+        }
+    }
+
     nonisolated func hourlyActivity() throws -> [Int] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """

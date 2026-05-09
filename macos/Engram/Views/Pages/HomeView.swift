@@ -5,7 +5,7 @@ struct HomeView: View {
     @Environment(DatabaseManager.self) var db
 
     @State private var kpi: DatabaseManager.KPIStats?
-    @State private var dailyActivity: [(date: String, count: Int)] = []
+    @State private var dailySourceActivity: [(date: String, segments: [(source: String, count: Int)])] = []
     @State private var hourlyActivity: [Int] = Array(repeating: 0, count: 24)
     @State private var sourceDist: [(source: String, count: Int)] = []
     @State private var tiers: (premium: Int, normal: Int, lite: Int, skip: Int) = (0, 0, 0, 0)
@@ -90,9 +90,9 @@ struct HomeView: View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeader(icon: "chart.bar", title: "Activity", badge: "30d")
-                ActivityChart(data: dailyActivity)
+                StackedActivityChart(data: dailySourceActivity, sourceOrder: sourceDist.map(\.source))
                     .frame(height: 140)
-                sourceSummary
+                sourceLegend
             }
             .frame(maxWidth: .infinity)
             .accessibilityIdentifier("home_dailyChart")
@@ -107,40 +107,21 @@ struct HomeView: View {
         }
     }
 
-    private var sourceSummary: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "chart.pie")
-                    .foregroundStyle(Theme.tertiaryText)
-                Text("Sources")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.primaryText)
-            }
-
-            VStack(spacing: 5) {
-                ForEach(Array(sourceDist.prefix(6).enumerated()), id: \.offset) { _, item in
-                    HStack(spacing: 8) {
-                        Text(SourceColors.label(for: item.source))
-                            .font(.caption)
-                            .foregroundStyle(Theme.secondaryText)
-                            .frame(width: 74, alignment: .trailing)
-                        GeometryReader { geo in
-                            let maxValue = max(sourceDist.map(\.count).max() ?? 1, 1)
-                            let width = geo.size.width * CGFloat(item.count) / CGFloat(maxValue)
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(SourceColors.color(for: item.source).opacity(0.6))
-                                .frame(width: max(width, 3), height: 12)
-                        }
-                        .frame(height: 12)
-                        Text(formatNumber(item.count))
-                            .font(.caption2)
-                            .foregroundStyle(Theme.tertiaryText)
-                            .frame(width: 44, alignment: .leading)
-                    }
+    private var sourceLegend: some View {
+        HStack(spacing: 10) {
+            ForEach(sourceDist.prefix(6), id: \.source) { item in
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(SourceColors.color(for: item.source))
+                        .frame(width: 6, height: 6)
+                    Text(SourceColors.label(for: item.source))
+                        .font(.caption2)
+                        .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(1)
                 }
             }
+            Spacer(minLength: 0)
         }
-        .padding(.top, 2)
         .accessibilityIdentifier("home_sourceDistribution")
     }
 
@@ -212,7 +193,7 @@ struct HomeView: View {
         do {
             let data = try await Task.detached {
                 let kpi = try db.kpiStats()
-                let daily = try db.dailyActivity(days: 30)
+                let dailySource = try db.dailySourceActivity(days: 30)
                 let hourly = try db.hourlyActivity()
                 let source = try db.sourceDistribution()
                 let tiers = try db.tierDistribution()
@@ -220,10 +201,10 @@ struct HomeView: View {
                 let parentIds = recent.map(\.id)
                 let confirmed = try db.childCount(parentIds: parentIds)
                 let suggested = try db.suggestedChildCount(parentIds: parentIds)
-                return (kpi, daily, hourly, source, tiers, recent, confirmed, suggested)
+                return (kpi, dailySource, hourly, source, tiers, recent, confirmed, suggested)
             }.value
             kpi = data.0
-            dailyActivity = data.1
+            dailySourceActivity = data.1
             hourlyActivity = data.2
             sourceDist = data.3
             tiers = data.4
