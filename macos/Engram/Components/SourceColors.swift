@@ -6,22 +6,22 @@ import SwiftUI
 enum SourceColors {
     static func color(for source: String) -> Color {
         switch source {
-        case "claude-code":   return Color(hex: 0x4A8FE7)  // Blue
-        case "cursor":        return Color(hex: 0xA855F7)  // Purple
-        case "codex":         return Color(hex: 0x30D158)  // Green
-        case "gemini-cli":    return Color(hex: 0xFF9F0A)  // Orange
-        case "windsurf":      return Color(hex: 0xFF453A)  // Red
-        case "cline":         return Color(hex: 0x30B0C7)  // Teal
-        case "vscode":        return Color(hex: 0x00A1F1)  // Cyan
-        case "antigravity":   return Color(hex: 0xFF9F0A)  // Orange (same as gemini)
-        case "copilot":       return Color(hex: 0x8E8E93)  // Gray
-        case "opencode":      return Color(hex: 0x5856D6)  // Indigo
-        case "iflow":         return Color(hex: 0xA855F7)  // Purple
-        case "qwen":          return Color(hex: 0x30B0C7)  // Teal
-        case "kimi":          return Color(hex: 0xFF6482)  // Pink
-        case "minimax":       return Color(hex: 0xFF453A)  // Red
-        case "lobsterai":     return Color(hex: 0xFFCC00)  // Yellow
-        default:              return Color(hex: 0x8E8E93)  // Gray
+        case "claude-code":   return Color(hex: 0xD97757)
+        case "cursor":        return Color.primary
+        case "codex":         return Color(hex: 0x3941FF)
+        case "gemini-cli":    return Color(hex: 0x4285F4)
+        case "windsurf":      return Color(hex: 0x00C4B3)
+        case "cline":         return Color(hex: 0x6C47FF)
+        case "vscode":        return Color(hex: 0x007ACC)
+        case "antigravity":   return Color(hex: 0x4285F4)
+        case "copilot":       return Color(hex: 0x1F6FEB)
+        case "opencode":      return Color.primary
+        case "iflow":         return Color(hex: 0x615CED)
+        case "qwen":          return Color(hex: 0x615CED)
+        case "kimi":          return Color(hex: 0x1080F8)
+        case "minimax":       return Color(hex: 0xFF6A00)
+        case "lobsterai":     return Color(hex: 0xE11D48)
+        default:              return Color(hex: 0x8E8E93)
         }
     }
 
