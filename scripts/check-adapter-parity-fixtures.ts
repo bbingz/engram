@@ -1,12 +1,12 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 
 type SupportedFixtureSource =
   | 'antigravity'
   | 'claude-code'
   | 'cline'
-  | 'commandcode'
   | 'codex'
+  | 'commandcode'
   | 'copilot'
   | 'cursor'
   | 'gemini-cli'
@@ -23,8 +23,8 @@ const supportedSources = [
   'antigravity',
   'claude-code',
   'cline',
-  'commandcode',
   'codex',
+  'commandcode',
   'copilot',
   'cursor',
   'gemini-cli',
@@ -91,14 +91,31 @@ function walkFiles(root: string): string[] {
   return out;
 }
 
+type PhysicalFixturePathResult =
+  | { path: string }
+  | { failure: 'missing' | 'escaped' };
+
 function physicalFixturePath(
   fixtureRoot: string,
   value: unknown,
-): string | null {
-  if (typeof value !== 'string' || value.length === 0) return null;
+): PhysicalFixturePathResult {
+  if (typeof value !== 'string' || value.length === 0) {
+    return { failure: 'missing' };
+  }
   const physical = value.split('?')[0]?.split('::')[0];
-  if (!physical) return null;
-  return join(fixtureRoot, physical);
+  if (!physical) return { failure: 'missing' };
+
+  const resolvedRoot = resolve(fixtureRoot);
+  const resolvedPath = resolve(resolvedRoot, physical);
+  const relativePath = relative(resolvedRoot, resolvedPath);
+  if (
+    relativePath === '' ||
+    relativePath.startsWith('..') ||
+    isAbsolute(relativePath)
+  ) {
+    return { failure: 'escaped' };
+  }
+  return { path: resolvedPath };
 }
 
 function assertBatchSizes(fixtureRoot: string, failures: string[]): void {
@@ -163,16 +180,23 @@ export function checkAdapterParityFixtures(fixtureRoot: string): string[] {
     if (fixture.source !== source) {
       failures.push(`${source} fixture source mismatch`);
     }
+    const checkedPhysicalPaths = new Set<string>();
     for (const key of ['inputPath', 'locator']) {
       const physicalPath = physicalFixturePath(fixtureRoot, fixture[key]);
-      if (!physicalPath) {
-        failures.push(`${source} missing physical fixture path: ${key}`);
-      } else {
-        try {
-          statSync(physicalPath);
-        } catch {
-          failures.push(`${source} missing fixture input file: ${key}`);
+      if ('failure' in physicalPath) {
+        if (physicalPath.failure === 'escaped') {
+          failures.push(`${source} fixture path escapes fixture root: ${key}`);
+          continue;
         }
+        failures.push(`${source} missing physical fixture path: ${key}`);
+        continue;
+      }
+      if (checkedPhysicalPaths.has(physicalPath.path)) continue;
+      checkedPhysicalPaths.add(physicalPath.path);
+      try {
+        statSync(physicalPath.path);
+      } catch {
+        failures.push(`${source} missing fixture input file: ${key}`);
       }
     }
     for (const key of [

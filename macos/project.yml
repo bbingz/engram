@@ -63,6 +63,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: EngramCoreTests
+      - path: ../tests/fixtures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: EngramCoreRead
       - target: EngramCoreWrite

@@ -50,6 +50,7 @@ npm run typecheck:test
 npm run knip
 npm test
 xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destination 'platform=macOS' -only-testing:EngramCoreTests/AdapterParityTests/testSwiftAdaptersMatchNodeParityGoldensForAllProviders
+xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' -only-testing:EngramTests/MessageParserTests
 ```
 
 Results:
@@ -61,6 +62,7 @@ Results:
 - `npm run knip`: passed.
 - `npm test`: passed, 118 files, 1321 tests.
 - Swift adapter parity: passed, 1 selected test, 0 failures.
+- Swift display message parser tests: passed, 19 selected tests, 0 failures.
 
 ## Follow-up Rule
 

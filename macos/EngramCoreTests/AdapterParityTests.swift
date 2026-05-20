@@ -4,8 +4,10 @@ import XCTest
 
 final class AdapterParityTests: XCTestCase {
     func testSwiftAdaptersMatchNodeParityGoldensForAllProviders() async throws {
-        let fixtureRoot = repoRoot()
-            .appendingPathComponent("tests/fixtures/adapter-parity")
+        let fixtureRoot = try copyBundledAdapterFixturesToTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: fixtureRoot)
+        }
         let registry = AdapterRegistry(adapters: [
             AntigravityAdapter(
                 cacheDir: fixtureRoot.appendingPathComponent("antigravity/input/cache").path,
@@ -69,8 +71,9 @@ final class AdapterParityTests: XCTestCase {
                 XCTFail("Unexpected adapter result for \(result.source.rawValue)")
                 continue
             }
+            let listedLocators = result.listedLocators.map(standardizedPath)
             XCTAssertTrue(
-                result.listedLocators.contains(harness.resolveLocator(golden.locator)),
+                listedLocators.contains(standardizedPath(harness.resolveLocator(golden.locator))),
                 "\(result.source.rawValue) did not list its fixture locator"
             )
             XCTAssertNil(result.failure, result.source.rawValue)
@@ -86,9 +89,41 @@ final class AdapterParityTests: XCTestCase {
     }
 }
 
-private func repoRoot(filePath: String = #filePath) -> URL {
-    URL(fileURLWithPath: filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
+private func standardizedPath(_ path: String) -> String {
+    URL(fileURLWithPath: path).standardizedFileURL.path
+}
+
+private func copyBundledAdapterFixturesToTemporaryDirectory() throws -> URL {
+    guard let resourceURL = Bundle(for: AdapterParityTests.self).resourceURL else {
+        throw AdapterParityFixtureError.missingResourceURL
+    }
+    let bundledFixtureRoot = resourceURL
+        .appendingPathComponent("fixtures", isDirectory: true)
+        .appendingPathComponent("adapter-parity", isDirectory: true)
+
+    var isDirectory = ObjCBool(false)
+    guard FileManager.default.fileExists(atPath: bundledFixtureRoot.path, isDirectory: &isDirectory),
+          isDirectory.boolValue
+    else {
+        throw AdapterParityFixtureError.missingBundledFixtureRoot(bundledFixtureRoot.path)
+    }
+
+    let temporaryFixtureRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-adapter-parity-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.copyItem(at: bundledFixtureRoot, to: temporaryFixtureRoot)
+    return temporaryFixtureRoot
+}
+
+private enum AdapterParityFixtureError: Error, CustomStringConvertible {
+    case missingResourceURL
+    case missingBundledFixtureRoot(String)
+
+    var description: String {
+        switch self {
+        case .missingResourceURL:
+            return "EngramCoreTests bundle has no resource URL"
+        case .missingBundledFixtureRoot(let path):
+            return "Missing bundled adapter parity fixtures at \(path)"
+        }
+    }
 }

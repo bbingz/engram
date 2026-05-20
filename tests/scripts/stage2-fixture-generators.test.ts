@@ -1,5 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -109,6 +115,37 @@ describe('stage2 Node parity fixture generators', () => {
     }
   }, 60_000);
 
+  it('keeps Antigravity CLI, Command Code, and Qoder in adapter parity coverage', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-adapter-parity-coverage-test-'));
+    const fixtureRoot = join(tmp, 'adapter-parity');
+
+    runScript('scripts/gen-adapter-parity-fixtures.ts', ['--out', fixtureRoot]);
+    const generatedSources = execFileSync(
+      'find',
+      [
+        fixtureRoot,
+        '-maxdepth',
+        '1',
+        '-mindepth',
+        '1',
+        '-type',
+        'd',
+        '-exec',
+        'basename',
+        '{}',
+        ';',
+      ],
+      { encoding: 'utf8' },
+    )
+      .trim()
+      .split('\n')
+      .sort();
+
+    expect(generatedSources).toEqual(
+      expect.arrayContaining(['antigravity', 'commandcode', 'qoder']),
+    );
+  }, 60_000);
+
   it('checks adapter parity fixtures for malformed coverage and file size', () => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-adapter-parity-check-test-'));
     const fixtureRoot = join(tmp, 'adapter-parity');
@@ -166,6 +203,49 @@ describe('stage2 Node parity fixture generators', () => {
         fixtureRoot,
       ]),
     ).toThrow(/opencode missing fixture input file: inputPath/);
+  }, 60_000);
+
+  it('rejects malformed physical fixture paths', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-adapter-parity-path-test-'));
+    const fixtureRoot = join(tmp, 'adapter-parity');
+    runScript('scripts/gen-adapter-parity-fixtures.ts', ['--out', fixtureRoot]);
+
+    const qoderFixturePath = join(
+      fixtureRoot,
+      'qoder',
+      'success.expected.json',
+    );
+    const qoderFixture = JSON.parse(readFileSync(qoderFixturePath, 'utf8'));
+    qoderFixture.inputPath = null;
+    qoderFixture.locator = '/tmp/engram-escaped-fixture.jsonl';
+    writeFileSync(qoderFixturePath, JSON.stringify(qoderFixture, null, 2));
+
+    expect(() =>
+      runScript('scripts/check-adapter-parity-fixtures.ts', [
+        '--fixture-root',
+        fixtureRoot,
+      ]),
+    ).toThrow(
+      /qoder missing physical fixture path: inputPath[\s\S]*qoder fixture path escapes fixture root: locator/,
+    );
+  }, 60_000);
+
+  it('checks adapter parity batch-size guardrails', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-adapter-parity-batch-test-'));
+    const fixtureRoot = join(tmp, 'adapter-parity');
+    runScript('scripts/gen-adapter-parity-fixtures.ts', ['--out', fixtureRoot]);
+
+    const batchPath = join(fixtureRoot, 'batch-sizes.json');
+    const batchSizes = JSON.parse(readFileSync(batchPath, 'utf8'));
+    batchSizes.watchWriteStabilityMs = 1000;
+    writeFileSync(batchPath, JSON.stringify(batchSizes, null, 2));
+
+    expect(() =>
+      runScript('scripts/check-adapter-parity-fixtures.ts', [
+        '--fixture-root',
+        fixtureRoot,
+      ]),
+    ).toThrow(/batch-sizes\.json watchWriteStabilityMs must be 2000/);
   }, 60_000);
 
   it('generates parent detection and indexer fixtures deterministically', () => {
