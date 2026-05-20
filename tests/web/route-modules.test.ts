@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { registerAiAuditRoutes } from '../../src/web/routes/ai-audit.js';
 import { registerProjectAliasRoutes } from '../../src/web/routes/project-aliases.js';
+import { registerSearchRoutes } from '../../src/web/routes/search.js';
 import { registerStatsRoutes } from '../../src/web/routes/stats.js';
 import { registerSyncRoutes } from '../../src/web/routes/sync.js';
 
@@ -19,5 +20,9 @@ describe('web route modules', () => {
 
   it('exposes Stats and analytics routes from a dedicated module', () => {
     expect(registerStatsRoutes).toEqual(expect.any(Function));
+  });
+
+  it('exposes Search routes from a dedicated module', () => {
+    expect(registerSearchRoutes).toEqual(expect.any(Function));
   });
 });

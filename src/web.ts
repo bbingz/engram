@@ -40,10 +40,10 @@ import { handleHandoff } from './tools/handoff.js';
 import { handleLinkSessions } from './tools/link_sessions.js';
 import { handleLintConfig, runAllHealthChecks } from './tools/lint_config.js';
 import { handleSaveInsight } from './tools/save_insight.js';
-import { handleSearch, type SearchDeps } from './tools/search.js';
 import { handleStats } from './tools/stats.js';
 import { registerAiAuditRoutes } from './web/routes/ai-audit.js';
 import { registerProjectAliasRoutes } from './web/routes/project-aliases.js';
+import { registerSearchRoutes } from './web/routes/search.js';
 import { registerStatsRoutes } from './web/routes/stats.js';
 import { registerSyncRoutes } from './web/routes/sync.js';
 import {
@@ -56,18 +56,6 @@ import {
   settingsPage,
   statsPage,
 } from './web/views.js';
-
-function createRateLimiter(maxPerMinute: number) {
-  const timestamps: number[] = [];
-  return (): boolean => {
-    const now = Date.now();
-    while (timestamps.length > 0 && timestamps[0] < now - 60_000)
-      timestamps.shift();
-    if (timestamps.length >= maxPerMinute) return false;
-    timestamps.push(now);
-    return true;
-  };
-}
 
 /** Round 4: retry_policy classification + error-envelope construction +
  *  message sanitization all live in src/core/project-move/retry-policy.ts
@@ -278,7 +266,6 @@ export function createApp(
   type Variables = { traceId: string };
   const app = new Hono<{ Variables: Variables }>();
   const settings = opts?.settings ?? readFileSettings();
-  const semanticLimiter = createRateLimiter(30);
   const detailPageSize = 50;
 
   function resolveAdapter(source: string): SessionAdapter | undefined {
@@ -758,108 +745,13 @@ export function createApp(
     return c.json(result);
   });
 
-  // Embedding status endpoint
-  app.get('/api/search/status', (c) => {
-    const totalSessions = db.countSessions();
-    const embeddedCount = opts?.vectorStore?.count() ?? 0;
-    const available = !!(opts?.vectorStore && opts?.embeddingClient);
-    return c.json({
-      available,
-      model: available ? opts?.embeddingClient?.model : null,
-      embeddedCount,
-      totalSessions,
-      progress:
-        totalSessions > 0
-          ? Math.round((embeddedCount / totalSessions) * 100)
-          : 0,
-    });
-  });
-
-  // Hybrid search (FTS + semantic)
-  const searchDeps: SearchDeps = {
-    ...(opts?.vectorStore && opts?.embeddingClient
-      ? {
-          vectorStore: opts.vectorStore,
-          embed: (text: string) => opts!.embeddingClient!.embed(text),
-        }
-      : {}),
+  // Search
+  registerSearchRoutes(app, {
+    db,
+    vectorStore: opts?.vectorStore,
+    embeddingClient: opts?.embeddingClient,
     metrics: opts?.metrics,
-  };
-
-  app.get('/api/search', async (c) => {
-    const q = c.req.query('q') ?? '';
-    const source = c.req.query('source') as SourceName | undefined;
-    const project = c.req.query('project');
-    const since = c.req.query('since');
-    const limitParam = c.req.query('limit');
-    const limit = parseOptionalPositiveIntParam('limit', limitParam, 100);
-    if (!limit.ok) return c.json({ error: limit.error }, 400);
-    const mode = c.req.query('mode') as string | undefined;
-    const agents = c.req.query('agents') as 'hide' | undefined;
-    const tools = c.req.query('tools') as 'hide' | undefined;
-
-    try {
-      const result = await handleSearch(
-        db,
-        {
-          query: q,
-          source,
-          project,
-          since,
-          limit: limit.value,
-          mode,
-          agents,
-          tools,
-        },
-        searchDeps,
-      );
-      return c.json(result);
-    } catch (err) {
-      return c.json({
-        results: [],
-        query: q,
-        searchModes: [],
-        warning: `Search failed: ${String(err)}`,
-      });
-    }
-  });
-
-  // Semantic search (backward compat — delegates to hybrid with mode=semantic)
-  app.get('/api/search/semantic', async (c) => {
-    if (!semanticLimiter()) {
-      return c.json(
-        { error: 'Rate limit exceeded — max 30 requests/minute' },
-        429,
-      );
-    }
-    if (!opts?.vectorStore || !opts?.embeddingClient) {
-      return c.json(
-        {
-          error:
-            'Semantic search not available — no embedding provider configured',
-        },
-        501,
-      );
-    }
-    const q = c.req.query('q') ?? '';
-    const limitParam = c.req.query('limit');
-    const limit = parseOptionalPositiveIntParam('limit', limitParam, 100);
-    if (!limit.ok) return c.json({ error: limit.error }, 400);
-    try {
-      const result = await handleSearch(
-        db,
-        { query: q, limit: limit.value ?? 10, mode: 'semantic' },
-        searchDeps,
-      );
-      return c.json(result);
-    } catch (err) {
-      return c.json({
-        results: [],
-        query: q,
-        searchModes: [],
-        warning: `Search failed: ${String(err)}`,
-      });
-    }
+    parseOptionalPositiveIntParam,
   });
 
   // Stats and analytics
