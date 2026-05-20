@@ -47,6 +47,27 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
+    var localizedTitle: String {
+        switch self {
+        case .home:        return String(localized: "Home")
+        case .search:      return String(localized: "Search")
+        case .sessions:    return String(localized: "Sessions")
+        case .timeline:    return String(localized: "Timeline")
+        case .activity:    return String(localized: "Activity")
+        case .observability: return String(localized: "Observability")
+        case .hygiene:       return String(localized: "Hygiene")
+        case .projects:    return String(localized: "Projects")
+        case .sourcePulse: return String(localized: "Sources")
+        case .repos:       return String(localized: "Repos")
+        case .workGraph:   return String(localized: "Work Graph")
+        case .skills:      return String(localized: "Skills")
+        case .agents:      return String(localized: "Agents")
+        case .memory:      return String(localized: "Memory")
+        case .hooks:       return String(localized: "Hooks")
+        case .settings:    return String(localized: "Settings")
+        }
+    }
+
     var icon: String {
         switch self {
         case .home:        return "house"

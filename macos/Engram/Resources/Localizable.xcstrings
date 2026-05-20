@@ -244,6 +244,9 @@
     "Error" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误" } } }
     },
+    "Failed: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "失败：%@" } } }
+    },
     "General" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "通用" } } }
     },
@@ -285,6 +288,9 @@
     },
     "HTTP Host" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "HTTP 主机" } } }
+    },
+    "HTTP %lld" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %lld" } } }
     },
     "Hygiene" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "健康检查" } } }
@@ -370,6 +376,9 @@
     "Regenerate All" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部重新生成" } } }
     },
+    "Queued…" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已加入队列…" } } }
+    },
     "Repos" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仓库" } } }
     },
@@ -381,6 +390,9 @@
     },
     "Session Filter" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "会话过滤" } } }
+    },
+    "Service status: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务状态：%@" } } }
     },
     "Settings" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "设置" } } }
@@ -435,6 +447,9 @@
     },
     "Test Connection" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "测试连接" } } }
+    },
+    "Testing…" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "测试中…" } } }
     },
     "Theme" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "深浅" } } }
@@ -748,6 +763,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "复制"
+          }
+        }
+      }
+    },
+    "Connected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接"
           }
         }
       }

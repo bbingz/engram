@@ -142,6 +142,51 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    func testMainMenuNavigationTitlesUseStringCatalog() throws {
+        let menu = try source("macos/Engram/MenuBarController.swift")
+        XCTAssertFalse(
+            menu.contains("NSMenuItem(title: title, action: #selector(navigateToScreenAction(_:))"),
+            "View menu navigation items must localize Screen titles before creating NSMenuItem titles"
+        )
+        XCTAssertTrue(
+            menu.contains("NSMenuItem(title: screen.localizedTitle, action: #selector(navigateToScreenAction(_:))"),
+            "View menu navigation items should use Screen.localizedTitle for String-backed NSMenuItem titles"
+        )
+        let screen = try source("macos/Engram/Models/Screen.swift")
+        XCTAssertTrue(
+            screen.contains("var localizedTitle: String"),
+            "Screen should expose a String-backed localized title for AppKit menu surfaces"
+        )
+    }
+
+    func testAISettingsOperationStatusesUseLocalizedStateModels() throws {
+        let aiSettings = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+        XCTAssertFalse(
+            aiSettings.contains("@State private var titleTestStatus: String"),
+            "Title connection status should be an enum-backed localized state, not a raw display String"
+        )
+        XCTAssertFalse(
+            aiSettings.contains("@State private var titleRegenerateStatus: String"),
+            "Title regeneration status should be an enum-backed localized state, not a raw display String"
+        )
+        XCTAssertFalse(
+            aiSettings.contains("Text(titleTestStatus)"),
+            "Dynamic operation status text should render localized state labels instead of raw String state"
+        )
+        XCTAssertFalse(
+            aiSettings.contains("Text(titleRegenerateStatus)"),
+            "Dynamic operation status text should render localized state labels instead of raw String state"
+        )
+        XCTAssertTrue(
+            aiSettings.contains("enum TitleConnectionStatus"),
+            "AI settings should define a localized state model for connection status"
+        )
+        XCTAssertTrue(
+            aiSettings.contains("enum TitleRegenerationStatus"),
+            "AI settings should define a localized state model for title regeneration status"
+        )
+    }
+
     func testUnsupportedSyncIsNotPresentedAsWorkingSettingsAction() throws {
         let networkSettings = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
         XCTAssertTrue(

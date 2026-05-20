@@ -46,8 +46,8 @@ struct AISettingsSection: View {
     @State private var titleModel: String = "qwen2.5:3b"
     @State private var titleApiKey: String = ""
     @State private var titleAutoGenerate: Bool = false
-    @State private var titleTestStatus: String = ""
-    @State private var titleRegenerateStatus: String = ""
+    @State private var titleTestStatus: TitleConnectionStatus = .idle
+    @State private var titleRegenerateStatus: TitleRegenerationStatus = .idle
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -315,7 +315,7 @@ struct AISettingsSection: View {
 
                     HStack(spacing: 8) {
                         Button("Test Connection") {
-                            titleTestStatus = "Testing…"
+                            titleTestStatus = .testing
                             let url = titleBaseURL.isEmpty ? "http://localhost:11434" : titleBaseURL
                             let testURL = titleProvider == "ollama"
                                 ? "\(url)/api/tags"
@@ -328,37 +328,37 @@ struct AISettingsSection: View {
                                     }
                                     let (_, resp) = try await URLSession.shared.data(for: req)
                                     let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                                    titleTestStatus = code == 200 ? "Connected" : "HTTP \(code)"
+                                    titleTestStatus = code == 200 ? .connected : .http(code)
                                 } catch {
-                                    titleTestStatus = "Failed: \(error.localizedDescription)"
+                                    titleTestStatus = .failed(error.localizedDescription)
                                 }
                             }
                         }
                         .buttonStyle(.bordered)
 
-                        if !titleTestStatus.isEmpty {
-                            Text(titleTestStatus)
+                        if let label = titleTestStatus.label {
+                            Text(label)
                                 .font(.caption)
-                                .foregroundStyle(titleTestStatus == "Connected" ? .green : .red)
+                                .foregroundStyle(titleTestStatus.isSuccess ? .green : .red)
                         }
 
                         Spacer()
 
                         Button("Regenerate All") {
-                            titleRegenerateStatus = "Queued…"
+                            titleRegenerateStatus = .queued
                             Task {
                                 do {
                                     let response = try await serviceClient.regenerateAllTitles()
-                                    titleRegenerateStatus = response.status
+                                    titleRegenerateStatus = .service(response.status)
                                 } catch {
-                                    titleRegenerateStatus = "Error"
+                                    titleRegenerateStatus = .error
                                 }
                             }
                         }
                         .buttonStyle(.bordered)
 
-                        if !titleRegenerateStatus.isEmpty {
-                            Text(titleRegenerateStatus)
+                        if let label = titleRegenerateStatus.label {
+                            Text(label)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -512,5 +512,52 @@ struct AISettingsSection: View {
         titleApiKey = KeychainHelper.get("titleApiKey")
             ?? { let v = settings["titleApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
         if let v = settings["titleAutoGenerate"] as? Bool { titleAutoGenerate = v }
+    }
+}
+
+enum TitleConnectionStatus: Equatable {
+    case idle
+    case testing
+    case connected
+    case http(Int)
+    case failed(String)
+
+    var label: LocalizedStringKey? {
+        switch self {
+        case .idle:
+            return nil
+        case .testing:
+            return "Testing…"
+        case .connected:
+            return "Connected"
+        case .http(let code):
+            return "HTTP \(code)"
+        case .failed(let message):
+            return "Failed: \(message)"
+        }
+    }
+
+    var isSuccess: Bool {
+        self == .connected
+    }
+}
+
+enum TitleRegenerationStatus: Equatable {
+    case idle
+    case queued
+    case service(String)
+    case error
+
+    var label: LocalizedStringKey? {
+        switch self {
+        case .idle:
+            return nil
+        case .queued:
+            return "Queued…"
+        case .service(let status):
+            return "Service status: \(status)"
+        case .error:
+            return "Error"
+        }
     }
 }

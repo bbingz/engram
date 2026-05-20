@@ -388,15 +388,15 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         // View menu (navigation shortcuts)
         let viewMenu = NSMenu(title: String(localized: "View"))
-        let viewShortcuts: [(String, Screen, String)] = [
-            ("Home", .home, "1"),
-            ("Sessions", .sessions, "2"),
-            ("Search", .search, "3"),
-            ("Timeline", .timeline, "4"),
-            ("Activity", .activity, "5"),
+        let viewShortcuts: [(Screen, String)] = [
+            (.home, "1"),
+            (.sessions, "2"),
+            (.search, "3"),
+            (.timeline, "4"),
+            (.activity, "5"),
         ]
-        for (title, screen, key) in viewShortcuts {
-            let item = NSMenuItem(title: title, action: #selector(navigateToScreenAction(_:)), keyEquivalent: key)
+        for (screen, key) in viewShortcuts {
+            let item = NSMenuItem(title: screen.localizedTitle, action: #selector(navigateToScreenAction(_:)), keyEquivalent: key)
             item.target = self
             item.representedObject = screen.rawValue
             viewMenu.addItem(item)
