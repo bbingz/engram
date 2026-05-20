@@ -36,16 +36,15 @@ import { withSpan } from './core/tracer.js';
 import type { UsageCollector } from './core/usage-collector.js';
 import type { VectorStore } from './core/vector-store.js';
 import { WATCHED_SOURCES } from './core/watcher.js';
-import { handleGetCosts } from './tools/get_costs.js';
 import { handleHandoff } from './tools/handoff.js';
 import { handleLinkSessions } from './tools/link_sessions.js';
 import { handleLintConfig, runAllHealthChecks } from './tools/lint_config.js';
 import { handleSaveInsight } from './tools/save_insight.js';
 import { handleSearch, type SearchDeps } from './tools/search.js';
 import { handleStats } from './tools/stats.js';
-import { handleToolAnalytics } from './tools/tool_analytics.js';
 import { registerAiAuditRoutes } from './web/routes/ai-audit.js';
 import { registerProjectAliasRoutes } from './web/routes/project-aliases.js';
+import { registerStatsRoutes } from './web/routes/stats.js';
 import { registerSyncRoutes } from './web/routes/sync.js';
 import {
   healthPage,
@@ -863,87 +862,11 @@ export function createApp(
     }
   });
 
-  // Stats
-  app.get('/api/stats', async (c) => {
-    const since = c.req.query('since');
-    const until = c.req.query('until');
-    const group_by = c.req.query('group_by');
-    const exclude_noise = c.req.query('exclude_noise') !== '0'; // default: true
-
-    const result = await handleStats(db, {
-      since,
-      until,
-      group_by,
-      exclude_noise,
-    });
-    return c.json(result);
-  });
-
-  // Cost tracking API
-  app.get('/api/costs', (c) => {
-    const group_by = c.req.query('group_by');
-    const since = c.req.query('since');
-    const until = c.req.query('until');
-    const result = handleGetCosts(db, { group_by, since, until });
-    return c.json(result);
-  });
-
-  app.get('/api/costs/sessions', (c) => {
-    const rawLimit = parseInt(c.req.query('limit') || '20', 10);
-    const limit = Math.min(
-      Math.max(Number.isNaN(rawLimit) ? 20 : rawLimit, 1),
-      100,
-    );
-    const rows = db
-      .getRawDb()
-      .prepare(`
-      SELECT c.*, s.source, s.project, s.start_time, s.summary
-      FROM session_costs c JOIN sessions s ON c.session_id = s.id
-      ORDER BY c.cost_usd DESC LIMIT ?
-    `)
-      .all(limit);
-    return c.json({ sessions: rows });
-  });
-
-  // File activity API
-  app.get('/api/file-activity', (c) => {
-    const project = c.req.query('project');
-    const since = c.req.query('since');
-    const limit = parseOptionalPositiveIntParam(
-      'limit',
-      c.req.query('limit'),
-      500,
-    );
-    if (!limit.ok) return c.json({ error: limit.error }, 400);
-    const result = db.getFileActivity({
-      project: project ?? undefined,
-      since: since ?? undefined,
-      limit: limit.value,
-    });
-    return c.json({ files: result, totalFiles: result.length });
-  });
-
-  // Tool analytics API
-  app.get('/api/tool-analytics', (c) => {
-    const project = c.req.query('project');
-    const since = c.req.query('since');
-    const group_by = c.req.query('group_by');
-    const result = handleToolAnalytics(db, { project, since, group_by });
-    return c.json(result);
-  });
-
-  // Usage snapshots
-  app.get('/api/usage', (c) => {
-    const latest = opts?.usageCollector?.getLatest() ?? [];
-    return c.json({ usage: latest });
-  });
-
-  app.get('/api/repos', (c) => {
-    const rows = db
-      .getRawDb()
-      .prepare('SELECT * FROM git_repos ORDER BY last_commit_at DESC')
-      .all();
-    return c.json({ repos: rows });
+  // Stats and analytics
+  registerStatsRoutes(app, {
+    db,
+    usageCollector: opts?.usageCollector,
+    parseOptionalPositiveIntParam,
   });
 
   // Project aliases
