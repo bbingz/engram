@@ -221,6 +221,13 @@ final class MessageParserTests: XCTestCase {
             MessageParser.classifySystem(content: "text with <command-name>test</command-name>", source: "claude-code"),
             .agentComm
         )
+        XCTAssertEqual(
+            MessageParser.classifySystem(
+                content: "<subagent_notification>\n{\"agent_path\":\"agent-1\"}\n</subagent_notification>",
+                source: "codex"
+            ),
+            .agentComm
+        )
 
         // Normal content
         XCTAssertEqual(

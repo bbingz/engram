@@ -1333,8 +1333,18 @@ export function healthPage(data: HealthData): string {
 type SystemCategory = 'none' | 'systemPrompt' | 'agentComm';
 
 function classifySystem(content: string): SystemCategory {
+  // System prompts
+  if (content.startsWith('# AGENTS.md instructions for '))
+    return 'systemPrompt';
+  if (content.includes('<INSTRUCTIONS>')) return 'systemPrompt';
+  if (content.startsWith('<system-reminder>')) return 'systemPrompt';
+  if (content.startsWith('<environment_context>')) return 'systemPrompt';
+  if (content.startsWith('<EXTREMELY_IMPORTANT>')) return 'systemPrompt';
+  if (content.startsWith('\nYou are Qwen Code')) return 'systemPrompt';
+  if (content.startsWith('You are Qwen Code')) return 'systemPrompt';
+
   // Agent communication
-  if (content.startsWith('# AGENTS.md instructions for ')) return 'agentComm';
+  if (content.startsWith('<subagent_notification>')) return 'agentComm';
   if (content.includes('<command-name>')) return 'agentComm';
   if (content.includes('<command-message>')) return 'agentComm';
   if (content.startsWith('<local-command-caveat>')) return 'agentComm';
@@ -1342,14 +1352,6 @@ function classifySystem(content: string): SystemCategory {
   if (content.startsWith('Unknown skill: ')) return 'agentComm';
   if (content.startsWith('Invoke the superpowers:')) return 'agentComm';
   if (content.startsWith('Base directory for this skill:')) return 'agentComm';
-
-  // System prompts
-  if (content.includes('<INSTRUCTIONS>')) return 'systemPrompt';
-  if (content.startsWith('<system-reminder>')) return 'systemPrompt';
-  if (content.startsWith('<environment_context>')) return 'systemPrompt';
-  if (content.startsWith('<EXTREMELY_IMPORTANT>')) return 'systemPrompt';
-  if (content.startsWith('\nYou are Qwen Code')) return 'systemPrompt';
-  if (content.startsWith('You are Qwen Code')) return 'systemPrompt';
 
   return 'none';
 }

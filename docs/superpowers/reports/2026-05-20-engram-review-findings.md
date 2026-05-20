@@ -405,6 +405,20 @@ Not a backend blocker if docs are corrected, but a useful UI completion item.
 Recommended fix:
 Either remove the README promise or add a small Settings section with list/add/remove and service-backed validation.
 
+### 27. HTTP transcript rendering is not aligned with Swift transcript classification
+
+Evidence:
+- The HTTP session detail view uses a local TypeScript classifier in `src/web/views.ts`.
+- The Swift app uses `macos/Engram/Core/MessageParser.swift`, plus Swift-side message classification and filtering.
+- `<subagent_notification>` currently renders in the HTTP view as a normal `You` message, while Swift treats comparable injected/agent metadata as system-like transcript content.
+- `src/web/views.ts` also classifies `# AGENTS.md instructions for ...` differently from Swift despite the code comment saying the two classifiers should stay in sync.
+
+Impact:
+The same session can be readable in the Swift app but noisy or misleading in the HTTP transcript, especially when subagents emit large status payloads.
+
+Recommended fix:
+Keep the Web and Swift system classifiers in parity. Classify `<subagent_notification>` as agent communication, and align AGENTS injected instruction classification with Swift.
+
 ## Gemini Revised Findings - Triage
 
 | Gemini claim | Verdict | Notes |

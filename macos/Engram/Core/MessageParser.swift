@@ -378,6 +378,7 @@ struct MessageParser {
         if content.hasPrefix("You are Qwen Code")             { return .systemPrompt }
 
         // Agent communication — tool/skill/command interactions
+        if content.hasPrefix("<subagent_notification>")        { return .agentComm }
         if content.hasPrefix("<local-command-caveat>")         { return .agentComm }
         if content.hasPrefix("<local-command-stdout>")         { return .agentComm }
         if content.contains("<command-name>")                  { return .agentComm }
