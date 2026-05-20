@@ -41,6 +41,28 @@ export const saveInsightTool = {
   },
 };
 
+export const deleteInsightTool = {
+  name: 'delete_insight',
+  description:
+    'Delete a saved insight by id. Normal calls delete from the local text/vector stores; dry_run only validates input.',
+  inputSchema: {
+    type: 'object' as const,
+    required: ['id'],
+    properties: {
+      id: {
+        type: 'string',
+        description: 'Insight id to delete',
+      },
+      dry_run: {
+        type: 'boolean',
+        description: 'Validate and show intent without deleting',
+        default: false,
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
 interface SaveInsightDeps {
   vecStore?: VectorStore | null;
   embedder?: EmbeddingClient | null;
@@ -64,7 +86,7 @@ const DEDUP_THRESHOLD = 0.85;
  * Delete an insight from both text (insights+FTS) and vector (memory_insights+vec_insights) stores.
  * Callers don't need to remember to delete from both — this is the single entry point.
  */
-function _deleteInsight(
+function deleteInsight(
   id: string,
   deps: { db?: Database; vecStore?: VectorStore | null },
 ): boolean {
@@ -77,6 +99,20 @@ function _deleteInsight(
     deleted = true;
   }
   return deleted;
+}
+
+export function handleDeleteInsight(
+  params: { id: string; dry_run?: boolean },
+  deps: SaveInsightDeps = {},
+): { id: string; deleted: boolean; dry_run?: boolean } {
+  const id = String(params.id ?? '').trim();
+  if (!id) {
+    throw new Error('id is required.');
+  }
+  if (params.dry_run) {
+    return { id, deleted: false, dry_run: true };
+  }
+  return { id, deleted: deleteInsight(id, deps) };
 }
 
 export async function handleSaveInsight(

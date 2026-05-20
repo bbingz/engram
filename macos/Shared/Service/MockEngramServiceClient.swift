@@ -15,6 +15,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
     var embeddingStatusResult: Result<EngramServiceEmbeddingStatusResponse, Error>
     var generateSummaryResult: Result<EngramServiceGenerateSummaryResponse, Error>
     var saveInsightResult: Result<EngramServiceJSONValue, Error>
+    var deleteInsightResult: Result<EngramServiceJSONValue, Error>
     var manageProjectAliasResult: Result<EngramServiceJSONValue, Error>
     var resumeCommandResult: Result<EngramServiceResumeCommandResponse, Error>
     var confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
@@ -48,6 +49,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
         embeddingStatus: EngramServiceEmbeddingStatusResponse = EngramServiceEmbeddingStatusResponse(available: false, model: nil, embeddedCount: 0, totalSessions: 0, progress: 0),
         generateSummary: EngramServiceGenerateSummaryResponse = EngramServiceGenerateSummaryResponse(summary: "Mock summary"),
         saveInsight: EngramServiceJSONValue = .object(["id": .string("mock-insight")]),
+        deleteInsight: EngramServiceJSONValue = .object(["id": .string("mock-insight"), "deleted": .bool(true)]),
         manageProjectAlias: EngramServiceJSONValue = .object(["ok": .bool(true)]),
         resumeCommand: EngramServiceResumeCommandResponse = EngramServiceResumeCommandResponse(
             tool: "codex",
@@ -89,6 +91,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
         self.embeddingStatusResult = .success(embeddingStatus)
         self.generateSummaryResult = .success(generateSummary)
         self.saveInsightResult = .success(saveInsight)
+        self.deleteInsightResult = .success(deleteInsight)
         self.manageProjectAliasResult = .success(manageProjectAlias)
         self.resumeCommandResult = .success(resumeCommand)
         self.confirmSuggestionResult = .success(confirmSuggestion)
@@ -146,6 +149,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sen
 
     func saveInsight(_ request: EngramServiceSaveInsightRequest) async throws -> EngramServiceJSONValue {
         try saveInsightResult.get()
+    }
+
+    func deleteInsight(_ request: EngramServiceDeleteInsightRequest) async throws -> EngramServiceJSONValue {
+        try deleteInsightResult.get()
     }
 
     func manageProjectAlias(_ request: EngramServiceProjectAliasRequest) async throws -> EngramServiceJSONValue {

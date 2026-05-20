@@ -543,6 +543,51 @@ enum MCPToolRegistry {
             ])
         ),
         MCPToolDefinition(
+            name: "delete_insight",
+            description: "Delete a saved insight by id. Normal calls are routed through EngramService; dry_run only validates input.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("id")]),
+                "properties": .object([
+                    "id": .object([
+                        "type": .string("string"),
+                        "description": .string("Insight id to delete"),
+                    ]),
+                    "dry_run": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Validate and show intent without deleting"),
+                        "default": .bool(false),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
+            name: "hide_session",
+            description: "Hide or unhide a session by id. Normal calls are routed through EngramService; dry_run only validates input.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("session_id")]),
+                "properties": .object([
+                    "session_id": .object([
+                        "type": .string("string"),
+                        "description": .string("Session id to hide or unhide"),
+                    ]),
+                    "hidden": .object([
+                        "type": .string("boolean"),
+                        "description": .string("true hides the session; false restores it"),
+                        "default": .bool(true),
+                    ]),
+                    "dry_run": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Validate and show intent without changing the session"),
+                        "default": .bool(false),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
             name: "project_move",
             description: "⚠️ Cannot run concurrently with other project_* tools; execute sequentially. Move a project directory and keep all AI session history reachable. Patches cwd references in Claude Code / Codex / Gemini / iFlow / OpenCode / Antigravity / Copilot session files, renames per-project directories for every source that groups by project (Claude Code encoded cwd, Gemini basename, iFlow encoded), syncs Gemini's projects.json, updates engram DB, and creates a project alias. Transactional with compensation on failure.",
             inputSchema: .object([
@@ -931,6 +976,50 @@ enum MCPToolRegistry {
             )
             let structured = orderedSaveInsight(from: jsonValue(raw))
             return .toolSuccess(structured)
+        case "delete_insight":
+            let id = try requiredString("id", in: arguments)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else {
+                throw MCPToolError.invalidArguments("id is required")
+            }
+            if arguments["dry_run"]?.boolValue == true {
+                return .toolSuccess(.object([
+                    ("id", .string(id)),
+                    ("deleted", .bool(false)),
+                    ("dry_run", .bool(true)),
+                ]))
+            }
+            let serviceClient = makeServiceClient(config: config)
+            defer {
+                Task {
+                    await serviceClient.close()
+                }
+            }
+            let raw = try await serviceClient.deleteInsight(
+                EngramServiceDeleteInsightRequest(id: id)
+            )
+            return .toolSuccess(orderedDeleteInsight(from: jsonValue(raw)))
+        case "hide_session":
+            let sessionId = try requiredString("session_id", in: arguments)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sessionId.isEmpty else {
+                throw MCPToolError.invalidArguments("session_id is required")
+            }
+            let hidden = arguments["hidden"]?.boolValue ?? true
+            if arguments["dry_run"]?.boolValue != true {
+                let serviceClient = makeServiceClient(config: config)
+                defer {
+                    Task {
+                        await serviceClient.close()
+                    }
+                }
+                try await serviceClient.setSessionHidden(sessionId: sessionId, hidden: hidden)
+            }
+            return .toolSuccess(.object([
+                ("session_id", .string(sessionId)),
+                ("hidden", .bool(hidden)),
+                ("dry_run", .bool(arguments["dry_run"]?.boolValue ?? false)),
+            ]))
         case "manage_project_alias":
             let action = try requiredString("action", in: arguments)
             switch action {
@@ -1067,9 +1156,11 @@ enum MCPToolRegistry {
         case "generate_summary":
             return .longRunningRead
         case "save_insight",
+             "delete_insight",
+             "hide_session",
              "export",
              "link_sessions":
-            return .mutating
+            return arguments["dry_run"]?.boolValue == true ? .readOnly : .mutating
         case "manage_project_alias":
             return arguments["action"]?.stringValue == "list" ? .readOnly : .mutating
         case "project_move",
@@ -1110,6 +1201,13 @@ private func orderedSaveInsight(from raw: JSONValue) -> OrderedJSONValue {
         entries.append(("duplicateWarning", OrderedJSONValue(duplicateWarning)))
     }
     if let warning = raw["warning"] { entries.append(("warning", OrderedJSONValue(warning))) }
+    return .object(entries)
+}
+
+private func orderedDeleteInsight(from raw: JSONValue) -> OrderedJSONValue {
+    var entries: [(String, OrderedJSONValue)] = []
+    if let id = raw["id"] { entries.append(("id", OrderedJSONValue(id))) }
+    if let deleted = raw["deleted"] { entries.append(("deleted", OrderedJSONValue(deleted))) }
     return .object(entries)
 }
 

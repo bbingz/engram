@@ -75,6 +75,10 @@ final class EngramServiceClient: EngramServiceClientProtocol, @unchecked Sendabl
         try await command("saveInsight", payload: request)
     }
 
+    func deleteInsight(_ request: EngramServiceDeleteInsightRequest) async throws -> EngramServiceJSONValue {
+        try await command("deleteInsight", payload: request)
+    }
+
     func manageProjectAlias(_ request: EngramServiceProjectAliasRequest) async throws -> EngramServiceJSONValue {
         try await command("manageProjectAlias", payload: request)
     }

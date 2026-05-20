@@ -27,6 +27,50 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath), "save_insight must not open or write the DB")
     }
 
+    func testDeleteInsightFailsClosedWithoutServiceSocket() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbPath = temp.appendingPathComponent("should-not-exist.sqlite").path
+        let socketPath = temp.appendingPathComponent("missing-service.sock").path
+
+        let result = try callTool(
+            name: "delete_insight",
+            arguments: [
+                "id": "insight-123",
+            ],
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": socketPath,
+                "ENGRAM_MCP_DAEMON_BASE_URL": "http://127.0.0.1:9",
+            ]
+        )
+
+        assertServiceUnavailable(result, tool: "delete_insight", socketPath: socketPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath), "delete_insight must not open or write the DB")
+    }
+
+    func testHideSessionFailsClosedWithoutServiceSocket() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbPath = temp.appendingPathComponent("should-not-exist.sqlite").path
+        let socketPath = temp.appendingPathComponent("missing-service.sock").path
+
+        let result = try callTool(
+            name: "hide_session",
+            arguments: [
+                "session_id": "session-123",
+            ],
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": socketPath,
+                "ENGRAM_MCP_DAEMON_BASE_URL": "http://127.0.0.1:9",
+            ]
+        )
+
+        assertServiceUnavailable(result, tool: "hide_session", socketPath: socketPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath), "hide_session must not open or write the DB")
+    }
+
     func testProjectMoveDryRunFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }

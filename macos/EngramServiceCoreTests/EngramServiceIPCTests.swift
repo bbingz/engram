@@ -708,6 +708,60 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testDeleteInsightRemovesInsightAndFtsRowsThroughServiceWriterGate() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let insight = try await client.saveInsight(
+            EngramServiceSaveInsightRequest(
+                content: "Swift service should delete insight and search rows",
+                wing: "engram",
+                room: "stage5",
+                importance: 4,
+                sourceSessionId: "s1",
+                actor: "test"
+            )
+        )
+        let insightId = try XCTUnwrap(insight.objectValue?["id"]?.stringValue)
+
+        let transport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        let deleteResponse = try await transport.send(
+            EngramServiceRequestEnvelope(
+                command: "deleteInsight",
+                payload: try JSONSerialization.data(withJSONObject: ["id": insightId])
+            ),
+            timeout: 2
+        )
+
+        guard case .success(_, let data, let generation?) = deleteResponse else {
+            throw EngramServiceError.invalidRequest(message: "Expected successful deleteInsight response")
+        }
+        XCTAssertGreaterThanOrEqual(generation, 2)
+        let result = try JSONDecoder().decode(EngramServiceJSONValue.self, from: data)
+        XCTAssertEqual(result.objectValue?["deleted"]?.boolValue, true)
+        XCTAssertEqual(result.objectValue?["id"]?.stringValue, insightId)
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insights WHERE id = ?", arguments: [insightId]),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insights_fts WHERE insight_id = ?", arguments: [insightId]),
+                0
+            )
+        }
+    }
+
     func testFormerBridgeCommandsUseNativeServiceBehavior() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -891,6 +945,11 @@ private extension EngramServiceJSONValue {
 
     var stringValue: String? {
         if case .string(let value) = self { return value }
+        return nil
+    }
+
+    var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
         return nil
     }
 }

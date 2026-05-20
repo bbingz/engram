@@ -61,7 +61,12 @@ import {
   handleProjectTimeline,
   projectTimelineTool,
 } from './tools/project_timeline.js';
-import { handleSaveInsight, saveInsightTool } from './tools/save_insight.js';
+import {
+  deleteInsightTool,
+  handleDeleteInsight,
+  handleSaveInsight,
+  saveInsightTool,
+} from './tools/save_insight.js';
 import { handleSearch, type SearchDeps, searchTool } from './tools/search.js';
 import { handleStats, statsTool } from './tools/stats.js';
 import {
@@ -124,6 +129,33 @@ const manageProjectAliasTool = {
   },
 };
 
+const hideSessionTool = {
+  name: 'hide_session',
+  description:
+    'Hide or unhide a session by id. Normal calls update the local session row; dry_run only validates input.',
+  inputSchema: {
+    type: 'object' as const,
+    required: ['session_id'],
+    properties: {
+      session_id: {
+        type: 'string',
+        description: 'Session id to hide or unhide',
+      },
+      hidden: {
+        type: 'boolean',
+        description: 'true hides the session; false restores it',
+        default: true,
+      },
+      dry_run: {
+        type: 'boolean',
+        description: 'Validate and show intent without changing the session',
+        default: false,
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
 const allTools = [
   listSessionsTool,
   getSessionTool,
@@ -137,6 +169,8 @@ const allTools = [
   linkSessionsTool,
   getMemoryTool,
   saveInsightTool,
+  deleteInsightTool,
+  hideSessionTool,
   getCostsTool,
   toolAnalyticsTool,
   handoffTool,
@@ -259,6 +293,29 @@ toolRegistry.set('get_session', async (a) => {
     a as { id: string; page?: number; roles?: string[] },
     { log },
   );
+});
+
+toolRegistry.set('delete_insight', (a) =>
+  handleDeleteInsight(a as { id: string; dry_run?: boolean }, {
+    db,
+    vecStore: vectorStore,
+    log,
+  }),
+);
+
+toolRegistry.set('hide_session', (a) => {
+  const sessionId = String(a.session_id ?? '').trim();
+  if (!sessionId) throw new Error('session_id is required.');
+  const hidden = typeof a.hidden === 'boolean' ? a.hidden : true;
+  if (a.dry_run === true) {
+    return { session_id: sessionId, hidden, dry_run: true };
+  }
+  db.raw
+    .prepare(
+      `UPDATE sessions SET hidden_at = ${hidden ? "datetime('now')" : 'NULL'} WHERE id = ?`,
+    )
+    .run(sessionId);
+  return { session_id: sessionId, hidden, dry_run: false };
 });
 
 toolRegistry.set('export', async (a) => {

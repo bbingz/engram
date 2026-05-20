@@ -551,6 +551,10 @@ struct EngramServiceSaveInsightRequest: Codable, Equatable, Sendable {
     }
 }
 
+struct EngramServiceDeleteInsightRequest: Codable, Equatable, Sendable {
+    let id: String
+}
+
 struct EngramServiceProjectAliasRequest: Codable, Equatable, Sendable {
     let action: String
     let oldProject: String?

@@ -15,7 +15,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             XCTFail("Expected tools/list result.tools array")
             return
         }
-        XCTAssertEqual(tools.count, 26)
+        XCTAssertEqual(tools.count, 28)
     }
 
     func testToolNameParityMatchesNodeAllTools() throws {
@@ -367,6 +367,87 @@ final class EngramMCPExecutableTests: XCTestCase {
         let actual = try normalizeUUIDs(in: prettyJSONString(from: XCTUnwrap(capture.ordered["result"])))
         let expected = try String(contentsOfFile: goldenPath, encoding: .utf8)
         XCTAssertEqual(actual, expected)
+    }
+
+    func testDeleteInsightRoutesThroughServiceSocket() throws {
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "deleteInsight":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["id"]?.stringValue, "insight-123")
+                return try request.success(
+                    .object([
+                        "id": .string("insight-123"),
+                        "deleted": .bool(true),
+                    ]),
+                    databaseGeneration: 1
+                )
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 105)
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_insight","arguments":{"id":"insight-123"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["structuredContent"]?["id"]?.stringValue, "insight-123")
+        XCTAssertEqual(result["structuredContent"]?["deleted"]?.boolValue, true)
+    }
+
+    func testHideSessionRoutesThroughServiceSocket() throws {
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "setSessionHidden":
+                let body = try request.decodePayload([String: TestJSONValue].self)
+                XCTAssertEqual(body["sessionId"]?.stringValue, "session-123")
+                XCTAssertEqual(body["hidden"]?.boolValue, true)
+                return try request.success(.object([:]), databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 106)
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hide_session","arguments":{"session_id":"session-123"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["structuredContent"]?["session_id"]?.stringValue, "session-123")
+        XCTAssertEqual(result["structuredContent"]?["hidden"]?.boolValue, true)
     }
 
     func testManageProjectAliasRoutesReadAndWriteModes() throws {

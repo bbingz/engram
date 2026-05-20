@@ -15,6 +15,7 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse
     func saveInsight(_ request: EngramServiceSaveInsightRequest) async throws -> EngramServiceJSONValue
+    func deleteInsight(_ request: EngramServiceDeleteInsightRequest) async throws -> EngramServiceJSONValue
     func manageProjectAlias(_ request: EngramServiceProjectAliasRequest) async throws -> EngramServiceJSONValue
     func resumeCommand(sessionId: String) async throws -> EngramServiceResumeCommandResponse
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse

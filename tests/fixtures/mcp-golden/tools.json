@@ -11,6 +11,8 @@
   "link_sessions",
   "get_memory",
   "save_insight",
+  "delete_insight",
+  "hide_session",
   "get_costs",
   "tool_analytics",
   "handoff",

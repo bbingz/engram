@@ -105,6 +105,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+            case "deleteInsight":
+                let payload = try decodePayload(EngramServiceDeleteInsightRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.deleteInsight(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
             case "manageProjectAlias":
                 let payload = try decodePayload(EngramServiceProjectAliasRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
@@ -695,6 +705,27 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 importance: importance,
                 warning: "Saved without embedding; keyword search is available immediately"
             )
+        }
+    }
+
+    private static func deleteInsight(
+        _ request: EngramServiceDeleteInsightRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EngramServiceJSONValue {
+        try writer.write { db in
+            try ensureInsightTables(db)
+            let id = request.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else {
+                throw EngramServiceError.invalidRequest(message: "id is required")
+            }
+
+            try db.execute(sql: "DELETE FROM insights_fts WHERE insight_id = ?", arguments: [id])
+            let before = db.totalChangesCount
+            try db.execute(sql: "DELETE FROM insights WHERE id = ?", arguments: [id])
+            return .object([
+                "id": .string(id),
+                "deleted": .bool(db.totalChangesCount > before),
+            ])
         }
     }
 
