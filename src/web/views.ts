@@ -226,6 +226,11 @@ export function layout(title: string, body: string, currentPath = '/'): string {
     .msg.system .system-content { display: none; margin-top: 0.5em; font-family: var(--mono); font-size: 0.8em; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; color: var(--text-dim); padding: 0.5em; border-radius: 6px; background: rgba(0,0,0,0.15); }
     .msg.system .bubble.expanded .system-content { display: block; }
     .msg.system .system-icon { margin-right: 0.4em; }
+    .chat-actions { display: flex; justify-content: center; margin: 0.75em 0 2em; }
+    .load-more-btn { font-family: var(--font); font-size: 0.88em; padding: 0.45em 1em; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-sec); cursor: pointer; transition: all 0.15s; }
+    .load-more-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .load-more-btn:disabled { cursor: default; opacity: 0.55; }
+    .inline-alert { margin: 1em 0; padding: 0.75em 1em; border-radius: var(--radius); border: 1px solid rgba(245,158,11,0.3); color: var(--text-sec); background: rgba(245,158,11,0.08); font-size: 0.9em; }
 
     /* === Session Header (Detail) === */
     .session-header { position: sticky; top: 48px; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border-light); padding: 1em 0; margin-bottom: 1em; }
@@ -574,8 +579,93 @@ export function sessionListPage(
 export function sessionDetailPage(
   session: SessionInfo,
   messages: { role: string; content: string }[],
+  opts: {
+    offset?: number;
+    limit?: number;
+    hasMore?: boolean;
+    nextOffset?: number;
+    error?: string;
+  } = {},
 ): string {
-  const msgHtml = messages
+  const msgHtml = renderSessionMessagesHtml(session, messages);
+  const limit = opts.limit ?? 50;
+  const nextOffset = opts.nextOffset ?? messages.length;
+  const transcriptStatus = opts.error
+    ? `<div class="inline-alert">Could not read transcript: ${escapeHtml(opts.error)}</div>`
+    : msgHtml
+      ? ''
+      : '<div class="empty-state"><p>No transcript messages found.</p></div>';
+  const loadMore = opts.hasMore
+    ? `<div class="chat-actions" id="load-more-wrap">
+        <button class="load-more-btn" id="load-more-btn" data-next-offset="${nextOffset}" data-limit="${limit}" onclick="loadMoreMessages()">Load more</button>
+      </div>`
+    : '<div class="chat-actions" id="load-more-wrap"></div>';
+
+  const script = `
+    <script>
+      async function loadMoreMessages() {
+        var btn = document.getElementById('load-more-btn');
+        var chat = document.getElementById('chat');
+        if (!btn || !chat) return;
+        var offset = btn.dataset.nextOffset || '0';
+        var limit = btn.dataset.limit || '50';
+        var oldText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Loading...';
+        try {
+          var res = await fetch('/api/sessions/${encodeURIComponent(session.id)}/messages?offset=' + encodeURIComponent(offset) + '&limit=' + encodeURIComponent(limit));
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Failed to load messages');
+          if (data.html) chat.insertAdjacentHTML('beforeend', data.html);
+          if (data.hasMore) {
+            btn.dataset.nextOffset = String(data.nextOffset);
+            btn.disabled = false;
+            btn.textContent = oldText || 'Load more';
+          } else {
+            document.getElementById('load-more-wrap').remove();
+          }
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = 'Retry';
+          var alert = document.createElement('div');
+          alert.className = 'inline-alert';
+          alert.textContent = err && err.message ? err.message : 'Failed to load messages';
+          btn.closest('.chat-actions').before(alert);
+        }
+      }
+    </script>`;
+
+  const sessionTitle = session.summary ?? truncate(session.id, 80);
+
+  return layout(
+    sessionTitle,
+    `
+    <a href="/" class="back-link">&larr; Back to sessions</a>
+    <div class="session-header">
+      <h2>${escapeHtml(sessionTitle)}</h2>
+      <div class="meta">
+        ${sourceBadge(session.source)}
+        <span class="sep">&middot;</span>
+        ${session.project ? `<span>${escapeHtml(session.project)}</span><span class="sep">&middot;</span>` : ''}
+        <span>${formatDate(session.startTime)}</span>
+        <span class="sep">&middot;</span>
+        <span>${msgCounts(session)}</span>
+        ${session.model ? `<span class="sep">&middot;</span><code>${escapeHtml(session.model)}</code>` : ''}
+      </div>
+    </div>
+    ${transcriptStatus}
+    <div class="chat" id="chat">${msgHtml}</div>
+    ${loadMore}
+    ${script}`,
+    '/',
+  );
+}
+
+export function renderSessionMessagesHtml(
+  session: SessionInfo,
+  messages: { role: string; content: string }[],
+): string {
+  return messages
     .filter((m) => m.content.trim())
     .map((m) => {
       const isUser = m.role === 'user';
@@ -608,28 +698,6 @@ export function sessionDetailPage(
     </div>`;
     })
     .join('\n');
-
-  const sessionTitle = session.summary ?? truncate(session.id, 80);
-
-  return layout(
-    sessionTitle,
-    `
-    <a href="/" class="back-link">&larr; Back to sessions</a>
-    <div class="session-header">
-      <h2>${escapeHtml(sessionTitle)}</h2>
-      <div class="meta">
-        ${sourceBadge(session.source)}
-        <span class="sep">&middot;</span>
-        ${session.project ? `<span>${escapeHtml(session.project)}</span><span class="sep">&middot;</span>` : ''}
-        <span>${formatDate(session.startTime)}</span>
-        <span class="sep">&middot;</span>
-        <span>${msgCounts(session)}</span>
-        ${session.model ? `<span class="sep">&middot;</span><code>${escapeHtml(session.model)}</code>` : ''}
-      </div>
-    </div>
-    <div class="chat">${msgHtml}</div>`,
-    '/',
-  );
 }
 
 // ---------------------------------------------------------------------------

@@ -1,20 +1,16 @@
 // macos/Engram/Views/Pages/SessionsPageView.swift
 import SwiftUI
 
-private let isoFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
-
 struct SessionsPageView: View {
     @Environment(DatabaseManager.self) var db
+    @AppStorage("sessions.showHidden") private var showHiddenSessions = false
 
     @State private var sessions: [Session] = []
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
     @State private var totalCount = 0
     @State private var totalMessages = 0
+    @State private var avgDurationSeconds: Double?
     @State private var timeFilter = "All Time"
     @State private var sourceFilter: String? = nil
     @State private var availableSources: [String] = []
@@ -38,6 +34,9 @@ struct SessionsPageView: View {
                     FilterPills(options: timeOptions, selected: $timeFilter)
                         .accessibilityIdentifier("sessions_filterPills")
                     Spacer()
+                    Toggle("Show hidden sessions", isOn: $showHiddenSessions)
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("sessions_showHiddenToggle")
                     if !availableSources.isEmpty {
                         Picker("Source", selection: Binding(
                             get: { sourceFilter ?? "All" },
@@ -63,6 +62,7 @@ struct SessionsPageView: View {
                                 session: session,
                                 confirmedChildCount: confirmedCounts[session.id] ?? 0,
                                 suggestedChildCount: suggestedCounts[session.id] ?? 0,
+                                includeHiddenChildren: showHiddenSessions,
                                 onTap: {
                                     NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
                                 },
@@ -83,6 +83,7 @@ struct SessionsPageView: View {
         .task { await loadData() }
         .onChange(of: timeFilter) { _, _ in Task { await loadData() } }
         .onChange(of: sourceFilter) { _, _ in Task { await loadData() } }
+        .onChange(of: showHiddenSessions) { _, _ in Task { await loadData() } }
     }
 
     private func loadData() async {
@@ -92,19 +93,39 @@ struct SessionsPageView: View {
             let db = self.db
             let sources: Set<String> = sourceFilter.map { [$0] } ?? []
             let since = sinceDate(for: timeFilter)
+            let includeHidden = showHiddenSessions
             let data = try await Task.detached {
-                let loaded = try db.listSessions(sources: sources, since: since, subAgent: false, limit: 200)
+                let loaded = try db.listSessions(
+                    sources: sources,
+                    since: since,
+                    includeHidden: includeHidden,
+                    subAgent: false,
+                    sort: .updatedDesc,
+                    limit: 200
+                )
+                let stats = try db.sessionListStats(
+                    sources: sources,
+                    since: since,
+                    includeHidden: includeHidden,
+                    subAgent: false
+                )
+                let sourceOptions = try db.sessionListStats(
+                    since: since,
+                    includeHidden: includeHidden,
+                    subAgent: false
+                ).sources
                 let parentIds = loaded.map(\.id)
-                let confirmed = try db.childCount(parentIds: parentIds)
-                let suggested = try db.suggestedChildCount(parentIds: parentIds)
-                return (loaded, confirmed, suggested)
+                let confirmed = try db.childCount(parentIds: parentIds, includeHidden: includeHidden)
+                let suggested = try db.suggestedChildCount(parentIds: parentIds, includeHidden: includeHidden)
+                return (loaded, confirmed, suggested, stats, sourceOptions)
             }.value
             sessions = data.0
             confirmedCounts = data.1
             suggestedCounts = data.2
-            totalCount = sessions.count
-            totalMessages = sessions.reduce(0) { $0 + $1.messageCount }
-            availableSources = Array(Set(sessions.map(\.source))).sorted()
+            totalCount = data.3.totalSessions
+            totalMessages = data.3.totalMessages
+            avgDurationSeconds = data.3.avgDurationSeconds
+            availableSources = data.4
         } catch {
             EngramLogger.error("SessionsPage load failed", module: .ui, error: error)
         }
@@ -123,14 +144,7 @@ struct SessionsPageView: View {
     }
 
     private var avgDuration: String {
-        let sessionsWithEnd = sessions.filter { $0.endTime != nil }
-        guard !sessionsWithEnd.isEmpty else { return "—" }
-        let totalSeconds = sessionsWithEnd.compactMap { s -> TimeInterval? in
-            guard let start = isoFormatter.date(from: s.startTime),
-                  let end = s.endTime.flatMap({ isoFormatter.date(from: $0) }) else { return nil }
-            return end.timeIntervalSince(start)
-        }.reduce(0, +)
-        let avg = totalSeconds / Double(sessionsWithEnd.count)
+        guard let avg = avgDurationSeconds else { return "—" }
         if avg < 60 { return "\(Int(avg))s" }
         if avg < 3600 { return "\(Int(avg / 60))m" }
         return String(format: "%.1fh", avg / 3600)

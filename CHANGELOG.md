@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — Recent indexing covers updated Claude sessions (2026-05-10)
+
+- **Claude 今日会话不再漏入库** —— `EngramService` 的 recent indexing 之前实际只走 `SessionAdapterFactory.recentCodexAdapters()`,导致持续写入的 `~/.claude/projects/*.jsonl` 不会被服务周期扫描捞进索引。现在 `indexRecentSessions()` 默认使用 `recentActiveAdapters()`:Codex 继续按近两天日期目录扫,Claude/Gemini/OpenCode/Cursor/Qwen/Kimi/Cline/VS Code/Windsurf/Antigravity/Copilot 等文件型来源按 backing file mtime 过滤最近活跃 locator。OpenCode `db.sqlite::sessionId` 和 Cursor `db.sqlite?composer=...` 这类虚拟 locator 会先解析回实际 DB 文件再取 mtime。
+- **服务扫描节奏调整**:`EngramServiceRunner` 启动后立即扫一次,之后每 5 分钟扫最近活跃来源。Release 重新部署到 `/Applications/Engram.app` 后,实测 `/Users/bing/.claude/projects/-Users-bing--NetWork--Safeline/00bca506-271f-4f5c-92b4-c8e088696aae.jsonl` 已入 `~/.engram/index.sqlite`: `source=claude-code`, `project=Safeline`, `message_count=1250`, `indexed_at=2026-05-10T15:25:39Z`;`EngramMCP get_session` 可读 transcript。
+- **验证**:`IndexerParityTests` 16/16 通过;`EngramService` build 通过;Release `Engram` build 通过;`codesign --verify --deep --strict /Applications/Engram.app` 通过;bundle 未包含 Node runtime 残留。
+
 ### Fixed — Session detail keeps transcript visible with many agent children (2026-05-09)
 
 - **Agent Sessions 不再挤没正文可视区** —— `SessionDetailView` 的子 agent 列表改成默认折叠标题行;展开后列表有独立滚动区域并限制最大高度。含几十条 Polycli/qwen/kimi/pi/copilot 子会话的父会话不再把 transcript 视口压到不可用。

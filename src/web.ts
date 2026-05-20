@@ -4,7 +4,12 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve as pathResolve } from 'node:path';
 import { Hono } from 'hono';
-import type { SessionAdapter, SourceName } from './adapters/types.js';
+import type {
+  Message,
+  SessionAdapter,
+  SessionInfo,
+  SourceName,
+} from './adapters/types.js';
 import type { AiAuditQuery, AiAuditWriter } from './core/ai-audit.js';
 import { summarizeConversation } from './core/ai-client.js';
 import { ensureDataDirs, getAdapter } from './core/bootstrap.js';
@@ -42,6 +47,7 @@ import { handleToolAnalytics } from './tools/tool_analytics.js';
 import {
   healthPage,
   layout,
+  renderSessionMessagesHtml,
   searchPage,
   sessionDetailPage,
   sessionListPage,
@@ -201,6 +207,76 @@ export function createApp(
   const app = new Hono<{ Variables: Variables }>();
   const settings = opts?.settings ?? readFileSettings();
   const semanticLimiter = createRateLimiter(30);
+  const detailPageSize = 50;
+
+  function resolveAdapter(source: string): SessionAdapter | undefined {
+    return opts?.adapters?.find((a) => a.name === source) ?? getAdapter(source);
+  }
+
+  function parsePagination(
+    rawOffset: string | undefined,
+    rawLimit: string | undefined,
+    defaultLimit: number,
+    maxLimit: number,
+  ):
+    | { ok: true; offset: number; limit: number }
+    | { ok: false; error: string } {
+    const offset = rawOffset ? parseInt(rawOffset, 10) : 0;
+    if (Number.isNaN(offset) || offset < 0) {
+      return { ok: false, error: 'offset must be a non-negative integer' };
+    }
+    const requestedLimit = rawLimit ? parseInt(rawLimit, 10) : defaultLimit;
+    if (Number.isNaN(requestedLimit) || requestedLimit < 1) {
+      return { ok: false, error: 'limit must be a positive integer' };
+    }
+    return { ok: true, offset, limit: Math.min(requestedLimit, maxLimit) };
+  }
+
+  async function readTranscriptPage(
+    session: SessionInfo,
+    offset: number,
+    limit: number,
+  ): Promise<{
+    messages: Pick<Message, 'role' | 'content'>[];
+    hasMore: boolean;
+    nextOffset: number;
+    error?: string;
+  }> {
+    const adapter = resolveAdapter(session.source);
+    if (!adapter) {
+      return {
+        messages: [],
+        hasMore: false,
+        nextOffset: offset,
+        error: `No adapter for source: ${session.source}`,
+      };
+    }
+
+    const messages: Pick<Message, 'role' | 'content'>[] = [];
+    try {
+      for await (const msg of adapter.streamMessages(session.filePath, {
+        offset,
+        limit: limit + 1,
+      })) {
+        messages.push({ role: msg.role, content: msg.content });
+      }
+    } catch (err) {
+      return {
+        messages: [],
+        hasMore: false,
+        nextOffset: offset,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    const hasMore = messages.length > limit;
+    if (hasMore) messages.length = limit;
+    return {
+      messages,
+      hasMore,
+      nextOffset: offset + messages.length,
+    };
+  }
 
   // CIDR access control — only active when listening beyond localhost
   const host = settings.httpHost ?? '127.0.0.1';
@@ -514,6 +590,35 @@ export function createApp(
     return c.json(session);
   });
 
+  app.get('/api/sessions/:id/messages', async (c) => {
+    const session = db.getSession(c.req.param('id'));
+    if (!session) return c.json({ error: 'Session not found' }, 404);
+
+    const pagination = parsePagination(
+      c.req.query('offset'),
+      c.req.query('limit'),
+      detailPageSize,
+      200,
+    );
+    if (!pagination.ok) return c.json({ error: pagination.error }, 400);
+
+    const page = await readTranscriptPage(
+      session,
+      pagination.offset,
+      pagination.limit,
+    );
+    if (page.error) return c.json({ error: page.error }, 500);
+
+    return c.json({
+      html: renderSessionMessagesHtml(session, page.messages),
+      offset: pagination.offset,
+      limit: pagination.limit,
+      count: page.messages.length,
+      hasMore: page.hasMore,
+      nextOffset: page.nextOffset,
+    });
+  });
+
   // --- Parent link management ---
 
   app.post('/api/sessions/:id/link', async (c) => {
@@ -565,7 +670,7 @@ export function createApp(
     const session = db.getSession(c.req.param('id'));
     if (!session) return c.json({ error: 'Session not found' }, 404);
 
-    const adapter = opts?.adapters?.find((a) => a.name === session.source);
+    const adapter = resolveAdapter(session.source);
     if (!adapter)
       return c.json({ error: `No adapter for source: ${session.source}` }, 500);
 
@@ -1752,18 +1857,16 @@ export function createApp(
     const session = db.getSession(c.req.param('id'));
     if (!session)
       return c.html(layout('Not Found', '<h2>Session not found</h2>'), 404);
-    const adapter = getAdapter(session.source);
-    const messages: { role: string; content: string }[] = [];
-    if (adapter) {
-      try {
-        for await (const msg of adapter.streamMessages(session.filePath)) {
-          messages.push({ role: msg.role, content: msg.content });
-        }
-      } catch {
-        // File may not exist (e.g. deleted or on another machine)
-      }
-    }
-    return c.html(sessionDetailPage(session, messages));
+    const page = await readTranscriptPage(session, 0, detailPageSize);
+    return c.html(
+      sessionDetailPage(session, page.messages, {
+        offset: 0,
+        limit: detailPageSize,
+        hasMore: page.hasMore,
+        nextOffset: page.nextOffset,
+        error: page.error,
+      }),
+    );
   });
 
   // --- Live Sessions API ---

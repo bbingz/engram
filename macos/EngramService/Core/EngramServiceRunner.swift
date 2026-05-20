@@ -58,10 +58,31 @@ public enum EngramServiceRunner {
             await handler.handle(request)
         }
         try server.start()
+        let webTask = Task {
+            do {
+                let webServer = try EngramWebUIServer(databasePath: databasePath)
+                print(#"{"event":"web_ready","host":"127.0.0.1","port":3457}"#)
+                fflush(stdout)
+                try await webServer.run()
+            } catch is CancellationError {
+                return
+            } catch {
+                ServiceLogger.warn(
+                    "web ui failed to start: \(error.localizedDescription)",
+                    category: .runner
+                )
+                print(#"{"event":"web_error","message":"\#(error.localizedDescription)"}"#)
+                fflush(stdout)
+            }
+        }
 
         ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
         print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
         fflush(stdout)
+
+        let indexingTask = Task {
+            await Self.runIndexingLoop(gate: gate)
+        }
 
         // Best-effort startup TRUNCATE: PASSIVE never shrinks the WAL file on
         // disk, so without this the file grows monotonically. Created AFTER
@@ -120,7 +141,68 @@ public enum EngramServiceRunner {
         // wait is what guarantees we don't drop the writer mid-checkpoint.
         // Bound by busy_timeout (30s) in the worst case; in practice <1s.
         await truncateTask.value
+        indexingTask.cancel()
         checkpointTask.cancel()
+        webTask.cancel()
         server.stop()
     }
+
+    private static func runIndexingLoop(gate: ServiceWriterGate) async {
+        let intervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
+        var isFirstScan = true
+
+        while !Task.isCancelled {
+            if isFirstScan {
+                isFirstScan = false
+            } else {
+                do {
+                    try await Task.sleep(nanoseconds: intervalNanoseconds)
+                } catch {
+                    break
+                }
+            }
+
+            do {
+                let result = try await gate.performWriteCommand(name: "indexRecent") { writer in
+                    try await writer.indexRecentSessions()
+                }
+                ServiceLogger.notice(
+                    "index scan completed: indexed=\(result.value.indexed) total=\(result.value.total) todayParents=\(result.value.todayParents)",
+                    category: .runner
+                )
+                emit(ServiceIndexEvent(
+                    indexed: result.value.indexed,
+                    total: result.value.total,
+                    todayParents: result.value.todayParents
+                ))
+            } catch is CancellationError {
+                break
+            } catch {
+                ServiceLogger.error("index scan failed", category: .runner, error: error)
+                emit(ServiceIndexErrorEvent(error: error.localizedDescription))
+            }
+        }
+    }
+
+    private static func emit<T: Encodable>(_ value: T) {
+        guard let data = try? JSONEncoder().encode(value),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return
+        }
+        print(text)
+        fflush(stdout)
+    }
+}
+
+private struct ServiceIndexEvent: Encodable {
+    let event = "indexed"
+    let indexed: Int
+    let total: Int
+    let todayParents: Int
+}
+
+private struct ServiceIndexErrorEvent: Encodable {
+    let event = "index_error"
+    let error: String
 }

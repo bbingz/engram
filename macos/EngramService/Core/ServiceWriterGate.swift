@@ -85,6 +85,10 @@ public actor ServiceWriterGate {
         }
     }
 
+    public func indexStatus() throws -> EngramDatabaseIndexStatus {
+        try writer.indexStatus()
+    }
+
     /// Best-effort TRUNCATE checkpoint. Returns the SQLite result tuple so the
     /// caller can decide whether to log/retry. Throws only if the underlying
     /// pool write fails outright; a `busy=1` result is considered a normal

@@ -30,6 +30,8 @@ func createSessionsTable(at path: String) throws {
                 size_bytes INTEGER NOT NULL DEFAULT 0,
                 indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 agent_role TEXT,
+                parent_session_id TEXT,
+                suggested_parent_id TEXT,
                 hidden_at TEXT,
                 custom_name TEXT,
                 tier TEXT,

@@ -124,6 +124,7 @@ public final class SwiftIndexer {
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { continue }
             guard message.role == .user || message.role == .assistant else { continue }
+            if message.role == .user, Self.isSystemInjection(content) { continue }
 
             stats.indexedMessageCount += 1
             if message.role == .assistant {
@@ -224,6 +225,15 @@ public final class SwiftIndexer {
         return combined.hasPrefix("# AGENTS.md instructions for ") ||
             combined.contains("<INSTRUCTIONS>") ||
             combined.hasPrefix("<environment_context>")
+    }
+
+    private static func isSystemInjection(_ text: String) -> Bool {
+        text.hasPrefix("# AGENTS.md instructions for ") ||
+            text.contains("<INSTRUCTIONS>") ||
+            text.hasPrefix("<local-command-caveat>") ||
+            text.hasPrefix("<environment_context>") ||
+            text.hasPrefix("<skills_instructions>") ||
+            text.hasPrefix("<plugins_instructions>")
     }
 
     private static func isProviderReviewPrompt(_ prompt: String) -> Bool {

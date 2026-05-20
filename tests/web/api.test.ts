@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { SessionInfo } from '../../src/adapters/types.js';
+import type { SessionAdapter, SessionInfo } from '../../src/adapters/types.js';
 import { Database } from '../../src/core/db.js';
 import { createApp } from '../../src/web.js';
 
@@ -123,6 +123,80 @@ describe('Web API', () => {
     const body = await res.json();
     expect(body.sessions).toBeDefined();
     expect(Array.isArray(body.sessions)).toBe(true);
+  });
+
+  it('GET /api/sessions/:id/messages returns paginated rendered messages', async () => {
+    db.upsertSession(mockSession);
+    const messages = Array.from({ length: 5 }, (_, i) => ({
+      role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      content: `message ${i + 1}`,
+    }));
+    const adapter: SessionAdapter = {
+      name: 'codex',
+      detect: async () => true,
+      listSessionFiles: async function* () {},
+      parseSessionInfo: async () => null,
+      streamMessages: async function* (_filePath, opts = {}) {
+        const offset = opts.offset ?? 0;
+        const limit = opts.limit ?? messages.length;
+        for (const message of messages.slice(offset, offset + limit)) {
+          yield message;
+        }
+      },
+      isAccessible: async () => true,
+    };
+    const appWithAdapter = createApp(db, { adapters: [adapter] });
+
+    const res = await appWithAdapter.request(
+      '/api/sessions/api-test-session-001/messages?offset=2&limit=2',
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.offset).toBe(2);
+    expect(body.limit).toBe(2);
+    expect(body.count).toBe(2);
+    expect(body.hasMore).toBe(true);
+    expect(body.nextOffset).toBe(4);
+    expect(body.html).toContain('message 3');
+    expect(body.html).toContain('message 4');
+    expect(body.html).not.toContain('message 5');
+  });
+
+  it('GET /session/:id renders only the first transcript page', async () => {
+    db.upsertSession({
+      ...mockSession,
+      id: 'paged-session',
+      messageCount: 60,
+      userMessageCount: 30,
+      assistantMessageCount: 30,
+    });
+    const messages = Array.from({ length: 60 }, (_, i) => ({
+      role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      content: `transcript message ${i + 1}`,
+    }));
+    const adapter: SessionAdapter = {
+      name: 'codex',
+      detect: async () => true,
+      listSessionFiles: async function* () {},
+      parseSessionInfo: async () => null,
+      streamMessages: async function* (_filePath, opts = {}) {
+        const offset = opts.offset ?? 0;
+        const limit = opts.limit ?? messages.length;
+        for (const message of messages.slice(offset, offset + limit)) {
+          yield message;
+        }
+      },
+      isAccessible: async () => true,
+    };
+    const appWithAdapter = createApp(db, { adapters: [adapter] });
+
+    const res = await appWithAdapter.request('/session/paged-session');
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('transcript message 1');
+    expect(html).toContain('transcript message 50');
+    expect(html).not.toContain('transcript message 51');
+    expect(html).toContain('Load more');
   });
 
   // 8. GET /api/sessions/:id → 404 for nonexistent

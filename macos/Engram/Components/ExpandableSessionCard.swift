@@ -24,6 +24,7 @@ struct ExpandableSessionCard: View {
     let session: Session
     let confirmedChildCount: Int
     let suggestedChildCount: Int
+    var includeHiddenChildren = false
     var onTap: (() -> Void)? = nil
     var onChildTap: ((Session) -> Void)? = nil
     var onConfirmSuggestion: ((Session) -> Void)? = nil
@@ -79,7 +80,7 @@ struct ExpandableSessionCard: View {
                             .font(.caption)
                             .foregroundStyle(Theme.tertiaryText)
 
-                        Text(relativeTime(session.startTime))
+                        Text(relativeTime(session.endTime ?? session.startTime))
                             .font(.caption)
                             .foregroundStyle(Theme.tertiaryText)
                             .frame(width: 40, alignment: .trailing)
@@ -199,9 +200,16 @@ struct ExpandableSessionCard: View {
 
     private func loadChildren() {
         isLoadingChildren = true
-        Task.detached { [db, session] in
-            let confirmed = (try? db.childSessions(parentId: session.id, limit: 5)) ?? []
-            let suggested = (try? db.suggestedChildSessions(parentId: session.id)) ?? []
+        Task.detached { [db, session, includeHiddenChildren] in
+            let confirmed = (try? db.childSessions(
+                parentId: session.id,
+                includeHidden: includeHiddenChildren,
+                limit: 5
+            )) ?? []
+            let suggested = (try? db.suggestedChildSessions(
+                parentId: session.id,
+                includeHidden: includeHiddenChildren
+            )) ?? []
             await MainActor.run {
                 children = confirmed
                 suggestedChildren = suggested
@@ -212,9 +220,10 @@ struct ExpandableSessionCard: View {
 
     private func loadMoreChildren() {
         let currentCount = children.count
-        Task.detached { [db, session] in
+        Task.detached { [db, session, includeHiddenChildren] in
             let more = (try? db.childSessions(
                 parentId: session.id,
+                includeHidden: includeHiddenChildren,
                 limit: 20,
                 offset: currentCount
             )) ?? []
@@ -259,7 +268,7 @@ struct CompactChildRow: View {
                     .buttonStyle(.plain)
             }
 
-            Text(relativeTime(session.startTime))
+            Text(relativeTime(session.endTime ?? session.startTime))
                 .font(.caption2)
                 .foregroundStyle(Theme.tertiaryText)
                 .frame(width: 36, alignment: .trailing)

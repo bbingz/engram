@@ -129,6 +129,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let serviceConfiguration = environment.serviceLaunchConfiguration()
                 try serviceLauncher.start(configuration: serviceConfiguration)
+                serviceStatusStore.endpointHost = "127.0.0.1"
+                serviceStatusStore.endpointPort = 3457
                 startServiceStatusObservation()
                 serviceLauncher.startHealthMonitor(
                     configuration: serviceConfiguration,

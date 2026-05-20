@@ -1,17 +1,54 @@
 // macos/Engram/Views/Pages/TimelinePageView.swift
 import SwiftUI
 
+private enum TimelineSortMode: String, CaseIterable, Identifiable {
+    case activity
+    case created
+
+    var id: String { rawValue }
+
+    var databaseSort: SessionSort {
+        switch self {
+        case .activity:
+            .updatedDesc
+        case .created:
+            .createdDesc
+        }
+    }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .activity:
+            "Active"
+        case .created:
+            "Created"
+        }
+    }
+}
+
 struct TimelinePageView: View {
     @Environment(DatabaseManager.self) var db
     @State private var timeline: [(date: String, sessions: [Session])] = []
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
+    @State private var sortMode: TimelineSortMode = .activity
     @State private var isLoading = true
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                SectionHeader(icon: "chart.bar.xaxis", title: "Timeline", badge: "30d")
+                HStack(alignment: .center, spacing: 12) {
+                    SectionHeader(icon: "chart.bar.xaxis", title: "Timeline", badge: "30d")
+                    Spacer(minLength: 12)
+                    Picker("Sort", selection: $sortMode) {
+                        ForEach(TimelineSortMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 144)
+                    .accessibilityIdentifier("timeline_sortPicker")
+                }
                 if timeline.isEmpty && !isLoading {
                     EmptyState(icon: "calendar", title: "No activity", message: "No sessions in the last 30 days")
                         .accessibilityIdentifier("timeline_emptyState")
@@ -23,7 +60,7 @@ struct TimelinePageView: View {
                                     Text(formatDateLabel(group.date))
                                         .font(.headline)
                                         .foregroundStyle(Theme.primaryText)
-                                    Text("\(group.sessions.count) sessions")
+                                    Text(sessionCountLabel(group.sessions.count))
                                         .font(.caption)
                                         .foregroundStyle(Theme.tertiaryText)
                                     Spacer()
@@ -51,6 +88,7 @@ struct TimelinePageView: View {
         }
         .accessibilityIdentifier("timeline_container")
         .task { await loadData() }
+        .onChange(of: sortMode) { _, _ in Task { await loadData() } }
     }
 
     private func loadData() async {
@@ -58,8 +96,9 @@ struct TimelinePageView: View {
         defer { isLoading = false }
         do {
             let database = db
-            let data = try await Task.detached { [database] in
-                let tl = try database.sessionTimeline(days: 30)
+            let sort = sortMode.databaseSort
+            let data = try await Task.detached { [database, sort] in
+                let tl = try database.sessionTimeline(days: 30, sort: sort)
                 let allSessions = tl.flatMap(\.sessions)
                 let parentIds = allSessions.map(\.id)
                 let confirmed = try database.childCount(parentIds: parentIds)
@@ -78,9 +117,13 @@ struct TimelinePageView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         guard let date = formatter.date(from: dateStr) else { return dateStr }
-        if Calendar.current.isDateInToday(date) { return "Today" }
-        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        if Calendar.current.isDateInToday(date) { return String(localized: "Today") }
+        if Calendar.current.isDateInYesterday(date) { return String(localized: "Yesterday") }
         formatter.dateFormat = "EEEE, MMM d"
         return formatter.string(from: date)
+    }
+
+    private func sessionCountLabel(_ count: Int) -> String {
+        String.localizedStringWithFormat(String(localized: "%lld sessions"), count)
     }
 }

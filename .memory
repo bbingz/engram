@@ -1,5 +1,36 @@
 # Engram Local Memory
 
+## 2026-05-10 — Recent indexing must scan all active local session sources
+
+- Root cause: `EngramServiceRunner` called `writer.indexRecentSessions()`, but
+  `EngramDatabaseIndexer.indexRecentSessions()` defaulted to
+  `SessionAdapterFactory.recentCodexAdapters()`, so the service's periodic
+  recent scan indexed Codex only. Recently updated Claude JSONL files under
+  `~/.claude/projects/` were invisible unless a full scan or source-specific
+  path handled them.
+- Fix: `indexRecentSessions()` now uses
+  `SessionAdapterFactory.recentActiveAdapters()`. Codex still uses recent dated
+  roots; file-backed sources such as Claude Code, Gemini, OpenCode, Cursor,
+  Qwen, Kimi, Cline, VS Code, Windsurf, Antigravity, and Copilot are wrapped in
+  `RecentlyModifiedSessionAdapter` and filtered by backing file mtime.
+- Virtual locators must resolve to their backing file for mtime filtering:
+  OpenCode-style `db.sqlite::sessionId` and Cursor-style
+  `db.sqlite?composer=...` are handled explicitly.
+- Service cadence is now immediate scan on startup, then every 5 minutes.
+- Production verification after deploying `/Applications/Engram.app`:
+  `/Users/bing/.claude/projects/-Users-bing--NetWork--Safeline/00bca506-271f-4f5c-92b4-c8e088696aae.jsonl`
+  entered `~/.engram/index.sqlite` as `claude-code`, project `Safeline`.
+  Follow-up DB check showed `message_count=1250` and
+  `indexed_at=2026-05-10T15:25:39Z`; `EngramMCP get_session` could read the
+  session transcript.
+- Verification commands used during the fix:
+  - `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -only-testing:EngramCoreTests/IndexerParityTests`
+    passed 16 tests.
+  - `xcodebuild build -project macos/Engram.xcodeproj -scheme EngramService`
+    passed.
+  - Release deploy build passed and `/Applications/Engram.app` was replaced
+    after stopping the old app/helper processes.
+
 ## 2026-05-08 — Swift-only cutover: drop stale Node schema compat gate
 
 - The `scripts/db/check-swift-schema-compat.ts` gate was a Stage 0-4 migration

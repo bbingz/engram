@@ -9,7 +9,7 @@ struct FilterPills: View {
         HStack(spacing: 8) {
             ForEach(options, id: \.self) { option in
                 Button(action: { selected = option }) {
-                    Text(option)
+                    Text(LocalizedStringKey(option))
                         .font(.caption)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)

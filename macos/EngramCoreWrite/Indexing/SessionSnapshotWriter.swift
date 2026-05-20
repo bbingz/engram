@@ -58,7 +58,25 @@ public final class SessionSnapshotWriter {
         if incoming.syncVersion == current.syncVersion,
            incoming.snapshotHash == current.snapshotHash,
            incoming.sizeBytes == current.sizeBytes {
-            return (.noop, current, SessionChangeSet(flags: []))
+            let currentTier = current.tier ?? .normal
+            let incomingTier = incoming.tier ?? .normal
+            guard currentTier != incomingTier || current.agentRole != incoming.agentRole else {
+                return (.noop, current, SessionChangeSet(flags: []))
+            }
+
+            var merged = current
+            merged.tier = incoming.tier
+            merged.agentRole = incoming.agentRole
+            merged.indexedAt = incoming.indexedAt
+
+            var flags: Set<ChangeFlag> = [.localStateChanged]
+            if currentTier == .skip, incomingTier != .skip {
+                flags.insert(.searchTextChanged)
+                if incomingTier == .normal || incomingTier == .premium {
+                    flags.insert(.embeddingTextChanged)
+                }
+            }
+            return (.merge, merged, SessionChangeSet(flags: flags))
         }
         if incoming.syncVersion == current.syncVersion, incoming.snapshotHash == current.snapshotHash {
             var merged = current
@@ -66,10 +84,6 @@ public final class SessionSnapshotWriter {
             merged.indexedAt = incoming.indexedAt
             return (.merge, merged, SessionChangeSet(flags: [.syncPayloadChanged]))
         }
-        if incoming.syncVersion == current.syncVersion, incoming.snapshotHash != current.snapshotHash {
-            throw SessionSnapshotWriterError.conflictingSnapshotHash(incoming.id)
-        }
-
         var merged = incoming
         merged.endTime = incoming.endTime ?? current.endTime
         merged.project = incoming.project ?? current.project
@@ -79,6 +93,17 @@ public final class SessionSnapshotWriter {
         merged.origin = incoming.origin ?? current.origin
 
         var flags: Set<ChangeFlag> = [.syncPayloadChanged]
+        let currentTier = current.tier ?? .normal
+        let incomingTier = incoming.tier ?? .normal
+        if currentTier != incomingTier || current.agentRole != incoming.agentRole {
+            flags.insert(.localStateChanged)
+        }
+        if currentTier == .skip, incomingTier != .skip {
+            flags.insert(.searchTextChanged)
+            if incomingTier == .normal || incomingTier == .premium {
+                flags.insert(.embeddingTextChanged)
+            }
+        }
         if searchText(current) != searchText(merged) {
             flags.insert(.searchTextChanged)
         }

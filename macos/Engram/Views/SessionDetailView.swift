@@ -26,6 +26,8 @@ struct SessionDetailView: View {
     @State private var suggestedParent: Session?
     @State private var childrenSessions: [Session] = []
     @State private var childrenSessionCount = 0
+    @State private var suggestedChildrenSessions: [Session] = []
+    @State private var suggestedChildrenSessionCount = 0
     @State private var showAgentSessions = false
 
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
@@ -38,12 +40,18 @@ struct SessionDetailView: View {
     @State private var currentMatchIndex: Int = -1
     @State private var indexedMessages: [IndexedMessage] = []
     @State private var typeCounts: [MessageType: Int] = [:]
-    @State private var typeVisibility: [MessageType: Bool] = Dictionary(uniqueKeysWithValues: MessageType.allCases.map { ($0, true) })
+    @State private var typeVisibility: [MessageType: Bool] = Self.defaultTypeVisibility
     @State private var navPositions: [MessageType: Int] = Dictionary(uniqueKeysWithValues: MessageType.allCases.map { ($0, -1) })
     @State private var scrollTarget: UUID? = nil
 
     @State private var displayIndexed: [IndexedMessage] = []
     @State private var matchIndices: [Int] = []
+
+    private static let defaultTypeVisibility: [MessageType: Bool] = Dictionary(
+        uniqueKeysWithValues: MessageType.allCases.map { type in
+            (type, type == .user || type == .assistant)
+        }
+    )
 
     private func updateDisplayIndexed() {
         displayIndexed = indexedMessages.filter { idx in
@@ -231,58 +239,7 @@ struct SessionDetailView: View {
                 }
             }
 
-            // Child session list
-            if childrenSessionCount > 0 {
-                Divider().padding(.horizontal, 16)
-                VStack(alignment: .leading, spacing: 6) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.16)) {
-                            showAgentSessions.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: showAgentSessions ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(Theme.tertiaryText)
-                                .frame(width: 12)
-
-                            Text("Agent Sessions (\(childrenSessionCount))")
-                                .font(.caption)
-                                .foregroundStyle(Theme.secondaryText)
-
-                            if childrenSessionCount > agentSessionPreviewLimit {
-                                Text("showing \(childrenSessions.count)")
-                                    .font(.caption2)
-                                    .foregroundStyle(Theme.tertiaryText)
-                            }
-
-                            Spacer()
-                        }
-                        .padding(.horizontal, 16)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-
-                    if showAgentSessions {
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 2) {
-                                ForEach(childrenSessions, id: \.id) { child in
-                                    CompactChildRow(
-                                        session: child,
-                                        isConfirmed: true,
-                                        onTap: { navigateToSession(child) }
-                                    )
-                                    .padding(.horizontal, 12)
-                                }
-                            }
-                            .padding(.vertical, 2)
-                        }
-                        .frame(maxHeight: agentSessionListMaxHeight)
-                        .scrollIndicators(.visible)
-                    }
-                }
-                .padding(.vertical, 8)
-            }
+            agentSessionsSection
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail_container")
@@ -310,8 +267,11 @@ struct SessionDetailView: View {
             messages = []
             indexedMessages = []
             typeCounts = [:]
+            typeVisibility = Self.defaultTypeVisibility
             childrenSessions = []
             childrenSessionCount = 0
+            suggestedChildrenSessions = []
+            suggestedChildrenSessionCount = 0
             showAgentSessions = false
             var effectivePath = session.effectiveFilePath
             let source = session.source
@@ -348,6 +308,80 @@ struct SessionDetailView: View {
 
     // MARK: - Parent/Child Helpers
 
+    @ViewBuilder
+    private var agentSessionsSection: some View {
+        let totalCount = childrenSessionCount + suggestedChildrenSessionCount
+        if totalCount > 0 {
+            Divider().padding(.horizontal, 16)
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        showAgentSessions.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: showAgentSessions ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.tertiaryText)
+                            .frame(width: 12)
+
+                        Text(agentSessionsTitle(totalCount))
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondaryText)
+
+                        if childrenSessionCount > agentSessionPreviewLimit {
+                            Text(showingAgentSessionsLabel(childrenSessions.count))
+                                .font(.caption2)
+                                .foregroundStyle(Theme.tertiaryText)
+                        }
+
+                        if suggestedChildrenSessionCount > 0 {
+                            Text(suggestedAgentSessionsLabel(suggestedChildrenSessionCount))
+                                .font(.caption2)
+                                .foregroundStyle(Theme.tertiaryText)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if showAgentSessions {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(childrenSessions, id: \.id) { child in
+                                CompactChildRow(
+                                    session: child,
+                                    isConfirmed: true,
+                                    onTap: { navigateToSession(child) }
+                                )
+                                .padding(.horizontal, 12)
+                            }
+                            ForEach(suggestedChildrenSessions, id: \.id) { child in
+                                CompactChildRow(
+                                    session: child,
+                                    isConfirmed: false,
+                                    onTap: { navigateToSession(child) },
+                                    onConfirm: { confirmSuggestedChild(child) },
+                                    onDismiss: { dismissSuggestedChild(child) }
+                                )
+                                .padding(.horizontal, 12)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .frame(maxHeight: agentSessionListMaxHeight)
+                    .scrollIndicators(.visible)
+                    .accessibilityIdentifier("detail_agentSessionsList")
+                }
+            }
+            .padding(.vertical, 8)
+            .accessibilityIdentifier("detail_agentSessionsSection")
+        }
+    }
+
     private func loadParentInfo() {
         let sessionId = session.id
         let parentId = session.parentSessionId
@@ -373,15 +407,50 @@ struct SessionDetailView: View {
                 parentId: sessionId,
                 limit: agentSessionPreviewLimit
             )
+            let suggestedChildren = try? dbRef.suggestedChildSessions(parentId: sessionId)
             let counts = try? dbRef.childCount(parentIds: [sessionId])
+            let suggestedCounts = try? dbRef.suggestedChildCount(parentIds: [sessionId])
             let childCount = counts?[sessionId] ?? children?.count ?? 0
+            let suggestedChildCount = suggestedCounts?[sessionId] ?? suggestedChildren?.count ?? 0
             await MainActor.run {
                 confirmedParent = confirmed
                 suggestedParent = suggested
                 childrenSessions = children ?? []
                 childrenSessionCount = childCount
+                suggestedChildrenSessions = suggestedChildren ?? []
+                suggestedChildrenSessionCount = suggestedChildCount
             }
         }
+    }
+
+    private func confirmSuggestedChild(_ child: Session) {
+        Task {
+            _ = try? await serviceClient.confirmSuggestion(sessionId: child.id)
+            loadParentInfo()
+        }
+    }
+
+    private func dismissSuggestedChild(_ child: Session) {
+        guard let suggestedId = child.suggestedParentId else { return }
+        Task {
+            try? await serviceClient.dismissSuggestion(
+                sessionId: child.id,
+                suggestedParentId: suggestedId
+            )
+            loadParentInfo()
+        }
+    }
+
+    private func agentSessionsTitle(_ count: Int) -> String {
+        String.localizedStringWithFormat(String(localized: "Agent Sessions (%lld)"), count)
+    }
+
+    private func showingAgentSessionsLabel(_ count: Int) -> String {
+        String.localizedStringWithFormat(String(localized: "showing %lld"), count)
+    }
+
+    private func suggestedAgentSessionsLabel(_ count: Int) -> String {
+        String.localizedStringWithFormat(String(localized: "%lld suggested"), count)
     }
 
     private func navigateToSession(_ target: Session) {

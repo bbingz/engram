@@ -7,16 +7,45 @@ enum DatabaseError: Error {
     case notOpen
 }
 
-enum SessionSort: String {
+enum SessionSort: String, Sendable {
     case createdDesc = "start_time DESC"
     case createdAsc  = "start_time ASC"
     case updatedDesc = "COALESCE(end_time, start_time) DESC"
     case updatedAsc  = "COALESCE(end_time, start_time) ASC"
+
+    var usesActivityTime: Bool {
+        switch self {
+        case .updatedDesc, .updatedAsc:
+            true
+        case .createdDesc, .createdAsc:
+            false
+        }
+    }
+
+    var isDescending: Bool {
+        switch self {
+        case .createdDesc, .updatedDesc:
+            true
+        case .createdAsc, .updatedAsc:
+            false
+        }
+    }
+
+    var timelineTimestampSQL: String {
+        usesActivityTime ? "COALESCE(end_time, start_time)" : "start_time"
+    }
 }
 
 enum GroupingMode: String, CaseIterable {
     case project = "Project"
     case source = "Source"
+}
+
+struct SessionListStats {
+    let totalSessions: Int
+    let totalMessages: Int
+    let avgDurationSeconds: Double?
+    let sources: [String]
 }
 
 @MainActor
@@ -47,10 +76,50 @@ final class DatabaseManager {
     }
 
     // MARK: - list_sessions
+    nonisolated private static func appendSessionFilters(
+        to parts: inout [String],
+        args: inout [DatabaseValueConvertible],
+        sources: Set<String>,
+        projects: Set<String>,
+        since: String?,
+        includeHidden: Bool,
+        subAgent: Bool?,
+        topLevelOnly: Bool
+    ) {
+        if !includeHidden {
+            parts.append("AND hidden_at IS NULL")
+        }
+        if topLevelOnly {
+            parts.append("AND parent_session_id IS NULL AND suggested_parent_id IS NULL")
+        }
+        if !sources.isEmpty {
+            let ph = sources.map { _ in "?" }.joined(separator: ", ")
+            parts.append("AND source IN (\(ph))")
+            sources.forEach { args.append($0) }
+        }
+        if !projects.isEmpty {
+            let ph = projects.map { _ in "?" }.joined(separator: ", ")
+            parts.append("AND project IN (\(ph))")
+            projects.forEach { args.append($0) }
+        }
+        if let since {
+            parts.append("AND COALESCE(end_time, start_time) >= ?")
+            args.append(since)
+        }
+        if let subAgent {
+            if subAgent {
+                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+            } else {
+                parts.append("AND (tier IS NULL OR tier != 'skip')")
+            }
+        }
+    }
+
     nonisolated func listSessions(
         sources: Set<String> = [],   // empty = all
         projects: Set<String> = [],  // empty = all
         since: String? = nil,
+        includeHidden: Bool = false,
         subAgent: Bool? = nil,       // nil=all, true=only sub-agents, false=hide sub-agents
         topLevelOnly: Bool = false,
         sort: SessionSort = .createdDesc,
@@ -58,30 +127,68 @@ final class DatabaseManager {
         offset: Int = 0
     ) throws -> [Session] {
         try readInBackground { db in
-            var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
+            var parts = ["SELECT * FROM sessions WHERE 1=1"]
             var args: [DatabaseValueConvertible] = []
-            if topLevelOnly {
-                parts.append("AND parent_session_id IS NULL AND suggested_parent_id IS NULL")
-            }
-            if !sources.isEmpty {
-                let ph = sources.map { _ in "?" }.joined(separator: ", ")
-                parts.append("AND source IN (\(ph))")
-                sources.forEach { args.append($0) }
-            }
-            if !projects.isEmpty {
-                let ph = projects.map { _ in "?" }.joined(separator: ", ")
-                parts.append("AND project IN (\(ph))")
-                projects.forEach { args.append($0) }
-            }
-            if let since { parts.append("AND start_time >= ?"); args.append(since) }
-            if let subAgent {
-                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
-            }
+            Self.appendSessionFilters(
+                to: &parts,
+                args: &args,
+                sources: sources,
+                projects: projects,
+                since: since,
+                includeHidden: includeHidden,
+                subAgent: subAgent,
+                topLevelOnly: topLevelOnly
+            )
             parts.append("ORDER BY \(sort.rawValue) LIMIT ? OFFSET ?")
             args.append(limit); args.append(offset)
             return try Session.fetchAll(db, sql: parts.joined(separator: " "),
                                         arguments: StatementArguments(args))
+        }
+    }
+
+    nonisolated func sessionListStats(
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        since: String? = nil,
+        includeHidden: Bool = false,
+        subAgent: Bool? = nil,
+        topLevelOnly: Bool = false
+    ) throws -> SessionListStats {
+        try readInBackground { db in
+            var parts = ["FROM sessions WHERE 1=1"]
+            var args: [DatabaseValueConvertible] = []
+            Self.appendSessionFilters(
+                to: &parts,
+                args: &args,
+                sources: sources,
+                projects: projects,
+                since: since,
+                includeHidden: includeHidden,
+                subAgent: subAgent,
+                topLevelOnly: topLevelOnly
+            )
+            let fromWhere = parts.joined(separator: " ")
+            let row = try Row.fetchOne(db, sql: """
+                SELECT
+                    COUNT(*) AS total_sessions,
+                    COALESCE(SUM(message_count), 0) AS total_messages,
+                    AVG(CASE
+                        WHEN end_time IS NOT NULL
+                        THEN (julianday(end_time) - julianday(start_time)) * 86400.0
+                    END) AS avg_duration_seconds
+                \(fromWhere)
+            """, arguments: StatementArguments(args))
+            let sourceRows = try Row.fetchAll(db, sql: """
+                SELECT DISTINCT source
+                \(fromWhere)
+                ORDER BY source
+            """, arguments: StatementArguments(args))
+            return SessionListStats(
+                totalSessions: row?["total_sessions"] ?? 0,
+                totalMessages: row?["total_messages"] ?? 0,
+                avgDurationSeconds: row?["avg_duration_seconds"],
+                sources: sourceRows.map { $0["source"] as String }
+            )
         }
     }
 
@@ -648,20 +755,31 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func sessionTimeline(days: Int = 30) throws -> [(date: String, sessions: [Session])] {
+    nonisolated func sessionTimeline(days: Int = 30, sort: SessionSort = .updatedDesc) throws -> [(date: String, sessions: [Session])] {
         try readInBackground { db in
+            let timestampSQL = sort.timelineTimestampSQL
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE hidden_at IS NULL
                   AND parent_session_id IS NULL
                   AND suggested_parent_id IS NULL
-                  AND start_time >= DATE('now', '-\(days) days')
+                  AND \(timestampSQL) >= DATE('now', '-\(days) days')
                   AND (tier IS NULL OR tier != 'skip')
-                ORDER BY start_time DESC
+                ORDER BY \(sort.rawValue)
             """)
-            let grouped = Dictionary(grouping: sessions) { String($0.startTime.prefix(10)) }
-            return grouped.sorted { $0.key > $1.key }
-                .map { (date: $0.key, sessions: $0.value) }
+            func timelineTimestamp(_ session: Session) -> String {
+                sort.usesActivityTime ? (session.endTime ?? session.startTime) : session.startTime
+            }
+
+            let grouped = Dictionary(grouping: sessions) { String(timelineTimestamp($0).prefix(10)) }
+            return grouped
+                .sorted { sort.isDescending ? $0.key > $1.key : $0.key < $1.key }
+                .map { group in
+                    let sortedSessions = group.value.sorted {
+                        sort.isDescending ? timelineTimestamp($0) > timelineTimestamp($1) : timelineTimestamp($0) < timelineTimestamp($1)
+                    }
+                    return (date: group.key, sessions: sortedSessions)
+                }
         }
     }
 
@@ -737,37 +855,45 @@ final class DatabaseManager {
 
     // MARK: - Parent/Child Session Queries
 
-    nonisolated func childSessions(parentId: String, limit: Int = 20, offset: Int = 0) throws -> [Session] {
+    nonisolated func childSessions(
+        parentId: String,
+        includeHidden: Bool = false,
+        limit: Int = 20,
+        offset: Int = 0
+    ) throws -> [Session] {
         try readInBackground { db in
-            try Session.fetchAll(db, sql: """
+            let hiddenClause = includeHidden ? "" : "AND hidden_at IS NULL"
+            return try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
-                WHERE parent_session_id = ? AND hidden_at IS NULL
+                WHERE parent_session_id = ? \(hiddenClause)
                 ORDER BY start_time ASC
                 LIMIT ? OFFSET ?
             """, arguments: [parentId, limit, offset])
         }
     }
 
-    nonisolated func suggestedChildSessions(parentId: String) throws -> [Session] {
+    nonisolated func suggestedChildSessions(parentId: String, includeHidden: Bool = false) throws -> [Session] {
         try readInBackground { db in
-            try Session.fetchAll(db, sql: """
+            let hiddenClause = includeHidden ? "" : "AND hidden_at IS NULL"
+            return try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE suggested_parent_id = ?
                   AND parent_session_id IS NULL
-                  AND hidden_at IS NULL
+                  \(hiddenClause)
                 ORDER BY start_time ASC
             """, arguments: [parentId])
         }
     }
 
-    nonisolated func childCount(parentIds: [String]) throws -> [String: Int] {
+    nonisolated func childCount(parentIds: [String], includeHidden: Bool = false) throws -> [String: Int] {
         guard !parentIds.isEmpty else { return [:] }
         return try readInBackground { db in
             let placeholders = parentIds.map { _ in "?" }.joined(separator: ",")
+            let hiddenClause = includeHidden ? "" : "AND hidden_at IS NULL"
             let rows = try Row.fetchAll(db, sql: """
                 SELECT parent_session_id, COUNT(*) as cnt
                 FROM sessions
-                WHERE parent_session_id IN (\(placeholders)) AND hidden_at IS NULL
+                WHERE parent_session_id IN (\(placeholders)) \(hiddenClause)
                 GROUP BY parent_session_id
             """, arguments: StatementArguments(parentIds))
             var result: [String: Int] = [:]
@@ -780,15 +906,16 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func suggestedChildCount(parentIds: [String]) throws -> [String: Int] {
+    nonisolated func suggestedChildCount(parentIds: [String], includeHidden: Bool = false) throws -> [String: Int] {
         guard !parentIds.isEmpty else { return [:] }
         return try readInBackground { db in
             let placeholders = parentIds.map { _ in "?" }.joined(separator: ",")
+            let hiddenClause = includeHidden ? "" : "AND hidden_at IS NULL"
             let rows = try Row.fetchAll(db, sql: """
                 SELECT suggested_parent_id, COUNT(*) as cnt
                 FROM sessions
                 WHERE suggested_parent_id IN (\(placeholders))
-                  AND parent_session_id IS NULL AND hidden_at IS NULL
+                  AND parent_session_id IS NULL \(hiddenClause)
                 GROUP BY suggested_parent_id
             """, arguments: StatementArguments(parentIds))
             var result: [String: Int] = [:]

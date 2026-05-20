@@ -12,6 +12,45 @@ struct ColorBarMessageView: View {
         "\(indexed.messageType.label.uppercased()) #\(indexed.typeIndex)"
     }
 
+    private var isPrimaryDialogue: Bool {
+        indexed.messageType == .user || indexed.messageType == .assistant
+    }
+
+    private var messageBackground: Color {
+        indexed.messageType == .user ? barColor.opacity(0.10) : Color.clear
+    }
+
+    private var shouldOutline: Bool {
+        indexed.messageType == .user
+    }
+
+    @ViewBuilder
+    private var roleHeader: some View {
+        if indexed.messageType == .user {
+            HStack(spacing: 6) {
+                Text(typeLabel)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(barColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(barColor.opacity(0.14))
+                    .clipShape(Capsule())
+                Spacer(minLength: 0)
+            }
+        } else if indexed.messageType == .assistant {
+            HStack(spacing: 6) {
+                Text(typeLabel)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(barColor)
+                Spacer(minLength: 0)
+            }
+        } else {
+            Text(typeLabel)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(barColor)
+        }
+    }
+
     private func highlightedText(_ text: String) -> AttributedString {
         var attr = AttributedString(text)
         guard !searchText.isEmpty else { return attr }
@@ -35,9 +74,7 @@ struct ColorBarMessageView: View {
                 .frame(width: 3)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(typeLabel)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(barColor)
+                roleHeader
 
                 switch indexed.messageType {
                 case .assistant, .code:
@@ -82,7 +119,11 @@ struct ColorBarMessageView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
         }
-        .background(barColor.opacity(0.06))
+        .background(messageBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(shouldOutline ? barColor.opacity(0.16) : Color.clear, lineWidth: 1)
+        )
         .clipShape(
             UnevenRoundedRectangle(
                 topLeadingRadius: 0, bottomLeadingRadius: 0,

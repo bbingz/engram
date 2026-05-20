@@ -172,6 +172,31 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testSameSyncVersionSnapshotCanRecoverTierFromSkip() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "tier-recovery", tier: .skip))
+
+            let result = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "tier-recovery", snapshotHash: "h2", tier: .premium)
+            )
+
+            XCTAssertEqual(result.action, .merge)
+            XCTAssertEqual(
+                result.changeSet.flags,
+                [.syncPayloadChanged, .localStateChanged, .searchTextChanged, .embeddingTextChanged]
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'tier-recovery'"),
+                "premium"
+            )
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT job_kind FROM session_index_jobs WHERE session_id = 'tier-recovery' ORDER BY job_kind"),
+                ["embedding", "fts"]
+            )
+        }
+    }
+
     func testSessionBatchUpsertReportsPerSessionResults() throws {
         try writer.write { db in
             let sink = SessionBatchUpsert(db: db)
@@ -201,6 +226,83 @@ final class IndexerParityTests: XCTestCase {
 
         XCTAssertEqual(indexed, 205)
         XCTAssertEqual(sink.batchSizes, [100, 100, 5])
+    }
+
+    func testRecentModifiedAdapterOnlyIndexesRecentlyTouchedLocators() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("recent-active-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let oldLocator = root.appendingPathComponent("old.jsonl")
+        let recentLocator = root.appendingPathComponent("recent.jsonl")
+        try "old\n".write(to: oldLocator, atomically: true, encoding: .utf8)
+        try "recent\n".write(to: recentLocator, atomically: true, encoding: .utf8)
+
+        let now = Date(timeIntervalSince1970: 1_800)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-1_200)],
+            ofItemAtPath: oldLocator.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-60)],
+            ofItemAtPath: recentLocator.path
+        )
+
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [
+                RecentlyModifiedSessionAdapter(
+                    base: SyntheticFileSessionAdapter(locators: [oldLocator.path, recentLocator.path]),
+                    modifiedSince: now.addingTimeInterval(-600)
+                )
+            ]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.map(\.id), ["recent"])
+    }
+
+    func testRecentModifiedAdapterUsesBackingFileForVirtualLocators() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("recent-active-virtual-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let oldDatabase = root.appendingPathComponent("old.sqlite")
+        let recentDatabase = root.appendingPathComponent("recent.sqlite")
+        try "old\n".write(to: oldDatabase, atomically: true, encoding: .utf8)
+        try "recent\n".write(to: recentDatabase, atomically: true, encoding: .utf8)
+
+        let now = Date(timeIntervalSince1970: 1_800)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-1_200)],
+            ofItemAtPath: oldDatabase.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-60)],
+            ofItemAtPath: recentDatabase.path
+        )
+
+        let adapter = RecentlyModifiedSessionAdapter(
+            base: SyntheticFileSessionAdapter(locators: [
+                "\(oldDatabase.path)::old-session",
+                "\(recentDatabase.path)::recent-session",
+                "\(recentDatabase.path)?composer=recent-composer"
+            ]),
+            modifiedSince: now.addingTimeInterval(-600)
+        )
+
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertEqual(
+            locators,
+            [
+                "\(recentDatabase.path)::recent-session",
+                "\(recentDatabase.path)?composer=recent-composer"
+            ]
+        )
     }
 
     func testStreamSnapshotsExposesBoundedConsumerPath() async throws {
@@ -272,6 +374,37 @@ final class IndexerParityTests: XCTestCase {
 
         XCTAssertEqual(snapshots.count, 1)
         XCTAssertEqual(snapshots.first?.tier, .skip)
+    }
+
+    func testCodexSessionWithAgentInstructionsAndRealUserTaskIsNotSkipped() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [
+                SyntheticSessionAdapter(
+                    count: 1,
+                    userContent: """
+                    # AGENTS.md instructions for /Users/bing/-Code-/engram
+
+                    <INSTRUCTIONS>
+                    Follow the repo instructions.
+                    </INSTRUCTIONS>
+
+                    <environment_context>
+                      <cwd>/Users/bing/-Code-/engram</cwd>
+                    </environment_context>
+
+                    Total Sessions
+                    Avg Duration
+                    """,
+                    assistantContent: "Updated the sessions page."
+                )
+            ]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertNotEqual(snapshots.first?.tier, .skip)
     }
 
     private func makeSnapshot(
@@ -367,9 +500,19 @@ final class IndexerParityTests: XCTestCase {
         case .double(let value):
             return .double(value)
         case .string(let value):
-            return .string(value.replacingOccurrences(of: repoRoot.deletingLastPathComponent().path, with: "<repo>"))
+            return .string(normalizedRepoPath(value))
         case .blob(let data):
             return .string(data.base64EncodedString())
+        }
+    }
+
+    private func normalizedRepoPath(_ value: String) -> String {
+        let rawRoot = repoRoot.deletingLastPathComponent().path
+        let resolvedRoot = repoRoot.deletingLastPathComponent().resolvingSymlinksInPath().path
+        let roots = Set([rawRoot, resolvedRoot, "/private\(rawRoot)"])
+            .sorted { $0.count > $1.count }
+        return roots.reduce(value) { normalized, root in
+            normalized.replacingOccurrences(of: root, with: "<repo>")
         }
     }
 
@@ -465,6 +608,59 @@ private final class SyntheticSessionAdapter: SessionAdapter {
 
     func isAccessible(locator: String) async -> Bool {
         true
+    }
+}
+
+private final class SyntheticFileSessionAdapter: SessionAdapter {
+    let source: SourceName = .claudeCode
+    private let locators: [String]
+
+    init(locators: [String]) {
+        self.locators = locators
+    }
+
+    func detect() async -> Bool {
+        true
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        locators
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        let id = URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent
+        return .success(
+            NormalizedSessionInfo(
+                id: id,
+                source: .claudeCode,
+                startTime: "2026-04-24T00:00:00Z",
+                cwd: "/repo",
+                model: "synthetic",
+                messageCount: 2,
+                userMessageCount: 1,
+                assistantMessageCount: 1,
+                toolMessageCount: 0,
+                systemMessageCount: 0,
+                summary: "hello",
+                filePath: locator,
+                sizeBytes: 128
+            )
+        )
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "hello"))
+            continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        FileManager.default.fileExists(atPath: locator)
     }
 }
 

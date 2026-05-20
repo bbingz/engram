@@ -67,6 +67,16 @@
     "%@%%" : {
 
     },
+    "%lld suggested" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个建议"
+          }
+        }
+      }
+    },
     "%lld msgs" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -77,6 +87,19 @@
           }
         }
       }
+    },
+    "Agent Sessions (%lld)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent 会话（%lld）"
+          }
+        }
+      }
+    },
+    "%lld sessions" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个会话" } } }
     },
     "%lld of %lld" : {
       "extractionState" : "stale",
@@ -125,8 +148,17 @@
         }
       }
     },
+    "All Sources" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部来源" } } }
+    },
+    "All Time" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部时间" } } }
+    },
     "Activity" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "活动" } } }
+    },
+    "Active" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "活跃" } } }
     },
     "Add Peer" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加节点" } } }
@@ -154,6 +186,9 @@
     },
     "Auto-generate titles" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动生成标题" } } }
+    },
+    "Avg Duration" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "平均时长" } } }
     },
     "Bearer Token" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Bearer Token" } } }
@@ -349,6 +384,9 @@
     },
     "Settings" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "设置" } } }
+    },
+    "showing %lld" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示 %lld 个" } } }
     },
     "Show Agent Communication" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示代理通信" } } }
@@ -1026,6 +1064,9 @@
         }
       }
     },
+    "No activity" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无活动" } } }
+    },
     "No sessions" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1035,6 +1076,9 @@
           }
         }
       }
+    },
+    "No sessions in the last 30 days" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近 30 天没有会话" } } }
     },
     "No sessions match the current filters." : {
 
@@ -1291,6 +1335,12 @@
         }
       }
     },
+    "Source" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来源" } } }
+    },
+    "Sort" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排序" } } }
+    },
     "Show hidden sessions" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1376,6 +1426,9 @@
     "Tiers" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分层" } } }
     },
+    "This Month" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本月" } } }
+    },
     "This session is %@ — loading may take a moment" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1385,6 +1438,9 @@
           }
         }
       }
+    },
+    "This Week" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本周" } } }
     },
     "This source (%@) uses a SQLite database — conversation preview is not yet supported." : {
       "extractionState" : "stale",
@@ -1396,6 +1452,12 @@
           }
         }
       }
+    },
+    "Today" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "今天" } } }
+    },
+    "Yesterday" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "昨天" } } }
     },
     "Timeline" : {
       "extractionState" : "stale",
@@ -1417,6 +1479,9 @@
           }
         }
       }
+    },
+    "Total Sessions" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "会话总数" } } }
     },
     "Truncate" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "截断" } } }

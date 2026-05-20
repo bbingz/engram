@@ -108,30 +108,20 @@ struct HeadingView: View {
     let text: String
     let fontSize: Double
 
-    private var headingSize: Double {
-        switch level {
-        case 1: return fontSize + 8
-        case 2: return fontSize + 5
-        case 3: return fontSize + 3
-        case 4: return fontSize + 1
-        default: return fontSize
-        }
-    }
-
     var body: some View {
         if let attributed = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
             Text(attributed)
-                .font(.system(size: headingSize, weight: .bold))
+                .font(.system(size: fontSize, weight: .bold))
                 .textSelection(.enabled)
-                .padding(.top, level <= 2 ? 6 : 2)
+                .padding(.top, level <= 2 ? 4 : 2)
         } else {
             Text(verbatim: text)
-                .font(.system(size: headingSize, weight: .bold))
+                .font(.system(size: fontSize, weight: .bold))
                 .textSelection(.enabled)
-                .padding(.top, level <= 2 ? 6 : 2)
+                .padding(.top, level <= 2 ? 4 : 2)
         }
     }
 }

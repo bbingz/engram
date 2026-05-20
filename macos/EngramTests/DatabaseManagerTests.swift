@@ -111,6 +111,69 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testListSessionsSinceUsesActivityTime() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "started-yesterday-active-today",
+            startTime: "2026-05-08T10:00:00Z",
+            endTime: "2026-05-09T01:00:00Z"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "inactive-yesterday",
+            startTime: "2026-05-08T08:00:00Z",
+            endTime: "2026-05-08T09:00:00Z"
+        )
+
+        let sessions = try db.listSessions(since: "2026-05-09T00:00:00Z")
+
+        XCTAssertEqual(sessions.map(\.id), ["started-yesterday-active-today"])
+    }
+
+    @MainActor
+    func testSessionTimelineCanUseActivityOrCreatedTime() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "started-yesterday-active-today",
+            startTime: "2026-05-08T10:00:00Z",
+            endTime: "2026-05-09T01:00:00Z"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "created-today",
+            startTime: "2026-05-09T00:30:00Z",
+            endTime: nil
+        )
+
+        let byActivity = try db.sessionTimeline(days: 10_000, sort: .updatedDesc)
+
+        XCTAssertEqual(byActivity.map(\.date), ["2026-05-09"])
+        XCTAssertEqual(
+            byActivity.first?.sessions.map(\.id),
+            ["started-yesterday-active-today", "created-today"]
+        )
+
+        let byCreated = try db.sessionTimeline(days: 10_000, sort: .createdDesc)
+
+        XCTAssertEqual(byCreated.map(\.date), ["2026-05-09", "2026-05-08"])
+        XCTAssertEqual(byCreated[0].sessions.map(\.id), ["created-today"])
+        XCTAssertEqual(byCreated[1].sessions.map(\.id), ["started-yesterday-active-today"])
+    }
+
+    @MainActor
+    func testListSessionsCanIncludeHiddenSessions() throws {
+        try insertTestSession(at: dbPath, id: "visible")
+        try insertTestSession(at: dbPath, id: "hidden")
+        try setHidden(at: dbPath, sessionId: "hidden", hidden: true)
+
+        XCTAssertEqual(try db.listSessions().map(\.id), ["visible"])
+
+        let sessions = try db.listSessions(includeHidden: true)
+
+        XCTAssertEqual(Set(sessions.map(\.id)), Set(["visible", "hidden"]))
+    }
+
+    @MainActor
     func testGetSessionReturnsCorrectSession() throws {
         try insertTestSession(at: dbPath, id: "specific-id", source: "codex")
 
@@ -143,6 +206,26 @@ final class DatabaseManagerTests: XCTestCase {
 
         let count = try db.countSessions(sources: Set(["claude-code"]))
         XCTAssertEqual(count, 1)
+    }
+
+    @MainActor
+    func testSessionListStatsCountsAllMatchesBeyondPageLimit() throws {
+        for i in 0..<201 {
+            try insertTestSession(
+                at: dbPath,
+                id: "s\(i)",
+                source: i.isMultiple(of: 2) ? "claude-code" : "codex",
+                messageCount: 1
+            )
+        }
+
+        let page = try db.listSessions(subAgent: false, limit: 200)
+        let stats = try db.sessionListStats(subAgent: false)
+
+        XCTAssertEqual(page.count, 200)
+        XCTAssertEqual(stats.totalSessions, 201)
+        XCTAssertEqual(stats.totalMessages, 201)
+        XCTAssertEqual(Set(stats.sources), Set(["claude-code", "codex"]))
     }
 
     // MARK: - Stats

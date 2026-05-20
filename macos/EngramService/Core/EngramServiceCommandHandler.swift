@@ -19,9 +19,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         do {
             switch request.command {
             case "status":
+                let status = try await writerGate.indexStatus()
                 return .success(
                     requestId: request.requestId,
-                    result: try Self.encode(EngramServiceStatus.running(total: 0, todayParents: 0))
+                    result: try Self.encode(
+                        EngramServiceStatus.running(total: status.total, todayParents: status.todayParents)
+                    )
                 )
             case "search":
                 let payload = try decodePayload(EngramServiceSearchRequest.self, from: request)
