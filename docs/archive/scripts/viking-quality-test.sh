@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# HISTORICAL: archived Viking comparison script. Not part of active Engram
+# tooling; requires explicit VIKING_BASE and VIKING_TOKEN environment values.
 # Viking 质量验收测试 — 检验回填 + VLM 生成效果
 # 可重复运行：Semantic 队列未跑完时显示进度，跑完后显示完整结果
 set -euo pipefail

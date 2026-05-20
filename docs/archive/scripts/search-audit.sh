@@ -1,4 +1,6 @@
 #!/bin/bash
+# HISTORICAL: archived Viking comparison script. Not part of active Engram
+# tooling; requires explicit VIKING_BASE and VIKING_TOKEN environment values.
 # ============================================================================
 # Engram Search Quality Audit
 # Benchmarks FTS (SQLite trigram), Viking grep, Viking find across 4 dimensions:
