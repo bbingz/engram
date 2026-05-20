@@ -18,6 +18,7 @@ coverage/
 .tmp-parent-detection.mjs
 tests/fixtures/antigravity/cache/*.jsonl
 !tests/fixtures/antigravity/cache/conv-001.jsonl
+.antigravitycli/
 
 # macOS
 .DS_Store
