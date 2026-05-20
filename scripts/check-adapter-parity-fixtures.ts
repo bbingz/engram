@@ -91,6 +91,16 @@ function walkFiles(root: string): string[] {
   return out;
 }
 
+function physicalFixturePath(
+  fixtureRoot: string,
+  value: unknown,
+): string | null {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const physical = value.split('?')[0]?.split('::')[0];
+  if (!physical) return null;
+  return join(fixtureRoot, physical);
+}
+
 function assertBatchSizes(fixtureRoot: string, failures: string[]): void {
   const batchPath = join(fixtureRoot, 'batch-sizes.json');
   let batch: Record<string, unknown>;
@@ -152,6 +162,18 @@ export function checkAdapterParityFixtures(fixtureRoot: string): string[] {
     }
     if (fixture.source !== source) {
       failures.push(`${source} fixture source mismatch`);
+    }
+    for (const key of ['inputPath', 'locator']) {
+      const physicalPath = physicalFixturePath(fixtureRoot, fixture[key]);
+      if (!physicalPath) {
+        failures.push(`${source} missing physical fixture path: ${key}`);
+      } else {
+        try {
+          statSync(physicalPath);
+        } catch {
+          failures.push(`${source} missing fixture input file: ${key}`);
+        }
+      }
     }
     for (const key of [
       'projectFields',

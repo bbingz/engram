@@ -5,6 +5,7 @@ dist/
 !test-fixtures/*.sqlite
 !tests/fixtures/mcp-contract.sqlite
 *.db
+!tests/fixtures/adapter-parity/opencode/input/sample.db
 
 # Xcode
 macos/build/

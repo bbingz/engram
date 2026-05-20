@@ -153,6 +153,21 @@ describe('stage2 Node parity fixture generators', () => {
     );
   }, 60_000);
 
+  it('checks adapter parity fixtures for physical input files', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-adapter-parity-input-test-'));
+    const fixtureRoot = join(tmp, 'adapter-parity');
+    runScript('scripts/gen-adapter-parity-fixtures.ts', ['--out', fixtureRoot]);
+
+    rmSync(join(fixtureRoot, 'opencode', 'input', 'sample.db'));
+
+    expect(() =>
+      runScript('scripts/check-adapter-parity-fixtures.ts', [
+        '--fixture-root',
+        fixtureRoot,
+      ]),
+    ).toThrow(/opencode missing fixture input file: inputPath/);
+  }, 60_000);
+
   it('generates parent detection and indexer fixtures deterministically', () => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-stage2-fixture-test-'));
     const parentOut = join(tmp, 'parent-detection');
