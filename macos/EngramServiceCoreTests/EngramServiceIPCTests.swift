@@ -76,7 +76,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
-            readProvider: SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
         )
         let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
             await handler.handle(request)
@@ -123,11 +123,33 @@ final class EngramServiceIPCTests: XCTestCase {
                 """
             )
         }
-        let provider = SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
 
         let search = try await provider.search(EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10))
 
         XCTAssertEqual(search.items.map(\.id), ["s1"])
+    }
+
+    func testSQLiteReadProviderReusesOpenedReaderAcrossRepeatedReads() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let factory = CountingServiceDatabaseReaderFactory()
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            makeDatabaseReader: factory.makeReader(path:)
+        )
+
+        let first = try await provider.sources()
+        XCTAssertEqual(first, [
+            EngramServiceSourceInfo(name: "codex", sessionCount: 2, latestIndexed: "2026-04-23T02:00:00Z")
+        ])
+
+        let second = try await provider.sources()
+        XCTAssertEqual(second, first)
+        let embedding = try await provider.embeddingStatus()
+        XCTAssertTrue(embedding.available)
+        XCTAssertEqual(factory.makeCount, 1)
+        XCTAssertEqual(factory.reader?.readCount, 3)
     }
 
     func testSQLiteReadProviderBuildsResumeCommand() async throws {
@@ -136,7 +158,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
-            readProvider: SQLiteEngramServiceReadProvider(
+            readProvider: try SQLiteEngramServiceReadProvider(
                 databasePath: paths.database.path,
                 commandLocator: { command in
                     command == "codex" ? "/usr/local/bin/codex" : nil
@@ -406,7 +428,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
-            readProvider: SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
         )
         let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
             await handler.handle(request)
@@ -663,7 +685,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
-            readProvider: SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
         )
         let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
             await handler.handle(request)
@@ -860,7 +882,11 @@ private func makeServiceIPCPaths() throws -> (runtime: URL, socket: URL, databas
 }
 
 private func seedSearchFixture(at path: String) throws {
-    let queue = try DatabaseQueue(path: path)
+    var configuration = Configuration()
+    configuration.prepareDatabase { db in
+        try db.execute(sql: "PRAGMA journal_mode = WAL")
+    }
+    let queue = try DatabaseQueue(path: path, configuration: configuration)
     try queue.write { db in
         try db.execute(sql: """
             CREATE TABLE sessions (
@@ -955,5 +981,36 @@ private func seedSearchFixture(at path: String) throws {
               'committed', '2026-04-23T03:00:00Z', '2026-04-23T03:05:00Z', 0, 'fixture', 'app'
             );
         """)
+    }
+}
+
+private final class CountingServiceDatabaseReaderFactory: @unchecked Sendable {
+    private(set) var makeCount = 0
+    private(set) var reader: CountingServiceDatabaseReader?
+
+    func makeReader(path: String) throws -> any ServiceDatabaseReading {
+        makeCount += 1
+        let reader = try CountingServiceDatabaseReader(path: path)
+        self.reader = reader
+        return reader
+    }
+}
+
+private final class CountingServiceDatabaseReader: ServiceDatabaseReading, @unchecked Sendable {
+    private let queue: DatabaseQueue
+    private(set) var readCount = 0
+
+    init(path: String) throws {
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA busy_timeout = 30000")
+        }
+        self.queue = try DatabaseQueue(path: path, configuration: configuration)
+    }
+
+    func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        readCount += 1
+        return try queue.read(block)
     }
 }

@@ -52,7 +52,7 @@ public enum EngramServiceRunner {
         let gate = try ServiceWriterGate(databasePath: databasePath, runtimeDirectory: runtimeDirectory)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
-            readProvider: SQLiteEngramServiceReadProvider(databasePath: databasePath)
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath)
         )
         let server = UnixSocketServiceServer(socketPath: socketPath) { request in
             await handler.handle(request)

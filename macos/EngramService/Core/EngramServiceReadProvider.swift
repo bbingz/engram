@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import EngramCoreRead
 
 protocol EngramServiceReadProvider: Sendable {
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse
@@ -14,6 +15,10 @@ protocol EngramServiceReadProvider: Sendable {
     func resumeCommand(_ request: EngramServiceResumeCommandRequest) async throws -> EngramServiceResumeCommandResponse
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse
     func projectCwds(_ request: EngramServiceProjectCwdsRequest) async throws -> EngramServiceProjectCwdsResponse
+}
+
+protocol ServiceDatabaseReading: Sendable {
+    func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T
 }
 
 struct EmptyEngramServiceReadProvider: EngramServiceReadProvider {
@@ -284,18 +289,21 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
 }
 
 struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
-    private let databasePath: String
+    private let databaseReader: any ServiceDatabaseReading
     private let fileSystemProvider: FileSystemEngramServiceReadProvider
     private let commandLocator: @Sendable (String) -> String?
 
     init(
         databasePath: String,
         fileSystemProvider: FileSystemEngramServiceReadProvider = FileSystemEngramServiceReadProvider(),
+        makeDatabaseReader: (String) throws -> any ServiceDatabaseReading = { path in
+            try ServiceDatabaseReader(path: path)
+        },
         commandLocator: @escaping @Sendable (String) -> String? = { name in
             SQLiteEngramServiceReadProvider.defaultCommandLocator(name)
         }
-    ) {
-        self.databasePath = databasePath
+    ) throws {
+        self.databaseReader = try makeDatabaseReader(databasePath)
         self.fileSystemProvider = fileSystemProvider
         self.commandLocator = commandLocator
     }
@@ -547,16 +555,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     private func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
-        var configuration = Configuration()
-        configuration.readonly = true
-        configuration.prepareDatabase { db in
-            try db.execute(sql: "PRAGMA busy_timeout = 30000")
-        }
-        let queue = try DatabaseQueue(
-            path: databasePath,
-            configuration: configuration
-        )
-        return try queue.read(block)
+        try databaseReader.read(block)
     }
 
     private func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
@@ -644,6 +643,18 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             return path
         }
         return nil
+    }
+}
+
+private final class ServiceDatabaseReader: ServiceDatabaseReading, @unchecked Sendable {
+    private let reader: EngramDatabaseReader
+
+    init(path: String) throws {
+        self.reader = try EngramDatabaseReader(path: path)
+    }
+
+    func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        try reader.read(block)
     }
 }
 
