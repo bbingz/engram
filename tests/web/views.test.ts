@@ -16,9 +16,9 @@ type ClassificationCase = {
 
 const classificationCases = JSON.parse(
   readFileSync(
-    join(
-      process.cwd(),
-      'macos/test-fixtures/transcript-display/system-classification-cases.json',
+    new URL(
+      '../../test-fixtures/transcript-display/system-classification-cases.json',
+      import.meta.url,
     ),
     'utf8',
   ),

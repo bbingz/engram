@@ -376,7 +376,7 @@ struct MessageParser {
         if content.hasPrefix("<system-reminder>")              { return .systemPrompt }
         if content.hasPrefix("<environment_context>")          { return .systemPrompt }
         if content.hasPrefix("<EXTREMELY_IMPORTANT>")          { return .systemPrompt }
-        if content.contains("<SYSTEM_MESSAGE>")                { return .systemPrompt }
+        if isSystemMessageWrapper(content)                     { return .systemPrompt }
         if content.hasPrefix("\nYou are Qwen Code")            { return .systemPrompt }
         if content.hasPrefix("You are Qwen Code")             { return .systemPrompt }
 
@@ -391,6 +391,11 @@ struct MessageParser {
         if content.hasPrefix("Base directory for this skill:") { return .agentComm }
 
         return .none
+    }
+
+    private static func isSystemMessageWrapper(_ content: String) -> Bool {
+        content.hasPrefix("<SYSTEM_MESSAGE>") ||
+        content.hasPrefix("The following is a <SYSTEM_MESSAGE>")
     }
 
     // MARK: - Helpers

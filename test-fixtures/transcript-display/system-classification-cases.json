@@ -18,6 +18,12 @@
     "category": "systemPrompt"
   },
   {
+    "name": "system-message-mentioned-in-normal-text",
+    "source": "codex",
+    "content": "Can you explain why Antigravity wraps tasks in a <SYSTEM_MESSAGE> block?",
+    "category": "none"
+  },
+  {
     "name": "subagent-notification",
     "source": "codex",
     "content": "<subagent_notification>\n{\"agent_path\":\"agent-1\",\"status\":{\"completed\":\"Result text\"}}\n</subagent_notification>",

@@ -76,7 +76,7 @@ xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destina
 xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' -only-testing:EngramTests/MessageParserTests
 ```
 
-当前 fixture/parity gate 覆盖 15 个独立产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax 和 Lobster AI 作为 Claude-compatible derived sources 走 Claude Code parser，但会以独立 source 写入索引；Swift/Node 回归测试覆盖该派生分类。HTTP/API reference 视图和 Swift App 显示层消费同一套消息模型，但不是同一个编译后的 parser；显示分类由 `test-fixtures/transcript-display/system-classification-cases.json` 同时驱动 TS/Swift 测试。如果出现同一会话在两端显示不同，先补 parity fixture，再改两端分类逻辑。
+当前 fixture/parity gate 覆盖 15 个独立产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax 和 Lobster AI 作为 Claude-compatible derived sources 走 Claude Code parser，但会以独立 source 写入索引；Swift/Node 回归测试覆盖该派生分类。HTTP/API reference 视图和 Swift App 显示层消费同一套消息模型，但不是同一个编译后的 parser；provider parser parity 由 `tests/fixtures/adapter-parity/**` 约束，display classification parity 由 `test-fixtures/transcript-display/system-classification-cases.json` 同时驱动 TS/Swift 测试。如果出现同一会话在两端解析或显示不同，先补对应 fixture，再改两端逻辑。
 
 ## 快速上手
 

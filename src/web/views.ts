@@ -1,4 +1,4 @@
-import type { SessionInfo } from '../adapters/types.js';
+import type { SessionInfo, SourceName } from '../adapters/types.js';
 
 const CDN_HTMX = 'https://unpkg.com/htmx.org@2.0.4';
 const CDN_HTMX_SRI =
@@ -673,7 +673,9 @@ export function renderSessionMessagesHtml(
     .filter((m) => m.content.trim())
     .map((m) => {
       const isUser = m.role === 'user';
-      const category = isUser ? classifySystem(m.content) : 'none';
+      const category = isUser
+        ? classifySystem(m.content, session.source)
+        : 'none';
 
       if (category !== 'none') {
         const isAgent = category === 'agentComm';
@@ -1336,7 +1338,10 @@ export function healthPage(data: HealthData): string {
 
 type SystemCategory = 'none' | 'systemPrompt' | 'agentComm';
 
-function classifySystem(content: string): SystemCategory {
+function classifySystem(
+  content: string,
+  _source?: SourceName | string,
+): SystemCategory {
   // System prompts
   if (content.startsWith('# AGENTS.md instructions for '))
     return 'systemPrompt';
@@ -1344,7 +1349,7 @@ function classifySystem(content: string): SystemCategory {
   if (content.startsWith('<system-reminder>')) return 'systemPrompt';
   if (content.startsWith('<environment_context>')) return 'systemPrompt';
   if (content.startsWith('<EXTREMELY_IMPORTANT>')) return 'systemPrompt';
-  if (content.includes('<SYSTEM_MESSAGE>')) return 'systemPrompt';
+  if (isSystemMessageWrapper(content)) return 'systemPrompt';
   if (content.startsWith('\nYou are Qwen Code')) return 'systemPrompt';
   if (content.startsWith('You are Qwen Code')) return 'systemPrompt';
 
@@ -1359,6 +1364,13 @@ function classifySystem(content: string): SystemCategory {
   if (content.startsWith('Base directory for this skill:')) return 'agentComm';
 
   return 'none';
+}
+
+function isSystemMessageWrapper(content: string): boolean {
+  return (
+    content.startsWith('<SYSTEM_MESSAGE>') ||
+    content.startsWith('The following is a <SYSTEM_MESSAGE>')
+  );
 }
 
 // ---------------------------------------------------------------------------

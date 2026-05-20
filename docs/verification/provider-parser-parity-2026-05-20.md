@@ -34,7 +34,7 @@ Antigravity CLI, Command Code, and Qoder are explicitly included in both the fix
 - TypeScript adapters remain dev/reference tooling for fixture generation and regression tests.
 - `tests/fixtures/adapter-parity/**/success.expected.json` is the shared golden corpus for Swift adapter parity.
 - `scripts/check-adapter-parity-fixtures.ts` fails when a covered provider has no success fixture, no malformed fixture, or a missing physical input file.
-- HTTP/API reference rendering and the Swift App detail view do not share a compiled parser, so display classification parity is guarded by the shared `test-fixtures/transcript-display/system-classification-cases.json` corpus. Divergence should be fixed by adding or updating that fixture first, then changing both classifiers.
+- HTTP/API reference rendering and the Swift App detail view do not share a compiled parser. Provider parser parity is guarded by `tests/fixtures/adapter-parity/**`; display classification parity is guarded by the shared `test-fixtures/transcript-display/system-classification-cases.json` corpus. Divergence should be fixed by adding or updating the relevant fixture first, then changing both implementations.
 
 ## Node 26 Native Dependency Note
 
