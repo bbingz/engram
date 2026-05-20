@@ -1083,7 +1083,9 @@ export function createApp(
     opencode: join(HOME, '.local/share/opencode/opencode.db'),
     iflow: join(HOME, '.iflow/projects'),
     qwen: join(HOME, '.qwen/projects'),
+    qoder: join(HOME, '.qoder/projects'),
     kimi: join(HOME, '.kimi/sessions'),
+    commandcode: join(HOME, '.commandcode/projects'),
     cline: join(HOME, '.cline/data/tasks'),
     cursor: join(
       HOME,
@@ -1093,7 +1095,7 @@ export function createApp(
       HOME,
       'Library/Application Support/Code/User/workspaceStorage',
     ),
-    antigravity: join(HOME, '.gemini/antigravity/daemon'),
+    antigravity: join(HOME, '.gemini/antigravity-cli/brain'),
     windsurf: join(HOME, '.codeium/windsurf/daemon'),
     copilot: join(HOME, '.copilot/session-state'),
   };

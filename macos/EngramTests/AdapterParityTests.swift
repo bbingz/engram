@@ -128,6 +128,120 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(info.model, "kimi-k2")
     }
 
+    func testQoderAdapterParsesClaudeCompatibleProjectJsonl() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qoder-adapter-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("-Users-test-my-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = project.appendingPathComponent("qoder-session.jsonl")
+        try Data(contentsOf: fixtureRoot.deletingLastPathComponent().appendingPathComponent("qoder/sample.jsonl"))
+            .write(to: locator)
+
+        let adapter = QoderAdapter(projectsRoot: root.path)
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(locators, [standardizedPath(locator.path)])
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("qoder fixture did not parse")
+        }
+
+        XCTAssertEqual(info.id, "qoder-session-001")
+        XCTAssertEqual(info.source, .qoder)
+        XCTAssertEqual(info.cwd, "/Users/test/my-project")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 2)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.summary, "Review the parser")
+
+        var messages: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(locator: locator.path, options: StreamMessagesOptions()) {
+            messages.append(message)
+        }
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant, .assistant, .tool])
+        XCTAssertEqual(messages.flatMap { $0.toolCalls ?? [] }.first?.name, "Read")
+    }
+
+    func testCommandCodeAdapterParsesRoleContentJsonl() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("commandcode-adapter-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("-Users-test-my-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = project.appendingPathComponent("commandcode-session.jsonl")
+        try Data(contentsOf: fixtureRoot.deletingLastPathComponent().appendingPathComponent("commandcode/sample.jsonl"))
+            .write(to: locator)
+        try "{}\n".write(
+            to: project.appendingPathComponent("commandcode-session.checkpoints.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let adapter = CommandCodeAdapter(projectsRoot: root.path)
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(locators, [standardizedPath(locator.path)])
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("commandcode fixture did not parse")
+        }
+
+        XCTAssertEqual(info.id, "commandcode-session-001")
+        XCTAssertEqual(info.source, .commandcode)
+        XCTAssertEqual(info.cwd, "/Users/test/my-project")
+        XCTAssertEqual(info.model, "command-code-agent")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.summary, "检查解析器")
+
+        var messages: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(locator: locator.path, options: StreamMessagesOptions()) {
+            messages.append(message)
+        }
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant, .tool])
+        XCTAssertEqual(messages.flatMap { $0.toolCalls ?? [] }.first?.name, "read_file")
+    }
+
+    func testAntigravityAdapterListsAndParsesCliBrainTranscripts() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("antigravity-cli-\(UUID().uuidString)", isDirectory: true)
+        let transcriptDir = root.appendingPathComponent("brain/ag-cli-session/.system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: transcriptDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = transcriptDir.appendingPathComponent("transcript.jsonl")
+        try Data(contentsOf: fixtureRoot.deletingLastPathComponent().appendingPathComponent("antigravity-cli/transcript.jsonl"))
+            .write(to: locator)
+
+        let adapter = AntigravityAdapter(
+            daemonDir: root.appendingPathComponent("missing-daemon").path,
+            cacheDir: root.appendingPathComponent("missing-cache").path,
+            conversationsDir: root.appendingPathComponent("missing-conversations").path,
+            cliBrainDir: root.appendingPathComponent("brain").path,
+            enableLiveSync: false
+        )
+
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(locators, [standardizedPath(locator.path)])
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("antigravity cli fixture did not parse")
+        }
+
+        XCTAssertEqual(info.id, "ag-cli-session")
+        XCTAssertEqual(info.source, .antigravity)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 2)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.summary, "Review the Antigravity CLI parser")
+
+        var messages: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(locator: locator.path, options: StreamMessagesOptions()) {
+            messages.append(message)
+        }
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant, .tool, .assistant])
+        XCTAssertEqual(messages.flatMap { $0.toolCalls ?? [] }.first?.name, "Read")
+    }
+
     func testCodexAdapterListsArchivedSessionsNextToSessionsRoot() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-archive-\(UUID().uuidString)", isDirectory: true)
@@ -269,11 +383,13 @@ final class AdapterParityTests: XCTestCase {
             .codex,
             .claudeCode,
             .cline,
+            .commandcode,
             .cursor,
             .geminiCli,
             .iflow,
             .kimi,
             .opencode,
+            .qoder,
             .qwen,
             .copilot,
             .vscode,
@@ -290,6 +406,7 @@ final class AdapterParityTests: XCTestCase {
                 CodexAdapter(sessionsRoot: fixtureRoot.appendingPathComponent("codex/input").path),
                 ClaudeCodeAdapter(projectsRoot: fixtureRoot.appendingPathComponent("claude-code/input").path),
                 ClineAdapter(tasksRoot: fixtureRoot.appendingPathComponent("cline/input/tasks").path),
+                CommandCodeAdapter(projectsRoot: fixtureRoot.appendingPathComponent("commandcode/input").path),
                 CursorAdapter(dbPath: fixtureRoot.appendingPathComponent("cursor/input/state.vscdb").path),
                 GeminiCliAdapter(
                     tmpRoot: fixtureRoot.appendingPathComponent("gemini-cli/input/tmp").path,
@@ -301,6 +418,7 @@ final class AdapterParityTests: XCTestCase {
                     kimiJsonPath: fixtureRoot.appendingPathComponent("kimi/input/kimi.json").path
                 ),
                 OpenCodeAdapter(dbPath: fixtureRoot.appendingPathComponent("opencode/input/sample.db").path),
+                QoderAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qoder/input").path),
                 QwenAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qwen/input").path),
                 CopilotAdapter(sessionRoot: fixtureRoot.appendingPathComponent("copilot/input").path),
                 VsCodeAdapter(workspaceStorageDir: fixtureRoot.appendingPathComponent("vscode/input").path),
@@ -314,7 +432,7 @@ final class AdapterParityTests: XCTestCase {
         )
 
         let goldens = try harness.loadGoldens()
-        XCTAssertEqual(goldens.count, 13)
+        XCTAssertEqual(goldens.count, 15)
         let enabledGoldens = goldens.filter { enabledSources.contains($0.source) }
         let results = try await harness.run()
         XCTAssertEqual(Set(results.map { $0.source }), enabledSources)

@@ -6,12 +6,14 @@ import { AntigravityAdapter } from '../src/adapters/antigravity.js';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import { ClineAdapter } from '../src/adapters/cline.js';
 import { CodexAdapter } from '../src/adapters/codex.js';
+import { CommandCodeAdapter } from '../src/adapters/commandcode.js';
 import { CopilotAdapter } from '../src/adapters/copilot.js';
 import { CursorAdapter } from '../src/adapters/cursor.js';
 import { GeminiCliAdapter } from '../src/adapters/gemini-cli.js';
 import { IflowAdapter } from '../src/adapters/iflow.js';
 import { KimiAdapter } from '../src/adapters/kimi.js';
 import { OpenCodeAdapter } from '../src/adapters/opencode.js';
+import { QoderAdapter } from '../src/adapters/qoder.js';
 import { QwenAdapter } from '../src/adapters/qwen.js';
 import type {
   Message,
@@ -54,6 +56,7 @@ const supportedSources = [
   'antigravity',
   'claude-code',
   'cline',
+  'commandcode',
   'codex',
   'copilot',
   'cursor',
@@ -61,6 +64,7 @@ const supportedSources = [
   'iflow',
   'kimi',
   'opencode',
+  'qoder',
   'qwen',
   'vscode',
   'windsurf',
@@ -243,6 +247,20 @@ function makeAdapter(source: SupportedFixtureSource, root: string) {
         join(inputRoot, '-Users-test-my-project/chats/sample.jsonl'),
       );
       return { adapter: new QwenAdapter(inputRoot), inputRoot };
+    }
+    case 'qoder': {
+      copyFileFixture(
+        join(sourceFixtureRoot, 'qoder/sample.jsonl'),
+        join(inputRoot, '-Users-test-my-project/qoder-session.jsonl'),
+      );
+      return { adapter: new QoderAdapter(inputRoot), inputRoot };
+    }
+    case 'commandcode': {
+      copyFileFixture(
+        join(sourceFixtureRoot, 'commandcode/sample.jsonl'),
+        join(inputRoot, '-Users-test-my-project/commandcode-session.jsonl'),
+      );
+      return { adapter: new CommandCodeAdapter(inputRoot), inputRoot };
     }
     case 'kimi': {
       copyDirFixture(join(sourceFixtureRoot, 'kimi'), inputRoot);

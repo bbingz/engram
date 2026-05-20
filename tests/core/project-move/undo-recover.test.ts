@@ -34,7 +34,8 @@ describe('undoMigration', () => {
       '.codex/sessions',
       '.gemini/tmp',
       '.local/share/opencode',
-      '.antigravity',
+      '.gemini/antigravity-cli/brain',
+      '.gemini/antigravity',
       '.copilot',
     ]) {
       mkdirSync(join(home, d), { recursive: true });

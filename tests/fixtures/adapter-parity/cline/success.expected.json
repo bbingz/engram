@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "571fd97",
+  "generatedAtCommit": "adb1088c",
   "inputPath": "cline/input/tasks/1770000000000/ui_messages.json",
   "insightFields": {
     "firstUserSummary": "帮我写单元测试",
@@ -26,7 +26,7 @@
       "timestamp": "2026-02-02T02:41:00.000Z"
     }
   ],
-  "nodeVersion": "v25.9.0",
+  "nodeVersion": "v26.0.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,
@@ -49,6 +49,7 @@
     "filePath": "<fixtureRoot>/cline/input/tasks/1770000000000/ui_messages.json",
     "id": "1770000000000",
     "messageCount": 3,
+    "model": "glm-5",
     "sizeBytes": 835,
     "source": "cline",
     "startTime": "2026-02-02T02:40:00.000Z",

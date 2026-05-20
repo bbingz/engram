@@ -46,6 +46,7 @@ final class IflowAdapter: SessionAdapter {
             var assistantCount = 0
             var systemCount = 0
             var firstUserText = ""
+            var detectedModel: String?
 
             for object in objects {
                 guard let type = JSONLAdapterSupport.string(object["type"]),
@@ -67,10 +68,14 @@ final class IflowAdapter: SessionAdapter {
                     endTime = value
                 }
 
+                let message = JSONLAdapterSupport.object(object["message"])
+                if detectedModel == nil, let value = JSONLAdapterSupport.string(message?["model"]) {
+                    detectedModel = value
+                }
+
                 if type == "assistant" {
                     assistantCount += 1
                 } else {
-                    let message = JSONLAdapterSupport.object(object["message"])
                     let text = Self.extractContent(message?["content"])
                     if Self.isSystemInjection(text) {
                         systemCount += 1
@@ -91,7 +96,7 @@ final class IflowAdapter: SessionAdapter {
                     endTime: endTime != startTime ? endTime : nil,
                     cwd: cwd,
                     project: nil,
-                    model: nil,
+                    model: detectedModel,
                     messageCount: userCount + assistantCount,
                     userMessageCount: userCount,
                     assistantMessageCount: assistantCount,

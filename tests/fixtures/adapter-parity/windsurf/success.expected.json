@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "571fd97",
+  "generatedAtCommit": "adb1088c",
   "inputPath": "windsurf/input/cache/conv-w01.jsonl",
   "insightFields": {
     "firstUserSummary": "Refactor the API",
@@ -21,7 +21,7 @@
       "timestamp": "2026-02-18T09:00:20.000Z"
     }
   ],
-  "nodeVersion": "v25.9.0",
+  "nodeVersion": "v26.0.0",
   "projectFields": {
     "cwd": "",
     "project": null,

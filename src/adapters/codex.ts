@@ -123,7 +123,7 @@ export class CodexAdapter implements SessionAdapter {
         startTime: payload.timestamp as string,
         endTime: lastTimestamp || undefined,
         cwd: (payload.cwd as string) || '',
-        model: detectedModel || (payload.model_provider as string | undefined),
+        model: detectedModel || (payload.model as string | undefined),
         messageCount: userCount + assistantCount + toolCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,

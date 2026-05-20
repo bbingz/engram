@@ -7,19 +7,24 @@ import { reviewScan } from '../../../src/core/project-move/review.js';
 /**
  * Review scan classifies residual refs into own/other per mvp.py semantics.
  * We fake `home` so getSourceRoots() rooted at the tmp dir, and populate
- * the 6 source sub-dirs with planted refs.
+ * the canonical source sub-dirs with planted refs.
  */
 describe('reviewScan', () => {
   let tmp: string;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-review-'));
-    // Create the 6 canonical source roots under tmp
+    // Create canonical source roots under tmp
     mkdirSync(join(tmp, '.claude', 'projects'), { recursive: true });
     mkdirSync(join(tmp, '.codex', 'sessions'), { recursive: true });
     mkdirSync(join(tmp, '.gemini', 'tmp'), { recursive: true });
     mkdirSync(join(tmp, '.local', 'share', 'opencode'), { recursive: true });
-    mkdirSync(join(tmp, '.antigravity'), { recursive: true });
+    mkdirSync(join(tmp, '.gemini', 'antigravity-cli', 'brain'), {
+      recursive: true,
+    });
+    mkdirSync(join(tmp, '.gemini', 'antigravity'), {
+      recursive: true,
+    });
     mkdirSync(join(tmp, '.copilot'), { recursive: true });
   });
 

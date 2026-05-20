@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "571fd97",
+  "generatedAtCommit": "adb1088c",
   "inputPath": "opencode/input/sample.db::ses_test001",
   "insightFields": {
     "firstUserSummary": "实现用户登录功能",
@@ -21,7 +21,7 @@
       "timestamp": "2026-02-02T02:40:10.000Z"
     }
   ],
-  "nodeVersion": "v25.9.0",
+  "nodeVersion": "v26.0.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,

@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "571fd97",
+  "generatedAtCommit": "adb1088c",
   "inputPath": "iflow/input/-Users-test-my-project/session-sample.jsonl",
   "insightFields": {
     "firstUserSummary": "帮我优化数据库查询",
@@ -26,7 +26,7 @@
       "timestamp": "2026-01-20T09:01:00.000Z"
     }
   ],
-  "nodeVersion": "v25.9.0",
+  "nodeVersion": "v26.0.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,
@@ -49,6 +49,7 @@
     "filePath": "<fixtureRoot>/iflow/input/-Users-test-my-project/session-sample.jsonl",
     "id": "session-iflow-001",
     "messageCount": 3,
+    "model": "glm-5",
     "sizeBytes": 1031,
     "source": "iflow",
     "startTime": "2026-01-20T09:00:00.000Z",

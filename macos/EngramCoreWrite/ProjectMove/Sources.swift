@@ -1,7 +1,7 @@
 // macos/EngramCoreWrite/ProjectMove/Sources.swift
 // Mirrors src/core/project-move/sources.ts (Node parity baseline).
 //
-// Enumerates the 7 AI session root directories a project move must scan +
+// Enumerates the AI session root directories a project move must scan +
 // patch, plus the per-source `cwd → directory-name` encoding rules. Also
 // supplies the recursive walk + literal-substring grep used by the
 // orchestrator and the post-move review.
@@ -13,8 +13,11 @@ public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case codex
     case geminiCli = "gemini-cli"
     case iflow
+    case qoder
     case opencode
     case antigravity
+    case antigravityLegacy = "antigravity-legacy"
+    case commandcode
     case copilot
 }
 
@@ -58,9 +61,10 @@ public struct WalkIssue: Equatable, Sendable {
 }
 
 public enum SessionSources {
-    /// The 7 session roots a project move must consider. Ordering matches
+    /// The session roots a project move must consider. Ordering matches
     /// Node parity: known-active first (claude-code → codex → gemini-cli →
-    /// iflow), then mvp.py compat tail (opencode → antigravity → copilot).
+    /// iflow → qoder), then flat-layout tail (opencode → antigravity →
+    /// commandcode → copilot).
     public static func roots(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [SourceRoot] {
@@ -87,13 +91,28 @@ public enum SessionSources {
                 encodeProjectDir: { cwd in encodeIflow(cwd) }
             ),
             SourceRoot(
+                id: .qoder,
+                path: (home as NSString).appendingPathComponent(".qoder/projects"),
+                encodeProjectDir: { cwd in ClaudeCodeProjectDir.encode(cwd) }
+            ),
+            SourceRoot(
                 id: .opencode,
                 path: (home as NSString).appendingPathComponent(".local/share/opencode"),
                 encodeProjectDir: nil
             ),
             SourceRoot(
                 id: .antigravity,
-                path: (home as NSString).appendingPathComponent(".antigravity"),
+                path: (home as NSString).appendingPathComponent(".gemini/antigravity-cli/brain"),
+                encodeProjectDir: nil
+            ),
+            SourceRoot(
+                id: .antigravityLegacy,
+                path: (home as NSString).appendingPathComponent(".gemini/antigravity"),
+                encodeProjectDir: nil
+            ),
+            SourceRoot(
+                id: .commandcode,
+                path: (home as NSString).appendingPathComponent(".commandcode/projects"),
                 encodeProjectDir: nil
             ),
             SourceRoot(

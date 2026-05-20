@@ -1,9 +1,9 @@
-// End-to-end orchestrator test — spins up a tmp FS with the 6 source roots,
+// End-to-end orchestrator test — spins up a tmp FS with the canonical source roots,
 // populates them with planted refs to the old path, runs runProjectMove(),
 // and asserts:
 //   1. physical move happened
 //   2. CC encoded dir was renamed
-//   3. JSONL cwd references in all 6 sources were patched
+//   3. JSONL cwd references in all source roots were patched
 //   4. migration_log is in state='committed' with correct counts
 //   5. review scan finds 0 own refs (all patched)
 //   6. project_aliases was created when basename differs
@@ -36,12 +36,17 @@ describe('runProjectMove — orchestrator integration', () => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-orch-'));
     home = join(tmp, 'home');
     mkdirSync(home);
-    // 6 source roots under fake home
+    // Canonical source roots under fake home
     mkdirSync(join(home, '.claude', 'projects'), { recursive: true });
     mkdirSync(join(home, '.codex', 'sessions'), { recursive: true });
     mkdirSync(join(home, '.gemini', 'tmp'), { recursive: true });
     mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
-    mkdirSync(join(home, '.antigravity'), { recursive: true });
+    mkdirSync(join(home, '.gemini', 'antigravity-cli', 'brain'), {
+      recursive: true,
+    });
+    mkdirSync(join(home, '.gemini', 'antigravity', 'conversations'), {
+      recursive: true,
+    });
     mkdirSync(join(home, '.copilot'), { recursive: true });
 
     db = new Database(join(tmp, 'engram.sqlite'));
@@ -71,8 +76,12 @@ describe('runProjectMove — orchestrator integration', () => {
 
     // Plant a ref in antigravity
     writeFileSync(
-      join(home, '.antigravity', 'ag.jsonl'),
+      join(home, '.gemini', 'antigravity-cli', 'brain', 'ag.jsonl'),
       `{"mention":"${src}/sub"}\n`,
+    );
+    writeFileSync(
+      join(home, '.gemini', 'antigravity', 'conversations', 'legacy.jsonl'),
+      `{"mention":"${src}/legacy"}\n`,
     );
   });
 
@@ -128,11 +137,19 @@ describe('runProjectMove — orchestrator integration', () => {
     );
     expect(codex).toContain(dst);
 
-    const ag = readFileSync(join(home, '.antigravity', 'ag.jsonl'), 'utf8');
+    const ag = readFileSync(
+      join(home, '.gemini', 'antigravity-cli', 'brain', 'ag.jsonl'),
+      'utf8',
+    );
     expect(ag).toContain(dst);
+    const agLegacy = readFileSync(
+      join(home, '.gemini', 'antigravity', 'conversations', 'legacy.jsonl'),
+      'utf8',
+    );
+    expect(agLegacy).toContain(dst);
 
     // Counts
-    expect(result.totalFilesPatched).toBeGreaterThanOrEqual(3);
+    expect(result.totalFilesPatched).toBeGreaterThanOrEqual(4);
     expect(
       result.perSource.find((s) => s.id === 'claude-code')?.filesPatched,
     ).toBe(1);
@@ -141,6 +158,9 @@ describe('runProjectMove — orchestrator integration', () => {
     );
     expect(
       result.perSource.find((s) => s.id === 'antigravity')?.filesPatched,
+    ).toBe(1);
+    expect(
+      result.perSource.find((s) => s.id === 'antigravity-legacy')?.filesPatched,
     ).toBe(1);
 
     // DB

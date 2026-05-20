@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import GRDB
+import EngramCoreRead
 
 enum TranscriptExportService {
     static func exportSession(
@@ -248,7 +249,7 @@ private func jsonValue(_ value: Int?) -> Any {
     value ?? NSNull()
 }
 
-private struct ServiceTranscriptMessage {
+private struct ServiceTranscriptMessage: Sendable {
     let role: String
     let content: String
     let timestamp: String?
@@ -267,9 +268,15 @@ private struct ServiceTranscriptMessage {
 
 private enum ServiceTranscriptReader {
     static func readMessages(filePath: String, source: String) -> [ServiceTranscriptMessage] {
+        if let adapterMessages = readWithAdapterRegistry(filePath: filePath, source: source) {
+            return adapterMessages
+        }
+
         switch source {
-        case "claude-code", "qwen", "iflow", "lobsterai", "minimax":
+        case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
             return parseTypeMessageFormat(filePath: filePath)
+        case "commandcode":
+            return parseCommandCodeFormat(filePath: filePath)
         case "kimi", "antigravity", "windsurf":
             return parseRoleDirectFormat(filePath: filePath)
         case "codex":
@@ -289,6 +296,97 @@ private enum ServiceTranscriptReader {
         default:
             return []
         }
+    }
+
+    private static func readWithAdapterRegistry(filePath: String, source: String) -> [ServiceTranscriptMessage]? {
+        guard let sourceName = SourceName(rawValue: source),
+              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
+        else {
+            return nil
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        final class Box: @unchecked Sendable {
+            var messages: [ServiceTranscriptMessage]?
+        }
+        let box = Box()
+
+        Task.detached {
+            defer { semaphore.signal() }
+            do {
+                let stream = try await adapter.streamMessages(
+                    locator: filePath,
+                    options: StreamMessagesOptions()
+                )
+                var messages: [ServiceTranscriptMessage] = []
+                for try await message in stream {
+                    guard message.role == .user || message.role == .assistant || message.role == .tool,
+                          !message.content.isEmpty
+                    else {
+                        continue
+                    }
+                    messages.append(
+                        ServiceTranscriptMessage(
+                            role: message.role.rawValue,
+                            content: message.content,
+                            timestamp: message.timestamp
+                        )
+                    )
+                }
+                box.messages = messages
+            } catch {
+                box.messages = nil
+            }
+        }
+
+        semaphore.wait()
+        return box.messages
+    }
+
+    private static func parseCommandCodeFormat(filePath: String) -> [ServiceTranscriptMessage] {
+        readJSONLines(filePath: filePath).compactMap { object in
+            guard let role = object["role"] as? String,
+                  role == "user" || role == "assistant" || role == "tool"
+            else {
+                return nil
+            }
+            let timestamp = object["timestamp"] as? String
+                ?? (object["metadata"] as? [String: Any])?["timestamp"] as? String
+            return ServiceTranscriptMessage(
+                role: role,
+                content: commandCodeContent(object["content"]),
+                timestamp: timestamp
+            )
+        }
+    }
+
+    private static func commandCodeContent(_ value: Any?) -> String {
+        guard let parts = value as? [[String: Any]] else {
+            return value as? String ?? ""
+        }
+        return parts.compactMap { part in
+            switch part["type"] as? String {
+            case "text":
+                return part["text"] as? String
+            case "tool-call":
+                return (part["toolName"] as? String).map { "`\($0)`" }
+            case "tool-result":
+                if let output = part["output"] as? String {
+                    return output
+                }
+                if let output = part["output"],
+                   JSONSerialization.isValidJSONObject(output),
+                   let data = try? JSONSerialization.data(withJSONObject: output, options: [.withoutEscapingSlashes]),
+                   let text = String(data: data, encoding: .utf8) {
+                    return String(text.prefix(2_000))
+                }
+                return nil
+            default:
+                return nil
+            }
+        }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
     }
 
     private static func parseTypeMessageFormat(filePath: String) -> [ServiceTranscriptMessage] {

@@ -105,10 +105,45 @@ final class KimiAdapter: SessionAdapter {
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         var messages: [NormalizedMessage] = []
+        let turns = try Self.readTurnTimestamps(
+            wirePath: URL(fileURLWithPath: locator)
+                .deletingLastPathComponent()
+                .appendingPathComponent("wire.jsonl")
+                .path,
+            limits: limits
+        )
+        var turnIndex = 0
+        var userBoundInTurn = false
+        var assistantBoundInTurn = false
+
         for file in Self.contextFiles(for: locator) {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: file, limits: limits)
             if let failure { throw failure }
-            messages.append(contentsOf: objects.compactMap(Self.message(from:)))
+            for object in objects {
+                guard let role = JSONLAdapterSupport.string(object["role"]),
+                      role == "user" || role == "assistant"
+                else { continue }
+
+                let shouldAdvance = role == "user"
+                    ? (userBoundInTurn || assistantBoundInTurn)
+                    : assistantBoundInTurn
+                if shouldAdvance {
+                    turnIndex += 1
+                    userBoundInTurn = false
+                    assistantBoundInTurn = false
+                }
+                let turn = turnIndex < turns.count ? turns[turnIndex] : nil
+                let wireTimestamp = role == "user" ? turn?.startTime : (turn?.endTime ?? turn?.startTime)
+                if role == "user" {
+                    userBoundInTurn = true
+                } else {
+                    assistantBoundInTurn = true
+                }
+
+                if let message = Self.message(from: object, timestamp: Self.lineTimestamp(from: object) ?? wireTimestamp) {
+                    messages.append(message)
+                }
+            }
         }
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
     }
@@ -159,18 +194,32 @@ final class KimiAdapter: SessionAdapter {
         wirePath: String,
         limits: ParserLimits
     ) throws -> (startTime: String, endTime: String) {
-        guard JSONLAdapterSupport.fileExists(wirePath) else { return ("", "") }
+        let turns = try readTurnTimestamps(wirePath: wirePath, limits: limits)
+        guard let first = turns.first else { return ("", "") }
+        let last = turns.last
+        return (first.startTime, last?.endTime ?? last?.startTime ?? first.startTime)
+    }
+
+    private static func readTurnTimestamps(
+        wirePath: String,
+        limits: ParserLimits
+    ) throws -> [(startTime: String, endTime: String?)] {
+        guard JSONLAdapterSupport.fileExists(wirePath) else { return [] }
         let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: wirePath, limits: limits)
         if let failure { throw failure }
-        var startTime = ""
-        var endTime = ""
+        var turns: [(startTime: String, endTime: String?)] = []
         for object in objects {
             guard let timestamp = Phase4AdapterSupport.double(object["timestamp"]) else { continue }
             let iso = Phase4AdapterSupport.isoFromSeconds(timestamp)
-            if startTime.isEmpty { startTime = iso }
-            endTime = iso
+            let message = JSONLAdapterSupport.object(object["message"])
+            let type = JSONLAdapterSupport.string(message?["type"])
+            if type == "TurnBegin" {
+                turns.append((startTime: iso, endTime: nil))
+            } else if type == "TurnEnd", !turns.isEmpty, turns[turns.count - 1].endTime == nil {
+                turns[turns.count - 1].endTime = iso
+            }
         }
-        return (startTime, endTime)
+        return turns
     }
 
     private static func isConversation(_ object: Phase4AdapterSupport.JSONObject) -> Bool {
@@ -178,7 +227,7 @@ final class KimiAdapter: SessionAdapter {
         return role == "user" || role == "assistant"
     }
 
-    private static func message(from object: Phase4AdapterSupport.JSONObject) -> NormalizedMessage? {
+    private static func message(from object: Phase4AdapterSupport.JSONObject, timestamp: String? = nil) -> NormalizedMessage? {
         guard isConversation(object),
               let role = JSONLAdapterSupport.string(object["role"])
         else {
@@ -187,9 +236,19 @@ final class KimiAdapter: SessionAdapter {
         return NormalizedMessage(
             role: role == "user" ? .user : .assistant,
             content: JSONLAdapterSupport.string(object["content"]) ?? "",
-            timestamp: nil,
+            timestamp: timestamp,
             toolCalls: nil,
             usage: nil
         )
+    }
+
+    private static func lineTimestamp(from object: Phase4AdapterSupport.JSONObject) -> String? {
+        if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
+            return timestamp
+        }
+        if let timestamp = Phase4AdapterSupport.double(object["timestamp"]) {
+            return Phase4AdapterSupport.isoFromSeconds(timestamp)
+        }
+        return nil
     }
 }

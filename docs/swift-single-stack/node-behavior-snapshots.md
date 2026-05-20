@@ -69,7 +69,7 @@ Swift executable tests use `ENGRAM_MCP_DB_PATH=tests/fixtures/mcp-contract.sqlit
 - `IndexJobRunner` processes up to 50 recoverable jobs and orders FTS before embedding.
 - FTS jobs preserve existing full-message FTS content and only fall back to summary/project/model when no FTS rows exist.
 - Embedding jobs remain pending without provider, become `not_applicable` with no readable text, and write session plus chunk vectors when provider exists.
-- Watched sources: `codex`, `claude-code`, `gemini-cli`, `antigravity`, `iflow`, `qwen`, `kimi`, `cline`, plus derived `lobsterai` and `minimax`.
+- Watched sources: `codex`, `claude-code`, `gemini-cli`, `antigravity` (`~/.gemini/antigravity-cli/brain` plus legacy `~/.gemini/antigravity`), `iflow`, `qwen`, `qoder`, `kimi`, `commandcode`, `cline`, plus derived `lobsterai` and `minimax`.
 - Watcher uses `ignoreInitial: true`, `followSymlinks: false`, `awaitWriteFinish` with 2000 ms stability, and skips paths during pending project moves.
 - Non-watchable rescan interval is `10 * 60 * 1000 * POWER_MULTIPLIER`; battery doubles it. Rescan emits `{ event: "rescan", indexed, total, todayParents }` only when `indexed > 0`.
 

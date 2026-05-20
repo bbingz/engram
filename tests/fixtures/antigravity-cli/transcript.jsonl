@@ -1,0 +1,4 @@
+{"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","created_at":"2026-05-20T03:00:00Z","step_index":0,"content":"Review the Antigravity CLI parser"}
+{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-05-20T03:00:01Z","step_index":1,"thinking":"Inspecting the transcript shape","tool_calls":[{"name":"Read","args":{"path":"/Users/test/my-project/src/parser.ts"}}]}
+{"type":"VIEW_FILE","source":"MODEL","status":"DONE","created_at":"2026-05-20T03:00:02Z","step_index":2,"content":"file contents omitted"}
+{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-05-20T03:00:03Z","step_index":3,"content":"The parser should include CLI brain transcripts."}

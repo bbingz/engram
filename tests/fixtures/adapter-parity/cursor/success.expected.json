@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "571fd97",
+  "generatedAtCommit": "adb1088c",
   "inputPath": "cursor/input/state.vscdb?composer=abc-123",
   "insightFields": {
     "firstUserSummary": "Fix the login bug",
@@ -21,7 +21,7 @@
       "timestamp": "2026-02-18T05:20:30.000Z"
     }
   ],
-  "nodeVersion": "v25.9.0",
+  "nodeVersion": "v26.0.0",
   "projectFields": {
     "cwd": "",
     "project": null,

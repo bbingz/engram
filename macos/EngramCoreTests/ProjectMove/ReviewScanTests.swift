@@ -17,7 +17,7 @@ final class ReviewScanTests: XCTestCase {
             ".codex/sessions",
             ".gemini/tmp",
             ".local/share/opencode",
-            ".antigravity",
+            ".gemini/antigravity-cli/brain",
             ".copilot",
         ]
         for sub in dirs {

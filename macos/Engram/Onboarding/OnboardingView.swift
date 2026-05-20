@@ -178,8 +178,10 @@ private func scanSources() -> [SourceCheck] {
         ("vscode",       "VS Code",       "Library/Application Support/Code/User/workspaceStorage"),
         ("kimi",         "Kimi",          ".kimi/sessions"),
         ("qwen",         "Qwen",          ".qwen/projects"),
+        ("qoder",        "Qoder",         ".qoder/projects"),
         ("iflow",        "iFlow",         ".iflow/projects"),
-        ("antigravity",  "Antigravity",   ".gemini/antigravity"),
+        ("commandcode",  "Command Code",  ".commandcode/projects"),
+        ("antigravity",  "Antigravity",   ".gemini/antigravity-cli/brain"),
     ]
 
     return specs.map { spec in

@@ -8,11 +8,17 @@ struct MCPTranscriptMessage {
 
 enum MCPTranscriptReader {
     static func readMessages(filePath: String, source: String) -> [MCPTranscriptMessage] {
+        if let adapterMessages = readWithAdapterRegistry(filePath: filePath, source: source) {
+            return adapterMessages
+        }
+
         switch source {
-        case "claude-code", "qwen", "iflow", "lobsterai", "minimax":
+        case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
             return parseTypeMessageFormat(filePath: filePath)
         case "kimi", "antigravity", "windsurf":
             return parseRoleDirectFormat(filePath: filePath)
+        case "commandcode":
+            return parseCommandCodeFormat(filePath: filePath)
         case "codex":
             return parseCodexFormat(filePath: filePath)
         case "gemini-cli":
@@ -20,6 +26,75 @@ enum MCPTranscriptReader {
         default:
             return []
         }
+    }
+
+    private static func readWithAdapterRegistry(filePath: String, source: String) -> [MCPTranscriptMessage]? {
+        guard let sourceName = SourceName(rawValue: source),
+              let adapter = adapterRegistry().adapter(for: sourceName)
+        else {
+            return nil
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        final class Box: @unchecked Sendable {
+            var messages: [MCPTranscriptMessage]?
+        }
+        let box = Box()
+
+        Task.detached {
+            defer { semaphore.signal() }
+            do {
+                let stream = try await adapter.streamMessages(
+                    locator: filePath,
+                    options: StreamMessagesOptions()
+                )
+                var messages: [MCPTranscriptMessage] = []
+                for try await message in stream {
+                    guard message.role == .user || message.role == .assistant || message.role == .tool,
+                          !message.content.isEmpty
+                    else {
+                        continue
+                    }
+                    messages.append(
+                        MCPTranscriptMessage(
+                            role: message.role.rawValue,
+                            content: message.content,
+                            timestamp: message.timestamp
+                        )
+                    )
+                }
+                box.messages = messages
+            } catch {
+                box.messages = nil
+            }
+        }
+
+        semaphore.wait()
+        return box.messages
+    }
+
+    private static func adapterRegistry() -> AdapterRegistry {
+        AdapterRegistry(
+            adapters: [
+                CodexAdapter(),
+                ClaudeCodeAdapter(),
+                ClaudeCodeDerivedSourceAdapter(source: .minimax),
+                ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
+                GeminiCliAdapter(),
+                OpenCodeAdapter(),
+                IflowAdapter(),
+                QwenAdapter(),
+                QoderAdapter(),
+                KimiAdapter(),
+                ClineAdapter(),
+                CursorAdapter(),
+                VsCodeAdapter(),
+                WindsurfAdapter(enableLiveSync: false),
+                AntigravityAdapter(enableLiveSync: false),
+                CommandCodeAdapter(),
+                CopilotAdapter()
+            ]
+        )
     }
 
     private static func parseTypeMessageFormat(filePath: String) -> [MCPTranscriptMessage] {
@@ -125,6 +200,22 @@ enum MCPTranscriptReader {
         }
     }
 
+    private static func parseCommandCodeFormat(filePath: String) -> [MCPTranscriptMessage] {
+        readJSONLines(filePath: filePath).compactMap { obj in
+            guard
+                let role = obj["role"] as? String,
+                role == "user" || role == "assistant"
+            else {
+                return nil
+            }
+            let content = extractCommandCodeContent(obj["content"])
+            guard !content.isEmpty else { return nil }
+            let timestamp = (obj["timestamp"] as? String)
+                ?? ((obj["metadata"] as? [String: Any])?["timestamp"] as? String)
+            return MCPTranscriptMessage(role: role, content: content, timestamp: timestamp)
+        }
+    }
+
     private static func readJSONLines(filePath: String) -> [[String: Any]] {
         guard let text = try? String(contentsOfFile: filePath, encoding: .utf8) else { return [] }
         return text
@@ -173,5 +264,35 @@ enum MCPTranscriptReader {
             }
         }
         return ""
+    }
+
+    private static func extractCommandCodeContent(_ content: Any?) -> String {
+        if let text = content as? String {
+            return text
+        }
+        guard let items = content as? [[String: Any]] else { return "" }
+        return items.compactMap { item in
+            switch item["type"] as? String {
+            case "text":
+                return item["text"] as? String
+            case "tool-call":
+                return (item["toolName"] as? String).map { "`\($0)`" }
+            case "tool-result":
+                if let output = item["output"] as? String {
+                    return output
+                }
+                if let output = item["output"],
+                   JSONSerialization.isValidJSONObject(output),
+                   let data = try? JSONSerialization.data(withJSONObject: output, options: [.withoutEscapingSlashes]),
+                   let text = String(data: data, encoding: .utf8) {
+                    return String(text.prefix(2_000))
+                }
+                return nil
+            default:
+                return nil
+            }
+        }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
     }
 }

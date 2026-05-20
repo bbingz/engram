@@ -14,10 +14,13 @@ final class WatcherSemanticsTests: XCTestCase {
                 WatchEntry(path: "/tmp/engram-home/.codex/archived_sessions", source: .codex),
                 WatchEntry(path: "/tmp/engram-home/.claude/projects", source: .claudeCode),
                 WatchEntry(path: "/tmp/engram-home/.gemini/tmp", source: .geminiCli),
+                WatchEntry(path: "/tmp/engram-home/.gemini/antigravity-cli/brain", source: .antigravity),
                 WatchEntry(path: "/tmp/engram-home/.gemini/antigravity", source: .antigravity),
                 WatchEntry(path: "/tmp/engram-home/.iflow/projects", source: .iflow),
                 WatchEntry(path: "/tmp/engram-home/.qwen/projects", source: .qwen),
+                WatchEntry(path: "/tmp/engram-home/.qoder/projects", source: .qoder),
                 WatchEntry(path: "/tmp/engram-home/.kimi/sessions", source: .kimi),
+                WatchEntry(path: "/tmp/engram-home/.commandcode/projects", source: .commandcode),
                 WatchEntry(path: "/tmp/engram-home/.cline/data/tasks", source: .cline)
             ]
         )
@@ -28,6 +31,10 @@ final class WatcherSemanticsTests: XCTestCase {
         XCTAssertTrue(WatchPathRules.isIgnored("/tmp/repo/.DS_Store"))
         XCTAssertFalse(WatchPathRules.isIgnored("/tmp/engram-home/.codex/sessions/session.jsonl"))
         XCTAssertEqual(WatchPathRules.source(for: "/tmp/engram-home/.codex/archived_sessions/rollout.jsonl", home: home), .codex)
+        XCTAssertEqual(WatchPathRules.source(for: "/tmp/engram-home/.gemini/antigravity-cli/brain/conv/transcript.jsonl", home: home), .antigravity)
+        XCTAssertEqual(WatchPathRules.source(for: "/tmp/engram-home/.gemini/antigravity/conversations/conv.jsonl", home: home), .antigravity)
+        XCTAssertEqual(WatchPathRules.source(for: "/tmp/engram-home/.qoder/projects/-tmp-proj/session.jsonl", home: home), .qoder)
+        XCTAssertEqual(WatchPathRules.source(for: "/tmp/engram-home/.commandcode/projects/tmp-proj/session.jsonl", home: home), .commandcode)
 
         let fixture = try WatchBatchConfig.load(
             from: repoRoot().appendingPathComponent("tests/fixtures/adapter-parity/batch-sizes.json")

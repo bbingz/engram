@@ -8,9 +8,11 @@ public enum SourceName: String, CaseIterable, Codable, Sendable {
     case opencode
     case iflow
     case qwen
+    case qoder
     case kimi
     case minimax
     case lobsterai
+    case commandcode
     case cline
     case cursor
     case vscode

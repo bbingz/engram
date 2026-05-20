@@ -1174,6 +1174,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             "codex": [".codex/sessions", ".codex/logs"],
             "claude-code": [".claude/projects"],
             "qwen": [".qwen"],
+            "qoder": [".qoder"],
+            "commandcode": [".commandcode"],
             "iflow": [".iflow"],
             "gemini-cli": [".gemini"],
             "cursor": [
@@ -1199,7 +1201,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 ".config/Code/User/globalStorage",
             ],
             "opencode": [".opencode"],
-            "antigravity": [".antigravity"],
+            "antigravity": [".gemini/antigravity-cli/brain", ".gemini/antigravity", ".antigravity"],
             "kimi": [".kimi"],
             "minimax": [".claude/projects", ".minimax"],
             "lobsterai": [".claude/projects", ".lobsterai"],

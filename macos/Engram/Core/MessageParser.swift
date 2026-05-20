@@ -84,12 +84,14 @@ struct MessageParser {
                 OpenCodeAdapter(),
                 IflowAdapter(),
                 QwenAdapter(),
+                QoderAdapter(),
                 KimiAdapter(),
                 ClineAdapter(),
                 CursorAdapter(),
                 VsCodeAdapter(),
                 WindsurfAdapter(enableLiveSync: false),
                 AntigravityAdapter(enableLiveSync: false),
+                CommandCodeAdapter(),
                 CopilotAdapter()
             ]
         )
@@ -108,6 +110,7 @@ struct MessageParser {
         let box = Box()
 
         Task.detached {
+            defer { semaphore.signal() }
             do {
                 let stream = try await adapter.streamMessages(locator: locator, options: options)
                 var messages: [ChatMessage] = []
@@ -125,7 +128,6 @@ struct MessageParser {
             } catch {
                 box.messages = nil
             }
-            semaphore.signal()
         }
 
         semaphore.wait()

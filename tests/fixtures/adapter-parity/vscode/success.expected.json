@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "571fd97",
+  "generatedAtCommit": "adb1088c",
   "inputPath": "vscode/input/ws-abc123/chatSessions/sess-001.jsonl",
   "insightFields": {
     "firstUserSummary": "How do I use async/await in TypeScript?",
@@ -31,9 +31,9 @@
       "timestamp": "2026-02-18T05:20:15.000Z"
     }
   ],
-  "nodeVersion": "v25.9.0",
+  "nodeVersion": "v26.0.0",
   "projectFields": {
-    "cwd": "",
+    "cwd": "/Users/test/my-project",
     "project": null,
     "source": "vscode"
   },
@@ -50,7 +50,7 @@
   },
   "sessionInfo": {
     "assistantMessageCount": 2,
-    "cwd": "",
+    "cwd": "/Users/test/my-project",
     "endTime": "2026-02-18T05:20:15.000Z",
     "filePath": "<fixtureRoot>/vscode/input/ws-abc123/chatSessions/sess-001.jsonl",
     "id": "sess-001",

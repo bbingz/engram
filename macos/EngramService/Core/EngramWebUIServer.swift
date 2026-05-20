@@ -399,6 +399,8 @@ private func sourceLabel(_ source: String) -> String {
     case "gemini-cli": return "Gemini"
     case "opencode": return "OpenCode"
     case "iflow": return "iFlow"
+    case "qoder": return "Qoder"
+    case "commandcode": return "Command Code"
     case "vscode": return "VS Code"
     default: return source
     }

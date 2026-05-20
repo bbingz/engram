@@ -1,0 +1,103 @@
+{
+  "failure": null,
+  "fileToolCounts": {
+    "/Users/test/my-project/src/parser.ts": {
+      "read": 1
+    }
+  },
+  "generatedAtCommit": "adb1088c",
+  "inputPath": "qoder/input/-Users-test-my-project/qoder-session.jsonl",
+  "insightFields": {
+    "firstUserSummary": "Review the parser",
+    "messageCount": 4,
+    "toolCallCount": 1
+  },
+  "locator": "qoder/input/-Users-test-my-project/qoder-session.jsonl",
+  "messages": [
+    {
+      "content": "Review the parser",
+      "role": "user",
+      "timestamp": "2026-05-20T01:00:00.000Z"
+    },
+    {
+      "content": "I will review the parser.",
+      "role": "assistant",
+      "timestamp": "2026-05-20T01:00:02.000Z",
+      "usage": {
+        "cacheCreationTokens": 2,
+        "cacheReadTokens": 3,
+        "inputTokens": 12,
+        "outputTokens": 8
+      }
+    },
+    {
+      "content": "`Read`",
+      "role": "assistant",
+      "timestamp": "2026-05-20T01:00:04.000Z",
+      "toolCalls": [
+        {
+          "input": "{\"file_path\":\"/Users/test/my-project/src/parser.ts\"}",
+          "name": "Read"
+        }
+      ]
+    },
+    {
+      "content": "file contents omitted",
+      "role": "tool",
+      "timestamp": "2026-05-20T01:00:05.000Z"
+    }
+  ],
+  "nodeVersion": "v26.0.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": null,
+    "source": "qoder"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "Review the parser\nI will review the parser.\n`Read`\nfile contents omitted",
+    "contentSha256InputBytes": 72,
+    "roles": [
+      "user",
+      "assistant",
+      "assistant",
+      "tool"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 2,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-05-20T01:00:05.000Z",
+    "filePath": "<fixtureRoot>/qoder/input/-Users-test-my-project/qoder-session.jsonl",
+    "id": "qoder-session-001",
+    "messageCount": 4,
+    "model": "qoder-agent",
+    "sizeBytes": 1240,
+    "source": "qoder",
+    "startTime": "2026-05-20T01:00:00.000Z",
+    "summary": "Review the parser",
+    "systemMessageCount": 0,
+    "toolMessageCount": 1,
+    "userMessageCount": 1
+  },
+  "source": "qoder",
+  "statsFields": {
+    "assistantMessageCount": 2,
+    "messageCount": 4,
+    "systemMessageCount": 0,
+    "toolMessageCount": 1,
+    "userMessageCount": 1
+  },
+  "toolCalls": [
+    {
+      "input": "{\"file_path\":\"/Users/test/my-project/src/parser.ts\"}",
+      "name": "Read"
+    }
+  ],
+  "usageTotals": {
+    "cacheCreationTokens": 2,
+    "cacheReadTokens": 3,
+    "inputTokens": 12,
+    "outputTokens": 8
+  }
+}

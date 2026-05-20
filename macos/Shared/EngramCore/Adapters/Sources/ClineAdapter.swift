@@ -53,6 +53,10 @@ final class ClineAdapter: SessionAdapter {
             let summary = JSONLAdapterSupport.string(
                 messages.first { JSONLAdapterSupport.string($0["say"]) == "task" }?["text"]
             )
+            let model = messages.compactMap { message -> String? in
+                let modelInfo = JSONLAdapterSupport.object(message["modelInfo"])
+                return JSONLAdapterSupport.string(modelInfo?["modelId"])
+            }.first
 
             return .success(
                 NormalizedSessionInfo(
@@ -62,7 +66,7 @@ final class ClineAdapter: SessionAdapter {
                     endTime: lastTimestamp != firstTimestamp ? Phase4AdapterSupport.isoFromMilliseconds(lastTimestamp) : nil,
                     cwd: Self.extractCwd(from: messages),
                     project: nil,
-                    model: nil,
+                    model: model,
                     messageCount: userMessages.count + assistantMessages.count,
                     userMessageCount: userMessages.count,
                     assistantMessageCount: assistantMessages.count,

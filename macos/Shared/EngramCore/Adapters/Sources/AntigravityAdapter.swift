@@ -5,6 +5,7 @@ final class AntigravityAdapter: SessionAdapter {
     private let daemonDir: URL
     private let cacheDir: URL
     private let conversationsDir: URL
+    private let cliBrainDir: URL
     private let limits: ParserLimits
     private let enableLiveSync: Bool
 
@@ -18,26 +19,35 @@ final class AntigravityAdapter: SessionAdapter {
         conversationsDir: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".gemini/antigravity/conversations")
             .path,
+        cliBrainDir: String = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".gemini/antigravity-cli/brain")
+            .path,
         limits: ParserLimits = .default,
         enableLiveSync: Bool = true
     ) {
         self.daemonDir = URL(fileURLWithPath: daemonDir)
         self.cacheDir = URL(fileURLWithPath: cacheDir)
         self.conversationsDir = URL(fileURLWithPath: conversationsDir)
+        self.cliBrainDir = URL(fileURLWithPath: cliBrainDir)
         self.limits = limits
         self.enableLiveSync = enableLiveSync
     }
 
     func detect() async -> Bool {
-        JSONLAdapterSupport.isDirectory(daemonDir) || JSONLAdapterSupport.isDirectory(cacheDir)
+        JSONLAdapterSupport.isDirectory(daemonDir) ||
+            JSONLAdapterSupport.isDirectory(cacheDir) ||
+            JSONLAdapterSupport.isDirectory(cliBrainDir)
     }
 
     func listSessionLocators() async throws -> [String] {
         await sync()
-        return CascadeCacheSupport.jsonlLocators(cacheDir: cacheDir)
+        return (CascadeCacheSupport.jsonlLocators(cacheDir: cacheDir) + cliTranscriptLocators()).sorted()
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        if isCLITranscript(locator) {
+            return try parseCLITranscript(locator: locator)
+        }
         do {
             let (metadata, rawMessages, failure) = try CascadeCacheSupport.readCache(locator: locator, limits: limits)
             if let failure { return .failure(failure) }
@@ -98,6 +108,12 @@ final class AntigravityAdapter: SessionAdapter {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        if isCLITranscript(locator) {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+            if let failure { throw failure }
+            let messages = objects.compactMap(Self.cliMessage(from:))
+            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        }
         let (_, rawMessages, failure) = try CascadeCacheSupport.readCache(locator: locator, limits: limits)
         if let failure { throw failure }
         let messages = CascadeCacheSupport.normalizedMessages(from: rawMessages)
@@ -223,6 +239,151 @@ final class AntigravityAdapter: SessionAdapter {
         }
         let pbURL = conversationsDir.appendingPathComponent("\(id).pb")
         return CascadeCacheSupport.fileSize(pbURL) ?? JSONLAdapterSupport.fileSize(locator: locator)
+    }
+
+    private func cliTranscriptLocators() -> [String] {
+        guard JSONLAdapterSupport.isDirectory(cliBrainDir) else { return [] }
+        var locators: [String] = []
+        for sessionURL in JSONLAdapterSupport.directChildren(of: cliBrainDir)
+            where JSONLAdapterSupport.isDirectory(sessionURL)
+        {
+            let transcriptURL = sessionURL
+                .appendingPathComponent(".system_generated/logs/transcript.jsonl")
+            if JSONLAdapterSupport.fileExists(transcriptURL.path) {
+                locators.append(transcriptURL.path)
+            }
+        }
+        return locators
+    }
+
+    private func isCLITranscript(_ locator: String) -> Bool {
+        let path = URL(fileURLWithPath: locator).standardizedFileURL.path
+        let root = cliBrainDir.standardizedFileURL.path
+        if path == root || path.hasPrefix(root + "/") {
+            return true
+        }
+        return path.contains("/.gemini/antigravity-cli/brain/") &&
+            path.hasSuffix("/.system_generated/logs/transcript.jsonl")
+    }
+
+    private func parseCLITranscript(locator: String) throws -> AdapterParseResult<NormalizedSessionInfo> {
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+            if let failure { return .failure(failure) }
+
+            var startTime = ""
+            var endTime = ""
+            var userCount = 0
+            var assistantCount = 0
+            var toolCount = 0
+            var firstUserText = ""
+
+            for object in objects {
+                guard let message = Self.cliMessage(from: object) else { continue }
+                if startTime.isEmpty, let timestamp = message.timestamp {
+                    startTime = timestamp
+                }
+                if let timestamp = message.timestamp {
+                    endTime = timestamp
+                }
+                switch message.role {
+                case .user:
+                    userCount += 1
+                    if firstUserText.isEmpty { firstUserText = message.content }
+                case .assistant:
+                    assistantCount += 1
+                case .tool:
+                    toolCount += 1
+                case .system:
+                    break
+                }
+            }
+
+            let id = Self.cliSessionId(from: locator)
+            guard !id.isEmpty, userCount + assistantCount + toolCount > 0 else {
+                return .failure(.unsupportedVirtualLocator)
+            }
+
+            return .success(
+                NormalizedSessionInfo(
+                    id: id,
+                    source: .antigravity,
+                    startTime: startTime,
+                    endTime: endTime != startTime ? endTime : nil,
+                    cwd: inferredCWD(metadata: [:], locator: locator),
+                    project: nil,
+                    model: nil,
+                    messageCount: userCount + assistantCount + toolCount,
+                    userMessageCount: userCount,
+                    assistantMessageCount: assistantCount,
+                    toolMessageCount: toolCount,
+                    systemMessageCount: 0,
+                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+                    filePath: locator,
+                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                    indexedAt: nil,
+                    agentRole: nil,
+                    originator: nil,
+                    origin: nil,
+                    summaryMessageCount: nil,
+                    tier: nil,
+                    qualityScore: nil,
+                    parentSessionId: nil,
+                    suggestedParentId: nil
+                )
+            )
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    private static func cliMessage(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
+        guard let type = JSONLAdapterSupport.string(object["type"]) else { return nil }
+        let timestamp = JSONLAdapterSupport.string(object["created_at"])
+        let content = JSONLAdapterSupport.string(object["content"]) ?? ""
+        switch type {
+        case "USER_INPUT":
+            return NormalizedMessage(role: .user, content: content, timestamp: timestamp)
+        case "PLANNER_RESPONSE":
+            let toolCalls = cliToolCalls(from: object["tool_calls"])
+            let body = !content.isEmpty ? content : (JSONLAdapterSupport.string(object["thinking"]) ?? "")
+            return NormalizedMessage(
+                role: .assistant,
+                content: body,
+                timestamp: timestamp,
+                toolCalls: toolCalls.isEmpty ? nil : toolCalls,
+                usage: nil
+            )
+        default:
+            guard !content.isEmpty else { return nil }
+            return NormalizedMessage(role: .tool, content: content, timestamp: timestamp)
+        }
+    }
+
+    private static func cliToolCalls(from value: Any?) -> [NormalizedToolCall] {
+        guard let calls = JSONLAdapterSupport.array(value) else { return [] }
+        return calls.compactMap { item in
+            guard let object = JSONLAdapterSupport.object(item),
+                  let name = JSONLAdapterSupport.string(object["name"])
+            else { return nil }
+            return NormalizedToolCall(
+                name: name,
+                input: object["args"].flatMap { JSONLAdapterSupport.jsonString($0, limit: 500) },
+                output: nil
+            )
+        }
+    }
+
+    private static func cliSessionId(from locator: String) -> String {
+        let parts = locator.split(separator: "/").map(String.init)
+        guard let logsIndex = parts.lastIndex(of: "logs"),
+              logsIndex >= 2
+        else {
+            return URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
+        }
+        return parts[logsIndex - 2]
     }
 
     private func inferredCWD(metadata: CascadeCacheSupport.JSONObject, locator: String) -> String {

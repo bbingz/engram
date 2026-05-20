@@ -49,6 +49,7 @@ final class VsCodeAdapter: SessionAdapter {
             let lastTimestamp = Phase4AdapterSupport.double(requestObjects.last?["timestamp"])
             let sessionId = JSONLAdapterSupport.string(session["sessionId"]) ??
                 URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent
+            let cwd = Self.readWorkspaceCwd(for: locator)
 
             return .success(
                 NormalizedSessionInfo(
@@ -58,7 +59,7 @@ final class VsCodeAdapter: SessionAdapter {
                     endTime: lastTimestamp != nil && lastTimestamp != creationDate
                         ? Phase4AdapterSupport.isoFromMilliseconds(lastTimestamp!)
                         : nil,
-                    cwd: "",
+                    cwd: cwd,
                     project: nil,
                     model: nil,
                     messageCount: requestObjects.count * 2,
@@ -145,6 +146,57 @@ final class VsCodeAdapter: SessionAdapter {
             return nil
         }
         return JSONLAdapterSupport.object(line0["v"])
+    }
+
+    private static func readWorkspaceCwd(for locator: String) -> String {
+        let sessionURL = URL(fileURLWithPath: locator)
+        let workspaceURL = sessionURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("workspace.json")
+        guard let data = try? Data(contentsOf: workspaceURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject
+        else {
+            return ""
+        }
+        if let folder = JSONLAdapterSupport.string(object["folder"]) {
+            return decodeFileURI(folder)
+        }
+        if let configuration = JSONLAdapterSupport.string(object["configuration"]) {
+            let workspacePath = decodeFileURI(configuration)
+            guard !workspacePath.isEmpty else { return "" }
+            return readCodeWorkspaceFirstFolder(workspacePath)
+        }
+        return ""
+    }
+
+    private static func readCodeWorkspaceFirstFolder(_ workspacePath: String) -> String {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: workspacePath)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject,
+              let folders = JSONLAdapterSupport.array(object["folders"]),
+              let first = folders.compactMap({ JSONLAdapterSupport.object($0) }).first
+        else {
+            return ""
+        }
+        if let uri = JSONLAdapterSupport.string(first["uri"]) {
+            return decodeFileURI(uri)
+        }
+        guard let path = JSONLAdapterSupport.string(first["path"]), !path.isEmpty else { return "" }
+        if path.hasPrefix("/") { return path }
+        return URL(fileURLWithPath: workspacePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent(path)
+            .standardizedFileURL
+            .path
+    }
+
+    private static func decodeFileURI(_ uri: String) -> String {
+        guard uri.hasPrefix("file://") else { return "" }
+        var path = String(uri.dropFirst("file://".count))
+        if path.hasPrefix("localhost/") {
+            path = String(path.dropFirst("localhost".count))
+        }
+        return path.removingPercentEncoding ?? ""
     }
 
     private static func extractUserText(_ request: Phase4AdapterSupport.JSONObject) -> String {

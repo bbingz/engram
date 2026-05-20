@@ -17,7 +17,7 @@ import {
 } from '../../../src/core/project-move/sources.js';
 
 describe('getSourceRoots', () => {
-  it('returns the 7 canonical AI session roots (includes iflow + copilot)', () => {
+  it('returns the 10 canonical AI session roots (includes qoder + commandcode)', () => {
     const roots = getSourceRoots('/home/test');
     const ids = roots.map((r) => r.id);
     expect(ids).toEqual([
@@ -25,8 +25,11 @@ describe('getSourceRoots', () => {
       'codex',
       'gemini-cli',
       'iflow',
+      'qoder',
       'opencode',
       'antigravity',
+      'antigravity-legacy',
+      'commandcode',
       'copilot',
     ]);
     // copilot root must match mvp.py COPILOT_DATA
@@ -36,6 +39,18 @@ describe('getSourceRoots', () => {
     expect(roots.find((r) => r.id === 'iflow')?.path).toBe(
       '/home/test/.iflow/projects',
     );
+    expect(roots.find((r) => r.id === 'qoder')?.path).toBe(
+      '/home/test/.qoder/projects',
+    );
+    expect(roots.find((r) => r.id === 'commandcode')?.path).toBe(
+      '/home/test/.commandcode/projects',
+    );
+    expect(roots.find((r) => r.id === 'antigravity')?.path).toBe(
+      '/home/test/.gemini/antigravity-cli/brain',
+    );
+    expect(roots.find((r) => r.id === 'antigravity-legacy')?.path).toBe(
+      '/home/test/.gemini/antigravity',
+    );
   });
 
   it('encodeProjectDir is set exactly for sources with project-grouped dirs', () => {
@@ -43,7 +58,12 @@ describe('getSourceRoots', () => {
     const withEncoder = roots
       .filter((r) => r.encodeProjectDir !== null)
       .map((r) => r.id);
-    expect(withEncoder).toEqual(['claude-code', 'gemini-cli', 'iflow']);
+    expect(withEncoder).toEqual([
+      'claude-code',
+      'gemini-cli',
+      'iflow',
+      'qoder',
+    ]);
     // Spot check each encoding rule.
     const ccRoot = roots.find((r) => r.id === 'claude-code');
     expect(ccRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
@@ -53,6 +73,10 @@ describe('getSourceRoots', () => {
     expect(geminiRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe('proj');
     const iflowRoot = roots.find((r) => r.id === 'iflow');
     expect(iflowRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
+      '-Users-a-b-proj',
+    );
+    const qoderRoot = roots.find((r) => r.id === 'qoder');
+    expect(qoderRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
       '-Users-a-b-proj',
     );
   });

@@ -18,9 +18,11 @@ enum SourceColors {
         case "opencode":      return Color.primary
         case "iflow":         return Color(hex: 0x615CED)
         case "qwen":          return Color(hex: 0x615CED)
+        case "qoder":         return Color(hex: 0x2563EB)
         case "kimi":          return Color(hex: 0x1080F8)
         case "minimax":       return Color(hex: 0xFF6A00)
         case "lobsterai":     return Color(hex: 0xE11D48)
+        case "commandcode":   return Color(hex: 0x22C55E)
         default:              return Color(hex: 0x8E8E93)
         }
     }
@@ -33,8 +35,10 @@ enum SourceColors {
         case "gemini-cli":    return "Gemini"
         case "kimi":          return "Kimi"
         case "qwen":          return "Qwen"
+        case "qoder":         return "Qoder"
         case "minimax":       return "MiniMax"
         case "lobsterai":     return "Lobster AI"
+        case "commandcode":   return "Command Code"
         case "cline":         return "Cline"
         case "cursor":        return "Cursor"
         case "windsurf":      return "Windsurf"

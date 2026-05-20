@@ -5,11 +5,12 @@ import SwiftUI
 
 final class SourceColorsTests: XCTestCase {
 
-    // All 15 known sources from SourceColors.color(for:)
+    // All 17 known sources from SourceColors.color(for:)
     private let allSources = [
         "claude-code", "cursor", "codex", "gemini-cli", "windsurf",
         "cline", "vscode", "antigravity", "copilot", "opencode",
-        "iflow", "qwen", "kimi", "minimax", "lobsterai"
+        "iflow", "qwen", "qoder", "kimi", "minimax", "lobsterai",
+        "commandcode"
     ]
 
     func testAllKnownSourcesReturnNonNilColor() {
@@ -22,11 +23,10 @@ final class SourceColorsTests: XCTestCase {
 
     func testUnknownSourceReturnsFallbackColor() {
         let unknown = SourceColors.color(for: "totally-unknown-tool")
-        let copilot = SourceColors.color(for: "copilot")
-        // Both should be the gray fallback (0x8E8E93)
+        let fallback = Color(hex: 0x8E8E93)
         XCTAssertEqual(
-            unknown.description, copilot.description,
-            "Unknown source should use same gray as copilot (fallback)"
+            unknown.description, fallback.description,
+            "Unknown source should use gray fallback"
         )
     }
 
@@ -39,9 +39,9 @@ final class SourceColorsTests: XCTestCase {
         )
     }
 
-    func testAll15SourceNamesCovered() {
-        // Verify we test the exact 15 sources defined in the switch statement
-        XCTAssertEqual(allSources.count, 15)
+    func testAll17SourceNamesCovered() {
+        // Verify we test the exact 17 sources defined in the switch statement
+        XCTAssertEqual(allSources.count, 17)
 
         // Each should have a corresponding label (not the default pass-through)
         for source in allSources {

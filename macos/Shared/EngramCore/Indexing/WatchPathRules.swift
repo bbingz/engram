@@ -40,7 +40,9 @@ public enum WatchPathRules {
         .antigravity,
         .iflow,
         .qwen,
+        .qoder,
         .kimi,
+        .commandcode,
         .cline,
         .lobsterai,
         .minimax
@@ -52,10 +54,13 @@ public enum WatchPathRules {
             WatchEntry(path: join(home, ".codex", "archived_sessions"), source: .codex),
             WatchEntry(path: join(home, ".claude", "projects"), source: .claudeCode),
             WatchEntry(path: join(home, ".gemini", "tmp"), source: .geminiCli),
+            WatchEntry(path: join(home, ".gemini", "antigravity-cli", "brain"), source: .antigravity),
             WatchEntry(path: join(home, ".gemini", "antigravity"), source: .antigravity),
             WatchEntry(path: join(home, ".iflow", "projects"), source: .iflow),
             WatchEntry(path: join(home, ".qwen", "projects"), source: .qwen),
+            WatchEntry(path: join(home, ".qoder", "projects"), source: .qoder),
             WatchEntry(path: join(home, ".kimi", "sessions"), source: .kimi),
+            WatchEntry(path: join(home, ".commandcode", "projects"), source: .commandcode),
             WatchEntry(path: join(home, ".cline", "data", "tasks"), source: .cline)
         ]
     }

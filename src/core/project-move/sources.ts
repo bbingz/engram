@@ -1,4 +1,4 @@
-// src/core/project-move/sources.ts — enumerate the 7 AI session root dirs
+// src/core/project-move/sources.ts — enumerate the AI session root dirs
 // that a project move must scan + patch.
 //
 // Mirrors mvp.py globals (CC_PROJECTS, CODEX_SESSIONS, GEMINI_TMP,
@@ -46,8 +46,11 @@ export type SourceId =
   | 'gemini-cli'
   | 'opencode'
   | 'antigravity'
+  | 'antigravity-legacy'
   | 'copilot'
-  | 'iflow';
+  | 'iflow'
+  | 'qoder'
+  | 'commandcode';
 
 export interface SourceRoot {
   /** Stable identifier used in logs / audit output. */
@@ -62,12 +65,11 @@ export interface SourceRoot {
 }
 
 /**
- * The 7 session root directories a project move must consider.
+ * The session root directories a project move must consider.
  * Returns absolute paths rooted at `home` (default: homedir()).
  *
- * Ordering: the first four (claude-code, codex, gemini-cli, iflow) are
- * known-active sources on this machine; the last three (opencode,
- * antigravity, copilot) are here for compatibility with mvp.py's scan.
+ * Ordering: known grouped sources first (claude-code, codex, gemini-cli,
+ * iflow, qoder), followed by flat-layout roots.
  */
 export function getSourceRoots(home?: string): SourceRoot[] {
   const h = home ?? homedir();
@@ -96,13 +98,28 @@ export function getSourceRoots(home?: string): SourceRoot[] {
       encodeProjectDir: encodeIflow,
     },
     {
+      id: 'qoder',
+      path: join(h, '.qoder', 'projects'),
+      encodeProjectDir: encodeCC,
+    },
+    {
       id: 'opencode',
       path: join(h, '.local', 'share', 'opencode'),
       encodeProjectDir: null,
     },
     {
       id: 'antigravity',
-      path: join(h, '.antigravity'),
+      path: join(h, '.gemini', 'antigravity-cli', 'brain'),
+      encodeProjectDir: null,
+    },
+    {
+      id: 'antigravity-legacy',
+      path: join(h, '.gemini', 'antigravity'),
+      encodeProjectDir: null,
+    },
+    {
+      id: 'commandcode',
+      path: join(h, '.commandcode', 'projects'),
       encodeProjectDir: null,
     },
     {

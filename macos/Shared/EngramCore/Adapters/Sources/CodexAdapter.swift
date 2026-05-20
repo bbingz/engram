@@ -92,7 +92,7 @@ enum JSONLAdapterSupport {
 
     static func jsonString(_ value: Any, limit: Int? = nil) -> String? {
         guard JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(withJSONObject: value, options: []),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.withoutEscapingSlashes]),
               let string = String(data: data, encoding: .utf8)
         else {
             return nil
@@ -173,24 +173,33 @@ final class CodexAdapter: SessionAdapter {
             var meta: JSONLAdapterSupport.JSONObject?
             var userCount = 0
             var assistantCount = 0
+            var toolCount = 0
             var systemCount = 0
             var firstUserText = ""
             var lastTimestamp = ""
+            var detectedModel: String?
 
             for object in objects {
+                if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
+                    lastTimestamp = timestamp
+                }
+
                 if JSONLAdapterSupport.string(object["type"]) == "session_meta", meta == nil {
                     meta = JSONLAdapterSupport.object(object["payload"])
                 }
 
                 guard JSONLAdapterSupport.string(object["type"]) == "response_item",
-                      let payload = JSONLAdapterSupport.object(object["payload"]),
-                      JSONLAdapterSupport.string(payload["type"]) == "message"
+                      let payload = JSONLAdapterSupport.object(object["payload"])
                 else {
                     continue
                 }
 
-                let role = JSONLAdapterSupport.string(payload["role"])
-                if role == "user" {
+                if detectedModel == nil, let model = JSONLAdapterSupport.string(payload["model"]) {
+                    detectedModel = model
+                }
+
+                let payloadType = JSONLAdapterSupport.string(payload["type"])
+                if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "user" {
                     let rawText = Self.extractText(JSONLAdapterSupport.array(payload["content"]))
                     let normalized = Self.normalizeUserText(rawText)
                     if normalized.strippedSystemContent {
@@ -202,11 +211,10 @@ final class CodexAdapter: SessionAdapter {
                     } else if !normalized.strippedSystemContent, Self.isSystemInjection(rawText) {
                         systemCount += 1
                     }
-                } else if role == "assistant" {
+                } else if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "assistant" {
                     assistantCount += 1
-                }
-                if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
-                    lastTimestamp = timestamp
+                } else if payloadType == "function_call" || payloadType == "function_call_output" {
+                    toolCount += 1
                 }
             }
 
@@ -228,11 +236,11 @@ final class CodexAdapter: SessionAdapter {
                     endTime: lastTimestamp.isEmpty ? nil : lastTimestamp,
                     cwd: JSONLAdapterSupport.string(meta["cwd"]) ?? "",
                     project: nil,
-                    model: JSONLAdapterSupport.string(meta["model_provider"]),
-                    messageCount: userCount + assistantCount,
+                    model: detectedModel ?? JSONLAdapterSupport.string(meta["model"]),
+                    messageCount: userCount + assistantCount + toolCount,
                     userMessageCount: userCount,
                     assistantMessageCount: assistantCount,
-                    toolMessageCount: 0,
+                    toolMessageCount: toolCount,
                     systemMessageCount: systemCount,
                     summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
                     filePath: locator,
@@ -320,29 +328,54 @@ final class CodexAdapter: SessionAdapter {
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
         guard JSONLAdapterSupport.string(object["type"]) == "response_item",
-              let payload = JSONLAdapterSupport.object(object["payload"]),
-              JSONLAdapterSupport.string(payload["type"]) == "message",
-              let rawRole = JSONLAdapterSupport.string(payload["role"]),
-              rawRole == "user" || rawRole == "assistant"
-        else {
+              let payload = JSONLAdapterSupport.object(object["payload"])
+        else { return nil }
+
+        let timestamp = JSONLAdapterSupport.string(object["timestamp"])
+        switch JSONLAdapterSupport.string(payload["type"]) {
+        case "message":
+            guard let rawRole = JSONLAdapterSupport.string(payload["role"]),
+                  rawRole == "user" || rawRole == "assistant"
+            else { return nil }
+            let role: NormalizedMessageRole = rawRole == "user" ? .user : .assistant
+            let rawText = extractText(JSONLAdapterSupport.array(payload["content"]))
+            let content: String
+            if role == .user {
+                guard let userText = normalizeUserText(rawText).userText else { return nil }
+                content = userText
+            } else {
+                content = rawText
+            }
+            return NormalizedMessage(
+                role: role,
+                content: content,
+                timestamp: timestamp,
+                toolCalls: nil,
+                usage: role == .assistant ? JSONLAdapterSupport.usage(from: JSONLAdapterSupport.object(payload["usage"])) : nil
+            )
+        case "function_call":
+            let name = JSONLAdapterSupport.string(payload["name"]) ?? ""
+            let arguments = payload["arguments"].flatMap { JSONLAdapterSupport.jsonString($0, limit: 500) } ?? ""
+            return NormalizedMessage(
+                role: .tool,
+                content: arguments.isEmpty ? name : "\(name) \(arguments)",
+                timestamp: timestamp,
+                toolCalls: [NormalizedToolCall(name: name, input: arguments.isEmpty ? nil : arguments)]
+            )
+        case "function_call_output":
+            let content: String
+            if let output = JSONLAdapterSupport.string(payload["output"]) {
+                content = output
+            } else if let output = payload["output"],
+                      let json = JSONLAdapterSupport.jsonString(output, limit: 2000) {
+                content = json
+            } else {
+                content = ""
+            }
+            return NormalizedMessage(role: .tool, content: content, timestamp: timestamp)
+        default:
             return nil
         }
-        let role: NormalizedMessageRole = rawRole == "user" ? .user : .assistant
-        let rawText = extractText(JSONLAdapterSupport.array(payload["content"]))
-        let content: String
-        if role == .user {
-            guard let userText = normalizeUserText(rawText).userText else { return nil }
-            content = userText
-        } else {
-            content = rawText
-        }
-        return NormalizedMessage(
-            role: role,
-            content: content,
-            timestamp: JSONLAdapterSupport.string(object["timestamp"]),
-            toolCalls: nil,
-            usage: nil
-        )
     }
 
     private static func isSystemInjection(_ text: String) -> Bool {

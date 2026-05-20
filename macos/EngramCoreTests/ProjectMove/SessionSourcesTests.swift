@@ -24,12 +24,12 @@ final class SessionSourcesTests: XCTestCase {
 
     // MARK: - getSourceRoots
 
-    func testRootsReturnsCanonicalSevenInOrder() {
+    func testRootsReturnsCanonicalTenInOrder() {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/home/test"))
         let ids = roots.map(\.id)
         XCTAssertEqual(ids, [
             .claudeCode, .codex, .geminiCli, .iflow,
-            .opencode, .antigravity, .copilot,
+            .qoder, .opencode, .antigravity, .antigravityLegacy, .commandcode, .copilot,
         ])
         XCTAssertEqual(
             roots.first(where: { $0.id == .copilot })?.path,
@@ -39,12 +39,28 @@ final class SessionSourcesTests: XCTestCase {
             roots.first(where: { $0.id == .iflow })?.path,
             "/home/test/.iflow/projects"
         )
+        XCTAssertEqual(
+            roots.first(where: { $0.id == .qoder })?.path,
+            "/home/test/.qoder/projects"
+        )
+        XCTAssertEqual(
+            roots.first(where: { $0.id == .commandcode })?.path,
+            "/home/test/.commandcode/projects"
+        )
+        XCTAssertEqual(
+            roots.first(where: { $0.id == .antigravity })?.path,
+            "/home/test/.gemini/antigravity-cli/brain"
+        )
+        XCTAssertEqual(
+            roots.first(where: { $0.id == .antigravityLegacy })?.path,
+            "/home/test/.gemini/antigravity"
+        )
     }
 
     func testEncodeProjectDirSetForGroupedSourcesOnly() {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/h"))
         let withEncoder = roots.filter { $0.encodeProjectDir != nil }.map(\.id)
-        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .iflow])
+        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .iflow, .qoder])
 
         let cc = roots.first { $0.id == .claudeCode }?.encodeProjectDir
         XCTAssertEqual(cc?("/Users/a/b/proj"), "-Users-a-b-proj")
@@ -54,6 +70,9 @@ final class SessionSourcesTests: XCTestCase {
 
         let iflow = roots.first { $0.id == .iflow }?.encodeProjectDir
         XCTAssertEqual(iflow?("/Users/a/b/proj"), "-Users-a-b-proj")
+
+        let qoder = roots.first { $0.id == .qoder }?.encodeProjectDir
+        XCTAssertEqual(qoder?("/Users/a/b/proj"), "-Users-a-b-proj")
     }
 
     // MARK: - encodeIflow

@@ -11,6 +11,7 @@ import type {
   SessionAdapter,
   SessionInfo,
   StreamMessagesOptions,
+  ToolCall,
 } from './types.js';
 
 interface CacheMetaLine {
@@ -28,11 +29,13 @@ export class AntigravityAdapter implements SessionAdapter {
   private daemonDir: string;
   private cacheDir: string;
   private conversationsDir: string;
+  private cliBrainDir: string;
 
   constructor(
     daemonDir?: string,
     cacheDir?: string,
     conversationsDir?: string,
+    cliBrainDir?: string,
   ) {
     const home = homedir();
     this.daemonDir =
@@ -40,6 +43,8 @@ export class AntigravityAdapter implements SessionAdapter {
     this.cacheDir = cacheDir ?? join(home, '.engram', 'cache', 'antigravity');
     this.conversationsDir =
       conversationsDir ?? join(home, '.gemini', 'antigravity', 'conversations');
+    this.cliBrainDir =
+      cliBrainDir ?? join(home, '.gemini', 'antigravity-cli', 'brain');
   }
 
   async detect(): Promise<boolean> {
@@ -51,7 +56,12 @@ export class AntigravityAdapter implements SessionAdapter {
         await stat(this.cacheDir);
         return true;
       } catch {
-        return false;
+        try {
+          await stat(this.cliBrainDir);
+          return true;
+        } catch {
+          return false;
+        }
       }
     }
   }
@@ -203,10 +213,34 @@ export class AntigravityAdapter implements SessionAdapter {
     } catch {
       /* cache dir not created yet */
     }
+    try {
+      const sessions = await readdir(this.cliBrainDir, { withFileTypes: true });
+      for (const session of sessions) {
+        if (!session.isDirectory()) continue;
+        const transcript = join(
+          this.cliBrainDir,
+          session.name,
+          '.system_generated',
+          'logs',
+          'transcript.jsonl',
+        );
+        try {
+          await stat(transcript);
+          yield transcript;
+        } catch {
+          /* no transcript */
+        }
+      }
+    } catch {
+      /* CLI brain dir not present */
+    }
   }
 
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
     try {
+      if (this.isCliTranscript(filePath)) {
+        return await this.parseCliTranscript(filePath);
+      }
       const firstLine = await readFirstLine(filePath);
       if (!firstLine) return null;
 
@@ -303,6 +337,27 @@ export class AntigravityAdapter implements SessionAdapter {
     filePath: string,
     opts: StreamMessagesOptions = {},
   ): AsyncGenerator<Message> {
+    if (this.isCliTranscript(filePath)) {
+      const offset = opts.offset ?? 0;
+      const limit = opts.limit ?? Infinity;
+      let count = 0;
+      let yielded = 0;
+      for await (const line of this.readLines(filePath)) {
+        if (yielded >= limit) break;
+        const obj = this.parseLine(line);
+        if (!obj) continue;
+        const msg = this.cliMessage(obj);
+        if (!msg) continue;
+        if (count < offset) {
+          count++;
+          continue;
+        }
+        count++;
+        yield msg;
+        yielded++;
+      }
+      return;
+    }
     const offset = opts.offset ?? 0;
     const limit = opts.limit ?? Infinity;
     let count = 0;
@@ -353,8 +408,146 @@ export class AntigravityAdapter implements SessionAdapter {
     }
   }
 
+  private parseLine(line: string): Record<string, unknown> | null {
+    try {
+      return JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
   async isAccessible(locator: string): Promise<boolean> {
     return isFileAccessible(locator);
+  }
+
+  private isCliTranscript(filePath: string): boolean {
+    const normalized = filePath.split('\\').join('/');
+    const cliRoot = this.cliBrainDir.split('\\').join('/');
+    return (
+      normalized === cliRoot ||
+      normalized.startsWith(`${cliRoot}/`) ||
+      (normalized.includes('/.gemini/antigravity-cli/brain/') &&
+        normalized.endsWith('/.system_generated/logs/transcript.jsonl'))
+    );
+  }
+
+  private async parseCliTranscript(
+    filePath: string,
+  ): Promise<SessionInfo | null> {
+    try {
+      const fileStat = await stat(filePath);
+      let startTime = '';
+      let endTime = '';
+      let userCount = 0;
+      let assistantCount = 0;
+      let toolCount = 0;
+      let firstUserText = '';
+
+      for await (const line of this.readLines(filePath)) {
+        const obj = this.parseLine(line);
+        if (!obj) continue;
+        const msg = this.cliMessage(obj);
+        if (!msg) continue;
+        if (!startTime && msg.timestamp) startTime = msg.timestamp;
+        if (msg.timestamp) endTime = msg.timestamp;
+        if (msg.role === 'user') {
+          userCount++;
+          if (!firstUserText) firstUserText = msg.content;
+        } else if (msg.role === 'assistant') assistantCount++;
+        else if (msg.role === 'tool') toolCount++;
+      }
+
+      const id = this.cliSessionId(filePath);
+      if (!id || userCount + assistantCount + toolCount === 0) return null;
+      return {
+        id,
+        source: 'antigravity',
+        startTime,
+        endTime: endTime !== startTime ? endTime : undefined,
+        cwd: await this.inferCwd(filePath),
+        messageCount: userCount + assistantCount + toolCount,
+        userMessageCount: userCount,
+        assistantMessageCount: assistantCount,
+        toolMessageCount: toolCount,
+        systemMessageCount: 0,
+        summary: firstUserText.slice(0, 200) || undefined,
+        filePath,
+        sizeBytes: fileStat.size,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private cliMessage(obj: Record<string, unknown>): Message | null {
+    const type = obj.type as string | undefined;
+    const timestamp = obj.created_at as string | undefined;
+    const content = typeof obj.content === 'string' ? obj.content : '';
+    if (type === 'USER_INPUT') return { role: 'user', content, timestamp };
+    if (type === 'PLANNER_RESPONSE') {
+      const body = content || ((obj.thinking as string | undefined) ?? '');
+      const toolCalls = this.cliToolCalls(obj.tool_calls);
+      return {
+        role: 'assistant',
+        content: body,
+        timestamp,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      };
+    }
+    if (!content) return null;
+    return { role: 'tool', content, timestamp };
+  }
+
+  private cliToolCalls(value: unknown): ToolCall[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item): item is Record<string, unknown> => {
+        return (
+          item !== null &&
+          typeof item === 'object' &&
+          typeof (item as Record<string, unknown>).name === 'string'
+        );
+      })
+      .map((item) => {
+        return {
+          name: item.name as string,
+          input: item.args
+            ? JSON.stringify(item.args).slice(0, 500)
+            : undefined,
+        };
+      });
+  }
+
+  private cliSessionId(filePath: string): string {
+    const parts = filePath.split('/');
+    const logsIndex = parts.lastIndexOf('logs');
+    if (logsIndex >= 2) return parts[logsIndex - 2] ?? '';
+    return (
+      filePath
+        .split('/')
+        .pop()
+        ?.replace(/\.jsonl$/, '') ?? ''
+    );
+  }
+
+  private async inferCwd(filePath: string): Promise<string> {
+    try {
+      const content = (await readFile(filePath, 'utf8')).slice(0, 50000);
+      const pathMatches =
+        content.match(/\/Users\/[^/]+\/-Code-\/([^/\s"'`)]+)/g) || [];
+      if (pathMatches.length === 0) return '';
+      const counts = new Map<string, number>();
+      for (const p of pathMatches) {
+        const m = p.match(/\/-Code-\/([^/\s"'`)]+)/);
+        if (m) counts.set(m[1], (counts.get(m[1]) || 0) + 1);
+      }
+      const topProject = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+      return topProject
+        ? `/Users/${homedir().split('/').pop()}/-Code-/${topProject[0]}`
+        : '';
+    } catch {
+      return '';
+    }
   }
 }
 

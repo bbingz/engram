@@ -27,8 +27,10 @@ Engram reads session files created by AI coding tools on your local machine:
 | Windsurf | `~/.codeium/windsurf/` | Read-only |
 | Kimi | `~/.kimi/sessions/` | Read-only |
 | Qwen | `~/.qwen/projects/` | Read-only |
+| Qoder | `~/.qoder/projects/` | Read-only |
 | iflow | `~/.iflow/projects/` | Read-only |
-| Antigravity | `~/.gemini/antigravity/` | Read-only |
+| Antigravity | `~/.gemini/antigravity-cli/brain/` and legacy `~/.gemini/antigravity/` cache data | Read-only |
+| Command Code | `~/.commandcode/projects/` | Read-only |
 
 Engram never modifies your AI tool session files.
 

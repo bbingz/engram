@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { AntigravityAdapter } from '../adapters/antigravity.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code.js';
 import { ClineAdapter } from '../adapters/cline.js';
+import { CommandCodeAdapter } from '../adapters/commandcode.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { CopilotAdapter } from '../adapters/copilot.js';
 import { CursorAdapter } from '../adapters/cursor.js';
@@ -14,6 +15,7 @@ import { GeminiCliAdapter } from '../adapters/gemini-cli.js';
 import { IflowAdapter } from '../adapters/iflow.js';
 import { KimiAdapter } from '../adapters/kimi.js';
 import { OpenCodeAdapter } from '../adapters/opencode.js';
+import { QoderAdapter } from '../adapters/qoder.js';
 import { QwenAdapter } from '../adapters/qwen.js';
 import type { SessionAdapter, SourceName } from '../adapters/types.js';
 import { VsCodeAdapter } from '../adapters/vscode.js';
@@ -52,7 +54,9 @@ function createAdapters(): SessionAdapter[] {
     new OpenCodeAdapter(),
     new IflowAdapter(),
     new QwenAdapter(),
+    new QoderAdapter(),
     new KimiAdapter(),
+    new CommandCodeAdapter(),
     new CopilotAdapter(),
     new ClineAdapter(),
     new CursorAdapter(),

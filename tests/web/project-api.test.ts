@@ -25,7 +25,12 @@ describe('Web API — /api/project/*', () => {
     mkdirSync(join(home, '.codex', 'sessions'), { recursive: true });
     mkdirSync(join(home, '.gemini', 'tmp'), { recursive: true });
     mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
-    mkdirSync(join(home, '.antigravity'), { recursive: true });
+    mkdirSync(join(home, '.gemini', 'antigravity-cli', 'brain'), {
+      recursive: true,
+    });
+    mkdirSync(join(home, '.gemini', 'antigravity'), {
+      recursive: true,
+    });
     mkdirSync(join(home, '.copilot'), { recursive: true });
     mkdirSync(join(home, '.iflow', 'projects'), { recursive: true });
     mkdirSync(join(home, '.engram'), { recursive: true });

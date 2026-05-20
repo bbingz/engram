@@ -7,6 +7,10 @@ import { AntigravityAdapter } from '../../src/adapters/antigravity.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_CACHE = join(__dirname, '../fixtures/antigravity/cache');
+const FIXTURE_CLI = join(
+  __dirname,
+  '../fixtures/antigravity-cli/transcript.jsonl',
+);
 
 describe('AntigravityAdapter (cache mode)', () => {
   // Pass a non-existent daemon dir — adapter falls back to cache-only mode
@@ -38,5 +42,44 @@ describe('AntigravityAdapter (cache mode)', () => {
     expect(msgs).toHaveLength(2);
     expect(msgs[0].role).toBe('user');
     expect(msgs[1].role).toBe('assistant');
+  });
+});
+
+describe('AntigravityAdapter (CLI brain transcripts)', () => {
+  const adapter = new AntigravityAdapter(
+    '/nonexistent/daemon',
+    '/nonexistent/cache',
+    '/nonexistent/conversations',
+    dirname(FIXTURE_CLI),
+  );
+
+  it('parseSessionInfo reads Antigravity CLI event streams', async () => {
+    const info = await adapter.parseSessionInfo(FIXTURE_CLI);
+    expect(info).toMatchObject({
+      id: 'transcript',
+      source: 'antigravity',
+      userMessageCount: 1,
+      assistantMessageCount: 2,
+      toolMessageCount: 1,
+      summary: 'Review the Antigravity CLI parser',
+    });
+  });
+
+  it('streamMessages maps planner and tool events to roles', async () => {
+    const msgs = [];
+    for await (const msg of adapter.streamMessages(FIXTURE_CLI)) {
+      msgs.push(msg);
+    }
+    expect(msgs.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ]);
+    expect(msgs.flatMap((m) => m.toolCalls ?? [])[0]?.name).toBe('Read');
+  });
+
+  it('keeps CLI constructor root available for discovery', async () => {
+    expect(adapter.name).toBe('antigravity');
   });
 });

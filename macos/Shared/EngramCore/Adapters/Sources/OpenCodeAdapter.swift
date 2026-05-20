@@ -162,10 +162,7 @@ final class OpenCodeAdapter: SessionAdapter {
                         return title.isEmpty ? nil : title
                     }(),
                     filePath: locator,
-                    sizeBytes: try Self.sessionPayloadSize(
-                        database: database,
-                        sessionId: locatorParts.sessionId
-                    ),
+                    sizeBytes: try Self.sessionPayloadSize(database: database, sessionId: locatorParts.sessionId),
                     indexedAt: nil,
                     agentRole: nil,
                     originator: nil,

@@ -40,7 +40,9 @@ export const WATCHED_SOURCES = new Set([
   'antigravity',
   'iflow',
   'qwen',
+  'qoder',
   'kimi',
+  'commandcode',
   'cline',
   // Derived sources that share claude-code's directory
   'lobsterai',
@@ -55,10 +57,13 @@ export function getWatchEntries(home?: string): Array<[string, SourceName]> {
     [join(h, '.codex', 'archived_sessions'), 'codex'],
     [join(h, '.claude', 'projects'), 'claude-code'],
     [join(h, '.gemini', 'tmp'), 'gemini-cli'],
+    [join(h, '.gemini', 'antigravity-cli', 'brain'), 'antigravity'],
     [join(h, '.gemini', 'antigravity'), 'antigravity'],
     [join(h, '.iflow', 'projects'), 'iflow'],
     [join(h, '.qwen', 'projects'), 'qwen'],
+    [join(h, '.qoder', 'projects'), 'qoder'],
     [join(h, '.kimi', 'sessions'), 'kimi'],
+    [join(h, '.commandcode', 'projects'), 'commandcode'],
     [join(h, '.cline', 'data', 'tasks'), 'cline'],
   ];
 }

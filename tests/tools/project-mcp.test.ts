@@ -36,13 +36,14 @@ describe('project MCP tools', () => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-mcp-project-'));
     home = join(tmp, 'home');
     mkdirSync(home);
-    // 6 source roots
+    // Canonical source roots
     for (const p of [
       '.claude/projects',
       '.codex/sessions',
       '.gemini/tmp',
       '.local/share/opencode',
-      '.antigravity',
+      '.gemini/antigravity-cli/brain',
+      '.gemini/antigravity',
       '.copilot',
     ]) {
       mkdirSync(join(home, p), { recursive: true });

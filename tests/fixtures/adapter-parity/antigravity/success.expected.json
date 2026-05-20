@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "571fd97",
+  "generatedAtCommit": "adb1088c",
   "inputPath": "antigravity/input/cache/conv-001.jsonl",
   "insightFields": {
     "firstUserSummary": "Fix auth bug",
@@ -21,7 +21,7 @@
       "timestamp": "2026-02-20T10:00:30.000Z"
     }
   ],
-  "nodeVersion": "v25.9.0",
+  "nodeVersion": "v26.0.0",
   "projectFields": {
     "cwd": "",
     "project": null,

@@ -1,6 +1,6 @@
 # Engram
 
-> Native Swift MCP helper + macOS App：聚合 15 种 AI 编程助手的历史会话，实现跨工具上下文共享和混合搜索。
+> Native Swift MCP helper + macOS App：聚合 17 种 AI 编程助手的历史会话，实现跨工具上下文共享和混合搜索。
 
 在 Codex 里做了半天，切到 Claude Code 继续时，AI 不需要你手动解释之前做了什么——它可以直接调用 `get_context` 查询你的历史。
 
@@ -45,17 +45,19 @@
 | [Codex CLI](https://github.com/openai/codex) | `~/.codex/sessions/` | ✅ 完整支持 |
 | [Claude Code](https://claude.ai/code) | `~/.claude/projects/` | ✅ 完整支持 |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `~/.gemini/tmp/` | ✅ 完整支持 |
-| [Antigravity](https://idx.google.com) | gRPC + `~/.gemini/antigravity/` | ✅ 完整支持 |
+| [Antigravity](https://idx.google.com) | CLI brain `~/.gemini/antigravity-cli/brain/` + legacy gRPC cache | ✅ 完整支持 |
 | [Windsurf](https://codeium.com/windsurf) | gRPC + `~/.codeium/windsurf/` | ✅ 完整支持 |
 | [Cursor](https://cursor.sh) | `~/Library/Application Support/Cursor/…/state.vscdb` | ✅ 完整支持 |
 | [VS Code Copilot](https://code.visualstudio.com) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
 | [GitHub Copilot](https://github.com/features/copilot) | `~/.copilot/session-state/<uuid>/events.jsonl` | ✅ 完整支持 |
 | [iflow](https://iflow.ai) | `~/.iflow/projects/` | ✅ 完整支持 |
 | [Qwen Code](https://qwen.ai) | `~/.qwen/projects/` | ✅ 完整支持 |
+| Qoder | `~/.qoder/projects/` | ✅ 完整支持 |
 | [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | ✅ 完整支持 |
 | [Kimi](https://kimi.moonshot.cn) | `~/.kimi/sessions/` | ✅ 完整支持 |
 | [MiniMax](https://minimax.chat) | `~/.minimax/sessions/` | ✅ 完整支持 |
 | [Lobster AI](https://lobster.ai) | `~/.lobsterai/sessions/` | ✅ 完整支持 |
+| Command Code | `~/.commandcode/projects/` | ✅ 完整支持 |
 | [Cline](https://github.com/cline/cline) | `~/.cline/data/tasks/` | ✅ 完整支持 |
 
 ## 快速上手

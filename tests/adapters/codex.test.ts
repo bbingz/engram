@@ -44,9 +44,9 @@ describe('CodexAdapter', () => {
     expect(info?.endTime).toBe('2026-01-15T10:05:00.000Z');
   });
 
-  it('falls back to model_provider when response_item.payload.model is absent', async () => {
+  it('does not treat session_meta.model_provider as a model name', async () => {
     const info = await adapter.parseSessionInfo(FIXTURE);
-    expect(info?.model).toBe('openai');
+    expect(info?.model).toBeUndefined();
   });
 
   it('prefers response_item.payload.model over session_meta.model_provider', async () => {

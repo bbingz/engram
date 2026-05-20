@@ -22,6 +22,15 @@ final class MessageParserTests: XCTestCase {
         return path
     }
 
+    private func repoFixturePath(_ relativePath: String, filePath: String = #filePath) -> String {
+        URL(fileURLWithPath: filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("tests/fixtures/\(relativePath)")
+            .path
+    }
+
     // MARK: - claude-code format (type/message)
 
     /// 1. Parse claude-code JSONL with string and array content
@@ -44,7 +53,9 @@ final class MessageParserTests: XCTestCase {
         let path = try fixturePath("codex.jsonl")
         let messages = MessageParser.parse(filePath: path, source: "codex")
 
-        XCTAssertEqual(messages.count, 2)
+        guard messages.count == 2 else {
+            return XCTFail("Expected 2 codex display messages, got \(messages.count)")
+        }
         XCTAssertEqual(messages[0].role, "user")
         XCTAssertEqual(messages[0].content, "Hello from Codex")
         XCTAssertEqual(messages[1].role, "assistant")
@@ -87,7 +98,9 @@ final class MessageParserTests: XCTestCase {
         let messages = MessageParser.parse(filePath: path, source: "claude-code")
 
         // empty-content.jsonl: "" is skipped (isEmpty), "valid" kept, "   " kept (not empty, just whitespace)
-        XCTAssertEqual(messages.count, 2)
+        guard messages.count == 2 else {
+            return XCTFail("Expected 2 claude-code display messages, got \(messages.count)")
+        }
         XCTAssertEqual(messages[0].content, "valid")
         XCTAssertEqual(messages[1].content, "   ")
     }
@@ -135,6 +148,66 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(messages[0].content, "Hello Copilot")
         XCTAssertEqual(messages[1].role, "assistant")
         XCTAssertEqual(messages[1].content, "Hi from Copilot")
+    }
+
+    func testParseQoderThroughAdapterRegistry() throws {
+        let messages = MessageParser.parse(
+            filePath: repoFixturePath("qoder/sample.jsonl"),
+            source: "qoder"
+        )
+
+        guard messages.count == 3 else {
+            return XCTFail("Expected 3 qoder display messages, got \(messages.count)")
+        }
+        XCTAssertEqual(messages[0].role, "user")
+        XCTAssertEqual(messages[0].content, "Review the parser")
+        XCTAssertEqual(messages[1].role, "assistant")
+        XCTAssertEqual(messages[1].content, "I will review the parser.")
+        XCTAssertEqual(messages[2].role, "assistant")
+        XCTAssertEqual(messages[2].content, "`Read`")
+    }
+
+    func testParseCommandCodeThroughAdapterRegistry() throws {
+        let messages = MessageParser.parse(
+            filePath: repoFixturePath("commandcode/sample.jsonl"),
+            source: "commandcode"
+        )
+
+        guard messages.count == 2 else {
+            return XCTFail("Expected 2 commandcode display messages, got \(messages.count)")
+        }
+        XCTAssertEqual(messages[0].role, "user")
+        XCTAssertEqual(messages[0].content, "检查解析器")
+        XCTAssertEqual(messages[1].role, "assistant")
+        XCTAssertEqual(messages[1].content, "我会检查解析器。\n\n`read_file`")
+    }
+
+    func testParseAntigravityCliThroughAdapterRegistry() throws {
+        let tmpRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-ag-cli-\(UUID().uuidString)", isDirectory: true)
+        let transcript = tmpRoot
+            .appendingPathComponent(".gemini/antigravity-cli/brain/cli-session-001/.system_generated/logs/transcript.jsonl")
+        try FileManager.default.createDirectory(
+            at: transcript.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: tmpRoot) }
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: repoFixturePath("antigravity-cli/transcript.jsonl")),
+            to: transcript
+        )
+
+        let messages = MessageParser.parse(filePath: transcript.path, source: "antigravity")
+
+        guard messages.count == 3 else {
+            return XCTFail("Expected 3 antigravity CLI display messages, got \(messages.count)")
+        }
+        XCTAssertEqual(messages[0].role, "user")
+        XCTAssertEqual(messages[0].content, "Review the Antigravity CLI parser")
+        XCTAssertEqual(messages[1].role, "assistant")
+        XCTAssertEqual(messages[1].content, "Inspecting the transcript shape")
+        XCTAssertEqual(messages[2].role, "assistant")
+        XCTAssertEqual(messages[2].content, "The parser should include CLI brain transcripts.")
     }
 
     /// 11. Cline format (whole-file JSON array with say/text)

@@ -181,6 +181,8 @@ describe('createMCPDeps', () => {
     expect(names).toContain('claude-code');
     expect(names).toContain('codex');
     expect(names).toContain('gemini-cli');
+    expect(names).toContain('qoder');
+    expect(names).toContain('commandcode');
     deps.db.close();
   });
 });

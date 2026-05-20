@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "571fd97",
+  "generatedAtCommit": "adb1088c",
   "inputPath": "kimi/input/sessions/ws-001/sess-001/context.jsonl",
   "insightFields": {
     "firstUserSummary": "帮我排查内存泄漏",
@@ -12,18 +12,20 @@
   "messages": [
     {
       "content": "帮我排查内存泄漏",
-      "role": "user"
+      "role": "user",
+      "timestamp": "2026-02-02T02:40:01.000Z"
     },
     {
       "content": "我来帮你分析内存使用情况。",
-      "role": "assistant"
+      "role": "assistant",
+      "timestamp": "2026-02-02T02:41:00.000Z"
     },
     {
       "content": "找到了，谢谢",
       "role": "user"
     }
   ],
-  "nodeVersion": "v25.9.0",
+  "nodeVersion": "v26.0.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
     "project": null,
