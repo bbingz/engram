@@ -71,9 +71,11 @@ Antigravity CLI、Command Code、Qoder 是重点覆盖来源。发布前的 pars
 
 ```bash
 npm run check:adapter-parity-fixtures
-npx vitest run tests/adapters/antigravity.test.ts tests/adapters/commandcode.test.ts tests/adapters/qoder.test.ts tests/adapters/codex.test.ts
-xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' -only-testing:EngramTests/AdapterParityTests -only-testing:EngramTests/MessageParserTests
+npm test -- tests/adapters
+xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destination 'platform=macOS' -only-testing:EngramCoreTests/AdapterParityTests/testSwiftAdaptersMatchNodeParityGoldensForAllProviders
 ```
+
+当前 fixture/parity gate 覆盖 15 个产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。HTTP/API reference 视图和 Swift App 显示层都应消费同一套解析结果；如果出现同一会话在两端显示不同，先补 parity fixture，再改解析器。
 
 ## 快速上手
 
@@ -393,6 +395,7 @@ npm test              # 运行测试
 npm run test:watch    # 监听模式
 npm run test:coverage # 覆盖率报告
 npm run build         # 编译 TypeScript dev/reference tooling -> dist/
+npm run check:adapter-parity-fixtures # 校验 provider parser parity fixtures
 npm run dev           # TypeScript 开发/reference 模式；不是 shipped app runtime
 ```
 
