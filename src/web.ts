@@ -4,12 +4,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve as pathResolve } from 'node:path';
 import { Hono } from 'hono';
-import type {
-  Message,
-  SessionAdapter,
-  SessionInfo,
-  SourceName,
-} from './adapters/types.js';
+import type { Message, SessionAdapter, SessionInfo } from './adapters/types.js';
 import type { AiAuditQuery, AiAuditWriter } from './core/ai-audit.js';
 import { summarizeConversation } from './core/ai-client.js';
 import { ensureDataDirs, getAdapter } from './core/bootstrap.js';
@@ -28,7 +23,6 @@ import {
   mapErrorStatus,
 } from './core/project-move/retry-policy.js';
 import { runWithContext } from './core/request-context.js';
-import { buildResumeCommand } from './core/resume-coordinator.js';
 import type { SyncEngine, SyncPeer } from './core/sync.js';
 import type { TitleGenerator } from './core/title-generator.js';
 import type { Tracer } from './core/tracer.js';
@@ -44,12 +38,12 @@ import { handleStats } from './tools/stats.js';
 import { registerAiAuditRoutes } from './web/routes/ai-audit.js';
 import { registerProjectAliasRoutes } from './web/routes/project-aliases.js';
 import { registerSearchRoutes } from './web/routes/search.js';
+import { registerSessionRoutes } from './web/routes/sessions.js';
 import { registerStatsRoutes } from './web/routes/stats.js';
 import { registerSyncRoutes } from './web/routes/sync.js';
 import {
   healthPage,
   layout,
-  renderSessionMessagesHtml,
   searchPage,
   sessionDetailPage,
   sessionListPage,
@@ -514,235 +508,14 @@ export function createApp(
     });
   });
 
-  // Session list
-  app.get('/api/sessions', (c) => {
-    const source = c.req.query('source') as SourceName | undefined;
-    const project = c.req.query('project');
-    const since = c.req.query('since');
-    const until = c.req.query('until');
-    const limitParam = c.req.query('limit');
-    const offsetParam = c.req.query('offset');
-
-    const pagination = parsePaginationParams(offsetParam, limitParam, 20, 100);
-    if (!pagination.ok) return c.json({ error: pagination.error }, 400);
-
-    const sessions = db.listSessions({
-      source,
-      project,
-      since,
-      until,
-      limit: pagination.limit,
-      offset: pagination.offset,
-    });
-    return c.json({
-      sessions,
-      offset: pagination.offset,
-      limit: pagination.limit,
-      hasMore: sessions.length === pagination.limit,
-    });
-  });
-
-  // Session detail
-  app.get('/api/sessions/:id', (c) => {
-    const session = db.getSession(c.req.param('id'));
-    if (!session) {
-      return c.json({ error: 'Session not found' }, 404);
-    }
-    return c.json(session);
-  });
-
-  app.get('/api/sessions/:id/messages', async (c) => {
-    const session = db.getSession(c.req.param('id'));
-    if (!session) return c.json({ error: 'Session not found' }, 404);
-
-    const pagination = parsePaginationParams(
-      c.req.query('offset'),
-      c.req.query('limit'),
-      detailPageSize,
-      200,
-    );
-    if (!pagination.ok) return c.json({ error: pagination.error }, 400);
-
-    const page = await readTranscriptPage(
-      session,
-      pagination.offset,
-      pagination.limit,
-    );
-    if (page.error) return c.json({ error: page.error }, 500);
-
-    return c.json({
-      html: renderSessionMessagesHtml(session, page.messages),
-      offset: pagination.offset,
-      limit: pagination.limit,
-      count: page.messages.length,
-      hasMore: page.hasMore,
-      nextOffset: page.nextOffset,
-    });
-  });
-
-  // --- Parent link management ---
-
-  app.post('/api/sessions/:id/link', async (c) => {
-    const sessionId = c.req.param('id');
-    const body = await c.req.json<{ parentId: string }>();
-    if (!body?.parentId) return c.json({ error: 'parentId required' }, 400);
-    const validation = db.validateParentLink(sessionId, body.parentId);
-    if (validation !== 'ok') return c.json({ error: validation }, 400);
-    db.setParentSession(sessionId, body.parentId, 'manual');
-    return c.json({ ok: true });
-  });
-
-  app.delete('/api/sessions/:id/link', (c) => {
-    const sessionId = c.req.param('id');
-    db.clearParentSession(sessionId);
-    return c.json({ ok: true });
-  });
-
-  app.post('/api/sessions/:id/confirm-suggestion', (c) => {
-    const sessionId = c.req.param('id');
-    const result = db.confirmSuggestion(sessionId);
-    if (!result.ok) return c.json({ error: result.error }, 400);
-    return c.json({ ok: true });
-  });
-
-  app.delete('/api/sessions/:id/suggestion', async (c) => {
-    const sessionId = c.req.param('id');
-    const body = await c.req.json<{ suggestedParentId: string }>();
-    if (!body?.suggestedParentId)
-      return c.json({ error: 'suggestedParentId required' }, 400);
-    const cleared = db.clearSuggestedParent(sessionId, body.suggestedParentId);
-    if (!cleared) return c.json({ error: 'stale-suggestion' }, 409);
-    return c.json({ ok: true });
-  });
-
-  app.get('/api/sessions/:id/children', (c) => {
-    const parentId = c.req.param('id');
-    const limitParam = c.req.query('limit');
-    const offsetParam = c.req.query('offset');
-    const pagination = parsePaginationParams(offsetParam, limitParam, 20, 100);
-    if (!pagination.ok) return c.json({ error: pagination.error }, 400);
-    const confirmed = db.childSessions(
-      parentId,
-      pagination.limit,
-      pagination.offset,
-    );
-    const suggested = db.suggestedChildSessions(parentId);
-    return c.json({ confirmed, suggested });
-  });
-
-  // Session timeline for replay
-  app.get('/api/sessions/:id/timeline', async (c) => {
-    const session = db.getSession(c.req.param('id'));
-    if (!session) return c.json({ error: 'Session not found' }, 404);
-
-    const adapter = resolveAdapter(session.source);
-    if (!adapter)
-      return c.json({ error: `No adapter for source: ${session.source}` }, 500);
-
-    const limitParam = c.req.query('limit');
-    const offsetParam = c.req.query('offset');
-    const limit = parseOptionalPositiveIntParam('limit', limitParam, 500);
-    if (!limit.ok) return c.json({ error: limit.error }, 400);
-    const offset = offsetParam
-      ? parseNonNegativeInteger('offset', offsetParam)
-      : ({ ok: true, value: 0 } as const);
-    if (!offset.ok) return c.json({ error: offset.error }, 400);
-
-    const entries: Array<{
-      index: number;
-      timestamp: string | undefined;
-      role: string;
-      type: string;
-      preview: string;
-      toolName?: string;
-      durationToNextMs?: number;
-      tokens?: { input: number; output: number };
-    }> = [];
-
-    // When limit is set, collect limit + 1 entries to determine hasMore accurately.
-    // If we get limit + 1, pop the last and set hasMore = true.
-    const collectTarget =
-      limit.value !== undefined ? limit.value + 1 : undefined;
-
-    try {
-      let idx = 0;
-      let collected = 0;
-      let prevTimestamp: string | undefined;
-      for await (const msg of adapter.streamMessages(session.filePath)) {
-        if (idx < offset.value) {
-          idx++;
-          prevTimestamp = msg.timestamp;
-          // NOTE: durationToNextMs for the first entry after offset > 0 will be
-          // computed relative to the last skipped message's timestamp, which is
-          // correct. However the skipped entry itself won't have durationToNextMs
-          // set — acceptable limitation for v1 pagination.
-          continue;
-        }
-        if (collectTarget !== undefined && collected >= collectTarget) {
-          break;
-        }
-        const entry: (typeof entries)[0] = {
-          index: idx,
-          timestamp: msg.timestamp,
-          role: msg.role,
-          type:
-            msg.role === 'tool'
-              ? 'tool_result'
-              : msg.toolCalls?.length
-                ? 'tool_use'
-                : 'message',
-          preview: msg.content.slice(0, 100),
-        };
-        if (msg.toolCalls?.length) {
-          entry.toolName = msg.toolCalls[0].name;
-        }
-        if (msg.usage) {
-          entry.tokens = {
-            input: msg.usage.inputTokens,
-            output: msg.usage.outputTokens,
-          };
-        }
-        // Compute gap to previous entry
-        if (prevTimestamp && msg.timestamp) {
-          const gap =
-            new Date(msg.timestamp).getTime() -
-            new Date(prevTimestamp).getTime();
-          if (entries.length > 0)
-            entries[entries.length - 1].durationToNextMs = gap;
-        }
-        prevTimestamp = msg.timestamp;
-        entries.push(entry);
-        idx++;
-        collected++;
-      }
-    } catch (err) {
-      return c.json({ error: `Failed to read session: ${err}` }, 500);
-    }
-
-    // If we collected more than the requested limit, there are more entries
-    const hasMore = limit.value !== undefined && entries.length > limit.value;
-    if (hasMore) entries.pop();
-
-    return c.json({
-      sessionId: session.id,
-      source: session.source,
-      totalEntries: session.messageCount || entries.length,
-      entries,
-      ...(offset.value > 0 ? { offset: offset.value } : {}),
-      ...(limit.value !== undefined ? { limit: limit.value, hasMore } : {}),
-    });
-  });
-
-  // Session resume — detect CLI tool and build resume command
-  app.post('/api/session/:id/resume', (c) => {
-    const session = db.getSession(c.req.param('id'));
-    if (!session) return c.json({ error: 'Session not found', hint: '' }, 404);
-    const result = buildResumeCommand(
-      session.source,
-      session.id,
-      session.cwd ?? '',
-    );
-    return c.json(result);
+  // Sessions
+  registerSessionRoutes(app, {
+    db,
+    adapters: opts?.adapters,
+    detailPageSize,
+    parsePaginationParams,
+    parseOptionalPositiveIntParam,
+    parseNonNegativeInteger,
   });
 
   // Search
