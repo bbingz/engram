@@ -1,5 +1,7 @@
 // src/core/db/maintenance.ts — post-migration backfills and DB maintenance
-import { closeSync, openSync, readSync } from 'node:fs';
+
+import type { FileHandle } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import type BetterSqlite3 from 'better-sqlite3';
 import {
   DETECTION_VERSION,
@@ -15,6 +17,26 @@ import {
   setSuggestedParent,
   validateParentLink,
 } from './parent-link-repo.js';
+
+type SuggestedParentCandidate = {
+  id: string;
+  start_time: string;
+  project: string | null;
+  cwd: string;
+  summary: string | null;
+  agent_role: string | null;
+};
+
+type ParentCandidate = {
+  id: string;
+  start_time: string;
+  end_time: string | null;
+  project: string | null;
+  cwd: string;
+};
+
+const PARENT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const CODEX_ORIGINATOR_READ_BYTES = 16384;
 
 export function runPostMigrationBackfill(db: BetterSqlite3.Database): void {
   // Incremental: only backfill sessions not yet in session_local_state
@@ -322,7 +344,9 @@ export function backfillFilePaths(db: BetterSqlite3.Database): number {
  * `agent_role = 'dispatched'` and their `link_checked_at` is cleared so
  * `backfillSuggestedParents()` can score them for a parent.
  */
-export function backfillCodexOriginator(db: BetterSqlite3.Database): number {
+export async function backfillCodexOriginator(
+  db: BetterSqlite3.Database,
+): Promise<number> {
   const candidates = db
     .prepare(
       `
@@ -343,27 +367,39 @@ export function backfillCodexOriginator(db: BetterSqlite3.Database): number {
   );
 
   for (const { id, file_path } of candidates) {
-    try {
-      // Read the first ~16KB (session_meta line) — some Codex files have 13KB+ first lines
-      const fd = openSync(file_path, 'r');
-      const chunk = Buffer.alloc(16384);
-      const bytesRead = readSync(fd, chunk, 0, 16384, 0);
-      closeSync(fd);
-      const text = chunk.toString('utf8', 0, bytesRead);
-      const newlineIdx = text.indexOf('\n');
-      const firstLine = newlineIdx > 0 ? text.slice(0, newlineIdx) : text;
-      const obj = JSON.parse(firstLine);
-      const originator = obj?.payload?.originator;
-      if (originator === 'Claude Code') {
-        update.run(id);
-        updated++;
-      }
-    } catch {
-      // File missing or unparseable — skip silently
+    const originator = await readCodexOriginator(file_path);
+    if (originator === 'Claude Code') {
+      update.run(id);
+      updated++;
     }
   }
 
   return updated;
+}
+
+async function readCodexOriginator(filePath: string): Promise<string | null> {
+  let handle: FileHandle | undefined;
+  try {
+    // Read the first ~16KB (session_meta line) — some Codex files have 13KB+ first lines
+    handle = await open(filePath, 'r');
+    const chunk = Buffer.alloc(CODEX_ORIGINATOR_READ_BYTES);
+    const { bytesRead } = await handle.read(
+      chunk,
+      0,
+      CODEX_ORIGINATOR_READ_BYTES,
+      0,
+    );
+    const text = chunk.toString('utf8', 0, bytesRead);
+    const newlineIdx = text.indexOf('\n');
+    const firstLine = newlineIdx > 0 ? text.slice(0, newlineIdx) : text;
+    const obj = JSON.parse(firstLine);
+    return obj?.payload?.originator ?? null;
+  } catch {
+    // File missing or unparseable — skip silently
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 export function backfillSuggestedParents(db: BetterSqlite3.Database): {
@@ -386,18 +422,13 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
     LIMIT 500
   `,
     )
-    .all() as {
-    id: string;
-    start_time: string;
-    project: string | null;
-    cwd: string;
-    summary: string | null;
-    agent_role: string | null;
-  }[];
+    .all() as SuggestedParentCandidate[];
 
   const markChecked = db.prepare(
     `UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?`,
   );
+  const eligibleCandidates = candidates.filter(isParentLookupEligible);
+  const parentCandidates = loadParentCandidatesForBatch(db, eligibleCandidates);
 
   for (const candidate of candidates) {
     checked++;
@@ -412,23 +443,7 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
       }
     }
 
-    const parents = db
-      .prepare(
-        `
-      SELECT id, start_time, end_time, project, cwd FROM sessions
-      WHERE source IN ('claude-code', 'claude')
-        AND start_time <= ?
-        AND start_time >= datetime(?, '-24 hours')
-        AND parent_session_id IS NULL
-    `,
-      )
-      .all(candidate.start_time, candidate.start_time) as {
-      id: string;
-      start_time: string;
-      end_time: string | null;
-      project: string | null;
-      cwd: string;
-    }[];
+    const parents = parentCandidatesForCandidate(candidate, parentCandidates);
 
     const scored = parents.map((p) => ({
       parentId: p.id,
@@ -458,6 +473,60 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
   }
 
   return { checked, suggested };
+}
+
+function isParentLookupEligible(candidate: SuggestedParentCandidate): boolean {
+  return (
+    candidate.agent_role != null ||
+    (candidate.summary != null && isDispatchPattern(candidate.summary))
+  );
+}
+
+function loadParentCandidatesForBatch(
+  db: BetterSqlite3.Database,
+  candidates: SuggestedParentCandidate[],
+): ParentCandidate[] {
+  const candidateTimes = candidates
+    .map((candidate) => Date.parse(candidate.start_time))
+    .filter(Number.isFinite);
+  if (candidateTimes.length === 0) return [];
+
+  const earliestStart = Math.min(...candidateTimes);
+  const latestStart = Math.max(...candidateTimes);
+  const windowStart = new Date(
+    earliestStart - PARENT_LOOKBACK_MS,
+  ).toISOString();
+  const windowEnd = new Date(latestStart).toISOString();
+
+  return db
+    .prepare(
+      `
+      SELECT id, start_time, end_time, project, cwd FROM sessions
+      WHERE source IN ('claude-code', 'claude')
+        AND start_time <= ?
+        AND start_time >= ?
+        AND parent_session_id IS NULL
+    `,
+    )
+    .all(windowEnd, windowStart) as ParentCandidate[];
+}
+
+function parentCandidatesForCandidate(
+  candidate: SuggestedParentCandidate,
+  parents: ParentCandidate[],
+): ParentCandidate[] {
+  const candidateStart = Date.parse(candidate.start_time);
+  if (!Number.isFinite(candidateStart)) return [];
+  const windowStart = candidateStart - PARENT_LOOKBACK_MS;
+
+  return parents.filter((parent) => {
+    const parentStart = Date.parse(parent.start_time);
+    return (
+      Number.isFinite(parentStart) &&
+      parentStart <= candidateStart &&
+      parentStart >= windowStart
+    );
+  });
 }
 
 /**

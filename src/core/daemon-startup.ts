@@ -44,7 +44,7 @@ interface InitialScanDeps {
       linked: number;
     };
     resetStaleDetections: () => number;
-    backfillCodexOriginator: () => number;
+    backfillCodexOriginator: () => Promise<number>;
     backfillSuggestedParents: () => {
       checked: number;
       suggested: number;
@@ -172,7 +172,7 @@ export async function runInitialScan({
         count: detectionReset,
       });
     }
-    const originatorUpdated = db.backfillCodexOriginator();
+    const originatorUpdated = await db.backfillCodexOriginator();
     if (originatorUpdated > 0) {
       emit({
         event: 'backfill',

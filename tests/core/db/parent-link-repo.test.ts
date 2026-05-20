@@ -1,8 +1,9 @@
 // tests/core/db/parent-link-repo.test.ts
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type BetterSqlite3 from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SessionInfo } from '../../../src/adapters/types.js';
 import {
@@ -888,6 +889,63 @@ describe('parent-link-repo', () => {
       expect(row.link_checked_at).toBeTruthy();
     });
 
+    it('loads parent candidates once for a batch of agent sessions', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'cc-parent-batch',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          endTime: '2026-04-13T12:00:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/cc-batch.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+
+      for (const id of ['gem-agent-a', 'gem-agent-b', 'gem-agent-c']) {
+        db.upsertSession(
+          makeSession({
+            id,
+            source: 'gemini-cli',
+            startTime: '2026-04-13T10:05:00Z',
+            cwd: '/test',
+            project: 'myproj',
+            filePath: `/test/${id}.json`,
+            sizeBytes: 50,
+            summary: '<task> Review the insight-hardening branch...',
+          }),
+        );
+      }
+
+      const raw = db.raw;
+      let parentLookupCount = 0;
+      const countedDb = {
+        prepare(sql: string) {
+          const stmt = raw.prepare(sql);
+          if (sql.includes("source IN ('claude-code', 'claude')")) {
+            return {
+              all(...args: unknown[]) {
+                parentLookupCount++;
+                return (
+                  stmt.all as (...parameters: unknown[]) => unknown[]
+                ).call(stmt, ...args);
+              },
+              get: stmt.get.bind(stmt),
+              run: stmt.run.bind(stmt),
+            };
+          }
+          return stmt;
+        },
+      } as unknown as BetterSqlite3.Database;
+
+      const result = backfillSuggestedParents(countedDb);
+
+      expect(result.checked).toBe(3);
+      expect(result.suggested).toBe(3);
+      expect(parentLookupCount).toBe(1);
+    });
+
     it('marks link_checked_at even when no parent found', () => {
       db.upsertSession(
         makeSession({
@@ -1038,7 +1096,16 @@ describe('parent-link-repo', () => {
   });
 
   describe('backfillCodexOriginator', () => {
-    it('marks Claude Code-originated Codex sessions as dispatched and skip-tier', () => {
+    it('does not use synchronous fs APIs on the Codex originator scan path', () => {
+      const source = readFileSync(
+        new URL('../../../src/core/db/maintenance.ts', import.meta.url),
+        'utf8',
+      );
+
+      expect(source).not.toMatch(/\b(?:openSync|readSync|closeSync)\b/);
+    });
+
+    it('marks Claude Code-originated Codex sessions as dispatched and skip-tier', async () => {
       const tempFile = join(tmpDir, 'codex-originator.jsonl');
       writeFileSync(
         tempFile,
@@ -1065,7 +1132,7 @@ describe('parent-link-repo', () => {
         }),
       );
 
-      const updated = backfillCodexOriginator(db.raw);
+      const updated = await backfillCodexOriginator(db.raw);
       expect(updated).toBe(1);
 
       const row = db.raw

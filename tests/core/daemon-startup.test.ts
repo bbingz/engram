@@ -51,7 +51,7 @@ describe('runInitialScan', () => {
           return { linked: 1 };
         }),
         resetStaleDetections: vi.fn(() => 0),
-        backfillCodexOriginator: vi.fn(() => 0),
+        backfillCodexOriginator: vi.fn(async () => 0),
         backfillSuggestedParents: vi.fn(() => ({ checked: 0, suggested: 0 })),
         cleanupStaleMigrations: vi.fn(() => 0),
         detectOrphans: vi.fn(async () => ({
