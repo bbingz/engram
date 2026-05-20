@@ -26,6 +26,7 @@
 ## 目录
 
 - [支持的工具](#支持的工具)
+- [适配器与显示一致性](#适配器与显示一致性)
 - [快速上手](#快速上手)
 - [注册为 MCP Server](#注册为-mcp-server)
 - [macOS App](#macos-app)
@@ -59,6 +60,20 @@
 | [Lobster AI](https://lobster.ai) | `~/.lobsterai/sessions/` | ✅ 完整支持 |
 | Command Code | `~/.commandcode/projects/` | ✅ 完整支持 |
 | [Cline](https://github.com/cline/cline) | `~/.cline/data/tasks/` | ✅ 完整支持 |
+
+## 适配器与显示一致性
+
+Engram 的产品解析路径在 Swift 侧：`macos/Shared/EngramCore/Adapters/Sources/` 负责读取各工具原始日志，`macos/EngramCoreWrite/Indexing/` 负责写入索引库。TypeScript 适配器保留为 dev/reference/fixture tooling，用于生成和校验 fixture parity。
+
+会话详情只把 `user` / `assistant` 消息作为可见正文展示；tool/event/system-like 数据用于索引、工具统计或诊断，不作为普通对话气泡混入正文。历史 HTTP/API reference 视图也遵循同一可见消息规则，因此分页 offset 按可见消息计算，而不是按原始日志行数计算。
+
+Antigravity CLI、Command Code、Qoder 是重点覆盖来源。发布前的 parser/parity smoke：
+
+```bash
+npm run check:adapter-parity-fixtures
+npx vitest run tests/adapters/antigravity.test.ts tests/adapters/commandcode.test.ts tests/adapters/qoder.test.ts tests/adapters/codex.test.ts
+xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' -only-testing:EngramTests/AdapterParityTests -only-testing:EngramTests/MessageParserTests
+```
 
 ## 快速上手
 

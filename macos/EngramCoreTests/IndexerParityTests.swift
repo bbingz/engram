@@ -215,6 +215,27 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testSessionSnapshotWriterRefreshesSessionToolsOnNoopSnapshots() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "tool-refresh", toolCallCounts: ["read_file": 1])
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT call_count FROM session_tools WHERE session_id = 'tool-refresh' AND tool_name = 'read_file'"),
+                1
+            )
+
+            let noop = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "tool-refresh"))
+
+            XCTAssertEqual(noop.action, .noop)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_tools WHERE session_id = 'tool-refresh'"),
+                0
+            )
+        }
+    }
+
     func testIndexAllFlushesSnapshotsInBoundedBatches() async throws {
         let sink = RecordingBatchSink()
         let indexer = SwiftIndexer(
@@ -541,7 +562,8 @@ final class IndexerParityTests: XCTestCase {
         sourceLocator: String = "/tmp/rollout.jsonl",
         sizeBytes: Int64 = 128,
         summary: String = "hello",
-        tier: SessionTier = .normal
+        tier: SessionTier = .normal,
+        toolCallCounts: [String: Int] = [:]
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
             id: id,
@@ -566,7 +588,8 @@ final class IndexerParityTests: XCTestCase {
             summaryMessageCount: nil,
             origin: nil,
             tier: tier,
-            agentRole: nil
+            agentRole: nil,
+            toolCallCounts: toolCallCounts
         )
     }
 

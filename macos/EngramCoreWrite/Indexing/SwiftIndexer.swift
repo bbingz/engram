@@ -115,12 +115,18 @@ public final class SwiftIndexer {
         var assistantCount = 0
         var toolCount = 0
         var firstUserMessages: [String] = []
+        var toolCallCounts: [String: Int] = [:]
     }
 
     private func streamStats(adapter: any SessionAdapter, locator: String) async throws -> SessionStreamStats {
         var stats = SessionStreamStats()
         let stream = try await adapter.streamMessages(locator: locator, options: StreamMessagesOptions())
         for try await message in stream {
+            for call in message.toolCalls ?? [] {
+                guard !call.name.isEmpty else { continue }
+                stats.toolCallCounts[call.name, default: 0] += 1
+            }
+
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { continue }
             guard message.role == .user || message.role == .assistant else { continue }
@@ -184,7 +190,8 @@ public final class SwiftIndexer {
             summaryMessageCount: summaryMessageCount,
             origin: authoritativeNode,
             tier: tier,
-            agentRole: info.agentRole
+            agentRole: info.agentRole,
+            toolCallCounts: stats.toolCallCounts
         )
     }
 

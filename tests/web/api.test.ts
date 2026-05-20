@@ -162,6 +162,73 @@ describe('Web API', () => {
     expect(body.html).not.toContain('message 5');
   });
 
+  it('GET /api/sessions/:id/messages filters tool messages like the Swift detail view', async () => {
+    db.upsertSession(mockSession);
+    const messages = [
+      { role: 'user' as const, content: 'Review the Antigravity CLI parser' },
+      { role: 'tool' as const, content: 'raw tool output should stay hidden' },
+      { role: 'assistant' as const, content: 'The parser is aligned.' },
+    ];
+    const adapter: SessionAdapter = {
+      name: 'codex',
+      detect: async () => true,
+      listSessionFiles: async function* () {},
+      parseSessionInfo: async () => null,
+      streamMessages: async function* () {
+        for (const message of messages) yield message;
+      },
+      isAccessible: async () => true,
+    };
+    const appWithAdapter = createApp(db, { adapters: [adapter] });
+
+    const res = await appWithAdapter.request(
+      '/api/sessions/api-test-session-001/messages',
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(2);
+    expect(body.html).toContain('Review the Antigravity CLI parser');
+    expect(body.html).toContain('The parser is aligned.');
+    expect(body.html).not.toContain('raw tool output should stay hidden');
+  });
+
+  it('GET /api/sessions/:id/messages paginates after filtering hidden tool messages', async () => {
+    db.upsertSession(mockSession);
+    const messages = [
+      { role: 'user' as const, content: 'visible 1' },
+      { role: 'tool' as const, content: 'hidden tool 1' },
+      { role: 'tool' as const, content: 'hidden tool 2' },
+      { role: 'assistant' as const, content: 'visible 2' },
+      { role: 'user' as const, content: 'visible 3' },
+    ];
+    const adapter: SessionAdapter = {
+      name: 'codex',
+      detect: async () => true,
+      listSessionFiles: async function* () {},
+      parseSessionInfo: async () => null,
+      streamMessages: async function* () {
+        for (const message of messages) yield message;
+      },
+      isAccessible: async () => true,
+    };
+    const appWithAdapter = createApp(db, { adapters: [adapter] });
+
+    const res = await appWithAdapter.request(
+      '/api/sessions/api-test-session-001/messages?offset=0&limit=2',
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(2);
+    expect(body.hasMore).toBe(true);
+    expect(body.nextOffset).toBe(2);
+    expect(body.html).toContain('visible 1');
+    expect(body.html).toContain('visible 2');
+    expect(body.html).not.toContain('visible 3');
+    expect(body.html).not.toContain('hidden tool');
+  });
+
   it('GET /session/:id renders only the first transcript page', async () => {
     db.upsertSession({
       ...mockSession,

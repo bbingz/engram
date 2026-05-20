@@ -288,11 +288,16 @@ export function createApp(
 
     const messages: Pick<Message, 'role' | 'content'>[] = [];
     try {
-      for await (const msg of adapter.streamMessages(session.filePath, {
-        offset,
-        limit: limit + 1,
-      })) {
+      let visibleSeen = 0;
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+        if (visibleSeen < offset) {
+          visibleSeen++;
+          continue;
+        }
         messages.push({ role: msg.role, content: msg.content });
+        visibleSeen++;
+        if (messages.length > limit) break;
       }
     } catch (err) {
       return {
@@ -551,10 +556,15 @@ export function createApp(
   // truncated list even though many committed ones existed further
   // back. listMigrations already supports state filtering — push it in.
   app.get('/api/project/migrations', (c) => {
-    const limit = Math.min(
-      Math.max(parseInt(c.req.query('limit') ?? '20', 10) || 20, 1),
+    const parsedLimit = parseOptionalPositiveIntParam(
+      'limit',
+      c.req.query('limit'),
       100,
     );
+    if (!parsedLimit.ok) {
+      return c.json(validationError('InvalidParam', parsedLimit.error), 400);
+    }
+    const limit = parsedLimit.value ?? 20;
     const stateFilter = c.req.query('state'); // undefined = all states
     const validStates = ['fs_pending', 'fs_done', 'committed', 'failed'];
     if (stateFilter && !validStates.includes(stateFilter)) {

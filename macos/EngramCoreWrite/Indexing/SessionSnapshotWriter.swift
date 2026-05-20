@@ -18,11 +18,14 @@ public final class SessionSnapshotWriter {
         let current = try currentSnapshot(id: snapshot.id)
         let merge = try mergeSessionSnapshot(current: current, incoming: snapshot)
         guard merge.action == .merge else {
+            try upsertZeroCostRow(snapshot)
+            try replaceSessionTools(snapshot)
             return SessionWriteResult(action: .noop, changeSet: merge.changeSet)
         }
 
         try upsert(merge.snapshot)
         try upsertZeroCostRow(merge.snapshot)
+        try replaceSessionTools(merge.snapshot)
 
         if shouldDeleteIndexArtifacts(current: current, merged: merge.snapshot) {
             try deleteIndexArtifacts(sessionId: snapshot.id)
@@ -242,8 +245,24 @@ public final class SessionSnapshotWriter {
               model = excluded.model,
               computed_at = excluded.computed_at
             """,
-            arguments: [snapshot.id, snapshot.model]
+            arguments: [snapshot.id, snapshot.model ?? ""]
         )
+    }
+
+    private func replaceSessionTools(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        try db.execute(sql: "DELETE FROM session_tools WHERE session_id = ?", arguments: [snapshot.id])
+        guard !snapshot.toolCallCounts.isEmpty else { return }
+        for (name, count) in snapshot.toolCallCounts where count > 0 {
+            try db.execute(
+                sql: """
+                INSERT INTO session_tools(session_id, tool_name, call_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(session_id, tool_name) DO UPDATE SET
+                  call_count = excluded.call_count
+                """,
+                arguments: [snapshot.id, name, count]
+            )
+        }
     }
 
     private func insertIndexJobs(

@@ -475,4 +475,16 @@ describe('Web API — /api/project/*', () => {
       gemini_projects_json_updated: false,
     });
   });
+
+  it('GET /api/project/migrations rejects invalid limit', async () => {
+    const res = await app.request('/api/project/migrations?limit=NaN');
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: {
+        name: 'InvalidParam',
+        message: 'limit must be a positive integer',
+      },
+    });
+  });
 });

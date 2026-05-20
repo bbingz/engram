@@ -11,6 +11,10 @@ type OptionalIntegerParamResult =
   | { ok: true; value: number | undefined }
   | { ok: false; error: string };
 
+function validationError(name: string, message: string) {
+  return { error: { name, message, retry_policy: 'never' } };
+}
+
 export function registerStatsRoutes(
   app: WebApp,
   deps: {
@@ -47,11 +51,15 @@ export function registerStatsRoutes(
   });
 
   app.get('/api/costs/sessions', (c) => {
-    const rawLimit = parseInt(c.req.query('limit') || '20', 10);
-    const limit = Math.min(
-      Math.max(Number.isNaN(rawLimit) ? 20 : rawLimit, 1),
+    const parsedLimit = deps.parseOptionalPositiveIntParam(
+      'limit',
+      c.req.query('limit'),
       100,
     );
+    if (!parsedLimit.ok) {
+      return c.json(validationError('InvalidParam', parsedLimit.error), 400);
+    }
+    const limit = parsedLimit.value ?? 20;
     const rows = deps.db
       .getRawDb()
       .prepare(`

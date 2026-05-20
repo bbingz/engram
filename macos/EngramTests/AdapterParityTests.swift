@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import Engram
 
 final class AdapterParityTests: XCTestCase {
@@ -378,6 +379,15 @@ final class AdapterParityTests: XCTestCase {
     }
 
     func testAdapterParityHarnessComparesStage2Phase3Phase4AndPhase5Sources() async throws {
+        let testFixtureRoot = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("adapter-parity-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.copyItem(at: fixtureRoot, to: testFixtureRoot)
+        defer { try? FileManager.default.removeItem(at: testFixtureRoot) }
+        try createOpenCodeFixtureDatabase(
+            at: testFixtureRoot.appendingPathComponent("opencode/input/sample.db")
+        )
+
         let enabledSources: Set<SourceName> = [
             .antigravity,
             .codex,
@@ -396,35 +406,35 @@ final class AdapterParityTests: XCTestCase {
             .windsurf
         ]
         let harness = AdapterParityHarness(
-            fixtureRoot: fixtureRoot,
+            fixtureRoot: testFixtureRoot,
             registry: AdapterRegistry(adapters: [
                 AntigravityAdapter(
-                    cacheDir: fixtureRoot.appendingPathComponent("antigravity/input/cache").path,
-                    conversationsDir: fixtureRoot.appendingPathComponent("antigravity/input/conversations").path,
+                    cacheDir: testFixtureRoot.appendingPathComponent("antigravity/input/cache").path,
+                    conversationsDir: testFixtureRoot.appendingPathComponent("antigravity/input/conversations").path,
                     enableLiveSync: false
                 ),
-                CodexAdapter(sessionsRoot: fixtureRoot.appendingPathComponent("codex/input").path),
-                ClaudeCodeAdapter(projectsRoot: fixtureRoot.appendingPathComponent("claude-code/input").path),
-                ClineAdapter(tasksRoot: fixtureRoot.appendingPathComponent("cline/input/tasks").path),
-                CommandCodeAdapter(projectsRoot: fixtureRoot.appendingPathComponent("commandcode/input").path),
-                CursorAdapter(dbPath: fixtureRoot.appendingPathComponent("cursor/input/state.vscdb").path),
+                CodexAdapter(sessionsRoot: testFixtureRoot.appendingPathComponent("codex/input").path),
+                ClaudeCodeAdapter(projectsRoot: testFixtureRoot.appendingPathComponent("claude-code/input").path),
+                ClineAdapter(tasksRoot: testFixtureRoot.appendingPathComponent("cline/input/tasks").path),
+                CommandCodeAdapter(projectsRoot: testFixtureRoot.appendingPathComponent("commandcode/input").path),
+                CursorAdapter(dbPath: testFixtureRoot.appendingPathComponent("cursor/input/state.vscdb").path),
                 GeminiCliAdapter(
-                    tmpRoot: fixtureRoot.appendingPathComponent("gemini-cli/input/tmp").path,
-                    projectsFile: fixtureRoot.appendingPathComponent("gemini-cli/input/projects.json").path
+                    tmpRoot: testFixtureRoot.appendingPathComponent("gemini-cli/input/tmp").path,
+                    projectsFile: testFixtureRoot.appendingPathComponent("gemini-cli/input/projects.json").path
                 ),
-                IflowAdapter(projectsRoot: fixtureRoot.appendingPathComponent("iflow/input").path),
+                IflowAdapter(projectsRoot: testFixtureRoot.appendingPathComponent("iflow/input").path),
                 KimiAdapter(
-                    sessionsRoot: fixtureRoot.appendingPathComponent("kimi/input/sessions").path,
-                    kimiJsonPath: fixtureRoot.appendingPathComponent("kimi/input/kimi.json").path
+                    sessionsRoot: testFixtureRoot.appendingPathComponent("kimi/input/sessions").path,
+                    kimiJsonPath: testFixtureRoot.appendingPathComponent("kimi/input/kimi.json").path
                 ),
-                OpenCodeAdapter(dbPath: fixtureRoot.appendingPathComponent("opencode/input/sample.db").path),
-                QoderAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qoder/input").path),
-                QwenAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qwen/input").path),
-                CopilotAdapter(sessionRoot: fixtureRoot.appendingPathComponent("copilot/input").path),
-                VsCodeAdapter(workspaceStorageDir: fixtureRoot.appendingPathComponent("vscode/input").path),
+                OpenCodeAdapter(dbPath: testFixtureRoot.appendingPathComponent("opencode/input/sample.db").path),
+                QoderAdapter(projectsRoot: testFixtureRoot.appendingPathComponent("qoder/input").path),
+                QwenAdapter(projectsRoot: testFixtureRoot.appendingPathComponent("qwen/input").path),
+                CopilotAdapter(sessionRoot: testFixtureRoot.appendingPathComponent("copilot/input").path),
+                VsCodeAdapter(workspaceStorageDir: testFixtureRoot.appendingPathComponent("vscode/input").path),
                 WindsurfAdapter(
-                    cacheDir: fixtureRoot.appendingPathComponent("windsurf/input/cache").path,
-                    conversationsDir: fixtureRoot.appendingPathComponent("windsurf/input/cascade").path,
+                    cacheDir: testFixtureRoot.appendingPathComponent("windsurf/input/cache").path,
+                    conversationsDir: testFixtureRoot.appendingPathComponent("windsurf/input/cascade").path,
                     enableLiveSync: false
                 )
             ]),
@@ -440,9 +450,10 @@ final class AdapterParityTests: XCTestCase {
         for golden in enabledGoldens {
             let result = try XCTUnwrap(results.first { $0.source == golden.source })
             let expectedLocator = harness.resolveLocator(golden.locator)
+            let listedLocators = result.listedLocators.map(standardizedPath)
             XCTAssertEqual(result.locator, expectedLocator, golden.source.rawValue)
             XCTAssertTrue(
-                result.listedLocators.contains(expectedLocator),
+                listedLocators.contains(standardizedPath(expectedLocator)),
                 "\(golden.source.rawValue) did not list \(expectedLocator)"
             )
             XCTAssertEqual(result.failure, golden.failure, golden.source.rawValue)
@@ -514,5 +525,65 @@ final class AdapterParityTests: XCTestCase {
         {"timestamp":"2026-04-29T00:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}
 
         """
+    }
+
+    private func createOpenCodeFixtureDatabase(at dbURL: URL) throws {
+        try? FileManager.default.removeItem(at: dbURL)
+        try FileManager.default.createDirectory(
+            at: dbURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        let sql = """
+        CREATE TABLE session (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT,
+          slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL,
+          version TEXT NOT NULL, share_url TEXT, summary_additions INTEGER,
+          summary_deletions INTEGER, summary_files INTEGER, summary_diffs TEXT,
+          revert TEXT, permission TEXT,
+          time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+          time_compacting INTEGER, time_archived INTEGER
+        );
+        CREATE TABLE message (
+          id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+          time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+          data TEXT NOT NULL
+        );
+        CREATE TABLE part (
+          id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+          time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+          data TEXT NOT NULL
+        );
+        INSERT INTO session VALUES (
+          'ses_test001', 'proj_001', NULL, 'test-session', '/Users/test/my-project',
+          '实现用户登录功能', '0.0.1', NULL, 3, 10, 2, NULL, NULL, NULL,
+          1770000000000, 1770000060000, NULL, NULL
+        );
+        INSERT INTO message VALUES (
+          'msg_001', 'ses_test001', 1770000001000, 1770000001000,
+          '{"role":"user","time":{"created":1770000001000}}'
+        );
+        INSERT INTO part VALUES (
+          'part_001', 'msg_001', 1770000001000, 1770000001000,
+          '{"type":"text","text":"帮我实现登录功能"}'
+        );
+        INSERT INTO message VALUES (
+          'msg_002', 'ses_test001', 1770000010000, 1770000010000,
+          '{"role":"assistant","time":{"created":1770000010000,"completed":1770000015000}}'
+        );
+        INSERT INTO part VALUES (
+          'part_002', 'msg_002', 1770000010000, 1770000010000,
+          '{"type":"text","text":"好的，我来实现登录功能。"}'
+        );
+        """
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+        if result != SQLITE_OK {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown sqlite error"
+            sqlite3_free(errorMessage)
+            XCTFail("failed to create OpenCode fixture DB: \(message)")
+        }
     }
 }

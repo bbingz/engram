@@ -387,6 +387,18 @@ describe('Hono API server — additional endpoints', () => {
     expect(Array.isArray(body.sessions)).toBe(true);
   });
 
+  it('GET /api/costs/sessions rejects invalid limit', async () => {
+    const res = await app.request('/api/costs/sessions?limit=NaN');
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: {
+        name: 'InvalidParam',
+        message: 'limit must be a positive integer',
+      },
+    });
+  });
+
   it('GET /api/file-activity returns file activity list', async () => {
     db.upsertSession(mockSession);
     const res = await app.request('/api/file-activity');
