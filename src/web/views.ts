@@ -1344,6 +1344,7 @@ function classifySystem(content: string): SystemCategory {
   if (content.startsWith('<system-reminder>')) return 'systemPrompt';
   if (content.startsWith('<environment_context>')) return 'systemPrompt';
   if (content.startsWith('<EXTREMELY_IMPORTANT>')) return 'systemPrompt';
+  if (content.includes('<SYSTEM_MESSAGE>')) return 'systemPrompt';
   if (content.startsWith('\nYou are Qwen Code')) return 'systemPrompt';
   if (content.startsWith('You are Qwen Code')) return 'systemPrompt';
 

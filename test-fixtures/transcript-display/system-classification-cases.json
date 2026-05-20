@@ -1,0 +1,44 @@
+[
+  {
+    "name": "agents-md-instructions",
+    "source": "codex",
+    "content": "# AGENTS.md instructions for /Users/bing/-Code-/engram\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>",
+    "category": "systemPrompt"
+  },
+  {
+    "name": "qwen-system-prompt",
+    "source": "qwen",
+    "content": "You are Qwen Code, a coding agent.",
+    "category": "systemPrompt"
+  },
+  {
+    "name": "antigravity-system-message-wrapper",
+    "source": "antigravity",
+    "content": "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-05-20T00:02:44Z priority=MESSAGE_PRIORITY_HIGH\ncontent=Task finished with result.\n</SYSTEM_MESSAGE>",
+    "category": "systemPrompt"
+  },
+  {
+    "name": "subagent-notification",
+    "source": "codex",
+    "content": "<subagent_notification>\n{\"agent_path\":\"agent-1\",\"status\":{\"completed\":\"Result text\"}}\n</subagent_notification>",
+    "category": "agentComm"
+  },
+  {
+    "name": "command-name-tag",
+    "source": "claude-code",
+    "content": "text with <command-name>test</command-name>",
+    "category": "agentComm"
+  },
+  {
+    "name": "superpowers-invocation",
+    "source": "codex",
+    "content": "Invoke the superpowers: systematic-debugging",
+    "category": "agentComm"
+  },
+  {
+    "name": "normal-user-message",
+    "source": "codex",
+    "content": "Please review the provider parser.",
+    "category": "none"
+  }
+]

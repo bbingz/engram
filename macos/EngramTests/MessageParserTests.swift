@@ -3,6 +3,13 @@ import XCTest
 @testable import Engram
 
 final class MessageParserTests: XCTestCase {
+    private struct ClassificationFixtureCase: Decodable {
+        let name: String
+        let source: String
+        let content: String
+        let category: String
+    }
+
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -307,5 +314,37 @@ final class MessageParserTests: XCTestCase {
             MessageParser.classifySystem(content: "Hello, how are you?", source: "claude-code"),
             .none
         )
+    }
+
+    func testClassifySystemMatchesSharedTranscriptDisplayFixtures() throws {
+        guard let path = Bundle(for: type(of: self)).path(
+            forResource: "test-fixtures/transcript-display/system-classification-cases",
+            ofType: "json"
+        ) else {
+            return XCTFail("missing shared transcript display classification fixture")
+        }
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let cases = try JSONDecoder().decode([ClassificationFixtureCase].self, from: data)
+
+        for fixtureCase in cases {
+            let expected: SystemCategory
+            switch fixtureCase.category {
+            case "systemPrompt":
+                expected = .systemPrompt
+            case "agentComm":
+                expected = .agentComm
+            case "none":
+                expected = .none
+            default:
+                return XCTFail("unknown category \(fixtureCase.category) in \(fixtureCase.name)")
+            }
+
+            XCTAssertEqual(
+                MessageParser.classifySystem(content: fixtureCase.content, source: fixtureCase.source),
+                expected,
+                fixtureCase.name
+            )
+        }
     }
 }

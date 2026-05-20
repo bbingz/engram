@@ -1,10 +1,28 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { SourceName } from '../../src/adapters/types.js';
 import { Database } from '../../src/core/db.js';
 import { sessionDetailPage } from '../../src/web/views.js';
 import { createApp } from '../../src/web.js';
+
+type ClassificationCase = {
+  name: string;
+  source: SourceName;
+  content: string;
+  category: 'none' | 'systemPrompt' | 'agentComm';
+};
+
+const classificationCases = JSON.parse(
+  readFileSync(
+    join(
+      process.cwd(),
+      'macos/test-fixtures/transcript-display/system-classification-cases.json',
+    ),
+    'utf8',
+  ),
+) as ClassificationCase[];
 
 describe('Web Views', () => {
   let db: Database;
@@ -159,5 +177,50 @@ describe('Web Views', () => {
     expect(html).toContain('<strong>System Prompt</strong>');
     expect(html).toContain('class="system-content"');
     expect(html).not.toContain('<strong>Agent Communication</strong>');
+  });
+
+  it.each(
+    classificationCases,
+  )('keeps transcript display classification aligned with Swift for $name', ({
+    source,
+    content,
+    category,
+  }) => {
+    const html = sessionDetailPage(
+      {
+        id: `case-${category}`,
+        source,
+        startTime: '2026-05-20T10:00:00Z',
+        cwd: '/p',
+        project: 'engram',
+        messageCount: 1,
+        userMessageCount: 1,
+        assistantMessageCount: 0,
+        toolMessageCount: 0,
+        systemMessageCount: 0,
+        summary: 'classification case',
+        filePath: '/f1',
+        sizeBytes: 100,
+      },
+      [{ role: 'user', content }],
+    );
+
+    if (category === 'systemPrompt') {
+      expect(html).toContain('<strong>System Prompt</strong>');
+      expect(html).not.toContain(
+        '<div class="role" style="color:var(--text-dim)">You</div>',
+      );
+    } else if (category === 'agentComm') {
+      expect(html).toContain('<strong>Agent Communication</strong>');
+      expect(html).not.toContain(
+        '<div class="role" style="color:var(--text-dim)">You</div>',
+      );
+    } else {
+      expect(html).toContain(
+        '<div class="role" style="color:var(--text-dim)">You</div>',
+      );
+      expect(html).not.toContain('<strong>System Prompt</strong>');
+      expect(html).not.toContain('<strong>Agent Communication</strong>');
+    }
   });
 });
