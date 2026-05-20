@@ -133,18 +133,26 @@ public enum EngramServiceRunner {
             }
         }
 
-        while !Task.isCancelled {
-            try await Task.sleep(nanoseconds: 1_000_000_000)
+        defer {
+            indexingTask.cancel()
+            checkpointTask.cancel()
+            webTask.cancel()
+            server.stop()
         }
+
+        do {
+            while !Task.isCancelled {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        } catch is CancellationError {
+            // Fall through to the same shutdown path as an orderly stop.
+        }
+
         // Wait for the startup truncate to finish before tearing down the gate.
         // SQLite's PRAGMA call doesn't observe Task cancellation, so the value
         // wait is what guarantees we don't drop the writer mid-checkpoint.
         // Bound by busy_timeout (30s) in the worst case; in practice <1s.
         await truncateTask.value
-        indexingTask.cancel()
-        checkpointTask.cancel()
-        webTask.cancel()
-        server.stop()
     }
 
     private static func runIndexingLoop(gate: ServiceWriterGate) async {

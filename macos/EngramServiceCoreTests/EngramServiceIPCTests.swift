@@ -39,6 +39,35 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(status, .running(total: 0, todayParents: 0))
     }
 
+    func testRunnerCancellationReleasesWriterGateAndRemovesSocket() async throws {
+        let paths = try makeServiceIPCPaths()
+
+        let runner = Task {
+            try await EngramServiceRunner.run(
+                arguments: [
+                    "--service-socket", paths.socket.path,
+                    "--database-path", paths.database.path
+                ],
+                environment: [:]
+            )
+        }
+        try await waitUntilFileExists(paths.socket.path)
+
+        runner.cancel()
+        do {
+            try await runner.value
+        } catch is CancellationError {
+            // Also acceptable: the important contract is cleanup.
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.socket.path))
+        XCTAssertNoThrow(
+            try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime),
+            "runner cancellation must release process and database writer locks"
+        )
+    }
+
     func testReadOnlyAppFacingCommandsDoNotReturnUnsupportedCommand() async throws {
         let paths = try makeServiceIPCPaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -879,6 +908,17 @@ private func makeServiceIPCPaths() throws -> (runtime: URL, socket: URL, databas
         runtime.appendingPathComponent("service.sock"),
         root.appendingPathComponent("service.sqlite")
     )
+}
+
+private func waitUntilFileExists(_ path: String) async throws {
+    let deadline = Date().addingTimeInterval(5)
+    while !FileManager.default.fileExists(atPath: path) {
+        if Date() >= deadline {
+            XCTFail("timed out waiting for \(path)")
+            return
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
 }
 
 private func seedSearchFixture(at path: String) throws {
