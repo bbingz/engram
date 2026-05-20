@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import GRDB
 import Network
 import XCTest
 
@@ -338,6 +339,81 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/get_session.transcript.json"
         )
+    }
+
+    func testGetSessionFiltersToolMessagesLikeSwiftDisplay() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-mcp-commandcode-\(UUID().uuidString)", isDirectory: true)
+        let transcript = root
+            .appendingPathComponent(".commandcode/projects/-Users-test-my-project/commandcode-session.jsonl")
+        try FileManager.default.createDirectory(
+            at: transcript.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try """
+        {"id":"msg-001","sessionId":"commandcode-session-001","parentId":null,"role":"user","cwd":"/Users/test/my-project","content":[{"type":"text","text":"检查解析器"}],"timestamp":"2026-05-20T02:00:00.000Z"}
+        {"id":"msg-002","sessionId":"commandcode-session-001","parentId":"msg-001","role":"assistant","cwd":"/Users/test/my-project","model":"command-code-agent","content":[{"type":"text","text":"我会检查解析器。"},{"type":"tool-call","toolCallId":"tool-001","toolName":"read_file","args":{"path":"/Users/test/my-project/src/parser.ts"}}],"timestamp":"2026-05-20T02:00:01.000Z"}
+        {"id":"msg-003","sessionId":"commandcode-session-001","parentId":"msg-002","role":"tool","cwd":"/Users/test/my-project","content":[{"type":"tool-result","toolCallId":"tool-001","toolName":"read_file","output":"file contents omitted"}],"timestamp":"2026-05-20T02:00:02.000Z"}
+        {"id":"msg-004","sessionId":"commandcode-session-001","parentId":"msg-003","role":"assistant","cwd":"/Users/test/my-project","content":"   ","timestamp":"2026-05-20T02:00:03.000Z"}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-commandcode-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "commandcode",
+            filePath: transcript.path,
+            messageCount: 3,
+            userMessageCount: 1,
+            assistantMessageCount: 1,
+            toolMessageCount: 1
+        )
+
+        let result = try getSessionTextFromMCP(dbPath: dbPath)
+        XCTAssertTrue(result.contains(#""role": "user""#), result)
+        XCTAssertTrue(result.contains(#""role": "assistant""#), result)
+        XCTAssertFalse(result.contains(#""role": "tool""#), result)
+        XCTAssertFalse(result.contains("file contents omitted"), result)
+        XCTAssertFalse(result.contains(#""content": "   ""#), result)
+    }
+
+    func testGetSessionReadsAntigravityLegacySourceThroughAdapterRegistry() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-mcp-antigravity-legacy-\(UUID().uuidString)", isDirectory: true)
+        let transcript = root.appendingPathComponent("legacy-cache.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try """
+        {"type":"metadata","id":"legacy-ag","createdAt":"2026-05-20T03:00:00Z","updatedAt":"2026-05-20T03:00:02Z"}
+        {"role":"user","content":"Review legacy cache"}
+        {"role":"assistant","content":"Done"}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-antigravity-legacy-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "antigravity-legacy",
+            filePath: transcript.path,
+            messageCount: 2,
+            userMessageCount: 1,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
+        let result = try getSessionTextFromMCP(dbPath: dbPath)
+        XCTAssertTrue(result.contains(#""source": "antigravity-legacy""#), result)
+        XCTAssertTrue(result.contains("Review legacy cache"), result)
+        XCTAssertTrue(result.contains("Done"), result)
     }
 
     func testExportMatchesGolden() throws {
@@ -791,6 +867,56 @@ final class EngramMCPExecutableTests: XCTestCase {
             toPath: destination.path
         )
         return destination.path
+    }
+
+    private func rewriteTranscriptFixtureSession(
+        dbPath: String,
+        source: String,
+        filePath: String,
+        messageCount: Int,
+        userMessageCount: Int,
+        assistantMessageCount: Int,
+        toolMessageCount: Int
+    ) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET source = ?,
+                    file_path = ?,
+                    message_count = ?,
+                    user_message_count = ?,
+                    assistant_message_count = ?,
+                    tool_message_count = ?
+                WHERE id = 'mcp-transcript-01'
+                """,
+                arguments: [
+                    source,
+                    filePath,
+                    messageCount,
+                    userMessageCount,
+                    assistantMessageCount,
+                    toolMessageCount,
+                ]
+            )
+        }
+    }
+
+    private func getSessionTextFromMCP(dbPath: String) throws -> String {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+        guard case .array(let content)? = capture.ordered["result"]?["content"] else {
+            XCTFail("Expected get_session text content")
+            return ""
+        }
+        return try XCTUnwrap(content.first?["text"]?.stringValue)
     }
 
     private func makeReachableServiceSocketServer(exportHomeDir: String? = nil) throws -> MockServiceSocketServer {

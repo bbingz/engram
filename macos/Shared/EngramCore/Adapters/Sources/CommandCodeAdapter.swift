@@ -187,7 +187,7 @@ final class CommandCodeAdapter: SessionAdapter {
             else { return nil }
             return NormalizedToolCall(
                 name: name,
-                input: object["input"].flatMap { JSONLAdapterSupport.jsonString($0, limit: 500) },
+                input: (object["input"] ?? object["args"]).flatMap { JSONLAdapterSupport.jsonString($0, limit: 500) },
                 output: nil
             )
         }

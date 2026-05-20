@@ -34,7 +34,7 @@ Antigravity CLI, Command Code, and Qoder are explicitly included in both the fix
 - TypeScript adapters remain dev/reference tooling for fixture generation and regression tests.
 - `tests/fixtures/adapter-parity/**/success.expected.json` is the shared golden corpus for Swift adapter parity.
 - `scripts/check-adapter-parity-fixtures.ts` fails when a covered provider has no success fixture, no malformed fixture, or a missing physical input file.
-- HTTP/API reference rendering and the Swift App detail view do not share a compiled parser. Provider parser parity is guarded by `tests/fixtures/adapter-parity/**`; display classification parity is guarded by the shared `test-fixtures/transcript-display/system-classification-cases.json` corpus. Divergence should be fixed by adding or updating the relevant fixture first, then changing both implementations.
+- Swift App, Swift MCP, Swift Service export, and Swift HTTP transcript rendering all use the same visible-message contract: only non-empty `user` / `assistant` messages are rendered as transcript body. Tool, system, event, and subagent notification rows remain available for indexing/statistics/diagnostics, but are not returned as ordinary transcript messages. Provider parser parity is guarded by `tests/fixtures/adapter-parity/**`; surface parity is covered by Swift HTTP/MCP/export tests that exercise the same Command Code and Antigravity cases.
 
 ## Node 26 Native Dependency Note
 
@@ -42,35 +42,36 @@ The local checkout initially had stale `node_modules` with `better-sqlite3@11.10
 
 ## Verification
 
-Fresh commands run on `/Users/bing/-Code-/engram`:
+Fresh commands run from the remediation branch worktree:
 
 ```bash
 npm run check:adapter-parity-fixtures
-npm test -- tests/adapters
+npm test -- tests/adapters/antigravity.test.ts tests/adapters/commandcode.test.ts tests/adapters/qoder.test.ts tests/scripts/stage2-fixture-generators.test.ts tests/web/api.test.ts tests/web/server.test.ts
 npm test -- tests/scripts/stage2-fixture-generators.test.ts
 npm run typecheck:test
 npm run build
 npm run knip
-npm audit --json
+npm audit --audit-level=high --json
 npm test
 xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destination 'platform=macOS' -only-testing:EngramCoreTests/AdapterParityTests/testSwiftAdaptersMatchNodeParityGoldensForAllProviders
-xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' -only-testing:EngramTests/MessageParserTests
+xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests -destination 'platform=macOS' -only-testing:EngramMCPTests/EngramMCPExecutableTests/testSourceSchemasCoverEveryKnownProvider -only-testing:EngramMCPTests/EngramMCPExecutableTests/testGetSessionFiltersToolMessagesLikeSwiftDisplay -only-testing:EngramMCPTests/EngramMCPExecutableTests/testGetSessionReadsAntigravityLegacySourceThroughAdapterRegistry
+xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore -destination 'platform=macOS' -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionFiltersToolMessagesLikeSwiftDisplay -only-testing:EngramServiceCoreTests/EngramWebUIServerTests/testTranscriptDisplayFiltersToolMessagesLikeSwiftApp
 ```
 
 Results:
 
 - `npm run check:adapter-parity-fixtures`: passed, `adapter parity fixtures ok`.
-- Targeted Antigravity/Qoder/Command Code parser + fixture tests: passed, 5 files, 36 tests.
-- HTTP transcript display parity tests: passed, 16 tests.
-- `npm test -- tests/scripts/stage2-fixture-generators.test.ts`: passed, 6 tests.
+- Targeted Antigravity/Qoder/Command Code parser + fixture + HTTP tests: passed, 6 files, 115 tests.
+- HTTP transcript display parity tests: passed through Swift ServiceCore selected tests and Node web tests.
+- `npm test -- tests/scripts/stage2-fixture-generators.test.ts`: passed, 9 tests.
 - `npm run typecheck:test`: passed.
 - `npm run build`: passed.
 - `npm run knip`: passed.
-- `npm test`: passed, 120 files, 1340 tests.
-- `npm audit --json`: passed, 0 vulnerabilities.
-- Swift adapter parity: passed, 1 selected test, 0 failures.
-- Swift `AdapterParityTests`: passed, 15 selected tests, 0 failures.
-- Swift display message parser tests: passed, 20 selected tests, 0 failures.
+- `npm test`: passed, 120 files, 1342 tests.
+- `npm audit --audit-level=high --json`: passed, 0 high/critical vulnerabilities.
+- Swift adapter parity + indexer regressions: passed, 2 selected tests, 0 failures.
+- Swift MCP executable transcript/source schema tests: passed, 3 selected tests, 0 failures.
+- Swift ServiceCore export/HTTP transcript tests: passed, 2 selected tests, 0 failures.
 
 ## Follow-up Rule
 
@@ -84,11 +85,14 @@ When adding or changing any provider parser:
 
 ## Polycli Review
 
-Two Polycli review rounds were run against the provider/parser parity changes. The final healthy provider set was `gemini`, `claude`, `copilot`, and `cmd`; `kimi`, `qwen`, `minimax`, `opencode`, and `pi` were unavailable due to health-check failures, timeout, quota, or missing binary.
+Two Polycli review rounds were run against the provider/parser parity changes. Round 1 used `gemini`, `claude`, `copilot`, `minimax`, `cmd`, and `agy`; Round 2 re-ran the same practical set, with `claude` retried using a focused diff after the first broad second-round run timed out.
 
-Round 2 results:
+Round 2 actionable results:
 
-- `copilot`: CLEAN.
-- `cmd`: no issues found.
-- `claude`: CLEAN; suggested adding bare `<SYSTEM_MESSAGE>` display coverage, which is now covered by the shared fixture.
-- `gemini`: flagged Swift fixture lookup path as risky; the test already passed, but the lookup now uses explicit `inDirectory:` to make the resource path stable.
+- `copilot`: found a real Qoder parent-detection bug for project-level `subagents/` outside `/Users`; fixed in Swift and TypeScript.
+- `gemini`: found whitespace-only transcript messages still leaking through MCP/export and blank assistant tool-call stats being skipped; both fixed.
+- `claude`: found plain blank assistant messages inflating assistant counts, noop cost-row model refresh regression, and worktree name leaking into the generated Xcode project; all fixed.
+- `cmd` and `minimax`: remaining claims were either covered by tests or intentional product behavior.
+- `agy`: completed read-only exploration without a final actionable finding.
+
+The final verification pass after absorbing Round 2 issues is the command set above.

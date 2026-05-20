@@ -76,4 +76,12 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertTrue(html.contains("message limit"))
         XCTAssertTrue(html.contains("message system transcript-error"))
     }
+
+    func testTranscriptDisplayFiltersToolMessagesLikeSwiftApp() {
+        XCTAssertTrue(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .user, content: "hello")))
+        XCTAssertTrue(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .assistant, content: "done")))
+        XCTAssertFalse(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .tool, content: "tool output")))
+        XCTAssertFalse(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .system, content: "system")))
+        XCTAssertFalse(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .assistant, content: "   ")))
+    }
 }

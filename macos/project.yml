@@ -259,6 +259,8 @@ targets:
         buildPhase: resources
     dependencies:
       - target: EngramMCP
+      - package: GRDB
+        product: GRDB
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES

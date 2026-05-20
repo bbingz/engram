@@ -128,17 +128,23 @@ public final class SwiftIndexer {
             }
 
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { continue }
+            if message.role == .tool {
+                guard !content.isEmpty else { continue }
+                stats.toolCount += 1
+                continue
+            }
             guard message.role == .user || message.role == .assistant else { continue }
             if message.role == .user, Self.isSystemInjection(content) { continue }
 
-            stats.indexedMessageCount += 1
-            if message.role == .assistant {
+            let hasToolCalls = !(message.toolCalls ?? []).isEmpty
+            if message.role == .assistant, !content.isEmpty || hasToolCalls {
                 stats.assistantCount += 1
             }
-            if message.role == .tool || !(message.toolCalls ?? []).isEmpty {
+            if hasToolCalls {
                 stats.toolCount += 1
             }
+            guard !content.isEmpty else { continue }
+            stats.indexedMessageCount += 1
             if message.role == .user, stats.firstUserMessages.count < 3 {
                 stats.firstUserMessages.append(message.content)
             }

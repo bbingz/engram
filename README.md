@@ -67,7 +67,7 @@ Engram 的产品解析路径在 Swift 侧：`macos/Shared/EngramCore/Adapters/So
 
 会话详情只把 `user` / `assistant` 消息作为可见正文展示；tool/event/system-like 数据用于索引、工具统计或诊断，不作为普通对话气泡混入正文。历史 HTTP/API reference 视图也遵循同一可见消息规则，因此分页 offset 按可见消息计算，而不是按原始日志行数计算。
 
-Antigravity CLI、Command Code、Qoder 是重点覆盖来源。发布前的 parser/parity smoke：
+Antigravity CLI、Command Code、Qoder 是重点覆盖来源。Antigravity CLI 使用 `~/.gemini/antigravity-cli/brain/` 下的 CLI transcript，并兼容旧 gRPC cache；Qoder 覆盖顶层 session 与 nested `subagents/` 父子关系；Command Code 覆盖 `tool-call` 的 `input` / `args` 形态。发布前的 parser/parity smoke：
 
 ```bash
 npm run check:adapter-parity-fixtures
@@ -76,7 +76,9 @@ xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destina
 xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' -only-testing:EngramTests/MessageParserTests
 ```
 
-当前 fixture/parity gate 覆盖 15 个独立产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax 和 Lobster AI 作为 Claude-compatible derived sources 走 Claude Code parser，但会以独立 source 写入索引；Swift/Node 回归测试覆盖该派生分类。HTTP transcript 视图和 Swift App transcript 视图都消费 Swift adapters 产出的同一套消息模型，并共享 `SystemMessageClassifier` 处理系统提示、子 agent 通知、命令回显等显示分类；provider parser parity 由 `tests/fixtures/adapter-parity/**` 约束，display classification parity 由 `test-fixtures/transcript-display/system-classification-cases.json` 同时驱动 TS/Swift 测试。如果出现同一会话在两端解析或显示不同，先补对应 fixture，再改共享分类器或 adapter 逻辑。
+当前 fixture/parity gate 覆盖 15 个独立产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax 和 Lobster AI 作为 Claude-compatible derived sources 走 Claude Code parser，但会以独立 source 写入索引；Swift/Node 回归测试覆盖该派生分类。Swift App、Swift MCP、Swift Service export、Swift HTTP transcript endpoint 都只展示非空 `user` / `assistant` 可见正文；tool/system/event-like 行保留给索引、工具统计和诊断，不混入普通对话气泡。provider parser parity 由 `tests/fixtures/adapter-parity/**` 约束；HTTP/Swift/MCP/export 的可见消息一致性由 Swift service/core 测试覆盖。如果出现同一会话在两端解析或显示不同，先补对应 fixture，再改 adapter 或可见消息过滤逻辑。
+
+最近一次完整 provider/parser ship 记录见 [`docs/verification/provider-parser-parity-2026-05-20.md`](docs/verification/provider-parser-parity-2026-05-20.md)，其中包含两轮 Polycli review 与最终验证命令。
 
 ## 快速上手
 

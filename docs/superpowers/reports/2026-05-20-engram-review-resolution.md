@@ -34,7 +34,15 @@ Status: all 27 findings from the review report are resolved in the current remed
 | 24 | Documentation stale | README, `docs/mcp-swift.md`, and `docs/swift-single-stack/daemon-client-map.md` now describe Swift service/Unix socket reality, unsupported sync, and drift-free test commands. |
 | 25 | Localized UI paths bypass string catalogs | Menu titles use `String(localized:)` / `Screen.localizedTitle`; AI settings statuses use enum-backed localized state models; scan tests cover both. |
 | 26 | Project Alias Settings UI promise | Resolved by removing the App UI promise from README and documenting current MCP/Web API paths. |
-| 27 | HTTP transcript rendering diverges from Swift | Web transcript tests classify `<subagent_notification>` as agent communication; Swift service HTTP renders parser failures inline instead of blank HTTP 500; provider parser parity docs require shared model alignment. |
+| 27 | HTTP transcript rendering diverges from Swift | Swift HTTP transcript, Swift App/MCP/export paths now share the same visible-message contract: only non-empty `user` / `assistant` transcript body rows are returned. Tests cover Command Code tool rows, whitespace-only assistant rows, and Antigravity legacy-source reads. |
+
+## Provider Parser Final Pass
+
+Antigravity CLI, Command Code, and Qoder received the final focused provider pass. Antigravity CLI is covered as the new provider under `~/.gemini/antigravity-cli/brain/` with legacy `antigravity-legacy` source mapping. Command Code covers both `tool-call.input` and `tool-call.args`. Qoder covers nested subagent parent detection while avoiding false parent IDs for project-level `subagents/` folders.
+
+HTTP/API display was checked against Swift behavior: Swift HTTP transcript endpoints, MCP `get_session`, export, and the App-facing parser all filter to non-empty `user` / `assistant` visible transcript messages. Tool/event/system-like rows remain available for indexing and diagnostics, but do not render as normal transcript content.
+
+Two Polycli review rounds were run. The second round produced three actionable fixes after the initial implementation: Qoder parent detection outside `/Users`, blank/whitespace transcript filtering in MCP/export, and blank assistant indexing stats/noop cost metadata refresh. These fixes are covered by new Swift and TypeScript regressions.
 
 ## Verification Commands
 
@@ -48,17 +56,19 @@ npm test -- tests/core/db/parent-link-repo.test.ts tests/core/live-sessions.test
 npm audit --json
 ```
 
-The final shipping pass on `main` also ran:
+The final shipping pass on the remediation branch also ran:
 
 ```bash
 bash -n macos/scripts/build-release.sh
 npm run typecheck:test
 npm run knip
 npm run check:adapter-parity-fixtures
+npm test -- tests/adapters/antigravity.test.ts tests/adapters/commandcode.test.ts tests/adapters/qoder.test.ts tests/scripts/stage2-fixture-generators.test.ts tests/web/api.test.ts tests/web/server.test.ts
 npm test
 npm run build
 xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destination 'platform=macOS' -only-testing:EngramCoreTests/AdapterParityTests CODE_SIGNING_ALLOWED=NO -derivedDataPath /tmp/engram-dd-provider-core-round1fix
 xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests -destination 'platform=macOS' -only-testing:EngramMCPTests/EngramMCPExecutableTests/testSourceSchemasCoverEveryKnownProvider CODE_SIGNING_ALLOWED=NO -derivedDataPath /tmp/engram-dd-mcp-source-schema-round1fix
+xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore -destination 'platform=macOS' -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionFiltersToolMessagesLikeSwiftDisplay -only-testing:EngramServiceCoreTests/EngramWebUIServerTests/testTranscriptDisplayFiltersToolMessagesLikeSwiftApp CODE_SIGNING_ALLOWED=NO -derivedDataPath /tmp/engram-dd-final-service
 macos/scripts/build-release.sh
 ```
 

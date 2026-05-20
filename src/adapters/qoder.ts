@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
 import type {
@@ -43,17 +43,10 @@ export class QoderAdapter implements SessionAdapter {
           if (entry.isFile() && entry.name.endsWith('.jsonl')) {
             yield join(projectPath, entry.name);
           } else if (entry.isDirectory()) {
-            const subagentsPath = join(projectPath, entry.name, 'subagents');
-            try {
-              const subFiles = await readdir(subagentsPath);
-              for (const file of subFiles) {
-                if (file.endsWith('.jsonl')) yield join(subagentsPath, file);
-              }
-            } catch {
-              /* no subagents dir */
-            }
+            yield* this.subagentFiles(join(projectPath, entry.name));
           }
         }
+        yield* this.subagentFiles(projectPath);
       }
     } catch {
       /* projectsRoot does not exist */
@@ -268,6 +261,21 @@ export class QoderAdapter implements SessionAdapter {
   }
 
   private parentSessionId(filePath: string): string | undefined {
-    return filePath.match(/\/([^/]+)\/subagents\/[^/]+\.jsonl$/)?.[1];
+    const parts = relative(this.projectsRoot, filePath).split(sep);
+    const subagentsIndex = parts.indexOf('subagents');
+    if (subagentsIndex < 2) return undefined;
+    return parts[subagentsIndex - 1];
+  }
+
+  private async *subagentFiles(containerPath: string): AsyncGenerator<string> {
+    const subagentsPath = join(containerPath, 'subagents');
+    try {
+      const subFiles = await readdir(subagentsPath);
+      for (const file of subFiles) {
+        if (file.endsWith('.jsonl')) yield join(subagentsPath, file);
+      }
+    } catch {
+      /* no subagents dir */
+    }
   }
 }

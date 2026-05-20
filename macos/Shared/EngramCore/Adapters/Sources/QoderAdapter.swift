@@ -29,14 +29,9 @@ final class QoderAdapter: SessionAdapter {
                     locators.append(entryURL.path)
                     continue
                 }
-                let subagentsURL = entryURL.appendingPathComponent("subagents")
-                guard JSONLAdapterSupport.isDirectory(subagentsURL) else { continue }
-                for subagentURL in JSONLAdapterSupport.directChildren(of: subagentsURL)
-                    where subagentURL.pathExtension == "jsonl"
-                {
-                    locators.append(subagentURL.path)
-                }
+                locators.append(contentsOf: subagentLocators(in: entryURL))
             }
+            locators.append(contentsOf: subagentLocators(in: projectURL))
         }
         return locators.sorted()
     }
@@ -127,7 +122,7 @@ final class QoderAdapter: SessionAdapter {
                     summaryMessageCount: nil,
                     tier: nil,
                     qualityScore: nil,
-                    parentSessionId: isSubagent ? Self.parentSessionId(from: locator) : nil,
+                    parentSessionId: isSubagent ? parentSessionId(for: locator) : nil,
                     suggestedParentId: nil
                 )
             )
@@ -227,11 +222,22 @@ final class QoderAdapter: SessionAdapter {
         return calls.isEmpty ? nil : calls
     }
 
-    private static func parentSessionId(from locator: String) -> String? {
-        let parts = locator.split(separator: "/").map(String.init)
+    private func parentSessionId(for locator: String) -> String? {
+        let rootComponents = projectsRoot.standardizedFileURL.pathComponents
+        let locatorComponents = URL(fileURLWithPath: locator).standardizedFileURL.pathComponents
+        guard locatorComponents.starts(with: rootComponents) else { return nil }
+        let parts = Array(locatorComponents.dropFirst(rootComponents.count))
         guard let subagentsIndex = parts.firstIndex(of: "subagents"),
-              subagentsIndex > 0
+              subagentsIndex >= 2
         else { return nil }
         return parts[subagentsIndex - 1]
+    }
+
+    private func subagentLocators(in url: URL) -> [String] {
+        let subagentsURL = url.appendingPathComponent("subagents")
+        guard JSONLAdapterSupport.isDirectory(subagentsURL) else { return [] }
+        return JSONLAdapterSupport.directChildren(of: subagentsURL)
+            .filter { $0.pathExtension == "jsonl" }
+            .map(\.path)
     }
 }

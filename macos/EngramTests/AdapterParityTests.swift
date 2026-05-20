@@ -214,6 +214,53 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(messages.flatMap { $0.toolCalls ?? [] }.first?.name, "Read")
     }
 
+    func testQoderAdapterListsSubagentSessions() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qoder-subagents-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("-Users-test-my-project", isDirectory: true)
+        let parent = project.appendingPathComponent("qoder-parent-session", isDirectory: true)
+        let subagents = parent.appendingPathComponent("subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = subagents.appendingPathComponent("qoder-subagent.jsonl")
+        try Data(contentsOf: fixtureRoot.deletingLastPathComponent().appendingPathComponent("qoder/sample.jsonl"))
+            .write(to: locator)
+
+        let adapter = QoderAdapter(projectsRoot: root.path)
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(locators, [standardizedPath(locator.path)])
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("qoder subagent fixture did not parse")
+        }
+
+        XCTAssertEqual(info.agentRole, "subagent")
+        XCTAssertEqual(info.parentSessionId, "qoder-parent-session")
+    }
+
+    func testQoderDirectProjectSubagentFolderDoesNotInventParentSession() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qoder-direct-subagents-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("-Volumes-work-my-project", isDirectory: true)
+        let subagents = project.appendingPathComponent("subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = subagents.appendingPathComponent("qoder-subagent.jsonl")
+        try Data(contentsOf: fixtureRoot.deletingLastPathComponent().appendingPathComponent("qoder/sample.jsonl"))
+            .write(to: locator)
+
+        let adapter = QoderAdapter(projectsRoot: root.path)
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(locators, [standardizedPath(locator.path)])
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("qoder direct subagent fixture did not parse")
+        }
+
+        XCTAssertEqual(info.agentRole, "subagent")
+        XCTAssertNil(info.parentSessionId)
+    }
+
     func testCommandCodeAdapterParsesRoleContentJsonl() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("commandcode-adapter-\(UUID().uuidString)", isDirectory: true)
@@ -252,6 +299,28 @@ final class AdapterParityTests: XCTestCase {
         }
         XCTAssertEqual(messages.map(\.role), [.user, .assistant, .tool])
         XCTAssertEqual(messages.flatMap { $0.toolCalls ?? [] }.first?.name, "read_file")
+        XCTAssertTrue(messages.flatMap { $0.toolCalls ?? [] }.first?.input?.contains(#""path":"/Users/test/my-project/src/parser.ts""#) ?? false)
+    }
+
+    func testCommandCodeAdapterAcceptsArgsForToolCallInput() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("commandcode-args-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("-Users-test-my-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = project.appendingPathComponent("commandcode-session.jsonl")
+        try """
+        {"id":"msg-001","sessionId":"commandcode-session-args","role":"assistant","content":[{"type":"tool-call","toolName":"read_file","args":{"path":"/tmp/file.txt"}}],"timestamp":"2026-05-20T02:00:01.000Z"}
+        """.write(to: locator, atomically: true, encoding: .utf8)
+
+        let adapter = CommandCodeAdapter(projectsRoot: root.path)
+        var messages: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(locator: locator.path, options: StreamMessagesOptions()) {
+            messages.append(message)
+        }
+
+        XCTAssertEqual(messages.flatMap { $0.toolCalls ?? [] }.first?.input, #"{"path":"/tmp/file.txt"}"#)
     }
 
     func testAntigravityAdapterListsAndParsesCliBrainTranscripts() async throws {
@@ -292,6 +361,64 @@ final class AdapterParityTests: XCTestCase {
         }
         XCTAssertEqual(messages.map(\.role), [.user, .assistant, .tool, .assistant])
         XCTAssertEqual(messages.flatMap { $0.toolCalls ?? [] }.first?.name, "Read")
+    }
+
+    func testAntigravityCliIgnoresUnknownContentEvents() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("antigravity-cli-unknown-\(UUID().uuidString)", isDirectory: true)
+        let transcriptDir = root.appendingPathComponent("brain/ag-cli-session/.system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: transcriptDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = transcriptDir.appendingPathComponent("transcript.jsonl")
+        try """
+        {"type":"USER_INPUT","created_at":"2026-05-20T03:00:00Z","content":"Review the parser"}
+        {"type":"MEMORY_NOTE","created_at":"2026-05-20T03:00:01Z","content":"internal memory"}
+        {"type":"PLANNER_RESPONSE","created_at":"2026-05-20T03:00:02Z","content":"Done."}
+        """.write(to: locator, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            daemonDir: root.appendingPathComponent("missing-daemon").path,
+            cacheDir: root.appendingPathComponent("missing-cache").path,
+            conversationsDir: root.appendingPathComponent("missing-conversations").path,
+            cliBrainDir: root.appendingPathComponent("brain").path,
+            enableLiveSync: false
+        )
+
+        var messages: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(locator: locator.path, options: StreamMessagesOptions()) {
+            messages.append(message)
+        }
+
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant])
+        XCTAssertFalse(messages.contains { $0.content == "internal memory" })
+    }
+
+    func testAntigravityCliSessionIdUsesTranscriptContainerOutsideConfiguredRoot() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("antigravity-cli-external-\(UUID().uuidString)", isDirectory: true)
+        let transcriptDir = root.appendingPathComponent(".gemini/antigravity-cli/brain/ag-external/.system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: transcriptDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = transcriptDir.appendingPathComponent("transcript.jsonl")
+        try """
+        {"type":"USER_INPUT","created_at":"2026-05-20T03:00:00Z","content":"Review the parser"}
+        {"type":"PLANNER_RESPONSE","created_at":"2026-05-20T03:00:01Z","content":"Done."}
+        """.write(to: locator, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            daemonDir: root.appendingPathComponent("missing-daemon").path,
+            cacheDir: root.appendingPathComponent("missing-cache").path,
+            conversationsDir: root.appendingPathComponent("missing-conversations").path,
+            cliBrainDir: root.appendingPathComponent("different-brain-root").path,
+            enableLiveSync: false
+        )
+        guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
+            return XCTFail("external antigravity cli fixture did not parse")
+        }
+
+        XCTAssertEqual(info.id, "ag-external")
     }
 
     func testCodexAdapterListsArchivedSessionsNextToSessionsRoot() async throws {

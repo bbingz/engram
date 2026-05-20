@@ -215,7 +215,7 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
-    func testSessionSnapshotWriterRefreshesSessionToolsOnNoopSnapshots() throws {
+    func testSessionSnapshotWriterPreservesSessionToolsOnEmptyNoopSnapshots() throws {
         try writer.write { db in
             let snapshotWriter = SessionSnapshotWriter(db: db)
             _ = try snapshotWriter.writeAuthoritativeSnapshot(
@@ -230,8 +230,59 @@ final class IndexerParityTests: XCTestCase {
 
             XCTAssertEqual(noop.action, .noop)
             XCTAssertEqual(
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_tools WHERE session_id = 'tool-refresh'"),
-                0
+                try Int.fetchOne(db, sql: "SELECT call_count FROM session_tools WHERE session_id = 'tool-refresh' AND tool_name = 'read_file'"),
+                1
+            )
+        }
+    }
+
+    func testSessionSnapshotWriterCanRefreshNonEmptyNoopSessionTools() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "tool-refresh-non-empty", toolCallCounts: ["read_file": 1])
+            )
+
+            let noop = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "tool-refresh-non-empty", toolCallCounts: ["write_file": 2])
+            )
+
+            XCTAssertEqual(noop.action, .noop)
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT tool_name || ':' || call_count FROM session_tools WHERE session_id = 'tool-refresh-non-empty' ORDER BY tool_name"),
+                ["write_file:2"]
+            )
+        }
+    }
+
+    func testSessionSnapshotWriterKeepsNilModelAsNullInZeroCostRows() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "nil-model", model: nil))
+
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT model FROM session_costs WHERE session_id = 'nil-model'"))
+        }
+    }
+
+    func testSessionSnapshotWriterRefreshesNoopCostModelWithoutClearingExistingModel() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "noop-model", model: nil))
+
+            let modelUpdate = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "noop-model", model: "claude-opus"))
+
+            XCTAssertEqual(modelUpdate.action, .noop)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT model FROM session_costs WHERE session_id = 'noop-model'"),
+                "claude-opus"
+            )
+
+            let nilUpdate = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "noop-model", model: nil))
+
+            XCTAssertEqual(nilUpdate.action, .noop)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT model FROM session_costs WHERE session_id = 'noop-model'"),
+                "claude-opus"
             )
         }
     }
@@ -358,7 +409,45 @@ final class IndexerParityTests: XCTestCase {
         let snapshots = try await indexer.collectSnapshots()
 
         XCTAssertEqual(snapshots.count, 1)
-        XCTAssertEqual(snapshots.first?.tier, .skip)
+        XCTAssertEqual(snapshots.first?.tier, .lite)
+    }
+
+    func testToolRoleMessagesContributeToTierStats() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [ToolRoleSyntheticSessionAdapter()]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.first?.tier, .normal)
+        XCTAssertEqual(snapshots.first?.summaryMessageCount, 2)
+    }
+
+    func testAssistantToolCallsWithBlankContentContributeToTierStats() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [BlankAssistantToolCallSyntheticSessionAdapter()]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.first?.tier, .normal)
+        XCTAssertEqual(snapshots.first?.summaryMessageCount, 2)
+        XCTAssertEqual(snapshots.first?.toolCallCounts, ["Read": 1])
+    }
+
+    func testBlankAssistantWithoutToolCallsDoesNotContributeToTierStats() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [BlankAssistantNoToolCallSyntheticSessionAdapter()]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.first?.tier, .lite)
+        XCTAssertEqual(snapshots.first?.summaryMessageCount, 1)
+        XCTAssertEqual(snapshots.first?.toolCallCounts, [:])
     }
 
     func testProviderReviewProbeSessionsAreSkipped() async throws {
@@ -563,7 +652,8 @@ final class IndexerParityTests: XCTestCase {
         sizeBytes: Int64 = 128,
         summary: String = "hello",
         tier: SessionTier = .normal,
-        toolCallCounts: [String: Int] = [:]
+        toolCallCounts: [String: Int] = [:],
+        model: String? = "openai"
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
             id: id,
@@ -578,7 +668,7 @@ final class IndexerParityTests: XCTestCase {
             endTime: nil,
             cwd: "/repo",
             project: nil,
-            model: "openai",
+            model: model,
             messageCount: 2,
             userMessageCount: 1,
             assistantMessageCount: 1,
@@ -689,6 +779,155 @@ private struct NoopIndexingWriteSink: IndexingWriteSink {
         reason: IndexingWriteReason
     ) throws -> SessionBatchUpsertResult {
         SessionBatchUpsertResult(reason: reason, results: [])
+    }
+}
+
+private final class ToolRoleSyntheticSessionAdapter: SessionAdapter {
+    let source: SourceName = .codex
+
+    func detect() async -> Bool {
+        true
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        ["synthetic://tool-role"]
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .success(
+            NormalizedSessionInfo(
+                id: "synthetic-tool-role",
+                source: .codex,
+                startTime: "2026-04-24T00:00:00Z",
+                cwd: "/repo",
+                model: "synthetic",
+                messageCount: 3,
+                userMessageCount: 1,
+                assistantMessageCount: 1,
+                toolMessageCount: 1,
+                systemMessageCount: 0,
+                summary: "real work",
+                filePath: locator,
+                sizeBytes: 128
+            )
+        )
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "real work"))
+            continuation.yield(NormalizedMessage(role: .tool, content: "tool output"))
+            continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        true
+    }
+}
+
+private final class BlankAssistantToolCallSyntheticSessionAdapter: SessionAdapter {
+    let source: SourceName = .codex
+
+    func detect() async -> Bool {
+        true
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        ["synthetic://blank-assistant-tool-call"]
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .success(
+            NormalizedSessionInfo(
+                id: "synthetic-blank-assistant-tool-call",
+                source: .codex,
+                startTime: "2026-04-24T00:00:00Z",
+                cwd: "/repo",
+                model: "synthetic",
+                messageCount: 3,
+                userMessageCount: 1,
+                assistantMessageCount: 2,
+                toolMessageCount: 0,
+                systemMessageCount: 0,
+                summary: "real work",
+                filePath: locator,
+                sizeBytes: 128
+            )
+        )
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "real work"))
+            continuation.yield(
+                NormalizedMessage(
+                    role: .assistant,
+                    content: "   ",
+                    toolCalls: [NormalizedToolCall(name: "Read")]
+                )
+            )
+            continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        true
+    }
+}
+
+private final class BlankAssistantNoToolCallSyntheticSessionAdapter: SessionAdapter {
+    let source: SourceName = .codex
+
+    func detect() async -> Bool {
+        true
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        ["synthetic://blank-assistant-no-tool-call"]
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .success(
+            NormalizedSessionInfo(
+                id: "synthetic-blank-assistant-no-tool-call",
+                source: .codex,
+                startTime: "2026-04-24T00:00:00Z",
+                cwd: "/repo",
+                model: "synthetic",
+                messageCount: 2,
+                userMessageCount: 1,
+                assistantMessageCount: 1,
+                toolMessageCount: 0,
+                systemMessageCount: 0,
+                summary: "real work",
+                filePath: locator,
+                sizeBytes: 128
+            )
+        )
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "real work"))
+            continuation.yield(NormalizedMessage(role: .assistant, content: "   "))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        true
     }
 }
 

@@ -301,7 +301,7 @@ final class AntigravityAdapter: SessionAdapter {
 
             let id = cliSessionId(from: locator)
             guard !id.isEmpty, userCount + assistantCount + toolCount > 0 else {
-                return .failure(.unsupportedVirtualLocator)
+                return .failure(.malformedJSON)
             }
 
             return .success(
@@ -356,9 +356,11 @@ final class AntigravityAdapter: SessionAdapter {
                 toolCalls: toolCalls.isEmpty ? nil : toolCalls,
                 usage: nil
             )
-        default:
+        case "VIEW_FILE", "TOOL_OUTPUT", "COMMAND_OUTPUT", "SHELL_OUTPUT", "APPLY_PATCH":
             guard !content.isEmpty else { return nil }
             return NormalizedMessage(role: .tool, content: content, timestamp: timestamp)
+        default:
+            return nil
         }
     }
 
@@ -384,6 +386,14 @@ final class AntigravityAdapter: SessionAdapter {
             let first = relative.split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
             if !first.hasSuffix(".jsonl") {
                 return first
+            }
+        }
+
+        if path.hasSuffix("/.system_generated/logs/transcript.jsonl") {
+            let logs = URL(fileURLWithPath: path).deletingLastPathComponent()
+            let systemGenerated = logs.deletingLastPathComponent()
+            if systemGenerated.lastPathComponent == ".system_generated" {
+                return systemGenerated.deletingLastPathComponent().lastPathComponent
             }
         }
 

@@ -184,7 +184,7 @@ final class EngramWebUIServer: @unchecked Sendable {
             options: StreamMessagesOptions(offset: offset, limit: limit + 1)
         )
         var messages: [NormalizedMessage] = []
-        for try await message in stream where !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        for try await message in stream where Self.shouldDisplayTranscriptMessage(message) {
             messages.append(message)
         }
         let hasMore = messages.count > limit
@@ -192,6 +192,11 @@ final class EngramWebUIServer: @unchecked Sendable {
             messages.removeLast(messages.count - limit)
         }
         return (messages, hasMore, offset + messages.count)
+    }
+
+    static func shouldDisplayTranscriptMessage(_ message: NormalizedMessage) -> Bool {
+        guard message.role == .user || message.role == .assistant else { return false }
+        return !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     static func renderMessageHTML(_ message: NormalizedMessage, source: String) -> String {

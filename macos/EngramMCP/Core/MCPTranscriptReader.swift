@@ -29,7 +29,7 @@ enum MCPTranscriptReader {
     }
 
     private static func readWithAdapterRegistry(filePath: String, source: String) -> [MCPTranscriptMessage]? {
-        guard let sourceName = SourceName(rawValue: source),
+        guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
             return nil
@@ -50,8 +50,8 @@ enum MCPTranscriptReader {
                 )
                 var messages: [MCPTranscriptMessage] = []
                 for try await message in stream {
-                    guard message.role == .user || message.role == .assistant || message.role == .tool,
-                          !message.content.isEmpty
+                    guard message.role == .user || message.role == .assistant,
+                          !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     else {
                         continue
                     }
@@ -73,6 +73,11 @@ enum MCPTranscriptReader {
         return box.messages
     }
 
+    private static func adapterSourceName(for source: String) -> SourceName? {
+        if source == "antigravity-legacy" { return .antigravity }
+        return SourceName(rawValue: source)
+    }
+
     private static func parseTypeMessageFormat(filePath: String) -> [MCPTranscriptMessage] {
         readJSONLines(filePath: filePath).compactMap { obj in
             guard
@@ -86,7 +91,7 @@ enum MCPTranscriptReader {
             if content.isEmpty {
                 content = extractPartsContent(message["parts"])
             }
-            guard !content.isEmpty else { return nil }
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return MCPTranscriptMessage(
                 role: type,
                 content: content,
@@ -101,7 +106,7 @@ enum MCPTranscriptReader {
                 let role = obj["role"] as? String,
                 (role == "user" || role == "assistant"),
                 let content = obj["content"] as? String,
-                !content.isEmpty
+                !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else {
                 return nil
             }
@@ -127,7 +132,7 @@ enum MCPTranscriptReader {
             }
 
             let content = extractTextArray(payload["content"])
-            guard !content.isEmpty else { return nil }
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
             return MCPTranscriptMessage(
                 role: role,
@@ -166,7 +171,7 @@ enum MCPTranscriptReader {
             } else {
                 return nil
             }
-            guard !content.isEmpty else { return nil }
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
             return MCPTranscriptMessage(
                 role: role,
@@ -180,12 +185,12 @@ enum MCPTranscriptReader {
         readJSONLines(filePath: filePath).compactMap { obj in
             guard
                 let role = obj["role"] as? String,
-                role == "user" || role == "assistant" || role == "tool"
+                role == "user" || role == "assistant"
             else {
                 return nil
             }
             let content = extractCommandCodeContent(obj["content"])
-            guard !content.isEmpty else { return nil }
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             let timestamp = (obj["timestamp"] as? String)
                 ?? ((obj["metadata"] as? [String: Any])?["timestamp"] as? String)
             return MCPTranscriptMessage(role: role, content: content, timestamp: timestamp)

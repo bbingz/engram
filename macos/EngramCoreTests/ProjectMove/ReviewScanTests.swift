@@ -18,6 +18,7 @@ final class ReviewScanTests: XCTestCase {
             ".gemini/tmp",
             ".local/share/opencode",
             ".gemini/antigravity-cli/brain",
+            ".gemini/antigravity",
             ".copilot",
         ]
         for sub in dirs {
@@ -85,6 +86,22 @@ final class ReviewScanTests: XCTestCase {
             homeDirectory: tmpHome
         )
         XCTAssertTrue(r.own.contains(codexFile.path))
+        XCTAssertEqual(r.other, [])
+    }
+
+    func testAntigravityLegacyHitsCountAsOwn() throws {
+        let legacyFile = tmpHome.appendingPathComponent(
+            ".gemini/antigravity/conversations/legacy.jsonl"
+        )
+        try write("{\"cwd\":\"/old/path\"}", to: legacyFile)
+
+        let r = ReviewScan.run(
+            oldPath: "/old/path",
+            newPath: "/Users/bing/-Code-/engram",
+            homeDirectory: tmpHome
+        )
+
+        XCTAssertTrue(r.own.contains(legacyFile.path))
         XCTAssertEqual(r.other, [])
     }
 

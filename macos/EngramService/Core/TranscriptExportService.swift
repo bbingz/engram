@@ -299,7 +299,7 @@ private enum ServiceTranscriptReader {
     }
 
     private static func readWithAdapterRegistry(filePath: String, source: String) -> [ServiceTranscriptMessage]? {
-        guard let sourceName = SourceName(rawValue: source),
+        guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
             return nil
@@ -320,8 +320,8 @@ private enum ServiceTranscriptReader {
                 )
                 var messages: [ServiceTranscriptMessage] = []
                 for try await message in stream {
-                    guard message.role == .user || message.role == .assistant || message.role == .tool,
-                          !message.content.isEmpty
+                    guard message.role == .user || message.role == .assistant,
+                          !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     else {
                         continue
                     }
@@ -343,20 +343,23 @@ private enum ServiceTranscriptReader {
         return box.messages
     }
 
+    private static func adapterSourceName(for source: String) -> SourceName? {
+        if source == "antigravity-legacy" { return .antigravity }
+        return SourceName(rawValue: source)
+    }
+
     private static func parseCommandCodeFormat(filePath: String) -> [ServiceTranscriptMessage] {
         readJSONLines(filePath: filePath).compactMap { object in
             guard let role = object["role"] as? String,
-                  role == "user" || role == "assistant" || role == "tool"
+                  role == "user" || role == "assistant"
             else {
                 return nil
             }
             let timestamp = object["timestamp"] as? String
                 ?? (object["metadata"] as? [String: Any])?["timestamp"] as? String
-            return ServiceTranscriptMessage(
-                role: role,
-                content: commandCodeContent(object["content"]),
-                timestamp: timestamp
-            )
+            let content = commandCodeContent(object["content"])
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return ServiceTranscriptMessage(role: role, content: content, timestamp: timestamp)
         }
     }
 

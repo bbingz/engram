@@ -19,7 +19,9 @@ public final class SessionSnapshotWriter {
         let merge = try mergeSessionSnapshot(current: current, incoming: snapshot)
         guard merge.action == .merge else {
             try upsertZeroCostRow(snapshot)
-            try replaceSessionTools(snapshot)
+            if !snapshot.toolCallCounts.isEmpty {
+                try replaceSessionToolsIfDifferent(snapshot)
+            }
             return SessionWriteResult(action: .noop, changeSet: merge.changeSet)
         }
 
@@ -240,13 +242,38 @@ public final class SessionSnapshotWriter {
             INSERT INTO session_costs(
               session_id, model, input_tokens, output_tokens, cache_read_tokens,
               cache_creation_tokens, cost_usd, computed_at
-            ) VALUES (?, ?, 0, 0, 0, 0, 0, datetime('now'))
+            ) VALUES (?, NULLIF(?, ''), 0, 0, 0, 0, 0, datetime('now'))
             ON CONFLICT(session_id) DO UPDATE SET
-              model = excluded.model,
-              computed_at = excluded.computed_at
+              model = COALESCE(excluded.model, session_costs.model),
+              computed_at = CASE
+                WHEN excluded.model IS NOT NULL AND session_costs.model IS NOT excluded.model
+                THEN excluded.computed_at
+                ELSE session_costs.computed_at
+              END
             """,
             arguments: [snapshot.id, snapshot.model ?? ""]
         )
+    }
+
+    private func replaceSessionToolsIfDifferent(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        let current = try currentToolCallCounts(sessionId: snapshot.id)
+        guard current != snapshot.toolCallCounts else { return }
+        try replaceSessionTools(snapshot)
+    }
+
+    private func currentToolCallCounts(sessionId: String) throws -> [String: Int] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: "SELECT tool_name, call_count FROM session_tools WHERE session_id = ?",
+            arguments: [sessionId]
+        )
+        var counts: [String: Int] = [:]
+        for row in rows {
+            let name: String = row["tool_name"]
+            let count: Int = row["call_count"]
+            counts[name] = count
+        }
+        return counts
     }
 
     private func replaceSessionTools(_ snapshot: AuthoritativeSessionSnapshot) throws {
