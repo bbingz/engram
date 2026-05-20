@@ -318,8 +318,9 @@ final class MessageParserTests: XCTestCase {
 
     func testClassifySystemMatchesSharedTranscriptDisplayFixtures() throws {
         guard let path = Bundle(for: type(of: self)).path(
-            forResource: "test-fixtures/transcript-display/system-classification-cases",
-            ofType: "json"
+            forResource: "system-classification-cases",
+            ofType: "json",
+            inDirectory: "test-fixtures/transcript-display"
         ) else {
             return XCTFail("missing shared transcript display classification fixture")
         }

@@ -18,6 +18,12 @@
     "category": "systemPrompt"
   },
   {
+    "name": "bare-system-message-wrapper",
+    "source": "antigravity",
+    "content": "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-05-20T00:02:44Z priority=MESSAGE_PRIORITY_HIGH\ncontent=Task finished with result.\n</SYSTEM_MESSAGE>",
+    "category": "systemPrompt"
+  },
+  {
     "name": "system-message-mentioned-in-normal-text",
     "source": "codex",
     "content": "Can you explain why Antigravity wraps tasks in a <SYSTEM_MESSAGE> block?",

@@ -61,12 +61,12 @@ Results:
 
 - `npm run check:adapter-parity-fixtures`: passed, `adapter parity fixtures ok`.
 - Targeted Antigravity/Qoder/Command Code parser + fixture tests: passed, 5 files, 36 tests.
-- HTTP transcript display parity tests: passed, 14 tests.
+- HTTP transcript display parity tests: passed, 16 tests.
 - `npm test -- tests/scripts/stage2-fixture-generators.test.ts`: passed, 6 tests.
 - `npm run typecheck:test`: passed.
 - `npm run build`: passed.
 - `npm run knip`: passed.
-- `npm test`: passed, 120 files, 1338 tests.
+- `npm test`: passed, 120 files, 1340 tests.
 - `npm audit --json`: passed, 0 vulnerabilities.
 - Swift adapter parity: passed, 1 selected test, 0 failures.
 - Swift `AdapterParityTests`: passed, 15 selected tests, 0 failures.
@@ -81,3 +81,14 @@ When adding or changing any provider parser:
 3. Add or update the TypeScript adapter regression test.
 4. Add or update Swift adapter parity coverage before shipping.
 5. If transcript display rules change, update `test-fixtures/transcript-display/system-classification-cases.json` and keep the HTTP and Swift tests green.
+
+## Polycli Review
+
+Two Polycli review rounds were run against the provider/parser parity changes. The final healthy provider set was `gemini`, `claude`, `copilot`, and `cmd`; `kimi`, `qwen`, `minimax`, `opencode`, and `pi` were unavailable due to health-check failures, timeout, quota, or missing binary.
+
+Round 2 results:
+
+- `copilot`: CLEAN.
+- `cmd`: no issues found.
+- `claude`: CLEAN; suggested adding bare `<SYSTEM_MESSAGE>` display coverage, which is now covered by the shared fixture.
+- `gemini`: flagged Swift fixture lookup path as risky; the test already passed, but the lookup now uses explicit `inDirectory:` to make the resource path stable.
