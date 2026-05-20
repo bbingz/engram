@@ -112,6 +112,76 @@ function validationError(name: string, message: string): ErrorEnvelope {
   return { error: { name, message, retry_policy: 'never' } };
 }
 
+type IntegerParamResult =
+  | { ok: true; value: number }
+  | { ok: false; error: string };
+
+type OptionalIntegerParamResult =
+  | { ok: true; value: number | undefined }
+  | { ok: false; error: string };
+
+function parsePositiveInteger(
+  name: string,
+  raw: string | undefined,
+): IntegerParamResult {
+  if (raw === undefined || !/^\d+$/.test(raw)) {
+    return { ok: false, error: `${name} must be a positive integer` };
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    return { ok: false, error: `${name} must be a positive integer` };
+  }
+  return { ok: true, value };
+}
+
+function parseNonNegativeInteger(
+  name: string,
+  raw: string | undefined,
+): IntegerParamResult {
+  if (raw === undefined || !/^\d+$/.test(raw)) {
+    return { ok: false, error: `${name} must be a non-negative integer` };
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    return { ok: false, error: `${name} must be a non-negative integer` };
+  }
+  return { ok: true, value };
+}
+
+export function parseOptionalPositiveIntParam(
+  name: string,
+  raw: string | undefined,
+  max: number,
+): OptionalIntegerParamResult {
+  if (raw === undefined) return { ok: true, value: undefined };
+  const parsed = parsePositiveInteger(name, raw);
+  if (!parsed.ok) return parsed;
+  return { ok: true, value: Math.min(parsed.value, max) };
+}
+
+export function parsePaginationParams(
+  rawOffset: string | undefined,
+  rawLimit: string | undefined,
+  defaultLimit: number,
+  maxLimit: number,
+): { ok: true; offset: number; limit: number } | { ok: false; error: string } {
+  const offset = rawOffset
+    ? parseNonNegativeInteger('offset', rawOffset)
+    : ({ ok: true, value: 0 } as const);
+  if (!offset.ok) return { ok: false, error: offset.error };
+
+  const limit = rawLimit
+    ? parsePositiveInteger('limit', rawLimit)
+    : ({ ok: true, value: defaultLimit } as const);
+  if (!limit.ok) return { ok: false, error: limit.error };
+
+  return {
+    ok: true,
+    offset: offset.value,
+    limit: Math.min(limit.value, maxLimit),
+  };
+}
+
 /** Normalize a user-supplied path: expand `~`, resolve `..` / `.` segments,
  *  require absolute, and confine to `$HOME` unless the caller explicitly
  *  opts out via settings. Matches the defense-in-depth already present on
@@ -211,25 +281,6 @@ export function createApp(
 
   function resolveAdapter(source: string): SessionAdapter | undefined {
     return opts?.adapters?.find((a) => a.name === source) ?? getAdapter(source);
-  }
-
-  function parsePagination(
-    rawOffset: string | undefined,
-    rawLimit: string | undefined,
-    defaultLimit: number,
-    maxLimit: number,
-  ):
-    | { ok: true; offset: number; limit: number }
-    | { ok: false; error: string } {
-    const offset = rawOffset ? parseInt(rawOffset, 10) : 0;
-    if (Number.isNaN(offset) || offset < 0) {
-      return { ok: false, error: 'offset must be a non-negative integer' };
-    }
-    const requestedLimit = rawLimit ? parseInt(rawLimit, 10) : defaultLimit;
-    if (Number.isNaN(requestedLimit) || requestedLimit < 1) {
-      return { ok: false, error: 'limit must be a positive integer' };
-    }
-    return { ok: true, offset, limit: Math.min(requestedLimit, maxLimit) };
   }
 
   async function readTranscriptPage(
@@ -445,8 +496,8 @@ export function createApp(
     if (!opts?.auditQuery)
       return c.json({ error: 'Audit not configured' }, 501);
     const q = c.req.query();
-    const limit = q.limit ? parseInt(q.limit, 10) : 50;
-    const offset = q.offset ? parseInt(q.offset, 10) : 0;
+    const pagination = parsePaginationParams(q.offset, q.limit, 50, 500);
+    if (!pagination.ok) return c.json({ error: pagination.error }, 400);
     const result = opts.auditQuery.list({
       caller: q.caller || undefined,
       model: q.model || undefined,
@@ -459,16 +510,22 @@ export function createApp(
           : q.hasError === 'false'
             ? false
             : undefined,
-      limit,
-      offset,
+      limit: pagination.limit,
+      offset: pagination.offset,
     });
-    return c.json({ ...result, limit, offset });
+    return c.json({
+      ...result,
+      limit: pagination.limit,
+      offset: pagination.offset,
+    });
   });
 
   app.get('/api/ai/audit/:id', (c) => {
     if (!opts?.auditQuery)
       return c.json({ error: 'Audit not configured' }, 501);
-    const record = opts.auditQuery.get(parseInt(c.req.param('id'), 10));
+    const id = parsePositiveInteger('id', c.req.param('id'));
+    if (!id.ok) return c.json({ error: id.error }, 400);
+    const record = opts.auditQuery.get(id.value);
     if (!record) return c.json({ error: 'not found' }, 404);
     return c.json(record);
   });
@@ -495,7 +552,13 @@ export function createApp(
 
   // Sync: sessions since timestamp
   app.get('/api/sync/sessions', (c) => {
-    const limit = parseInt(c.req.query('limit') ?? '100', 10);
+    const limit = parseOptionalPositiveIntParam(
+      'limit',
+      c.req.query('limit'),
+      500,
+    );
+    if (!limit.ok) return c.json({ error: limit.error }, 400);
+    const resolvedLimit = limit.value ?? 100;
     const cursorIndexedAt = c.req.query('cursor_indexed_at');
     const cursorId = c.req.query('cursor_id');
 
@@ -505,12 +568,12 @@ export function createApp(
     if (cursorIndexedAt && cursorId) {
       sessions = db.listSessionsAfterCursor(
         { indexedAt: cursorIndexedAt, sessionId: cursorId },
-        limit,
+        resolvedLimit,
       );
     } else {
       const since = c.req.query('since');
       if (!since) return c.json({ error: 'since parameter required' }, 400);
-      sessions = db.listSessionsSince(since, limit);
+      sessions = db.listSessionsSince(since, resolvedLimit);
     }
 
     return c.json({ sessions });
@@ -562,22 +625,22 @@ export function createApp(
     const limitParam = c.req.query('limit');
     const offsetParam = c.req.query('offset');
 
-    const limit = Math.min(limitParam ? parseInt(limitParam, 10) : 20, 100);
-    const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
+    const pagination = parsePaginationParams(offsetParam, limitParam, 20, 100);
+    if (!pagination.ok) return c.json({ error: pagination.error }, 400);
 
     const sessions = db.listSessions({
       source,
       project,
       since,
       until,
-      limit,
-      offset,
+      limit: pagination.limit,
+      offset: pagination.offset,
     });
     return c.json({
       sessions,
-      offset,
-      limit,
-      hasMore: sessions.length === limit,
+      offset: pagination.offset,
+      limit: pagination.limit,
+      hasMore: sessions.length === pagination.limit,
     });
   });
 
@@ -594,7 +657,7 @@ export function createApp(
     const session = db.getSession(c.req.param('id'));
     if (!session) return c.json({ error: 'Session not found' }, 404);
 
-    const pagination = parsePagination(
+    const pagination = parsePaginationParams(
       c.req.query('offset'),
       c.req.query('limit'),
       detailPageSize,
@@ -658,9 +721,13 @@ export function createApp(
     const parentId = c.req.param('id');
     const limitParam = c.req.query('limit');
     const offsetParam = c.req.query('offset');
-    const limit = Math.min(limitParam ? parseInt(limitParam, 10) : 20, 100);
-    const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
-    const confirmed = db.childSessions(parentId, limit, offset);
+    const pagination = parsePaginationParams(offsetParam, limitParam, 20, 100);
+    if (!pagination.ok) return c.json({ error: pagination.error }, 400);
+    const confirmed = db.childSessions(
+      parentId,
+      pagination.limit,
+      pagination.offset,
+    );
     const suggested = db.suggestedChildSessions(parentId);
     return c.json({ confirmed, suggested });
   });
@@ -676,13 +743,12 @@ export function createApp(
 
     const limitParam = c.req.query('limit');
     const offsetParam = c.req.query('offset');
-    const limit = limitParam ? parseInt(limitParam, 10) : undefined;
-    if (limit !== undefined && (Number.isNaN(limit) || limit < 1))
-      return c.json({ error: 'limit must be a positive integer' }, 400);
-    const clampedLimit = limit !== undefined ? Math.min(limit, 500) : undefined;
-    const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
-    if (Number.isNaN(offset) || offset < 0)
-      return c.json({ error: 'offset must be a non-negative integer' }, 400);
+    const limit = parseOptionalPositiveIntParam('limit', limitParam, 500);
+    if (!limit.ok) return c.json({ error: limit.error }, 400);
+    const offset = offsetParam
+      ? parseNonNegativeInteger('offset', offsetParam)
+      : ({ ok: true, value: 0 } as const);
+    if (!offset.ok) return c.json({ error: offset.error }, 400);
 
     const entries: Array<{
       index: number;
@@ -698,14 +764,14 @@ export function createApp(
     // When limit is set, collect limit + 1 entries to determine hasMore accurately.
     // If we get limit + 1, pop the last and set hasMore = true.
     const collectTarget =
-      clampedLimit !== undefined ? clampedLimit + 1 : undefined;
+      limit.value !== undefined ? limit.value + 1 : undefined;
 
     try {
       let idx = 0;
       let collected = 0;
       let prevTimestamp: string | undefined;
       for await (const msg of adapter.streamMessages(session.filePath)) {
-        if (idx < offset) {
+        if (idx < offset.value) {
           idx++;
           prevTimestamp = msg.timestamp;
           // NOTE: durationToNextMs for the first entry after offset > 0 will be
@@ -756,7 +822,7 @@ export function createApp(
     }
 
     // If we collected more than the requested limit, there are more entries
-    const hasMore = clampedLimit !== undefined && entries.length > clampedLimit;
+    const hasMore = limit.value !== undefined && entries.length > limit.value;
     if (hasMore) entries.pop();
 
     return c.json({
@@ -764,8 +830,8 @@ export function createApp(
       source: session.source,
       totalEntries: session.messageCount || entries.length,
       entries,
-      ...(offset > 0 ? { offset } : {}),
-      ...(clampedLimit !== undefined ? { limit: clampedLimit, hasMore } : {}),
+      ...(offset.value > 0 ? { offset: offset.value } : {}),
+      ...(limit.value !== undefined ? { limit: limit.value, hasMore } : {}),
     });
   });
 
@@ -815,7 +881,8 @@ export function createApp(
     const project = c.req.query('project');
     const since = c.req.query('since');
     const limitParam = c.req.query('limit');
-    const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+    const limit = parseOptionalPositiveIntParam('limit', limitParam, 100);
+    if (!limit.ok) return c.json({ error: limit.error }, 400);
     const mode = c.req.query('mode') as string | undefined;
     const agents = c.req.query('agents') as 'hide' | undefined;
     const tools = c.req.query('tools') as 'hide' | undefined;
@@ -823,7 +890,16 @@ export function createApp(
     try {
       const result = await handleSearch(
         db,
-        { query: q, source, project, since, limit, mode, agents, tools },
+        {
+          query: q,
+          source,
+          project,
+          since,
+          limit: limit.value,
+          mode,
+          agents,
+          tools,
+        },
         searchDeps,
       );
       return c.json(result);
@@ -856,11 +932,12 @@ export function createApp(
     }
     const q = c.req.query('q') ?? '';
     const limitParam = c.req.query('limit');
-    const limit = limitParam ? parseInt(limitParam, 10) : 10;
+    const limit = parseOptionalPositiveIntParam('limit', limitParam, 100);
+    if (!limit.ok) return c.json({ error: limit.error }, 400);
     try {
       const result = await handleSearch(
         db,
-        { query: q, limit, mode: 'semantic' },
+        { query: q, limit: limit.value ?? 10, mode: 'semantic' },
         searchDeps,
       );
       return c.json(result);
@@ -920,13 +997,16 @@ export function createApp(
   app.get('/api/file-activity', (c) => {
     const project = c.req.query('project');
     const since = c.req.query('since');
-    const limit = c.req.query('limit')
-      ? parseInt(c.req.query('limit')!, 10)
-      : undefined;
+    const limit = parseOptionalPositiveIntParam(
+      'limit',
+      c.req.query('limit'),
+      500,
+    );
+    if (!limit.ok) return c.json({ error: limit.error }, 400);
     const result = db.getFileActivity({
       project: project ?? undefined,
       since: since ?? undefined,
-      limit,
+      limit: limit.value,
     });
     return c.json({ files: result, totalFiles: result.length });
   });
@@ -1790,14 +1870,14 @@ export function createApp(
         : agentsParam === 'only'
           ? 'only'
           : 'hide'; // default: hide agents
-    const limit = Math.min(limitParam ? parseInt(limitParam, 10) : 50, 100);
-    const offset = offsetParam ? parseInt(offsetParam, 10) : 0;
+    const pagination = parsePaginationParams(offsetParam, limitParam, 50, 100);
+    if (!pagination.ok) return c.text(pagination.error, 400);
 
     const sessions = db.listSessions({
       sources: selectedSources,
       projects: selectedProjects,
-      limit,
-      offset,
+      limit: pagination.limit,
+      offset: pagination.offset,
       agents,
     });
     const total = db.countSessions({
@@ -1810,9 +1890,9 @@ export function createApp(
 
     return c.html(
       sessionListPage(sessions, {
-        offset,
-        limit,
-        hasMore: sessions.length === limit,
+        offset: pagination.offset,
+        limit: pagination.limit,
+        hasMore: sessions.length === pagination.limit,
         total,
         selectedSources,
         sources,
