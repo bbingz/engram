@@ -44,6 +44,7 @@ import { handleSaveInsight } from './tools/save_insight.js';
 import { handleSearch, type SearchDeps } from './tools/search.js';
 import { handleStats } from './tools/stats.js';
 import { handleToolAnalytics } from './tools/tool_analytics.js';
+import { registerAiAuditRoutes } from './web/routes/ai-audit.js';
 import {
   healthPage,
   layout,
@@ -492,54 +493,10 @@ export function createApp(
   }
 
   // --- AI Audit API ---
-  app.get('/api/ai/audit', (c) => {
-    if (!opts?.auditQuery)
-      return c.json({ error: 'Audit not configured' }, 501);
-    const q = c.req.query();
-    const pagination = parsePaginationParams(q.offset, q.limit, 50, 500);
-    if (!pagination.ok) return c.json({ error: pagination.error }, 400);
-    const result = opts.auditQuery.list({
-      caller: q.caller || undefined,
-      model: q.model || undefined,
-      sessionId: q.sessionId || undefined,
-      from: q.from || undefined,
-      to: q.to || undefined,
-      hasError:
-        q.hasError === 'true'
-          ? true
-          : q.hasError === 'false'
-            ? false
-            : undefined,
-      limit: pagination.limit,
-      offset: pagination.offset,
-    });
-    return c.json({
-      ...result,
-      limit: pagination.limit,
-      offset: pagination.offset,
-    });
-  });
-
-  app.get('/api/ai/audit/:id', (c) => {
-    if (!opts?.auditQuery)
-      return c.json({ error: 'Audit not configured' }, 501);
-    const id = parsePositiveInteger('id', c.req.param('id'));
-    if (!id.ok) return c.json({ error: id.error }, 400);
-    const record = opts.auditQuery.get(id.value);
-    if (!record) return c.json({ error: 'not found' }, 404);
-    return c.json(record);
-  });
-
-  app.get('/api/ai/stats', (c) => {
-    if (!opts?.auditQuery)
-      return c.json({ error: 'Audit not configured' }, 501);
-    const q = c.req.query();
-    return c.json(
-      opts.auditQuery.stats({
-        from: q.from || undefined,
-        to: q.to || undefined,
-      }),
-    );
+  registerAiAuditRoutes(app, {
+    auditQuery: opts?.auditQuery,
+    parsePaginationParams,
+    parsePositiveInteger,
   });
 
   app.get('/api/sync/status', (c) => {
