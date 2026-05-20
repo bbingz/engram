@@ -195,7 +195,7 @@ final class EngramWebUIServer: @unchecked Sendable {
     }
 
     static func renderMessageHTML(_ message: NormalizedMessage, source: String) -> String {
-        if message.role == .user, let category = WebSystemMessageCategory(content: message.content) {
+        if message.role == .user, let category = WebSystemMessageCategory(content: message.content, source: source) {
             return """
             <article class="message system \(category.cssClass)">
               <div class="role">\(category.label)</div>
@@ -246,31 +246,15 @@ private enum WebSystemMessageCategory {
     case systemPrompt
     case agentComm
 
-    init?(content: String) {
-        if content.hasPrefix("# AGENTS.md instructions for ") ||
-            content.contains("<INSTRUCTIONS>") ||
-            content.hasPrefix("<system-reminder>") ||
-            content.hasPrefix("<environment_context>") ||
-            content.hasPrefix("<EXTREMELY_IMPORTANT>") ||
-            content.hasPrefix("\nYou are Qwen Code") ||
-            content.hasPrefix("You are Qwen Code") {
+    init?(content: String, source: String) {
+        switch SystemMessageClassifier.classify(content: content, source: source) {
+        case .systemPrompt:
             self = .systemPrompt
-            return
-        }
-
-        if content.hasPrefix("<subagent_notification>") ||
-            content.hasPrefix("<local-command-caveat>") ||
-            content.hasPrefix("<local-command-stdout>") ||
-            content.contains("<command-name>") ||
-            content.contains("<command-message>") ||
-            content.hasPrefix("Unknown skill: ") ||
-            content.hasPrefix("Invoke the superpowers:") ||
-            content.hasPrefix("Base directory for this skill:") {
+        case .agentComm:
             self = .agentComm
-            return
+        case .none:
+            return nil
         }
-
-        return nil
     }
 
     var label: String {

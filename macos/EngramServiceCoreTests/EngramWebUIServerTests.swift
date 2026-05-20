@@ -36,6 +36,39 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertTrue(html.contains("message system system-prompt"))
     }
 
+    func testAntigravitySystemMessageWrapperUsesSharedSystemPromptClassification() {
+        let message = NormalizedMessage(
+            role: .user,
+            content: """
+            The following is a <SYSTEM_MESSAGE> not actually sent by the user.
+
+            <SYSTEM_MESSAGE>
+            [Message] timestamp=2026-05-20T00:02:44Z priority=MESSAGE_PRIORITY_HIGH
+            content=Task finished with result.
+            </SYSTEM_MESSAGE>
+            """
+        )
+
+        let html = EngramWebUIServer.renderMessageHTML(message, source: "antigravity")
+
+        XCTAssertTrue(html.contains("System Prompt"))
+        XCTAssertFalse(html.contains(">You<"))
+        XCTAssertTrue(html.contains("message system system-prompt"))
+    }
+
+    func testSystemMessageWrapperDoesNotReclassifyNonAntigravitySources() {
+        let message = NormalizedMessage(
+            role: .user,
+            content: "<SYSTEM_MESSAGE>user pasted wrapper</SYSTEM_MESSAGE>"
+        )
+
+        let html = EngramWebUIServer.renderMessageHTML(message, source: "codex")
+
+        XCTAssertTrue(html.contains(">You<"))
+        XCTAssertFalse(html.contains("System Prompt"))
+        XCTAssertFalse(html.contains("message system system-prompt"))
+    }
+
     func testTranscriptParserFailureRendersInlineNotice() {
         let html = EngramWebUIServer.transcriptErrorHTML(ParserFailure.messageLimitExceeded)
 

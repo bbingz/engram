@@ -291,6 +291,14 @@ final class MessageParserTests: XCTestCase {
             MessageParser.classifySystem(content: "You are Qwen Code...", source: "qwen"),
             .systemPrompt
         )
+        XCTAssertEqual(
+            MessageParser.classifySystem(content: "\n<SYSTEM_MESSAGE>not sent by user", source: "antigravity"),
+            .systemPrompt
+        )
+        XCTAssertEqual(
+            MessageParser.classifySystem(content: "\n<SYSTEM_MESSAGE>user pasted wrapper", source: "codex"),
+            .none
+        )
 
         // Agent communication
         XCTAssertEqual(
@@ -303,7 +311,7 @@ final class MessageParserTests: XCTestCase {
         )
         XCTAssertEqual(
             MessageParser.classifySystem(
-                content: "<subagent_notification>\n{\"agent_path\":\"agent-1\"}\n</subagent_notification>",
+                content: "\n<subagent_notification>\n{\"agent_path\":\"agent-1\"}\n</subagent_notification>",
                 source: "codex"
             ),
             .agentComm

@@ -261,12 +261,25 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     func testLinkSessionsMatchesGolden() throws {
-        let conversationLogDir = fixturePath("mcp-runtime/engram/conversation_log")
+        let targetDir = try temporaryFixtureCopy(
+            "mcp-runtime/engram",
+            prefix: "engram-mcp-link-sessions"
+        )
+        defer { try? FileManager.default.removeItem(atPath: targetDir) }
+        let canonicalTargetDir = fixturePath("mcp-runtime/engram")
+        let conversationLogDir = "\(targetDir)/conversation_log"
         try? FileManager.default.removeItem(atPath: conversationLogDir)
-        let goldenPath = fixturePath("mcp-golden/link_sessions.engram.json")
-        let goldenData = try Data(contentsOf: URL(fileURLWithPath: goldenPath))
-        let goldenObject = try JSONDecoder().decode(TestJSONValue.self, from: goldenData)
-        let structured = try XCTUnwrap(goldenObject["structuredContent"])
+        let structured = TestJSONValue.object([
+            "created": .int(6),
+            "skipped": .int(0),
+            "errors": .array([]),
+            "targetDir": .string(targetDir),
+            "projectNames": .array([
+                .string("engram"),
+                .string("engram-legacy"),
+                .string("engram-mcp"),
+            ]),
+        ])
         let service = try MockServiceSocketServer { request in
             switch request.command {
             case "status":
@@ -281,7 +294,7 @@ final class EngramMCPExecutableTests: XCTestCase {
                 let body = try request.decodePayload([String: TestJSONValue].self)
                 XCTAssertEqual(
                     body["targetDir"]?.stringValue,
-                    self.fixturePath("mcp-runtime/engram")
+                    targetDir
                 )
                 XCTAssertEqual(body["actor"]?.stringValue, "mcp")
                 return try request.success(structured, databaseGeneration: 1)
@@ -294,12 +307,13 @@ final class EngramMCPExecutableTests: XCTestCase {
         try assertToolCallMatchesGolden(
             tool: "link_sessions",
             arguments: """
-            {"targetDir":"\(fixturePath("mcp-runtime/engram"))"}
+            {"targetDir":"\(targetDir)"}
             """,
             goldenFixture: "mcp-golden/link_sessions.engram.json",
             environment: [
                 "ENGRAM_MCP_SERVICE_SOCKET": service.socketPath,
-            ]
+            ],
+            pathNormalizations: [targetDir: canonicalTargetDir]
         )
     }
 
@@ -327,9 +341,15 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     func testExportMatchesGolden() throws {
-        let exportDir = fixturePath("mcp-runtime/export-home/codex-exports")
+        let homeDir = try temporaryFixtureCopy(
+            "mcp-runtime/export-home",
+            prefix: "engram-mcp-export-home"
+        )
+        defer { try? FileManager.default.removeItem(atPath: homeDir) }
+        let canonicalHomeDir = fixturePath("mcp-runtime/export-home")
+        let exportDir = "\(homeDir)/codex-exports"
         try? FileManager.default.removeItem(atPath: exportDir)
-        let service = try makeReachableServiceSocketServer()
+        let service = try makeReachableServiceSocketServer(exportHomeDir: homeDir)
         try service.start()
         defer { service.stop() }
         try assertToolCallMatchesGolden(
@@ -339,9 +359,10 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/export.transcript.json",
             environment: [
-                "HOME": fixturePath("mcp-runtime/export-home"),
+                "HOME": homeDir,
                 "ENGRAM_MCP_SERVICE_SOCKET": service.socketPath,
-            ]
+            ],
+            pathNormalizations: [homeDir: canonicalHomeDir]
         )
     }
 
@@ -710,7 +731,8 @@ final class EngramMCPExecutableTests: XCTestCase {
         tool: String,
         arguments: String,
         goldenFixture: String,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        pathNormalizations: [String: String] = [:]
     ) throws {
         let capture = try rpc(
             """
@@ -722,7 +744,31 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
         let actual = try prettyJSONString(from: XCTUnwrap(capture.ordered["result"]))
         let expected = try String(contentsOfFile: fixturePath(goldenFixture), encoding: .utf8)
-        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(
+            normalizeFixturePaths(in: actual, pathNormalizations: pathNormalizations),
+            normalizeFixturePaths(in: expected, pathNormalizations: pathNormalizations)
+        )
+    }
+
+    private func normalizeFixturePaths(
+        in text: String,
+        pathNormalizations: [String: String] = [:]
+    ) -> String {
+        var normalized = text
+        for (source, replacement) in pathNormalizations {
+            normalized = normalized.replacingOccurrences(of: source, with: replacement)
+        }
+
+        return normalizeAbsoluteFixtureRoots(in: normalized)
+    }
+
+    private func normalizeAbsoluteFixtureRoots(in text: String) -> String {
+        let pattern = #"(?:/[^\s"\\]+)+/tests/fixtures"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "<fixture-root>")
     }
 
     private func normalizeUUIDs(in text: String) throws -> String {
@@ -737,7 +783,17 @@ final class EngramMCPExecutableTests: XCTestCase {
         return try JSONDecoder().decode(TestJSONValue.self, from: data)
     }
 
-    private func makeReachableServiceSocketServer() throws -> MockServiceSocketServer {
+    private func temporaryFixtureCopy(_ relativePath: String, prefix: String) throws -> String {
+        let destination = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
+        try FileManager.default.copyItem(
+            atPath: fixturePath(relativePath),
+            toPath: destination.path
+        )
+        return destination.path
+    }
+
+    private func makeReachableServiceSocketServer(exportHomeDir: String? = nil) throws -> MockServiceSocketServer {
         try MockServiceSocketServer { request in
             switch request.command {
             case "status":
@@ -749,9 +805,10 @@ final class EngramMCPExecutableTests: XCTestCase {
                     ])
                 )
             case "exportSession":
+                let homeDir = exportHomeDir ?? self.fixturePath("mcp-runtime/export-home")
                 return try request.success(
                     .object([
-                        "outputPath": .string(self.fixturePath("mcp-runtime/export-home/codex-exports/codex-mcp-tran-2026-01-15.json")),
+                        "outputPath": .string("\(homeDir)/codex-exports/codex-mcp-tran-2026-01-15.json"),
                         "format": .string("json"),
                         "messageCount": .int(3),
                     ])

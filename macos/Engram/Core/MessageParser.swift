@@ -370,32 +370,14 @@ struct MessageParser {
     // MARK: - System injection detection
 
     static func classifySystem(content: String, source: String) -> SystemCategory {
-        // System prompts — injected context, instructions, environment
-        if content.hasPrefix("# AGENTS.md instructions for ")  { return .systemPrompt }
-        if content.contains("<INSTRUCTIONS>")                  { return .systemPrompt }
-        if content.hasPrefix("<system-reminder>")              { return .systemPrompt }
-        if content.hasPrefix("<environment_context>")          { return .systemPrompt }
-        if content.hasPrefix("<EXTREMELY_IMPORTANT>")          { return .systemPrompt }
-        if isSystemMessageWrapper(content)                     { return .systemPrompt }
-        if content.hasPrefix("\nYou are Qwen Code")            { return .systemPrompt }
-        if content.hasPrefix("You are Qwen Code")             { return .systemPrompt }
-
-        // Agent communication — tool/skill/command interactions
-        if content.hasPrefix("<subagent_notification>")        { return .agentComm }
-        if content.hasPrefix("<local-command-caveat>")         { return .agentComm }
-        if content.hasPrefix("<local-command-stdout>")         { return .agentComm }
-        if content.contains("<command-name>")                  { return .agentComm }
-        if content.contains("<command-message>")               { return .agentComm }
-        if content.hasPrefix("Unknown skill: ")                { return .agentComm }
-        if content.hasPrefix("Invoke the superpowers:")        { return .agentComm }
-        if content.hasPrefix("Base directory for this skill:") { return .agentComm }
-
-        return .none
-    }
-
-    private static func isSystemMessageWrapper(_ content: String) -> Bool {
-        content.hasPrefix("<SYSTEM_MESSAGE>") ||
-        content.hasPrefix("The following is a <SYSTEM_MESSAGE>")
+        switch SystemMessageClassifier.classify(content: content, source: source) {
+        case .none:
+            return .none
+        case .systemPrompt:
+            return .systemPrompt
+        case .agentComm:
+            return .agentComm
+        }
     }
 
     // MARK: - Helpers
