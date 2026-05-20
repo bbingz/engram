@@ -24,6 +24,8 @@ The parity gate currently covers these product sources:
 - `vscode`
 - `windsurf`
 
+MiniMax and Lobster AI are Claude-compatible derived sources. They intentionally share the Claude Code parser while being indexed under their own `source` values; Swift and Node tests cover that derived-source classification separately from the 15 independent fixture directories.
+
 Antigravity CLI, Command Code, and Qoder are explicitly included in both the fixture checker and targeted adapter tests.
 
 ## Parser Contract

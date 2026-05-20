@@ -59,6 +59,17 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(message.usage?.cacheCreationTokens, 1)
     }
 
+    func testAdapterFactoriesCoverEveryKnownSource() {
+        XCTAssertEqual(
+            Set(SessionAdapterFactory.defaultAdapters().map(\.source)),
+            Set(SourceName.allCases)
+        )
+        XCTAssertEqual(
+            Set(SessionAdapterFactory.recentActiveAdapters().map(\.source)),
+            Set(SourceName.allCases)
+        )
+    }
+
     func testClaudeCodeOriginatorClassifierMatchesCodexAndGeminiSpellings() {
         XCTAssertTrue(OriginatorClassifier.isClaudeCode("Claude Code"))
         XCTAssertTrue(OriginatorClassifier.isClaudeCode("claude-code"))
@@ -72,12 +83,21 @@ final class AdapterParityTests: XCTestCase {
             .appendingPathComponent("claude-derived-\(UUID().uuidString)", isDirectory: true)
         let minimaxProject = root.appendingPathComponent("project", isDirectory: true)
         let lobsterProject = root.appendingPathComponent("lobsterai-project", isDirectory: true)
+        let hiddenLobsterProject = root.appendingPathComponent(".lobsterai-project", isDirectory: true)
+        let hiddenDecoyProject = root.appendingPathComponent(".lobsteraiproject", isDirectory: true)
+        let decoyProject = root.appendingPathComponent("notlobsterai-project", isDirectory: true)
         try FileManager.default.createDirectory(at: minimaxProject, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: lobsterProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: hiddenLobsterProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: hiddenDecoyProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: decoyProject, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let minimaxLocator = minimaxProject.appendingPathComponent("minimax.jsonl")
         let lobsterLocator = lobsterProject.appendingPathComponent("claude.jsonl")
+        let hiddenLobsterLocator = hiddenLobsterProject.appendingPathComponent("claude.jsonl")
+        let hiddenDecoyLocator = hiddenDecoyProject.appendingPathComponent("claude.jsonl")
+        let decoyLocator = decoyProject.appendingPathComponent("claude.jsonl")
         try claudeFixture(sessionId: "minimax-session", model: "minimax-m1").write(
             to: minimaxLocator,
             atomically: true,
@@ -88,14 +108,33 @@ final class AdapterParityTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
+        try claudeFixture(sessionId: "hidden-lobster-session", model: "claude-sonnet").write(
+            to: hiddenLobsterLocator,
+            atomically: true,
+            encoding: .utf8
+        )
+        try claudeFixture(sessionId: "hidden-claude-session", model: "claude-sonnet").write(
+            to: hiddenDecoyLocator,
+            atomically: true,
+            encoding: .utf8
+        )
+        try claudeFixture(sessionId: "claude-session", model: "claude-sonnet").write(
+            to: decoyLocator,
+            atomically: true,
+            encoding: .utf8
+        )
 
         let minimax = ClaudeCodeDerivedSourceAdapter(source: .minimax, projectsRoot: root.path)
         let lobster = ClaudeCodeDerivedSourceAdapter(source: .lobsterai, projectsRoot: root.path)
+        let claude = ClaudeCodeAdapter(projectsRoot: root.path)
 
         let minimaxLocators = try await minimax.listSessionLocators()
         let lobsterLocators = try await lobster.listSessionLocators()
         XCTAssertEqual(minimaxLocators.map(standardizedPath), [standardizedPath(minimaxLocator.path)])
-        XCTAssertEqual(lobsterLocators.map(standardizedPath), [standardizedPath(lobsterLocator.path)])
+        XCTAssertEqual(
+            lobsterLocators.map(standardizedPath).sorted(),
+            [standardizedPath(lobsterLocator.path), standardizedPath(hiddenLobsterLocator.path)].sorted()
+        )
         guard case .success(let minimaxInfo) = try await minimax.parseSessionInfo(locator: minimaxLocator.path) else {
             return XCTFail("minimax fixture did not parse")
         }
@@ -104,6 +143,18 @@ final class AdapterParityTests: XCTestCase {
         }
         XCTAssertEqual(minimaxInfo.source, .minimax)
         XCTAssertEqual(lobsterInfo.source, .lobsterai)
+        guard case .success(let hiddenLobsterInfo) = try await lobster.parseSessionInfo(locator: hiddenLobsterLocator.path) else {
+            return XCTFail("hidden Lobster fixture did not parse")
+        }
+        XCTAssertEqual(hiddenLobsterInfo.source, .lobsterai)
+        guard case .success(let hiddenDecoyInfo) = try await claude.parseSessionInfo(locator: hiddenDecoyLocator.path) else {
+            return XCTFail("hidden decoy Claude fixture did not parse")
+        }
+        XCTAssertEqual(hiddenDecoyInfo.source, .claudeCode)
+        guard case .success(let decoyInfo) = try await claude.parseSessionInfo(locator: decoyLocator.path) else {
+            return XCTFail("decoy Claude fixture did not parse")
+        }
+        XCTAssertEqual(decoyInfo.source, .claudeCode)
     }
 
     func testClaudeAdapterKeepsRoutedProviderModelsUnderClaudeCodeSource() async throws {

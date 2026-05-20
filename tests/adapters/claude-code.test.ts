@@ -80,6 +80,90 @@ describe('ClaudeCodeAdapter', () => {
     }
   });
 
+  it('classifies MiniMax and Lobster AI as derived Claude-compatible sources', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cc-derived-${Date.now()}`);
+    const minimaxPath = join(tmpRoot, 'project', 'minimax.jsonl');
+    const lobsterPath = join(tmpRoot, 'lobsterai-project', 'claude.jsonl');
+    const hiddenLobsterPath = join(
+      tmpRoot,
+      '.lobsterai-project',
+      'claude.jsonl',
+    );
+    const hiddenDecoyPath = join(tmpRoot, '.lobsteraiproject', 'claude.jsonl');
+    const decoyPath = join(tmpRoot, 'notlobsterai-project', 'claude.jsonl');
+    mkdirSync(dirname(minimaxPath), { recursive: true });
+    mkdirSync(dirname(lobsterPath), { recursive: true });
+    mkdirSync(dirname(hiddenLobsterPath), { recursive: true });
+    mkdirSync(dirname(hiddenDecoyPath), { recursive: true });
+    mkdirSync(dirname(decoyPath), { recursive: true });
+
+    const fixture = (sessionId: string, model: string) =>
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: '/proj',
+          sessionId,
+          timestamp: '2026-04-29T10:00:00.000Z',
+          message: { role: 'user', content: 'hello' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId,
+          timestamp: '2026-04-29T10:00:01.000Z',
+          message: {
+            role: 'assistant',
+            model,
+            content: [{ type: 'text', text: 'hi' }],
+          },
+        }),
+      ].join('\n');
+
+    writeFileSync(minimaxPath, fixture('minimax-session', 'minimax-m1'));
+    writeFileSync(lobsterPath, fixture('lobster-session', 'claude-sonnet'));
+    writeFileSync(
+      hiddenLobsterPath,
+      fixture('hidden-lobster-session', 'claude-sonnet'),
+    );
+    writeFileSync(
+      hiddenDecoyPath,
+      fixture('hidden-claude-session', 'claude-sonnet'),
+    );
+    writeFileSync(decoyPath, fixture('claude-session', 'claude-sonnet'));
+
+    try {
+      await expect(
+        adapter.parseSessionInfo(minimaxPath),
+      ).resolves.toMatchObject({
+        source: 'minimax',
+        model: 'minimax-m1',
+      });
+      await expect(
+        adapter.parseSessionInfo(lobsterPath),
+      ).resolves.toMatchObject({
+        source: 'lobsterai',
+        model: 'claude-sonnet',
+      });
+      await expect(
+        adapter.parseSessionInfo(hiddenLobsterPath),
+      ).resolves.toMatchObject({
+        source: 'lobsterai',
+        model: 'claude-sonnet',
+      });
+      await expect(
+        adapter.parseSessionInfo(hiddenDecoyPath),
+      ).resolves.toMatchObject({
+        source: 'claude-code',
+        model: 'claude-sonnet',
+      });
+      await expect(adapter.parseSessionInfo(decoyPath)).resolves.toMatchObject({
+        source: 'claude-code',
+        model: 'claude-sonnet',
+      });
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('streamMessages filters only user/assistant/tool', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(FIXTURE)) {

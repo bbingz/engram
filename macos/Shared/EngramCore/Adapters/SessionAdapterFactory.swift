@@ -49,6 +49,8 @@ public enum SessionAdapterFactory {
         let cutoff = now.addingTimeInterval(-Double(max(days, 1)) * 24 * 60 * 60)
         let fileBackedAdapters: [any SessionAdapter] = [
             ClaudeCodeAdapter(),
+            ClaudeCodeDerivedSourceAdapter(source: .minimax),
+            ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
             GeminiCliAdapter(),
             OpenCodeAdapter(),
             IflowAdapter(),

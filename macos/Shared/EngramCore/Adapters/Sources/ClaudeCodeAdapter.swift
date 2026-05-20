@@ -21,7 +21,7 @@ final class ClaudeCodeAdapter: SessionAdapter {
 
     func listSessionLocators() async throws -> [String] {
         var locators: [String] = []
-        for projectURL in JSONLAdapterSupport.directChildren(of: projectsRoot)
+        for projectURL in JSONLAdapterSupport.directChildren(of: projectsRoot, includingHidden: true)
             where JSONLAdapterSupport.isDirectory(projectURL)
         {
             for entryURL in JSONLAdapterSupport.directChildren(of: projectURL) {
@@ -159,7 +159,7 @@ final class ClaudeCodeAdapter: SessionAdapter {
     }
 
     static func detectSource(model: String, filePath: String? = nil) -> SourceName {
-        if filePath?.contains("lobsterai") == true { return .lobsterai }
+        if let filePath, hasLobsterAIPathComponent(filePath) { return .lobsterai }
         if model.isEmpty || model.hasPrefix("claude") || model.hasPrefix("<") {
             return .claudeCode
         }
@@ -169,6 +169,22 @@ final class ClaudeCodeAdapter: SessionAdapter {
         // Qwen/Kimi/Gemini models can be routed through Claude-compatible clients,
         // but the session file is still owned by Claude Code's on-disk format.
         return .claudeCode
+    }
+
+    private static func hasLobsterAIPathComponent(_ filePath: String) -> Bool {
+        filePath
+            .components(separatedBy: CharacterSet(charactersIn: "/\\"))
+            .contains { component in
+                let lowercased = component.lowercased()
+                return lowercased == "lobsterai" ||
+                    lowercased == ".lobsterai" ||
+                    lowercased.hasPrefix("lobsterai-") ||
+                    lowercased.hasPrefix("lobsterai_") ||
+                    lowercased.hasPrefix("lobsterai.") ||
+                    lowercased.hasPrefix(".lobsterai-") ||
+                    lowercased.hasPrefix(".lobsterai_") ||
+                    lowercased.hasPrefix(".lobsterai.")
+            }
     }
 
     static func decodeCwd(_ encoded: String) -> String {

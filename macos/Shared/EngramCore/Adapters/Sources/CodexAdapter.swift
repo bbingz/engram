@@ -12,11 +12,12 @@ enum JSONLAdapterSupport {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    static func directChildren(of url: URL) -> [URL] {
-        (try? FileManager.default.contentsOfDirectory(
+    static func directChildren(of url: URL, includingHidden: Bool = false) -> [URL] {
+        let options: FileManager.DirectoryEnumerationOptions = includingHidden ? [] : [.skipsHiddenFiles]
+        return (try? FileManager.default.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: options
         ))?.sorted { $0.path < $1.path } ?? []
     }
 

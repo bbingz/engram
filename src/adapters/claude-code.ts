@@ -177,7 +177,8 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   /** Map Claude-compatible project files to Engram's derived Claude sources. */
   static detectSource(model: string, filePath?: string): SessionInfo['source'] {
     // Lobster AI writes to ~/.claude/projects/ with its own project dirs
-    if (filePath?.includes('lobsterai')) return 'lobsterai';
+    if (filePath && ClaudeCodeAdapter.hasLobsterAIPathComponent(filePath))
+      return 'lobsterai';
     if (!model || model.startsWith('claude') || model.startsWith('<'))
       return 'claude-code';
     const m = model.toLowerCase();
@@ -185,6 +186,12 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     // Qwen/Kimi/Gemini models can be routed through Claude-compatible clients,
     // but the session file is still owned by Claude Code's on-disk format.
     return 'claude-code';
+  }
+
+  private static hasLobsterAIPathComponent(filePath: string): boolean {
+    return filePath
+      .split(/[\\/]+/)
+      .some((component) => /^(?:\.?lobsterai(?:$|[._-].*))$/i.test(component));
   }
 
   async *streamMessages(
