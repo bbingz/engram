@@ -10,6 +10,35 @@ import {
   listSessionsTool,
 } from '../../src/tools/list_sessions.js';
 
+describe('list_sessions tool schema', () => {
+  it('tool schema has correct name', () => {
+    expect(listSessionsTool.name).toBe('list_sessions');
+    expect(listSessionsTool.inputSchema.type).toBe('object');
+  });
+
+  it('source schema covers every known provider', () => {
+    expect(listSessionsTool.inputSchema.properties.source.enum).toEqual([
+      'codex',
+      'claude-code',
+      'copilot',
+      'gemini-cli',
+      'opencode',
+      'iflow',
+      'qwen',
+      'qoder',
+      'kimi',
+      'minimax',
+      'lobsterai',
+      'commandcode',
+      'cline',
+      'cursor',
+      'vscode',
+      'antigravity',
+      'windsurf',
+    ]);
+  });
+});
+
 describe('list_sessions tool', () => {
   let db: Database;
   let tmpDir: string;
@@ -82,32 +111,5 @@ describe('list_sessions tool', () => {
       since: '2026-01-01T00:00:00Z',
     });
     expect(result.sessions).toHaveLength(2);
-  });
-
-  it('tool schema has correct name', () => {
-    expect(listSessionsTool.name).toBe('list_sessions');
-    expect(listSessionsTool.inputSchema.type).toBe('object');
-  });
-
-  it('source schema covers every known provider', () => {
-    expect(listSessionsTool.inputSchema.properties.source.enum).toEqual([
-      'codex',
-      'claude-code',
-      'copilot',
-      'gemini-cli',
-      'opencode',
-      'iflow',
-      'qwen',
-      'qoder',
-      'kimi',
-      'minimax',
-      'lobsterai',
-      'commandcode',
-      'cline',
-      'cursor',
-      'vscode',
-      'antigravity',
-      'windsurf',
-    ]);
   });
 });

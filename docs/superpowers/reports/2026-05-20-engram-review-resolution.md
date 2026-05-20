@@ -48,4 +48,18 @@ npm test -- tests/core/db/parent-link-repo.test.ts tests/core/live-sessions.test
 npm audit --json
 ```
 
-Additional full-suite validation must still run after this resolution document is merged back to `main`, before replacing `/Applications/Engram.app`.
+The final shipping pass on `main` also ran:
+
+```bash
+bash -n macos/scripts/build-release.sh
+npm run typecheck:test
+npm run knip
+npm run check:adapter-parity-fixtures
+npm test
+npm run build
+xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destination 'platform=macOS' -only-testing:EngramCoreTests/AdapterParityTests CODE_SIGNING_ALLOWED=NO -derivedDataPath /tmp/engram-dd-provider-core-round1fix
+xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests -destination 'platform=macOS' -only-testing:EngramMCPTests/EngramMCPExecutableTests/testSourceSchemasCoverEveryKnownProvider CODE_SIGNING_ALLOWED=NO -derivedDataPath /tmp/engram-dd-mcp-source-schema-round1fix
+macos/scripts/build-release.sh
+```
+
+`macos/scripts/build-release.sh` archived successfully, hit the expected local Developer ID export-method error on this machine, fell back to the archived signed app, and verified the exported app with `codesign --verify --deep --strict`.

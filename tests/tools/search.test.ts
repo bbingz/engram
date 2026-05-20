@@ -8,10 +8,7 @@ import { Database } from '../../src/core/db.js';
 import { MetricsCollector } from '../../src/core/metrics.js';
 import { handleSearch, searchTool } from '../../src/tools/search.js';
 
-describe('search', () => {
-  let db: Database;
-  let tmpDir: string;
-
+describe('search tool schema', () => {
   it('source schema covers every known provider', () => {
     expect(searchTool.inputSchema.properties.source.enum).toEqual([
       'codex',
@@ -33,6 +30,11 @@ describe('search', () => {
       'windsurf',
     ]);
   });
+});
+
+describe('search', () => {
+  let db: Database;
+  let tmpDir: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'search-test-'));
