@@ -40,11 +40,11 @@ Engram never modifies your AI tool session files.
 
 ## Network Activity
 
-Data is local by default. Network calls are made by: peer sync, AI summaries, title generation, and embedding providers — all optional and user-configured.
+Data is local by default. The current Swift service does not implement peer sync and the macOS app does not trigger it. Network calls are only made by optional, user-configured AI summaries, title generation, and embedding providers.
 
 By default, the macOS app talks to EngramService over a Unix domain socket under `~/.engram/run/engram-service.sock`. The default app runtime does not expose a localhost HTTP API. No external network connections are made unless you explicitly configure:
 
-- **Peer Sync** (optional): Pulls session metadata (not message content) from configured peer Engram instances on your network.
+- **Peer sync compatibility fields**: Older settings may contain peer-sync keys, but the current Swift service returns unsupported for sync commands and the macOS app does not start sync traffic.
 - **AI Summary** (optional): Sends session excerpts to your configured AI provider (OpenAI/Anthropic/Gemini/Ollama) for summary generation.
 - **Title Generation** (optional): Sends session excerpts to your configured AI provider for automatic title generation.
 - **Embedding Providers** (optional): Sends message content to Ollama (local or remote) or OpenAI for vector embedding generation used in semantic search.
@@ -55,7 +55,7 @@ Retained development/reference tooling may still understand older HTTP settings.
 
 ## Third-party Services
 
-Engram does not integrate with any advertising, analytics, or tracking services. The only third-party network calls are those you explicitly configure (AI providers, sync peers).
+Engram does not integrate with any advertising, analytics, or tracking services. The only third-party network calls are those you explicitly configure for AI providers or embedding providers.
 
 ## Data Deletion
 

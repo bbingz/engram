@@ -7,7 +7,7 @@ native Swift service code.
 
 ## Stage 4 Gate
 
-Stage 4 no longer blocks on writer authority. The real IPC gate is green, and app-facing move/archive/undo plus sync/title bulk actions now cross the service boundary first.
+Stage 4 no longer blocks on writer authority. The real IPC gate is green, and app-facing move/archive/undo plus title bulk actions now cross the service boundary first. Sync remains an unsupported Swift service stub and is not exposed as a working macOS App action.
 
 Recorded passing IPC gate:
 
@@ -50,7 +50,7 @@ Decision values:
 | App summary generation | `/api/summary` | `GenerateSummaryResponse` | `generateSummary(_:)` | App | App and MCP callers route through native service code | service command |
 | App title generation | `/api/session/:id/generate-title`, `/api/titles/regenerate-all` | title response / bulk result | `generateTitle(sessionId:)`, `regenerateAllTitles()` | App | Bulk title regeneration runs in native service code | service command |
 | App embedding status | `/api/search/status` | semantic/vector status fields | `embeddingStatus()` | App | MCP search parity | service command |
-| App sync settings | `/api/sync/status`, `/api/sync/sessions`, `/api/sync/trigger` | sync status/sessions/trigger result | `syncStatus()`, `syncSessions()`, `triggerSync(_:)` | App | Sync trigger is native service fail-soft status reporting; no daemon bridge | service command |
+| App sync settings | `/api/sync/status`, `/api/sync/sessions`, `/api/sync/trigger` | sync status/sessions/trigger result | `syncStatus()`, `syncSessions()`, `triggerSync(_:)` | App | Unsupported Swift service stub; macOS App must present this as unavailable until native sync exists | removed with documented deprecation |
 | App monitor alerts | `/api/monitor/alerts`, `/api/monitor/alerts/:id/dismiss` | `MonitorAlert` | `monitorAlerts()`, `dismissMonitorAlert(id:)` | App | none | service command |
 | App project migrations list | `DaemonClient.listProjectMigrations`, `/api/project/migrations` | `[MigrationLogEntry]` | `projectMigrations(_:)` | App | MCP/CLI project ops in Stage 4 | service command |
 | App project CWD lookup | `DaemonClient.projectCwds`, `/api/project/cwds` | `[String]` | `projectCwds(project:)` | App | MCP/CLI project ops in Stage 4 | service command |
@@ -84,7 +84,7 @@ Decision values:
 - Project migrations, project CWDs, project move, project archive, project undo, and project move batch: service command, including current App and MCP caller routing.
 - Search and embedding status: `search(_:)`, `searchStatus()`, `embeddingStatus()`.
 - Summary generation and title regeneration: `generateSummary(_:)`, `generateTitle(sessionId:)`, `regenerateAllTitles()`.
-- Sync trigger and status: `syncStatus()`, `syncSessions()`, `triggerSync(_:)`.
+- Sync trigger and status: unsupported Swift service stubs retained for compatibility; no macOS App working action until native sync exists.
 - Resume command: `resumeCommand(sessionId:)`.
 - Save insight: service command.
 - Link sessions: service command with MCP fail-closed coverage.
@@ -93,7 +93,7 @@ Decision values:
 
 ## Stage 5 Debt Snapshot
 
-- App UI surfaces no longer call daemon HTTP directly for sync trigger, bulk title regeneration, or project move/archive/undo.
+- App UI surfaces no longer call daemon HTTP directly for bulk title regeneration or project move/archive/undo. Sync is not presented as a working action while the Swift service returns unsupported.
 - `LegacyDaemonBridge` has been deleted. No service-internal command forwards to retained daemon endpoints.
 - Project move/archive/undo/batch now use the native Swift migration pipeline.
 - MCP direct daemon HTTP compatibility has been removed from the routed mutation/operational paths in `macos/EngramMCP/Core/MCPToolRegistry.swift`.

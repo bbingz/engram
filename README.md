@@ -1,6 +1,6 @@
 # Engram
 
-> Native Swift MCP helper + macOS App：聚合 15 种 AI 编程助手的历史会话，实现跨工具上下文共享、混合搜索和多机同步。
+> Native Swift MCP helper + macOS App：聚合 15 种 AI 编程助手的历史会话，实现跨工具上下文共享和混合搜索。
 
 在 Codex 里做了半天，切到 Claude Code 继续时，AI 不需要你手动解释之前做了什么——它可以直接调用 `get_context` 查询你的历史。
 
@@ -32,7 +32,7 @@
 - [MCP Tools 参考](#mcp-tools-参考)
 - [混合搜索](#混合搜索)
 - [项目别名](#项目别名)
-- [多机同步](#多机同步)
+- [Peer Sync 状态](#peer-sync-状态)
 - [配置](#配置)
 - [添加新适配器](#添加新适配器)
 - [数据存储与隐私](#数据存储与隐私)
@@ -131,7 +131,7 @@ App 功能：
 - **会话详情**：完整对话内容，Markdown 渲染
 - **混合搜索**：FTS 关键词 + 语义向量搜索，实时高亮
 - **用量统计**：按来源 / 项目 / 天 / 周分组统计
-- **同步设置**：配置多机同步节点
+- **网络设置**：配置 MCP single-writer 策略，并标明当前 Swift service 的 sync 状态
 
 历史 TypeScript Web/API 代码仍保留为开发/reference material，不是当前 macOS 产品运行路径。
 - `GET /api/sessions/:id` — 会话详情
@@ -252,9 +252,7 @@ Engram 支持三种搜索模式，默认使用混合模式自动融合：
 { "name": "manage_project_alias", "arguments": { "action": "add", "old_project": "wechat-decrypt", "new_project": "wechat-decrypt-bing" } }
 ```
 
-**通过 macOS App：** Settings 页面 → Project Aliases 区域，输入两个项目名并点击添加。
-
-历史 TypeScript Web/API 仍保留为开发/reference material；当前产品路径优先使用 MCP 工具和 macOS App。
+历史 TypeScript Web/API 仍保留为开发/reference material；当前产品路径优先使用 MCP 工具。macOS App 暂未提供 Project Aliases 管理 UI。
 
 ```bash
 curl -X POST http://127.0.0.1:3457/api/project-aliases \
@@ -276,34 +274,24 @@ curl -X POST http://127.0.0.1:3457/api/project-aliases \
 
 > **注意：** 项目别名解决的是 Engram 层面的查询问题。各 AI 工具自身的 `/resume` 等功能仍然依赖原始路径，这不在 Engram 的控制范围内。
 
-## 多机同步
+## Peer Sync 状态
 
-Engram 支持多台机器之间同步会话索引（pull-based）。
+Swift service 目前未实现 peer sync。macOS App 不会启用或触发 sync；`triggerSync` 在 service 层返回 unsupported 状态，避免把未实现功能包装成成功操作。
 
-### 配置
+旧版 TypeScript reference tooling 仍保留 peer-sync 配置字段和 API 路由，供开发/迁移参考；它们不是当前 macOS 产品运行路径。
 
-编辑 `~/.engram/settings.json`：
+`~/.engram/settings.json` 中可能仍存在这些兼容字段：
 
 ```json
 {
   "syncNodeName": "macbook-pro",
-  "syncEnabled": true,
+  "syncEnabled": false,
   "syncIntervalMinutes": 10,
   "syncPeers": [
     { "name": "desktop", "url": "http://192.168.1.100:3457" }
   ]
 }
 ```
-
-也可通过 macOS App 的 Settings 页面配置。
-
-### 工作原理
-
-- 每台机器运行 Engram App / EngramService，并通过配置的同步端点交换会话元数据
-- 定时从配置的 peer 拉取新增/更新的会话元数据
-- 使用 `indexed_at` 游标分页，增量同步
-- 同步的会话标记 `origin` 为来源机器名
-- 仅同步元数据（ID、摘要、时间等），不同步完整对话内容
 
 ## 配置
 
@@ -335,10 +323,10 @@ Engram 支持多台机器之间同步会话索引（pull-based）。
 | `ollamaUrl` | string | `"http://localhost:11434"` | Ollama 服务地址（支持远程） |
 | `ollamaModel` | string | `"nomic-embed-text"` | Ollama embedding 模型 |
 | `embeddingDimension` | number | `768` | 向量维度（需与模型输出维度匹配） |
-| `syncNodeName` | string | `"unnamed"` | 当前节点名称 |
-| `syncEnabled` | boolean | `false` | 是否启用同步 |
-| `syncIntervalMinutes` | number | `10` | 同步间隔（分钟） |
-| `syncPeers` | array | `[]` | 同步节点列表 `[{ name, url }]` |
+| `syncNodeName` | string | `"unnamed"` | 旧版 peer-sync 兼容字段；Swift service 当前不使用 |
+| `syncEnabled` | boolean | `false` | 旧版 peer-sync 兼容字段；Swift service 当前不使用 |
+| `syncIntervalMinutes` | number | `10` | 旧版 peer-sync 兼容字段；Swift service 当前不使用 |
+| `syncPeers` | array | `[]` | 旧版 peer-sync 兼容字段；Swift service 当前不使用 |
 
 > **安全说明：** 如果把历史 HTTP/API 的 `httpHost` 设为 `0.0.0.0` 或其他非 localhost 地址，但没有配置 `httpAllowCIDR`，服务会直接拒绝启动，不会自动回退到 localhost。
 
@@ -379,12 +367,12 @@ interface SessionAdapter {
 - **索引库位置：** `~/.engram/index.sqlite`，存储元数据（会话 ID、时间、路径、摘要）、FTS 全文搜索索引和 embedding 向量
 - **原始文件：** 完整消息内容始终从 AI 工具的原始日志文件流式读取，不做额外拷贝
 - **隐私脱敏：** 可在配置中设置正则，匹配内容在建立索引时会被替换为 `[REDACTED]`
-- **数据不离本机：** `EngramService`、`EngramMCP` 和 macOS App 本地运行，不向任何远程服务发送数据（除非启用同步或使用 OpenAI embedding）
+- **数据不离本机：** `EngramService`、`EngramMCP` 和 macOS App 本地运行，不向任何远程服务发送数据（除非使用远程 AI/embedding provider）
 
 ## 开发
 
 ```bash
-npm test              # 运行测试（922 tests）
+npm test              # 运行测试
 npm run test:watch    # 监听模式
 npm run test:coverage # 覆盖率报告
 npm run build         # 编译 TypeScript dev/reference tooling -> dist/

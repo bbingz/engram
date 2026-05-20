@@ -53,9 +53,9 @@ struct PopoverView: View {
                 .accessibilityIdentifier("popover_status_web")
                 statusDot(
                     color: serviceStatusStore.isRunning ? .green : .red,
-                    label: "MCP"
+                    label: "Service"
                 )
-                .accessibilityIdentifier("popover_status_mcp")
+                .accessibilityIdentifier("popover_status_service")
                 embeddingStatusView
                     .accessibilityIdentifier("popover_status_embedding")
             }

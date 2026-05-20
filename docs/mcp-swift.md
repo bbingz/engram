@@ -1,16 +1,16 @@
 # Switching to the Swift MCP Helper
 
-Engram ships two interchangeable MCP server implementations:
+Engram's product MCP path is the Swift helper bundled inside the macOS app.
+The older Node MCP entrypoint remains only as development/reference material.
 
 | Impl | Path | Runtime |
 |------|------|---------|
-| Node (default) | `dist/index.js` | `node ≥ 18` |
-| Swift helper | `Engram.app/Contents/Helpers/EngramMCP` | native macOS binary |
+| Swift helper (product) | `Engram.app/Contents/Helpers/EngramMCP` | native macOS binary |
+| Node reference | `dist/index.js` | Node.js dev/reference tooling |
 
-Both expose the **same 26 tools with identical JSON-RPC contracts** —
-the Swift helper delegates reads to GRDB (read-only pool) and writes
-through the daemon's HTTP API (`actor: "mcp"`). Switching is one line
-of config on the MCP client.
+The Swift helper exposes the MCP tools over stdio. Reads use the Swift
+GRDB read layer, and mutating tools route through the local `EngramService`
+Unix socket instead of a daemon HTTP API.
 
 ## Why switch
 
@@ -19,16 +19,15 @@ of config on the MCP client.
 - **Code-signed, sandbox-friendly**: the helper lives inside the
   notarized `Engram.app` bundle and inherits its signature.
 
-The Node impl stays around as the fallback — if anything goes wrong,
-reverting is a single edit back to `node dist/index.js`.
+The Node entrypoint is retained for development/reference workflows, not as
+the default product runtime.
 
 ## Prerequisites
 
 - Engram.app installed to `/Applications/` (or wherever you keep it);
   Release-built, or Debug build from the Xcode DerivedData path.
-- The Engram daemon reachable at its configured port (default 9100);
-  the Swift helper is **strict-mode only** and does not fall back to
-  direct SQLite on daemon unreachability.
+- `EngramService` reachable through the Unix socket managed by the app
+  under `~/.engram/run/engram-service.sock`.
 
 ## Switching Claude Code
 
@@ -54,9 +53,10 @@ show the 26 tools.
 Any client that accepts a `command` + `args` config works. Point
 `command` at the absolute path to the helper; no args are required.
 
-## Reverting to Node
+## Legacy Node reference
 
-Change the `command` back:
+Development workflows can still point a client at the retained Node reference
+entrypoint:
 
 ```jsonc
 {
@@ -69,8 +69,7 @@ Change the `command` back:
 }
 ```
 
-Restart the client. No data migration is needed — both impls read and
-write the same `~/.engram/index.sqlite`.
+Restart the client. This path is not the shipped macOS product runtime.
 
 ## Sanity check from the terminal
 
@@ -98,10 +97,10 @@ byte-for-byte golden tests in `macos/EngramMCPTests/`.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `engram` tools missing after restart | Daemon not running | Start Engram.app (it supervises the daemon) |
+| `engram` tools missing after restart | Service not running | Start Engram.app (it supervises EngramService) |
 | `spawn EACCES` from client | Binary not executable | `chmod +x` the Helpers/EngramMCP path |
-| Write tool returns `DaemonUnreachable` | Daemon port changed or dead | Check Console.app `com.engram.app:daemon` logs |
+| Write tool returns service unreachable | EngramService not running or socket missing | Start Engram.app and check Console.app `com.engram.app` logs |
 | Stale tool count (< 26) | Client cached old spec | Restart the client |
 
-Logs: helper stderr flows to the client; daemon logs are in Console.app
-subsystem `com.engram.app:daemon`.
+Logs: helper stderr flows to the client; service logs are in Console.app
+subsystem `com.engram.app`.

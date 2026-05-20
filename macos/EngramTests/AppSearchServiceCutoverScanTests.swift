@@ -126,6 +126,86 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         }
     }
 
+    func testPopoverStatusLabelsServiceInsteadOfMcpWhenUsingServiceStatus() throws {
+        let popover = try source("macos/Engram/Views/PopoverView.swift")
+        XCTAssertFalse(
+            popover.contains("label: \"MCP\""),
+            "Popover must not label serviceStatusStore.isRunning as MCP helper health"
+        )
+        XCTAssertTrue(
+            popover.contains("label: \"Service\""),
+            "Popover should label serviceStatusStore.isRunning as Service unless a real MCP helper health check exists"
+        )
+        XCTAssertFalse(
+            popover.contains("popover_status_mcp"),
+            "Popover accessibility id should not imply an MCP helper health check"
+        )
+    }
+
+    func testUnsupportedSyncIsNotPresentedAsWorkingSettingsAction() throws {
+        let networkSettings = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
+        XCTAssertTrue(
+            networkSettings.contains("Sync is not implemented in the Swift service"),
+            "Network settings should state that peer sync is currently unsupported"
+        )
+        XCTAssertFalse(
+            networkSettings.contains("triggerSync()"),
+            "Settings must not expose a Sync Now action while the Swift service returns an unsupported stub"
+        )
+        XCTAssertFalse(
+            networkSettings.contains("syncStatus = \"Synced!\""),
+            "Settings must not present a success state for unsupported sync"
+        )
+    }
+
+    func testReadmeDoesNotAdvertiseUnsupportedAppSurfacesOrFixedTestCounts() throws {
+        let readme = try source("README.md")
+        XCTAssertFalse(
+            readme.contains("多机同步"),
+            "README should not advertise peer sync while the Swift service returns an unsupported stub"
+        )
+        XCTAssertFalse(
+            readme.contains("Settings 页面 → Project Aliases"),
+            "README should not point users to a Project Aliases settings UI that does not exist"
+        )
+        XCTAssertFalse(
+            readme.contains("922 tests"),
+            "README should avoid fixed test counts that drift with the suite"
+        )
+    }
+
+    func testSwiftMcpDocsDoNotDescribeRetiredNodeDaemonRuntimeAsProductPath() throws {
+        let mcpSwift = try source("docs/mcp-swift.md")
+        XCTAssertFalse(
+            mcpSwift.contains("Node (default)"),
+            "Swift MCP docs should not describe Node as the default product runtime"
+        )
+        XCTAssertFalse(
+            mcpSwift.contains("daemon's HTTP API"),
+            "Swift MCP docs should not describe writes as going through retired daemon HTTP"
+        )
+        XCTAssertFalse(
+            mcpSwift.contains("default 9100"),
+            "Swift MCP docs should not require the retired daemon HTTP port"
+        )
+        XCTAssertTrue(
+            mcpSwift.contains("Unix socket"),
+            "Swift MCP docs should describe the current EngramService Unix socket runtime"
+        )
+    }
+
+    func testDaemonClientMapMarksSyncUnsupportedInSwiftService() throws {
+        let daemonMap = try source("docs/swift-single-stack/daemon-client-map.md")
+        XCTAssertTrue(
+            daemonMap.contains("Sync remains an unsupported Swift service stub"),
+            "Daemon map should not present sync as a completed service-backed app feature"
+        )
+        XCTAssertFalse(
+            daemonMap.contains("Sync trigger is native service fail-soft status reporting"),
+            "Daemon map should remove the old wording that made unsupported sync sound product-ready"
+        )
+    }
+
     func testResumeActionLivesInSessionToolbarNotGlobalWindowToolbar() throws {
         let mainWindow = try source("macos/Engram/Views/MainWindowView.swift")
         XCTAssertFalse(
