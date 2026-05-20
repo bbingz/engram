@@ -62,8 +62,9 @@ public actor ServiceWriterGate {
         name: String,
         operation: @Sendable (EngramDatabaseWriter) async throws -> Value
     ) async throws -> ServiceWriterGateResult<Value> {
-        await writeSemaphore.wait()
+        try await writeSemaphore.wait()
         do {
+            try Task.checkCancellation()
             let value = try await operation(writer)
             databaseGeneration += 1
             await writeSemaphore.signal()
@@ -75,8 +76,9 @@ public actor ServiceWriterGate {
     }
 
     public func checkpointWal() async throws {
-        await writeSemaphore.wait()
+        try await writeSemaphore.wait()
         do {
+            try Task.checkCancellation()
             try writer.checkpointPassive()
             await writeSemaphore.signal()
         } catch {
@@ -95,8 +97,9 @@ public actor ServiceWriterGate {
     /// outcome (a reader held the WAL) — caller inspects the tuple.
     @discardableResult
     public func checkpointTruncate() async throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
-        await writeSemaphore.wait()
+        try await writeSemaphore.wait()
         do {
+            try Task.checkCancellation()
             let result = try writer.checkpointTruncate()
             await writeSemaphore.signal()
             return result
@@ -136,29 +139,53 @@ public actor ServiceWriterGate {
 }
 
 private actor ServiceAsyncSemaphore {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     private var permits: Int
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
 
     init(value: Int) {
         permits = value
     }
 
-    func wait() async {
+    func wait() async throws {
+        try Task.checkCancellation()
         if permits > 0 {
             permits -= 1
             return
         }
 
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append(Waiter(id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task {
+                await cancel(id: id)
+            }
         }
+        try Task.checkCancellation()
+    }
+
+    private func cancel(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     func signal() {
-        if waiters.isEmpty {
-            permits += 1
+        if let waiter = waiters.first {
+            waiters.removeFirst()
+            waiter.continuation.resume()
         } else {
-            waiters.removeFirst().resume()
+            permits += 1
         }
     }
 }

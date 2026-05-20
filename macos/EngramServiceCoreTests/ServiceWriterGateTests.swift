@@ -112,6 +112,49 @@ final class ServiceWriterGateTests: XCTestCase {
         let maximumActive = await probe.maximumActive
         XCTAssertEqual(maximumActive, 1)
     }
+
+    func testCancelledQueuedWriteCommandDoesNotExecuteLater() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let probe = CancellationProbe()
+
+        let first = Task {
+            try await gate.performWriteCommand(name: "first") { _ in
+                await probe.markFirstStarted()
+                await probe.waitUntilRelease()
+                return "first"
+            }
+        }
+        await probe.waitUntilFirstStarted()
+
+        let queued = Task {
+            try await gate.performWriteCommand(name: "queued") { _ in
+                await probe.markQueuedOperationRan()
+                return "queued"
+            }
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        queued.cancel()
+        await probe.releaseFirst()
+
+        let firstResult = try await first.value
+        XCTAssertEqual(firstResult.databaseGeneration, 1)
+
+        do {
+            _ = try await queued.value
+            XCTFail("cancelled queued write should not complete successfully")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let queuedOperationRan = await probe.queuedOperationRan
+        XCTAssertFalse(queuedOperationRan)
+
+        let third = try await gate.performWriteCommand(name: "third") { _ in
+            "third"
+        }
+        XCTAssertEqual(third.databaseGeneration, 2)
+    }
 }
 
 private final class CountingWriterFactory {
@@ -136,6 +179,52 @@ private actor SerializationProbe {
 
     func leave() {
         active -= 1
+    }
+}
+
+private actor CancellationProbe {
+    private var firstStarted = false
+    private var firstStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private var queuedRan = false
+
+    var queuedOperationRan: Bool { queuedRan }
+
+    func markFirstStarted() {
+        firstStarted = true
+        let waiters = firstStartWaiters
+        firstStartWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func waitUntilFirstStarted() async {
+        guard !firstStarted else { return }
+        await withCheckedContinuation { continuation in
+            firstStartWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilRelease() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirst() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func markQueuedOperationRan() {
+        queuedRan = true
     }
 }
 
