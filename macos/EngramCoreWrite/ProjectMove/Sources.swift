@@ -64,7 +64,7 @@ public enum SessionSources {
     /// The session roots a project move must consider. Ordering matches
     /// Node parity: known-active first (claude-code → codex → gemini-cli →
     /// iflow → qoder), then flat-layout tail (opencode → antigravity →
-    /// commandcode → copilot).
+    /// antigravity-legacy → commandcode → copilot).
     public static func roots(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [SourceRoot] {

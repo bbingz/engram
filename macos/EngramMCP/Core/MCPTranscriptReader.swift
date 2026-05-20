@@ -30,7 +30,7 @@ enum MCPTranscriptReader {
 
     private static func readWithAdapterRegistry(filePath: String, source: String) -> [MCPTranscriptMessage]? {
         guard let sourceName = SourceName(rawValue: source),
-              let adapter = adapterRegistry().adapter(for: sourceName)
+              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
             return nil
         }
@@ -71,30 +71,6 @@ enum MCPTranscriptReader {
 
         semaphore.wait()
         return box.messages
-    }
-
-    private static func adapterRegistry() -> AdapterRegistry {
-        AdapterRegistry(
-            adapters: [
-                CodexAdapter(),
-                ClaudeCodeAdapter(),
-                ClaudeCodeDerivedSourceAdapter(source: .minimax),
-                ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
-                GeminiCliAdapter(),
-                OpenCodeAdapter(),
-                IflowAdapter(),
-                QwenAdapter(),
-                QoderAdapter(),
-                KimiAdapter(),
-                ClineAdapter(),
-                CursorAdapter(),
-                VsCodeAdapter(),
-                WindsurfAdapter(enableLiveSync: false),
-                AntigravityAdapter(enableLiveSync: false),
-                CommandCodeAdapter(),
-                CopilotAdapter()
-            ]
-        )
     }
 
     private static func parseTypeMessageFormat(filePath: String) -> [MCPTranscriptMessage] {
@@ -204,7 +180,7 @@ enum MCPTranscriptReader {
         readJSONLines(filePath: filePath).compactMap { obj in
             guard
                 let role = obj["role"] as? String,
-                role == "user" || role == "assistant"
+                role == "user" || role == "assistant" || role == "tool"
             else {
                 return nil
             }

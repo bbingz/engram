@@ -13,7 +13,8 @@ enum SourceColors {
         case "windsurf":      return Color(hex: 0x00C4B3)
         case "cline":         return Color(hex: 0x6C47FF)
         case "vscode":        return Color(hex: 0x007ACC)
-        case "antigravity":   return Color(hex: 0x4285F4)
+        case "antigravity", "antigravity-legacy":
+                              return Color(hex: 0x4285F4)
         case "copilot":       return Color(hex: 0x1F6FEB)
         case "opencode":      return Color.primary
         case "iflow":         return Color(hex: 0x615CED)
@@ -43,6 +44,8 @@ enum SourceColors {
         case "cursor":        return "Cursor"
         case "windsurf":      return "Windsurf"
         case "antigravity":   return "Antigravity"
+        case "antigravity-legacy":
+                              return "Antigravity Legacy"
         case "opencode":      return "OpenCode"
         case "iflow":         return "iFlow"
         case "vscode":        return "VS Code"

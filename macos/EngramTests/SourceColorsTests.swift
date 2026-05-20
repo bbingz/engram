@@ -5,12 +5,12 @@ import SwiftUI
 
 final class SourceColorsTests: XCTestCase {
 
-    // All 17 known sources from SourceColors.color(for:)
+    // All displayable source ids from SourceColors.color(for:), including legacy roots.
     private let allSources = [
         "claude-code", "cursor", "codex", "gemini-cli", "windsurf",
         "cline", "vscode", "antigravity", "copilot", "opencode",
-        "iflow", "qwen", "qoder", "kimi", "minimax", "lobsterai",
-        "commandcode"
+            "iflow", "qwen", "qoder", "kimi", "minimax", "lobsterai", "antigravity-legacy",
+            "commandcode"
     ]
 
     func testAllKnownSourcesReturnNonNilColor() {
@@ -39,9 +39,8 @@ final class SourceColorsTests: XCTestCase {
         )
     }
 
-    func testAll17SourceNamesCovered() {
-        // Verify we test the exact 17 sources defined in the switch statement
-        XCTAssertEqual(allSources.count, 17)
+    func testAllSourceNamesCovered() {
+        XCTAssertEqual(allSources.count, 18)
 
         // Each should have a corresponding label (not the default pass-through)
         for source in allSources {

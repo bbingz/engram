@@ -299,7 +299,7 @@ final class AntigravityAdapter: SessionAdapter {
                 }
             }
 
-            let id = Self.cliSessionId(from: locator)
+            let id = cliSessionId(from: locator)
             guard !id.isEmpty, userCount + assistantCount + toolCount > 0 else {
                 return .failure(.unsupportedVirtualLocator)
             }
@@ -376,14 +376,28 @@ final class AntigravityAdapter: SessionAdapter {
         }
     }
 
-    private static func cliSessionId(from locator: String) -> String {
-        let parts = locator.split(separator: "/").map(String.init)
-        guard let logsIndex = parts.lastIndex(of: "logs"),
-              logsIndex >= 2
-        else {
-            return URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
+    private func cliSessionId(from locator: String) -> String {
+        let path = URL(fileURLWithPath: locator).standardizedFileURL.path
+        let root = cliBrainDir.standardizedFileURL.path
+        if path.hasPrefix(root + "/") {
+            let relative = String(path.dropFirst(root.count + 1))
+            let first = relative.split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
+            if !first.hasSuffix(".jsonl") {
+                return first
+            }
         }
-        return parts[logsIndex - 2]
+
+        let parts = path.split(separator: "/").map(String.init)
+        guard
+            let brainIndex = parts.lastIndex(of: "brain"),
+            parts.count > brainIndex + 4,
+            parts[brainIndex + 2] == ".system_generated",
+            parts[brainIndex + 3] == "logs",
+            parts[brainIndex + 4] == "transcript.jsonl"
+        else {
+            return URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent
+        }
+        return parts[brainIndex + 1]
     }
 
     private func inferredCWD(metadata: CascadeCacheSupport.JSONObject, locator: String) -> String {

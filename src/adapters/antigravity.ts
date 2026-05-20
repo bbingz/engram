@@ -519,11 +519,25 @@ export class AntigravityAdapter implements SessionAdapter {
   }
 
   private cliSessionId(filePath: string): string {
-    const parts = filePath.split('/');
-    const logsIndex = parts.lastIndexOf('logs');
-    if (logsIndex >= 2) return parts[logsIndex - 2] ?? '';
+    const normalized = filePath.split('\\').join('/');
+    const cliRoot = this.cliBrainDir.split('\\').join('/');
+    if (normalized.startsWith(`${cliRoot}/`)) {
+      const first = normalized.slice(cliRoot.length + 1).split('/')[0] ?? '';
+      if (first && !first.endsWith('.jsonl')) return first;
+    }
+
+    const parts = normalized.split('/');
+    const brainIndex = parts.lastIndexOf('brain');
+    if (
+      brainIndex >= 0 &&
+      parts[brainIndex + 2] === '.system_generated' &&
+      parts[brainIndex + 3] === 'logs' &&
+      parts[brainIndex + 4] === 'transcript.jsonl'
+    ) {
+      return parts[brainIndex + 1] ?? '';
+    }
     return (
-      filePath
+      normalized
         .split('/')
         .pop()
         ?.replace(/\.jsonl$/, '') ?? ''
