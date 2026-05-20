@@ -10,8 +10,27 @@ function buildIndexJobId(
   sessionId: string,
   targetSyncVersion: number,
   jobKind: IndexJobKind,
+  targetSnapshotHash?: string,
 ): string {
+  if (targetSnapshotHash) {
+    return `${sessionId}:${targetSyncVersion}:${targetSnapshotHash}:${jobKind}`;
+  }
   return `${sessionId}:${targetSyncVersion}:${jobKind}`;
+}
+
+function parseTargetSnapshotHash(
+  id: string,
+  targetSyncVersion: number,
+  jobKind: IndexJobKind,
+): string | undefined {
+  const suffix = `:${jobKind}`;
+  if (!id.endsWith(suffix)) return undefined;
+  const withoutKind = id.slice(0, -suffix.length);
+  const marker = `:${targetSyncVersion}:`;
+  const markerIndex = withoutKind.lastIndexOf(marker);
+  if (markerIndex === -1) return undefined;
+  const hash = withoutKind.slice(markerIndex + marker.length);
+  return hash.length > 0 ? hash : undefined;
 }
 
 export function insertIndexJobs(
@@ -19,6 +38,7 @@ export function insertIndexJobs(
   sessionId: string,
   targetSyncVersion: number,
   jobKinds: IndexJobKind[],
+  targetSnapshotHash?: string,
 ): void {
   const insert = db.prepare(`
     INSERT INTO session_index_jobs (
@@ -34,7 +54,12 @@ export function insertIndexJobs(
   const tx = db.transaction((kinds: IndexJobKind[]) => {
     for (const jobKind of kinds) {
       insert.run({
-        id: buildIndexJobId(sessionId, targetSyncVersion, jobKind),
+        id: buildIndexJobId(
+          sessionId,
+          targetSyncVersion,
+          jobKind,
+          targetSnapshotHash,
+        ),
         sessionId,
         jobKind,
         targetSyncVersion,
@@ -72,6 +97,11 @@ export function takeRecoverableIndexJobs(
     sessionId: row.session_id,
     jobKind: row.job_kind,
     targetSyncVersion: row.target_sync_version,
+    targetSnapshotHash: parseTargetSnapshotHash(
+      row.id,
+      row.target_sync_version,
+      row.job_kind,
+    ),
     status: row.status,
     retryCount: row.retry_count,
     lastError: row.last_error ?? undefined,
@@ -107,6 +137,11 @@ export function listIndexJobs(
     sessionId: row.session_id,
     jobKind: row.job_kind,
     targetSyncVersion: row.target_sync_version,
+    targetSnapshotHash: parseTargetSnapshotHash(
+      row.id,
+      row.target_sync_version,
+      row.job_kind,
+    ),
     status: row.status,
     retryCount: row.retry_count,
     lastError: row.last_error ?? undefined,

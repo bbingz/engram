@@ -407,12 +407,140 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertNotEqual(snapshots.first?.tier, .skip)
     }
 
+    func testCodexAdapterStripsInjectedPrefixAndPreservesRealUserTask() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-injected-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let realTask = "请修复真实问题，不要丢失这个任务。"
+        let injectedPrompt = """
+        # AGENTS.md instructions for /Users/bing/-Code-/engram
+
+        <INSTRUCTIONS>
+        Follow the repo instructions.
+        </INSTRUCTIONS>
+        <environment_context>
+          <cwd>/Users/bing/-Code-/engram</cwd>
+        </environment_context>
+
+        \(realTask)
+        """
+        let file = root.appendingPathComponent("rollout-2026-05-20T00-00-00-test.jsonl")
+        try writeJSONL(
+            [
+                [
+                    "type": "session_meta",
+                    "payload": [
+                        "id": "codex-injected-real-task",
+                        "timestamp": "2026-05-20T00:00:00Z",
+                        "cwd": "/Users/bing/-Code-/engram",
+                        "model_provider": "openai"
+                    ]
+                ],
+                [
+                    "type": "response_item",
+                    "timestamp": "2026-05-20T00:00:01Z",
+                    "payload": [
+                        "type": "message",
+                        "role": "user",
+                        "content": [["type": "input_text", "text": injectedPrompt]]
+                    ]
+                ],
+                [
+                    "type": "response_item",
+                    "timestamp": "2026-05-20T00:00:02Z",
+                    "payload": [
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [["type": "output_text", "text": "完成。"]]
+                    ]
+                ]
+            ],
+            to: file
+        )
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        guard case let .success(info) = try await adapter.parseSessionInfo(locator: file.path) else {
+            XCTFail("Codex fixture should parse")
+            return
+        }
+
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.messageCount, 2)
+        XCTAssertEqual(info.summary, realTask)
+
+        let stream = try await adapter.streamMessages(locator: file.path, options: StreamMessagesOptions())
+        var messages: [NormalizedMessage] = []
+        for try await message in stream {
+            messages.append(message)
+        }
+        XCTAssertEqual(messages.first?.content, realTask)
+
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [adapter]
+        )
+        let snapshots = try await indexer.collectSnapshots()
+        XCTAssertEqual(snapshots.first?.summary, realTask)
+        XCTAssertNotEqual(snapshots.first?.tier, .skip)
+    }
+
+    func testSnapshotHashChangeWithSameSyncVersionEnqueuesDistinctIndexJobs() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "hash-change", snapshotHash: "h1"))
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'hash-change'")
+
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "hash-change", snapshotHash: "h2", sizeBytes: 256, summary: "new searchable summary")
+            )
+
+            let pendingJobIds = try String.fetchAll(
+                db,
+                sql: "SELECT id FROM session_index_jobs WHERE session_id = 'hash-change' AND status = 'pending' ORDER BY id"
+            )
+            XCTAssertEqual(
+                pendingJobIds,
+                ["hash-change:1:h2:embedding", "hash-change:1:h2:fts"]
+            )
+        }
+    }
+
+    func testDowngradingSessionToSkipDeletesStaleSearchArtifacts() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "downgrade", snapshotHash: "h1", tier: .normal))
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('downgrade', 'old searchable content')")
+            try db.execute(sql: "CREATE TABLE IF NOT EXISTS session_embeddings(session_id TEXT PRIMARY KEY)")
+            try db.execute(sql: "INSERT INTO session_embeddings(session_id) VALUES ('downgrade')")
+
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "downgrade", snapshotHash: "h2", tier: .skip)
+            )
+
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'downgrade'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'downgrade'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_index_jobs WHERE session_id = 'downgrade' AND status = 'pending'"),
+                0
+            )
+        }
+    }
+
     private func makeSnapshot(
         id: String,
         syncVersion: Int = 1,
         snapshotHash: String = "h1",
         sourceLocator: String = "/tmp/rollout.jsonl",
         sizeBytes: Int64 = 128,
+        summary: String = "hello",
         tier: SessionTier = .normal
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
@@ -434,12 +562,20 @@ final class IndexerParityTests: XCTestCase {
             assistantMessageCount: 1,
             toolMessageCount: 0,
             systemMessageCount: 0,
-            summary: "hello",
+            summary: summary,
             summaryMessageCount: nil,
             origin: nil,
             tier: tier,
             agentRole: nil
         )
+    }
+
+    private func writeJSONL(_ objects: [[String: Any]], to url: URL) throws {
+        let lines = try objects.map { object in
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+            return String(data: data, encoding: .utf8)!
+        }
+        try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func expectedFixture() throws -> ExpectedIndexerFixture {

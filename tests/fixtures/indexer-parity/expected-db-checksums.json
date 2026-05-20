@@ -48,7 +48,7 @@
       "rows": [
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:embedding",
+          "id": "codex-session-001:1:c7450f8df0cc537034d612f35970f8571cc136fc8b17d8f15b3569368c4311bb:embedding",
           "job_kind": "embedding",
           "last_error": null,
           "retry_count": 0,
@@ -59,7 +59,7 @@
         },
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:fts",
+          "id": "codex-session-001:1:c7450f8df0cc537034d612f35970f8571cc136fc8b17d8f15b3569368c4311bb:fts",
           "job_kind": "fts",
           "last_error": null,
           "retry_count": 0,

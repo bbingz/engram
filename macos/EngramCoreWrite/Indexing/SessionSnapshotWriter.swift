@@ -24,9 +24,18 @@ public final class SessionSnapshotWriter {
         try upsert(merge.snapshot)
         try upsertZeroCostRow(merge.snapshot)
 
+        if shouldDeleteIndexArtifacts(current: current, merged: merge.snapshot) {
+            try deleteIndexArtifacts(sessionId: snapshot.id)
+        }
+
         let jobs = jobKinds(for: merge.snapshot.tier ?? .normal, changeSet: merge.changeSet)
         if !jobs.isEmpty {
-            try insertIndexJobs(sessionId: snapshot.id, targetSyncVersion: snapshot.syncVersion, jobKinds: jobs)
+            try insertIndexJobs(
+                sessionId: snapshot.id,
+                targetSyncVersion: snapshot.syncVersion,
+                targetSnapshotHash: merge.snapshot.snapshotHash,
+                jobKinds: jobs
+            )
         }
 
         return SessionWriteResult(action: .merge, changeSet: merge.changeSet)
@@ -240,6 +249,7 @@ public final class SessionSnapshotWriter {
     private func insertIndexJobs(
         sessionId: String,
         targetSyncVersion: Int,
+        targetSnapshotHash: String,
         jobKinds: [IndexJobKind]
     ) throws {
         for jobKind in jobKinds {
@@ -255,13 +265,40 @@ public final class SessionSnapshotWriter {
                   updated_at = datetime('now')
                 """,
                 arguments: [
-                    "\(sessionId):\(targetSyncVersion):\(jobKind.rawValue)",
+                    "\(sessionId):\(targetSyncVersion):\(targetSnapshotHash):\(jobKind.rawValue)",
                     sessionId,
                     jobKind.rawValue,
                     targetSyncVersion
                 ]
             )
         }
+    }
+
+    private func shouldDeleteIndexArtifacts(
+        current: AuthoritativeSessionSnapshot?,
+        merged: AuthoritativeSessionSnapshot
+    ) -> Bool {
+        guard let current else { return false }
+        return (current.tier ?? .normal) != .skip && (merged.tier ?? .normal) == .skip
+    }
+
+    private func deleteIndexArtifacts(sessionId: String) throws {
+        try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [sessionId])
+        if try tableExists("session_embeddings") {
+            try db.execute(sql: "DELETE FROM session_embeddings WHERE session_id = ?", arguments: [sessionId])
+        }
+        try db.execute(
+            sql: "DELETE FROM session_index_jobs WHERE session_id = ? AND status IN ('pending', 'failed_retryable')",
+            arguments: [sessionId]
+        )
+    }
+
+    private func tableExists(_ name: String) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?)",
+            arguments: [name]
+        ) ?? false
     }
 
     private func jobKinds(for tier: SessionTier, changeSet: SessionChangeSet) -> [IndexJobKind] {

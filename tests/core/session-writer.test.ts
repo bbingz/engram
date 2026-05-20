@@ -269,4 +269,99 @@ describe('SessionSnapshotWriter', () => {
       expect(row.file_path === '' || row.file_path === null).toBe(true);
     });
   });
+
+  it('enqueues fresh content-hash jobs when same sync version changes content', () => {
+    const writer = new SessionSnapshotWriter(db);
+    const snapshot = {
+      id: 'sess-hash',
+      source: 'codex' as const,
+      authoritativeNode: 'node-a',
+      syncVersion: 1,
+      snapshotHash: 'hash-1',
+      indexedAt: '2026-04-20T12:00:00Z',
+      sourceLocator: '/tmp/hash.jsonl',
+      startTime: '2026-04-20T11:00:00Z',
+      cwd: '/repo',
+      messageCount: 2,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      summary: 'old summary',
+      tier: 'normal' as const,
+    };
+
+    writer.writeAuthoritativeSnapshot(snapshot);
+    db.getRawDb()
+      .prepare(
+        "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = ?",
+      )
+      .run('sess-hash');
+    writer.writeAuthoritativeSnapshot({
+      ...snapshot,
+      snapshotHash: 'hash-2',
+      sizeBytes: 256,
+      summary: 'new summary',
+    });
+
+    expect(
+      db
+        .listIndexJobs('sess-hash')
+        .filter((j) => j.status === 'pending')
+        .map((j) => j.id)
+        .sort(),
+    ).toEqual(['sess-hash:1:hash-2:embedding', 'sess-hash:1:hash-2:fts']);
+  });
+
+  it('deletes stale search artifacts when a normal session is downgraded to skip', () => {
+    const writer = new SessionSnapshotWriter(db);
+    const snapshot = {
+      id: 'sess-downgrade',
+      source: 'codex' as const,
+      authoritativeNode: 'node-a',
+      syncVersion: 1,
+      snapshotHash: 'hash-1',
+      indexedAt: '2026-04-20T12:00:00Z',
+      sourceLocator: '/tmp/downgrade.jsonl',
+      startTime: '2026-04-20T11:00:00Z',
+      cwd: '/repo',
+      messageCount: 2,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      summary: 'visible summary',
+      tier: 'normal' as const,
+    };
+
+    writer.writeAuthoritativeSnapshot(snapshot);
+    db.replaceFtsContent('sess-downgrade', ['old searchable content']);
+    db.getRawDb()
+      .prepare(
+        'CREATE TABLE IF NOT EXISTS session_embeddings(session_id TEXT PRIMARY KEY)',
+      )
+      .run();
+    db.getRawDb()
+      .prepare('INSERT INTO session_embeddings(session_id) VALUES (?)')
+      .run('sess-downgrade');
+
+    writer.writeAuthoritativeSnapshot({
+      ...snapshot,
+      snapshotHash: 'hash-2',
+      tier: 'skip',
+    });
+
+    expect(db.getFtsContent('sess-downgrade')).toEqual([]);
+    expect(
+      db
+        .getRawDb()
+        .prepare(
+          'SELECT COUNT(*) AS count FROM session_embeddings WHERE session_id = ?',
+        )
+        .get('sess-downgrade'),
+    ).toEqual({ count: 0 });
+    expect(
+      db.listIndexJobs('sess-downgrade').filter((j) => j.status === 'pending'),
+    ).toEqual([]);
+  });
 });

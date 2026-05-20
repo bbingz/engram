@@ -97,12 +97,15 @@ describe('mergeSessionSnapshot', () => {
     expect(result.merged.summary).toBe('old summary');
   });
 
-  it('rejects equal syncVersion with different snapshot hash', () => {
-    expect(() =>
-      mergeSessionSnapshot(
-        makeSnapshot({ syncVersion: 2, snapshotHash: 'hash-a' }),
-        makeSnapshot({ syncVersion: 2, snapshotHash: 'hash-b' }),
-      ),
-    ).toThrow(/snapshot hash/i);
+  it('accepts equal syncVersion with different snapshot hash as a content refresh', () => {
+    const result = mergeSessionSnapshot(
+      makeSnapshot({ syncVersion: 2, snapshotHash: 'hash-a', summary: 'old' }),
+      makeSnapshot({ syncVersion: 2, snapshotHash: 'hash-b', summary: 'new' }),
+    );
+
+    expect(result.action).toBe('merge');
+    expect(result.merged.snapshotHash).toBe('hash-b');
+    expect(result.changeSet.flags.has('search_text_changed')).toBe(true);
+    expect(result.changeSet.flags.has('embedding_text_changed')).toBe(true);
   });
 });

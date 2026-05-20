@@ -104,4 +104,32 @@ describe('IndexJobRunner', () => {
       'not_applicable',
     );
   });
+
+  it('rebuilds FTS content for content-hash targeted jobs', async () => {
+    db.upsertAuthoritativeSnapshot({
+      id: 'sess-3',
+      source: 'codex',
+      authoritativeNode: 'local',
+      syncVersion: 1,
+      snapshotHash: 'hash-2',
+      indexedAt: '2026-03-18T12:00:00Z',
+      sourceLocator: '/tmp/rollout.jsonl',
+      startTime: '2026-03-18T11:00:00Z',
+      cwd: '/repo',
+      messageCount: 2,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      summary: 'new searchable summary',
+    });
+    db.replaceFtsContent('sess-3', ['old searchable summary']);
+    db.insertIndexJobs('sess-3', 1, ['fts'], 'hash-2');
+
+    const runner = new IndexJobRunner(db, mockStore, mockClient);
+    await runner.runRecoverableJobs();
+
+    expect(db.getFtsContent('sess-3')).toEqual(['new searchable summary']);
+    expect(db.listIndexJobs('sess-3')[0]?.status).toBe('completed');
+  });
 });

@@ -361,6 +361,19 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testSearchExcludesSkipAndLiteSessions() throws {
+        try insertTestSession(at: dbPath, id: "s-visible", source: "claude-code", tier: "normal")
+        try insertTestSession(at: dbPath, id: "s-skip", source: "claude-code", tier: "skip")
+        try insertTestSession(at: dbPath, id: "s-lite", source: "claude-code", tier: "lite")
+        try insertFTSContent(at: dbPath, sessionId: "s-visible", content: "visible session with search terms")
+        try insertFTSContent(at: dbPath, sessionId: "s-skip", content: "skip session with search terms")
+        try insertFTSContent(at: dbPath, sessionId: "s-lite", content: "lite session with search terms")
+
+        let results = try db.search(query: "search terms")
+        XCTAssertEqual(results.map(\.id), ["s-visible"])
+    }
+
+    @MainActor
     func testSearchShortQueryReturnsEmpty() throws {
         try insertTestSession(at: dbPath, id: "s1")
         try insertFTSContent(at: dbPath, sessionId: "s1", content: "some content")

@@ -25,6 +25,12 @@ export class SessionSnapshotWriter {
 
       this.db.upsertAuthoritativeSnapshot(mergeResult.merged);
 
+      const currentTier = current?.tier ?? 'normal';
+      const mergedTier = mergeResult.merged.tier ?? 'normal';
+      if (current && currentTier !== 'skip' && mergedTier === 'skip') {
+        this.db.deleteIndexArtifacts(snapshot.id);
+      }
+
       const tier = mergeResult.merged.tier ?? 'normal';
       const jobKinds: IndexJobKind[] = [];
       if (
@@ -38,7 +44,12 @@ export class SessionSnapshotWriter {
       )
         jobKinds.push('embedding');
       if (jobKinds.length > 0) {
-        this.db.insertIndexJobs(snapshot.id, snapshot.syncVersion, jobKinds);
+        this.db.insertIndexJobs(
+          snapshot.id,
+          snapshot.syncVersion,
+          jobKinds,
+          mergeResult.merged.snapshotHash,
+        );
       }
 
       return {

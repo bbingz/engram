@@ -68,21 +68,41 @@ export function mergeSessionSnapshot(
     incoming.syncVersion === current.syncVersion &&
     incoming.snapshotHash === current.snapshotHash
   ) {
-    return { action: 'noop', merged: current, changeSet: { flags: new Set() } };
-  }
-
-  if (
-    incoming.syncVersion === current.syncVersion &&
-    incoming.snapshotHash !== current.snapshotHash
-  ) {
-    throw new Error(
-      `Conflicting snapshot hash for session ${incoming.id} at syncVersion ${incoming.syncVersion}`,
-    );
+    const currentTier = current.tier ?? 'normal';
+    const incomingTier = incoming.tier ?? 'normal';
+    const incomingSizeBytes = incoming.sizeBytes ?? current.sizeBytes;
+    if (
+      currentTier === incomingTier &&
+      (current.agentRole ?? null) === (incoming.agentRole ?? null) &&
+      current.sizeBytes === incomingSizeBytes
+    ) {
+      return {
+        action: 'noop',
+        merged: current,
+        changeSet: { flags: new Set() },
+      };
+    }
   }
 
   const merged = coalesceSnapshot(current, incoming);
 
   const flags = new Set<ChangeFlag>(['sync_payload_changed']);
+  const currentTier = current.tier ?? 'normal';
+  const incomingTier = merged.tier ?? 'normal';
+
+  if (
+    currentTier !== incomingTier ||
+    (current.agentRole ?? null) !== (merged.agentRole ?? null)
+  ) {
+    flags.add('local_state_changed');
+  }
+
+  if (currentTier === 'skip' && incomingTier !== 'skip') {
+    flags.add('search_text_changed');
+    if (incomingTier === 'normal' || incomingTier === 'premium') {
+      flags.add('embedding_text_changed');
+    }
+  }
 
   if (buildSearchText(current) !== buildSearchText(merged)) {
     flags.add('search_text_changed');

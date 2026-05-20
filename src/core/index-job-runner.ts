@@ -46,7 +46,12 @@ export class IndexJobRunner {
 
   private runFtsJob(job: PersistedIndexJob): void {
     const snapshot = this.db.getAuthoritativeSnapshot(job.sessionId);
-    if (!snapshot || snapshot.syncVersion !== job.targetSyncVersion) {
+    if (
+      !snapshot ||
+      snapshot.syncVersion !== job.targetSyncVersion ||
+      (job.targetSnapshotHash &&
+        snapshot.snapshotHash !== job.targetSnapshotHash)
+    ) {
       this.db.markIndexJobCompleted(job.id);
       return;
     }
@@ -54,7 +59,7 @@ export class IndexJobRunner {
     // Preserve existing FTS content (full user/assistant messages indexed by Indexer).
     // Only rebuild if no existing content — avoid regressing from full messages to summary-only.
     const existing = this.db.getFtsContent(job.sessionId);
-    if (existing.length > 0) {
+    if (existing.length > 0 && !job.targetSnapshotHash) {
       this.db.markIndexJobCompleted(job.id);
       return;
     }
@@ -73,7 +78,12 @@ export class IndexJobRunner {
 
   private async runEmbeddingJob(job: PersistedIndexJob): Promise<void> {
     const snapshot = this.db.getAuthoritativeSnapshot(job.sessionId);
-    if (!snapshot || snapshot.syncVersion !== job.targetSyncVersion) {
+    if (
+      !snapshot ||
+      snapshot.syncVersion !== job.targetSyncVersion ||
+      (job.targetSnapshotHash &&
+        snapshot.snapshotHash !== job.targetSnapshotHash)
+    ) {
       this.db.markIndexJobCompleted(job.id);
       return;
     }

@@ -335,6 +335,7 @@ final class DatabaseManager {
                     SELECT DISTINCT s.* FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
                     WHERE f.content LIKE ? AND s.hidden_at IS NULL
+                      AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
                     ORDER BY s.start_time DESC
                     LIMIT ?
                 """, arguments: ["%\(query)%", limit])
@@ -353,7 +354,7 @@ final class DatabaseManager {
                 guard !seen.contains(match.sessionId) else { continue }
                 seen.insert(match.sessionId)
                 if let s = try Session.fetchOne(db,
-                    sql: "SELECT * FROM sessions WHERE id = ? AND hidden_at IS NULL",
+                    sql: "SELECT * FROM sessions WHERE id = ? AND hidden_at IS NULL AND (tier IS NULL OR tier NOT IN ('skip', 'lite'))",
                     arguments: [match.sessionId]) {
                     results.append(s)
                     if results.count >= limit { break }

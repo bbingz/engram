@@ -191,12 +191,16 @@ final class CodexAdapter: SessionAdapter {
 
                 let role = JSONLAdapterSupport.string(payload["role"])
                 if role == "user" {
-                    let text = Self.extractText(JSONLAdapterSupport.array(payload["content"]))
-                    if Self.isSystemInjection(text) {
+                    let rawText = Self.extractText(JSONLAdapterSupport.array(payload["content"]))
+                    let normalized = Self.normalizeUserText(rawText)
+                    if normalized.strippedSystemContent {
                         systemCount += 1
-                    } else {
+                    }
+                    if let text = normalized.userText {
                         userCount += 1
                         if firstUserText.isEmpty { firstUserText = text }
+                    } else if !normalized.strippedSystemContent, Self.isSystemInjection(rawText) {
+                        systemCount += 1
                     }
                 } else if role == "assistant" {
                     assistantCount += 1
@@ -282,9 +286,18 @@ final class CodexAdapter: SessionAdapter {
         else {
             return nil
         }
+        let role: NormalizedMessageRole = rawRole == "user" ? .user : .assistant
+        let rawText = extractText(JSONLAdapterSupport.array(payload["content"]))
+        let content: String
+        if role == .user {
+            guard let userText = normalizeUserText(rawText).userText else { return nil }
+            content = userText
+        } else {
+            content = rawText
+        }
         return NormalizedMessage(
-            role: rawRole == "user" ? .user : .assistant,
-            content: extractText(JSONLAdapterSupport.array(payload["content"])),
+            role: role,
+            content: content,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: nil,
             usage: nil
@@ -298,12 +311,47 @@ final class CodexAdapter: SessionAdapter {
             text.hasPrefix("<environment_context>")
     }
 
+    private static func normalizeUserText(_ text: String) -> (userText: String?, strippedSystemContent: Bool) {
+        var remaining = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var stripped = false
+
+        if remaining.hasPrefix("# AGENTS.md instructions for ") || remaining.hasPrefix("<INSTRUCTIONS>") {
+            if let end = remaining.range(of: "</INSTRUCTIONS>") {
+                remaining = String(remaining[end.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                stripped = true
+            }
+        }
+
+        var removedBlock = true
+        while removedBlock {
+            removedBlock = false
+            for tag in ["local-command-caveat", "environment_context", "skills_instructions", "plugins_instructions"] {
+                let open = "<\(tag)>"
+                let close = "</\(tag)>"
+                if remaining.hasPrefix(open), let end = remaining.range(of: close) {
+                    remaining = String(remaining[end.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    stripped = true
+                    removedBlock = true
+                }
+            }
+        }
+
+        guard !remaining.isEmpty else {
+            return (nil, stripped || isSystemInjection(text))
+        }
+        if !stripped, isSystemInjection(remaining) {
+            return (nil, true)
+        }
+        return (remaining, stripped)
+    }
+
     private static func extractText(_ content: [Any]?) -> String {
         guard let content else { return "" }
         for item in content {
             guard let object = JSONLAdapterSupport.object(item) else { continue }
             if let text = JSONLAdapterSupport.string(object["text"]) { return text }
             if let inputText = JSONLAdapterSupport.string(object["input_text"]) { return inputText }
+            if let outputText = JSONLAdapterSupport.string(object["output_text"]) { return outputText }
         }
         return ""
     }

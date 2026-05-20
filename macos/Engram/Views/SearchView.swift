@@ -251,6 +251,7 @@ struct SearchView: View {
                                 SELECT DISTINCT s.* FROM sessions_fts f
                                 JOIN sessions s ON s.id = f.session_id
                                 WHERE f.content LIKE ? AND s.hidden_at IS NULL
+                                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
                                 ORDER BY s.start_time DESC
                                 LIMIT 20
                             """, arguments: ["%\(q)%"])
@@ -261,6 +262,7 @@ struct SearchView: View {
                                 SELECT s.* FROM sessions_fts f
                                 JOIN sessions s ON s.id = f.session_id
                                 WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+                                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
                                 LIMIT 20
                             """, arguments: [q])
                         }

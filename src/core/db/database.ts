@@ -224,6 +224,30 @@ export class Database {
   replaceFtsContent(sessionId: string, contents: string[]): void {
     fts.replaceFtsContent(this.db, sessionId, contents);
   }
+  deleteIndexArtifacts(sessionId: string): void {
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare('DELETE FROM sessions_fts WHERE session_id = ?')
+        .run(sessionId);
+      const hasEmbeddings =
+        this.db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'session_embeddings'",
+          )
+          .get() !== undefined;
+      if (hasEmbeddings) {
+        this.db
+          .prepare('DELETE FROM session_embeddings WHERE session_id = ?')
+          .run(sessionId);
+      }
+      this.db
+        .prepare(
+          "DELETE FROM session_index_jobs WHERE session_id = ? AND status IN ('pending', 'failed_retryable')",
+        )
+        .run(sessionId);
+    });
+    tx();
+  }
 
   // --- Metrics repo ---
   statsGroupBy(
@@ -303,8 +327,15 @@ export class Database {
     sessionId: string,
     targetSyncVersion: number,
     jobKinds: IndexJobKind[],
+    targetSnapshotHash?: string,
   ): void {
-    jobs.insertIndexJobs(this.db, sessionId, targetSyncVersion, jobKinds);
+    jobs.insertIndexJobs(
+      this.db,
+      sessionId,
+      targetSyncVersion,
+      jobKinds,
+      targetSnapshotHash,
+    );
   }
   takeRecoverableIndexJobs(limit: number): PersistedIndexJob[] {
     return jobs.takeRecoverableIndexJobs(this.db, limit);

@@ -62,6 +62,7 @@ export interface PersistedIndexJob {
   sessionId: string;
   jobKind: IndexJobKind;
   targetSyncVersion: number;
+  targetSnapshotHash?: string;
   status: IndexJobStatus;
   retryCount: number;
   lastError?: string;

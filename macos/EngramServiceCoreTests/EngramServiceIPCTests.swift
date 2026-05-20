@@ -104,6 +104,32 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(embedding.progress, 50)
     }
 
+    func testSQLiteReadProviderSearchExcludesSkipAndLiteSessions() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES
+                  ('s-skip', 'codex', '2026-04-23T03:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/skip.jsonl', 44, '2026-04-23T03:00:00Z', 'skip'),
+                  ('s-lite', 'codex', '2026-04-23T04:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/lite.jsonl', 45, '2026-04-23T04:00:00Z', 'lite');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s-skip', 'hello from skipped noise');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s-lite', 'hello from lite noise');
+                """
+            )
+        }
+        let provider = SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10))
+
+        XCTAssertEqual(search.items.map(\.id), ["s1"])
+    }
+
     func testSQLiteReadProviderBuildsResumeCommand() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

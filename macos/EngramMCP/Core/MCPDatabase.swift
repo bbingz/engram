@@ -912,6 +912,7 @@ final class MCPDatabase {
                 "sessions_fts MATCH ?",
                 "s.hidden_at IS NULL",
                 "s.orphan_status IS NULL",
+                "(s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))",
             ]
             var values: [DatabaseValueConvertible?] = [query]
 
