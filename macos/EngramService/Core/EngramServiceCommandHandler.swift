@@ -155,13 +155,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "triggerSync":
                 let payload = try decodePayload(EngramServiceTriggerSyncRequest.self, from: request)
-                let result = try await writerGate.performWriteCommand(name: request.command) { _ in
-                    try Self.triggerSync(payload)
-                }
                 return .success(
                     requestId: request.requestId,
-                    result: try Self.encode(result.value),
-                    databaseGeneration: result.databaseGeneration
+                    result: try Self.encode(Self.triggerSync(payload))
                 )
             case "regenerateAllTitles":
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in

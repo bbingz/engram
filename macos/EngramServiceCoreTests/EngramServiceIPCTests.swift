@@ -846,6 +846,41 @@ final class EngramServiceIPCTests: XCTestCase {
             XCTAssertNotEqual(name, "UnsupportedNativeCommand")
         }
     }
+
+    func testUnsupportedTriggerSyncDoesNotAdvanceDatabaseGeneration() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let transport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        let request = EngramServiceRequestEnvelope(
+            command: "triggerSync",
+            payload: try JSONEncoder().encode(EngramServiceTriggerSyncRequest(peer: "laptop"))
+        )
+        let response = try await transport.send(request, timeout: 2)
+
+        guard case .success(_, let data, let generation) = response else {
+            throw EngramServiceError.invalidRequest(message: "Expected unsupported sync response")
+        }
+        XCTAssertNil(generation)
+        XCTAssertEqual(
+            try JSONDecoder().decode(EngramServiceTriggerSyncResponse.self, from: data).results,
+            [
+                EngramServiceTriggerSyncResponse.ResultItem(
+                    peer: "laptop",
+                    ok: false,
+                    pulled: 0,
+                    pushed: 0,
+                    error: "Sync is not implemented in the Swift service"
+                )
+            ]
+        )
+    }
 }
 
 private extension EngramServiceJSONValue {
