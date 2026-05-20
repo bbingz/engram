@@ -206,6 +206,30 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    func testAppLaunchDoesNotMarkWebEndpointReadyBeforeServiceEvent() throws {
+        let app = try source("macos/Engram/App.swift")
+        XCTAssertFalse(
+            app.contains("serviceStatusStore.endpointHost = \"127.0.0.1\""),
+            "App launch must not mark the Web endpoint ready before the service emits a verified web_ready event"
+        )
+        XCTAssertFalse(
+            app.contains("serviceStatusStore.endpointPort = 3457"),
+            "App launch must not enable Web UI before service readiness is verified"
+        )
+    }
+
+    func testServiceRunnerDoesNotEmitWebReadyBeforeServerRun() throws {
+        let runner = try source("macos/EngramService/Core/EngramServiceRunner.swift")
+        let runRange = try XCTUnwrap(runner.range(of: "try await webServer.run()"))
+        let readyRange = try XCTUnwrap(runner.range(of: #"{"event":"web_ready""#))
+
+        XCTAssertLessThan(
+            runRange.lowerBound,
+            readyRange.lowerBound,
+            "Service must not emit web_ready before starting the Web server run loop"
+        )
+    }
+
     func testResumeActionLivesInSessionToolbarNotGlobalWindowToolbar() throws {
         let mainWindow = try source("macos/Engram/Views/MainWindowView.swift")
         XCTAssertFalse(

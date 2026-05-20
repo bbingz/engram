@@ -83,6 +83,17 @@ final class EngramServiceStatusStoreTests: XCTestCase {
         XCTAssertEqual(store.endpointPort, 3457)
     }
 
+    func testWebErrorClearsEndpointHealth() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode(#"{"event":"web_ready","port":3457,"host":"127.0.0.1"}"#))
+        store.apply(try decode(#"{"event":"web_error","message":"Address already in use"}"#))
+
+        XCTAssertNil(store.endpointHost)
+        XCTAssertNil(store.endpointPort)
+        XCTAssertEqual(store.status, .degraded(message: "Web UI unavailable: Address already in use"))
+    }
+
     private func decode(_ json: String) throws -> EngramServiceEvent {
         try JSONDecoder().decode(EngramServiceEvent.self, from: Data(json.utf8))
     }

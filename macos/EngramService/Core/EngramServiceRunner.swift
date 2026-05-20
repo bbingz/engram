@@ -61,8 +61,22 @@ public enum EngramServiceRunner {
         let webTask = Task {
             do {
                 let webServer = try EngramWebUIServer(databasePath: databasePath)
-                print(#"{"event":"web_ready","host":"127.0.0.1","port":3457}"#)
-                fflush(stdout)
+                let readyTask = Task {
+                    do {
+                        try await waitForWebHealth(host: "127.0.0.1", port: 3457)
+                        emitWebReady(host: "127.0.0.1", port: 3457)
+                    } catch is CancellationError {
+                    } catch {
+                        ServiceLogger.warn(
+                            "web ui health probe failed: \(error.localizedDescription)",
+                            category: .runner
+                        )
+                        emit(ServiceWebErrorEvent(message: error.localizedDescription))
+                    }
+                }
+                defer {
+                    readyTask.cancel()
+                }
                 try await webServer.run()
             } catch is CancellationError {
                 return
@@ -71,8 +85,7 @@ public enum EngramServiceRunner {
                     "web ui failed to start: \(error.localizedDescription)",
                     category: .runner
                 )
-                print(#"{"event":"web_error","message":"\#(error.localizedDescription)"}"#)
-                fflush(stdout)
+                emit(ServiceWebErrorEvent(message: error.localizedDescription))
             }
         }
 
@@ -192,6 +205,35 @@ public enum EngramServiceRunner {
         }
     }
 
+    private static func waitForWebHealth(host: String, port: Int) async throws {
+        let url = URL(string: "http://\(host):\(port)/health")!
+        for _ in 0..<100 {
+            try Task.checkCancellation()
+            if await webHealthResponds(url: url) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw WebReadinessError.timeout(host: host, port: port)
+    }
+
+    private static func webHealthResponds(url: URL) async -> Bool {
+        do {
+            let (_, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return false
+            }
+            return httpResponse.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
+    private static func emitWebReady(host: String, port: Int) {
+        print(#"{"event":"web_ready","host":"\#(host)","port":\#(port)}"#)
+        fflush(stdout)
+    }
+
     private static func emit<T: Encodable>(_ value: T) {
         guard let data = try? JSONEncoder().encode(value),
               let text = String(data: data, encoding: .utf8)
@@ -200,6 +242,17 @@ public enum EngramServiceRunner {
         }
         print(text)
         fflush(stdout)
+    }
+}
+
+private enum WebReadinessError: LocalizedError {
+    case timeout(host: String, port: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .timeout(let host, let port):
+            return "Timed out waiting for Web UI at \(host):\(port)"
+        }
     }
 }
 
@@ -213,4 +266,9 @@ private struct ServiceIndexEvent: Encodable {
 private struct ServiceIndexErrorEvent: Encodable {
     let event = "index_error"
     let error: String
+}
+
+private struct ServiceWebErrorEvent: Encodable {
+    let event = "web_error"
+    let message: String
 }

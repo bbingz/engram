@@ -52,6 +52,10 @@ final class EngramServiceStatusStore {
         case "web_ready":
             endpointHost = event.host
             endpointPort = event.port
+        case "web_error":
+            endpointHost = nil
+            endpointPort = nil
+            status = .degraded(message: "Web UI unavailable: \(event.message ?? "Unknown error")")
         case "summary_generated":
             applyTotals(from: event)
             lastSummarySessionId = event.sessionId
