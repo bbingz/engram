@@ -1,9 +1,34 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SqliteVecStore } from '../../src/core/vector-store.js';
+
+const require = createRequire(import.meta.url);
+
+function sqliteVecVersion(): string {
+  const packagePath = join(
+    dirname(require.resolve('sqlite-vec')),
+    'package.json',
+  );
+  const pkg = JSON.parse(readFileSync(packagePath, 'utf8')) as {
+    version: string;
+  };
+  return pkg.version;
+}
+
+function compareSemver(a: string, b: string): number {
+  const left = a.split(/[-.]/).map((part) => Number(part) || 0);
+  const right = b.split(/[-.]/).map((part) => Number(part) || 0);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] ?? 0) - (right[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
 
 describe('SqliteVecStore', () => {
   let rawDb: BetterSqlite3.Database;
@@ -36,6 +61,12 @@ describe('SqliteVecStore', () => {
   function addSession(id: string) {
     rawDb.prepare('INSERT OR IGNORE INTO sessions (id) VALUES (?)').run(id);
   }
+
+  it('uses a sqlite-vec package with the evaluated 0.1.9 capability baseline', () => {
+    expect(compareSemver(sqliteVecVersion(), '0.1.9')).toBeGreaterThanOrEqual(
+      0,
+    );
+  });
 
   it('stores and retrieves vectors by KNN', () => {
     const vec1 = new Float32Array(768).fill(0.1);
