@@ -259,6 +259,10 @@ final class CodexAdapter: SessionAdapter {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        if options.limit != nil {
+            return try JSONLAdapterSupport.stream(Self.readWindow(locator: locator, options: options, limits: limits))
+        }
+
         let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
         if let failure { throw failure }
         let messages = objects.compactMap(Self.message(from:))
@@ -275,6 +279,48 @@ final class CodexAdapter: SessionAdapter {
             root,
             root.deletingLastPathComponent().appendingPathComponent("archived_sessions", isDirectory: true)
         ]
+    }
+
+    private static func readWindow(
+        locator: String,
+        options: StreamMessagesOptions,
+        limits: ParserLimits
+    ) throws -> [NormalizedMessage] {
+        let limit = max(options.limit ?? 0, 0)
+        guard limit > 0 else { return [] }
+
+        let offset = max(options.offset ?? 0, 0)
+        let (url, before) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
+        let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
+        var skipped = 0
+        var messages: [NormalizedMessage] = []
+
+        for line in try reader.readLines() {
+            guard let object = JSONLAdapterSupport.parseObject(line),
+                  let message = Self.message(from: object)
+            else {
+                continue
+            }
+            if skipped < offset {
+                skipped += 1
+                continue
+            }
+            messages.append(message)
+            if messages.count >= limit {
+                break
+            }
+        }
+
+        if let failure = reader.failures.first {
+            throw failure
+        }
+
+        let after = try limits.fileIdentity(for: url)
+        guard limits.isSameFileIdentity(before, after) else {
+            throw ParserFailure.fileModifiedDuringParse
+        }
+
+        return messages
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {

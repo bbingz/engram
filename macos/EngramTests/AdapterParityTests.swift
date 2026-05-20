@@ -171,6 +171,40 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertFalse(ParserLimits.default.isSameFileIdentity(before, modified))
     }
 
+    func testCodexStreamMessagesAppliesWindowBeforeMessageLimit() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-window-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("rollout-window.jsonl")
+        var lines = [
+            """
+            {"timestamp":"2026-05-20T00:00:00.000Z","type":"session_meta","payload":{"id":"window","timestamp":"2026-05-20T00:00:00.000Z","cwd":"/repo","originator":"Codex Desktop","model_provider":"openai"}}
+            """
+        ]
+        for index in 0..<12 {
+            lines.append(
+                """
+                {"timestamp":"2026-05-20T00:00:\(String(format: "%02d", index + 1)).000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"task-\(index)"}]}}
+                """
+            )
+        }
+        try lines.joined(separator: "\n").write(to: locator, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path, limits: ParserLimits(maxMessages: 10))
+        let stream = try await adapter.streamMessages(
+            locator: locator.path,
+            options: StreamMessagesOptions(offset: 9, limit: 2)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in stream {
+            messages.append(message)
+        }
+
+        XCTAssertEqual(messages.map(\.content), ["task-9", "task-10"])
+    }
+
     func testStreamingLineReaderReportsLinesAndLineLimitFailures() throws {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("adapter-lines-\(UUID().uuidString).jsonl")
