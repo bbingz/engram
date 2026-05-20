@@ -4,7 +4,7 @@
   "description": "MCP Server: 读取多个 AI 编程助手的会话日志，实现跨工具历史上下文共享",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22 <23"
   },
   "scripts": {
     "build": "tsc",
@@ -34,7 +34,7 @@
     "@modelcontextprotocol/sdk": "^1.10.2",
     "better-sqlite3": "^11.9.1",
     "chokidar": "^4.0.3",
-    "hono": "^4.12.4",
+    "hono": "^4.12.21",
     "openai": "^6.25.0",
     "sqlite-vec": "0.1.7-alpha.2",
     "yaml": "^2.8.3"

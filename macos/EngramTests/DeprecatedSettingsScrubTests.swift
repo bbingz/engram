@@ -57,4 +57,45 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
         // Guard against accidental deletion of the keychain cleanup target.
         XCTAssertTrue(DeprecatedSettings.keychainAccounts.contains("vikingApiKey"))
     }
+
+    func testSecureSettingsWriteCreatesDirectory0700AndFile0600() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = home.appendingPathComponent(".engram/settings.json")
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        try writeEngramSettingsDataSecurely(Data(#"{"aiProtocol":"openai"}"#.utf8), to: file)
+
+        var dirInfo = stat()
+        var fileInfo = stat()
+        XCTAssertEqual(lstat(file.deletingLastPathComponent().path, &dirInfo), 0)
+        XCTAssertEqual(lstat(file.path, &fileInfo), 0)
+        XCTAssertEqual(dirInfo.st_mode & 0o077, 0)
+        XCTAssertEqual(fileInfo.st_mode & 0o077, 0)
+    }
+
+    func testSecureSettingsWriteRepairsLegacyLoosePermissions() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directory = home.appendingPathComponent(".engram", isDirectory: true)
+        let file = directory.appendingPathComponent("settings.json")
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o755]
+        )
+        try Data(#"{"aiProtocol":"openai"}"#.utf8).write(to: file)
+        chmod(directory.path, 0o755)
+        chmod(file.path, 0o644)
+
+        try writeEngramSettingsDataSecurely(Data(#"{"aiProtocol":"gemini"}"#.utf8), to: file)
+
+        var dirInfo = stat()
+        var fileInfo = stat()
+        XCTAssertEqual(lstat(directory.path, &dirInfo), 0)
+        XCTAssertEqual(lstat(file.path, &fileInfo), 0)
+        XCTAssertEqual(dirInfo.st_mode & 0o077, 0)
+        XCTAssertEqual(fileInfo.st_mode & 0o077, 0)
+    }
 }

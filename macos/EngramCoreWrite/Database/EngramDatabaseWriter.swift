@@ -4,12 +4,15 @@ import EngramCoreRead
 
 public final class EngramDatabaseWriter {
     private let pool: DatabasePool
+    private let path: String
 
     public init(path: String) throws {
+        self.path = path
         pool = try DatabasePool(
             path: path,
             configuration: SQLiteConnectionPolicy.writerConfiguration()
         )
+        try SQLiteFileSecurity.secureDatabaseFiles(at: path)
     }
 
     public func write<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
@@ -44,5 +47,6 @@ public final class EngramDatabaseWriter {
         try pool.write { db in
             try EngramMigrationRunner.migrate(db)
         }
+        try SQLiteFileSecurity.secureDatabaseFiles(at: path)
     }
 }

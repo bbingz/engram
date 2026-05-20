@@ -1,4 +1,5 @@
 // src/core/db/database.ts — Database facade class
+import { chmodSync, existsSync } from 'node:fs';
 import BetterSqlite3 from 'better-sqlite3';
 import type { SessionInfo } from '../../adapters/types.js';
 import type { MetricsCollector } from '../metrics.js';
@@ -57,6 +58,7 @@ export class Database {
     maint.runPostMigrationBackfill(this.db);
     maint.backfillTiers(this.db);
     maint.backfillScores(this.db);
+    secureDatabaseFiles(dbPath);
   }
 
   setMetrics(metrics: MetricsCollector): void {
@@ -530,5 +532,14 @@ export class Database {
   }
   listProjectAliases(): { alias: string; canonical: string }[] {
     return aliases.listProjectAliases(this.db);
+  }
+}
+
+function secureDatabaseFiles(dbPath: string): void {
+  if (dbPath === ':memory:') return;
+  for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    if (existsSync(path)) {
+      chmodSync(path, 0o600);
+    }
   }
 }

@@ -1,5 +1,11 @@
 // src/core/config.ts
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SyncPeer } from './sync.js';
@@ -178,8 +184,35 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
 
 // ── Paths ────────────────────────────────────────────────────────────
 
-const CONFIG_DIR = join(homedir(), '.engram');
-const CONFIG_FILE = join(CONFIG_DIR, 'settings.json');
+function settingsPaths(): { dir: string; file: string } {
+  const dir = join(homedir(), '.engram');
+  return { dir, file: join(dir, 'settings.json') };
+}
+
+function ensureSecureSettingsDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+}
+
+function writeSettingsFileSecurely(settings: FileSettings): void {
+  const { dir, file } = settingsPaths();
+  ensureSecureSettingsDir(dir);
+  writeFileSync(file, JSON.stringify(settings, null, 2), {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
+  chmodSync(file, 0o600);
+}
+
+function repairExistingSettingsPermissions(): void {
+  const { dir, file } = settingsPaths();
+  try {
+    if (existsSync(dir)) chmodSync(dir, 0o700);
+    if (existsSync(file)) chmodSync(file, 0o600);
+  } catch {
+    /* best-effort */
+  }
+}
 
 // ── Migration ────────────────────────────────────────────────────────
 
@@ -257,14 +290,15 @@ export function getBaseURL(settings: FileSettings): string | undefined {
 
 export function readFileSettings(): FileSettings {
   try {
-    const content = readFileSync(CONFIG_FILE, 'utf-8');
+    const { file } = settingsPaths();
+    repairExistingSettingsPermissions();
+    const content = readFileSync(file, 'utf-8');
     const parsed = JSON.parse(content) as FileSettings;
     const migrated = migrateSettings(parsed);
     // Persist migration if settings changed (one-time write-back)
     if (migrated !== parsed) {
       try {
-        mkdirSync(CONFIG_DIR, { recursive: true });
-        writeFileSync(CONFIG_FILE, JSON.stringify(migrated, null, 2), 'utf-8');
+        writeSettingsFileSecurely(migrated);
       } catch {
         /* best-effort */
       }
@@ -307,8 +341,7 @@ export function readFileSettings(): FileSettings {
 }
 
 export function writeFileSettings(settings: FileSettings): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
   const current = readFileSettings();
   const merged = { ...current, ...settings };
-  writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), 'utf-8');
+  writeSettingsFileSecurely(merged);
 }

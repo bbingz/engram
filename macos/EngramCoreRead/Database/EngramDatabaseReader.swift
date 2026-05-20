@@ -9,6 +9,7 @@ public final class EngramDatabaseReader {
             path: path,
             configuration: SQLiteConnectionPolicy.readerConfiguration()
         )
+        try? SQLiteFileSecurity.secureDatabaseFiles(at: path)
     }
 
     public func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {

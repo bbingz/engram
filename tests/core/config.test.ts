@@ -1,10 +1,29 @@
 // tests/core/config.test.ts
-import { describe, expect, it } from 'vitest';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Dynamic import to match the project's ES module setup
-const { migrateSettings, resolveSummaryConfig, getBaseURL } = await import(
-  '../../src/core/config.js'
-);
+const {
+  migrateSettings,
+  resolveSummaryConfig,
+  getBaseURL,
+  readFileSettings,
+  writeFileSettings,
+} = await import('../../src/core/config.js');
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // ── migrateSettings ──────────────────────────────────────────────────
 
@@ -210,5 +229,96 @@ describe('observability config', () => {
       notifyOnCostThreshold: true,
       notifyOnLongSession: false,
     });
+  });
+});
+
+// ── secure settings file permissions ─────────────────────────────────
+
+describe('settings file permissions', () => {
+  it('creates the settings directory as 0700 and settings file as 0600', () => {
+    const home = mkdtempSync(join(tmpdir(), 'engram-config-'));
+    vi.stubEnv('HOME', home);
+    try {
+      writeFileSettings({ aiProtocol: 'openai', aiApiKey: 'secret' });
+
+      const dir = join(home, '.engram');
+      const file = join(dir, 'settings.json');
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(file, 'utf-8')).aiApiKey).toBe('secret');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs loose permissions on an existing settings file before writing', () => {
+    const home = mkdtempSync(join(tmpdir(), 'engram-config-'));
+    vi.stubEnv('HOME', home);
+    try {
+      const dir = join(home, '.engram');
+      const file = join(dir, 'settings.json');
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
+      writeFileSync(file, JSON.stringify({ aiProtocol: 'openai' }), {
+        mode: 0o644,
+      });
+      chmodSync(dir, 0o755);
+      chmodSync(file, 0o644);
+
+      writeFileSettings({ aiModel: 'gpt-4o' });
+
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(file, 'utf-8')).aiModel).toBe('gpt-4o');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('uses secure permissions when persisting migrated settings', () => {
+    const home = mkdtempSync(join(tmpdir(), 'engram-config-'));
+    vi.stubEnv('HOME', home);
+    try {
+      const dir = join(home, '.engram');
+      const file = join(dir, 'settings.json');
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
+      writeFileSync(
+        file,
+        JSON.stringify({ aiProvider: 'openai', openaiApiKey: 'secret' }),
+        { mode: 0o644 },
+      );
+      chmodSync(dir, 0o755);
+      chmodSync(file, 0o644);
+
+      const settings = readFileSettings();
+
+      expect(settings.aiProtocol).toBe('openai');
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs loose permissions when reading existing settings', () => {
+    const home = mkdtempSync(join(tmpdir(), 'engram-config-'));
+    vi.stubEnv('HOME', home);
+    try {
+      const dir = join(home, '.engram');
+      const file = join(dir, 'settings.json');
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
+      writeFileSync(file, JSON.stringify({ aiProtocol: 'openai' }), {
+        mode: 0o644,
+      });
+      chmodSync(dir, 0o755);
+      chmodSync(file, 0o644);
+
+      const settings = readFileSettings();
+
+      expect(settings.aiProtocol).toBe('openai');
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

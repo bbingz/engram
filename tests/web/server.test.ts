@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionInfo } from '../../src/adapters/types.js';
 import { Database } from '../../src/core/db.js';
 import { createApp } from '../../src/web.js';
@@ -36,6 +36,7 @@ describe('Web Server', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     db.close();
     rmSync(tmpDir, { recursive: true });
   });
@@ -241,6 +242,7 @@ describe('POST /api/summary', () => {
   });
 
   it('returns 500 when no API key configured', async () => {
+    vi.stubEnv('HOME', tmpDir);
     db.upsertSession(mockSession);
     const res = await app.request('/api/summary', {
       method: 'POST',

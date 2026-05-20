@@ -5,6 +5,30 @@ import Security
 let engramSettingsPath = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".engram/settings.json")
 
+func repairEngramSettingsPermissionsIfPresent(at url: URL = engramSettingsPath) throws {
+    let fileManager = FileManager.default
+    let directory = url.deletingLastPathComponent()
+    if fileManager.fileExists(atPath: directory.path) {
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    }
+    if fileManager.fileExists(atPath: url.path) {
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
+
+func writeEngramSettingsDataSecurely(_ data: Data, to url: URL = engramSettingsPath) throws {
+    let fileManager = FileManager.default
+    let directory = url.deletingLastPathComponent()
+    try fileManager.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    try data.write(to: url, options: [.atomic])
+    try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+}
+
 // MARK: - Keychain Helper
 
 enum KeychainHelper {
@@ -90,12 +114,13 @@ func migrateKeysToKeychainIfNeeded() {
     }
     if needsSave {
         if let data = try? JSONSerialization.data(withJSONObject: mutable, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: engramSettingsPath)
+            try? writeEngramSettingsDataSecurely(data)
         }
     }
 }
 
 func readEngramSettings() -> [String: Any]? {
+    try? repairEngramSettingsPermissionsIfPresent()
     guard let data = try? Data(contentsOf: engramSettingsPath),
           let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         return nil
@@ -111,7 +136,7 @@ func mutateEngramSettings(_ transform: (inout [String: Any]) -> Void) {
     }
     transform(&settings)
     if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-        try? data.write(to: engramSettingsPath)
+        try? writeEngramSettingsDataSecurely(data)
     }
 }
 
@@ -145,6 +170,6 @@ func removeDeprecatedSettingsKeysIfNeeded() {
     guard var settings = readEngramSettings() else { return }
     guard DeprecatedSettings.scrub(&settings) else { return }
     if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-        try? data.write(to: engramSettingsPath)
+        try? writeEngramSettingsDataSecurely(data)
     }
 }

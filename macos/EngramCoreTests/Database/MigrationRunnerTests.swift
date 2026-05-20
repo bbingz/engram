@@ -1,6 +1,7 @@
 import EngramCoreRead
 import EngramCoreWrite
 import GRDB
+import Darwin
 import XCTest
 
 final class MigrationRunnerTests: XCTestCase {
@@ -81,6 +82,29 @@ final class MigrationRunnerTests: XCTestCase {
             try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'schema_version'")
         }
         XCTAssertEqual(metadata, "1")
+    }
+
+    func testWriterCreatesDatabaseWithUserOnlyPermissions() throws {
+        let path = databasePath("secure.sqlite")
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+
+        var info = stat()
+        XCTAssertEqual(lstat(path, &info), 0)
+        XCTAssertEqual(info.st_mode & 0o077, 0)
+    }
+
+    func testWriterRepairsLegacyLooseDatabasePermissions() throws {
+        let path = databasePath("loose.sqlite")
+        FileManager.default.createFile(atPath: path, contents: Data())
+        chmod(path, 0o644)
+
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+
+        var info = stat()
+        XCTAssertEqual(lstat(path, &info), 0)
+        XCTAssertEqual(info.st_mode & 0o077, 0)
     }
 
     func testPreservesExistingSessionRows() throws {

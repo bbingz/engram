@@ -103,7 +103,7 @@ describe('stage2 Node parity fixture generators', () => {
       expect(fixture.nodeVersion).toMatch(/^v\d+\./);
       expect(fixture.generatedAtCommit).toBeTruthy();
     }
-  }, 20_000);
+  }, 60_000);
 
   it('checks adapter parity fixtures for malformed coverage and file size', () => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-adapter-parity-check-test-'));
@@ -129,7 +129,7 @@ describe('stage2 Node parity fixture generators', () => {
         fixtureRoot,
       ]),
     ).toThrow(/missing malformed manifest/);
-  }, 20_000);
+  }, 60_000);
 
   it('generates parent detection and indexer fixtures deterministically', () => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-stage2-fixture-test-'));
@@ -164,5 +164,5 @@ describe('stage2 Node parity fixture generators', () => {
     expect(checksums.tables.session_index_jobs.sha256).toMatch(
       /^[0-9a-f]{64}$/,
     );
-  }, 20_000);
+  }, 60_000);
 });

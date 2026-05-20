@@ -52,3 +52,13 @@ public enum SQLiteConnectionPolicy {
         }
     }
 }
+
+public enum SQLiteFileSecurity {
+    public static func secureDatabaseFiles(at path: String) throws {
+        guard path != ":memory:" else { return }
+        let fileManager = FileManager.default
+        for candidate in [path, "\(path)-wal", "\(path)-shm"] where fileManager.fileExists(atPath: candidate) {
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: candidate)
+        }
+    }
+}
