@@ -45,6 +45,7 @@ import { handleSearch, type SearchDeps } from './tools/search.js';
 import { handleStats } from './tools/stats.js';
 import { handleToolAnalytics } from './tools/tool_analytics.js';
 import { registerAiAuditRoutes } from './web/routes/ai-audit.js';
+import { registerProjectAliasRoutes } from './web/routes/project-aliases.js';
 import {
   healthPage,
   layout,
@@ -992,27 +993,7 @@ export function createApp(
   });
 
   // Project aliases
-  app.get('/api/project-aliases', (c) => {
-    return c.json(db.listProjectAliases());
-  });
-
-  app.post('/api/project-aliases', async (c) => {
-    const body = (await c.req.json()) as { alias?: string; canonical?: string };
-    if (!body.alias || !body.canonical)
-      return c.json({ error: 'alias and canonical required' }, 400);
-    db.addProjectAlias(body.alias, body.canonical);
-    return c.json({ added: { alias: body.alias, canonical: body.canonical } });
-  });
-
-  app.delete('/api/project-aliases', async (c) => {
-    const body = (await c.req.json()) as { alias?: string; canonical?: string };
-    if (!body.alias || !body.canonical)
-      return c.json({ error: 'alias and canonical required' }, 400);
-    db.removeProjectAlias(body.alias, body.canonical);
-    return c.json({
-      removed: { alias: body.alias, canonical: body.canonical },
-    });
-  });
+  registerProjectAliasRoutes(app, { db });
 
   // --- Project migration API (powers Swift UI: Rename / Archive / Undo) ---
   // Writes (POST) require bearer auth via the generic /api/* middleware above.
