@@ -1,9 +1,63 @@
 import XCTest
 import GRDB
 import Darwin
+import Foundation
 @testable import EngramServiceCore
 
 final class EngramServiceIPCTests: XCTestCase {
+    func testUnixSocketServiceServerLifecycleUsesTrackedSendableState() throws {
+        let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
+
+        XCTAssertFalse(
+            source.contains("@unchecked Sendable"),
+            "UnixSocketServiceServer must not hide lifecycle data races with @unchecked Sendable"
+        )
+        XCTAssertFalse(
+            source.contains("private var fd"),
+            "Socket file descriptor must be kept in synchronized lifecycle state"
+        )
+        XCTAssertFalse(
+            source.contains("private var acceptTask"),
+            "Accept task must be kept in synchronized lifecycle state"
+        )
+    }
+
+    func testUnixSocketServiceServerStopCancelsInFlightClientHandlers() async throws {
+        let paths = try makeServiceIPCPaths()
+        let requestStarted = expectation(description: "request handler started")
+        let handlerCancelled = expectation(description: "request handler cancelled")
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            requestStarted.fulfill()
+            do {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                XCTFail("server.stop() must cancel active client handlers")
+            } catch is CancellationError {
+                handlerCancelled.fulfill()
+            } catch {
+                XCTFail("unexpected handler error: \(error)")
+            }
+            return .failure(
+                requestId: request.requestId,
+                error: EngramServiceErrorEnvelope(
+                    name: "Cancelled",
+                    message: "Handler cancelled",
+                    retryPolicy: "never"
+                )
+            )
+        }
+        try server.start()
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let requestTask = Task {
+            _ = try? await client.status()
+        }
+
+        await fulfillment(of: [requestStarted], timeout: 1)
+        server.stop()
+        await fulfillment(of: [handlerCancelled], timeout: 1)
+        requestTask.cancel()
+    }
+
     func testTwoClientsSerializeWriteIntentThroughOneServiceGate() async throws {
         let paths = try makeServiceIPCPaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -1116,6 +1170,15 @@ private func seedSearchFixture(at path: String) throws {
             );
         """)
     }
+}
+
+private func serviceCoreSource(_ relativePath: String) throws -> String {
+    var directory = URL(fileURLWithPath: #filePath)
+    while directory.lastPathComponent != "macos" {
+        directory.deleteLastPathComponent()
+    }
+    let file = directory.appendingPathComponent(relativePath)
+    return try String(contentsOf: file, encoding: .utf8)
 }
 
 private final class CountingServiceDatabaseReaderFactory: @unchecked Sendable {
