@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "generate:fixtures": "tsx scripts/generate-test-fixtures.ts",
     "generate:mcp-contract-fixtures": "TZ=UTC tsx scripts/gen-mcp-contract-fixtures.ts",
     "generate:adapter-parity-fixtures": "tsx scripts/gen-adapter-parity-fixtures.ts",
@@ -24,7 +25,7 @@
     "baselines:update": "tsx scripts/baselines-update.ts",
     "lint": "biome check .",
     "lint:fix": "biome check . --write",
-    "knip": "knip",
+    "knip": "knip --no-config-hints",
     "prepare": "husky"
   },
   "dependencies": {

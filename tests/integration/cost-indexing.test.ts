@@ -21,7 +21,7 @@ describe('cost indexing integration', () => {
 
     // Parse and index the fixture
     const info = await adapter.parseSessionInfo(FIXTURE);
-    expect(info).toBeDefined();
+    if (!info) throw new Error('expected fixture session info');
 
     // Insert session
     db.getRawDb()
@@ -29,19 +29,19 @@ describe('cost indexing integration', () => {
         `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        info?.id,
-        info?.source,
-        info?.startTime,
-        info?.cwd,
-        info?.project || '',
-        info?.model || '',
-        info?.messageCount,
-        info?.userMessageCount,
-        info?.assistantMessageCount,
-        info?.toolMessageCount,
-        info?.systemMessageCount,
+        info.id,
+        info.source,
+        info.startTime,
+        info.cwd,
+        info.project || '',
+        info.model || '',
+        info.messageCount,
+        info.userMessageCount,
+        info.assistantMessageCount,
+        info.toolMessageCount,
+        info.systemMessageCount,
         FIXTURE,
-        info?.sizeBytes,
+        info.sizeBytes,
         'normal',
       );
 
@@ -69,15 +69,15 @@ describe('cost indexing integration', () => {
     if (inputTokens > 0) {
       const { computeCost } = await import('../../src/core/pricing.js');
       const cost = computeCost(
-        info?.model || '',
+        info.model || '',
         inputTokens,
         outputTokens,
         cacheRead,
         cacheCreate,
       );
       db.upsertSessionCost(
-        info?.id,
-        info?.model || '',
+        info.id,
+        info.model || '',
         inputTokens,
         outputTokens,
         cacheRead,
@@ -86,27 +86,25 @@ describe('cost indexing integration', () => {
       );
     }
     if (toolCounts.size > 0) {
-      db.upsertSessionTools(info?.id, toolCounts);
+      db.upsertSessionTools(info.id, toolCounts);
     }
   });
 
   it('stores token costs in session_costs', () => {
     const costs = db.getCostsSummary({});
     expect(costs.length).toBe(1);
-    expect(costs[0].inputTokens).toBe(3500); // 1500 + 2000
-    expect(costs[0].outputTokens).toBe(150); // 50 + 100
-    expect(costs[0].costUsd).toBeGreaterThan(0);
+    expect(costs[0]?.inputTokens).toBe(3500); // 1500 + 2000
+    expect(costs[0]?.outputTokens).toBe(150); // 50 + 100
+    expect(costs[0]?.costUsd).toBeGreaterThan(0);
   });
 
   it('stores tool calls in session_tools', () => {
     const tools = db.getToolAnalytics({});
     expect(tools.length).toBe(2); // Read + Edit
     const readTool = tools.find((t: any) => t.key === 'Read');
-    expect(readTool).toBeDefined();
-    expect(readTool.callCount).toBe(1);
+    expect(readTool?.callCount).toBe(1);
     const editTool = tools.find((t: any) => t.key === 'Edit');
-    expect(editTool).toBeDefined();
-    expect(editTool.callCount).toBe(1);
+    expect(editTool?.callCount).toBe(1);
   });
 
   it('computes cost correctly for claude-sonnet-4-6', () => {
@@ -117,7 +115,7 @@ describe('cost indexing integration', () => {
     // cacheRead: 2300/1M * 0.3 = 0.00069
     // cacheWrite: 1000/1M * 3.75 = 0.00375
     // total = 0.01719
-    expect(costs[0].costUsd).toBeCloseTo(0.017, 2);
+    expect(costs[0]?.costUsd).toBeCloseTo(0.017, 2);
   });
 });
 
@@ -146,6 +144,7 @@ describe('backfill termination', () => {
         yield { role: 'user', content: 'hello' };
         yield { role: 'assistant', content: 'hi there' };
       },
+      isAccessible: async () => true,
     };
     const mockClaudeAdapter: SessionAdapter = {
       name: 'claude-code' as any,
@@ -160,6 +159,7 @@ describe('backfill termination', () => {
           usage: { inputTokens: 100, outputTokens: 50 },
         };
       },
+      isAccessible: async () => true,
     };
 
     const indexer = new Indexer(db, [mockClaudeAdapter, mockAdapter]);
@@ -213,6 +213,7 @@ describe('backfill termination', () => {
           throw new Error('file not found');
         yield { role: 'user', content: 'hello' };
       },
+      isAccessible: async () => true,
     };
 
     const indexer = new Indexer(db, [mockClaudeAdapter]);

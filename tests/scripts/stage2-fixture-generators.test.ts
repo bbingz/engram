@@ -3,9 +3,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import packageJson from '../../package.json' with { type: 'json' };
 
 const repoRoot = resolve(import.meta.dirname, '../..');
+const packageJson = JSON.parse(
+  readFileSync(resolve(repoRoot, 'package.json'), 'utf8'),
+) as { scripts: Record<string, string> };
 
 function runScript(
   script: string,

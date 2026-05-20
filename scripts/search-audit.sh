@@ -12,8 +12,9 @@ AUDIT_START=$(python3 -c "import time; print(int(time.time()))")
 # --- Config ---
 CURL="/usr/bin/curl"
 DB="$HOME/.engram/index.sqlite"
-VIKING_BASE="http://10.0.8.9:1933/api/v1"
-AUTH="Authorization: Bearer engram-viking-2026"
+: "${VIKING_BASE:?Set VIKING_BASE to the historical Viking API base URL, including /api/v1}"
+: "${VIKING_TOKEN:?Set VIKING_TOKEN to a valid historical Viking bearer token}"
+AUTH="Authorization: Bearer $VIKING_TOKEN"
 RUNS=3  # repetitions per query for latency measurement
 
 # --- Colors & formatting ---

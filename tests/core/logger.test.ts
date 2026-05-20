@@ -18,7 +18,9 @@ describe('observability schema', () => {
   });
 
   it('creates logs table with correct columns', () => {
-    const cols = db.raw.pragma('table_info(logs)').map((c: any) => c.name);
+    const cols = (
+      db.raw.pragma('table_info(logs)') as Array<{ name: string }>
+    ).map((c) => c.name);
     expect(cols).toContain('ts');
     expect(cols).toContain('level');
     expect(cols).toContain('module');
@@ -28,7 +30,9 @@ describe('observability schema', () => {
   });
 
   it('creates traces table with span_id index', () => {
-    const cols = db.raw.pragma('table_info(traces)').map((c: any) => c.name);
+    const cols = (
+      db.raw.pragma('table_info(traces)') as Array<{ name: string }>
+    ).map((c) => c.name);
     expect(cols).toContain('trace_id');
     expect(cols).toContain('span_id');
     expect(cols).toContain('duration_ms');
@@ -36,15 +40,15 @@ describe('observability schema', () => {
   });
 
   it('creates metrics and metrics_hourly tables', () => {
-    const metricsCols = db.raw
-      .pragma('table_info(metrics)')
-      .map((c: any) => c.name);
+    const metricsCols = (
+      db.raw.pragma('table_info(metrics)') as Array<{ name: string }>
+    ).map((c) => c.name);
     expect(metricsCols).toContain('name');
     expect(metricsCols).toContain('type');
     expect(metricsCols).toContain('value');
-    const hourlyCols = db.raw
-      .pragma('table_info(metrics_hourly)')
-      .map((c: any) => c.name);
+    const hourlyCols = (
+      db.raw.pragma('table_info(metrics_hourly)') as Array<{ name: string }>
+    ).map((c) => c.name);
     expect(hourlyCols).toContain('p95');
     expect(hourlyCols).toContain('hour');
   });

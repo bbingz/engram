@@ -23,6 +23,15 @@ describe('EmbeddingIndexer', () => {
       search: vi.fn().mockReturnValue([]),
       delete: vi.fn(),
       count: vi.fn().mockReturnValue(0),
+      upsertChunks: vi.fn(),
+      searchChunks: vi.fn().mockReturnValue([]),
+      deleteChunksBySession: vi.fn(),
+      upsertInsight: vi.fn(),
+      searchInsights: vi.fn().mockReturnValue([]),
+      deleteInsight: vi.fn(),
+      countInsights: vi.fn().mockReturnValue(0),
+      activeModel: vi.fn().mockReturnValue(null),
+      dropAndRebuild: vi.fn(),
     };
 
     mockClient = {

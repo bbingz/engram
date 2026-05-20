@@ -201,6 +201,9 @@ describe('Indexer', () => {
           yield { role: 'user', content: 'hello' };
           yield { role: 'assistant', content: 'world' };
         },
+        async isAccessible() {
+          return true;
+        },
       };
 
       const indexer = new Indexer(db, [adapter]);
@@ -231,6 +234,9 @@ describe('Indexer', () => {
           yield { role: 'user', content: 'first message' };
           throw new Error('stream failed mid-way');
         },
+        async isAccessible() {
+          return true;
+        },
       };
 
       const indexer = new Indexer(db, [adapter]);
@@ -254,6 +260,9 @@ describe('Indexer', () => {
         },
         async *streamMessages(_filePath: string): AsyncGenerator<Message> {
           yield { role: 'user', content: 'hello' };
+        },
+        async isAccessible() {
+          return true;
         },
       };
 
@@ -279,6 +288,9 @@ describe('Indexer', () => {
         },
         async *streamMessages(_filePath: string): AsyncGenerator<Message> {
           /* empty */
+        },
+        async isAccessible() {
+          return false;
         },
       };
 
@@ -321,6 +333,9 @@ describe('Indexer', () => {
         async *streamMessages(_filePath: string): AsyncGenerator<Message> {
           yield { role: 'user', content: 'hello' };
           yield { role: 'assistant', content: 'world' };
+        },
+        async isAccessible() {
+          return true;
         },
       };
 

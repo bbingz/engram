@@ -64,13 +64,11 @@ describe('tool_analytics', () => {
     // s1 has 38 total calls, s2 has 8
     const s1 = result.find((r: any) => r.key === 's1');
     const s2 = result.find((r: any) => r.key === 's2');
-    expect(s1).toBeDefined();
-    expect(s1.callCount).toBe(38);
-    expect(s1.toolCount).toBe(4);
-    expect(s1.label).toBe('Session one summary');
-    expect(s2).toBeDefined();
-    expect(s2.callCount).toBe(8);
-    expect(s2.toolCount).toBe(2);
+    expect(s1?.callCount).toBe(38);
+    expect(s1?.toolCount).toBe(4);
+    expect(s1?.label).toBe('Session one summary');
+    expect(s2?.callCount).toBe(8);
+    expect(s2?.toolCount).toBe(2);
   });
 
   it('group_by project returns per-project aggregates', () => {
@@ -78,12 +76,10 @@ describe('tool_analytics', () => {
     expect(result.length).toBe(2);
     const myProj = result.find((r: any) => r.key === 'my-project');
     const otherProj = result.find((r: any) => r.key === 'other-project');
-    expect(myProj).toBeDefined();
-    expect(myProj.callCount).toBe(38);
-    expect(myProj.sessionCount).toBe(1);
-    expect(myProj.toolCount).toBe(4);
-    expect(otherProj).toBeDefined();
-    expect(otherProj.callCount).toBe(8);
-    expect(otherProj.sessionCount).toBe(1);
+    expect(myProj?.callCount).toBe(38);
+    expect(myProj?.sessionCount).toBe(1);
+    expect(myProj?.toolCount).toBe(4);
+    expect(otherProj?.callCount).toBe(8);
+    expect(otherProj?.sessionCount).toBe(1);
   });
 });

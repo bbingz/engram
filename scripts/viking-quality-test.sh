@@ -3,8 +3,10 @@
 # 可重复运行：Semantic 队列未跑完时显示进度，跑完后显示完整结果
 set -euo pipefail
 
-API="http://10.0.8.9:1933/api/v1"
-AUTH="Authorization: Bearer engram-viking-2026"
+: "${VIKING_BASE:?Set VIKING_BASE to the historical Viking API base URL, including /api/v1}"
+: "${VIKING_TOKEN:?Set VIKING_TOKEN to a valid historical Viking bearer token}"
+API="${VIKING_BASE%/}"
+AUTH="Authorization: Bearer $VIKING_TOKEN"
 PASS=0; FAIL=0; SKIP=0
 
 ok()   { PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "$1"; }

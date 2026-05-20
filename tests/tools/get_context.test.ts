@@ -133,6 +133,15 @@ describe('get_context', () => {
         { sessionId: 's4', distance: 0.1 },
         { sessionId: 's1', distance: 0.3 },
       ],
+      upsertChunks: () => {},
+      searchChunks: () => [],
+      deleteChunksBySession: () => {},
+      upsertInsight: () => {},
+      searchInsights: () => [],
+      deleteInsight: () => {},
+      countInsights: () => 0,
+      activeModel: () => null,
+      dropAndRebuild: () => {},
     };
     const mockEmbed = async () => new Float32Array(768).fill(0.1);
 
