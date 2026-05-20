@@ -135,6 +135,24 @@ describe('stage2 Node parity fixture generators', () => {
     ).toThrow(/missing malformed manifest/);
   }, 60_000);
 
+  it('checks adapter parity fixtures for Qoder and Command Code', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-adapter-parity-provider-test-'));
+    const fixtureRoot = join(tmp, 'adapter-parity');
+    runScript('scripts/gen-adapter-parity-fixtures.ts', ['--out', fixtureRoot]);
+
+    rmSync(join(fixtureRoot, 'qoder', 'success.expected.json'));
+    rmSync(join(fixtureRoot, 'commandcode', 'success.expected.json'));
+
+    expect(() =>
+      runScript('scripts/check-adapter-parity-fixtures.ts', [
+        '--fixture-root',
+        fixtureRoot,
+      ]),
+    ).toThrow(
+      /missing success fixture: commandcode[\s\S]*missing success fixture: qoder/,
+    );
+  }, 60_000);
+
   it('generates parent detection and indexer fixtures deterministically', () => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-stage2-fixture-test-'));
     const parentOut = join(tmp, 'parent-detection');

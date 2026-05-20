@@ -5,6 +5,7 @@ type SupportedFixtureSource =
   | 'antigravity'
   | 'claude-code'
   | 'cline'
+  | 'commandcode'
   | 'codex'
   | 'copilot'
   | 'cursor'
@@ -12,6 +13,7 @@ type SupportedFixtureSource =
   | 'iflow'
   | 'kimi'
   | 'opencode'
+  | 'qoder'
   | 'qwen'
   | 'vscode'
   | 'windsurf';
@@ -21,6 +23,7 @@ const supportedSources = [
   'antigravity',
   'claude-code',
   'cline',
+  'commandcode',
   'codex',
   'copilot',
   'cursor',
@@ -28,6 +31,7 @@ const supportedSources = [
   'iflow',
   'kimi',
   'opencode',
+  'qoder',
   'qwen',
   'vscode',
   'windsurf',
