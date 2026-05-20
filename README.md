@@ -89,8 +89,12 @@ cd engram
 cd macos
 xcodegen generate
 xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Release build
+./scripts/build-release.sh
 
 # 2. 把构建出的 Engram.app 安装到 /Applications，或使用已安装版本
+#    build-release.sh 优先使用 ExportOptions.plist 导出；
+#    当本机只有 Apple Development 签名、Xcode 不提供 developer-id 导出 method 时，
+#    会 fallback 到 archive 内已签名的 Engram.app 供本机安装验证。
 
 # 3. 重启 AI 工具，在对话中调用：
 # get_context cwd=/your/project/path

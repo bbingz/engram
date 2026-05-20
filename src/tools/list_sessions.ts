@@ -1,6 +1,6 @@
 // src/tools/list_sessions.ts
 
-import type { SourceName } from '../adapters/types.js';
+import { SOURCE_NAMES, type SourceName } from '../adapters/types.js';
 import type { Database, ListSessionsOptions } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 import { toLocalDateTime } from '../utils/time.js';
@@ -14,22 +14,7 @@ export const listSessionsTool = {
     properties: {
       source: {
         type: 'string',
-        enum: [
-          'codex',
-          'claude-code',
-          'gemini-cli',
-          'opencode',
-          'iflow',
-          'qwen',
-          'qoder',
-          'kimi',
-          'commandcode',
-          'cline',
-          'cursor',
-          'vscode',
-          'antigravity',
-          'windsurf',
-        ],
+        enum: SOURCE_NAMES,
         description: '过滤特定工具的会话',
       },
       project: { type: 'string', description: '过滤特定项目（部分匹配）' },

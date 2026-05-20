@@ -88,4 +88,26 @@ describe('list_sessions tool', () => {
     expect(listSessionsTool.name).toBe('list_sessions');
     expect(listSessionsTool.inputSchema.type).toBe('object');
   });
+
+  it('source schema covers every known provider', () => {
+    expect(listSessionsTool.inputSchema.properties.source.enum).toEqual([
+      'codex',
+      'claude-code',
+      'copilot',
+      'gemini-cli',
+      'opencode',
+      'iflow',
+      'qwen',
+      'qoder',
+      'kimi',
+      'minimax',
+      'lobsterai',
+      'commandcode',
+      'cline',
+      'cursor',
+      'vscode',
+      'antigravity',
+      'windsurf',
+    ]);
+  });
 });

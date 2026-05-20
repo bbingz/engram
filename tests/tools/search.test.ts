@@ -6,11 +6,33 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Database } from '../../src/core/db.js';
 import { MetricsCollector } from '../../src/core/metrics.js';
-import { handleSearch } from '../../src/tools/search.js';
+import { handleSearch, searchTool } from '../../src/tools/search.js';
 
 describe('search', () => {
   let db: Database;
   let tmpDir: string;
+
+  it('source schema covers every known provider', () => {
+    expect(searchTool.inputSchema.properties.source.enum).toEqual([
+      'codex',
+      'claude-code',
+      'copilot',
+      'gemini-cli',
+      'opencode',
+      'iflow',
+      'qwen',
+      'qoder',
+      'kimi',
+      'minimax',
+      'lobsterai',
+      'commandcode',
+      'cline',
+      'cursor',
+      'vscode',
+      'antigravity',
+      'windsurf',
+    ]);
+  });
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'search-test-'));

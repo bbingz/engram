@@ -48,6 +48,8 @@ enum MCPToolRegistry {
         !unavailableNativeProjectOperationTools.contains($0.name)
     }
 
+    private static let sourceSchemaEnum: JSONValue = .array(SourceName.allCases.map { .string($0.rawValue) })
+
     private static let allToolDefinitions: [MCPToolDefinition] = [
         MCPToolDefinition(
             name: "list_sessions",
@@ -57,22 +59,7 @@ enum MCPToolRegistry {
                 "properties": .object([
                     "source": .object([
                         "type": .string("string"),
-                        "enum": .array([
-                            .string("codex"),
-                            .string("claude-code"),
-                            .string("gemini-cli"),
-                            .string("opencode"),
-                            .string("iflow"),
-                            .string("qwen"),
-                            .string("qoder"),
-                            .string("kimi"),
-                            .string("commandcode"),
-                            .string("cline"),
-                            .string("cursor"),
-                            .string("vscode"),
-                            .string("antigravity"),
-                            .string("windsurf"),
-                        ]),
+                        "enum": sourceSchemaEnum,
                         "description": .string("过滤特定工具的会话"),
                     ]),
                     "project": .object([
@@ -270,22 +257,7 @@ enum MCPToolRegistry {
                     ]),
                     "source": .object([
                         "type": .string("string"),
-                        "enum": .array([
-                            .string("codex"),
-                            .string("claude-code"),
-                            .string("gemini-cli"),
-                            .string("opencode"),
-                            .string("iflow"),
-                            .string("qwen"),
-                            .string("qoder"),
-                            .string("kimi"),
-                            .string("commandcode"),
-                            .string("cline"),
-                            .string("cursor"),
-                            .string("vscode"),
-                            .string("antigravity"),
-                            .string("windsurf"),
-                        ]),
+                        "enum": sourceSchemaEnum,
                     ]),
                     "project": .object(["type": .string("string")]),
                     "since": .object(["type": .string("string")]),

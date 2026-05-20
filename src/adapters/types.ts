@@ -1,23 +1,26 @@
 // src/adapters/types.ts
 
-export type SourceName =
-  | 'codex'
-  | 'claude-code'
-  | 'copilot'
-  | 'gemini-cli'
-  | 'opencode'
-  | 'iflow'
-  | 'qwen'
-  | 'qoder'
-  | 'kimi'
-  | 'minimax'
-  | 'lobsterai'
-  | 'commandcode'
-  | 'cline'
-  | 'cursor'
-  | 'vscode'
-  | 'antigravity'
-  | 'windsurf';
+export const SOURCE_NAMES = [
+  'codex',
+  'claude-code',
+  'copilot',
+  'gemini-cli',
+  'opencode',
+  'iflow',
+  'qwen',
+  'qoder',
+  'kimi',
+  'minimax',
+  'lobsterai',
+  'commandcode',
+  'cline',
+  'cursor',
+  'vscode',
+  'antigravity',
+  'windsurf',
+] as const;
+
+export type SourceName = (typeof SOURCE_NAMES)[number];
 
 export interface SessionInfo {
   id: string;

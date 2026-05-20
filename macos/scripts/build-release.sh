@@ -57,10 +57,31 @@ echo ""
 
 # 4. Export archive
 echo "[4/4] Exporting archive..."
-xcodebuild -exportArchive \
+EXPORT_LOG="$MACOS_DIR/build/export.log"
+rm -rf "$EXPORT_PATH"
+if xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportOptionsPlist "$MACOS_DIR/ExportOptions.plist" \
-  -exportPath "$EXPORT_PATH"
+  -exportPath "$EXPORT_PATH" 2>&1 | tee "$EXPORT_LOG"; then
+  :
+elif grep -q 'expected one {}' "$EXPORT_LOG"; then
+  ARCHIVED_APP="$ARCHIVE_PATH/Products/Applications/Engram.app"
+  if [[ ! -d "$ARCHIVED_APP" ]]; then
+    echo ""
+    echo "ERROR: xcodebuild export failed and no archived app was found at:"
+    echo "       $ARCHIVED_APP"
+    echo ""
+    exit 1
+  fi
+
+  echo ""
+  echo "WARNING: xcodebuild export reported no available distribution methods for this archive."
+  echo "         Falling back to the signed app inside the archive for local installation."
+  mkdir -p "$EXPORT_PATH"
+  ditto "$ARCHIVED_APP" "$EXPORT_PATH/Engram.app"
+else
+  exit 1
+fi
 echo "      Export created at: $EXPORT_PATH"
 echo ""
 

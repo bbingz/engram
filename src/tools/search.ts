@@ -1,6 +1,10 @@
 // src/tools/search.ts
 
-import type { SessionInfo, SourceName } from '../adapters/types.js';
+import {
+  type SessionInfo,
+  SOURCE_NAMES,
+  type SourceName,
+} from '../adapters/types.js';
 import { type Database, isTierHidden, type SearchFilters } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 import type { MetricsCollector } from '../core/metrics.js';
@@ -37,22 +41,7 @@ export const searchTool = {
       },
       source: {
         type: 'string',
-        enum: [
-          'codex',
-          'claude-code',
-          'gemini-cli',
-          'opencode',
-          'iflow',
-          'qwen',
-          'qoder',
-          'kimi',
-          'commandcode',
-          'cline',
-          'cursor',
-          'vscode',
-          'antigravity',
-          'windsurf',
-        ],
+        enum: SOURCE_NAMES,
       },
       project: { type: 'string' },
       since: { type: 'string' },

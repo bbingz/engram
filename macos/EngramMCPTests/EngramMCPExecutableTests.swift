@@ -35,6 +35,45 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(actual, expected)
     }
 
+    func testSourceSchemasCoverEveryKnownProvider() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"] else {
+            XCTFail("Expected tools/list result.tools array")
+            return
+        }
+        let expected = [
+            "codex",
+            "claude-code",
+            "copilot",
+            "gemini-cli",
+            "opencode",
+            "iflow",
+            "qwen",
+            "qoder",
+            "kimi",
+            "minimax",
+            "lobsterai",
+            "commandcode",
+            "cline",
+            "cursor",
+            "vscode",
+            "antigravity",
+            "windsurf",
+        ]
+
+        for toolName in ["list_sessions", "search"] {
+            let tool = tools.first { $0["name"]?.stringValue == toolName }
+            let sourceEnum = tool?["inputSchema"]?["properties"]?["source"]?["enum"]?.arrayValue?
+                .compactMap(\.stringValue)
+            XCTAssertEqual(sourceEnum, expected, toolName)
+        }
+    }
+
     func testInitializeMatchesGolden() throws {
         let capture = try rpc(
             """
