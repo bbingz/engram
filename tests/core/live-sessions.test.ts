@@ -1,4 +1,10 @@
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -141,5 +147,16 @@ describe('LiveSessionMonitor', () => {
     expect(monitor.isRunning()).toBe(true);
     monitor.stop();
     expect(monitor.isRunning()).toBe(false);
+  });
+
+  it('does not use synchronous fs APIs on the polling scan path', () => {
+    const source = readFileSync(
+      new URL('../../src/core/live-sessions.ts', import.meta.url),
+      'utf-8',
+    );
+
+    expect(source).not.toMatch(
+      /\b(?:readdirSync|statSync|openSync|readSync|closeSync)\b/,
+    );
   });
 });

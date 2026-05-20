@@ -1,4 +1,4 @@
-import { closeSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { open, readdir, stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import type { SourceName } from '../adapters/types.js';
 
@@ -79,10 +79,10 @@ export class LiveSessionMonitor {
 
     for (const { path: watchDir, source } of this.watchDirs) {
       try {
-        const files = this.findJsonlFiles(watchDir);
+        const files = await this.findJsonlFiles(watchDir);
         for (const filePath of files) {
           try {
-            const st = statSync(filePath);
+            const st = await stat(filePath);
             const mtimeMs = st.mtimeMs;
             if (now - mtimeMs > this.stalenessMs) continue; // stale
 
@@ -95,7 +95,7 @@ export class LiveSessionMonitor {
               continue;
 
             // Parse session metadata from file
-            const session = this.parseSessionFile(
+            const session = await this.parseSessionFile(
               filePath,
               source,
               mtimeMs,
@@ -122,24 +122,28 @@ export class LiveSessionMonitor {
     }
   }
 
-  private findJsonlFiles(dir: string): string[] {
+  private async findJsonlFiles(dir: string): Promise<string[]> {
     const results: string[] = [];
     try {
-      this.walkDir(dir, results, 0);
+      await this.walkDir(dir, results, 0);
     } catch {
       /* intentional: directory may not exist */
     }
     return results;
   }
 
-  private walkDir(dir: string, results: string[], depth: number): void {
+  private async walkDir(
+    dir: string,
+    results: string[],
+    depth: number,
+  ): Promise<void> {
     if (depth > 5) return; // safety limit
     try {
-      const entries = readdirSync(dir, { withFileTypes: true });
+      const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         const full = join(dir, entry.name);
         if (entry.isDirectory()) {
-          this.walkDir(full, results, depth + 1);
+          await this.walkDir(full, results, depth + 1);
         } else if (entry.isFile() && extname(entry.name) === '.jsonl') {
           results.push(full);
         }
@@ -150,37 +154,41 @@ export class LiveSessionMonitor {
   }
 
   /** Read at most `bytes` from the start of a file. */
-  private readHead(filePath: string, bytes: number): string {
-    const fd = openSync(filePath, 'r');
+  private async readHead(filePath: string, bytes: number): Promise<string> {
+    const fd = await open(filePath, 'r');
     try {
       const buf = Buffer.alloc(bytes);
-      const bytesRead = readSync(fd, buf, 0, bytes, 0);
+      const { bytesRead } = await fd.read(buf, 0, bytes, 0);
       return buf.toString('utf-8', 0, bytesRead);
     } finally {
-      closeSync(fd);
+      await fd.close();
     }
   }
 
   /** Read at most `bytes` from the end of a file, given its size. */
-  private readTail(filePath: string, fileSize: number, bytes: number): string {
-    const fd = openSync(filePath, 'r');
+  private async readTail(
+    filePath: string,
+    fileSize: number,
+    bytes: number,
+  ): Promise<string> {
+    const fd = await open(filePath, 'r');
     try {
       const readSize = Math.min(bytes, fileSize);
       const offset = Math.max(0, fileSize - readSize);
       const buf = Buffer.alloc(readSize);
-      const bytesRead = readSync(fd, buf, 0, readSize, offset);
+      const { bytesRead } = await fd.read(buf, 0, readSize, offset);
       return buf.toString('utf-8', 0, bytesRead);
     } finally {
-      closeSync(fd);
+      await fd.close();
     }
   }
 
-  private parseSessionFile(
+  private async parseSessionFile(
     filePath: string,
     source: SourceName,
     mtimeMs: number,
     fileSize: number,
-  ): LiveSession | null {
+  ): Promise<LiveSession | null> {
     try {
       // --- First-line metadata (cached; session metadata never changes) ---
       let meta = this.metadataCache.get(filePath);
@@ -188,7 +196,7 @@ export class LiveSessionMonitor {
       if (meta && meta.cwd === '') meta = undefined;
       if (!meta) {
         // Codex first lines can be 15KB+ (includes base_instructions), read enough
-        const head = this.readHead(filePath, 32768);
+        const head = await this.readHead(filePath, 32768);
         const firstLineEnd = head.indexOf('\n');
         const firstLine =
           firstLineEnd >= 0 ? head.slice(0, firstLineEnd) : head;
@@ -250,7 +258,7 @@ export class LiveSessionMonitor {
       let model: string | undefined;
       let currentActivity: string | undefined;
 
-      const tail = this.readTail(filePath, fileSize, 8192);
+      const tail = await this.readTail(filePath, fileSize, 8192);
       const tailLines = tail.split('\n').filter(Boolean);
       // First partial line may be truncated — start from the second if tail was truncated
       const startIdx = fileSize > 8192 && tailLines.length > 0 ? 1 : 0;
