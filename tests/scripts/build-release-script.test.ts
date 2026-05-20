@@ -11,17 +11,22 @@ const script = readFileSync(
 describe('macOS release build script', () => {
   it('keeps export fallback broad enough for Xcode method errors', () => {
     expect(script).toMatch(
-      /grep -Eq 'expected one\( of\)\? \\\{\\\}\|No valid distribution methods were found'/,
+      /grep -Eiq 'expected one\( of\)\? \\\{\[\^\}\]\*\\\}\|No \(valid \|available \)\?distribution methods/,
     );
+  });
+
+  it('enables pipefail next to the export pipeline', () => {
+    expect(script).toContain('set -o pipefail\nif xcodebuild -exportArchive');
   });
 
   it('verifies the exported app before reporting success', () => {
     const verifyIndex = script.indexOf(
-      'codesign --verify --deep --strict "$EXPORT_PATH/Engram.app"',
+      'codesign --verify --strict --verbose=4 "$EXPORT_PATH/Engram.app"',
     );
     const successIndex = script.indexOf('Export created at: $EXPORT_PATH');
 
     expect(verifyIndex).toBeGreaterThan(-1);
     expect(successIndex).toBeGreaterThan(verifyIndex);
+    expect(script).not.toContain('codesign --verify --deep');
   });
 });

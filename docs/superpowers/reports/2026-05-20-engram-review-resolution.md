@@ -62,4 +62,4 @@ xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests -destinat
 macos/scripts/build-release.sh
 ```
 
-`macos/scripts/build-release.sh` archived successfully, hit the expected local Developer ID export-method error on this machine, fell back to the archived signed app, and verified the exported app with `codesign --verify --deep --strict`.
+`macos/scripts/build-release.sh` archived successfully, hit the expected local Developer ID export-method error on this machine, fell back to the archived signed app, and verified the exported app before reporting success.

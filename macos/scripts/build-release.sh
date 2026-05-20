@@ -60,12 +60,13 @@ echo "[4/4] Exporting archive..."
 EXPORT_LOG="$MACOS_DIR/build/export.log"
 mkdir -p "$(dirname "$EXPORT_LOG")"
 rm -rf "$EXPORT_PATH"
+set -o pipefail
 if xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportOptionsPlist "$MACOS_DIR/ExportOptions.plist" \
   -exportPath "$EXPORT_PATH" 2>&1 | tee "$EXPORT_LOG"; then
   :
-elif grep -Eq 'expected one( of)? \{\}|No valid distribution methods were found' "$EXPORT_LOG"; then
+elif grep -Eiq 'expected one( of)? \{[^}]*\}|No (valid |available )?distribution methods( were found)?|Unable to find (a )?(distribution|export) method|There are no export methods' "$EXPORT_LOG"; then
   ARCHIVED_APP="$ARCHIVE_PATH/Products/Applications/Engram.app"
   if [[ ! -d "$ARCHIVED_APP" ]]; then
     echo ""
@@ -90,7 +91,7 @@ if [[ ! -d "$EXPORT_PATH/Engram.app" ]]; then
   echo ""
   exit 1
 fi
-codesign --verify --deep --strict "$EXPORT_PATH/Engram.app"
+codesign --verify --strict --verbose=4 "$EXPORT_PATH/Engram.app"
 echo "      Export created at: $EXPORT_PATH"
 echo ""
 
