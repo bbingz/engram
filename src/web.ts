@@ -46,6 +46,7 @@ import { handleStats } from './tools/stats.js';
 import { handleToolAnalytics } from './tools/tool_analytics.js';
 import { registerAiAuditRoutes } from './web/routes/ai-audit.js';
 import { registerProjectAliasRoutes } from './web/routes/project-aliases.js';
+import { registerSyncRoutes } from './web/routes/sync.js';
 import {
   healthPage,
   layout,
@@ -500,60 +501,13 @@ export function createApp(
     parsePositiveInteger,
   });
 
-  app.get('/api/sync/status', (c) => {
-    return c.json({
-      nodeName: settings.syncNodeName ?? 'unnamed',
-      sessionCount: db.countSessions(),
-      timestamp: new Date().toISOString(),
-    });
-  });
-
-  // Sync: sessions since timestamp
-  app.get('/api/sync/sessions', (c) => {
-    const limit = parseOptionalPositiveIntParam(
-      'limit',
-      c.req.query('limit'),
-      500,
-    );
-    if (!limit.ok) return c.json({ error: limit.error }, 400);
-    const resolvedLimit = limit.value ?? 100;
-    const cursorIndexedAt = c.req.query('cursor_indexed_at');
-    const cursorId = c.req.query('cursor_id');
-
-    let sessions:
-      | ReturnType<typeof db.listSessionsSince>
-      | ReturnType<typeof db.listSessionsAfterCursor>;
-    if (cursorIndexedAt && cursorId) {
-      sessions = db.listSessionsAfterCursor(
-        { indexedAt: cursorIndexedAt, sessionId: cursorId },
-        resolvedLimit,
-      );
-    } else {
-      const since = c.req.query('since');
-      if (!since) return c.json({ error: 'since parameter required' }, 400);
-      sessions = db.listSessionsSince(since, resolvedLimit);
-    }
-
-    return c.json({ sessions });
-  });
-
-  // Sync: manual trigger (re-reads peers from config to pick up Swift UI changes)
-  app.post('/api/sync/trigger', async (c) => {
-    if (!opts?.syncEngine) {
-      return c.json({ error: 'Sync not configured' }, 501);
-    }
-    const freshSettings = readFileSettings();
-    const freshPeers = freshSettings.syncPeers ?? opts.syncPeers ?? [];
-    if (!freshPeers.length) {
-      return c.json({ error: 'No peers configured' }, 400);
-    }
-    const peerName = c.req.query('peer');
-    const peers = peerName
-      ? freshPeers.filter((p) => p.name === peerName)
-      : freshPeers;
-
-    const results = await opts.syncEngine.syncAllPeers(peers);
-    return c.json({ results });
+  // Sync: reference TypeScript API retained for migration/dev tooling
+  registerSyncRoutes(app, {
+    db,
+    nodeName: settings.syncNodeName,
+    syncEngine: opts?.syncEngine,
+    syncPeers: opts?.syncPeers,
+    parseOptionalPositiveIntParam,
   });
 
   // General status
