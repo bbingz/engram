@@ -87,31 +87,32 @@ final class EngramWebUIServer: @unchecked Sendable {
 
         let offset = max(0, Int(String(request.uri.queryParameters["offset"] ?? "0")) ?? 0)
         let limit = min(200, max(1, Int(String(request.uri.queryParameters["limit"] ?? "50")) ?? 50))
-        let page = try await readMessages(for: session, offset: offset, limit: limit)
-        let messageHTML: String = page.messages.map { message -> String in
-            let role = message.role.rawValue
-            return """
-            <article class="message \(escape(role))">
-              <div class="role">\(role == "user" ? "You" : escape(sourceLabel(session.source)))</div>
-              <pre>\(escape(message.content))</pre>
-            </article>
-            """
-        }.joined(separator: "\n")
+        let messageHTML: String
+        let pager: String
+        do {
+            let page = try await readMessages(for: session, offset: offset, limit: limit)
+            messageHTML = page.messages.map { message in
+                Self.renderMessageHTML(message, source: session.source)
+            }.joined(separator: "\n")
 
-        let previousOffset = max(0, offset - limit)
-        let previousLink = offset > 0
-            ? "<a class=\"button\" href=\"/session/\(urlPath(session.id))?offset=\(previousOffset)&limit=\(limit)\">Previous</a>"
-            : ""
-        let nextLink = page.hasMore
-            ? "<a class=\"button\" href=\"/session/\(urlPath(session.id))?offset=\(page.nextOffset)&limit=\(limit)\">Next</a>"
-            : ""
-        let pager = """
-        <nav class="pager">
-          \(previousLink)
-          <span>Showing \(offset + 1)-\(offset + page.messages.count)</span>
-          \(nextLink)
-        </nav>
-        """
+            let previousOffset = max(0, offset - limit)
+            let previousLink = offset > 0
+                ? "<a class=\"button\" href=\"/session/\(urlPath(session.id))?offset=\(previousOffset)&limit=\(limit)\">Previous</a>"
+                : ""
+            let nextLink = page.hasMore
+                ? "<a class=\"button\" href=\"/session/\(urlPath(session.id))?offset=\(page.nextOffset)&limit=\(limit)\">Next</a>"
+                : ""
+            pager = """
+            <nav class="pager">
+              \(previousLink)
+              <span>Showing \(offset + 1)-\(offset + page.messages.count)</span>
+              \(nextLink)
+            </nav>
+            """
+        } catch {
+            messageHTML = Self.transcriptErrorHTML(error)
+            pager = ""
+        }
 
         return layout(
             title: session.displayTitle,
@@ -191,6 +192,99 @@ final class EngramWebUIServer: @unchecked Sendable {
             messages.removeLast(messages.count - limit)
         }
         return (messages, hasMore, offset + messages.count)
+    }
+
+    static func renderMessageHTML(_ message: NormalizedMessage, source: String) -> String {
+        if message.role == .user, let category = WebSystemMessageCategory(content: message.content) {
+            return """
+            <article class="message system \(category.cssClass)">
+              <div class="role">\(category.label)</div>
+              <pre>\(escape(message.content))</pre>
+            </article>
+            """
+        }
+
+        let role = message.role.rawValue
+        return """
+        <article class="message \(escape(role))">
+          <div class="role">\(role == "user" ? "You" : escape(sourceLabel(source)))</div>
+          <pre>\(escape(message.content))</pre>
+        </article>
+        """
+    }
+
+    static func transcriptErrorHTML(_ error: Error) -> String {
+        """
+        <article class="message system transcript-error">
+          <div class="role">Transcript unavailable</div>
+          <pre>\(escape(transcriptErrorMessage(error)))</pre>
+        </article>
+        """
+    }
+
+    private static func transcriptErrorMessage(_ error: Error) -> String {
+        guard let failure = error as? ParserFailure else {
+            return error.localizedDescription
+        }
+
+        switch failure {
+        case .messageLimitExceeded:
+            return "The transcript hit the adapter message limit. Re-index or open a smaller transcript window after indexing catches up."
+        case .fileTooLarge:
+            return "The transcript file is too large for the current parser limit."
+        case .fileMissing:
+            return "The transcript file is missing from disk."
+        case .fileModifiedDuringParse:
+            return "The transcript changed while Engram was reading it. Refresh the page to retry."
+        default:
+            return "The transcript could not be parsed: \(failure.rawValue)."
+        }
+    }
+}
+
+private enum WebSystemMessageCategory {
+    case systemPrompt
+    case agentComm
+
+    init?(content: String) {
+        if content.hasPrefix("# AGENTS.md instructions for ") ||
+            content.contains("<INSTRUCTIONS>") ||
+            content.hasPrefix("<system-reminder>") ||
+            content.hasPrefix("<environment_context>") ||
+            content.hasPrefix("<EXTREMELY_IMPORTANT>") ||
+            content.hasPrefix("\nYou are Qwen Code") ||
+            content.hasPrefix("You are Qwen Code") {
+            self = .systemPrompt
+            return
+        }
+
+        if content.hasPrefix("<subagent_notification>") ||
+            content.hasPrefix("<local-command-caveat>") ||
+            content.hasPrefix("<local-command-stdout>") ||
+            content.contains("<command-name>") ||
+            content.contains("<command-message>") ||
+            content.hasPrefix("Unknown skill: ") ||
+            content.hasPrefix("Invoke the superpowers:") ||
+            content.hasPrefix("Base directory for this skill:") {
+            self = .agentComm
+            return
+        }
+
+        return nil
+    }
+
+    var label: String {
+        switch self {
+        case .systemPrompt: return "System Prompt"
+        case .agentComm: return "Agent Communication"
+        }
+    }
+
+    var cssClass: String {
+        switch self {
+        case .systemPrompt: return "system-prompt"
+        case .agentComm: return "agent-comm"
+        }
     }
 }
 

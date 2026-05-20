@@ -408,16 +408,18 @@ Either remove the README promise or add a small Settings section with list/add/r
 ### 27. HTTP transcript rendering is not aligned with Swift transcript classification
 
 Evidence:
-- The HTTP session detail view uses a local TypeScript classifier in `src/web/views.ts`.
+- The legacy TypeScript HTTP session detail view uses a local classifier in `src/web/views.ts`.
+- The running macOS App HTTP session detail view is served by `macos/EngramService/Core/EngramWebUIServer.swift`.
 - The Swift app uses `macos/Engram/Core/MessageParser.swift`, plus Swift-side message classification and filtering.
 - `<subagent_notification>` currently renders in the HTTP view as a normal `You` message, while Swift treats comparable injected/agent metadata as system-like transcript content.
 - `src/web/views.ts` also classifies `# AGENTS.md instructions for ...` differently from Swift despite the code comment saying the two classifiers should stay in sync.
+- Large active Codex transcripts can exceed `ParserLimits.maxMessages`; `EngramWebUIServer` previously let adapter failures escape as HTTP 500 instead of showing an inline transcript notice.
 
 Impact:
 The same session can be readable in the Swift app but noisy or misleading in the HTTP transcript, especially when subagents emit large status payloads.
 
 Recommended fix:
-Keep the Web and Swift system classifiers in parity. Classify `<subagent_notification>` as agent communication, and align AGENTS injected instruction classification with Swift.
+Keep the TypeScript Web, Swift app, and Swift service HTTP system classifiers in parity. Classify `<subagent_notification>` as agent communication, align AGENTS injected instruction classification with Swift, and render adapter parser failures as an inline notice rather than a blank HTTP 500.
 
 ## Gemini Revised Findings - Triage
 
