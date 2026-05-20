@@ -290,7 +290,7 @@ final class CodexAdapter: SessionAdapter {
         guard limit > 0 else { return [] }
 
         let offset = max(options.offset ?? 0, 0)
-        let (url, before) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
+        let (url, _) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
         let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
         var skipped = 0
         var messages: [NormalizedMessage] = []
@@ -313,11 +313,6 @@ final class CodexAdapter: SessionAdapter {
 
         if let failure = reader.failures.first {
             throw failure
-        }
-
-        let after = try limits.fileIdentity(for: url)
-        guard limits.isSameFileIdentity(before, after) else {
-            throw ParserFailure.fileModifiedDuringParse
         }
 
         return messages

@@ -205,6 +205,49 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(messages.map(\.content), ["task-9", "task-10"])
     }
 
+    func testCodexStreamWindowToleratesActiveSessionAppend() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-active-window-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("rollout-active-window.jsonl")
+        var lines = [
+            """
+            {"timestamp":"2026-05-20T00:00:00.000Z","type":"session_meta","payload":{"id":"active-window","timestamp":"2026-05-20T00:00:00.000Z","cwd":"/repo","originator":"Codex Desktop","model_provider":"openai"}}
+            """
+        ]
+        for index in 0..<20_000 {
+            lines.append(
+                """
+                {"timestamp":"2026-05-20T00:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"active-\(index)"}]}}
+                """
+            )
+        }
+        try lines.joined(separator: "\n").write(to: locator, atomically: true, encoding: .utf8)
+
+        let appendTask = Task.detached {
+            try await Task.sleep(nanoseconds: 1_000_000)
+            let handle = try FileHandle(forWritingTo: locator)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data("\n".utf8))
+            try handle.close()
+        }
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let stream = try await adapter.streamMessages(
+            locator: locator.path,
+            options: StreamMessagesOptions(offset: 19_000, limit: 2)
+        )
+        var messages: [NormalizedMessage] = []
+        for try await message in stream {
+            messages.append(message)
+        }
+        try await appendTask.value
+
+        XCTAssertEqual(messages.map(\.content), ["active-19000", "active-19001"])
+    }
+
     func testStreamingLineReaderReportsLinesAndLineLimitFailures() throws {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("adapter-lines-\(UUID().uuidString).jsonl")
