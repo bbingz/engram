@@ -1,5 +1,49 @@
 # Engram Local Memory
 
+## 2026-05-21 — Full remediation ship after multi-agent review
+
+- Starting point: `docs/superpowers/reports/2026-05-20-engram-review-findings.md`
+  contained 27 verified findings from Codex subagents plus Gemini leads. The
+  remediation branch closed all 27 and recorded evidence in
+  `docs/superpowers/reports/2026-05-20-engram-review-resolution.md`.
+- Provider/parser contract is now explicit: Swift product adapters are the
+  implementation; TypeScript adapters are dev/reference/fixture tooling.
+  `tests/fixtures/adapter-parity/**` is the golden parity corpus.
+- Antigravity CLI, Command Code, and Qoder were the final focused providers:
+  Antigravity CLI reads `~/.gemini/antigravity-cli/brain/` and still supports
+  legacy Antigravity cache mapping; Command Code covers `tool-call.input` and
+  `tool-call.args`; Qoder covers nested `subagents/` parent detection without
+  false positives for project-level `subagents/` folders.
+- Transcript display parity rule: Swift App, Swift MCP, Swift Service export,
+  and Swift HTTP transcript endpoints return only non-empty `user` /
+  `assistant` body messages. Tool, system, event, and subagent notification rows
+  remain for indexing/statistics/diagnostics, but do not render as ordinary chat
+  bubbles.
+- Two Polycli review rounds were run with available providers
+  `gemini`, `claude`, `copilot`, `minimax`, `cmd`, and `agy`. Actionable round-2
+  issues fixed: Qoder parent detection outside `/Users`, whitespace/blank
+  transcript filtering across MCP/export, blank assistant indexing stats, noop
+  cost-row model refresh, and Xcode project worktree-name leakage.
+- Final verification before ship:
+  - `npm run check:adapter-parity-fixtures` passed.
+  - Targeted Antigravity/Command Code/Qoder + web/API fixture tests passed:
+    6 files, 115 tests.
+  - Full `npm test` passed: 120 files, 1342 tests.
+  - `npm run typecheck:test`, `npm run knip`, `npm run build`, and
+    `npm audit --audit-level=high --json` passed with 0 high/critical issues.
+  - Swift AdapterParity, MCP source schema/transcript, and ServiceCore
+    HTTP/export display parity selected tests passed.
+  - `macos/scripts/build-release.sh` archived successfully; local
+    Developer-ID export hit the known exportOptions limitation, then fell back
+    to the signed archive app. `/Applications/Engram.app` was replaced,
+    codesign verified, and `Engram` + `EngramService` + `EngramMCP` were running.
+- Git closeout: local and remote were reduced to a single `main` branch at
+  `83f096c3 fix: harden provider parser parity`. `origin/main` had unrelated
+  public-release history, so it was intentionally replaced with
+  `--force-with-lease` after inspection. Temporary remote `codex/*`, backup,
+  and `public-main` branches were deleted after confirming tags/coverage; local
+  worktrees and old local branches were also removed.
+
 ## 2026-05-10 — Recent indexing must scan all active local session sources
 
 - Root cause: `EngramServiceRunner` called `writer.indexRecentSessions()`, but

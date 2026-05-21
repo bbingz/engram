@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Shipped — Full remediation review closeout + provider parser parity (2026-05-21)
+
+- **27 项 review finding 全部收口** —— 基于 `docs/superpowers/reports/2026-05-20-engram-review-findings.md` 的 Codex 多子 agent 审计 + Gemini 线索复核,完成 Swift service/db/IPC、Node dev tooling、文档/UI 承诺、MCP 工具、Web route 拆分、安全权限、provider parser/display parity 的整轮修复。最终证据写入 `docs/superpowers/reports/2026-05-20-engram-review-resolution.md`。
+- **Provider parser parity 变成发布门禁** —— `tests/fixtures/adapter-parity/**` 作为 Swift product adapter 与 TypeScript dev/reference tooling 的 golden corpus。当前 fixture gate 覆盖 15 个独立 provider:Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax / Lobster AI 作为 Claude-compatible derived source 继续走 Claude parser,但以独立 source 入库。
+- **Antigravity CLI / Command Code / Qoder 重点修复** —— Antigravity CLI 新增 `~/.gemini/antigravity-cli/brain/` transcript 支持并保留 legacy cache mapping;Command Code 覆盖 `tool-call.input` / `tool-call.args`;Qoder 覆盖 nested `subagents/` parent detection,同时避免 project-level `subagents/` 目录被误判为 parent。
+- **HTTP / Swift / MCP / export 显示契约统一** —— Swift App、Swift MCP、Swift Service export、Swift HTTP transcript endpoint 只返回非空 `user` / `assistant` 正文。tool/system/event/subagent notification 行保留给索引、统计和诊断,不混入普通对话气泡。相关 Command Code tool row、blank/whitespace assistant、Antigravity legacy-source 读取都有 Swift/Node 回归测试。
+- **两轮 Polycli review 吸收完毕** —— 可用 provider 为 `gemini`、`claude`、`copilot`、`minimax`、`cmd`、`agy`。第二轮实质修复包括 Qoder `/Users` 外 parent detection、MCP/export 空白 transcript 过滤、blank assistant stats/noop cost metadata refresh,以及 Xcode project worktree-name 泄漏。记录见 `docs/verification/provider-parser-parity-2026-05-20.md`。
+- **最终 ship 验证**:`npm run check:adapter-parity-fixtures` ✓;目标 Antigravity/Command Code/Qoder + web/API tests 6 files / 115 tests ✓;完整 `npm test` 120 files / 1342 tests ✓;`npm run typecheck:test` ✓;`npm run knip` ✓;`npm run build` ✓;`npm audit --audit-level=high --json` 0 high/critical ✓;Swift AdapterParity / MCP source-schema+transcript / ServiceCore HTTP+export parity 选测 ✓。`macos/scripts/build-release.sh` archive 成功,本机 Developer-ID exportOptions 限制触发后使用 signed archive fallback;`/Applications/Engram.app` 已替换,codesign 通过,`Engram` / `EngramService` / `EngramMCP` 均运行。
+- **Git/发布线清理** —— 本地与远端最终只保留 `main`。由于旧 `origin/main` 与当前本地 `main` 无共同祖先,先检查并尝试普通推送/compare/集成 merge,确认不可行后用 `--force-with-lease` 将 `origin/main` 更新到 `83f096c3 fix: harden provider parser parity`;随后删除临时 `codex/*`、backup、`public-main` 远端分支和所有本地旧分支/worktree。
+
 ### Fixed — Recent indexing covers updated Claude sessions (2026-05-10)
 
 - **Claude 今日会话不再漏入库** —— `EngramService` 的 recent indexing 之前实际只走 `SessionAdapterFactory.recentCodexAdapters()`,导致持续写入的 `~/.claude/projects/*.jsonl` 不会被服务周期扫描捞进索引。现在 `indexRecentSessions()` 默认使用 `recentActiveAdapters()`:Codex 继续按近两天日期目录扫,Claude/Gemini/OpenCode/Cursor/Qwen/Kimi/Cline/VS Code/Windsurf/Antigravity/Copilot 等文件型来源按 backing file mtime 过滤最近活跃 locator。OpenCode `db.sqlite::sessionId` 和 Cursor `db.sqlite?composer=...` 这类虚拟 locator 会先解析回实际 DB 文件再取 mtime。
