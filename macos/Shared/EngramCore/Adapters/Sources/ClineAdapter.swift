@@ -1,6 +1,6 @@
 import Foundation
 
-final class ClineAdapter: SessionAdapter {
+final class ClineAdapter: SessionAdapter, Sendable {
     let source: SourceName = .cline
     private let tasksRoot: URL
     private let limits: ParserLimits
@@ -129,16 +129,40 @@ final class ClineAdapter: SessionAdapter {
             else {
                 continue
             }
-            if let match = request.range(
-                of: #"Current Working Directory \(([^)]+)\)"#,
-                options: .regularExpression
+            // Cline writes "Current Working Directory (<path>) Files ...". A path
+            // can itself contain ')', so anchor on the "\) Files" suffix and match
+            // the path lazily up to it; fall back to the loose pattern for caches
+            // that lack the " Files" trailer.
+            if let cwd = Self.captureGroup(
+                in: request,
+                pattern: #"Current Working Directory \((.+?)\) Files"#
+            ) ?? Self.captureGroup(
+                in: request,
+                pattern: #"Current Working Directory \(([^)]+)\)"#
             ) {
-                let matched = String(request[match])
-                return matched
-                    .replacingOccurrences(of: "Current Working Directory (", with: "")
-                    .replacingOccurrences(of: ")", with: "")
+                return cwd
             }
         }
         return ""
+    }
+
+    // Returns the first capture group of `pattern` in `text`, or nil. Uses
+    // dotMatchesLineSeparators so a path-with-newline edge case still matches
+    // (parity with the TS `/s` flag).
+    private static func captureGroup(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.dotMatchesLineSeparators]
+        ) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              match.numberOfRanges > 1,
+              let groupRange = Range(match.range(at: 1), in: text)
+        else {
+            return nil
+        }
+        return String(text[groupRange])
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-final class CopilotAdapter: SessionAdapter {
+final class CopilotAdapter: SessionAdapter, Sendable {
     let source: SourceName = .copilot
     private let sessionRoot: URL
     private let limits: ParserLimits

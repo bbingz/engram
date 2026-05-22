@@ -220,4 +220,62 @@ describe('KimiAdapter', () => {
       expect(msgs[1].timestamp).toBe('2026-02-02T02:42:00.000Z');
     });
   });
+
+  describe('extreme / non-finite timestamps (R5-30)', () => {
+    const tmpRoot = join(tmpdir(), `engram-kimi-extreme-${Date.now()}`);
+    const sessionsRoot = join(tmpRoot, 'sessions');
+    const sessDir = join(sessionsRoot, 'ws-e', 'sess-extreme');
+    const ctxPath = join(sessDir, 'context.jsonl');
+
+    beforeAll(() => {
+      mkdirSync(sessDir, { recursive: true });
+      // An out-of-range epoch (1e300 s) would make new Date(x*1000) throw a
+      // RangeError on toISOString(), aborting the whole parse.
+      writeFileSync(
+        ctxPath,
+        [
+          '{"role":"user","content":"q","timestamp":1e300}',
+          '{"role":"assistant","content":"a","timestamp":"2026-02-02T03:00:00.000Z"}',
+        ].join('\n'),
+      );
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('does not throw and skips the unrepresentable timestamp', async () => {
+      const a = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const info = await a.parseSessionInfo(ctxPath);
+      expect(info).not.toBeNull();
+      // The extreme value is dropped; the valid ISO line drives start/end.
+      expect(info?.startTime).toBe('2026-02-02T03:00:00.000Z');
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.assistantMessageCount).toBe(1);
+    });
+
+    it('streamMessages does not throw on the extreme timestamp', async () => {
+      const a = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const msgs = [];
+      for await (const m of a.streamMessages(ctxPath)) msgs.push(m);
+      expect(msgs).toHaveLength(2);
+      // First line's epoch is unrepresentable → no line timestamp; it falls
+      // back to a wire timestamp (none here) → undefined, never a crash.
+      expect(msgs[0].timestamp).toBeUndefined();
+    });
+  });
+
+  describe('session id validation (R5-35)', () => {
+    it('returns null when the session id resolves to "." (file at sessions root)', async () => {
+      const tmpRoot = join(tmpdir(), `engram-kimi-badid-${Date.now()}`);
+      mkdirSync(tmpRoot, { recursive: true });
+      // A context.jsonl directly under a dir whose basename(dirname) is '.'
+      // can't happen for absolute paths, so exercise the guard via a relative
+      // locator where dirname('context.jsonl') === '.'.
+      const rel = 'context.jsonl';
+      writeFileSync(join(tmpRoot, rel), '{"role":"user","content":"x"}');
+      const a = new KimiAdapter(tmpRoot, FIXTURE_KIMI_JSON);
+      const info = await a.parseSessionInfo(rel);
+      expect(info).toBeNull();
+      rmSync(tmpRoot, { recursive: true, force: true });
+    });
+  });
 });

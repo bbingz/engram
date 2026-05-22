@@ -409,7 +409,10 @@ final class IndexerParityTests: XCTestCase {
         let snapshots = try await indexer.collectSnapshots()
 
         XCTAssertEqual(snapshots.count, 1)
-        XCTAssertEqual(snapshots.first?.tier, .lite)
+        // A bare "ping" health probe is preamble-only noise, so it is skipped
+        // (SessionTier.compute returns .skip for isPreamble) — matching this
+        // test's own name and the Polycli probe-skip contract.
+        XCTAssertEqual(snapshots.first?.tier, .skip)
     }
 
     func testToolRoleMessagesContributeToTierStats() async throws {

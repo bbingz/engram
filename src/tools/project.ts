@@ -91,6 +91,16 @@ export const projectMoveTool = {
   },
 };
 
+// Cap on audit note length. The note is persisted into migration_log; an
+// unbounded string would bloat the log and (in dry-run echoes) the response.
+export const MAX_AUDIT_NOTE_CHARS = 2_000;
+
+/** Trim + truncate a user-supplied audit note; undefined passes through. */
+export function capAuditNote(note: string | undefined): string | undefined {
+  if (note === undefined) return undefined;
+  return note.trim().slice(0, MAX_AUDIT_NOTE_CHARS);
+}
+
 export async function handleProjectMove(
   db: Database,
   params: {
@@ -110,7 +120,7 @@ export async function handleProjectMove(
     dst,
     dryRun: params.dry_run,
     force: params.force,
-    auditNote: params.note,
+    auditNote: capAuditNote(params.note),
     actor: 'mcp',
   });
   // Echo resolved paths when ~ was expanded so the AI can confirm it's
@@ -240,7 +250,7 @@ export async function handleProjectArchive(
     src,
     dst: suggestion.dst,
     archived: true,
-    auditNote: params.note ?? `archive: ${suggestion.reason}`,
+    auditNote: capAuditNote(params.note) ?? `archive: ${suggestion.reason}`,
     force: params.force,
     actor: 'mcp',
   });
@@ -471,13 +481,33 @@ export const projectMoveBatchTool = {
   },
 };
 
+// Cap on raw batch-YAML size. A multi-megabyte document (or one engineered as
+// a YAML bomb) would otherwise be parsed into memory unbounded. 1MB is far
+// larger than any legitimate batch of project moves.
+export const MAX_BATCH_YAML_BYTES = 1_000_000;
+
+/**
+ * Parse batch YAML defensively: reject oversized input before parsing and cap
+ * alias expansion so anchor/alias bombs can't blow up memory. `maxAliasCount`
+ * is a hard limit the `yaml` parser enforces while building the tree.
+ */
+export function parseBatchYaml(text: string): Record<string, unknown> {
+  const byteLength = Buffer.byteLength(text, 'utf8');
+  if (byteLength > MAX_BATCH_YAML_BYTES) {
+    throw new Error(
+      `Batch YAML too large (${byteLength} bytes, maximum ${MAX_BATCH_YAML_BYTES}).`,
+    );
+  }
+  return parseYaml(text, { maxAliasCount: 100 }) as Record<string, unknown>;
+}
+
 export async function handleProjectMoveBatch(
   db: Database,
   params: { yaml: string; dry_run?: boolean; force?: boolean },
   opts?: ToolHandlerOpts,
 ) {
   opts?.log?.info('project_move_batch', { bytes: params.yaml.length });
-  const raw = parseYaml(params.yaml) as Record<string, unknown>;
+  const raw = parseBatchYaml(params.yaml);
   const doc = normalizeBatchDocument(raw);
   // Top-level dry_run overrides the YAML's defaults.dry_run — lets AI
   // preview a batch without modifying the document.

@@ -251,6 +251,30 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(after).toBe(before); // no log row written
   });
 
+  it('does not leak a SIGINT handler when the lock pre-fails (R5-6)', async () => {
+    // The SIGINT handler is now installed before acquireLock so a Ctrl-C while
+    // the lock is being created still cleans up. On a LockBusyError that handler
+    // must be removed again — otherwise it would unlink a live peer's lock on a
+    // later SIGINT. Verify no listener leaks.
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const lockPath = join(tmp, 'leak-check.lock');
+    await mkdir(join(tmp, '.engram'), { recursive: true }).catch(() => {});
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        migrationId: 'external',
+      }),
+    );
+
+    const sigintBefore = process.listenerCount('SIGINT');
+    await expect(
+      runProjectMove(db, { src, dst, home, lockPath }),
+    ).rejects.toThrow(/project-move is already in progress/);
+    expect(process.listenerCount('SIGINT')).toBe(sigintBefore);
+  });
+
   it('compensates on error: restores FS when patch fails mid-way', async () => {
     // Cause patch failure by pre-creating a CC file that will fail CAS.
     // Simplest: pass a non-existent `home` so CC dir lookup can't find the

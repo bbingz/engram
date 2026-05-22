@@ -8,10 +8,13 @@ struct MarkdownText: View {
     let text: String
     let fontSize: Double
 
-    // Cache AttributedString results to avoid re-parsing markdown every render
+    // Cache AttributedString results to avoid re-parsing markdown every render.
+    // totalCostLimit bounds memory even when a few entries are very large
+    // (countLimit alone can't cap total size).
     private static let attrCache: NSCache<NSString, CachedAttributedString> = {
         let cache = NSCache<NSString, CachedAttributedString>()
         cache.countLimit = 500
+        cache.totalCostLimit = 8 * 1024 * 1024 // ~8 MB
         return cache
     }()
 
@@ -22,7 +25,8 @@ struct MarkdownText: View {
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )
-        Self.attrCache.setObject(CachedAttributedString(value: result), forKey: key)
+        // Cost ≈ UTF-16 byte length of the source string.
+        Self.attrCache.setObject(CachedAttributedString(value: result), forKey: key, cost: text.utf16.count * 2)
         return result
     }
 
@@ -57,10 +61,13 @@ struct SegmentedMessageView: View {
     let content: String
     @AppStorage("contentFontSize") var fontSize: Double = 14
 
-    // Cache parsed segments keyed by content — avoids re-parsing on every render
+    // Cache parsed segments keyed by content — avoids re-parsing on every render.
+    // totalCostLimit bounds memory even when a few entries are very large
+    // (countLimit alone can't cap total size).
     private static let segmentCache: NSCache<NSString, SegmentCacheEntry> = {
         let cache = NSCache<NSString, SegmentCacheEntry>()
         cache.countLimit = 200
+        cache.totalCostLimit = 8 * 1024 * 1024 // ~8 MB
         return cache
     }()
 
@@ -71,7 +78,8 @@ struct SegmentedMessageView: View {
         }
         let parsed = ContentSegmentParser.parse(content)
         let entry = SegmentCacheEntry(segments: parsed)
-        Self.segmentCache.setObject(entry, forKey: key)
+        // Cost ≈ UTF-16 byte length of the source string.
+        Self.segmentCache.setObject(entry, forKey: key, cost: content.utf16.count * 2)
         return parsed
     }
 
@@ -133,6 +141,7 @@ struct CodeBlockView: View {
     let code: String
     let fontSize: Double
     @State private var copied = false
+    @State private var copyResetTask: Task<Void, Never>? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -148,7 +157,11 @@ struct CodeBlockView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(code, forType: .string)
                     copied = true
-                    Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
+                    copyResetTask?.cancel()
+                    copyResetTask = Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        if !Task.isCancelled { copied = false }
+                    }
                 } label: {
                     HStack(spacing: 3) {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc")
@@ -184,6 +197,7 @@ struct CodeBlockView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
         )
+        .onDisappear { copyResetTask?.cancel(); copyResetTask = nil }
     }
 }
 

@@ -12,7 +12,7 @@
     ]
   },
   "schemaVersion": 1,
-  "sourceCommit": "e85a6c58",
+  "sourceCommit": "9e43f40b",
   "tables": {
     "metadata": {
       "count": 2,
@@ -31,12 +31,12 @@
           "computed_at": "<volatile>",
           "cost_usd": 0,
           "input_tokens": 0,
-          "model": "",
+          "model": null,
           "output_tokens": 0,
           "session_id": "codex-session-001"
         }
       ],
-      "sha256": "154efc27049304fdf20e0748ee2fcaae186788b387154622607d65c6dfec8347"
+      "sha256": "65e6a6cf9f7ab264ebb3d68ae01e371d24ad6e527482f42053d67525b5ee6a5c"
     },
     "session_files": {
       "count": 0,
@@ -48,7 +48,7 @@
       "rows": [
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:7c635c5da55aba0e0f2cdcd74b690629869d79a55a66a7269736ae9c467f27a0:embedding",
+          "id": "codex-session-001:1:89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f:embedding",
           "job_kind": "embedding",
           "last_error": null,
           "retry_count": 0,
@@ -59,7 +59,7 @@
         },
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:7c635c5da55aba0e0f2cdcd74b690629869d79a55a66a7269736ae9c467f27a0:fts",
+          "id": "codex-session-001:1:89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f:fts",
           "job_kind": "fts",
           "last_error": null,
           "retry_count": 0,
@@ -69,7 +69,7 @@
           "updated_at": "<volatile>"
         }
       ],
-      "sha256": "0d7e030adfbea6ea02ff7b2077ed210ff2471e8bc4556c44256745cc557d045f"
+      "sha256": "35b5047e54b9e277cf2b05260955c6dabbfaca21ff8c2f8adc82811d06858c09"
     },
     "session_tools": {
       "count": 1,
@@ -99,7 +99,7 @@
           "indexed_at": "<volatile>",
           "link_checked_at": "<volatile>",
           "link_source": null,
-          "message_count": 5,
+          "message_count": 4,
           "model": null,
           "origin": "fixture-node",
           "orphan_reason": null,
@@ -107,9 +107,9 @@
           "orphan_status": null,
           "parent_session_id": null,
           "project": "my-project",
-          "quality_score": 67,
+          "quality_score": 68,
           "size_bytes": 1199,
-          "snapshot_hash": "7c635c5da55aba0e0f2cdcd74b690629869d79a55a66a7269736ae9c467f27a0",
+          "snapshot_hash": "89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f",
           "source": "codex",
           "source_locator": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
           "start_time": "2026-01-15T10:00:00.000Z",
@@ -119,11 +119,11 @@
           "sync_version": 1,
           "system_message_count": 0,
           "tier": "normal",
-          "tool_message_count": 2,
+          "tool_message_count": 1,
           "user_message_count": 2
         }
       ],
-      "sha256": "c1e95cde080c3ee54c8a9353400e138775f92e3b3952270e77a35597781c0f15"
+      "sha256": "465e327e09c0ab4a09f03c8dbb3222277c1c19186309d2a9c7bbc498bede062f"
     }
   }
 }

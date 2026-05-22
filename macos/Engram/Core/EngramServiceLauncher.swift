@@ -85,11 +85,24 @@ final class EngramServiceLauncher {
         healthTask?.cancel()
         let interval = healthIntervalNanoseconds
         let maxRestarts = maximumRestartAttempts
+        // [weak self] is intentional: `self` retains `healthTask`, so a strong
+        // capture would create a retain cycle that keeps the launcher (and its
+        // child process) alive past app teardown. The launcher is owned by the
+        // app for its whole lifetime, so the only time `self` deallocs is when
+        // the app is going away — at which point stopping the monitor is the
+        // correct behavior.
         healthTask = Task { [weak self] in
             var restartAttempts = 0
             while !Task.isCancelled {
+                // Exponential backoff once restarts start failing: probing/
+                // restarting a wedged service every `interval` adds load without
+                // helping. Backoff is capped so recovery latency stays bounded
+                // and we keep probing forever (the service may come back), rather
+                // than giving up permanently after the restart budget.
+                let backoffMultiplier = UInt64(1) << UInt64(min(restartAttempts, 5))
+                let sleepInterval = interval &* backoffMultiplier
                 do {
-                    try await Task.sleep(nanoseconds: interval)
+                    try await Task.sleep(nanoseconds: sleepInterval)
                 } catch {
                     return
                 }
@@ -117,10 +130,13 @@ final class EngramServiceLauncher {
                             }
                         }
                     } else {
+                        // Budget exhausted: surface degraded status but keep the
+                        // monitor alive (with backoff) so the service can recover
+                        // without requiring an app relaunch.
+                        restartAttempts += 1
                         await MainActor.run {
                             onStatus(.degraded(message: "EngramService health check failed after \(maxRestarts) restart attempts: \(message)"))
                         }
-                        return
                     }
                 }
             }
@@ -138,8 +154,25 @@ final class EngramServiceLauncher {
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
         stdoutPipe = nil
         stderrPipe = nil
-        process?.terminate()
+        if let process, process.isRunning {
+            process.terminate()
+            // Bounded wait so the old helper has actually released the
+            // single-writer lock + socket before a restart spawns a new one;
+            // otherwise the new process loses the lock race and exits. SIGTERM
+            // on our own short-lived helper is honored quickly; cap the wait so
+            // a wedged process can't block the main actor indefinitely.
+            Self.waitForExit(process, timeout: 2.0)
+        }
         process = nil
+    }
+
+    private static func waitForExit(_ process: Process, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            // Poll rather than blocking waitUntilExit(): a hung helper would
+            // otherwise wedge the @MainActor caller forever.
+            Thread.sleep(forTimeInterval: 0.02)
+        }
     }
 
     private func drain(pipe: Pipe, level: String) {

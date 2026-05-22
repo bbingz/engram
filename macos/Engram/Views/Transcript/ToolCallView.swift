@@ -5,6 +5,7 @@ struct ToolCallView: View {
     let parsed: ParsedToolCall
     @AppStorage("contentFontSize") var fontSize: Double = 14
     @State private var copied = false
+    @State private var copyResetTask: Task<Void, Never>? = nil
     @State private var expandedParams: Set<Int> = []
 
     private let tintColor = Color(red: 0.60, green: 0.32, blue: 0.85) // purple
@@ -25,7 +26,11 @@ struct ToolCallView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(parsed.rawContent, forType: .string)
                     copied = true
-                    Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
+                    copyResetTask?.cancel()
+                    copyResetTask = Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        if !Task.isCancelled { copied = false }
+                    }
                 } label: {
                     HStack(spacing: 3) {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc")
@@ -62,6 +67,7 @@ struct ToolCallView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(tintColor.opacity(0.20), lineWidth: 1)
         )
+        .onDisappear { copyResetTask?.cancel(); copyResetTask = nil }
     }
 
     @ViewBuilder

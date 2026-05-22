@@ -415,4 +415,67 @@ describe('Indexer', () => {
     const snap2 = db.getAuthoritativeSnapshot('tier-001');
     expect(snap2?.tier).toBe('premium');
   });
+
+  describe('snapshot + extracted-data atomicity (R5-4)', () => {
+    function makeRealFileAdapter(filePath: string, id: string): SessionAdapter {
+      // Stream produces token usage so writeExtractedData performs a real cost
+      // write — the step we force to fail to prove the snapshot rolls back.
+      return {
+        name: 'codex',
+        async detect() {
+          return true;
+        },
+        async *listSessionFiles() {
+          yield filePath;
+        },
+        async parseSessionInfo(fp: string) {
+          return makeBaseSessionInfo({ id, filePath: fp, sizeBytes: 0 });
+        },
+        async *streamMessages(): AsyncGenerator<Message> {
+          yield { role: 'user', content: 'hello' };
+          yield {
+            role: 'assistant',
+            content: 'world',
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        },
+        async isAccessible() {
+          return true;
+        },
+      };
+    }
+
+    it('persists snapshot and cost row together on success', async () => {
+      const filePath = join(sessionsDir, 'atomic-ok.jsonl');
+      writeFileSync(filePath, 'x');
+      const adapter = makeRealFileAdapter(filePath, 'atomic-ok-001');
+      const indexer = new Indexer(db, [adapter]);
+
+      const result = await indexer.indexFile(adapter, filePath);
+
+      expect(result.indexed).toBe(true);
+      expect(db.getAuthoritativeSnapshot('atomic-ok-001')).not.toBeNull();
+      const cost = db.raw
+        .prepare('SELECT COUNT(*) AS c FROM session_costs WHERE session_id = ?')
+        .get('atomic-ok-001') as { c: number };
+      expect(cost.c).toBe(1);
+    });
+
+    it('rolls back the snapshot when extracted-data write fails', async () => {
+      const filePath = join(sessionsDir, 'atomic-fail.jsonl');
+      writeFileSync(filePath, 'x');
+      const adapter = makeRealFileAdapter(filePath, 'atomic-fail-001');
+      const indexer = new Indexer(db, [adapter]);
+
+      // Force writeExtractedData's cost upsert to throw mid-transaction.
+      db.raw.exec('DROP TABLE session_costs');
+
+      const result = await indexer.indexFile(adapter, filePath);
+
+      // indexFile swallows the error and reports not-indexed, and crucially the
+      // snapshot write is rolled back — no orphaned session without cost data.
+      expect(result.indexed).toBe(false);
+      expect(db.getAuthoritativeSnapshot('atomic-fail-001')).toBeNull();
+    });
+  });
 });

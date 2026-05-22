@@ -7,7 +7,7 @@ enum TranscriptExportService {
     static func exportSession(
         _ request: EngramServiceExportSessionRequest,
         databasePath: String
-    ) throws -> EngramServiceExportSessionResponse {
+    ) async throws -> EngramServiceExportSessionResponse {
         guard request.format == "markdown" || request.format == "json" else {
             throw EngramServiceError.invalidRequest(message: "Unsupported export format: \(request.format)")
         }
@@ -18,7 +18,7 @@ enum TranscriptExportService {
             throw EngramServiceError.invalidRequest(message: "Session not found: \(request.id)")
         }
 
-        let messages = ServiceTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
+        let messages = await ServiceTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
         let home = try outputHome(from: request.outputHome)
         let outputDir = URL(fileURLWithPath: home).appendingPathComponent("codex-exports")
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
@@ -267,8 +267,8 @@ private struct ServiceTranscriptMessage: Sendable {
 }
 
 private enum ServiceTranscriptReader {
-    static func readMessages(filePath: String, source: String) -> [ServiceTranscriptMessage] {
-        if let adapterMessages = readWithAdapterRegistry(filePath: filePath, source: source) {
+    static func readMessages(filePath: String, source: String) async -> [ServiceTranscriptMessage] {
+        if let adapterMessages = await readWithAdapterRegistry(filePath: filePath, source: source) {
             return adapterMessages
         }
 
@@ -298,49 +298,40 @@ private enum ServiceTranscriptReader {
         }
     }
 
-    private static func readWithAdapterRegistry(filePath: String, source: String) -> [ServiceTranscriptMessage]? {
+    // Async by design: await the adapter stream directly instead of bridging
+    // back to sync via DispatchSemaphore. Blocking a cooperative-pool thread on
+    // a semaphore can starve/deadlock the pool under concurrent exports.
+    private static func readWithAdapterRegistry(filePath: String, source: String) async -> [ServiceTranscriptMessage]? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
             return nil
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        final class Box: @unchecked Sendable {
-            var messages: [ServiceTranscriptMessage]?
-        }
-        let box = Box()
-
-        Task.detached {
-            defer { semaphore.signal() }
-            do {
-                let stream = try await adapter.streamMessages(
-                    locator: filePath,
-                    options: StreamMessagesOptions()
-                )
-                var messages: [ServiceTranscriptMessage] = []
-                for try await message in stream {
-                    guard message.role == .user || message.role == .assistant,
-                          !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    else {
-                        continue
-                    }
-                    messages.append(
-                        ServiceTranscriptMessage(
-                            role: message.role.rawValue,
-                            content: message.content,
-                            timestamp: message.timestamp
-                        )
-                    )
+        do {
+            let stream = try await adapter.streamMessages(
+                locator: filePath,
+                options: StreamMessagesOptions()
+            )
+            var messages: [ServiceTranscriptMessage] = []
+            for try await message in stream {
+                guard message.role == .user || message.role == .assistant,
+                      !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else {
+                    continue
                 }
-                box.messages = messages
-            } catch {
-                box.messages = nil
+                messages.append(
+                    ServiceTranscriptMessage(
+                        role: message.role.rawValue,
+                        content: message.content,
+                        timestamp: message.timestamp
+                    )
+                )
             }
+            return messages
+        } catch {
+            return nil
         }
-
-        semaphore.wait()
-        return box.messages
     }
 
     private static func adapterSourceName(for source: String) -> SourceName? {

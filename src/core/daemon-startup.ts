@@ -68,6 +68,9 @@ interface InitialScanDeps {
     name: string;
     isAccessible(locator: string): Promise<boolean>;
   }>;
+  // Optional shutdown signal: when aborted, the background orphan scan is
+  // skipped/short-circuited so it cannot race db.close() on daemon shutdown.
+  signal?: AbortSignal;
 }
 
 export async function runInitialScan({
@@ -78,6 +81,7 @@ export async function runInitialScan({
   indexJobRunner,
   db,
   adapters,
+  signal,
 }: InitialScanDeps): Promise<void> {
   const indexed = await indexer.indexAll();
 
@@ -211,9 +215,15 @@ export async function runInitialScan({
   });
 
   // Background orphan scan — runs after ready so the menu-bar badge is not delayed.
+  // Guarded by the shutdown signal so an in-flight scan cannot touch the DB
+  // after daemon shutdown closes it.
   setImmediate(() => {
+    if (signal?.aborted) return;
     db.detectOrphans(adapters)
       .then((r) => {
+        // Drop results if shutdown began while the scan was running — emit()
+        // and any downstream DB reads would otherwise race db.close().
+        if (signal?.aborted) return;
         if (r.newlyFlagged > 0 || r.confirmed > 0 || r.recovered > 0) {
           emit({
             event: 'orphan_scan',

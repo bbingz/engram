@@ -8,6 +8,7 @@ struct GlobalSearchOverlay: View {
     @State private var query = ""
     @State private var results: [SearchHit] = []
     @State private var isSearching = false
+    @State private var searchTask: Task<Void, Never>? = nil
     @FocusState private var isFocused: Bool
 
     let onSelectSession: (String) -> Void  // session ID
@@ -89,18 +90,23 @@ struct GlobalSearchOverlay: View {
         .padding(.horizontal, 40)
         .padding(.top, 4)
         .onAppear { isFocused = true }
+        .onDisappear { searchTask?.cancel(); searchTask = nil }
     }
 
     func performSearch() {
         guard !query.isEmpty else { return }
+        // Cancel any in-flight search before starting a new one — avoids racing
+        // state writes and stops the old Task mutating state after dismiss.
+        searchTask?.cancel()
         isSearching = true
         let q = query
         let db = self.db
-        Task {
+        searchTask = Task {
             do {
                 let response = try await serviceClient.search(
                     EngramServiceSearchRequest(query: q, mode: "hybrid", limit: 10)
                 )
+                if Task.isCancelled { return }
                 results = response.items.map { item in
                     SearchHit(
                         id: item.id,
@@ -114,6 +120,7 @@ struct GlobalSearchOverlay: View {
                 let sessions = (try? await Task.detached {
                     try db.search(query: q, limit: 10)
                 }.value) ?? []
+                if Task.isCancelled { return }
                 results = sessions.map { session in
                     SearchHit(
                         id: session.id,
@@ -124,6 +131,7 @@ struct GlobalSearchOverlay: View {
                     )
                 }
             }
+            if Task.isCancelled { return }
             isSearching = false
         }
     }

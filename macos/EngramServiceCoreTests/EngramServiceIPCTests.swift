@@ -187,6 +187,72 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(embedding.progress, 50)
     }
 
+    func testSearchSemanticModeDegradesToKeywordWithWarning() async throws {
+        // R5-56: the service search path is keyword-only. A semantic/hybrid
+        // request must not be silently ignored — it degrades to keyword and
+        // surfaces a warning so callers know semantic results were skipped.
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let semantic = try await provider.search(
+            EngramServiceSearchRequest(query: "hello", mode: "semantic", limit: 10)
+        )
+        XCTAssertEqual(semantic.items.map(\.id), ["s1"])
+        XCTAssertEqual(semantic.searchModes, ["keyword"])
+        XCTAssertNotNil(semantic.warning)
+
+        let hybrid = try await provider.search(
+            EngramServiceSearchRequest(query: "hello", mode: "hybrid", limit: 10)
+        )
+        XCTAssertNotNil(hybrid.warning)
+
+        // Keyword mode stays warning-free.
+        let keyword = try await provider.search(
+            EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10)
+        )
+        XCTAssertNil(keyword.warning)
+    }
+
+    func testFTSSyntaxErrorIsTaggedNeverRetry() async throws {
+        // R5-61: a malformed FTS5 MATCH query is deterministic — retrying it is
+        // futile, so the failure must be tagged retryPolicy "never" rather than
+        // the conservative "safe" default.
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+
+        // Unbalanced double-quote → fts5 syntax error. >=3 chars so it reaches
+        // the MATCH branch (not the short-query early return).
+        let request = EngramServiceRequestEnvelope(
+            command: "search",
+            payload: try JSONEncoder().encode(
+                EngramServiceSearchRequest(query: "\"unterminated", mode: "keyword", limit: 10)
+            )
+        )
+        let response = await handler.handle(request)
+        guard case .failure(_, let error) = response else {
+            return XCTFail("expected FTS syntax error to fail, got \(response)")
+        }
+        XCTAssertEqual(error.retryPolicy, "never")
+    }
+
+    func testSyntaxErrorEnvelopeClassification() {
+        // Direct unit coverage for the classifier so the policy is locked even
+        // if the IPC plumbing changes.
+        let syntax = DatabaseError(resultCode: .SQLITE_ERROR, message: "fts5: syntax error near \"\"")
+        XCTAssertTrue(EngramServiceCommandHandler.isSyntaxError(syntax))
+        XCTAssertEqual(EngramServiceCommandHandler.genericErrorEnvelope(syntax).retryPolicy, "never")
+
+        let transient = DatabaseError(resultCode: .SQLITE_BUSY, message: "database is locked")
+        XCTAssertFalse(EngramServiceCommandHandler.isSyntaxError(transient))
+        XCTAssertEqual(EngramServiceCommandHandler.genericErrorEnvelope(transient).retryPolicy, "safe")
+    }
+
     func testSQLiteReadProviderSearchExcludesSkipAndLiteSessions() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

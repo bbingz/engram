@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import EngramCoreRead
 
-public final class EngramDatabaseWriter {
+public final class EngramDatabaseWriter: Sendable {
     private let pool: DatabasePool
     private let path: String
 

@@ -283,7 +283,15 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     );
   }
 
-  // 解码 Claude Code 目录名：-Users-example--Code--project → /Users/example/-Code-/project
+  // Decode a Claude Code project dir name back to a real path.
+  // Encoding is `/` → `-`; a literal `-` in the path is kept verbatim. This is
+  // genuinely lossy: a run of dashes encodes "[trailing dashes of prev seg] +
+  // one slash separator + [leading dashes of next seg]", and the split point
+  // within the run is unrecoverable. e.g. `--Code--project` could be
+  // `/-Code-/project`, `/-Code/-project`, or `/Code-/-project`. We pick a
+  // single consistent disambiguation (every `--` → a literal `-`, every single
+  // `-` → `/`); the unambiguous common case (`-Users-x-proj`) round-trips
+  // exactly. Keep this byte-for-byte aligned with the Swift adapter for parity.
   static decodeCwd(encoded: string): string {
     return encoded
       .replace(/--/g, '\x00')
@@ -294,8 +302,16 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   private async *readLines(filePath: string): AsyncGenerator<string> {
     const stream = createReadStream(filePath, { encoding: 'utf8' });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (line.trim()) yield line;
+    // try/finally so a consumer that breaks early (e.g. limit/offset slicing in
+    // streamMessages) still closes the readline interface + fd — otherwise we
+    // leak descriptors and hit EMFILE when indexing many sessions.
+    try {
+      for await (const line of rl) {
+        if (line.trim()) yield line;
+      }
+    } finally {
+      rl.close();
+      stream.destroy();
     }
   }
 

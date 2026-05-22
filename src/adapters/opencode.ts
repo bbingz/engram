@@ -74,6 +74,9 @@ export class OpenCodeAdapter implements SessionAdapter {
   private splitVirtualPath(
     filePath: string,
   ): { dbPath: string; sessionId: string } | null {
+    // Split from the right: the locator is `${dbPath}::${sessionId}` and the
+    // session id never contains '::', so lastIndexOf keeps the split correct
+    // even when the db path itself contains '::' (e.g. an odd mount point).
     const idx = filePath.lastIndexOf('::');
     if (idx === -1) return null;
     return {

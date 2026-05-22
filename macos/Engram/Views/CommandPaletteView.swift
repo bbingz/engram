@@ -12,6 +12,7 @@ struct CommandPaletteView: View {
     @State private var sessionResults: [SessionHit] = []
     @State private var isSearching = false
     @State private var selectedIndex = 0
+    @State private var searchTask: Task<Void, Never>? = nil
     @FocusState private var isFocused: Bool
     @Environment(\.dismiss) private var dismiss
 
@@ -155,6 +156,7 @@ struct CommandPaletteView: View {
             }
         }
         .onAppear { isFocused = true }
+        .onDisappear { searchTask?.cancel(); searchTask = nil }
         .onKeyPress(.upArrow) {
             if selectedIndex > 0 { selectedIndex -= 1 }
             return .handled
@@ -176,14 +178,18 @@ struct CommandPaletteView: View {
 
     private func performSearch() {
         guard !query.isEmpty else { return }
+        // Cancel any in-flight search before starting a new one — avoids racing
+        // state writes and stops the old Task mutating state after dismiss.
+        searchTask?.cancel()
         isSearching = true
         let q = query
         let db = self.db
-        Task {
+        searchTask = Task {
             do {
                 let response = try await serviceClient.search(
                     EngramServiceSearchRequest(query: q, mode: "hybrid", limit: 10)
                 )
+                if Task.isCancelled { return }
                 sessionResults = response.items.map { item in
                     SessionHit(
                         id: item.id,
@@ -196,6 +202,7 @@ struct CommandPaletteView: View {
                 let sessions = (try? await Task.detached {
                     try db.search(query: q, limit: 10)
                 }.value) ?? []
+                if Task.isCancelled { return }
                 sessionResults = sessions.map { session in
                     SessionHit(
                         id: session.id,
@@ -205,6 +212,7 @@ struct CommandPaletteView: View {
                     )
                 }
             }
+            if Task.isCancelled { return }
             isSearching = false
         }
     }

@@ -221,6 +221,21 @@ describe('SqliteVecStore', () => {
     expect(store.countInsights()).toBe(1);
   });
 
+  it('upsertInsight rolls back the metadata row when the vec write fails (R5-25)', () => {
+    // A wrong-dimension embedding makes the vec insert throw. Because both
+    // writes are wrapped in one transaction, the metadata row must not survive.
+    const badEmbedding = new Float32Array(100).fill(0.1);
+    expect(() =>
+      store.upsertInsight('i-bad', 'partial write', badEmbedding, 'model'),
+    ).toThrow();
+
+    const metaRow = rawDb
+      .prepare('SELECT COUNT(*) AS c FROM memory_insights WHERE id = ?')
+      .get('i-bad') as { c: number };
+    expect(metaRow.c).toBe(0);
+    expect(store.countInsights()).toBe(0);
+  });
+
   // --- Model tracking ---
 
   it('tracks active model', () => {

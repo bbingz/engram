@@ -1,8 +1,10 @@
 // tests/adapters/gemini-cli.test.ts
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { GeminiCliAdapter } from '../../src/adapters/gemini-cli.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,5 +45,55 @@ describe('GeminiCliAdapter', () => {
   it('resolveProject returns cwd for projectName', async () => {
     const cwd = await adapter.resolveProject('my-project');
     expect(cwd).toBe('/Users/test/my-project');
+  });
+});
+
+describe('GeminiCliAdapter sidecar originator (R5-31)', () => {
+  let tmp: string;
+  afterEach(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function writeSession(originator: string): string {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-gemini-orig-'));
+    const sessionId = 'g-orig-001';
+    const sessionPath = join(tmp, `session-${sessionId}.json`);
+    const session = {
+      sessionId,
+      projectHash: 'h',
+      startTime: '2026-01-25T14:00:00.000Z',
+      messages: [
+        {
+          id: '1',
+          timestamp: '2026-01-25T14:00:00.000Z',
+          type: 'user',
+          content: 'hi',
+        },
+      ],
+    };
+    writeFileSync(sessionPath, JSON.stringify(session));
+    writeFileSync(
+      join(tmp, `${sessionId}.engram.json`),
+      JSON.stringify({ originator }),
+    );
+    return sessionPath;
+  }
+
+  it('classifies the slug form "claude-code" as dispatched', async () => {
+    const adapter = new GeminiCliAdapter(tmpdir(), join(tmpdir(), 'no.json'));
+    const info = await adapter.parseSessionInfo(writeSession('claude-code'));
+    expect(info?.agentRole).toBe('dispatched');
+  });
+
+  it('classifies the Codex form "Claude Code" as dispatched', async () => {
+    const adapter = new GeminiCliAdapter(tmpdir(), join(tmpdir(), 'no.json'));
+    const info = await adapter.parseSessionInfo(writeSession('Claude Code'));
+    expect(info?.agentRole).toBe('dispatched');
+  });
+
+  it('does not classify an unrelated originator as dispatched', async () => {
+    const adapter = new GeminiCliAdapter(tmpdir(), join(tmpdir(), 'no.json'));
+    const info = await adapter.parseSessionInfo(writeSession('vscode'));
+    expect(info?.agentRole).toBeUndefined();
   });
 });

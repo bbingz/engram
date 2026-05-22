@@ -6,12 +6,12 @@ enum MCPTranscriptTools {
         id: String,
         page: Int,
         roles: [String]?
-    ) throws -> OrderedJSONValue {
+    ) async throws -> OrderedJSONValue {
         guard let session = try database.sessionRecord(id: id) else {
             throw MCPToolError.invalidArguments("Session not found: \(id)")
         }
 
-        let allMessages = MCPTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
+        let allMessages = await MCPTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
             .filter { roles == nil || roles!.contains($0.role) }
         let pageSize = 50
         let currentPage = max(page, 1)
@@ -69,13 +69,9 @@ enum MCPTranscriptTools {
             format: format
         )
 
-        let sessionPayloads = rawSessions.map { handoffSessionJSON($0) }
-
         return .object([
             ("brief", .string(brief)),
             ("sessionCount", .int(rawSessions.count)),
-            ("sessions", .array(sessionPayloads)),
-            ("project", .string(projectName)),
         ])
     }
 
@@ -103,8 +99,6 @@ enum MCPTranscriptTools {
         return .object([
             ("brief", .string("\(prefix)No recent sessions found for this project.")),
             ("sessionCount", .int(0)),
-            ("sessions", .array([])),
-            ("project", .string(projectName)),
         ])
     }
 
@@ -151,21 +145,6 @@ enum MCPTranscriptTools {
         return lines.joined(separator: "\n")
     }
 
-    private static func handoffSessionJSON(_ session: HandoffSession) -> OrderedJSONValue {
-        var entries: [(String, OrderedJSONValue)] = [
-            ("id", .string(session.id)),
-            ("source", .string(session.source)),
-            ("startTime", .string(session.startTime)),
-            ("endTime", .string(session.endTime)),
-            ("messageCount", .int(session.messageCount)),
-        ]
-        if let summary = session.summary {
-            entries.append(("summary", .string(summary)))
-        } else {
-            entries.append(("summary", .null))
-        }
-        return .object(entries)
-    }
 }
 
 private struct HandoffSession {

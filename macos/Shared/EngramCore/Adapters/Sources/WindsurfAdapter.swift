@@ -94,7 +94,7 @@ enum CascadeCacheSupport {
     }
 }
 
-final class WindsurfAdapter: SessionAdapter {
+final class WindsurfAdapter: SessionAdapter, Sendable {
     let source: SourceName = .windsurf
     private let daemonDir: URL
     private let cacheDir: URL
@@ -157,7 +157,7 @@ final class WindsurfAdapter: SessionAdapter {
                     source: .windsurf,
                     startTime: createdAt,
                     endTime: updatedAt != createdAt ? updatedAt : nil,
-                    cwd: "",
+                    cwd: JSONLAdapterSupport.string(metadata["cwd"]) ?? "",
                     project: nil,
                     model: nil,
                     messageCount: userCount + assistantCount,
@@ -219,12 +219,18 @@ final class WindsurfAdapter: SessionAdapter {
                 continue
             }
             let messages = CascadeCacheSupport.parseMarkdownToMessages(markdown)
-            let metadata: CascadeCacheSupport.JSONObject = [
+            var metadata: CascadeCacheSupport.JSONObject = [
                 "id": conversation.cascadeId,
                 "title": conversation.title,
                 "createdAt": conversation.createdAt,
                 "updatedAt": conversation.updatedAt
             ]
+            // Surface the workspace folder from the Cascade summary so the
+            // session carries a cwd. Caches written before this field existed
+            // re-sync once the source .pb mtime advances.
+            if !conversation.cwd.isEmpty {
+                metadata["cwd"] = conversation.cwd
+            }
             try? CascadeCacheSupport.writeCache(cacheURL: cacheURL, metadata: metadata, messages: messages)
         }
     }

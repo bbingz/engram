@@ -310,8 +310,24 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
         let query = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The Swift service search path is keyword/FTS-only: it has no vector
+        // store or embedding provider wired in. Honor the requested `mode` by
+        // either accepting it (keyword) or transparently degrading to keyword
+        // and surfacing a warning, instead of silently ignoring it. A blank
+        // mode is treated as keyword for backwards compatibility.
+        let requestedMode = request.mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let semanticRequested = ["semantic", "hybrid", "both"].contains(requestedMode)
+        let warning: String? = semanticRequested
+            ? "Semantic search is unavailable in the local service; returning keyword results only."
+            : nil
+        if semanticRequested {
+            ServiceLogger.info(
+                "search mode '\(requestedMode)' requested but unsupported in service path; falling back to keyword",
+                category: .runner
+            )
+        }
         guard query.count >= 2 else {
-            return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: nil)
+            return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: warning)
         }
 
         let limit = max(1, min(request.limit, 100))
@@ -333,12 +349,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 return EngramServiceSearchResponse(
                     items: rows.map { item(from: $0) },
                     searchModes: ["keyword"],
-                    warning: nil
+                    warning: warning
                 )
             }
 
             guard query.count >= 3 else {
-                return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: nil)
+                return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: warning)
             }
 
             let rows = try Row.fetchAll(db, sql: """
@@ -354,7 +370,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             return EngramServiceSearchResponse(
                 items: rows.map { item(from: $0) },
                 searchModes: ["keyword"],
-                warning: nil
+                warning: warning
             )
         }
     }

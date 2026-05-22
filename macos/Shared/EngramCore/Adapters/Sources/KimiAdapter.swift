@@ -1,6 +1,6 @@
 import Foundation
 
-final class KimiAdapter: SessionAdapter {
+final class KimiAdapter: SessionAdapter, Sendable {
     let source: SourceName = .kimi
     private let sessionsRoot: URL
     private let kimiJsonPath: URL

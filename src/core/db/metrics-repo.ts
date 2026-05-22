@@ -84,7 +84,10 @@ export function upsertSessionCost(
     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     sessionId,
-    model,
+    // An unknown model is absence, not an empty string. Persist NULL so this
+    // reference path matches the Swift writer (the schema source of truth),
+    // keeping the indexer-parity checksum aligned.
+    model || null,
     inputTokens,
     outputTokens,
     cacheReadTokens,

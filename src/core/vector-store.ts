@@ -428,16 +428,20 @@ export class SqliteVecStore implements VectorStore {
       embedding.byteOffset,
       embedding.byteLength,
     );
-    this.stmts.insertInsight.run(
-      id,
-      content,
-      opts?.wing ?? null,
-      opts?.room ?? null,
-      opts?.sourceSessionId ?? null,
-      opts?.importance ?? 5,
-      model,
-    );
-    this.stmts.insertInsightVec.run(id, buf);
+    // Metadata + vec writes must commit atomically; a partial failure would
+    // diverge the two stores (orphaned row in one table).
+    this.db.transaction(() => {
+      this.stmts.insertInsight.run(
+        id,
+        content,
+        opts?.wing ?? null,
+        opts?.room ?? null,
+        opts?.sourceSessionId ?? null,
+        opts?.importance ?? 5,
+        model,
+      );
+      this.stmts.insertInsightVec.run(id, buf);
+    })();
   }
 
   searchInsights(query: Float32Array, topK: number): InsightSearchResult[] {

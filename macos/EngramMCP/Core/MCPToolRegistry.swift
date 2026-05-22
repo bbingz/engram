@@ -878,7 +878,7 @@ enum MCPToolRegistry {
             return .toolSuccess(structured)
         case "get_session":
             let database = try MCPDatabase(path: config.dbPath)
-            let structured = try MCPTranscriptTools.getSession(
+            let structured = try await MCPTranscriptTools.getSession(
                 database: database,
                 id: try requiredString("id", in: arguments),
                 page: arguments["page"]?.intValue ?? 1,

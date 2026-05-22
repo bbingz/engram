@@ -119,6 +119,54 @@ final class EngramServiceLauncherTests: XCTestCase {
     }
 
     @MainActor
+    func testHealthMonitorKeepsProbingAndRecoversAfterBudgetExhausted() async throws {
+        // R5-59: after the restart budget is spent the monitor must NOT stop
+        // permanently — it keeps probing (with backoff) so the service can
+        // recover without an app relaunch. Probe fails enough times to exhaust
+        // the budget, then starts succeeding; we expect a running status after
+        // the degraded one.
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 1
+        )
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: "/tmp/engram-recover-helper",
+            socketPath: "/tmp/engram-recover.sock",
+            databasePath: "/tmp/engram-recover.sqlite",
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+        let gate = ProbeFailureGate(failuresBeforeRecovery: 3)
+
+        launcher.startHealthMonitor(
+            configuration: config,
+            statusProbe: {
+                if await gate.shouldFail() {
+                    throw EngramServiceError.serviceUnavailable(message: "probe failed")
+                }
+                return .running(total: 7, todayParents: 1)
+            },
+            onStatus: { status in
+                recorder.append(status)
+            }
+        )
+
+        // Long enough to span the backoff after budget exhaustion and reach a
+        // successful probe.
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        launcher.stopIfOwned()
+
+        XCTAssertTrue(recorder.statuses.contains { status in
+            if case .degraded = status { return true }
+            return false
+        }, "expected a degraded status after budget exhaustion")
+        XCTAssertTrue(recorder.statuses.contains { status in
+            if case .running = status { return true }
+            return false
+        }, "monitor must recover to running after the service comes back")
+    }
+
+    @MainActor
     func testLauncherDrainsServiceOutputPipes() async throws {
         let marker = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-service-output-\(UUID().uuidString)")
@@ -148,6 +196,20 @@ private final class ServiceStatusRecorder {
 
     func append(_ status: EngramServiceStatus) {
         statuses.append(status)
+    }
+}
+
+private actor ProbeFailureGate {
+    private var remainingFailures: Int
+
+    init(failuresBeforeRecovery: Int) {
+        remainingFailures = failuresBeforeRecovery
+    }
+
+    func shouldFail() -> Bool {
+        guard remainingFailures > 0 else { return false }
+        remainingFailures -= 1
+        return true
     }
 }
 

@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import GRDB
 import EngramCoreRead
 
 public final class SwiftIndexer {
@@ -9,18 +8,15 @@ public final class SwiftIndexer {
     private let sink: any IndexingWriteSink
     private let adapters: [any SessionAdapter]
     private let authoritativeNode: String
-    private let db: Database?
 
     public init(
         sink: any IndexingWriteSink,
         adapters: [any SessionAdapter] = [],
-        authoritativeNode: String = "local",
-        db: Database? = nil
+        authoritativeNode: String = "local"
     ) {
         self.sink = sink
         self.adapters = adapters
         self.authoritativeNode = authoritativeNode
-        self.db = db
     }
 
     public func indexSnapshots(
@@ -49,10 +45,9 @@ public final class SwiftIndexer {
             indexed += batch.count
         }
 
-        if let db {
-            _ = try StartupBackfills.backfillPolycliProviderParents(db)
-            _ = try StartupBackfills.backfillSuggestedParents(db)
-        }
+        // Parent-link / suggested-parent backfills run in the writer's own
+        // `write { db in ... }` scope (see EngramDatabaseWriter.indexSessions),
+        // never against a Database handle held across the await loop above.
         return indexed
     }
 

@@ -29,6 +29,9 @@ struct SessionDetailView: View {
     @State private var suggestedChildrenSessions: [Session] = []
     @State private var suggestedChildrenSessionCount = 0
     @State private var showAgentSessions = false
+    // Single tracked task for parent/child loading; cancelled before each reload
+    // so the 3 entry points (initial load, confirm, dismiss) can't interleave writes.
+    @State private var parentInfoTask: Task<Void, Never>? = nil
 
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
@@ -258,11 +261,13 @@ struct SessionDetailView: View {
             }
             .frame(width: 0, height: 0)
             .opacity(0)
+            // These exist only to register keyboard shortcuts; keep them out of the a11y tree.
+            .accessibilityHidden(true)
         }
-        .task {
-            isFavorite = (try? db.isFavorite(sessionId: session.id)) ?? false
-        }
+        // Single per-session load path (keyed by session.id) — favorite + messages +
+        // parent info all run here so ordering is deterministic and re-runs on switch.
         .task(id: session.id) {
+            isFavorite = (try? db.isFavorite(sessionId: session.id)) ?? false
             isLoadingMessages = true
             messages = []
             indexedMessages = []
@@ -304,6 +309,7 @@ struct SessionDetailView: View {
         .sheet(isPresented: $showResume) {
             ResumeDialog(session: session)
         }
+        .onDisappear { parentInfoTask?.cancel(); parentInfoTask = nil }
     }
 
     // MARK: - Parent/Child Helpers
@@ -386,23 +392,25 @@ struct SessionDetailView: View {
         let sessionId = session.id
         let parentId = session.parentSessionId
         let suggestedId = session.suggestedParentId
-
-        // Re-fetch session to get latest state (e.g. after confirm/dismiss)
-        let freshSession = try? db.getSession(id: sessionId)
-        let effectiveParentId = freshSession?.parentSessionId ?? parentId
-        let effectiveSuggestedId = freshSession?.suggestedParentId ?? suggestedId
-
-        var confirmed: Session?
-        var suggested: Session?
-        if let pid = effectiveParentId {
-            confirmed = try? db.getSession(id: pid)
-        } else if let spid = effectiveSuggestedId {
-            suggested = try? db.getSession(id: spid)
-        }
-
-        // childSessions is nonisolated — fetch in background
         let dbRef = db
-        Task.detached {
+
+        // Cancel any prior load so the 3 entry points (initial / confirm / dismiss)
+        // can't interleave their write-backs. All DB reads run off the main actor.
+        parentInfoTask?.cancel()
+        parentInfoTask = Task.detached {
+            // Re-fetch session to get latest state (e.g. after confirm/dismiss)
+            let freshSession = try? dbRef.getSession(id: sessionId)
+            let effectiveParentId = freshSession?.parentSessionId ?? parentId
+            let effectiveSuggestedId = freshSession?.suggestedParentId ?? suggestedId
+
+            var confirmed: Session?
+            var suggested: Session?
+            if let pid = effectiveParentId {
+                confirmed = try? dbRef.getSession(id: pid)
+            } else if let spid = effectiveSuggestedId {
+                suggested = try? dbRef.getSession(id: spid)
+            }
+
             let children = try? dbRef.childSessions(
                 parentId: sessionId,
                 limit: agentSessionPreviewLimit
@@ -412,6 +420,7 @@ struct SessionDetailView: View {
             let suggestedCounts = try? dbRef.suggestedChildCount(parentIds: [sessionId])
             let childCount = counts?[sessionId] ?? children?.count ?? 0
             let suggestedChildCount = suggestedCounts?[sessionId] ?? suggestedChildren?.count ?? 0
+            if Task.isCancelled { return }
             await MainActor.run {
                 confirmedParent = confirmed
                 suggestedParent = suggested

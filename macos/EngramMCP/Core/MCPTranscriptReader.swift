@@ -7,8 +7,8 @@ struct MCPTranscriptMessage {
 }
 
 enum MCPTranscriptReader {
-    static func readMessages(filePath: String, source: String) -> [MCPTranscriptMessage] {
-        if let adapterMessages = readWithAdapterRegistry(filePath: filePath, source: source) {
+    static func readMessages(filePath: String, source: String) async -> [MCPTranscriptMessage] {
+        if let adapterMessages = await readWithAdapterRegistry(filePath: filePath, source: source) {
             return adapterMessages
         }
 
@@ -28,49 +28,41 @@ enum MCPTranscriptReader {
         }
     }
 
-    private static func readWithAdapterRegistry(filePath: String, source: String) -> [MCPTranscriptMessage]? {
+    // Async by design: the adapter stream is async, so we await it directly
+    // instead of bridging back to sync with a DispatchSemaphore. Blocking a
+    // cooperative-pool thread on a semaphore can starve/deadlock the pool when
+    // several reads run concurrently.
+    private static func readWithAdapterRegistry(filePath: String, source: String) async -> [MCPTranscriptMessage]? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
             return nil
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        final class Box: @unchecked Sendable {
-            var messages: [MCPTranscriptMessage]?
-        }
-        let box = Box()
-
-        Task.detached {
-            defer { semaphore.signal() }
-            do {
-                let stream = try await adapter.streamMessages(
-                    locator: filePath,
-                    options: StreamMessagesOptions()
-                )
-                var messages: [MCPTranscriptMessage] = []
-                for try await message in stream {
-                    guard message.role == .user || message.role == .assistant,
-                          !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    else {
-                        continue
-                    }
-                    messages.append(
-                        MCPTranscriptMessage(
-                            role: message.role.rawValue,
-                            content: message.content,
-                            timestamp: message.timestamp
-                        )
-                    )
+        do {
+            let stream = try await adapter.streamMessages(
+                locator: filePath,
+                options: StreamMessagesOptions()
+            )
+            var messages: [MCPTranscriptMessage] = []
+            for try await message in stream {
+                guard message.role == .user || message.role == .assistant,
+                      !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else {
+                    continue
                 }
-                box.messages = messages
-            } catch {
-                box.messages = nil
+                messages.append(
+                    MCPTranscriptMessage(
+                        role: message.role.rawValue,
+                        content: message.content,
+                        timestamp: message.timestamp
+                    )
+                )
             }
+            return messages
+        } catch {
+            return nil
         }
-
-        semaphore.wait()
-        return box.messages
     }
 
     private static func adapterSourceName(for source: String) -> SourceName? {

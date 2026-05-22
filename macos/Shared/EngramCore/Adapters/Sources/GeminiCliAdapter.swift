@@ -62,7 +62,7 @@ enum Phase4AdapterSupport {
     }
 }
 
-final class GeminiCliAdapter: SessionAdapter {
+final class GeminiCliAdapter: SessionAdapter, Sendable {
     let source: SourceName = .geminiCli
     private let tmpRoot: URL
     private let projectsFile: URL

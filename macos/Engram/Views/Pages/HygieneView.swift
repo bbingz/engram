@@ -269,6 +269,7 @@ private struct IssueSection: View {
 private struct IssueCard: View {
     let issue: EngramServiceHygieneIssue
     @State private var copied = false
+    @State private var copyResetTask: Task<Void, Never>? = nil
 
     private var severityColor: Color {
         switch issue.severity {
@@ -325,9 +326,10 @@ private struct IssueCard: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(action, forType: .string)
                         copied = true
-                        Task {
+                        copyResetTask?.cancel()
+                        copyResetTask = Task {
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
-                            copied = false
+                            if !Task.isCancelled { copied = false }
                         }
                     } label: {
                         Text(copied ? "Copied!" : "Copy")
@@ -349,5 +351,6 @@ private struct IssueCard: View {
                 .stroke(Theme.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onDisappear { copyResetTask?.cancel(); copyResetTask = nil }
     }
 }

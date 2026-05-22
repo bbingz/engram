@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  backfillScores,
   checkpointWal,
   detectOrphans,
   markOrphanByPath,
@@ -193,6 +194,78 @@ describe('reconcileInsights', () => {
 
     expect(result.resetEmbedding).toBe(1);
     expect(result.orphanedVector).toBe(1);
+  });
+});
+
+describe('backfillScores', () => {
+  let db: Database;
+  let tmpDir: string;
+
+  const insertScorableSession = (id: string, userCount: number) => {
+    db.raw
+      .prepare(
+        `INSERT INTO sessions
+         (id, source, start_time, end_time, cwd, project, model, message_count,
+          user_message_count, assistant_message_count, tool_message_count,
+          system_message_count, summary, file_path, size_bytes, source_locator,
+          tier, quality_score)
+         VALUES (?, 'codex', '2026-03-18T11:00:00Z', '2026-03-18T11:20:00Z',
+          '/repo', 'p', 'm', 10, ?, 5, 0, 0, 'hi', ?, 0, ?, 'normal', NULL)`,
+      )
+      .run(id, userCount, `/tmp/${id}.jsonl`, `/tmp/${id}.jsonl`);
+  };
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'engram-backfill-scores-'));
+    db = new Database(join(tmpDir, 'test.sqlite'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it('computes and persists a quality_score for eligible sessions', () => {
+    insertScorableSession('s-score', 3);
+
+    const updated = backfillScores(db.raw);
+
+    expect(updated).toBe(1);
+    const row = db.raw
+      .prepare('SELECT quality_score FROM sessions WHERE id = ?')
+      .get('s-score') as { quality_score: number };
+    expect(row.quality_score).toBeGreaterThan(0);
+  });
+
+  it('scores against current row state (read happens inside the tx)', () => {
+    // Two sessions with different message counts must each be scored from their
+    // own row values; folding the SELECT into the UPDATE transaction guarantees
+    // the score matches the row it is written against.
+    insertScorableSession('s-low', 1);
+    insertScorableSession('s-high', 20);
+
+    expect(backfillScores(db.raw)).toBe(2);
+
+    const low = db.raw
+      .prepare('SELECT quality_score FROM sessions WHERE id = ?')
+      .get('s-low') as { quality_score: number };
+    const high = db.raw
+      .prepare('SELECT quality_score FROM sessions WHERE id = ?')
+      .get('s-high') as { quality_score: number };
+    expect(high.quality_score).toBeGreaterThan(low.quality_score);
+  });
+
+  it('skips sessions that already have a score and returns 0 when none eligible', () => {
+    insertScorableSession('s-done', 5);
+    db.raw
+      .prepare('UPDATE sessions SET quality_score = 42 WHERE id = ?')
+      .run('s-done');
+
+    expect(backfillScores(db.raw)).toBe(0);
+    const row = db.raw
+      .prepare('SELECT quality_score FROM sessions WHERE id = ?')
+      .get('s-done') as { quality_score: number };
+    expect(row.quality_score).toBe(42);
   });
 });
 

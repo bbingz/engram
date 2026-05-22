@@ -1,37 +1,40 @@
 import Foundation
 
-final class MockEngramServiceClient: EngramServiceClientProtocol, @unchecked Sendable {
-    var statusResult: Result<EngramServiceStatus, Error>
-    var searchResult: Result<EngramServiceSearchResponse, Error>
-    var healthResult: Result<EngramServiceHealthResponse, Error>
-    var liveSessionsResult: Result<EngramServiceLiveSessionsResponse, Error>
-    var sourcesResult: Result<[EngramServiceSourceInfo], Error>
-    var skillsResult: Result<[EngramServiceSkillInfo], Error>
-    var memoryFilesResult: Result<[EngramServiceMemoryFile], Error>
-    var hooksResult: Result<[EngramServiceHookInfo], Error>
-    var hygieneResult: Result<EngramServiceHygieneResponse, Error>
-    var handoffResult: Result<EngramServiceHandoffResponse, Error>
-    var replayTimelineResult: Result<EngramServiceReplayTimelineResponse, Error>
-    var embeddingStatusResult: Result<EngramServiceEmbeddingStatusResponse, Error>
-    var generateSummaryResult: Result<EngramServiceGenerateSummaryResponse, Error>
-    var saveInsightResult: Result<EngramServiceJSONValue, Error>
-    var deleteInsightResult: Result<EngramServiceJSONValue, Error>
-    var manageProjectAliasResult: Result<EngramServiceJSONValue, Error>
-    var resumeCommandResult: Result<EngramServiceResumeCommandResponse, Error>
-    var confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
-    var dismissSuggestionResult: Result<Void, Error>
-    var triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
-    var regenerateAllTitlesResult: Result<EngramServiceRegenerateTitlesResponse, Error>
-    var projectMigrationsResult: Result<EngramServiceProjectMigrationsResponse, Error>
-    var projectCwdsResult: Result<EngramServiceProjectCwdsResponse, Error>
-    var projectMoveResult: Result<EngramServiceProjectMoveResult, Error>
-    var projectArchiveResult: Result<EngramServiceProjectMoveResult, Error>
-    var projectUndoResult: Result<EngramServiceProjectMoveResult, Error>
-    var setFavoriteResult: Result<Void, Error>
-    var setSessionHiddenResult: Result<Void, Error>
-    var renameSessionResult: Result<Void, Error>
-    var hideEmptySessionsResult: Result<EngramServiceHideEmptySessionsResponse, Error>
-    var exportSessionResult: Result<EngramServiceExportSessionResponse, Error>
+// Result properties are immutable `let`s set once at init so the mock is a
+// genuine `Sendable` (no `@unchecked`) and free of data races under TSAN. Tests
+// configure behavior through the initializer, not by mutating fields.
+final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
+    let statusResult: Result<EngramServiceStatus, Error>
+    let searchResult: Result<EngramServiceSearchResponse, Error>
+    let healthResult: Result<EngramServiceHealthResponse, Error>
+    let liveSessionsResult: Result<EngramServiceLiveSessionsResponse, Error>
+    let sourcesResult: Result<[EngramServiceSourceInfo], Error>
+    let skillsResult: Result<[EngramServiceSkillInfo], Error>
+    let memoryFilesResult: Result<[EngramServiceMemoryFile], Error>
+    let hooksResult: Result<[EngramServiceHookInfo], Error>
+    let hygieneResult: Result<EngramServiceHygieneResponse, Error>
+    let handoffResult: Result<EngramServiceHandoffResponse, Error>
+    let replayTimelineResult: Result<EngramServiceReplayTimelineResponse, Error>
+    let embeddingStatusResult: Result<EngramServiceEmbeddingStatusResponse, Error>
+    let generateSummaryResult: Result<EngramServiceGenerateSummaryResponse, Error>
+    let saveInsightResult: Result<EngramServiceJSONValue, Error>
+    let deleteInsightResult: Result<EngramServiceJSONValue, Error>
+    let manageProjectAliasResult: Result<EngramServiceJSONValue, Error>
+    let resumeCommandResult: Result<EngramServiceResumeCommandResponse, Error>
+    let confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
+    let dismissSuggestionResult: Result<Void, Error>
+    let triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
+    let regenerateAllTitlesResult: Result<EngramServiceRegenerateTitlesResponse, Error>
+    let projectMigrationsResult: Result<EngramServiceProjectMigrationsResponse, Error>
+    let projectCwdsResult: Result<EngramServiceProjectCwdsResponse, Error>
+    let projectMoveResult: Result<EngramServiceProjectMoveResult, Error>
+    let projectArchiveResult: Result<EngramServiceProjectMoveResult, Error>
+    let projectUndoResult: Result<EngramServiceProjectMoveResult, Error>
+    let setFavoriteResult: Result<Void, Error>
+    let setSessionHiddenResult: Result<Void, Error>
+    let renameSessionResult: Result<Void, Error>
+    let hideEmptySessionsResult: Result<EngramServiceHideEmptySessionsResponse, Error>
+    let exportSessionResult: Result<EngramServiceExportSessionResponse, Error>
     private let eventStream: AsyncThrowingStream<EngramServiceEvent, Error>
 
     init(

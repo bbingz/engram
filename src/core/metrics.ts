@@ -97,11 +97,21 @@ export class MetricsCollector {
       });
       insertMany(entries);
     } catch (err) {
-      // Batch is dropped (already spliced). Without this catch the throw
-      // propagates out of setInterval to uncaughtException, which we saw
-      // silently swallow on 2026-04-22.
+      // Re-queue the failed batch so the next flush retries instead of losing
+      // metrics on a transient DB error. Bound the buffer: if entries recorded
+      // while we were flushing pushed us over maxBufferSize, drop the oldest
+      // (the re-queued) entries so a persistently broken DB can't grow memory
+      // without limit. Without this catch the throw would propagate out of
+      // setInterval to uncaughtException (silently swallowed, seen 2026-04-22).
+      this.buffer = entries.concat(this.buffer);
+      let dropped = 0;
+      if (this.buffer.length > this.maxBufferSize) {
+        dropped = this.buffer.length - this.maxBufferSize;
+        this.buffer.splice(0, dropped);
+      }
       console.error(
-        `[metrics] flush failed, dropped ${entries.length} entries`,
+        `[metrics] flush failed, re-queued ${entries.length} entries` +
+          (dropped > 0 ? `, dropped ${dropped} oldest over buffer cap` : ''),
         err,
       );
     }

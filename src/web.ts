@@ -33,6 +33,7 @@ import { WATCHED_SOURCES } from './core/watcher.js';
 import { handleHandoff } from './tools/handoff.js';
 import { handleLinkSessions } from './tools/link_sessions.js';
 import { handleLintConfig, runAllHealthChecks } from './tools/lint_config.js';
+import { loadBoundedMessages } from './tools/message-loader.js';
 import { handleSaveInsight } from './tools/save_insight.js';
 import { handleStats } from './tools/stats.js';
 import { registerAiAuditRoutes } from './web/routes/ai-audit.js';
@@ -774,12 +775,14 @@ export function createApp(
         400,
       );
     }
-    const { parse: parseYaml } = await import('yaml');
+    const { parseBatchYaml } = await import('./tools/project.js');
     const { normalizeBatchDocument, runBatch } = await import(
       './core/project-move/batch.js'
     );
     try {
-      const raw = parseYaml(body.yaml) as Record<string, unknown>;
+      // parseBatchYaml enforces a size cap + bounded alias expansion so an
+      // untrusted YAML bomb can't exhaust memory on the daemon-fallback path.
+      const raw = parseBatchYaml(body.yaml);
       const doc = normalizeBatchDocument(raw);
       if (body.dryRun === true) {
         doc.defaults = { ...doc.defaults, dryRun: true };
@@ -819,11 +822,16 @@ export function createApp(
       return c.json({ error: `No adapter for source: ${session.source}` }, 500);
     }
 
-    const messages: Array<{ role: string; content: string }> = [];
+    // Bounded sliding-window load so a huge session can't OOM the server;
+    // summary sampling only consumes the head+tail anyway.
+    let messages: Array<{ role: string; content: string }>;
+    let totalSeen: number;
     try {
-      for await (const msg of adapter.streamMessages(session.filePath)) {
-        messages.push({ role: msg.role, content: msg.content });
-      }
+      const loaded = await loadBoundedMessages(
+        adapter.streamMessages(session.filePath),
+      );
+      messages = loaded.messages;
+      totalSeen = loaded.totalSeen;
     } catch (err) {
       return c.json({ error: `Failed to read session: ${err}` }, 500);
     }
@@ -840,7 +848,7 @@ export function createApp(
       if (!summary) {
         return c.json({ error: 'Empty response from AI' }, 500);
       }
-      db.updateSessionSummary(sessionId, summary, messages.length);
+      db.updateSessionSummary(sessionId, summary, totalSeen);
       return c.json({ summary });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -891,7 +899,9 @@ export function createApp(
       // retry_policy='never'; anything else is a 500 server-side error
       // (retry_policy='safe' = client may retry).
       const isValidation =
-        msg.startsWith('Content ') || msg.includes('requires either');
+        msg.startsWith('Content ') ||
+        msg.includes('requires either') ||
+        msg.startsWith('source_session_id ');
       if (isValidation) {
         return c.json(validationError('InvalidInsight', msg), 400);
       }
@@ -949,14 +959,22 @@ export function createApp(
   // --- Link sessions API ---
   app.post('/api/link-sessions', async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const targetDir = (body as Record<string, unknown>).targetDir as
+    const rawTargetDir = (body as Record<string, unknown>).targetDir as
       | string
       | undefined;
-    if (!targetDir) {
+    if (!rawTargetDir) {
       return c.json({ error: 'Missing required field: targetDir' }, 400);
     }
+    // link_sessions creates directories + symlinks under targetDir, so an
+    // unconfined path lets any localhost process scatter symlinks anywhere on
+    // the filesystem. Confine to $HOME the same way the other write endpoints
+    // (/api/project/*, /api/lint) do.
+    const norm = normalizeHttpPath(rawTargetDir);
+    if (!norm.ok) {
+      return c.json({ error: norm.error }, 400);
+    }
     try {
-      const result = await handleLinkSessions(db, { targetDir });
+      const result = await handleLinkSessions(db, { targetDir: norm.path });
       return c.json(result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1584,6 +1602,27 @@ export function createApp(
     if (!VALID_LEVELS.has(body.level))
       return c.json({ ok: false, error: 'invalid level' }, 400);
 
+    // Bound the free-form `data` blob — it's persisted verbatim, so an
+    // oversized payload would bloat the log store / memory. Drop it with a
+    // marker rather than rejecting the whole log line. 64KB is generous for
+    // structured diagnostic context.
+    const MAX_LOG_DATA_BYTES = 64 * 1024;
+    let safeData = body.data;
+    if (safeData !== undefined) {
+      let oversized = false;
+      try {
+        oversized =
+          Buffer.byteLength(JSON.stringify(safeData), 'utf8') >
+          MAX_LOG_DATA_BYTES;
+      } catch {
+        // Non-serializable (e.g. circular) — treat as unusable.
+        oversized = true;
+      }
+      if (oversized) {
+        safeData = { _truncated: true, reason: 'data exceeded 64KB limit' };
+      }
+    }
+
     if (opts?.logWriter) {
       // Use traceId from body (Swift-provided) or fall back to the request header trace ID
       const traceId = body.traceId ?? c.get('traceId');
@@ -1594,7 +1633,7 @@ export function createApp(
           typeof body.message === 'string'
             ? body.message.slice(0, 10000)
             : String(body.message),
-        data: body.data,
+        data: safeData,
         error: body.error
           ? { name: 'AppError', message: body.error }
           : undefined,

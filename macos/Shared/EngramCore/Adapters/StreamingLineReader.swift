@@ -4,7 +4,23 @@ final class StreamingLineReader {
     private let fileURL: URL
     private let chunkSize: Int
     private let maxLineBytes: Int
-    private(set) var failures: [ParserFailure] = []
+    // `failures` is appended to from inside the AnyIterator closure, which may be
+    // advanced on a different thread than the one inspecting `failures`. Guard
+    // both the writes and reads with a lock to avoid a data race.
+    private let failuresLock = NSLock()
+    private var failuresStorage: [ParserFailure] = []
+
+    var failures: [ParserFailure] {
+        failuresLock.lock()
+        defer { failuresLock.unlock() }
+        return failuresStorage
+    }
+
+    private func recordFailure(_ failure: ParserFailure) {
+        failuresLock.lock()
+        failuresStorage.append(failure)
+        failuresLock.unlock()
+    }
 
     init(
         fileURL: URL,
@@ -39,11 +55,11 @@ final class StreamingLineReader {
                         let lineData = buffer[buffer.startIndex..<newlineIndex]
                         buffer = Data(buffer[(newlineIndex + 1)...])
                         if lineData.count > maxLineBytes {
-                            self?.failures.append(.lineTooLarge)
+                            self?.recordFailure(.lineTooLarge)
                             continue
                         }
                         guard let line = String(data: lineData, encoding: .utf8) else {
-                            self?.failures.append(.invalidUtf8)
+                            self?.recordFailure(.invalidUtf8)
                             continue
                         }
                         let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -57,11 +73,11 @@ final class StreamingLineReader {
                         let remaining = buffer
                         buffer = Data()
                         if remaining.count > maxLineBytes {
-                            self?.failures.append(.lineTooLarge)
+                            self?.recordFailure(.lineTooLarge)
                             return nil
                         }
                         guard let line = String(data: remaining, encoding: .utf8) else {
-                            self?.failures.append(.invalidUtf8)
+                            self?.recordFailure(.invalidUtf8)
                             return nil
                         }
                         let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -69,7 +85,7 @@ final class StreamingLineReader {
                     }
 
                     if buffer.count > maxLineBytes {
-                        self?.failures.append(.lineTooLarge)
+                        self?.recordFailure(.lineTooLarge)
                         buffer = Data()
                         while true {
                             let chunk = holder.handle.readData(ofLength: chunkSize)

@@ -110,4 +110,31 @@ describe('OpenCodeAdapter', () => {
     const wholeDbBytes = require('node:fs').statSync(FIXTURE_DB).size;
     expect(info?.sizeBytes).toBeLessThan(wholeDbBytes);
   });
+
+  it('splits the virtual path from the right so a db path with "::" still works (R5-33)', async () => {
+    // Copy the fixture DB into a directory whose name contains "::". The
+    // locator becomes `<dir::with::colons>/db.db::ses_test001`; a naive
+    // first-"::" split would mis-slice the db path. Splitting from the right
+    // (session ids never contain "::") keeps it correct.
+    const { mkdtempSync, copyFileSync, rmSync: rm } = require('node:fs');
+    const { tmpdir } = require('node:os');
+    const base = mkdtempSync(join(tmpdir(), 'engram-oc-colon-'));
+    const weirdDir = join(base, 'a::b::c');
+    mkdirSync(weirdDir, { recursive: true });
+    const weirdDb = join(weirdDir, 'opencode.db');
+    copyFileSync(FIXTURE_DB, weirdDb);
+    try {
+      const colonAdapter = new OpenCodeAdapter(weirdDb);
+      const files: string[] = [];
+      for await (const f of colonAdapter.listSessionFiles()) files.push(f);
+      expect(files).toHaveLength(1);
+      expect(files[0]).toBe(`${weirdDb}::ses_test001`);
+      const info = await colonAdapter.parseSessionInfo(files[0]);
+      expect(info?.id).toBe('ses_test001');
+      expect(info?.cwd).toBe('/Users/test/my-project');
+      expect(await colonAdapter.isAccessible(files[0])).toBe(true);
+    } finally {
+      rm(base, { recursive: true, force: true });
+    }
+  });
 });

@@ -26,9 +26,18 @@ export function truncateString(value: string, max: number): string {
   if (value.length <= max) return value;
   const cut = value.slice(0, max);
   const last = cut.charCodeAt(cut.length - 1);
-  // Drop a leading high-surrogate so we never return an unpaired half.
+  // A high-surrogate at the very end lost its low half to the cut — drop it.
   if (last >= 0xd800 && last <= 0xdbff) {
     return cut.slice(0, cut.length - 1);
+  }
+  // A low-surrogate at the end is only valid if the preceding unit is its
+  // matching high-surrogate. If the input was malformed (a lone low half),
+  // drop it so we never emit an unpaired surrogate.
+  if (last >= 0xdc00 && last <= 0xdfff) {
+    const prev = cut.length >= 2 ? cut.charCodeAt(cut.length - 2) : 0;
+    if (prev < 0xd800 || prev > 0xdbff) {
+      return cut.slice(0, cut.length - 1);
+    }
   }
   return cut;
 }

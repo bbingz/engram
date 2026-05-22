@@ -30,6 +30,15 @@ interface GeminiMessage {
   toolCalls?: unknown[];
 }
 
+// Sidecars may write the originator in either Codex's "Claude Code" form or
+// the plugin's "claude-code" slug. Normalize (lowercase, strip spaces/dashes)
+// so the dispatched-role classification works regardless of which form the
+// writer used — otherwise parent-link detection silently misses the session.
+function isClaudeCodeOriginator(originator: string | undefined): boolean {
+  if (!originator) return false;
+  return originator.toLowerCase().replace(/[\s-]+/g, '') === 'claudecode';
+}
+
 function isConversation(m: GeminiMessage): boolean {
   return m.type === 'user' || m.type === 'gemini' || m.type === 'model';
 }
@@ -142,7 +151,9 @@ export class GeminiCliAdapter implements SessionAdapter {
         sizeBytes: fileStat.size,
         parentSessionId,
         originator,
-        agentRole: originator === 'claude-code' ? 'dispatched' : undefined,
+        agentRole: isClaudeCodeOriginator(originator)
+          ? 'dispatched'
+          : undefined,
       };
     } catch {
       return null;

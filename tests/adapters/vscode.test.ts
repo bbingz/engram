@@ -54,6 +54,56 @@ describe('VsCodeAdapter', () => {
     );
   });
 
+  describe('streamed first-line read (R5-37)', () => {
+    const tmpRoot = join(tmpdir(), `engram-vscode-firstline-${Date.now()}`);
+    const sessPath = join(
+      tmpRoot,
+      'workspaceStorage',
+      'h',
+      'chatSessions',
+      's.jsonl',
+    );
+
+    beforeAll(() => {
+      mkdirSync(dirname(sessPath), { recursive: true });
+      // Line 0 is the session payload; subsequent lines are unrelated/garbage.
+      // The adapter must read only line 0, so the trailing lines never matter.
+      const line0 = JSON.stringify({
+        kind: 0,
+        v: {
+          version: 3,
+          sessionId: 'fl-1',
+          creationDate: 1771392000000,
+          requests: [
+            {
+              requestId: 'r1',
+              message: { text: 'first-line only' },
+              response: [
+                {
+                  value: { kind: 'markdownContent', content: { value: 'ok' } },
+                },
+              ],
+              timestamp: 1771392005000,
+            },
+          ],
+        },
+      });
+      writeFileSync(
+        sessPath,
+        `${line0}\nNOT VALID JSON ON LINE 1\n{"kind":99}\n`,
+      );
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('parses using only the first line and ignores trailing content', async () => {
+      const adapter = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+      const info = await adapter.parseSessionInfo(sessPath);
+      expect(info?.id).toBe('fl-1');
+      expect(info?.summary).toBe('first-line only');
+    });
+  });
+
   describe('multi-root .code-workspace resolution', () => {
     const tmpRoot = join(tmpdir(), `engram-vscode-multiroot-${Date.now()}`);
     const projDir = join(tmpRoot, 'project-a');

@@ -18,6 +18,10 @@ interface CacheMetaLine {
   title: string;
   createdAt: string;
   updatedAt: string;
+  // Workspace folder path from the Cascade summary. Optional because caches
+  // written before this field was added won't carry it (they re-sync once the
+  // source .pb mtime advances).
+  cwd?: string;
 }
 
 export class WindsurfAdapter implements SessionAdapter {
@@ -84,6 +88,7 @@ export class WindsurfAdapter implements SessionAdapter {
             title: conv.title,
             createdAt: conv.createdAt,
             updatedAt: conv.updatedAt,
+            cwd: conv.cwd || undefined,
           };
           const lines = [
             JSON.stringify(metaLine),
@@ -155,7 +160,7 @@ export class WindsurfAdapter implements SessionAdapter {
         source: 'windsurf',
         startTime: meta.createdAt,
         endTime: meta.updatedAt !== meta.createdAt ? meta.updatedAt : undefined,
-        cwd: '',
+        cwd: meta.cwd ?? '',
         messageCount: userCount + assistantCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,

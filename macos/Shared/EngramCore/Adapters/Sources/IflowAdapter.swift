@@ -1,6 +1,6 @@
 import Foundation
 
-final class IflowAdapter: SessionAdapter {
+final class IflowAdapter: SessionAdapter, Sendable {
     let source: SourceName = .iflow
     private let projectsRoot: URL
     private let limits: ParserLimits

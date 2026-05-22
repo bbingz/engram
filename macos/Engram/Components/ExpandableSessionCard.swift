@@ -44,12 +44,16 @@ struct ExpandableSessionCard: View {
             HStack(spacing: 6) {
                 // Disclosure triangle
                 if totalChildCount > 0 {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.tertiaryText)
-                        .frame(width: 14)
-                        .contentShape(Rectangle())
-                        .onTapGesture { toggleExpand() }
+                    // Button (not bare onTapGesture) so VoiceOver exposes it as a control
+                    Button(action: { toggleExpand() }) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.tertiaryText)
+                            .frame(width: 14)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isExpanded ? "Collapse agent sessions" : "Expand agent sessions")
                 } else {
                     Spacer().frame(width: 14)
                 }

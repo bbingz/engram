@@ -78,6 +78,10 @@ export class KimiAdapter implements SessionAdapter {
     try {
       const fileStat = await stat(filePath);
       const sessionId = basename(dirname(filePath));
+      // The session id is derived from the directory name and used as the DB
+      // primary key + kimi.json lookup. Reject empty / relative-path artifacts
+      // ('', '.', '..') so we never upsert a session under a bogus id.
+      if (!sessionId || sessionId === '.' || sessionId === '..') return null;
 
       const cwd = await this.resolveCwd(sessionId);
       const turns = await this.readTurnTimestamps(filePath);
@@ -232,7 +236,7 @@ export class KimiAdapter implements SessionAdapter {
 
   private extractLineTimestamp(obj: Record<string, unknown>): string {
     if (typeof obj.timestamp === 'number') {
-      return new Date(obj.timestamp * 1000).toISOString();
+      return epochSecondsToISO(obj.timestamp);
     }
     if (typeof obj.timestamp === 'string') return obj.timestamp;
     return '';
@@ -305,7 +309,8 @@ export class KimiAdapter implements SessionAdapter {
       for await (const line of this.readLines(wirePath)) {
         const obj = this.parseLine(line);
         if (!obj || typeof obj.timestamp !== 'number') continue;
-        const iso = new Date(obj.timestamp * 1000).toISOString();
+        const iso = epochSecondsToISO(obj.timestamp);
+        if (!iso) continue;
         const message = obj.message as Record<string, unknown> | undefined;
         const type = message?.type;
         if (type === 'TurnBegin') {
@@ -345,4 +350,16 @@ export class KimiAdapter implements SessionAdapter {
   async isAccessible(locator: string): Promise<boolean> {
     return isFileAccessible(locator);
   }
+}
+
+// Convert epoch-seconds to ISO. new Date(x*1000).toISOString() throws a
+// RangeError for non-finite or out-of-range values (e.g. Infinity, 1e300),
+// which would abort parsing of an otherwise valid session. Return '' so
+// callers fall back to file mtime / line-level timestamps instead.
+function epochSecondsToISO(seconds: number): string {
+  if (!Number.isFinite(seconds)) return '';
+  const ms = seconds * 1000;
+  // JS Date valid range is ±8.64e15 ms from the epoch.
+  if (ms < -8.64e15 || ms > 8.64e15) return '';
+  return new Date(ms).toISOString();
 }

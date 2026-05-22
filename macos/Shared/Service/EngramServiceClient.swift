@@ -1,8 +1,10 @@
 import Foundation
 import Observation
 
+// All stored properties are immutable `@ObservationIgnored let`s holding
+// `Sendable` values, so the compiler can verify `Sendable` without `@unchecked`.
 @Observable
-final class EngramServiceClient: EngramServiceClientProtocol, @unchecked Sendable {
+final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     @ObservationIgnored
     private let transport: any EngramServiceTransport
     @ObservationIgnored

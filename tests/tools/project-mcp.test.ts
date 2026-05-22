@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Database } from '../../src/core/db.js';
 import { encodeCC } from '../../src/core/project-move/encode-cc.js';
 import {
+  capAuditNote,
   handleProjectArchive,
   handleProjectListMigrations,
   handleProjectMove,
@@ -23,6 +24,9 @@ import {
   handleProjectRecover,
   handleProjectReview,
   handleProjectUndo,
+  MAX_AUDIT_NOTE_CHARS,
+  MAX_BATCH_YAML_BYTES,
+  parseBatchYaml,
 } from '../../src/tools/project.js';
 
 describe('project MCP tools', () => {
@@ -188,6 +192,34 @@ operations:
         /continue_from/,
       );
     });
+  });
+
+  // R5-12: oversized batch YAML must be rejected before parsing.
+  it('project_move_batch rejects oversized YAML', async () => {
+    const huge = `x: ${'a'.repeat(MAX_BATCH_YAML_BYTES + 10)}`;
+    await expect(handleProjectMoveBatch(db, { yaml: huge })).rejects.toThrow(
+      /too large/,
+    );
+  });
+
+  // R5-12: alias bombs are capped by maxAliasCount.
+  it('parseBatchYaml caps alias expansion', () => {
+    const bomb = `
+a: &a [x,x,x,x,x,x,x,x,x,x]
+b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a,*a]
+c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b,*b]
+d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c,*c]
+e: [*d,*d,*d,*d,*d,*d,*d,*d,*d,*d]
+`;
+    expect(() => parseBatchYaml(bomb)).toThrow();
+  });
+
+  // R5-41: audit note is trimmed + length-capped.
+  it('capAuditNote truncates long notes', () => {
+    const long = 'n'.repeat(MAX_AUDIT_NOTE_CHARS + 500);
+    expect(capAuditNote(long)?.length).toBe(MAX_AUDIT_NOTE_CHARS);
+    expect(capAuditNote('  trimmed  ')).toBe('trimmed');
+    expect(capAuditNote(undefined)).toBeUndefined();
   });
 
   it('project_archive dry_run returns suggestion without FS changes', async () => {

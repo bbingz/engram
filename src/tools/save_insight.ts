@@ -95,8 +95,13 @@ function deleteInsight(
     deleted = deps.db.deleteInsightText(id) || deleted;
   }
   if (deps.vecStore) {
+    // VectorStore.deleteInsight returns void, so we can't learn whether a row
+    // was removed there. Only treat the overall delete as successful when the
+    // text store actually removed a row (the text store is the authoritative
+    // index — every embedded insight also has a text row). Previously this
+    // returned true unconditionally whenever a vecStore existed, so deleting a
+    // nonexistent id falsely reported success.
     deps.vecStore.deleteInsight(id);
-    deleted = true;
   }
   return deleted;
 }
@@ -149,6 +154,24 @@ export async function handleSaveInsight(
 
   if (params.wing) params.wing = params.wing.trim().slice(0, 200);
   if (params.room) params.room = params.room.trim().slice(0, 200);
+
+  // Validate source_session_id shape. Session ids across sources are bounded
+  // identifiers (UUIDs, slugs, file stems) — reject anything with control
+  // chars, whitespace, or absurd length so a malformed/injected value can't be
+  // persisted into the insight stores. Existence isn't checked: insights may
+  // outlive their source session and `db` isn't always present here.
+  if (params.source_session_id !== undefined) {
+    const sid = params.source_session_id.trim();
+    if (!sid) {
+      params.source_session_id = undefined;
+    } else if (sid.length > 256 || !/^[\w.@:+/-]+$/.test(sid)) {
+      throw new Error(
+        'source_session_id has an invalid format (expected a bounded session identifier).',
+      );
+    } else {
+      params.source_session_id = sid;
+    }
+  }
 
   const importance = params.importance ?? DEFAULT_IMPORTANCE;
 

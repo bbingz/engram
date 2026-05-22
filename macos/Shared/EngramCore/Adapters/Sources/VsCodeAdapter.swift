@@ -1,6 +1,6 @@
 import Foundation
 
-final class VsCodeAdapter: SessionAdapter {
+final class VsCodeAdapter: SessionAdapter, Sendable {
     let source: SourceName = .vscode
     private let workspaceStorageDir: URL
     private let limits: ParserLimits

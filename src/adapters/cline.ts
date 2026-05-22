@@ -139,9 +139,13 @@ export class ClineAdapter implements SessionAdapter {
       if (m.say !== 'api_req_started' || !m.text) continue;
       try {
         const inner = JSON.parse(m.text) as { request?: string };
-        const match = inner.request?.match(
-          /Current Working Directory \(([^)]+)\)/,
-        );
+        // Cline writes "Current Working Directory (<path>) Files ...". A path
+        // can itself contain ')', so anchor on the "\) Files" suffix and match
+        // the path greedily up to it instead of stopping at the first ')'.
+        const request = inner.request ?? '';
+        const match =
+          request.match(/Current Working Directory \((.+?)\) Files/s) ??
+          request.match(/Current Working Directory \(([^)]+)\)/);
         if (match) return match[1];
       } catch {
         /* skip */

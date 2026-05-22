@@ -6,6 +6,7 @@ import { getAdapter } from '../core/bootstrap.js';
 import { readFileSettings } from '../core/config.js';
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
+import { loadBoundedMessages } from './message-loader.js';
 
 export const generateSummaryTool = {
   name: 'generate_summary',
@@ -73,15 +74,17 @@ export async function handleGenerateSummary(
     };
   }
 
-  // Read messages from session file
-  const messages: Array<{ role: string; content: string }> = [];
+  // Read messages from session file with a bounded sliding window so a
+  // pathologically large session can't OOM the host (summary only needs the
+  // head+tail sample anyway — see loadBoundedMessages).
+  let messages: Array<{ role: string; content: string }>;
+  let totalSeen: number;
   try {
-    for await (const msg of adapter.streamMessages(session.filePath)) {
-      messages.push({
-        role: msg.role,
-        content: msg.content,
-      });
-    }
+    const loaded = await loadBoundedMessages(
+      adapter.streamMessages(session.filePath),
+    );
+    messages = loaded.messages;
+    totalSeen = loaded.totalSeen;
   } catch (error) {
     return {
       content: [
@@ -122,14 +125,14 @@ export async function handleGenerateSummary(
       };
     }
 
-    // Update database with summary
-    db.updateSessionSummary(sessionId, summary, messages.length);
+    // Persist the true message count (totalSeen), not the bounded sample size.
+    db.updateSessionSummary(sessionId, summary, totalSeen);
 
     return {
       content: [{ type: 'text' as const, text: summary }],
       metadata: {
         sessionId,
-        messageCount: messages.length,
+        messageCount: totalSeen,
         protocol: settings.aiProtocol || 'openai',
       },
     };

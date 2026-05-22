@@ -137,7 +137,7 @@ enum JSONLAdapterSupport {
     }
 }
 
-final class CodexAdapter: SessionAdapter {
+final class CodexAdapter: SessionAdapter, Sendable {
     let source: SourceName = .codex
     private let sessionRoots: [URL]
     private let limits: ParserLimits
@@ -214,7 +214,9 @@ final class CodexAdapter: SessionAdapter {
                     }
                 } else if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "assistant" {
                     assistantCount += 1
-                } else if payloadType == "function_call" || payloadType == "function_call_output" {
+                } else if payloadType == "function_call" {
+                    // Count a tool invocation once. The paired `function_call_output`
+                    // is the result of the same call, not a separate tool message.
                     toolCount += 1
                 }
             }

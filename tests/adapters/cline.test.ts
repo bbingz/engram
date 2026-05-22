@@ -1,6 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { ClineAdapter } from '../../src/adapters/cline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,5 +41,36 @@ describe('ClineAdapter', () => {
     expect(messages.some((m) => m.role === 'user')).toBe(true);
     expect(messages.some((m) => m.role === 'assistant')).toBe(true);
     expect(messages[0].content).toBe('帮我写单元测试');
+  });
+});
+
+describe('ClineAdapter cwd with parentheses (R5-32)', () => {
+  let tmp: string;
+  afterEach(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('extracts a cwd that itself contains a closing paren', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-cline-paren-'));
+    const taskDir = join(tmp, 'task-1');
+    mkdirSync(taskDir, { recursive: true });
+    const filePath = join(taskDir, 'ui_messages.json');
+    const cwdWithParen = '/Users/test/proj (work)/repo';
+    const request = `<task>\nhi\n</task>\n\nCurrent Working Directory (${cwdWithParen}) Files\n`;
+    const ui = [
+      { ts: 1770000000000, type: 'say', say: 'task', text: 'hi' },
+      {
+        ts: 1770000000001,
+        type: 'say',
+        say: 'api_req_started',
+        text: JSON.stringify({ request, tokensIn: 1, tokensOut: 0 }),
+      },
+    ];
+    writeFileSync(filePath, JSON.stringify(ui));
+    const adapter = new ClineAdapter(tmp);
+    const info = await adapter.parseSessionInfo(filePath);
+    // Previously the [^)]+ pattern stopped at the first ')', truncating to
+    // '/Users/test/proj (work'. Anchoring on ') Files' keeps the full path.
+    expect(info?.cwd).toBe(cwdWithParen);
   });
 });

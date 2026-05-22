@@ -313,20 +313,27 @@ toolRegistry.set('hide_session', (a) => {
   // hide_session must update both `sessions.hidden_at` (read by local UI)
   // and `session_local_state.hidden_at` (replicated to sync peers) atomically;
   // otherwise the two views drift and remote nodes never see the hide.
-  const hiddenExpr = hidden ? "datetime('now')" : 'NULL';
+  //
+  // Bind the timestamp as a parameter rather than interpolating SQL. The value
+  // is computed in JS (current UTC timestamp or null) so no SQL fragment is
+  // ever string-built — keeps the statement static and injection-proof even if
+  // the source of `hidden` changes later.
+  const hiddenAt = hidden
+    ? new Date().toISOString().replace('T', ' ').slice(0, 19)
+    : null;
   const tx = db.raw.transaction((id: string) => {
     db.raw
-      .prepare(`UPDATE sessions SET hidden_at = ${hiddenExpr} WHERE id = ?`)
-      .run(id);
+      .prepare('UPDATE sessions SET hidden_at = ? WHERE id = ?')
+      .run(hiddenAt, id);
     db.raw
       .prepare(
         `
         INSERT INTO session_local_state (session_id, hidden_at)
-        VALUES (?, ${hiddenExpr})
-        ON CONFLICT(session_id) DO UPDATE SET hidden_at = ${hiddenExpr}
+        VALUES (?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET hidden_at = excluded.hidden_at
         `,
       )
-      .run(id);
+      .run(id, hiddenAt);
   });
   tx(sessionId);
   return { session_id: sessionId, hidden, dry_run: false };
@@ -682,11 +689,19 @@ toolRegistry.set('project_move_batch', async (a) => {
   }
 });
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   heartbeat();
   const { name, arguments: args } = request.params;
   const a = (args ?? {}) as Record<string, unknown>;
 
+  // `extra.signal` aborts when the client sends a CancelledNotification (MCP
+  // SDK plumbs this through). Tool handlers don't yet accept a signal, so we
+  // can't interrupt mid-stream; instead we race the handler against the abort
+  // so a cancelled long-running tool (search/generate_summary/export) returns
+  // promptly with an error instead of blocking the request slot indefinitely.
+  // Scope note: this is cooperative at the handler boundary, not in-flight
+  // stream interruption — full per-tool signal threading is a larger change.
+  const signal = extra?.signal as AbortSignal | undefined;
   const requestId = randomUUID();
   return runWithContext({ requestId, source: 'mcp' }, async () => {
     const span = tracer.startSpan(`tool.${name}`, 'mcp');
@@ -701,7 +716,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      const result = await handler(a);
+      if (signal?.aborted) {
+        throw new Error('Request cancelled by client.');
+      }
+
+      const result = signal
+        ? await Promise.race([
+            handler(a),
+            new Promise<never>((_, reject) => {
+              signal.addEventListener(
+                'abort',
+                () => reject(new Error('Request cancelled by client.')),
+                { once: true },
+              );
+            }),
+          ])
+        : await handler(a);
       span.end();
 
       // Check for early return (tools that already formatted their response)

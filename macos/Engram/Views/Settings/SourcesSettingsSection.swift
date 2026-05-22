@@ -200,6 +200,7 @@ struct MCPClientRow: View {
     let client: MCPClientDef
     let helperPath: String
     @State private var copied = false
+    @State private var copyResetTask: Task<Void, Never>? = nil
 
     private var snippet: String {
         client.snippet(helperPath)
@@ -218,7 +219,11 @@ struct MCPClientRow: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(snippet, forType: .string)
                     copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                    copyResetTask?.cancel()
+                    copyResetTask = Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        if !Task.isCancelled { copied = false }
+                    }
                 } label: {
                     Text(copied ? LocalizedStringKey("Copied!") : LocalizedStringKey("Copy"))
                         .font(.caption2)
@@ -239,5 +244,6 @@ struct MCPClientRow: View {
                 .background(Color.secondary.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         }
+        .onDisappear { copyResetTask?.cancel(); copyResetTask = nil }
     }
 }

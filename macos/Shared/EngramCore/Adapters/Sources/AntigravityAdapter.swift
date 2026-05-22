@@ -1,6 +1,6 @@
 import Foundation
 
-final class AntigravityAdapter: SessionAdapter {
+final class AntigravityAdapter: SessionAdapter, Sendable {
     let source: SourceName = .antigravity
     private let daemonDir: URL
     private let cacheDir: URL

@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-public final class EngramDatabaseReader {
+public final class EngramDatabaseReader: Sendable {
     private let pool: DatabasePool
 
     public init(path: String) throws {

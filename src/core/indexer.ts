@@ -338,20 +338,25 @@ export class Indexer {
                   filePath,
                   messages,
                 );
-                this.writer.writeAuthoritativeSnapshot(snapshot);
-                this.db.applyParentLink(info);
-
-                // Write cost and tool data
-                this.writeExtractedData(
-                  info.id,
-                  info.model || '',
-                  acc.inputTokens,
-                  acc.outputTokens,
-                  acc.cacheReadTokens,
-                  acc.cacheCreationTokens,
-                  acc.toolCounts,
-                  acc.fileCounts,
-                );
+                // Snapshot, parent-link, and cost/tool/file data must commit
+                // atomically: a crash between them would leave a session with
+                // no cost/tool/parent data and only backfillCosts can recover.
+                // Nested writeAuthoritativeSnapshot transaction degrades to a
+                // savepoint under better-sqlite3, so this composes safely.
+                this.db.getRawDb().transaction(() => {
+                  this.writer.writeAuthoritativeSnapshot(snapshot);
+                  this.db.applyParentLink(info);
+                  this.writeExtractedData(
+                    info.id,
+                    info.model || '',
+                    acc.inputTokens,
+                    acc.outputTokens,
+                    acc.cacheReadTokens,
+                    acc.cacheCreationTokens,
+                    acc.toolCounts,
+                    acc.fileCounts,
+                  );
+                })();
 
                 if (snapshot.tier) {
                   await this.generateTitleIfNeeded(
@@ -523,6 +528,10 @@ export class Indexer {
 
       // Fast skip: file unchanged since the last index pass. Mirrors the dedup
       // in indexAll so watcher-driven incremental updates don't reparse hot files.
+      // This is an unlocked read, so a concurrent indexAll + watcher pass can
+      // both miss and re-index the same file. That race is benign: the write
+      // path upserts via ON CONFLICT and mergeSessionSnapshot returns noop for
+      // identical content, so the worst case is a wasted reparse, not corruption.
       if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) {
         span?.end();
         return { indexed: false };
@@ -571,20 +580,25 @@ export class Indexer {
         filePath,
         messages,
       );
-      this.writer.writeAuthoritativeSnapshot(snapshot);
-      this.db.applyParentLink(info);
-
-      // Write cost and tool data
-      this.writeExtractedData(
-        info.id,
-        info.model || '',
-        acc.inputTokens,
-        acc.outputTokens,
-        acc.cacheReadTokens,
-        acc.cacheCreationTokens,
-        acc.toolCounts,
-        acc.fileCounts,
-      );
+      // Snapshot, parent-link, and cost/tool/file data must commit atomically:
+      // a crash between them would leave a session with no cost/tool/parent
+      // data and only backfillCosts can recover. Nested
+      // writeAuthoritativeSnapshot transaction degrades to a savepoint under
+      // better-sqlite3, so this composes safely.
+      this.db.getRawDb().transaction(() => {
+        this.writer.writeAuthoritativeSnapshot(snapshot);
+        this.db.applyParentLink(info);
+        this.writeExtractedData(
+          info.id,
+          info.model || '',
+          acc.inputTokens,
+          acc.outputTokens,
+          acc.cacheReadTokens,
+          acc.cacheCreationTokens,
+          acc.toolCounts,
+          acc.fileCounts,
+        );
+      })();
 
       if (snapshot.tier) {
         await this.generateTitleIfNeeded(info.id, snapshot.tier, messages);

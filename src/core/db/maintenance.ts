@@ -97,32 +97,31 @@ export function backfillTiers(db: BetterSqlite3.Database): void {
 }
 
 export function backfillScores(db: BetterSqlite3.Database): number {
-  const rows = db
-    .prepare(`
+  const selectStmt = db.prepare(`
     SELECT id, user_message_count, assistant_message_count, tool_message_count, system_message_count,
            start_time, end_time, project
     FROM sessions
     WHERE (quality_score IS NULL OR quality_score = 0)
       AND tier != 'skip'
       AND (user_message_count > 0 OR assistant_message_count > 0)
-  `)
-    .all() as {
-    id: string;
-    user_message_count: number;
-    assistant_message_count: number;
-    tool_message_count: number;
-    system_message_count: number;
-    start_time: string;
-    end_time: string | null;
-    project: string | null;
-  }[];
-
-  if (rows.length === 0) return 0;
-
+  `);
   const updateStmt = db.prepare(
     'UPDATE sessions SET quality_score = ? WHERE id = ?',
   );
+  // Read and write inside one transaction so the score is computed from the
+  // same row state it is written against; a concurrent writer cannot change
+  // the message counts between the SELECT and the UPDATE.
   const transaction = db.transaction(() => {
+    const rows = selectStmt.all() as {
+      id: string;
+      user_message_count: number;
+      assistant_message_count: number;
+      tool_message_count: number;
+      system_message_count: number;
+      start_time: string;
+      end_time: string | null;
+      project: string | null;
+    }[];
     for (const row of rows) {
       const score = computeQualityScore({
         userCount: row.user_message_count,
@@ -135,9 +134,9 @@ export function backfillScores(db: BetterSqlite3.Database): number {
       });
       updateStmt.run(score, row.id);
     }
+    return rows.length;
   });
-  transaction();
-  return rows.length;
+  return transaction();
 }
 
 export function optimizeFts(db: BetterSqlite3.Database): void {

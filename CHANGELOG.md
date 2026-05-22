@@ -7,6 +7,67 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Shipped — round-5 fresh-angle remediation (2026-05-22)
+
+Round-4 closed the known P0/P1 set; a fresh 6-angle scan (`review-round5.md`)
+then found 61 new issues (3 P0, 21 P1, 37 P2) that the prior session recorded
+but never fixed. All 61 are addressed here, with tests added wherever the path
+is reachable from the test targets. Green: `npm test` 1395 ✓, `biome` clean,
+Swift `Engram` + `EngramServiceCore` (44) + `EngramMCPTests` (46) all ✓.
+(EngramUITests are environment-dependent — they need a seeded GUI session and
+fail identically on the round-4 base commit; out of scope here.)
+
+TypeScript dev/reference:
+- Snapshot write window: `applyParentLink` + `writeExtractedData` folded into
+  the snapshot transaction so a mid-write crash can't leave cost/tool/parent
+  data half-applied; `metricsRepo.upsertSessionCost` persists NULL (not "") for
+  an unknown model to match the Swift writer (schema source of truth).
+- project-move SIGINT handler installed before lock acquisition (+ownsLock
+  guard); `upsertInsight` dual-write wrapped in a transaction; orphan scan
+  honours a shutdown AbortSignal; `backfillScores` reads inside its txn;
+  `MetricsCollector.flush` re-queues on failure instead of dropping.
+- Adapters: codex `startTime` mtime fallback; codex counts a tool use once
+  (function_call only); 5 adapters' `readLines` get try/finally (fd leak);
+  kimi epoch guard; gemini originator case-insensitive; cline cwd anchors on
+  `) Files`; opencode `::` right-split; windsurf surfaces Cascade cwd; kimi
+  sessionId validation; `_truncate` drops trailing lone low-surrogate; vscode
+  streamed first-line read.
+- Tools/HTTP/MCP: `/api/link-sessions` + `/api/handoff` $HOME-confined;
+  `hide_session` parameterized (no SQL interpolation); bounded message loading
+  for summary/export/web (DoS); YAML batch size + alias-bomb cap; cooperative
+  MCP cancellation; `deleteInsight` returns the real result; `source_session_id`
+  validated; `/api/log` + `project_move` note size caps.
+
+Swift product runtime:
+- Concurrency: `SessionWatcher` pending dict guarded by a lock; `SwiftIndexer`
+  no longer holds a GRDB handle across an await; `StreamingLineReader` failures
+  lock-guarded; immutable adapters / GRDB wrappers / service client conform to
+  `Sendable` (dropped unnecessary `@unchecked`); `MockEngramServiceClient` made
+  immutable.
+- Service: final WAL checkpoint on graceful shutdown; `ServiceWriterGate` write
+  wait gains a timeout (a wedged write no longer blocks the queue forever);
+  transcript reader/exporter no longer bridge async→sync via DispatchSemaphore;
+  `EngramWebUIServer` opens read-only + deterministic close; launcher
+  `stopProcessOnly` bounded-waits for exit + exponential backoff health probe;
+  search `mode` honoured (semantic degrades to keyword with a warning);
+  FTS/SQL query syntax errors classified `retryPolicy: "never"` across the
+  IPC search path (matches the real "unterminated string"/"no such column"
+  fts5 messages, not just "syntax error"/"fts5").
+- UI: expand chevron is a Button (VoiceOver); hidden shortcut buttons
+  accessibility-hidden; search/loadParentInfo tasks tracked + cancelled on
+  disappear; skeleton respects reduce-motion; "Copied" tasks cancellable;
+  ContentSegment NSCaches get a totalCostLimit.
+- Adapter parity realigned to TS (codex single tool count, cline `) Files`
+  anchor, windsurf cwd) with goldens regenerated.
+
+Out-of-R5 fixes folded in to get a fully green suite (verified pre-existing on
+the round-4 base commit, not regressions):
+- `testPingHealthProbeSessionsAreSkipped` asserted `.lite` for a "ping" probe
+  that is correctly `.skip` — corrected the stale assertion.
+- `handoff` MCP output: Swift had drifted from the Node parity contract by
+  emitting extra `sessions`/`project` fields (R4); reverted to the documented
+  `{brief, sessionCount}` contract (the brief text already lists the sessions).
+
 ### Shipped — DeepSeek round-4 cross-layer remediation (2026-05-22)
 
 Round-3 confirmed P0 100% but deferred P1/P2; round-4 found the **Swift

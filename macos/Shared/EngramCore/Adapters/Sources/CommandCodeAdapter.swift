@@ -1,6 +1,6 @@
 import Foundation
 
-final class CommandCodeAdapter: SessionAdapter {
+final class CommandCodeAdapter: SessionAdapter, Sendable {
     let source: SourceName = .commandcode
     private let projectsRoot: URL
     private let limits: ParserLimits

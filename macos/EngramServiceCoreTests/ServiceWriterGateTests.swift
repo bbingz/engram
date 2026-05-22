@@ -155,6 +155,65 @@ final class ServiceWriterGateTests: XCTestCase {
         }
         XCTAssertEqual(third.databaseGeneration, 2)
     }
+    func testQueuedWriteTimesOutWhenHolderIsWedged() async throws {
+        // R5-20: a stuck holder must not wedge queued writes forever. With a
+        // short queue timeout, a second write that can't acquire the gate
+        // throws writerBusy instead of blocking indefinitely.
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 50_000_000
+        )
+        let probe = CancellationProbe()
+
+        // Holder enters and never returns until released — simulates a wedged
+        // SQLite/NFS write.
+        let holder = Task {
+            try await gate.performWriteCommand(name: "holder") { _ in
+                await probe.markFirstStarted()
+                await probe.waitUntilRelease()
+                return "holder"
+            }
+        }
+        await probe.waitUntilFirstStarted()
+
+        // Queued write should time out rather than hang forever.
+        do {
+            _ = try await gate.performWriteCommand(name: "queued") { _ in "queued" }
+            XCTFail("queued write should have timed out while holder was wedged")
+        } catch let error as EngramServiceError {
+            guard case .writerBusy = error else {
+                return XCTFail("expected writerBusy, got \(error)")
+            }
+        }
+
+        // Releasing the holder lets the gate recover for subsequent writes.
+        await probe.releaseFirst()
+        _ = try await holder.value
+        let after = try await gate.performWriteCommand(name: "after") { _ in "after" }
+        XCTAssertEqual(after.value, "after")
+    }
+
+    func testQueuedWriteSucceedsWhenHolderFinishesBeforeTimeout() async throws {
+        // Guard against false-positive timeouts: a normal queued write that
+        // waits less than the timeout still completes.
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 2_000_000_000
+        )
+
+        async let first = gate.performWriteCommand(name: "first") { _ in
+            try await Task.sleep(nanoseconds: 30_000_000)
+            return "first"
+        }
+        async let second = gate.performWriteCommand(name: "second") { _ in "second" }
+
+        let results = try await [first.value, second.value]
+        XCTAssertEqual(Set(results), ["first", "second"])
+    }
 }
 
 private final class CountingWriterFactory {

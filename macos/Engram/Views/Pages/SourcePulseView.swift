@@ -11,6 +11,7 @@ struct SourcePulseView: View {
     @State private var isLoading = true
     @State private var error: String? = nil
     @State private var liveTimer: Timer?
+    @State private var liveRefreshTask: Task<Void, Never>? = nil
     @State private var expandedGroups: Set<String> = []
 
     private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
@@ -86,12 +87,17 @@ struct SourcePulseView: View {
         .task {
             await loadData()
             await loadLiveSessions()
-            // Auto-refresh live sessions every 10s
+            // Auto-refresh live sessions every 10s. Track the inner Task and cancel
+            // the prior one each tick so it can't outlive the view / pile up.
             liveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
-                Task { @MainActor in await loadLiveSessions() }
+                liveRefreshTask?.cancel()
+                liveRefreshTask = Task { @MainActor in await loadLiveSessions() }
             }
         }
-        .onDisappear { liveTimer?.invalidate(); liveTimer = nil }
+        .onDisappear {
+            liveTimer?.invalidate(); liveTimer = nil
+            liveRefreshTask?.cancel(); liveRefreshTask = nil
+        }
     }
 
     private func loadLiveSessions() async {

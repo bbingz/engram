@@ -217,29 +217,49 @@ export async function runProjectMove(
   const newBasename = basename(dst);
   const lockPath = opts.lockPath ?? defaultLockPath(opts.home);
 
-  // Acquire lock BEFORE writing to migration_log. (self-review M1: otherwise
-  // a LockBusyError leaves a stale fs_pending row that blocks the watcher
-  // for 24h via hasPendingMigrationFor.)
-  await acquireLock(migrationId, lockPath);
-
   // SIGINT handler (Gemini major #5): on Ctrl-C, fail the migration in DB
   // and release the lock BEFORE the process exits so the 24h watcher-blind
   // TTL doesn't kick in. Sync-only calls inside the handler; then exit.
+  // Install it BEFORE acquireLock: acquireLock awaits fs ops between creating
+  // the lock file and returning, so a SIGINT in that window would otherwise
+  // leave a stale lock with no cleanup. failMigration/unlink are best-effort
+  // and safe to run even if the migration row was never created.
+  let ownsLock = false;
   const sigintHandler = () => {
     try {
       db.failMigration(migrationId, 'interrupted by SIGINT');
     } catch {
       /* best-effort */
     }
-    // Sync unlink so release happens before the process dies
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      /* best-effort */
+    // Sync unlink so release happens before the process dies. Only unlink once
+    // we believe the lock is ours: acquireLock may break/recreate a stale lock,
+    // but if it threw LockBusyError the file belongs to a live peer — don't
+    // delete it. (Race with the peer's own SIGINT is acceptable: pid recorded
+    // in the file is the peer's, not ours.)
+    if (ownsLock) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* best-effort */
+      }
     }
     process.exit(130); // conventional for SIGINT
   };
   process.on('SIGINT', sigintHandler);
+
+  // Acquire lock BEFORE writing to migration_log. (self-review M1: otherwise
+  // a LockBusyError leaves a stale fs_pending row that blocks the watcher
+  // for 24h via hasPendingMigrationFor.) acquireLock creates the file the
+  // moment it succeeds internally; ownsLock flips to true on return so the
+  // SIGINT handler covers the lock as soon as it is held. On throw the handler
+  // is removed below and ownsLock stays false.
+  try {
+    await acquireLock(migrationId, lockPath);
+    ownsLock = true;
+  } catch (err) {
+    process.off('SIGINT', sigintHandler);
+    throw err;
+  }
 
   // Phase A: persist intent BEFORE touching FS (three-phase log, Phase 1)
   db.startMigration({

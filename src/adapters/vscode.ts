@@ -1,7 +1,9 @@
 // src/adapters/vscode.ts
+import { createReadStream } from 'node:fs';
 import { glob, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
 import type {
   Message,
@@ -217,8 +219,11 @@ export class VsCodeAdapter implements SessionAdapter {
 
   private async readSession(filePath: string): Promise<VsSessionData | null> {
     try {
-      const content = await readFile(filePath, 'utf8');
-      const firstLine = content.split('\n')[0]?.trim();
+      // The session payload lives entirely on line 0. Stream just that line
+      // instead of readFile-then-split — chat session files can be many MB and
+      // we discard everything after the first line anyway (matches R4 fix
+      // applied to the windsurf adapter).
+      const firstLine = await readFirstLine(filePath);
       if (!firstLine) return null;
       const parsed = JSON.parse(firstLine) as VsLine0;
       if (parsed.kind !== 0 || !parsed.v) return null;
@@ -249,6 +254,23 @@ export class VsCodeAdapter implements SessionAdapter {
 
   async isAccessible(locator: string): Promise<boolean> {
     return isFileAccessible(locator);
+  }
+}
+
+async function readFirstLine(filePath: string): Promise<string | null> {
+  // Stream the file and bail after the first non-empty line. VS Code chat
+  // session files can be several MB; readFile-then-split would load it all.
+  const stream = createReadStream(filePath, { encoding: 'utf8' });
+  const reader = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      const trimmed = line.trim();
+      return trimmed || null;
+    }
+    return null;
+  } finally {
+    reader.close();
+    stream.destroy();
   }
 }
 

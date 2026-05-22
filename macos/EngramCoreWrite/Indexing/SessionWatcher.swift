@@ -81,6 +81,10 @@ public final class SessionWatcher {
     private let shouldSkip: (String) -> Bool
     private let clock: any WatcherClock
     private let config: WatchBatchConfig
+    // `pending` and `nextSequence` are mutated from `observe`/`drainReady`, which
+    // can run concurrently (file events vs. drain timer). Guard every access with
+    // a lock; async indexing is performed outside the lock on a snapshot.
+    private let stateLock = NSLock()
     private var pending: [String: PendingPath] = [:]
     private var nextSequence = 0
 
@@ -108,7 +112,9 @@ public final class SessionWatcher {
             enqueueStablePath(path: path, sizeBytes: sizeBytes, modifiedAtMilliseconds: modifiedAtMilliseconds)
             return []
         case .unlinked(let path):
+            stateLock.lock()
             pending.removeValue(forKey: path)
+            stateLock.unlock()
             guard !shouldSkip(path) else { return [] }
             let touched = try orphanMarker.markOrphanByPath(path, reason: .cleanedBySource)
             return touched > 0 ? [.orphaned(path: path, sessions: touched)] : []
@@ -128,8 +134,12 @@ public final class SessionWatcher {
 
     @discardableResult
     public func drainReady() async throws -> [SessionWatchEvent] {
+        let now = clock.nowMilliseconds
+        // Select and remove the ready batch atomically so a concurrent observe()
+        // can't mutate `pending` between the snapshot and the removal.
+        stateLock.lock()
         let ready = pending.values
-            .filter { $0.readyAtMilliseconds <= clock.nowMilliseconds }
+            .filter { $0.readyAtMilliseconds <= now }
             .sorted { lhs, rhs in
                 if lhs.sequence == rhs.sequence {
                     return lhs.path < rhs.path
@@ -137,10 +147,13 @@ public final class SessionWatcher {
                 return lhs.sequence < rhs.sequence
             }
             .prefix(config.maxDrainBatchSize)
+        for item in ready {
+            pending.removeValue(forKey: item.path)
+        }
+        stateLock.unlock()
 
         var events: [SessionWatchEvent] = []
         for item in ready {
-            pending.removeValue(forKey: item.path)
             guard !shouldSkip(item.path) else { continue }
             let result = try await indexer.indexFile(source: item.source, path: item.path)
             if result.indexed {
@@ -158,6 +171,8 @@ public final class SessionWatcher {
             return
         }
 
+        stateLock.lock()
+        defer { stateLock.unlock() }
         if let existing = pending[path] {
             pending[path] = PendingPath(
                 path: path,

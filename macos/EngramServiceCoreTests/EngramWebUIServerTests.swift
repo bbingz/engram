@@ -1,8 +1,63 @@
 import XCTest
+import GRDB
 import EngramCoreRead
 @testable import EngramServiceCore
 
 final class EngramWebUIServerTests: XCTestCase {
+    func testWebUIServerOpensDatabaseReadOnly() throws {
+        // R5-23: the Web UI must open the DB read-only like MCPDatabase, never
+        // read-write (only the ServiceWriterGate owns writes).
+        let dbPath = try makeMinimalDatabase()
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let server = try EngramWebUIServer(databasePath: dbPath)
+
+        XCTAssertTrue(try server.writeIsRejectedForTesting(), "Web UI DB handle must be read-only")
+    }
+
+    func testWebUIServerCloseReleasesPoolDeterministically() throws {
+        // R5-60: close() releases the GRDB pool eagerly and is idempotent;
+        // reads after close fail loudly rather than relying on ARC timing.
+        let dbPath = try makeMinimalDatabase()
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let server = try EngramWebUIServer(databasePath: dbPath)
+
+        XCTAssertFalse(server.isClosedForTesting)
+        server.close()
+        XCTAssertTrue(server.isClosedForTesting)
+        server.close() // idempotent
+        XCTAssertTrue(server.isClosedForTesting)
+        XCTAssertThrowsError(try server.writeIsRejectedForTesting())
+    }
+
+    private func makeMinimalDatabase() throws -> String {
+        let path = NSTemporaryDirectory() + "engram-webui-\(UUID().uuidString).sqlite"
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE sessions (
+                  id TEXT PRIMARY KEY,
+                  source TEXT NOT NULL,
+                  start_time TEXT NOT NULL,
+                  end_time TEXT,
+                  project TEXT,
+                  summary TEXT,
+                  generated_title TEXT,
+                  custom_name TEXT,
+                  message_count INTEGER NOT NULL DEFAULT 0,
+                  file_path TEXT,
+                  source_locator TEXT,
+                  hidden_at TEXT
+                );
+                CREATE TABLE session_local_state (
+                  session_id TEXT PRIMARY KEY,
+                  local_readable_path TEXT,
+                  hidden_at TEXT
+                );
+            """)
+        }
+        return path
+    }
+
     func testSubagentNotificationRendersAsAgentCommunication() {
         let message = NormalizedMessage(
             role: .user,

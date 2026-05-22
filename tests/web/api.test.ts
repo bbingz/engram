@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SessionAdapter, SessionInfo } from '../../src/adapters/types.js';
 import { Database } from '../../src/core/db.js';
+import type { LogWriter } from '../../src/core/logger.js';
 import { createApp } from '../../src/web.js';
 
 const mockSession: SessionInfo = {
@@ -285,6 +286,81 @@ describe('Web API', () => {
   it('unknown route returns 404', async () => {
     const res = await app.request('/api/this-route-does-not-exist-ever');
     expect(res.status).toBe(404);
+  });
+
+  // R5-2: /api/link-sessions confines targetDir to $HOME like other write
+  // endpoints. A path outside $HOME must be rejected before any FS work.
+  it('POST /api/link-sessions rejects targetDir outside $HOME', async () => {
+    const res = await app.request('/api/link-sessions', {
+      method: 'POST',
+      body: JSON.stringify({ targetDir: '/etc/evil-symlinks' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/must live under/);
+  });
+});
+
+// R5-40: /api/log bounds the free-form `data` blob.
+describe('Web API — /api/log data cap', () => {
+  let db: Database;
+  let captured: Array<{ data?: unknown }>;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    captured = [];
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('replaces oversized data with a truncation marker', async () => {
+    const app = createApp(db, {
+      // Minimal capturing stub of LogWriter; only write() is exercised here.
+      logWriter: {
+        write: (entry: { data?: unknown }) => captured.push(entry),
+      } as unknown as LogWriter,
+    });
+    const big = 'z'.repeat(100 * 1024); // > 64KB cap
+    const res = await app.request('/api/log', {
+      method: 'POST',
+      body: JSON.stringify({
+        level: 'info',
+        module: 'test',
+        message: 'oversized',
+        data: { blob: big },
+      }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(res.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].data).toEqual({
+      _truncated: true,
+      reason: 'data exceeded 64KB limit',
+    });
+  });
+
+  it('passes through small data unchanged', async () => {
+    const app = createApp(db, {
+      // Minimal capturing stub of LogWriter; only write() is exercised here.
+      logWriter: {
+        write: (entry: { data?: unknown }) => captured.push(entry),
+      } as unknown as LogWriter,
+    });
+    const res = await app.request('/api/log', {
+      method: 'POST',
+      body: JSON.stringify({
+        level: 'info',
+        module: 'test',
+        message: 'ok',
+        data: { k: 'v' },
+      }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(res.status).toBe(200);
+    expect(captured[0].data).toEqual({ k: 'v' });
   });
 });
 

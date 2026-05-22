@@ -166,6 +166,26 @@ public enum EngramServiceRunner {
         // wait is what guarantees we don't drop the writer mid-checkpoint.
         // Bound by busy_timeout (30s) in the worst case; in practice <1s.
         await truncateTask.value
+
+        // Final WAL TRUNCATE on graceful shutdown. The periodic checkpointTask
+        // only runs PASSIVE (never shrinks the file on disk), so without this
+        // accumulated WAL frames are left for the next startup's TRUNCATE,
+        // leaving the WAL file large between runs. The gate's writeSemaphore
+        // serializes this with any in-flight write; a reader-busy result
+        // (busy != 0) is a normal best-effort outcome. SQLite's PRAGMA does not
+        // observe Task cancellation; it is bounded by busy_timeout (30s).
+        do {
+            let result = try await gate.checkpointTruncate()
+            ServiceLogger.notice(
+                "shutdown wal truncate: busy=\(result.busy) log=\(result.logFrames) checkpointed=\(result.checkpointed)",
+                category: .checkpoint
+            )
+        } catch {
+            ServiceLogger.warn(
+                "shutdown wal truncate failed: \(error.localizedDescription)",
+                category: .checkpoint
+            )
+        }
     }
 
     private static func runIndexingLoop(gate: ServiceWriterGate) async {

@@ -270,7 +270,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             case "exportSession":
                 let payload = try decodePayload(EngramServiceExportSessionRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { _ in
-                    try TranscriptExportService.exportSession(payload, databasePath: writerGate.databasePath)
+                    try await TranscriptExportService.exportSession(payload, databasePath: writerGate.databasePath)
                 }
                 return .success(
                     requestId: request.requestId,
@@ -305,13 +305,49 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         } catch {
             return .failure(
                 requestId: request.requestId,
-                error: EngramServiceErrorEnvelope(
-                    name: "CommandFailed",
-                    message: error.localizedDescription,
-                    retryPolicy: "safe"
-                )
+                error: Self.genericErrorEnvelope(error)
             )
         }
+    }
+
+    /// Map an otherwise-unclassified thrown error to an envelope. A FTS5/SQL
+    /// syntax error (e.g. a malformed `MATCH` query) is deterministic: the same
+    /// input always fails, so retrying is futile — tag it `"never"`. All other
+    /// failures keep the conservative `"safe"` default so transient I/O can be
+    /// retried.
+    static func genericErrorEnvelope(_ error: Error) -> EngramServiceErrorEnvelope {
+        if isSyntaxError(error) {
+            return EngramServiceErrorEnvelope(
+                name: "QuerySyntaxError",
+                message: error.localizedDescription,
+                retryPolicy: "never"
+            )
+        }
+        return EngramServiceErrorEnvelope(
+            name: "CommandFailed",
+            message: error.localizedDescription,
+            retryPolicy: "safe"
+        )
+    }
+
+    static func isSyntaxError(_ error: Error) -> Bool {
+        guard let dbError = error as? DatabaseError else { return false }
+        // SQLITE_ERROR covers both generic SQL syntax errors and FTS5 query
+        // syntax errors ("fts5: syntax error near ..."). Both are caused by the
+        // query string itself, not by transient state.
+        guard dbError.resultCode == .SQLITE_ERROR else { return false }
+        let message = (dbError.message ?? "").lowercased()
+        // FTS5/SQL query errors are all deterministic — the same query string
+        // always fails — so retrying is futile. SQLite phrases them several ways:
+        //   "fts5: syntax error near ..."   (malformed MATCH operators)
+        //   "unterminated string"           (unbalanced quote in MATCH)
+        //   "no such column: x"             (column filter on a missing column)
+        //   "unrecognized token: ..."       (illegal characters)
+        return message.contains("syntax error")
+            || message.contains("fts5")
+            || message.contains("unterminated")
+            || message.contains("no such column")
+            || message.contains("unrecognized token")
     }
 
     private func decodePayload<T: Decodable>(_ type: T.Type, from request: EngramServiceRequestEnvelope) throws -> T {

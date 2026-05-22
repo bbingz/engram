@@ -100,10 +100,10 @@ export class CodexAdapter implements SessionAdapter {
             } else if (role === 'assistant') {
               assistantCount++;
             }
-          } else if (
-            payload.type === 'function_call' ||
-            payload.type === 'function_call_output'
-          ) {
+          } else if (payload.type === 'function_call') {
+            // Count one tool use per call. The matching function_call_output is
+            // the result of the same call, so counting it too would double the
+            // tool count relative to every other adapter (which counts 1).
             toolCount++;
           }
         }
@@ -123,10 +123,18 @@ export class CodexAdapter implements SessionAdapter {
       // mark it as dispatched so it skips dispatch-pattern matching in backfill.
       const effectiveRole =
         agentRole || (originator === 'Claude Code' ? 'dispatched' : undefined);
+      // session_meta may omit timestamp; fall back to file mtime like the other
+      // adapters so startTime is never undefined (it sorts to epoch otherwise).
+      const metaTimestamp =
+        typeof payload.timestamp === 'string' ? payload.timestamp : '';
+      const startTime =
+        metaTimestamp ||
+        lastTimestamp ||
+        new Date(fileStat.mtimeMs).toISOString();
       return {
         id: rawId,
         source: 'codex',
-        startTime: payload.timestamp as string,
+        startTime,
         endTime: lastTimestamp || undefined,
         cwd: (payload.cwd as string) || '',
         model: detectedModel || (payload.model as string | undefined),
@@ -225,8 +233,16 @@ export class CodexAdapter implements SessionAdapter {
   private async *readLines(filePath: string): AsyncGenerator<string> {
     const stream = createReadStream(filePath, { encoding: 'utf8' });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (line.trim()) yield line;
+    // try/finally so a consumer that breaks early (e.g. .limit/.prefix) still
+    // closes the readline interface + fd — otherwise we leak descriptors and
+    // hit EMFILE when indexing many sessions.
+    try {
+      for await (const line of rl) {
+        if (line.trim()) yield line;
+      }
+    } finally {
+      rl.close();
+      stream.destroy();
     }
   }
 

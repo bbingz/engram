@@ -30,6 +30,18 @@ enum EngramServiceError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
+/// Returns the `writerBusy` message when `error` is the single-writer-lock
+/// contention case, else nil. Public so the `EngramService` executable target
+/// can apply its exit policy without depending on the internal error enum.
+public func engramServiceWriterBusyMessage(_ error: Error) -> String? {
+    guard let serviceError = error as? EngramServiceError,
+          case .writerBusy(let message) = serviceError
+    else {
+        return nil
+    }
+    return message
+}
+
 struct EngramServiceErrorEnvelope: Codable, Equatable, Sendable {
     let name: String
     let message: String

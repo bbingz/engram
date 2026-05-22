@@ -29,9 +29,12 @@ describe('CodexAdapter', () => {
     expect(info?.summary).toBe('帮我修复登录 bug，用户无法登录');
   });
 
-  it('counts function_call / function_call_output as tool messages', async () => {
+  it('counts one tool message per function_call (not call + output)', async () => {
     const info = await adapter.parseSessionInfo(FIXTURE);
-    expect(info?.toolMessageCount).toBe(2);
+    // The fixture has one function_call and its matching function_call_output.
+    // That is a single tool use, so it counts as 1 — matching every other
+    // adapter. Counting the output too would double the count (R5-29).
+    expect(info?.toolMessageCount).toBe(1);
     expect(info?.messageCount).toBe(
       (info?.userMessageCount ?? 0) +
         (info?.assistantMessageCount ?? 0) +
@@ -147,6 +150,70 @@ describe('CodexAdapter', () => {
     expect(files.sort()).toEqual([archivedPath, activePath].sort());
   });
 
+  it('falls back to file mtime when session_meta lacks a timestamp', async () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-nots-${Date.now()}`);
+    const noTsPath = join(tmpRoot, 'rollout-no-ts.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    // session_meta with NO timestamp field, and the only timestamped line is a
+    // response_item (so lastTimestamp is set but startTime would be undefined).
+    const lines = [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: { id: 'no-ts', cwd: '/x', model_provider: 'openai' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-02-01T08:00:00.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hi' }],
+        },
+      }),
+    ].join('\n');
+    writeFileSync(noTsPath, `${lines}\n`);
+    try {
+      const info = await adapter.parseSessionInfo(noTsPath);
+      expect(info).not.toBeNull();
+      // startTime must be a valid ISO string, never undefined. Here it picks
+      // up lastTimestamp (the only timestamped line) before resorting to mtime.
+      expect(typeof info?.startTime).toBe('string');
+      expect(info?.startTime).toBe('2026-02-01T08:00:00.000Z');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('uses mtime when neither session_meta nor any line carries a timestamp', async () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-mtime-${Date.now()}`);
+    const path = join(tmpRoot, 'rollout-mtime.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    const lines = [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: { id: 'mtime', cwd: '/x', model_provider: 'openai' },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hi' }],
+        },
+      }),
+    ].join('\n');
+    writeFileSync(path, `${lines}\n`);
+    try {
+      const info = await adapter.parseSessionInfo(path);
+      expect(info).not.toBeNull();
+      expect(typeof info?.startTime).toBe('string');
+      // Valid ISO from mtime (would throw / be 'Invalid Date' if undefined).
+      expect(Number.isNaN(Date.parse(info?.startTime ?? ''))).toBe(false);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   describe('function_call edge cases', () => {
     const tmpRoot = join(tmpdir(), `engram-codex-fc-${Date.now()}`);
     const fcPath = join(tmpRoot, 'rollout-fc.jsonl');
@@ -234,9 +301,13 @@ describe('CodexAdapter', () => {
       expect(shellCall?.toolCalls?.[0]?.input).toBe('"{\\"cmd\\":\\"ls\\"}"');
     });
 
-    it('counts every function_call / function_call_output as a tool message', async () => {
+    it('counts function_call records only, not their outputs', async () => {
       const info = await adapter.parseSessionInfo(fcPath);
-      expect(info?.toolMessageCount).toBe(3);
+      // Fixture: 2 function_call + 1 orphan function_call_output. We count one
+      // tool message per function_call (R5-29); the orphan output is not a new
+      // tool use, so it is not counted. streamMessages still surfaces all 3 as
+      // tool-role messages for display.
+      expect(info?.toolMessageCount).toBe(2);
     });
 
     it('offset/limit treat tool messages the same as user/assistant', async () => {
@@ -321,7 +392,9 @@ describe('CodexAdapter', () => {
 
     it('counts and emits each repeated call/output independently (no dedup)', async () => {
       const info = await adapter.parseSessionInfo(dupPath);
-      expect(info?.toolMessageCount).toBe(4);
+      // 2 function_call + 2 function_call_output. Count = 2 (one per call,
+      // outputs not counted — R5-29). The stream still emits all 4 for display.
+      expect(info?.toolMessageCount).toBe(2);
 
       const messages = [];
       for await (const m of adapter.streamMessages(dupPath)) messages.push(m);

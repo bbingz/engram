@@ -79,16 +79,56 @@ describe('MetricsCollector', () => {
     ).toBeGreaterThanOrEqual(5);
   });
 
-  it('does not throw on flush failure and logs the drop', () => {
+  it('does not throw on flush failure and re-queues the batch', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     metrics.counter('test.count', 1);
     metrics.counter('test.count', 1);
     db.close();
     expect(() => metrics.flush()).not.toThrow();
     expect(spy).toHaveBeenCalledWith(
-      expect.stringContaining('[metrics] flush failed, dropped 2 entries'),
+      expect.stringContaining('[metrics] flush failed, re-queued 2 entries'),
       expect.any(Error),
     );
+    spy.mockRestore();
+  });
+
+  it('retries re-queued metrics on a later successful flush', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Recoverable DB on a real file: drop the table to force a flush failure,
+    // then recreate it so the retry succeeds with no metrics lost.
+    metrics.counter('test.retry', 1);
+    metrics.counter('test.retry', 1);
+    db.raw.exec('DROP TABLE metrics');
+    metrics.flush(); // fails → re-queued, not dropped
+    db.raw.exec(
+      'CREATE TABLE metrics (id INTEGER PRIMARY KEY, name TEXT, type TEXT, value REAL, tags TEXT, ts TEXT)',
+    );
+    metrics.flush(); // succeeds → flushes the re-queued batch
+    expect(
+      (db.raw.prepare('SELECT COUNT(*) as c FROM metrics').get() as any).c,
+    ).toBe(2);
+    spy.mockRestore();
+  });
+
+  it('caps the re-queue at maxBufferSize when the DB stays broken', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // High maxBufferSize so record() never auto-flushes; we drive flush()
+    // manually. The cap is enforced at re-queue time inside flush().
+    const capped = new MetricsCollector(db.raw, {
+      flushIntervalMs: 0,
+      maxBufferSize: 3,
+    });
+    db.raw.exec('DROP TABLE metrics');
+    // record() auto-flushes once buffer hits maxBufferSize. Each failing flush
+    // re-queues; once the re-queue would exceed the cap the oldest entries are
+    // dropped so a persistently broken DB cannot grow the buffer without bound.
+    for (let i = 0; i < 8; i++) capped.counter(`m${i}`, 1);
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining('oldest over buffer cap'),
+      expect.any(Error),
+    );
+    // Buffer must never exceed the cap.
+    expect((capped as unknown as { buffer: unknown[] }).buffer.length).toBe(3);
     spy.mockRestore();
   });
 });

@@ -1,6 +1,6 @@
 import Foundation
 
-final class CursorAdapter: SessionAdapter {
+final class CursorAdapter: SessionAdapter, Sendable {
     let source: SourceName = .cursor
     private let dbPath: String
 

@@ -1,5 +1,8 @@
 // src/tools/export.ts
-import { mkdir, writeFile } from 'node:fs/promises';
+
+import { once } from 'node:events';
+import { createWriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SessionAdapter } from '../adapters/types.js';
@@ -37,14 +40,6 @@ export async function handleExport(
   if (!session) throw new Error(`Session not found: ${params.id}`);
 
   const format = params.format ?? 'markdown';
-  const messages: { role: string; content: string; timestamp?: string }[] = [];
-  for await (const msg of adapter.streamMessages(session.filePath)) {
-    messages.push({
-      role: msg.role,
-      content: msg.content,
-      timestamp: msg.timestamp,
-    });
-  }
 
   const outputDir = join(homedir(), 'codex-exports');
   await mkdir(outputDir, { recursive: true });
@@ -53,33 +48,63 @@ export async function handleExport(
   const filename = `${session.source}-${safeId}-${toLocalDate(session.startTime)}.${format === 'json' ? 'json' : 'md'}`;
   const outputPath = join(outputDir, filename);
 
-  let content: string;
-  if (format === 'json') {
-    content = JSON.stringify({ session, messages }, null, 2);
-  } else {
-    const lines: string[] = [
-      `# Session: ${session.id}`,
-      '',
-      `**Source:** ${session.source}`,
-      `**Date:** ${toLocalDateTime(session.startTime)}`,
-      `**Project:** ${session.project ?? session.cwd}`,
-      `**Messages:** ${session.messageCount}`,
-      '',
-      '---',
-      '',
-    ];
-    for (const msg of messages) {
-      lines.push(`### ${msg.role === 'user' ? '👤 User' : '🤖 Assistant'}`);
-      lines.push('');
-      lines.push(msg.content);
-      lines.push('');
-      lines.push('---');
-      lines.push('');
+  // Stream messages straight to disk instead of buffering the entire session
+  // in memory first. A 100k-message session would otherwise allocate ~100MB+
+  // before a single byte hit the file, risking OOM on the host.
+  const stream = createWriteStream(outputPath, { encoding: 'utf8' });
+  const write = async (chunk: string): Promise<void> => {
+    if (!stream.write(chunk)) {
+      // Respect backpressure so a slow disk can't let the pending-write
+      // buffer grow unbounded.
+      await once(stream, 'drain');
     }
-    content = lines.join('\n');
+  };
+
+  let messageCount = 0;
+  try {
+    if (format === 'json') {
+      // Build the JSON document incrementally so the messages array is never
+      // fully materialized in memory.
+      await write(`{\n  "session": ${JSON.stringify(session, null, 2)},\n`);
+      await write('  "messages": [');
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        await write(messageCount === 0 ? '\n' : ',\n');
+        await write(
+          `    ${JSON.stringify({
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp,
+          })}`,
+        );
+        messageCount++;
+      }
+      await write(messageCount === 0 ? ']\n}\n' : '\n  ]\n}\n');
+    } else {
+      await write(
+        [
+          `# Session: ${session.id}`,
+          '',
+          `**Source:** ${session.source}`,
+          `**Date:** ${toLocalDateTime(session.startTime)}`,
+          `**Project:** ${session.project ?? session.cwd}`,
+          `**Messages:** ${session.messageCount}`,
+          '',
+          '---',
+          '',
+          '',
+        ].join('\n'),
+      );
+      for await (const msg of adapter.streamMessages(session.filePath)) {
+        await write(
+          `### ${msg.role === 'user' ? '👤 User' : '🤖 Assistant'}\n\n${msg.content}\n\n---\n\n`,
+        );
+        messageCount++;
+      }
+    }
+  } finally {
+    stream.end();
+    await once(stream, 'finish');
   }
 
-  await writeFile(outputPath, content, 'utf8');
-
-  return { outputPath, format, messageCount: messages.length };
+  return { outputPath, format, messageCount };
 }

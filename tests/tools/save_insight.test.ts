@@ -6,7 +6,10 @@ import { describe, expect, it } from 'vitest';
 import { Database } from '../../src/core/db.js';
 import type { EmbeddingClient } from '../../src/core/embeddings.js';
 import { SqliteVecStore } from '../../src/core/vector-store.js';
-import { handleSaveInsight } from '../../src/tools/save_insight.js';
+import {
+  handleDeleteInsight,
+  handleSaveInsight,
+} from '../../src/tools/save_insight.js';
 
 function makeStore() {
   const tmpDir = mkdtempSync(join(tmpdir(), 'insight-test-'));
@@ -608,6 +611,70 @@ describe('insight lifecycle', () => {
     // 3. Search for "nonexistent" → not found
     const misses = db.searchInsightsFts('nonexistent', 10);
     expect(misses).toHaveLength(0);
+
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  // R5-38: deleteInsight must report the real deletion result, not true
+  // unconditionally just because a vecStore exists.
+  it('handleDeleteInsight reports false when nothing was deleted', async () => {
+    const { store, db: sqliteDb, tmpDir } = makeStore();
+    const engDb = new Database(join(tmpDir, 'engram.sqlite'));
+    const embedder = makeMockEmbedder();
+
+    const saved = await handleSaveInsight(
+      { content: 'deletable insight content', wing: 'proj' },
+      { vecStore: store, embedder, db: engDb },
+    );
+
+    // Deleting a nonexistent id with a vecStore present must return false.
+    const ghost = handleDeleteInsight(
+      { id: 'no-such-insight-id' },
+      { vecStore: store, db: engDb },
+    );
+    expect(ghost.deleted).toBe(false);
+
+    // Deleting the real id returns true (text row removed).
+    const real = handleDeleteInsight(
+      { id: saved.id },
+      { vecStore: store, db: engDb },
+    );
+    expect(real.deleted).toBe(true);
+
+    sqliteDb.close();
+    engDb.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  // R5-39: source_session_id format validation.
+  it('rejects a malformed source_session_id', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'insight-badsid-'));
+    const db = new Database(join(tmpDir, 'test.sqlite'));
+
+    await expect(
+      handleSaveInsight(
+        {
+          content: 'insight with bad session id',
+          source_session_id: 'has spaces and\nnewline',
+        },
+        { db },
+      ),
+    ).rejects.toThrow(/source_session_id/);
+
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it('treats a blank source_session_id as absent', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'insight-blanksid-'));
+    const db = new Database(join(tmpDir, 'test.sqlite'));
+
+    const result = await handleSaveInsight(
+      { content: 'insight with blank session id', source_session_id: '   ' },
+      { db },
+    );
+    expect(result.id).toBeTruthy();
 
     db.close();
     rmSync(tmpDir, { recursive: true });

@@ -9,14 +9,20 @@ final class EngramWebUIServer: @unchecked Sendable {
     private let databasePath: String
     private let host: String
     private let port: Int
-    private let databaseQueue: DatabaseQueue
+    // Read-only DB handle: the Web UI never writes, and only EngramService's
+    // ServiceWriterGate is allowed to open the DB read-write. Mirrors
+    // MCPDatabase. Optional so teardown can release the GRDB pool
+    // deterministically rather than relying on ARC timing.
+    private var databaseQueue: DatabaseQueue?
     private let adapters: [SourceName: any SessionAdapter]
 
     init(databasePath: String, host: String = "127.0.0.1", port: Int = 3457) throws {
         self.databasePath = databasePath
         self.host = host
         self.port = port
-        self.databaseQueue = try DatabaseQueue(path: databasePath)
+        var configuration = Configuration()
+        configuration.readonly = true
+        self.databaseQueue = try DatabaseQueue(path: databasePath, configuration: configuration)
         // First registration wins; a duplicate source must not crash the
         // service at init (same hardening as AdapterRegistry).
         var adapterMap: [SourceName: any SessionAdapter] = [:]
@@ -49,7 +55,42 @@ final class EngramWebUIServer: @unchecked Sendable {
             configuration: ApplicationConfiguration(address: .hostname(host, port: port)),
             logger: logger
         )
+        // Release the GRDB read pool deterministically when the HTTP server
+        // stops (cancellation or error), instead of waiting for ARC to drop
+        // the last reference. The defer runs on the same path the runner's
+        // webTask cancellation triggers.
+        defer { close() }
         try await app.run()
+    }
+
+    /// Tear down the read pool eagerly. Idempotent.
+    func close() {
+        databaseQueue = nil
+    }
+
+    #if DEBUG
+    /// Test-only: whether the read pool has been released.
+    var isClosedForTesting: Bool { databaseQueue == nil }
+
+    /// Test-only: attempt a write to confirm the handle is opened read-only.
+    /// Returns true iff the write was rejected (read-only enforced).
+    func writeIsRejectedForTesting() throws -> Bool {
+        do {
+            try requireQueue().write { db in
+                try db.execute(sql: "CREATE TABLE IF NOT EXISTS web_write_probe(id INTEGER)")
+            }
+            return false
+        } catch let dbError as DatabaseError where dbError.resultCode == .SQLITE_READONLY {
+            return true
+        }
+    }
+    #endif
+
+    private func requireQueue() throws -> DatabaseQueue {
+        guard let databaseQueue else {
+            throw WebUIServerError.databaseClosed
+        }
+        return databaseQueue
     }
 
     private func indexPage() throws -> String {
@@ -141,7 +182,7 @@ final class EngramWebUIServer: @unchecked Sendable {
     }
 
     private func readSessions(limit: Int) throws -> [WebSession] {
-        try databaseQueue.read { db in
+        try requireQueue().read { db in
             try Row.fetchAll(db, sql: """
                 SELECT
                   s.id, s.source, s.start_time, s.project, s.summary, s.generated_title,
@@ -157,7 +198,7 @@ final class EngramWebUIServer: @unchecked Sendable {
     }
 
     private func readSession(id: String) throws -> WebSession? {
-        try databaseQueue.read { db in
+        try requireQueue().read { db in
             try Row.fetchOne(db, sql: """
                 SELECT
                   s.id, s.source, s.start_time, s.project, s.summary, s.generated_title,
@@ -247,6 +288,17 @@ final class EngramWebUIServer: @unchecked Sendable {
             return "The transcript changed while Engram was reading it. Refresh the page to retry."
         default:
             return "The transcript could not be parsed: \(failure.rawValue)."
+        }
+    }
+}
+
+private enum WebUIServerError: LocalizedError {
+    case databaseClosed
+
+    var errorDescription: String? {
+        switch self {
+        case .databaseClosed:
+            return "The Web UI database handle was released during shutdown."
         }
     }
 }

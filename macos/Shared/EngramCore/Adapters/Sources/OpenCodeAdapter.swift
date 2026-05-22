@@ -58,7 +58,7 @@ final class Phase4SQLiteDatabase {
     private static let transientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 }
 
-final class OpenCodeAdapter: SessionAdapter {
+final class OpenCodeAdapter: SessionAdapter, Sendable {
     let source: SourceName = .opencode
     private let dbPath: String
 

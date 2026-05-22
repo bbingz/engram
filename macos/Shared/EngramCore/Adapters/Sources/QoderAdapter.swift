@@ -1,6 +1,6 @@
 import Foundation
 
-final class QoderAdapter: SessionAdapter {
+final class QoderAdapter: SessionAdapter, Sendable {
     let source: SourceName = .qoder
     private let projectsRoot: URL
     private let limits: ParserLimits

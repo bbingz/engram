@@ -1,6 +1,6 @@
 import Foundation
 
-final class QwenAdapter: SessionAdapter {
+final class QwenAdapter: SessionAdapter, Sendable {
     let source: SourceName = .qwen
     private let projectsRoot: URL
     private let limits: ParserLimits

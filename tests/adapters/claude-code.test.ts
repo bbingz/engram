@@ -295,10 +295,21 @@ describe('ClaudeCodeAdapter', () => {
     });
   });
 
-  it('decodeCwd converts encoded path to real path', () => {
-    // 规则：-- 是 -，单 - 是 /
-    // 注：编码方式是 / → -，字面量 - 保持不变，因此 -- 可能是 /- 或 -/，解码有歧义
-    // 算法：先替换 -- 为占位符，再替换单 - 为 /，再恢复占位符为 -
+  it('decodeCwd round-trips unambiguous paths exactly', () => {
+    // No dash-run ambiguity here: every single '-' is a path separator.
+    expect(ClaudeCodeAdapter.decodeCwd('-Users-example-project')).toBe(
+      '/Users/example/project',
+    );
+    expect(ClaudeCodeAdapter.decodeCwd('-tmp-a-b-c')).toBe('/tmp/a/b/c');
+  });
+
+  it('decodeCwd is intentionally lossy for ambiguous dash-runs (R5-7)', () => {
+    // The encoding maps '/' → '-' and keeps literal '-' verbatim, so a run of
+    // dashes ("[trailing dashes][slash][leading dashes]") cannot be inverted
+    // unambiguously. `--Code--` could be `/-Code-/`, `/-Code/-`, or `/Code-/-`.
+    // We pick ONE consistent disambiguation (every '--' → literal '-'); this
+    // test pins that choice so any future change is deliberate, and must stay
+    // byte-for-byte aligned with the Swift adapter for parity.
     expect(ClaudeCodeAdapter.decodeCwd('-Users-example--Code--project')).toBe(
       '/Users/example-Code-project',
     );

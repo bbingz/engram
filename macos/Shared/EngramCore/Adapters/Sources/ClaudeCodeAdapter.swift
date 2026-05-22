@@ -1,6 +1,6 @@
 import Foundation
 
-final class ClaudeCodeAdapter: SessionAdapter {
+final class ClaudeCodeAdapter: SessionAdapter, Sendable {
     let source: SourceName = .claudeCode
     private let projectsRoot: URL
     private let limits: ParserLimits
@@ -377,7 +377,7 @@ final class ClaudeCodeAdapter: SessionAdapter {
     }
 }
 
-final class ClaudeCodeDerivedSourceAdapter: SessionAdapter {
+final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, Sendable {
     let source: SourceName
     private let base: ClaudeCodeAdapter
 

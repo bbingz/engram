@@ -170,8 +170,16 @@ export class IflowAdapter implements SessionAdapter {
   private async *readLines(filePath: string): AsyncGenerator<string> {
     const stream = createReadStream(filePath, { encoding: 'utf8' });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (line.trim()) yield line;
+    // try/finally so a consumer that breaks early (e.g. limit/offset slicing in
+    // streamMessages) still closes the readline interface + fd — otherwise we
+    // leak descriptors and hit EMFILE when indexing many sessions.
+    try {
+      for await (const line of rl) {
+        if (line.trim()) yield line;
+      }
+    } finally {
+      rl.close();
+      stream.destroy();
     }
   }
 

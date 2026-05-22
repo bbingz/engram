@@ -18,12 +18,18 @@ public actor ServiceWriterGate {
     private let writer: EngramDatabaseWriter
     private let writeSemaphore = ServiceAsyncSemaphore(value: 1)
     private var databaseGeneration = 0
+    // Upper bound a queued write may wait for the gate before giving up. Sized
+    // well above any legitimate single write (which complete in ms) so it only
+    // trips when a holder is genuinely wedged. 0 disables the timeout.
+    private let queueTimeoutNanoseconds: UInt64?
 
     public init(
         databasePath: String,
         runtimeDirectory: URL,
+        queueTimeoutNanoseconds: UInt64? = 60_000_000_000,
         writerFactory: WriterFactory = { try EngramDatabaseWriter(path: $0) }
     ) throws {
+        self.queueTimeoutNanoseconds = (queueTimeoutNanoseconds == 0) ? nil : queueTimeoutNanoseconds
         try Self.validateRuntimeDirectory(runtimeDirectory)
         self.databasePath = databasePath
         lockPath = runtimeDirectory.appendingPathComponent("engram-service.lock").path
@@ -62,7 +68,7 @@ public actor ServiceWriterGate {
         name: String,
         operation: @Sendable (EngramDatabaseWriter) async throws -> Value
     ) async throws -> ServiceWriterGateResult<Value> {
-        try await writeSemaphore.wait()
+        try await writeSemaphore.wait(timeoutNanoseconds: queueTimeoutNanoseconds)
         do {
             try Task.checkCancellation()
             let value = try await operation(writer)
@@ -151,7 +157,13 @@ private actor ServiceAsyncSemaphore {
         permits = value
     }
 
-    func wait() async throws {
+    /// Acquire a permit. If `timeoutNanoseconds` is non-nil, a queued waiter
+    /// that has not been signalled within the window throws
+    /// `EngramServiceError.writerBusy` and removes itself from the queue. This
+    /// prevents a single stuck write (e.g. a hung SQLite/NFS write that never
+    /// calls `signal()`) from wedging every queued write forever — the only
+    /// other escape was Task cancellation, which drops the caller's work.
+    func wait(timeoutNanoseconds: UInt64? = nil) async throws {
         try Task.checkCancellation()
         if permits > 0 {
             permits -= 1
@@ -159,15 +171,32 @@ private actor ServiceAsyncSemaphore {
         }
 
         let id = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                waiters.append(Waiter(id: id, continuation: continuation))
+        let timeoutTask: Task<Void, Never>?
+        if let timeoutNanoseconds {
+            timeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                guard !Task.isCancelled else { return }
+                await self?.timeOut(id: id)
             }
-        } onCancel: {
-            Task {
-                await cancel(id: id)
-            }
+        } else {
+            timeoutTask = nil
         }
+
+        do {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    waiters.append(Waiter(id: id, continuation: continuation))
+                }
+            } onCancel: {
+                Task {
+                    await cancel(id: id)
+                }
+            }
+        } catch {
+            timeoutTask?.cancel()
+            throw error
+        }
+        timeoutTask?.cancel()
         try Task.checkCancellation()
     }
 
@@ -178,6 +207,19 @@ private actor ServiceAsyncSemaphore {
 
         let waiter = waiters.remove(at: index)
         waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func timeOut(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(
+            throwing: EngramServiceError.writerBusy(
+                message: "Timed out waiting for the EngramService write lock"
+            )
+        )
     }
 
     func signal() {

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SkeletonRow: View {
     @State private var shimmer = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 12) {
@@ -18,8 +19,10 @@ struct SkeletonRow: View {
                 .frame(width: 80, height: 14)
         }
         .padding(.vertical, 8)
-        .opacity(shimmer ? 0.4 : 1.0)
-        .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: shimmer)
-        .onAppear { shimmer = true }
+        // Skip the repeatForever display-link animation when the user prefers
+        // reduced motion (also avoids per-row animation cost in that mode).
+        .opacity(reduceMotion ? 0.7 : (shimmer ? 0.4 : 1.0))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: shimmer)
+        .onAppear { if !reduceMotion { shimmer = true } }
     }
 }
