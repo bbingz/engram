@@ -211,17 +211,22 @@ struct EngramServiceRequestEnvelope: Codable, Equatable, Sendable {
     let kind: String
     let command: String
     let payload: Data?
+    /// Per-launch capability token authorizing destructive commands. Optional
+    /// so non-destructive requests (and older clients) stay compatible.
+    let capabilityToken: String?
 
     init(
         requestId: String = UUID().uuidString,
         kind: String = "request",
         command: String,
-        payload: Data? = nil
+        payload: Data? = nil,
+        capabilityToken: String? = nil
     ) {
         self.requestId = requestId
         self.kind = kind
         self.command = command
         self.payload = payload
+        self.capabilityToken = capabilityToken
     }
 
     enum CodingKeys: String, CodingKey {
@@ -229,6 +234,7 @@ struct EngramServiceRequestEnvelope: Codable, Equatable, Sendable {
         case kind
         case command
         case payload
+        case capabilityToken = "capability_token"
     }
 }
 

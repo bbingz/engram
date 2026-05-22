@@ -18,6 +18,25 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
     ) async throws -> EngramServiceResponseEnvelope {
         let socketTimeout = timeout ?? connectTimeout
         let socketPath = self.socketPath
+        // Attach the per-launch capability token for destructive commands so
+        // the service can authorize them. Non-destructive commands are left
+        // untouched. An already-populated token (e.g. from tests) is preserved.
+        let outboundRequest: EngramServiceRequestEnvelope
+        if request.capabilityToken == nil,
+           ServiceCapabilityToken.requiresToken(request.command),
+           let token = ServiceCapabilityToken.load(
+               fromPath: ServiceCapabilityToken.path(forSocketPath: socketPath)
+           ) {
+            outboundRequest = EngramServiceRequestEnvelope(
+                requestId: request.requestId,
+                kind: request.kind,
+                command: request.command,
+                payload: request.payload,
+                capabilityToken: token
+            )
+        } else {
+            outboundRequest = request
+        }
         // Hold the fd in a box so the cancellation handler can shutdown the
         // socket from outside the detached task. shutdown() unblocks any
         // pending read/write, lets `defer { close }` fire promptly, and
@@ -34,7 +53,7 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
             }
             try Self.setSocketTimeout(fd, seconds: socketTimeout)
 
-            let encoded = try JSONEncoder().encode(request)
+            let encoded = try JSONEncoder().encode(outboundRequest)
             try Self.writeFrame(encoded, to: fd)
             let responseData = try Self.readFrame(from: fd)
             do {
@@ -176,6 +195,14 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
     }
 
     static func writeFrame(_ data: Data, to fd: Int32) throws {
+        // Symmetric guard with readFrame: reject oversized payloads before the
+        // UInt32 length cast so a too-large frame is a clean error rather than
+        // a silently truncated / overflowed length prefix.
+        guard data.count > 0, data.count <= maximumFrameLength else {
+            throw EngramServiceError.invalidRequest(
+                message: "Service frame length \(data.count) exceeds maximum \(maximumFrameLength)"
+            )
+        }
         var length = UInt32(data.count).bigEndian
         try withUnsafeBytes(of: &length) { try writeAll($0, to: fd) }
         try data.withUnsafeBytes { try writeAll($0, to: fd) }
@@ -267,6 +294,14 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
                 guard Darwin.bind(fd, pointer, length) == 0 else {
                     throw EngramServiceError.serviceUnavailable(message: "Cannot bind EngramService socket")
                 }
+            }
+            // SEC-M1: restrict the socket inode to the owner (0600). The parent
+            // directory is already 0700, but tightening the socket itself stops
+            // any other local user from connecting even if the directory mode
+            // ever loosened. macOS does not honor fchmod() on an AF_UNIX socket
+            // fd, so chmod() the bound path instead.
+            guard chmod(path, 0o600) == 0 else {
+                throw EngramServiceError.serviceUnavailable(message: "Cannot restrict EngramService socket permissions")
             }
             guard listen(fd, 16) == 0 else {
                 throw EngramServiceError.serviceUnavailable(message: "Cannot listen on EngramService socket")

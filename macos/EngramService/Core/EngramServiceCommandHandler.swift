@@ -881,6 +881,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         _ request: EngramServiceProjectMoveRequest,
         writer: EngramDatabaseWriter
     ) async throws -> EngramServiceProjectMoveResult {
+        // SEC-C2: confine before any filesystem work. force never relaxes this.
+        try validateProjectMovePaths(src: request.src, dst: request.dst)
         let result = try await ProjectMoveOrchestrator.run(
             writer: writer,
             options: RunProjectMoveOptions(
@@ -901,6 +903,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         _ request: EngramServiceProjectArchiveRequest,
         writer: EngramDatabaseWriter
     ) async throws -> EngramServiceProjectMoveResult {
+        // SEC-C2: confine the caller-supplied source before resolving an
+        // archive target. force never relaxes this.
+        try validateProjectPathConfined(request.src, label: "source")
         // 1. Resolve the archive target. Errors here surface as
         //    ArchiveError.* (LocalizedError) so the IPC payload's `error`
         //    column captures the human-readable message rather than a
@@ -913,6 +918,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 forceCategory: request.archiveTo
             )
         )
+        // SEC-C2: confine the resolved archive destination as well, in case a
+        // future archive-root override could escape the home directory.
+        try validateProjectPathConfined(suggestion.dst, label: "archive destination")
         // 2. Make sure _archive/<category>/ exists before SafeMoveDir runs;
         //    rename(2) refuses to create intermediate parents.
         if !request.dryRun {
@@ -976,6 +984,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         // responsible for serialising the payload as JSON.
         let payloadData = Data(request.yaml.utf8)
         let document = try Batch.parseJSON(payloadData)
+        // SEC-C2: confine every operation before the batch driver runs. A
+        // single out-of-root src/dst rejects the whole batch up front rather
+        // than letting the orchestrator touch the filesystem.
+        for operation in document.operations {
+            try validateProjectPathConfined(operation.src, label: "source")
+            if let dst = operation.dst, !dst.isEmpty {
+                try validateProjectPathConfined(dst, label: "destination")
+            }
+        }
         let result = await Batch.run(
             document,
             writer: writer,
@@ -1191,6 +1208,49 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         )
     }
 
+    /// SEC-C2: Confine project move/archive/batch operations to paths that
+    /// canonicalize under $HOME and are not inside a sensitive subtree. This
+    /// runs at the IPC command boundary, BEFORE the orchestrator touches the
+    /// filesystem, so a malicious or buggy caller cannot rename/move arbitrary
+    /// directories (e.g. /etc, ~/.ssh) by supplying an out-of-root src/dst.
+    ///
+    /// `force` only relaxes the orchestrator's git-dirty guard; it never
+    /// relaxes this path confinement.
+    private static func validateProjectPathConfined(_ rawPath: String, label: String) throws {
+        let home = homeDirectoryPath()
+        let expanded = ProjectPath.expandHome(rawPath)
+        guard expanded.hasPrefix("/") else {
+            throw EngramServiceError.invalidRequest(
+                message: "\(label) path must be absolute and under the home directory"
+            )
+        }
+        let standardized = URL(fileURLWithPath: expanded).standardizedFileURL.path
+        guard standardized == home || standardized.hasPrefix(home + "/") else {
+            throw EngramServiceError.invalidRequest(
+                message: "\(label) path resolves outside the home directory and is refused"
+            )
+        }
+        if containsSensitivePathComponent(standardized, home: home) {
+            throw EngramServiceError.invalidRequest(
+                message: "\(label) path targets a protected location and is refused"
+            )
+        }
+    }
+
+    private static func validateProjectMovePaths(src: String, dst: String?) throws {
+        try validateProjectPathConfined(src, label: "source")
+        if let dst, !dst.isEmpty {
+            try validateProjectPathConfined(dst, label: "destination")
+        }
+    }
+
+    private static func homeDirectoryPath() -> String {
+        URL(
+            fileURLWithPath: ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory(),
+            isDirectory: true
+        ).standardizedFileURL.path
+    }
+
     private static func isAllowedSessionFilePath(_ path: String, source: String) -> Bool {
         guard path.hasPrefix("/") else { return false }
         let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
@@ -1255,8 +1315,25 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
     private static func containsSensitivePathComponent(_ path: String, home: String) -> Bool {
         let relative = path.dropFirst(home.count).split(separator: "/").map(String.init)
-        let sensitive = Set([".ssh", ".aws", ".gnupg", ".kube", ".docker", ".1password", "Library/Keychains"])
-        return relative.contains { sensitive.contains($0) }
+        // Single-component sensitive directories anywhere under $HOME.
+        let sensitiveSingle: Set<String> = [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".1password"]
+        if relative.contains(where: { sensitiveSingle.contains($0) }) {
+            return true
+        }
+        // Multi-component sensitive sequences, e.g. ~/Library/Keychains. The
+        // previous code matched single components against the compound string
+        // "Library/Keychains", which never matched and left keychains exposed.
+        let sensitiveSequences: [[String]] = [
+            ["Library", "Keychains"],
+        ]
+        for sequence in sensitiveSequences where relative.count >= sequence.count {
+            for start in 0...(relative.count - sequence.count) {
+                if Array(relative[start..<(start + sequence.count)]) == sequence {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private static func handoffMarkdownBrief(projectName: String, cwd: String, rows: [Row]) -> String {

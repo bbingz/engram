@@ -19,6 +19,12 @@ final class UnixSocketServiceServer: Sendable {
     }
 
     func start() throws {
+        // SEC-H1: write a fresh per-launch capability token next to the socket
+        // before we begin accepting connections. Trusted same-user clients read
+        // this 0600 file and attach it to destructive requests.
+        let tokenPath = ServiceCapabilityToken.path(forSocketPath: socketPath)
+        let capabilityToken = try ServiceCapabilityToken.generateAndWrite(toPath: tokenPath)
+
         let descriptor = try state.withLock { state -> Int32? in
             guard state.descriptor < 0 else { return nil }
             let descriptor = try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)
@@ -30,6 +36,7 @@ final class UnixSocketServiceServer: Sendable {
         let handler = handler
         let connectionLimiter = connectionLimiter
         let state = state
+        let serviceEuid = geteuid()
 
         let acceptTask = Task.detached {
             while !Task.isCancelled {
@@ -42,7 +49,32 @@ final class UnixSocketServiceServer: Sendable {
                 let client = accept(descriptor, nil, nil)
                 if client < 0 {
                     await connectionLimiter.signal()
-                    break
+                    let acceptErrno = errno
+                    // IPC-H1: do not tear down the listener on transient errors.
+                    switch acceptErrno {
+                    case EINTR, ECONNABORTED:
+                        // Interrupted / aborted before completion — retry now.
+                        continue
+                    case EMFILE, ENFILE:
+                        // Descriptor exhaustion — back off briefly, then retry.
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        continue
+                    case EBADF, EINVAL:
+                        // Listener was closed by stop(); exit the loop.
+                        return
+                    default:
+                        // Unknown transient error: retry rather than wedging the
+                        // whole service on a single failed accept.
+                        continue
+                    }
+                }
+                // SEC-H1: reject peers whose effective uid differs from the
+                // service euid. A Unix socket inherits the directory/inode
+                // permissions, but an explicit getpeereid check is a hard gate.
+                if !Self.peerIsAuthorized(client, serviceEuid: serviceEuid) {
+                    close(client)
+                    await connectionLimiter.signal()
+                    continue
                 }
                 try? UnixSocketEngramServiceTransport.disableSigPipe(client)
                 try? UnixSocketEngramServiceTransport.setSocketTimeout(client, seconds: Self.clientTimeoutSeconds)
@@ -55,20 +87,26 @@ final class UnixSocketServiceServer: Sendable {
                         }
                         Task { await connectionLimiter.signal() }
                     }
+                    // IPC-M1: two-stage decode so an error reply can carry the
+                    // real request id when the envelope was decodable. Falling
+                    // back to "unknown" only when no id is extractable avoids
+                    // tripping the client's response-id match guard.
+                    var decodedRequestId: String?
                     do {
                         let frame = try UnixSocketEngramServiceTransport.readFrame(from: client)
                         let request = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: frame)
+                        decodedRequestId = request.requestId
+                        // SEC-H1: destructive commands require a matching token.
+                        if ServiceCapabilityToken.requiresToken(request.command),
+                           request.capabilityToken != capabilityToken {
+                            throw EngramServiceError.unauthorized(
+                                message: "Missing or invalid capability token for \(request.command)"
+                            )
+                        }
                         let response = await handler(request)
                         try UnixSocketEngramServiceTransport.writeFrame(try JSONEncoder().encode(response), to: client)
                     } catch {
-                        let response = EngramServiceResponseEnvelope.failure(
-                            requestId: "unknown",
-                            error: EngramServiceErrorEnvelope(
-                                name: "InvalidRequest",
-                                message: error.localizedDescription,
-                                retryPolicy: "never"
-                            )
-                        )
+                        let response = Self.errorResponse(for: error, requestId: decodedRequestId)
                         try? UnixSocketEngramServiceTransport.writeFrame(try JSONEncoder().encode(response), to: client)
                     }
                 }
@@ -112,10 +150,68 @@ final class UnixSocketServiceServer: Sendable {
             close(snapshot.descriptor)
         }
         _ = unlink(socketPath)
+        // SEC-H1: remove the per-launch capability token so a stale token from
+        // a previous launch cannot be reused against a future one.
+        _ = unlink(ServiceCapabilityToken.path(forSocketPath: socketPath))
     }
 
     deinit {
         stop()
+    }
+
+    /// SEC-H1: verify the connected peer's effective uid matches the service.
+    static func peerIsAuthorized(_ fd: Int32, serviceEuid: uid_t) -> Bool {
+        var peerEuid: uid_t = 0
+        var peerEgid: gid_t = 0
+        guard getpeereid(fd, &peerEuid, &peerEgid) == 0 else {
+            return false
+        }
+        return peerEuid == serviceEuid
+    }
+
+    /// IPC-M1: build an error reply, preferring the decoded request id and only
+    /// falling back to "unknown" when no id is available. Maps known service
+    /// errors to their envelope names so e.g. unauthorized stays unauthorized.
+    static func errorResponse(
+        for error: Error,
+        requestId: String?
+    ) -> EngramServiceResponseEnvelope {
+        let resolvedId = requestId ?? "unknown"
+        if let serviceError = error as? EngramServiceError {
+            return .failure(requestId: resolvedId, error: Self.errorEnvelope(serviceError))
+        }
+        return .failure(
+            requestId: resolvedId,
+            error: EngramServiceErrorEnvelope(
+                name: "InvalidRequest",
+                message: error.localizedDescription,
+                retryPolicy: "never"
+            )
+        )
+    }
+
+    private static func errorEnvelope(_ error: EngramServiceError) -> EngramServiceErrorEnvelope {
+        switch error {
+        case .serviceUnavailable(let message):
+            return EngramServiceErrorEnvelope(name: "ServiceUnavailable", message: message, retryPolicy: "safe")
+        case .transportClosed(let message):
+            return EngramServiceErrorEnvelope(name: "TransportClosed", message: message, retryPolicy: "safe")
+        case .invalidRequest(let message):
+            return EngramServiceErrorEnvelope(name: "InvalidRequest", message: message, retryPolicy: "never")
+        case .unauthorized(let message):
+            return EngramServiceErrorEnvelope(name: "Unauthorized", message: message, retryPolicy: "never")
+        case .writerBusy(let message):
+            return EngramServiceErrorEnvelope(name: "WriterBusy", message: message, retryPolicy: "safe")
+        case .unsupportedProvider(let provider):
+            return EngramServiceErrorEnvelope(
+                name: "UnsupportedProvider",
+                message: "Unsupported provider: \(provider)",
+                retryPolicy: "none",
+                details: ["provider": .string(provider)]
+            )
+        case .commandFailed(let name, let message, let retryPolicy, let details):
+            return EngramServiceErrorEnvelope(name: name, message: message, retryPolicy: retryPolicy, details: details)
+        }
     }
 }
 

@@ -997,12 +997,37 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
 
-        // 1. projectMove: missing src is OrchestratorError (not unsupported).
+        let home = FileManager.default.homeDirectoryForCurrentUser
+
+        // 1a. SEC-C2: out-of-home src is refused at the boundary BEFORE the
+        //     pipeline, even with force=true. /tmp is outside HOME.
         do {
             _ = try await client.projectMove(
                 EngramServiceProjectMoveRequest(
                     src: "/tmp/no-such-engram-src-\(UUID().uuidString)",
                     dst: "/tmp/no-such-engram-dst-\(UUID().uuidString)",
+                    dryRun: false,
+                    force: true,
+                    auditNote: "fixture",
+                    actor: "test"
+                )
+            )
+            XCTFail("out-of-home projectMove must be refused")
+        } catch let error as EngramServiceError {
+            guard case .invalidRequest(let message) = error else {
+                XCTFail("expected invalidRequest confinement error, got \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("outside the home directory"), message)
+        }
+
+        // 1b. In-home but absent src reaches the pipeline and surfaces a real
+        //     OrchestratorError (not UnsupportedNativeCommand, not confinement).
+        do {
+            _ = try await client.projectMove(
+                EngramServiceProjectMoveRequest(
+                    src: home.appendingPathComponent(".engram-test-missing-src-\(UUID().uuidString)").path,
+                    dst: home.appendingPathComponent(".engram-test-missing-dst-\(UUID().uuidString)").path,
                     dryRun: false,
                     force: false,
                     auditNote: "fixture",

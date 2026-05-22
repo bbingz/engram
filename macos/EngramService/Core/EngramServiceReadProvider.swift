@@ -606,12 +606,17 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
         return out
     }
+    /// Upper bound on the search snippet length returned over IPC. `f.content`
+    /// in `sessions_fts` holds the full session text, which can be megabytes;
+    /// returning it verbatim per result can blow the transport frame cap and
+    /// waste bandwidth. Bound it server-side to a preview-sized window.
+    static let maxSnippetLength = 600
 
     private func item(from row: Row) -> EngramServiceSearchResponse.Item {
         EngramServiceSearchResponse.Item(
             id: row["id"],
             title: (row["generated_title"] as String?) ?? (row["summary"] as String?),
-            snippet: row["snippet"] as String?,
+            snippet: Self.truncateSnippet(row["snippet"] as String?),
             matchType: "keyword",
             score: nil,
             source: row["source"] as String?,
@@ -638,6 +643,13 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             suggestedParentId: row["suggested_parent_id"] as String?,
             linkSource: row["link_source"] as String?
         )
+    }
+
+    static func truncateSnippet(_ snippet: String?) -> String? {
+        guard let snippet else { return nil }
+        guard snippet.count > maxSnippetLength else { return snippet }
+        let prefix = snippet.prefix(maxSnippetLength)
+        return String(prefix) + "…"
     }
 
     private func resumeCLICommand(
