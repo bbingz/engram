@@ -27,7 +27,7 @@ public struct WatchBatchConfig: Equatable, Sendable {
         return WatchBatchConfig(
             writeStabilityMilliseconds: object?["watchWriteStabilityMs"] as? Int ?? 2_000,
             pollMilliseconds: object?["watchWriteStabilityPollMs"] as? Int ?? 500,
-            maxDrainBatchSize: object?["startupParentBackfillLimit"] as? Int ?? 500
+            maxDrainBatchSize: object?["watchMaxDrainBatchSize"] as? Int ?? 500
         )
     }
 }

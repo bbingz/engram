@@ -424,14 +424,16 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         let matches = regex.matches(in: prefix, range: NSRange(prefix.startIndex..., in: prefix))
         var counts: [String: Int] = [:]
         for match in matches {
-            guard let range = Range(match.range(at: 1), in: prefix) else { continue }
+            guard let range = Range(match.range, in: prefix) else { continue }
             counts[String(prefix[range]), default: 0] += 1
         }
         guard let top = counts.sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first else {
             return ""
         }
-        let user = FileManager.default.homeDirectoryForCurrentUser.lastPathComponent
-        return "/Users/\(user)/-Code-/\(top.key)"
+        // Return the path exactly as it appears in the transcript. Do NOT
+        // reconstruct it under the current user's home / a hardcoded layout —
+        // the source session may belong to a different user or directory shape.
+        return top.key
     }
 
     private static func isoString(_ date: Date) -> String {

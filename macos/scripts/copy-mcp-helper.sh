@@ -20,13 +20,15 @@ ditto "$SRC" "$DEST"
 
 # Sign the helper with Hardened Runtime. Request a secure timestamp for real
 # (non ad-hoc) identities; ad-hoc signing ("-") cannot obtain a timestamp.
-sign_args=(--force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --options runtime)
-if [ "${EXPANDED_CODE_SIGN_IDENTITY:-}" != "-" ]; then
-  sign_args+=(--timestamp)
-else
-  sign_args+=(--timestamp=none)
-fi
+# Guard FIRST: when signing is disabled (CI / test builds) Xcode does not set
+# EXPANDED_CODE_SIGN_IDENTITY, so reference it only inside this check (set -u).
 if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+  sign_args=(--force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --options runtime)
+  if [ "$EXPANDED_CODE_SIGN_IDENTITY" != "-" ]; then
+    sign_args+=(--timestamp)
+  else
+    sign_args+=(--timestamp=none)
+  fi
   codesign "${sign_args[@]}" "$DEST"
 fi
 echo "[copy-mcp-helper] EngramMCP → $DEST"

@@ -14,18 +14,24 @@ if [ ! -f "$SRC" ]; then
   exit 1
 fi
 
-# Build the codesign argument list once. Hardened Runtime (--options runtime) is
-# required for notarization; a secure timestamp (--timestamp) is required too, but
-# only obtainable with a real identity. Ad-hoc signing ("-") falls back to no timestamp.
-sign_args=(--force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --options runtime)
-if [ "${EXPANDED_CODE_SIGN_IDENTITY:-}" != "-" ]; then
-  sign_args+=(--timestamp)
-else
-  sign_args+=(--timestamp=none)
-fi
 sign_enabled() {
   [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]
 }
+
+# Build the codesign argument list once. Hardened Runtime (--options runtime) is
+# required for notarization; a secure timestamp (--timestamp) is required too, but
+# only obtainable with a real identity. Ad-hoc signing ("-") falls back to no timestamp.
+# Only reference EXPANDED_CODE_SIGN_IDENTITY when signing is active — Xcode leaves
+# it unset for CODE_SIGNING_ALLOWED=NO builds and `set -u` would otherwise abort.
+sign_args=()
+if sign_enabled; then
+  sign_args=(--force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --options runtime)
+  if [ "$EXPANDED_CODE_SIGN_IDENTITY" != "-" ]; then
+    sign_args+=(--timestamp)
+  else
+    sign_args+=(--timestamp=none)
+  fi
+fi
 
 mkdir -p "$DEST_DIR"
 ditto "$SRC" "$DEST"

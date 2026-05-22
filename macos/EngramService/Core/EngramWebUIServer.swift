@@ -8,11 +8,14 @@ import EngramCoreRead
 
 enum WebUIServerError: Error, CustomStringConvertible {
     case missingAuthToken
+    case databaseClosed
 
     var description: String {
         switch self {
         case .missingAuthToken:
             return "Web UI requires a per-launch auth token; none was provisioned"
+        case .databaseClosed:
+            return "The Web UI database handle was released during shutdown."
         }
     }
 }
@@ -419,17 +422,6 @@ final class EngramWebUIServer: @unchecked Sendable {
             return "The transcript changed while Engram was reading it. Refresh the page to retry."
         default:
             return "The transcript could not be parsed: \(failure.rawValue)."
-        }
-    }
-}
-
-private enum WebUIServerError: LocalizedError {
-    case databaseClosed
-
-    var errorDescription: String? {
-        switch self {
-        case .databaseClosed:
-            return "The Web UI database handle was released during shutdown."
         }
     }
 }

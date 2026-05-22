@@ -111,9 +111,12 @@ enum CascadeDiscovery {
 
         do {
             try process.run()
+            // Drain stdout BEFORE waiting: `ps aux` / `lsof` output can exceed
+            // the ~64KB pipe buffer, which would block the child on write while
+            // the parent blocks in waitUntilExit() — a classic pipe deadlock.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)
         } catch {
             return nil
