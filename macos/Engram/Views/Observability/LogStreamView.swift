@@ -9,9 +9,10 @@ struct LogStreamView: View {
     @State private var selectedModule: String = "All"
     @State private var availableModules: [String] = []
     @State private var isLoading = true
-    @State private var cancellable: AnyDatabaseCancellable?
+    @State private var logsUnavailable = false
 
     private let levels = ["All", "debug", "info", "warn", "error"]
+    private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,6 +46,13 @@ struct LogStreamView: View {
 
             Divider().opacity(0.3)
 
+            if logsUnavailable {
+                // OBS-C1: do not show a false-empty log when OSLogStore is blocked.
+                AlertBanner(message: "System log not available under current permissions.")
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
+
             // Log list
             if isLoading && logs.isEmpty {
                 Spacer()
@@ -71,40 +79,36 @@ struct LogStreamView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("observability_logStream")
-        .onAppear { startObservation() }
-        .onDisappear { cancellable?.cancel(); cancellable = nil }
-        .onChange(of: selectedLevel) { _, _ in startObservation() }
-        .onChange(of: selectedModule) { _, _ in startObservation() }
+        .task { await reload() }
+        .onReceive(timer) { _ in Task { await reload() } }
+        .onChange(of: selectedLevel) { _, _ in Task { await reload() } }
+        .onChange(of: selectedModule) { _, _ in Task { await reload() } }
     }
 
-    private func startObservation() {
-        // Cancel any existing observation before starting a new one
-        cancellable?.cancel()
+    private func reload() async {
+        // OBS-C1: stream Engram's own os_log entries (com.engram.*) from the
+        // unified log instead of the never-written `logs` table. Off-main (UI-C1/C2).
         isLoading = true
+        let level = selectedLevel
+        let module = selectedModule
         do {
-            let level = selectedLevel
-            let module = selectedModule
-            cancellable = try db.observeLogs(
-                level: level,
-                module: module,
-                limit: 200,
-                onError: { error in
-                    EngramLogger.error("LogStreamView observation failed", module: .ui, error: error)
-                },
-                onChange: { result in
-                    Task { @MainActor in
-                        self.logs = result.entries
-                        if self.availableModules.isEmpty {
-                            self.availableModules = result.modules
-                        }
-                        self.isLoading = false
-                    }
-                }
-            )
+            let result = try await Task.detached {
+                try OSLogReader.recentLogs(level: level, module: module, hours: 24, limit: 200)
+            }.value
+            // Most recent first for the list.
+            logs = result.entries.reversed()
+            if availableModules.isEmpty {
+                availableModules = result.modules
+            }
+            logsUnavailable = false
+        } catch is OSLogReaderError {
+            logsUnavailable = true
+            logs = []
         } catch {
-            EngramLogger.error("LogStreamView observation start failed", module: .ui, error: error)
-            isLoading = false
+            EngramLogger.error("LogStreamView load failed", module: .ui, error: error)
+            logs = []
         }
+        isLoading = false
     }
 }
 

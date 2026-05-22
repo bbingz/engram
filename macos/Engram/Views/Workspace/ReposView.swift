@@ -75,13 +75,20 @@ struct ReposView: View {
     private func loadData() async {
         isLoading = true; error = nil
         defer { isLoading = false }
+        // UI-C1/C2: run the repo list + N+1 per-repo sparkline reads in one detached
+        // block so the whole fan-out stays off the main thread.
+        let db = self.db
         do {
-            repos = try db.listGitRepos()
-            var map = [String: [Int]]()
-            for repo in repos {
-                map[repo.path] = (try? db.sparklineData(for: repo.path)) ?? [Int](repeating: 0, count: 7)
-            }
-            sparklines = map
+            let loaded = try await Task.detached { () -> ([GitRepo], [String: [Int]]) in
+                let repos = try db.listGitRepos()
+                var map = [String: [Int]]()
+                for repo in repos {
+                    map[repo.path] = (try? db.sparklineData(for: repo.path)) ?? [Int](repeating: 0, count: 7)
+                }
+                return (repos, map)
+            }.value
+            repos = loaded.0
+            sparklines = loaded.1
         } catch {
             self.error = error.localizedDescription
         }

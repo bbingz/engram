@@ -40,5 +40,24 @@ struct HeatmapGrid: View {
                 }
             }
         }
+        // UI-H3: expose the per-hour activity to VoiceOver as one labeled element.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Activity by hour")
+        .accessibilityValue(accessibilityValueText)
+    }
+
+    private func hourName(_ hour: Int) -> String {
+        switch hour {
+        case 0: return "12am"
+        case 1..<12: return "\(hour)am"
+        case 12: return "12pm"
+        default: return "\(hour - 12)pm"
+        }
+    }
+
+    private var accessibilityValueText: String {
+        let active = data.enumerated().filter { $0.element > 0 }
+        guard !active.isEmpty else { return "No activity" }
+        return active.map { "\(hourName($0.offset)): \($0.element)" }.joined(separator: ", ")
     }
 }

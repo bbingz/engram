@@ -39,6 +39,16 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(db.path, dbPath)
     }
 
+    // UI-M4: `journalMode()` must report the real PRAGMA value, not a hardcoded
+    // "WAL Mode: OK". SystemHealthView drives its journal-mode status row from it.
+    func testJournalModeReportsRealPragmaValue() throws {
+        let mode = try db.journalMode()
+        // A freshly opened SQLite DB reports a concrete journal mode (e.g. "wal",
+        // "delete", "memory"); it must never be the empty/"unknown" placeholder.
+        XCTAssertFalse(mode.isEmpty)
+        XCTAssertNotEqual(mode, "unknown")
+    }
+
     @MainActor
     func testReadInBackgroundThrowsWhenNotOpen() throws {
         let closedDb = DatabaseManager(path: "/tmp/nonexistent-\(UUID().uuidString).sqlite")

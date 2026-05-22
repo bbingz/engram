@@ -15,12 +15,16 @@ struct SessionsPageView: View {
     @State private var sourceFilter: String? = nil
     @State private var availableSources: [String] = []
     @State private var isLoading = true
+    @State private var loadError: String? = nil
 
     private let timeOptions = ["Today", "This Week", "This Month", "All Time"]
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let loadError {
+                    AlertBanner(message: "Failed to load sessions: \(loadError)")
+                }
                 HStack(spacing: 12) {
                     KPICard(value: "\(totalCount)", label: "Total Sessions")
                         .accessibilityIdentifier("sessions_kpiCard_total")
@@ -126,8 +130,10 @@ struct SessionsPageView: View {
             totalMessages = data.3.totalMessages
             avgDurationSeconds = data.3.avgDurationSeconds
             availableSources = data.4
+            loadError = nil
         } catch {
             EngramLogger.error("SessionsPage load failed", module: .ui, error: error)
+            loadError = error.localizedDescription
         }
     }
 

@@ -64,6 +64,9 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         self.updateBadge()
         // Re-update whenever totalSessions changes (Observation framework)
         self.observeTotalSessions()
+        // OBS-O2: reflect degraded/error service status in the menu bar.
+        self.updateStatusIndicator()
+        self.observeServiceStatus()
 
         // Poll live sessions every 10s for badge update
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
@@ -310,6 +313,39 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 self?.updateBadge()
                 self?.observeTotalSessions()
             }
+        }
+    }
+
+    /// OBS-O2: when indexing is degraded/errored, show a warning glyph + tooltip
+    /// in the menu bar so the failure is no longer invisible.
+    private func observeServiceStatus() {
+        withObservationTracking {
+            _ = serviceStatusStore.status
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.updateStatusIndicator()
+                self?.observeServiceStatus()
+            }
+        }
+    }
+
+    private func updateStatusIndicator() {
+        guard let btn = statusItem.button else { return }
+        switch serviceStatusStore.status {
+        case .degraded(let message), .error(let message):
+            let warn = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                               accessibilityDescription: "Engram service problem")
+            warn?.size = NSSize(width: 17, height: 15)
+            btn.image = warn
+            btn.toolTip = message
+        default:
+            let img = NSImage(named: "MenuBarIcon")
+                ?? NSImage(systemSymbolName: "brain.head.profile",
+                           accessibilityDescription: "Engram")
+            img?.size = NSSize(width: 19, height: 15)
+            img?.isTemplate = true
+            btn.image = img
+            btn.toolTip = serviceStatusStore.displayString
         }
     }
 

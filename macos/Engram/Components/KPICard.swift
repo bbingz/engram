@@ -29,5 +29,15 @@ struct KPICard: View {
                 .stroke(Theme.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        // UI-H3: combine the value+label (and optional delta) into one VoiceOver
+        // element with a real label/value instead of two disconnected strings.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(LocalizedStringKey(label))
+        .accessibilityValue(accessibilityValueText)
+    }
+
+    private var accessibilityValueText: String {
+        guard let delta else { return value }
+        return "\(value), \(deltaPositive ? "up" : "down") \(delta)"
     }
 }

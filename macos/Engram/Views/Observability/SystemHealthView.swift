@@ -4,8 +4,11 @@ import GRDB
 
 struct SystemHealthView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @State private var dbSize: Int64 = 0
-    @State private var tableCounts: [(table: String, count: Int)] = []
+    @State private var walMode: String? = nil
+    @State private var errorCount24h: Int = 0
+    @State private var logsAvailable = true
     @State private var isLoading = true
 
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
@@ -18,42 +21,41 @@ struct SystemHealthView: View {
 
                 HStack(spacing: 12) {
                     KPICard(value: formatBytes(dbSize), label: "DB Size")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Database size")
+                        .accessibilityValue(formatBytes(dbSize))
                     KPICard(value: db.path.components(separatedBy: "/").last ?? "index.sqlite", label: "DB File")
                 }
 
-                // Table row counts
-                SectionHeader(icon: "tablecells", title: "Table Row Counts", badge: nil)
-
-                if tableCounts.isEmpty && !isLoading {
-                    Text("No tables found")
-                        .font(.caption)
-                        .foregroundStyle(Theme.secondaryText)
-                } else {
-                    LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
-                    ], spacing: 8) {
-                        ForEach(tableCounts, id: \.table) { item in
-                            HStack {
-                                Text(item.table)
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                Spacer()
-                                Text(formatCount(item.count))
-                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(Theme.secondaryText)
-                            }
-                            .padding(8)
-                            .background(Theme.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                        }
-                    }
-                }
-
-                // Status indicators
+                // Status indicators (driven by real signal, not hardcoded)
                 SectionHeader(icon: "heart.fill", title: "Status", badge: nil)
                 VStack(alignment: .leading, spacing: 8) {
                     StatusRow(label: "SQLite Database", status: dbSize > 0 ? .ok : .warning)
-                    StatusRow(label: "WAL Mode", status: .ok)
+                    // UI-M4: query PRAGMA journal_mode rather than hardcoding "OK".
+                    StatusRow(
+                        label: "Journal Mode" + (walMode.map { " (\($0))" } ?? ""),
+                        status: walMode?.lowercased() == "wal" ? .ok : .warning
+                    )
+                    // OBS-O2: real index-scan health from the service status store.
+                    StatusRow(label: indexScanLabel, status: indexScanStatus)
+                }
+
+                // Errors (last 24h) from the unified log — OBS-C1.
+                SectionHeader(icon: "exclamationmark.triangle", title: "Recent Errors", badge: "24h")
+                if logsAvailable {
+                    StatusRow(
+                        label: "Errors logged (com.engram.*)",
+                        status: errorCount24h == 0 ? .ok : (errorCount24h > 10 ? .error : .warning)
+                    )
+                    Text("\(errorCount24h) error-level entries in the unified log over the last 24h.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                } else {
+                    // OBS-C1: if OSLogStore is not accessible, say so honestly
+                    // rather than rendering a false "all clear".
+                    Text("System log not available under current permissions.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
                 }
             }
             .padding(24)
@@ -64,15 +66,44 @@ struct SystemHealthView: View {
         .onReceive(timer) { _ in Task { await loadData() } }
     }
 
+    private var indexScanLabel: String {
+        switch serviceStatusStore.status {
+        case .degraded(let message): return "Index scan — \(message)"
+        case .error(let message): return "Service error — \(message)"
+        case .running: return "Index scan healthy"
+        case .starting: return "Service starting"
+        case .stopped: return "Service stopped"
+        }
+    }
+
+    private var indexScanStatus: StatusRow.HealthStatus {
+        switch serviceStatusStore.status {
+        case .running: return .ok
+        case .starting: return .warning
+        case .degraded: return .warning
+        case .stopped, .error: return .error
+        }
+    }
+
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
-        dbSize = db.dbSizeBytes()
-        do {
-            tableCounts = try db.observabilityTableCounts()
-        } catch {
-            EngramLogger.error("SystemHealthView load failed", module: .ui, error: error)
-        }
+        let db = self.db
+        // UI-C1/C2 + OBS-C1: run DB PRAGMA + OSLogStore reads off the main thread.
+        let loaded = await Task.detached { () -> (Int64, String?, Int, Bool) in
+            let size = db.dbSizeBytes()
+            let wal = (try? db.journalMode())
+            do {
+                let count = try OSLogReader.countErrors(hours: 24)
+                return (size, wal, count, true)
+            } catch {
+                return (size, wal, 0, false)
+            }
+        }.value
+        dbSize = loaded.0
+        walMode = loaded.1
+        errorCount24h = loaded.2
+        logsAvailable = loaded.3
     }
 
     private func formatBytes(_ bytes: Int64) -> String {
@@ -84,15 +115,6 @@ struct SystemHealthView: View {
             return String(format: "%.1f KB", Double(bytes) / 1024)
         }
         return "\(bytes) B"
-    }
-
-    private func formatCount(_ count: Int) -> String {
-        if count > 1_000_000 {
-            return String(format: "%.1fM", Double(count) / 1_000_000)
-        } else if count > 1_000 {
-            return String(format: "%.1fK", Double(count) / 1_000)
-        }
-        return "\(count)"
     }
 }
 
@@ -143,5 +165,8 @@ private struct StatusRow: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(status.color)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(status.text)
     }
 }

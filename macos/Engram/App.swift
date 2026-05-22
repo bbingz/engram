@@ -128,7 +128,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             serviceStatusStore.apply(.starting)
             do {
                 let serviceConfiguration = environment.serviceLaunchConfiguration()
-                try serviceLauncher.start(configuration: serviceConfiguration)
+                try serviceLauncher.start(
+                    configuration: serviceConfiguration,
+                    onEvent: { [serviceStatusStore] event in
+                        Self.applyServiceEvent(event, to: serviceStatusStore)
+                    }
+                )
                 startServiceStatusObservation()
                 serviceLauncher.startHealthMonitor(
                     configuration: serviceConfiguration,
@@ -222,7 +227,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 for try await event in serviceClient.events() {
                     await MainActor.run {
-                        serviceStatusStore.apply(event)
+                        Self.applyServiceEvent(event, to: serviceStatusStore)
                     }
                 }
             } catch is CancellationError {
@@ -233,6 +238,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// OBS-O2: route service events through one place so `index_error` (which the
+    /// shared `EngramServiceStatusStore.apply(event:)` does not handle — it falls
+    /// to `default: break`) surfaces as a degraded status instead of vanishing.
+    /// On a subsequent successful index (`indexed`/`ready`) the store's own
+    /// handling restores `.running`, clearing the degraded state.
+    @MainActor
+    static func applyServiceEvent(_ event: EngramServiceEvent, to store: EngramServiceStatusStore) {
+        if event.event == "index_error" {
+            let detail = event.message ?? "indexing failed"
+            store.apply(.degraded(message: "Last index scan failed: \(detail)"))
+            return
+        }
+        store.apply(event)
     }
 
     // MARK: - Onboarding

@@ -215,6 +215,8 @@ struct HomeView: View {
             alertMessage = nil
         } catch {
             EngramLogger.error("HomeView load failed", module: .ui, error: error)
+            // UI-M1: surface the failure to the user instead of only logging.
+            alertMessage = "Failed to load dashboard: \(error.localizedDescription)"
         }
     }
 
