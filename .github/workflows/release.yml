@@ -1,0 +1,81 @@
+name: Release Gate
+
+# Tag-gated release verification. Runs on any pushed tag.
+# We cannot notarize in CI (no Apple secrets), so this lane builds + exports with
+# an ad-hoc identity and runs the IDENTITY-INDEPENDENT checks from
+# macos/scripts/release-verify.sh:
+#   - bundle hygiene (no node / node_modules / dist / daemon.js / index.js / web.js)
+#   - structural sanity (Engram + EngramMCP + EngramService present)
+#   - non-default version
+#   - codesign --verify --deep --strict
+# This catches release-packaging defects (REL-C2 / REL-H bundle hygiene) before a tag ships.
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: read
+
+jobs:
+  release-bundle-gate:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install xcodegen
+        run: brew install xcodegen || true
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ hashFiles('macos/project.yml') }}
+          restore-keys: spm-
+
+      - name: Generate Xcode project
+        run: cd macos && xcodegen generate
+
+      - name: Build test fixtures (needed by the project's resource phases)
+        run: |
+          npm ci
+          npm run build
+          npm run generate:fixtures
+
+      - name: Archive (ad-hoc identity)
+        run: |
+          cd macos
+          xcodebuild archive \
+            -project Engram.xcodeproj \
+            -scheme Engram \
+            -configuration Release \
+            -archivePath build/Engram.xcarchive \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
+
+      - name: Export ad-hoc app from archive
+        run: |
+          cd macos
+          # Pull the app out of the archive directly. A developer-id exportArchive
+          # needs a real cert, which CI does not have; the archived app is already
+          # ad-hoc signed and is sufficient for identity-independent verification.
+          mkdir -p build/EngramExport
+          ditto build/Engram.xcarchive/Products/Applications/Engram.app \
+                build/EngramExport/Engram.app
+
+      - name: Run release-verify (ad-hoc, identity-independent checks)
+        run: |
+          cd macos
+          ./scripts/release-verify.sh build/EngramExport/Engram.app \
+            --adhoc \
+            --expected-build "${{ github.run_number }}"

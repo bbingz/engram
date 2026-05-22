@@ -23,6 +23,7 @@
     "screenshots:compare": "tsx scripts/screenshot-compare.ts",
     "baselines:generate": "tsx scripts/baselines-generate.ts",
     "baselines:update": "tsx scripts/baselines-update.ts",
+    "release:verify": "bash macos/scripts/release-verify.sh",
     "lint": "biome check .",
     "lint:fix": "biome check . --write",
     "knip": "knip --no-config-hints",

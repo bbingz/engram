@@ -12,5 +12,8 @@
     <true/>
     <key>uploadBitcode</key>
     <false/>
+    <!-- Required for notarization: export the Developer ID app with Hardened Runtime. -->
+    <key>hardenedRuntime</key>
+    <true/>
 </dict>
 </plist>

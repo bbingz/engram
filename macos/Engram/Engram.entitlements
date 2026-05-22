@@ -4,5 +4,12 @@
 <dict>
 	<!-- No app sandbox — developer tool needs filesystem access to read AI session directories -->
 	<!-- Explicitly NOT requesting removable volumes access -->
+	<!--
+	  Hardened Runtime is enabled (ENABLE_HARDENED_RUNTIME=YES) for notarization.
+	  No JIT / unsigned-executable-memory / get-task-allow entitlements are declared:
+	  the app and its bundled Helpers (EngramMCP, EngramService) and Frameworks are all
+	  signed with the same Developer ID identity inside one outer seal, so default
+	  library validation is satisfied and no disable-library-validation exception is needed.
+	-->
 </dict>
 </plist>

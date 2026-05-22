@@ -14,10 +14,23 @@ if [ ! -f "$SRC" ]; then
   exit 1
 fi
 
+# Build the codesign argument list once. Hardened Runtime (--options runtime) is
+# required for notarization; a secure timestamp (--timestamp) is required too, but
+# only obtainable with a real identity. Ad-hoc signing ("-") falls back to no timestamp.
+sign_args=(--force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --options runtime)
+if [ "${EXPANDED_CODE_SIGN_IDENTITY:-}" != "-" ]; then
+  sign_args+=(--timestamp)
+else
+  sign_args+=(--timestamp=none)
+fi
+sign_enabled() {
+  [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]
+}
+
 mkdir -p "$DEST_DIR"
 ditto "$SRC" "$DEST"
-if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
-  codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DEST"
+if sign_enabled; then
+  codesign "${sign_args[@]}" "$DEST"
 fi
 mkdir -p "$FRAMEWORKS_DIR"
 for framework in EngramServiceCore.framework EngramCoreRead.framework EngramCoreWrite.framework; do
@@ -28,16 +41,14 @@ for framework in EngramServiceCore.framework EngramCoreRead.framework EngramCore
   fi
   framework_dest="${FRAMEWORKS_DIR}/${framework}"
   ditto "$framework_src" "$framework_dest"
-  if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
-    codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$framework_dest"
+  if sign_enabled; then
+    codesign "${sign_args[@]}" "$framework_dest"
   fi
 done
-if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] \
-  && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] \
-  && [ ! -d "${APP}/Contents/PlugIns" ]; then
+if sign_enabled && [ ! -d "${APP}/Contents/PlugIns" ]; then
   debug_dylib="${APP}/Contents/MacOS/Engram.debug.dylib"
   if [ -f "$debug_dylib" ]; then
-    codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$debug_dylib"
+    codesign "${sign_args[@]}" "$debug_dylib"
   fi
   preview_dylib="${APP}/Contents/MacOS/__preview.dylib"
   if [ -f "$preview_dylib" ]; then
@@ -48,6 +59,6 @@ if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] \
   if [ -n "$entitlements_path" ] && [ -f "${SRCROOT}/${entitlements_path}" ]; then
     entitlements_args=(--entitlements "${SRCROOT}/${entitlements_path}")
   fi
-  codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "${entitlements_args[@]}" --timestamp=none "$APP"
+  codesign "${sign_args[@]}" "${entitlements_args[@]}" "$APP"
 fi
 echo "[copy-service-helper] EngramService → $DEST"

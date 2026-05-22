@@ -79,6 +79,9 @@ secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
   `ServiceWriterGate`; do not add new direct app/MCP SQLite writers.
 - `LegacyDaemonBridge`, `DaemonClient`, `DaemonHTTPClientCore`, app-local
   `MCPServer`, and the Node bundle phase are removed from the product path.
+- The HTTP web UI is NOT removed: the native `EngramWebUIServer` (Hummingbird)
+  is still wired into `EngramServiceRunner` and serves transcript HTML in the
+  product. Only the legacy Node `web.ts` surface is dev/reference-only.
 
 ### Database
 - Swift owns the product schema and writes through `EngramCoreWrite` /
@@ -114,7 +117,13 @@ secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
 UI noise filter uses `buildTierFilter()` / `isTierHidden()`. Swift filters via `tier != 'skip'`.
 
 ### Local Semantic Search
-Hybrid search: FTS5 (trigram) + sqlite-vec (vector embeddings) + RRF fusion. All local, no external services.
+NOTE: the hybrid/semantic search below describes the TypeScript REFERENCE design.
+It is NOT implemented in the shipped Swift product. The Swift product search is
+keyword-only (FTS5 / LIKE). `EngramCoreWrite/Database/SQLiteVecSupport.swift`
+reports sqlite-vec as "not implemented yet", so there is no product-side vector
+search or RRF fusion yet. Treat the rest of this section as TS reference only.
+
+Hybrid search (TS reference): FTS5 (trigram) + sqlite-vec (vector embeddings) + RRF fusion. All local, no external services.
 - `src/core/vector-store.ts`: session-level + chunk-level + insight vectors via sqlite-vec
 - `src/core/chunker.ts`: message-boundary-first chunking for fine-grained retrieval
 - `src/core/embeddings.ts`: provider strategy — Ollama (default) | OpenAI | Transformers.js (opt-in)
@@ -197,6 +206,10 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - SQLite DB: `~/.engram/index.sqlite` (WAL mode)
 - Settings: `~/.engram/settings.json`
 - Session sources: `~/.claude/projects/`, `~/.codex/sessions/`, `~/.gemini/`, etc.
+- `SessionAdapterFactory.defaultAdapters()` registers 17 source adapters, but
+  Windsurf and Antigravity are constructed with `enableLiveSync: false` and
+  ingest zero sessions. So ~15 sources actually ingest today; "17 sources" is
+  the adapter count, not the live-ingesting count.
 
 ## What NOT To Do
 

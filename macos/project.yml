@@ -190,6 +190,11 @@ targets:
         LSUIElement: true
         CFBundleDisplayName: Engram
         NSPrincipalClass: NSApplication
+        # Single-sourced from the MARKETING_VERSION / CURRENT_PROJECT_VERSION build
+        # settings above. xcodegen writes these substitution tokens into Info.plist
+        # so there is exactly one version source (project.yml).
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.app
       SWIFT_VERSION: "5.9"
@@ -198,6 +203,12 @@ targets:
       CODE_SIGN_STYLE: Automatic
       DEVELOPMENT_TEAM: J25GS8J4XM
       CODE_SIGN_ENTITLEMENTS: Engram/Engram.entitlements
+      # Notarization requires Hardened Runtime on the distributed (Developer ID) app.
+      ENABLE_HARDENED_RUNTIME: YES
+      # Single-sourced version. project.yml is the source of truth; build-release.sh
+      # reads MARKETING_VERSION from here and auto-injects a non-default CURRENT_PROJECT_VERSION.
+      MARKETING_VERSION: "0.1.0"
+      CURRENT_PROJECT_VERSION: "1"
 
   EngramCLI:
     type: tool

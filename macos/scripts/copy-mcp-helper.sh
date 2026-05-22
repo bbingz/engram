@@ -17,7 +17,16 @@ fi
 
 mkdir -p "$DEST_DIR"
 ditto "$SRC" "$DEST"
+
+# Sign the helper with Hardened Runtime. Request a secure timestamp for real
+# (non ad-hoc) identities; ad-hoc signing ("-") cannot obtain a timestamp.
+sign_args=(--force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --options runtime)
+if [ "${EXPANDED_CODE_SIGN_IDENTITY:-}" != "-" ]; then
+  sign_args+=(--timestamp)
+else
+  sign_args+=(--timestamp=none)
+fi
 if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
-  codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DEST"
+  codesign "${sign_args[@]}" "$DEST"
 fi
 echo "[copy-mcp-helper] EngramMCP → $DEST"
