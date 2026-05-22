@@ -98,6 +98,7 @@ private struct SidebarFooter: View {
             .help(Text("Toggle theme: System → Light → Dark"))
         }
         .frame(height: 28)
+        .accessibilityElement(children: .contain)
     }
 
     private func footerButton(

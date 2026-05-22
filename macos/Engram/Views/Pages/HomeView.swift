@@ -95,6 +95,7 @@ struct HomeView: View {
                 sourceLegend
             }
             .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("home_dailyChart")
 
             VStack(alignment: .leading, spacing: 16) {

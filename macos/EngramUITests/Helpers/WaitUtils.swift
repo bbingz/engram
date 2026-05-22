@@ -8,6 +8,21 @@ extension XCUIApplication {
     func element(id identifier: String) -> XCUIElement {
         descendants(matching: .any)[identifier].firstMatch
     }
+
+    /// Find a button by accessibility identifier without forcing an all-descendants snapshot.
+    func button(id identifier: String) -> XCUIElement {
+        buttons[identifier].firstMatch
+    }
+
+    /// Find a group by accessibility identifier without forcing an all-descendants snapshot.
+    func group(id identifier: String) -> XCUIElement {
+        groups[identifier].firstMatch
+    }
+
+    /// Find a scroll view by accessibility identifier without forcing an all-descendants snapshot.
+    func scrollView(id identifier: String) -> XCUIElement {
+        scrollViews[identifier].firstMatch
+    }
 }
 
 extension XCUIElement {

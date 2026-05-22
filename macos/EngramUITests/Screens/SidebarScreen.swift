@@ -5,12 +5,11 @@ struct SidebarScreen {
 
     // MARK: - Elements
 
-    var container: XCUIElement { app.element(id: "sidebar") }
-    var themeToggle: XCUIElement { app.element(id: "sidebar_themeToggle") }
+    var container: XCUIElement { app.group(id: "sidebar") }
+    var scrollContainer: XCUIElement { app.scrollViews.firstMatch }
+    var themeToggle: XCUIElement { app.button(id: "sidebar_themeToggle") }
     var settingsItem: XCUIElement {
-        let identified = app.element(id: "sidebar_item_settings")
-        if identified.exists { return identified }
-        return app.buttons["Settings"].firstMatch
+        app.button(id: "sidebar_item_settings")
     }
 
     // MARK: - Navigation
@@ -23,7 +22,7 @@ struct SidebarScreen {
     ]
 
     func item(for page: String) -> XCUIElement {
-        app.element(id: "sidebar_item_\(page)")
+        app.button(id: "sidebar_item_\(page)")
     }
 
     func navigateTo(_ page: String) {
@@ -34,7 +33,7 @@ struct SidebarScreen {
         // Bottom sidebar items may be below the visible scroll area in small windows.
         // Scroll them into view before clicking.
         if !button.isHittable {
-            button.scrollToVisible(in: container)
+            button.scrollToVisible(in: scrollContainer)
         }
 
         button.click()
@@ -45,7 +44,7 @@ struct SidebarScreen {
                       "Settings sidebar item should exist")
 
         if !settingsItem.isHittable {
-            settingsItem.scrollToVisible(in: container)
+            settingsItem.scrollToVisible(in: scrollContainer)
         }
 
         settingsItem.click()

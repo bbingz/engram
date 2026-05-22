@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Shipped — EngramUITests fully restored (2026-05-22, Claude + Codex)
+
+Building on the data-loading fix (18 → 7), the remaining 7 UI failures are now
+fixed and **EngramUITests is fully green (0 failures)**. Root causes:
+- XCUITest's `descendants(matching: .any)` id lookups forced a ~1600-deep AX
+  snapshot that stack-overflowed the app on macOS 26.5. Replaced with typed
+  collection queries (`button(id:)`/`group(id:)`/`scrollView(id:)`) in the
+  UITest helpers/screens. (Codex.)
+- SwiftUI's accessibility merge heuristic collapsed two containers (the
+  `SidebarFooter` HStack with its decorative divider, and the `home_dailyChart`
+  VStack), hiding the Settings/Theme footer buttons and the
+  `home_sourceDistribution` legend. Fixed with
+  `.accessibilityElement(children: .contain)` on both — additive a11y only, no
+  layout/behavior change. (Codex + Claude.)
+
+Verified: full `EngramUITests` green; `EngramCoreTests` + `EngramTests` green;
+no change to `npm test` (1395) or the service/MCP suites. See
+`HANDOFF-uitests-a11y-crash.md` for the full diagnosis.
+
 ### Shipped — round-5 fresh-angle remediation (2026-05-22)
 
 Round-4 closed the known P0/P1 set; a fresh 6-angle scan (`review-round5.md`)
