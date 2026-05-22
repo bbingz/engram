@@ -4,7 +4,15 @@ struct AdapterRegistry {
     private var adaptersBySource: [SourceName: any SessionAdapter]
 
     init(adapters: [any SessionAdapter] = []) {
-        adaptersBySource = Dictionary(uniqueKeysWithValues: adapters.map { ($0.source, $0) })
+        var map: [SourceName: any SessionAdapter] = [:]
+        map.reserveCapacity(adapters.count)
+        for adapter in adapters {
+            // First registration wins; duplicates are skipped instead of crashing.
+            if map[adapter.source] == nil {
+                map[adapter.source] = adapter
+            }
+        }
+        adaptersBySource = map
     }
 
     var sources: [SourceName] {

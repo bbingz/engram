@@ -150,7 +150,6 @@ export async function handleSaveInsight(
   if (params.wing) params.wing = params.wing.trim().slice(0, 200);
   if (params.room) params.room = params.room.trim().slice(0, 200);
 
-  const id = randomUUID();
   const importance = params.importance ?? DEFAULT_IMPORTANCE;
 
   // Text-only fallback: save to insights table when no embedding support
@@ -160,7 +159,9 @@ export async function handleSaveInsight(
         'Insight storage requires either embedding support or a database connection.',
       );
     }
-    // Text-only dedup check
+    // Text-only dedup check — generate the UUID only after we know we will
+    // actually insert. Generating it upfront wasted cryptographic work on the
+    // common duplicate path.
     const existing = deps.db.findDuplicateInsight(params.content, params.wing);
     if (existing) {
       return {
@@ -173,6 +174,7 @@ export async function handleSaveInsight(
       };
     }
 
+    const id = randomUUID();
     deps.db.saveInsightText(
       id,
       params.content,
@@ -212,6 +214,7 @@ export async function handleSaveInsight(
         };
       }
 
+      const id = randomUUID();
       deps.db.saveInsightText(
         id,
         params.content,
@@ -245,6 +248,7 @@ export async function handleSaveInsight(
     }
   }
 
+  const id = randomUUID();
   deps.vecStore.upsertInsight(
     id,
     params.content,

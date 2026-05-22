@@ -7,6 +7,7 @@ import {
   detectOrphans,
   markOrphanByPath,
   reconcileInsights,
+  runPostMigrationBackfill,
 } from '../../src/core/db/maintenance.js';
 import { Database } from '../../src/core/db.js';
 
@@ -366,5 +367,66 @@ describe('checkpointWal', () => {
   it('honors PASSIVE mode without throwing', () => {
     const r = checkpointWal(db.raw, 'PASSIVE');
     expect(r.busy).toBe(0);
+  });
+});
+
+describe('runPostMigrationBackfill hidden_at sync (P0-5)', () => {
+  let db: Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'engram-hidden-sync-test-'));
+    db = new Database(join(tmpDir, 'test.sqlite'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  function insertSession(id: string, hidden: string | null) {
+    db.raw
+      .prepare(
+        `INSERT INTO sessions
+           (id, source, start_time, cwd, file_path, size_bytes, hidden_at)
+         VALUES (?, 'codex', datetime('now'), '/c', ?, 0, ?)`,
+      )
+      .run(id, `/tmp/${id}.jsonl`, hidden);
+  }
+
+  it('propagates a later sessions.hidden_at change into session_local_state', () => {
+    insertSession('s1', null);
+    // First backfill: copies the initial NULL hidden_at across.
+    runPostMigrationBackfill(db.raw);
+    let row = db.raw
+      .prepare('SELECT hidden_at FROM session_local_state WHERE session_id = ?')
+      .get('s1') as { hidden_at: string | null };
+    expect(row.hidden_at).toBeNull();
+
+    // User hides the session in `sessions` only (mimicking pre-fix code path).
+    db.raw
+      .prepare("UPDATE sessions SET hidden_at = datetime('now') WHERE id = ?")
+      .run('s1');
+
+    // Re-running the backfill must reconcile the divergence so sync peers
+    // see the hide.
+    runPostMigrationBackfill(db.raw);
+    row = db.raw
+      .prepare('SELECT hidden_at FROM session_local_state WHERE session_id = ?')
+      .get('s1') as { hidden_at: string | null };
+    expect(row.hidden_at).not.toBeNull();
+  });
+
+  it('clears session_local_state.hidden_at when sessions.hidden_at is cleared', () => {
+    insertSession('s2', '2026-01-01T00:00:00Z');
+    runPostMigrationBackfill(db.raw);
+    db.raw
+      .prepare('UPDATE sessions SET hidden_at = NULL WHERE id = ?')
+      .run('s2');
+    runPostMigrationBackfill(db.raw);
+    const row = db.raw
+      .prepare('SELECT hidden_at FROM session_local_state WHERE session_id = ?')
+      .get('s2') as { hidden_at: string | null };
+    expect(row.hidden_at).toBeNull();
   });
 });

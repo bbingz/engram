@@ -44,6 +44,7 @@ final class CommandCodeAdapter: SessionAdapter {
             var userCount = 0
             var assistantCount = 0
             var toolCount = 0
+            var systemCount = 0
             var firstUserText = ""
             var cwd = ""
             var model: String?
@@ -70,9 +71,16 @@ final class CommandCodeAdapter: SessionAdapter {
 
                 switch role {
                 case "user":
-                    userCount += 1
                     let text = Self.extractContent(object["content"])
-                    if firstUserText.isEmpty { firstUserText = text }
+                    // Classify Claude-style injected wrappers as system messages
+                    // (parity with the TS commandcode adapter); otherwise they
+                    // inflate the user message count and pollute the summary.
+                    if Self.isSystemInjection(text) {
+                        systemCount += 1
+                    } else {
+                        userCount += 1
+                        if firstUserText.isEmpty { firstUserText = text }
+                    }
                 case "assistant":
                     assistantCount += 1
                 case "tool":
@@ -96,7 +104,7 @@ final class CommandCodeAdapter: SessionAdapter {
                     userMessageCount: userCount,
                     assistantMessageCount: assistantCount,
                     toolMessageCount: toolCount,
-                    systemMessageCount: 0,
+                    systemMessageCount: systemCount,
                     summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
                     filePath: locator,
                     sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
@@ -150,6 +158,20 @@ final class CommandCodeAdapter: SessionAdapter {
             return timestamp
         }
         return JSONLAdapterSupport.string(JSONLAdapterSupport.object(object["metadata"])?["timestamp"])
+    }
+
+    /// Detect Claude-style system wrappers injected into user-role messages.
+    /// Mirrors the TS commandcode adapter so parity fixtures agree.
+    private static func isSystemInjection(_ text: String) -> Bool {
+        text.hasPrefix("# AGENTS.md instructions for ") ||
+            text.contains("<INSTRUCTIONS>") ||
+            text.hasPrefix("<local-command-caveat>") ||
+            text.hasPrefix("<local-command-stdout>") ||
+            text.contains("<command-name>") ||
+            text.contains("<command-message>") ||
+            text.hasPrefix("Unknown skill: ") ||
+            text.hasPrefix("Invoke the superpowers:") ||
+            text.hasPrefix("Base directory for this skill:")
     }
 
     private static func extractContent(_ content: Any?) -> String {

@@ -21,13 +21,19 @@ final class StreamingLineReader {
 
     func readLines() throws -> AnySequence<String> {
         let handle = try FileHandle(forReadingFrom: fileURL)
+        // HandleHolder closes the file in deinit. The closure captures it, so
+        // when the caller drops the iterator early (break, .prefix, throw)
+        // the holder is released and the fd is closed instead of leaking
+        // until process exit.
+        let holder = HandleHolder(handle: handle)
         var buffer = Data()
         var eof = false
         let maxLineBytes = self.maxLineBytes
         let chunkSize = self.chunkSize
 
         return AnySequence {
-            AnyIterator { [weak self] in
+            AnyIterator { [weak self, holder] in
+                _ = holder // keep handle alive until iterator is released
                 while true {
                     if let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
                         let lineData = buffer[buffer.startIndex..<newlineIndex]
@@ -46,7 +52,7 @@ final class StreamingLineReader {
                     }
 
                     if eof {
-                        defer { try? handle.close() }
+                        holder.closeNow()
                         guard !buffer.isEmpty else { return nil }
                         let remaining = buffer
                         buffer = Data()
@@ -66,7 +72,7 @@ final class StreamingLineReader {
                         self?.failures.append(.lineTooLarge)
                         buffer = Data()
                         while true {
-                            let chunk = handle.readData(ofLength: chunkSize)
+                            let chunk = holder.handle.readData(ofLength: chunkSize)
                             if chunk.isEmpty {
                                 eof = true
                                 break
@@ -79,7 +85,7 @@ final class StreamingLineReader {
                         continue
                     }
 
-                    let chunk = handle.readData(ofLength: chunkSize)
+                    let chunk = holder.handle.readData(ofLength: chunkSize)
                     if chunk.isEmpty {
                         eof = true
                     } else {
@@ -88,5 +94,28 @@ final class StreamingLineReader {
                 }
             }
         }
+    }
+}
+
+private final class HandleHolder {
+    let handle: FileHandle
+    private var closed = false
+    private let lock = NSLock()
+
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
+    func closeNow() {
+        lock.lock()
+        defer { lock.unlock() }
+        if !closed {
+            try? handle.close()
+            closed = true
+        }
+    }
+
+    deinit {
+        closeNow()
     }
 }

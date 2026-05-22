@@ -7,7 +7,123 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Shipped — Full remediation review closeout + provider parser parity (2026-05-21)
+### Shipped — DeepSeek round-4 cross-layer remediation (2026-05-22)
+
+Round-3 confirmed P0 100% but deferred P1/P2; round-4 found the **Swift
+product runtime carried copies of the same bugs fixed in TS dev tooling**.
+Since Swift is the shipped runtime (TS is reference/fixtures), these product
+reproductions were the higher priority. All green: `npm test` 1351 ✓,
+`xcodebuild test` 199 ✓ (incl. AdapterParityTests), lint clean, build ✓.
+
+- **P1-24 (Gemini-authored, reviewed + kept)** — all remaining `DatabaseManager`
+  read methods marked `nonisolated` + routed through `readInBackground`, plus
+  `tableExists` nonisolated. Verified: compiles, consistent with existing
+  convention, builds on top of the round-3 nil-fallback fixes.
+- **Swift CJK LIKE injection (cross-layer of TS P1-1)** — escaped `% _ \` and
+  added `ESCAPE '\'` in all three Swift fallback paths:
+  `EngramServiceReadProvider.search`, `DatabaseManager.search`,
+  `MCPDatabase.searchInsightsFTS`. Also fixed a pre-existing broken
+  `ESCAPE '\\'` (two-backslash → SQLite "must be single character" runtime
+  error) in `MCPDatabase` tool-analytics project filter.
+- **Swift CursorAdapter sizeBytes (cross-layer of TS P0-7)** — per-session
+  bytes (composer JSON + raw bubble-row JSON) instead of whole `state.vscdb`
+  size; aligned **byte-for-byte** with the TS adapter. OpenCode TS adapter
+  re-aligned to `SUM(length(message.data)) + SUM(length(part.data))` to match
+  the Swift adapter. Parity golden fixtures regenerated (cursor 12288→382,
+  opencode 197).
+- **Swift CommandCodeAdapter system injection (cross-layer of TS NEW-2)** —
+  added `isSystemInjection` (9 Claude-style wrappers) so injected wrappers are
+  counted as system, not user; mirrors the TS commandcode fix for parity.
+- **Swift crash hardening** — `ToolCallParser` regex compiled via
+  precondition (was `try?` silently disabling ALL tool-call parsing);
+  `EngramWebUIServer` adapter map built with a loop (was
+  `Dictionary(uniqueKeysWithValues:)` — same P0-14 crash class);
+  `MCPConfig` dropped dead `daemonBaseURL`/`bearerToken` and the
+  force-unwrapped `URL(string:)!` (HTTP daemon is gone from the product path).
+- **TS adapters** — `commandcode.ts` gained `isSystemInjection` +
+  `systemMessageCount` tracking + file-mtime startTime fallback; remaining raw
+  `JSON.stringify().slice()` in `commandcode`/`antigravity`/`qoder` routed
+  through `truncateJSON`/`truncateString`.
+- **Tests added** — `commandcode.test.ts` covers injection classification +
+  mtime fallback; Swift `AdapterParityTests` now exercises the aligned
+  cursor/opencode sizeBytes.
+
+Still open from round-4 (documented, non-blocking sweep): TS P1-5/6/7
+(COALESCE authority, cache-token sync, title PII), several Swift UI P1s
+(MessageParser semaphore, Theme scroll timing), and the remaining new P2/P3
+findings (chunker step<=0 guard, config error distinction, gemini-cli endTime,
+duplicate ISO8601 formatters).
+
+### Shipped — DeepSeek round-3 review remediation (2026-05-21)
+
+P0 / P1 / select P2 fixes from `review-round3-confirmed.md` (Codex 6-agent
+round-3 audit, 121 confirmed findings). Test/lint/build all green:
+`npm test` 1347 ✓, `npm run lint` clean, `xcodebuild Engram` succeeds.
+
+- **Swift P0** — `Database.listGitRepos` and `Row.fetchOne!` sites gained
+  `guard let pool` / nil-row fallbacks; `AdapterRegistry.init` no longer
+  crashes on duplicate `SourceName` keys (first registration wins);
+  `MCPTranscriptTools.handoff` actually renders the recent-session list it
+  fetches; `MCPStdioServer.run()` is now async over `FileHandle.bytes.lines`
+  with no DispatchSemaphore (`main.swift` uses Task + dispatchMain).
+- **Swift P1** — `UnixSocketEngramServiceTransport.send` wraps the detached
+  I/O task with a cancellation handler that `shutdown(2)`s the fd to release
+  the leak window; `StreamingLineReader` now closes its FileHandle via a
+  HandleHolder so callers that `.prefix(...)` or `break` don't leak fds;
+  `OrderedJSON.quotedJSONString` falls back to a manual JSON escaper on bad
+  UTF-8 instead of crashing the MCP stdio process with `try!`.
+- **Swift P2** — `ParentDetection.compile` reports which regex failed instead
+  of bare `try!`; `MainWindowView` drops dead `searchQuery` / `performSearch`.
+- **TypeScript P0** — FTS-version reset is wrapped in BEGIN IMMEDIATE/COMMIT
+  so a mid-reset crash no longer wipes FTS on every restart;
+  `upsertAuthoritativeSnapshot` preserves NULL tier from sync peers (so
+  `backfillTiers` re-evaluates) instead of coercing to 'normal';
+  `Indexer.indexFile` adds the same `isIndexed(filePath, fileSize)` fast-skip
+  that `indexAll` already had — watcher events on hot files no longer cause
+  full re-parse / FTS churn; `backfillCosts`'s 50 ms rate-limit moved into a
+  `finally` so the no-filePath / no-adapter fast paths can't stampede SQLite;
+  `runPostMigrationBackfill` reconciles `sessions.hidden_at` →
+  `session_local_state.hidden_at` on every startup, and `hide_session`
+  writes both tables in a transaction so sync peers see the hide;
+  OpenCode and Cursor `sizeBytes` now reflect per-session payload bytes
+  instead of the whole shared SQLite file; Antigravity / Windsurf
+  `readFirstLine` is streamed instead of `readFile`-then-split (no more
+  multi-MB load to read one line); Codex `extractText` skips
+  non-text-bearing content blocks and `isSystemInjection` matches all five
+  missing Claude-style wrappers; Codex `session_meta` rows without a string
+  `id` are rejected.
+- **TypeScript P1** — CJK LIKE fallback in `searchSessions` and
+  `searchInsightsFts` now escapes `% _ \` and uses `ESCAPE '\\'`; the
+  fts-syntax retry is gated on `isFtsSyntaxError` so DB lock / I/O errors
+  propagate; `searchSessionsLike` replaces the non-portable
+  GROUP-BY-non-aggregated-columns shape with a per-session MIN(rowid)
+  subquery; `countSessions` honors `includeOrphans`; `get_session`
+  streams-and-windows messages by page instead of buffering all of them;
+  Codex `function_call(_output)` truncation goes through
+  `truncateJSON`/`truncateString` so `null` no longer leaks as the literal
+  string "null" and a slice cannot strand a UTF-16 surrogate; OpenCode
+  sets `endTime` even on single-message sessions; `backfillParentLinks`,
+  `backfillCodexOriginator`, and `backfillSuggestedParents` now page
+  through their LIMIT 500 candidates instead of silently skipping the
+  rest.
+- **TypeScript P2** — `searchSessions` project filter is now an exact
+  match on resolved alias names (no more `engram` matching
+  `engram-tools`); `save_insight` defers `randomUUID()` until after dedup
+  so the common duplicate path doesn't waste crypto work; `KimiAdapter`
+  caches the parsed `kimi.json` keyed by mtime so a 50-session indexing
+  pass reads the file once.
+- **Tests added** — `tests/adapters/codex.test.ts` covers the new
+  extractText / injection behavior; `tests/adapters/opencode.test.ts`
+  asserts per-session `sizeBytes < statSync(dbFile).size`;
+  `tests/core/maintenance.test.ts` covers `runPostMigrationBackfill`
+  reconciling hidden_at in both directions.
+
+Remaining P1 / P2 follow-ups documented in `review-round3-confirmed.md`
+(e.g. P1-24 Swift `nonisolated` audit, P1-32 reader-WAL doc, P1-33
+SQLITE_BUSY retry on OpenCodeAdapter, P2-31 shared ISO8601 formatter).
+None block product behavior; addressing them is a sweep pass.
+
+
 
 - **27 项 review finding 全部收口** —— 基于 `docs/superpowers/reports/2026-05-20-engram-review-findings.md` 的 Codex 多子 agent 审计 + Gemini 线索复核,完成 Swift service/db/IPC、Node dev tooling、文档/UI 承诺、MCP 工具、Web route 拆分、安全权限、provider parser/display parity 的整轮修复。最终证据写入 `docs/superpowers/reports/2026-05-20-engram-review-resolution.md`。
 - **Provider parser parity 变成发布门禁** —— `tests/fixtures/adapter-parity/**` 作为 Swift product adapter 与 TypeScript dev/reference tooling 的 golden corpus。当前 fixture gate 覆盖 15 个独立 provider:Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax / Lobster AI 作为 Claude-compatible derived source 继续走 Claude parser,但以独立 source 入库。

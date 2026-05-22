@@ -35,23 +35,26 @@ export async function handleGetSession(
   const session = db.getSession(params.id);
   if (!session) throw new Error(`Session not found: ${params.id}`);
 
-  const page = params.page ?? 1;
+  const page = Math.max(1, params.page ?? 1);
   const offset = (page - 1) * PAGE_SIZE;
 
-  const allMessages: { role: string; content: string; timestamp?: string }[] =
-    [];
+  // Stream-and-window: only keep the messages that belong to the requested
+  // page. Large sessions (10k+ messages) previously buffered everything just
+  // to slice a 50-row window, which inflated memory for the MCP host.
+  const messages: { role: string; content: string; timestamp?: string }[] = [];
+  let matched = 0;
   for await (const msg of adapter.streamMessages(session.filePath)) {
-    if (!params.roles || params.roles.includes(msg.role)) {
-      allMessages.push({
+    if (params.roles && !params.roles.includes(msg.role)) continue;
+    if (matched >= offset && messages.length < PAGE_SIZE) {
+      messages.push({
         role: msg.role,
         content: msg.content,
         timestamp: msg.timestamp,
       });
     }
+    matched++;
   }
 
-  const totalPages = Math.max(1, Math.ceil(allMessages.length / PAGE_SIZE));
-  const messages = allMessages.slice(offset, offset + PAGE_SIZE);
-
+  const totalPages = Math.max(1, Math.ceil(matched / PAGE_SIZE));
   return { session, messages, totalPages, currentPage: page };
 }

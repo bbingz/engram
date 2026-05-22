@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
+import { truncateJSON, truncateString } from './_truncate.js';
 import type {
   Message,
   SessionAdapter,
@@ -219,9 +220,12 @@ export class QoderAdapter implements SessionAdapter {
         parts.push(`\`${c.name}\``);
       else if (c.type === 'tool_result') {
         const output = c.content ?? c.output;
-        if (typeof output === 'string' && output) parts.push(output);
-        else if (output !== undefined && output !== null)
-          parts.push(JSON.stringify(output).slice(0, 2000));
+        if (typeof output === 'string' && output)
+          parts.push(truncateString(output, 2000));
+        else if (output !== undefined && output !== null) {
+          const encoded = truncateJSON(output, 2000);
+          if (encoded) parts.push(encoded);
+        }
       }
     }
     return parts.length > 0 ? parts.join('\n\n') : thinkingFallback;
@@ -239,9 +243,7 @@ export class QoderAdapter implements SessionAdapter {
         const obj = c as Record<string, unknown>;
         return {
           name: obj.name as string,
-          input: obj.input
-            ? JSON.stringify(obj.input).slice(0, 500)
-            : undefined,
+          input: truncateJSON(obj.input, 500),
         };
       });
     return calls.length > 0 ? calls : undefined;

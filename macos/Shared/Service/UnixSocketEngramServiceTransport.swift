@@ -17,9 +17,21 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
         timeout: TimeInterval?
     ) async throws -> EngramServiceResponseEnvelope {
         let socketTimeout = timeout ?? connectTimeout
-        return try await Task.detached(priority: .userInitiated) {
-            let fd = try Self.connectSocket(path: self.socketPath)
-            defer { Darwin.close(fd) }
+        let socketPath = self.socketPath
+        // Hold the fd in a box so the cancellation handler can shutdown the
+        // socket from outside the detached task. shutdown() unblocks any
+        // pending read/write, lets `defer { close }` fire promptly, and
+        // closes the fd-leak window that opened when the parent Task got
+        // cancelled mid-I/O.
+        let fdBox = FdBox()
+        let task = Task.detached(priority: .userInitiated) {
+            () throws -> EngramServiceResponseEnvelope in
+            let fd = try Self.connectSocket(path: socketPath)
+            fdBox.store(fd)
+            defer {
+                fdBox.clear()
+                Darwin.close(fd)
+            }
             try Self.setSocketTimeout(fd, seconds: socketTimeout)
 
             let encoded = try JSONEncoder().encode(request)
@@ -30,7 +42,13 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
             } catch {
                 throw EngramServiceError.invalidRequest(message: "Malformed service response: \(error.localizedDescription)")
             }
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            fdBox.shutdownIfOpen()
+            task.cancel()
+        }
     }
 
     func events() -> AsyncThrowingStream<EngramServiceEvent, Error> {
@@ -334,6 +352,35 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
             try pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
                 try body(sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
+        }
+    }
+}
+
+/// Holds an fd shared between a detached I/O task and an outer cancellation
+/// handler. On cancellation we shutdown() the fd from the handler so the
+/// detached task's blocking read/write returns immediately and runs its
+/// `defer { close(fd) }`, instead of leaking the fd until socket timeout.
+private final class FdBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fd: Int32?
+
+    func store(_ value: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        fd = value
+    }
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        fd = nil
+    }
+
+    func shutdownIfOpen() {
+        lock.lock()
+        defer { lock.unlock() }
+        if let value = fd {
+            _ = Darwin.shutdown(value, SHUT_RDWR)
         }
     }
 }

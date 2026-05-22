@@ -48,6 +48,26 @@ export function runPostMigrationBackfill(db: BetterSqlite3.Database): void {
     WHERE id NOT IN (SELECT session_id FROM session_local_state)
   `).run();
 
+  // Keep session_local_state.hidden_at in sync with sessions.hidden_at on every
+  // startup. Older builds wrote hide-state only to `sessions`; the sync layer
+  // pushes session_local_state, so without this reconciliation peers would
+  // miss hides made after the initial backfill.
+  db.prepare(`
+    UPDATE session_local_state
+    SET hidden_at = (
+      SELECT s.hidden_at FROM sessions s WHERE s.id = session_local_state.session_id
+    )
+    WHERE EXISTS (
+      SELECT 1 FROM sessions s
+      WHERE s.id = session_local_state.session_id
+        AND (
+          (s.hidden_at IS NULL AND session_local_state.hidden_at IS NOT NULL)
+          OR (s.hidden_at IS NOT NULL AND session_local_state.hidden_at IS NULL)
+          OR (s.hidden_at <> session_local_state.hidden_at)
+        )
+    )
+  `).run();
+
   db.prepare(`
     UPDATE sessions
     SET
@@ -57,8 +77,6 @@ export function runPostMigrationBackfill(db: BetterSqlite3.Database): void {
       snapshot_hash = COALESCE(snapshot_hash, '')
     WHERE authoritative_node IS NULL OR authoritative_node = ''
   `).run();
-
-  // Only does work when there are unmigrated rows — effectively O(0) on subsequent starts
 }
 
 export function backfillTiers(db: BetterSqlite3.Database): void {
@@ -233,30 +251,37 @@ export function backfillParentLinks(db: BetterSqlite3.Database): {
   linked: number;
 } {
   let linked = 0;
-
-  // Pass 1: Link subagent sessions to parent via path parsing
-  const candidates = db
-    .prepare(
-      `
+  const BATCH = 500;
+  // Page through candidate subagent sessions instead of stopping at the first
+  // batch — large installs can have >500 unlinked rows and used to silently
+  // skip everything past the first page until a manual rebuild ran.
+  const stmt = db.prepare(
+    `
     SELECT id, file_path FROM sessions
     WHERE agent_role = 'subagent'
       AND parent_session_id IS NULL
       AND (link_source IS NULL OR link_source != 'manual')
-    LIMIT 500
+    ORDER BY rowid ASC
+    LIMIT ?
   `,
-    )
-    .all() as { id: string; file_path: string }[];
-
-  for (const { id, file_path } of candidates) {
-    const match = file_path.match(/\/([^/]+)\/subagents\/[^/]+\.jsonl$/);
-    if (!match) continue;
-
-    const parentId = match[1];
-    const validation = validateParentLink(db, id, parentId);
-    if (validation !== 'ok') continue;
-
-    setParentSession(db, id, parentId, 'path');
-    linked++;
+  );
+  while (true) {
+    const candidates = stmt.all(BATCH) as { id: string; file_path: string }[];
+    if (candidates.length === 0) break;
+    let progressed = 0;
+    for (const { id, file_path } of candidates) {
+      const match = file_path.match(/\/([^/]+)\/subagents\/[^/]+\.jsonl$/);
+      if (!match) continue;
+      const parentId = match[1];
+      const validation = validateParentLink(db, id, parentId);
+      if (validation !== 'ok') continue;
+      setParentSession(db, id, parentId, 'path');
+      linked++;
+      progressed++;
+    }
+    // If nothing in the batch could be linked, the query would return the same
+    // rows forever (they remain WHERE-matching). Stop instead of looping.
+    if (progressed === 0) break;
   }
 
   return { linked };
@@ -347,30 +372,51 @@ export function backfillFilePaths(db: BetterSqlite3.Database): number {
 export async function backfillCodexOriginator(
   db: BetterSqlite3.Database,
 ): Promise<number> {
-  const candidates = db
-    .prepare(
-      `
+  const BATCH = 500;
+  // Skip rows already inspected by this pass on previous startups. The codex
+  // originator only needs to be read once per file; using
+  // `codex_originator_checked` in the metadata table is overkill, so we piggy-
+  // back on a column that's already on every row.
+  const candidatesStmt = db.prepare(
+    `
     SELECT id, file_path FROM sessions
     WHERE source = 'codex'
       AND agent_role IS NULL
       AND parent_session_id IS NULL
       AND suggested_parent_id IS NULL
       AND (link_source IS NULL OR link_source != 'manual')
-    LIMIT 500
+      AND link_checked_at IS NULL
+    LIMIT ?
   `,
-    )
-    .all() as { id: string; file_path: string }[];
-
-  let updated = 0;
-  const update = db.prepare(
-    `UPDATE sessions SET agent_role = 'dispatched', tier = 'skip', link_checked_at = NULL WHERE id = ?`,
   );
 
-  for (const { id, file_path } of candidates) {
-    const originator = await readCodexOriginator(file_path);
-    if (originator === 'Claude Code') {
-      update.run(id);
-      updated++;
+  // Note: we intentionally clear link_checked_at on dispatched rows so the
+  // suggested-parent backfill can score them on the same startup. Non-Claude
+  // rows do NOT need re-scanning, so we mark them inspected.
+  const updateDispatched = db.prepare(
+    `UPDATE sessions SET agent_role = 'dispatched', tier = 'skip', link_checked_at = NULL WHERE id = ?`,
+  );
+  const markInspected = db.prepare(
+    `UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?`,
+  );
+
+  let updated = 0;
+  while (true) {
+    const candidates = candidatesStmt.all(BATCH) as {
+      id: string;
+      file_path: string;
+    }[];
+    if (candidates.length === 0) break;
+    for (const { id, file_path } of candidates) {
+      const originator = await readCodexOriginator(file_path);
+      if (originator === 'Claude Code') {
+        updateDispatched.run(id);
+        updated++;
+      } else {
+        // Mark the row inspected so the next startup does not re-read this
+        // file's first 16KB just to discover the same answer.
+        markInspected.run(id);
+      }
     }
   }
 
@@ -408,67 +454,77 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
 } {
   let checked = 0;
   let suggested = 0;
+  const BATCH = 500;
 
-  // Select agent_role so we can skip dispatch-pattern check for known agents
-  const candidates = db
-    .prepare(
-      `
+  // Select agent_role so we can skip dispatch-pattern check for known agents.
+  // Loop until the candidate set drains: every batch row receives either
+  // markChecked, setSuggestedParent, or the dispatched-fallback UPDATE, all
+  // of which set link_checked_at — so the WHERE filter naturally shrinks.
+  const stmt = db.prepare(
+    `
     SELECT id, start_time, project, cwd, summary, agent_role FROM sessions
     WHERE parent_session_id IS NULL
       AND suggested_parent_id IS NULL
       AND link_checked_at IS NULL
       AND link_source IS NULL
       AND source IN ('gemini-cli', 'codex')
-    LIMIT 500
+    LIMIT ?
   `,
-    )
-    .all() as SuggestedParentCandidate[];
-
+  );
   const markChecked = db.prepare(
     `UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?`,
   );
-  const eligibleCandidates = candidates.filter(isParentLookupEligible);
-  const parentCandidates = loadParentCandidatesForBatch(db, eligibleCandidates);
 
-  for (const candidate of candidates) {
-    checked++;
+  while (true) {
+    const candidates = stmt.all(BATCH) as SuggestedParentCandidate[];
+    if (candidates.length === 0) break;
 
-    // Sessions with a known agent_role (dispatched, worker, explorer, etc.)
-    // are already confirmed agents — skip dispatch-pattern gating.
-    const knownAgent = candidate.agent_role != null;
-    if (!knownAgent) {
-      if (!candidate.summary || !isDispatchPattern(candidate.summary)) {
-        markChecked.run(candidate.id);
-        continue;
+    const eligibleCandidates = candidates.filter(isParentLookupEligible);
+    const parentCandidates = loadParentCandidatesForBatch(
+      db,
+      eligibleCandidates,
+    );
+
+    for (const candidate of candidates) {
+      checked++;
+
+      // Sessions with a known agent_role (dispatched, worker, explorer, etc.)
+      // are already confirmed agents — skip dispatch-pattern gating.
+      const knownAgent = candidate.agent_role != null;
+      if (!knownAgent) {
+        if (!candidate.summary || !isDispatchPattern(candidate.summary)) {
+          markChecked.run(candidate.id);
+          continue;
+        }
       }
-    }
 
-    const parents = parentCandidatesForCandidate(candidate, parentCandidates);
+      const parents = parentCandidatesForCandidate(candidate, parentCandidates);
 
-    const scored = parents.map((p) => ({
-      parentId: p.id,
-      score: scoreCandidate(
-        candidate.start_time,
-        p.start_time,
-        p.end_time,
-        candidate.project,
-        p.project,
-        candidate.cwd,
-        p.cwd,
-      ),
-    }));
+      const scored = parents.map((p) => ({
+        parentId: p.id,
+        score: scoreCandidate(
+          candidate.start_time,
+          p.start_time,
+          p.end_time,
+          candidate.project,
+          p.project,
+          candidate.cwd,
+          p.cwd,
+        ),
+      }));
 
-    const bestParent = pickBestCandidate(scored);
-    if (bestParent) {
-      setSuggestedParent(db, candidate.id, bestParent);
-      suggested++;
-    } else {
-      // No parent found, but dispatch pattern matched → mark as agent anyway.
-      // COALESCE preserves existing roles (worker, explorer) while setting
-      // 'dispatched' for sessions that have no role yet.
-      db.prepare(
-        `UPDATE sessions SET agent_role = COALESCE(agent_role, 'dispatched'), tier = 'skip', link_checked_at = datetime('now') WHERE id = ?`,
-      ).run(candidate.id);
+      const bestParent = pickBestCandidate(scored);
+      if (bestParent) {
+        setSuggestedParent(db, candidate.id, bestParent);
+        suggested++;
+      } else {
+        // No parent found, but dispatch pattern matched → mark as agent anyway.
+        // COALESCE preserves existing roles (worker, explorer) while setting
+        // 'dispatched' for sessions that have no role yet.
+        db.prepare(
+          `UPDATE sessions SET agent_role = COALESCE(agent_role, 'dispatched'), tier = 'skip', link_checked_at = datetime('now') WHERE id = ?`,
+        ).run(candidate.id);
+      }
     }
   }
 

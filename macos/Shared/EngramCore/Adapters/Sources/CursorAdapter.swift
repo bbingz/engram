@@ -54,12 +54,12 @@ final class CursorAdapter: SessionAdapter {
                 return .failure(.malformedJSON)
             }
 
-            let bubbles = try Self.bubbles(
+            let bubbleResult = try Self.bubbles(
                 database: database,
                 composerData: composerData,
                 composerId: locatorParts.composerId
             )
-            let visibleBubbles = bubbles.compactMap(Self.visibleBubble)
+            let visibleBubbles = bubbleResult.bubbles.compactMap(Self.visibleBubble)
             let userCount = visibleBubbles.filter { $0.role == .user }.count
             let assistantCount = visibleBubbles.filter { $0.role == .assistant }.count
             let createdAt = Phase4AdapterSupport.double(composerData["createdAt"]) ?? 0
@@ -67,6 +67,12 @@ final class CursorAdapter: SessionAdapter {
             let summary = JSONLAdapterSupport.string(
                 JSONLAdapterSupport.object(composerData["latestConversationSummary"])?["summary"]
             )
+            // Per-session size = this composer's raw JSON payload plus the raw
+            // JSON of any separately-stored bubble rows. state.vscdb is shared
+            // by every Cursor session, so measuring the whole file (the old
+            // behavior) attributed the entire DB size to each session. This
+            // matches the TS cursor adapter byte-for-byte for parity.
+            let perSessionBytes = Int64(composerValue.utf8.count) + bubbleResult.rawBubbleBytes
 
             return .success(
                 NormalizedSessionInfo(
@@ -84,7 +90,7 @@ final class CursorAdapter: SessionAdapter {
                     systemMessageCount: 0,
                     summary: summary.map { String($0.prefix(200)) },
                     filePath: locator,
-                    sizeBytes: Phase4AdapterSupport.fileSize(locatorParts.dbPath),
+                    sizeBytes: perSessionBytes,
                     indexedAt: nil,
                     agentRole: nil,
                     originator: nil,
@@ -123,12 +129,12 @@ final class CursorAdapter: SessionAdapter {
             {
                 composerData = parsed
             }
-            let bubbles = try Self.bubbles(
+            let bubbleResult = try Self.bubbles(
                 database: database,
                 composerData: composerData,
                 composerId: locatorParts.composerId
             )
-            let messages = bubbles.compactMap { bubble -> NormalizedMessage? in
+            let messages = bubbleResult.bubbles.compactMap { bubble -> NormalizedMessage? in
                 guard let visible = Self.visibleBubble(bubble) else { return nil }
                 let timestamp = Phase4AdapterSupport.double(
                     JSONLAdapterSupport.object(bubble["timingInfo"])?["clientStartTime"]
@@ -172,25 +178,42 @@ final class CursorAdapter: SessionAdapter {
         )
     }
 
+    private struct BubbleLoadResult {
+        let bubbles: [Phase4AdapterSupport.JSONObject]
+        /// Raw UTF-8 byte total of separately-stored bubble row JSON values
+        /// (0 when the conversation is embedded in composerData). Mirrors the
+        /// TS cursor adapter so per-session sizeBytes stays in parity.
+        let rawBubbleBytes: Int64
+    }
+
     private static func bubbles(
         database: Phase4SQLiteDatabase,
         composerData: Phase4AdapterSupport.JSONObject,
         composerId: String
-    ) throws -> [Phase4AdapterSupport.JSONObject] {
+    ) throws -> BubbleLoadResult {
         if let conversation = JSONLAdapterSupport.array(composerData["conversation"]),
            !conversation.isEmpty
         {
-            return conversation.compactMap { JSONLAdapterSupport.object($0) }
+            return BubbleLoadResult(
+                bubbles: conversation.compactMap { JSONLAdapterSupport.object($0) },
+                rawBubbleBytes: 0
+            )
         }
 
         let rows = try database.query(
             "SELECT value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC",
             bindings: ["bubbleId:\(composerId):%"]
         )
-        return rows.compactMap { row in
-            guard let value = row["value"] ?? nil else { return nil }
-            return Phase4AdapterSupport.jsonObject(from: value)
+        var bubbles: [Phase4AdapterSupport.JSONObject] = []
+        var rawBytes: Int64 = 0
+        for row in rows {
+            guard let value = row["value"] ?? nil else { continue }
+            rawBytes += Int64(value.utf8.count)
+            if let object = Phase4AdapterSupport.jsonObject(from: value) {
+                bubbles.append(object)
+            }
         }
+        return BubbleLoadResult(bubbles: bubbles, rawBubbleBytes: rawBytes)
     }
 
     private static func visibleBubble(

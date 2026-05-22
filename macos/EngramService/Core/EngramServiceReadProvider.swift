@@ -317,16 +317,19 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let limit = max(1, min(request.limit, 100))
         return try read { db in
             if containsCJK(query) {
+                // Escape LIKE wildcards so a literal "%"/"_" in the query is
+                // matched verbatim instead of acting as a wildcard.
+                let pattern = "%\(escapeLikePattern(query))%"
                 let rows = try Row.fetchAll(db, sql: """
                     SELECT s.*, f.content AS snippet
                     FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
-                    WHERE f.content LIKE ? AND s.hidden_at IS NULL
+                    WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
                       AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
                     GROUP BY s.id
                     ORDER BY s.start_time DESC
                     LIMIT ?
-                """, arguments: ["%\(query)%", limit])
+                """, arguments: [pattern, limit])
                 return EngramServiceSearchResponse(
                     items: rows.map { item(from: $0) },
                     searchModes: ["keyword"],
@@ -573,6 +576,19 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 (0xF900...0xFAFF).contains(scalar.value) ||
                 (0xFE30...0xFE4F).contains(scalar.value)
         }
+    }
+
+    /// Escape `\`, `%`, `_` for use with `LIKE ? ESCAPE '\'`.
+    private func escapeLikePattern(_ value: String) -> String {
+        var out = ""
+        out.reserveCapacity(value.count)
+        for ch in value {
+            if ch == "\\" || ch == "%" || ch == "_" {
+                out.append("\\")
+            }
+            out.append(ch)
+        }
+        return out
     }
 
     private func item(from row: Row) -> EngramServiceSearchResponse.Item {

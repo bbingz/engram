@@ -1,6 +1,6 @@
 // src/adapters/opencode.ts
 
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -119,11 +119,9 @@ export class OpenCodeAdapter implements SessionAdapter {
 
       if (messages.length > 0) {
         startTime = new Date(messages[0].time_created).toISOString();
-        if (messages.length > 1) {
-          endTime = new Date(
-            messages[messages.length - 1].time_created,
-          ).toISOString();
-        }
+        endTime = new Date(
+          messages[messages.length - 1].time_created,
+        ).toISOString();
       }
 
       let userMessageCount = 0;
@@ -138,6 +136,25 @@ export class OpenCodeAdapter implements SessionAdapter {
         }
       }
 
+      // Per-session size = message payload bytes + part payload bytes. The old
+      // statSync(dbPath) measured the whole shared SQLite file and attributed
+      // the entire DB size to every session. Sum length() in SQL so this stays
+      // byte-for-byte identical to the Swift OpenCode adapter (parity).
+      const messageBytesRow = db
+        .prepare<[string], { bytes: number }>(
+          'SELECT COALESCE(SUM(length(data)), 0) AS bytes FROM message WHERE session_id = ?',
+        )
+        .get(sessionId);
+      const partBytesRow = db
+        .prepare<[string], { bytes: number }>(
+          `SELECT COALESCE(SUM(length(p.data)), 0) AS bytes
+           FROM part p JOIN message m ON m.id = p.message_id
+           WHERE m.session_id = ?`,
+        )
+        .get(sessionId);
+      const perSessionBytes =
+        (messageBytesRow?.bytes ?? 0) + (partBytesRow?.bytes ?? 0);
+
       return {
         id: session.id,
         source: 'opencode',
@@ -151,13 +168,7 @@ export class OpenCodeAdapter implements SessionAdapter {
         systemMessageCount: 0,
         summary: session.title || undefined,
         filePath,
-        sizeBytes: (() => {
-          try {
-            return statSync(dbPath).size;
-          } catch {
-            return 0;
-          }
-        })(),
+        sizeBytes: perSessionBytes,
       };
     } catch {
       return null;

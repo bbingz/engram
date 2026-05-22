@@ -56,9 +56,41 @@ indirect enum OrderedJSONValue {
     }
 
     private func quotedJSONString(_ value: String) -> String {
-        let data = try! JSONSerialization.data(withJSONObject: [value])
-        let arrayText = String(data: data, encoding: .utf8)!
-        return String(arrayText.dropFirst().dropLast()).replacingOccurrences(of: "\\/", with: "/")
+        // JSONSerialization throws on invalid UTF-8 / unpaired surrogates that
+        // can sneak in via slice(0, N) truncation. Falling back to a manual
+        // escaper keeps the MCP process alive instead of crashing the stdio
+        // server on a single malformed input.
+        if let data = try? JSONSerialization.data(withJSONObject: [value]),
+           let arrayText = String(data: data, encoding: .utf8) {
+            return String(arrayText.dropFirst().dropLast())
+                .replacingOccurrences(of: "\\/", with: "/")
+        }
+        return manualEscape(value)
+    }
+
+    private func manualEscape(_ value: String) -> String {
+        var out = "\""
+        for scalar in value.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if scalar.value < 0x20 {
+                    out += String(format: "\\u%04x", scalar.value)
+                } else if scalar.value >= 0xD800 && scalar.value <= 0xDFFF {
+                    // Replace stray surrogate halves with U+FFFD so the output
+                    // is still valid JSON.
+                    out += "\u{FFFD}"
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+        }
+        out += "\""
+        return out
     }
 }
 

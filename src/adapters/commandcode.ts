@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
+import { truncateJSON, truncateString } from './_truncate.js';
 import type {
   Message,
   SessionAdapter,
@@ -59,6 +60,7 @@ export class CommandCodeAdapter implements SessionAdapter {
       let userCount = 0;
       let assistantCount = 0;
       let toolCount = 0;
+      let systemCount = 0;
       let firstUserText = '';
       let cwd = '';
       let model: string | undefined;
@@ -79,25 +81,36 @@ export class CommandCodeAdapter implements SessionAdapter {
         if (!startTime && timestamp) startTime = timestamp;
         if (timestamp) endTime = timestamp;
         if (role === 'user') {
-          userCount++;
-          if (!firstUserText) firstUserText = this.extractContent(obj.content);
+          const text = this.extractContent(obj.content);
+          if (this.isSystemInjection(text)) {
+            systemCount++;
+          } else {
+            userCount++;
+            if (!firstUserText) firstUserText = text;
+          }
         } else if (role === 'assistant') assistantCount++;
         else toolCount++;
       }
 
       if (!sessionId) return null;
+      // Fall back to file mtime when no message carried a timestamp, matching
+      // claude-code's behavior; otherwise startTime stays '' and the session
+      // sorts to the epoch.
+      if (!startTime) {
+        startTime = new Date(fileStat.mtimeMs).toISOString();
+      }
       return {
         id: sessionId,
         source: 'commandcode',
         startTime,
-        endTime: endTime !== startTime ? endTime : undefined,
+        endTime: endTime && endTime !== startTime ? endTime : undefined,
         cwd: cwd || this.decodeCwdFromLocator(filePath),
         model,
         messageCount: userCount + assistantCount + toolCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
         toolMessageCount: toolCount,
-        systemMessageCount: 0,
+        systemMessageCount: systemCount,
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
@@ -185,9 +198,10 @@ export class CommandCodeAdapter implements SessionAdapter {
         if (c.type === 'text') return c.text as string | undefined;
         if (c.type === 'tool-call' && c.toolName) return `\`${c.toolName}\``;
         if (c.type === 'tool-result') {
-          if (typeof c.output === 'string') return c.output;
+          if (typeof c.output === 'string')
+            return truncateString(c.output, 2000);
           if (c.output !== undefined && c.output !== null) {
-            return JSON.stringify(c.output).slice(0, 2000);
+            return truncateJSON(c.output, 2000);
           }
         }
         return undefined;
@@ -207,9 +221,23 @@ export class CommandCodeAdapter implements SessionAdapter {
         const c = item as Record<string, unknown>;
         return {
           name: c.toolName as string,
-          input: c.input ? JSON.stringify(c.input).slice(0, 500) : undefined,
+          input: truncateJSON(c.input, 500),
         };
       });
     return calls.length > 0 ? calls : undefined;
+  }
+
+  private isSystemInjection(text: string): boolean {
+    return (
+      text.startsWith('# AGENTS.md instructions for ') ||
+      text.includes('<INSTRUCTIONS>') ||
+      text.startsWith('<local-command-caveat>') ||
+      text.startsWith('<local-command-stdout>') ||
+      text.includes('<command-name>') ||
+      text.includes('<command-message>') ||
+      text.startsWith('Unknown skill: ') ||
+      text.startsWith('Invoke the superpowers:') ||
+      text.startsWith('Base directory for this skill:')
+    );
   }
 }

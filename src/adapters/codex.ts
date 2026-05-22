@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
+import { truncateJSON, truncateString } from './_truncate.js';
 import type {
   Message,
   SessionAdapter,
@@ -111,6 +112,11 @@ export class CodexAdapter implements SessionAdapter {
       if (!meta) return null;
 
       const payload = meta as Record<string, unknown>;
+      // Reject session_meta entries that do not carry an id — without a stable
+      // id we cannot upsert or dedup the session, and downstream code assumes
+      // SessionInfo.id is a non-empty string.
+      const rawId = payload.id;
+      if (typeof rawId !== 'string' || rawId.length === 0) return null;
       const agentRole = payload.agent_role as string | undefined;
       const originator = payload.originator as string | undefined;
       // If Claude Code launched this session and no explicit role was set,
@@ -118,7 +124,7 @@ export class CodexAdapter implements SessionAdapter {
       const effectiveRole =
         agentRole || (originator === 'Claude Code' ? 'dispatched' : undefined);
       return {
-        id: payload.id as string,
+        id: rawId,
         source: 'codex',
         startTime: payload.timestamp as string,
         endTime: lastTimestamp || undefined,
@@ -185,9 +191,7 @@ export class CodexAdapter implements SessionAdapter {
         msg = built;
       } else if (payload.type === 'function_call') {
         const name = (payload.name as string) || '';
-        const args = payload.arguments;
-        const argsStr =
-          args !== undefined ? JSON.stringify(args).slice(0, 500) : '';
+        const argsStr = truncateJSON(payload.arguments, 500) ?? '';
         msg = {
           role: 'tool',
           content: argsStr ? `${name} ${argsStr}` : name,
@@ -195,12 +199,13 @@ export class CodexAdapter implements SessionAdapter {
           toolCalls: [{ name, input: argsStr || undefined }],
         };
       } else if (payload.type === 'function_call_output') {
+        const output = payload.output;
         msg = {
           role: 'tool',
           content:
-            typeof payload.output === 'string'
-              ? payload.output
-              : JSON.stringify(payload.output ?? '').slice(0, 2000),
+            typeof output === 'string'
+              ? truncateString(output, 2000)
+              : (truncateJSON(output, 2000) ?? ''),
           timestamp,
         };
       }
@@ -238,16 +243,36 @@ export class CodexAdapter implements SessionAdapter {
       text.startsWith('# AGENTS.md instructions for ') ||
       text.includes('<INSTRUCTIONS>') ||
       text.startsWith('<local-command-caveat>') ||
-      text.startsWith('<environment_context>')
+      text.startsWith('<local-command-stdout>') ||
+      text.startsWith('<environment_context>') ||
+      text.includes('<command-name>') ||
+      text.includes('<command-message>') ||
+      text.startsWith('Unknown skill: ') ||
+      text.startsWith('Invoke the superpowers:') ||
+      text.startsWith('Base directory for this skill:')
     );
   }
 
   private extractText(content: unknown[]): string {
     if (!Array.isArray(content)) return '';
+    // Search the full array for a usable text payload. Returning on the first
+    // truthy `text`/`input_text` field would surface stray strings on non-text
+    // blocks (e.g. a tool_use entry that happens to carry a `text` name) and
+    // hide the real user/assistant text that follows.
     for (const item of content) {
+      if (item === null || typeof item !== 'object') continue;
       const c = item as Record<string, unknown>;
-      if (c.text) return c.text as string;
-      if (c.input_text) return c.input_text as string;
+      const type = typeof c.type === 'string' ? c.type : '';
+      if (
+        type !== '' &&
+        type !== 'input_text' &&
+        type !== 'output_text' &&
+        type !== 'text'
+      ) {
+        continue;
+      }
+      if (typeof c.text === 'string' && c.text) return c.text;
+      if (typeof c.input_text === 'string' && c.input_text) return c.input_text;
     }
     return '';
   }

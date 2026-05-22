@@ -96,7 +96,10 @@ export class CursorAdapter implements SessionAdapter {
         const data = JSON.parse(row.value) as ComposerData & {
           conversation?: BubbleData[];
         };
-        const fileStat = await stat(dbPath);
+        // Approximate per-session storage as the size of this composer's JSON
+        // payload rather than the whole state.vscdb file (which is shared by
+        // every Cursor session and inflates per-session totals).
+        let perSessionBytes = Buffer.byteLength(row.value ?? '', 'utf8');
 
         // Count messages from conversation array (or fallback to bubbleId keys)
         let bubbles: BubbleData[] = [];
@@ -107,6 +110,7 @@ export class CursorAdapter implements SessionAdapter {
             .prepare(`SELECT value FROM cursorDiskKV WHERE key LIKE ?`)
             .all(`bubbleId:${composerId}:%`) as { value: string }[];
           for (const br of bubbleRows) {
+            perSessionBytes += Buffer.byteLength(br.value ?? '', 'utf8');
             try {
               bubbles.push(JSON.parse(br.value));
             } catch {
@@ -142,7 +146,7 @@ export class CursorAdapter implements SessionAdapter {
           systemMessageCount: 0,
           summary: data.latestConversationSummary?.summary?.slice(0, 200),
           filePath,
-          sizeBytes: fileStat.size,
+          sizeBytes: perSessionBytes,
         };
       } finally {
         db.close();

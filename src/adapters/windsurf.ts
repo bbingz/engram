@@ -1,6 +1,6 @@
 // src/adapters/windsurf.ts
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -250,7 +250,19 @@ function parseMarkdownToMessages(
 }
 
 async function readFirstLine(filePath: string): Promise<string | null> {
-  const content = await readFile(filePath, 'utf8');
-  const line = content.split('\n')[0]?.trim();
-  return line || null;
+  // Stream the file and bail out after the first line — the cache meta file
+  // can be several MB and readFile-then-split would load everything just to
+  // discard the rest.
+  const stream = createReadStream(filePath, { encoding: 'utf8' });
+  const reader = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      const trimmed = line.trim();
+      return trimmed || null;
+    }
+    return null;
+  } finally {
+    reader.close();
+    stream.destroy();
+  }
 }

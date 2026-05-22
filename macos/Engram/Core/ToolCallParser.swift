@@ -20,11 +20,20 @@ struct ParsedToolResult {
 
 struct ToolCallParser {
 
-    // Match "`ToolName`:" or "`ToolName(`"
-    private static let toolCallHeaderPattern = try? NSRegularExpression(
-        pattern: #"`([A-Za-z][A-Za-z0-9_]*)[`(]"#,
-        options: []
-    )
+    // Match "`ToolName`:" or "`ToolName(`".
+    // This is a compile-time-constant pattern, so a failure means the literal
+    // is malformed — surface it loudly instead of silently disabling ALL tool
+    // call parsing via `try?` (which returns nil and degrades every transcript).
+    private static let toolCallHeaderPattern: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(
+                pattern: #"`([A-Za-z][A-Za-z0-9_]*)[`(]"#,
+                options: []
+            )
+        } catch {
+            preconditionFailure("ToolCallParser header regex failed to compile: \(error)")
+        }
+    }()
 
     // Common error signals in tool output
     private static let errorSignals: [String] = [
@@ -39,7 +48,7 @@ struct ToolCallParser {
     static func parseToolCall(_ content: String) -> ParsedToolCall? {
         let prefix = String(content.prefix(500))
 
-        guard let match = toolCallHeaderPattern?.firstMatch(
+        guard let match = toolCallHeaderPattern.firstMatch(
             in: prefix,
             range: NSRange(prefix.startIndex..., in: prefix)
         ) else { return nil }

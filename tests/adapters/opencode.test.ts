@@ -99,4 +99,15 @@ describe('OpenCodeAdapter', () => {
       messages.push(msg);
     expect(messages.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('sizeBytes reflects the session payload, not the whole shared SQLite file', async () => {
+    const files: string[] = [];
+    for await (const f of adapter.listSessionFiles()) files.push(f);
+    const info = await adapter.parseSessionInfo(files[0]);
+    expect(info?.sizeBytes).toBeGreaterThan(0);
+    // The fixture DB itself is at least a few KB; a correct per-session size
+    // is bounded by the message + title bytes, far below the whole-file size.
+    const wholeDbBytes = require('node:fs').statSync(FIXTURE_DB).size;
+    expect(info?.sizeBytes).toBeLessThan(wholeDbBytes);
+  });
 });

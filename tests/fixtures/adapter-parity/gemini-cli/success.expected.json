@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "adb1088c",
+  "generatedAtCommit": "b80b3356",
   "inputPath": "gemini-cli/input/tmp/my-project/chats/session-sample.json",
   "insightFields": {
     "firstUserSummary": "帮我优化这段 SQL 查询",

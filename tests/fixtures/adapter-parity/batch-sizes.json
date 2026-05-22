@@ -1,5 +1,5 @@
 {
-  "generatedAtCommit": "adb1088c",
+  "generatedAtCommit": "b80b3356",
   "schemaVersion": 1,
   "sourceFiles": [
     "src/core/watcher.ts",

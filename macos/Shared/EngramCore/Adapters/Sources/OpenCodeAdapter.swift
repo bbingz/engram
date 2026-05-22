@@ -11,6 +11,7 @@ final class Phase4SQLiteDatabase {
             database = nil
             throw ParserFailure.sqliteUnreadable
         }
+        sqlite3_busy_timeout(database, 30000)
     }
 
     deinit {

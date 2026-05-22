@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
+import { truncateJSON } from './_truncate.js';
 import type {
   Message,
   SessionAdapter,
@@ -257,9 +258,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
             )
             .map((c: Record<string, unknown>) => ({
               name: c.name as string,
-              input: c.input
-                ? JSON.stringify(c.input).slice(0, 500)
-                : undefined,
+              input: truncateJSON(c.input, 500),
             }));
           if (calls.length > 0) toolCalls = calls;
         }

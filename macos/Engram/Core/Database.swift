@@ -235,9 +235,8 @@ final class DatabaseManager {
         }
     }
 
-    func countsByProject() throws -> [String: Int] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func countsByProject() throws -> [String: Int] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT project, COUNT(*) as n FROM sessions
                 WHERE project IS NOT NULL AND hidden_at IS NULL GROUP BY project
@@ -246,9 +245,8 @@ final class DatabaseManager {
         }
     }
 
-    func listSessionsForProject(_ project: String?, subAgent: Bool? = nil, limit: Int = 100) throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func listSessionsForProject(_ project: String?, subAgent: Bool? = nil, limit: Int = 100) throws -> [Session] {
+        try readInBackground { db in
             var parts: [String]
             var args: [DatabaseValueConvertible]
             if let project {
@@ -269,20 +267,18 @@ final class DatabaseManager {
         }
     }
 
-    func getSession(id: String) throws -> Session? {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func getSession(id: String) throws -> Session? {
+        try readInBackground { db in
             try Session.fetchOne(db, sql: "SELECT * FROM sessions WHERE id = ?", arguments: [id])
         }
     }
 
-    func countSessions(
+    nonisolated func countSessions(
         sources: Set<String> = [],
         projects: Set<String> = [],
         subAgent: Bool? = nil
     ) throws -> Int {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+        try readInBackground { db in
             var parts = ["SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL"]
             var args: [DatabaseValueConvertible] = []
             if !sources.isEmpty {
@@ -316,7 +312,20 @@ final class DatabaseManager {
         }
     }
 
-    private static func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
+    /// Escape `\`, `%`, `_` for use with `LIKE ? ESCAPE '\'`.
+    nonisolated private static func escapeLikePattern(_ value: String) -> String {
+        var out = ""
+        out.reserveCapacity(value.count)
+        for ch in value {
+            if ch == "\\" || ch == "%" || ch == "_" {
+                out.append("\\")
+            }
+            out.append(ch)
+        }
+        return out
+    }
+
+    nonisolated private static func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
         let count = try Int.fetchOne(
             db,
             sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -330,15 +339,17 @@ final class DatabaseManager {
 
         // CJK: use LIKE fallback (trigram MATCH broken for CJK)
         if Self.containsCJK(query) {
+            // Escape LIKE wildcards so literal "%"/"_" match verbatim.
+            let pattern = "%\(Self.escapeLikePattern(query))%"
             return try readInBackground { db in
                 try Session.fetchAll(db, sql: """
                     SELECT DISTINCT s.* FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
-                    WHERE f.content LIKE ? AND s.hidden_at IS NULL
+                    WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
                       AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
                     ORDER BY s.start_time DESC
                     LIMIT ?
-                """, arguments: ["%\(query)%", limit])
+                """, arguments: [pattern, limit])
             }
         }
 
@@ -365,9 +376,8 @@ final class DatabaseManager {
     }
 
     // MARK: - project_timeline
-    func projectTimeline(project: String? = nil) throws -> [TimelineEntry] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func projectTimeline(project: String? = nil) throws -> [TimelineEntry] {
+        try readInBackground { db in
             var sql = """
                 SELECT project, COUNT(*) as session_count, MAX(start_time) as last_updated
                 FROM sessions
@@ -390,9 +400,8 @@ final class DatabaseManager {
         let bySource: [String: Int]
     }
 
-    func stats() throws -> StatsResult {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func stats() throws -> StatsResult {
+        try readInBackground { db in
             let total    = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL") ?? 0
             let messages = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(message_count), 0) FROM sessions WHERE hidden_at IS NULL") ?? 0
             let counts   = try SourceCount.fetchAll(db,
@@ -407,9 +416,8 @@ final class DatabaseManager {
     }
 
     // MARK: - get_context
-    func getContext(cwd: String, limit: Int = 5) throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func getContext(cwd: String, limit: Int = 5) throws -> [Session] {
+        try readInBackground { db in
             let project = URL(fileURLWithPath: cwd).lastPathComponent
             var results = try Session.fetchAll(db,
                 sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND project LIKE ? AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
@@ -424,9 +432,8 @@ final class DatabaseManager {
     }
 
     // MARK: - Favorites (service-owned extension table)
-    func listFavorites() throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func listFavorites() throws -> [Session] {
+        try readInBackground { db in
             guard try Self.tableExists("favorites", db: db) else { return [] }
             return try Session.fetchAll(db, sql: """
                 SELECT s.* FROM sessions s
@@ -437,9 +444,8 @@ final class DatabaseManager {
         }
     }
 
-    func isFavorite(sessionId: String) throws -> Bool {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func isFavorite(sessionId: String) throws -> Bool {
+        try readInBackground { db in
             guard try Self.tableExists("favorites", db: db) else { return false }
             return try Favorite.fetchOne(db,
                 sql: "SELECT * FROM favorites WHERE session_id = ?",
@@ -449,18 +455,16 @@ final class DatabaseManager {
 
     // MARK: - Hidden sessions (trash)
 
-    func listHiddenSessions(limit: Int = 200, offset: Int = 0) throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func listHiddenSessions(limit: Int = 200, offset: Int = 0) throws -> [Session] {
+        try readInBackground { db in
             try Session.fetchAll(db,
                 sql: "SELECT * FROM sessions WHERE hidden_at IS NOT NULL ORDER BY hidden_at DESC LIMIT ? OFFSET ?",
                 arguments: [limit, offset])
         }
     }
 
-    func countHiddenSessions() throws -> Int {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func countHiddenSessions() throws -> Int {
+        try readInBackground { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NOT NULL") ?? 0
         }
     }
@@ -468,15 +472,14 @@ final class DatabaseManager {
     // MARK: - Timeline (chronological list)
 
     /// Pure chronological list of sessions for Timeline view
-    func listSessionsChronologically(
+    nonisolated func listSessionsChronologically(
         sources: Set<String> = [],
         projects: Set<String> = [],
         subAgent: Bool? = nil,
         limit: Int = 50,
         offset: Int = 0
     ) throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+        try readInBackground { db in
             var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
             var args: [DatabaseValueConvertible] = []
             if !sources.isEmpty {
@@ -503,15 +506,14 @@ final class DatabaseManager {
     // MARK: - Grouped Sessions view
 
     /// Get all group keys with counts for grouped view (by project or source)
-    func listGroups(
+    nonisolated func listGroups(
         by mode: GroupingMode,
         sources: Set<String> = [],
         projects: Set<String> = [],
         subAgent: Bool? = nil,
         sort: SessionSort = .createdDesc
     ) throws -> [(key: String, count: Int, lastUpdated: String)] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+        try readInBackground { db in
             let groupColumn = mode == .project ? "project" : "source"
 
             // Pick aggregate expression + order matching the sort
@@ -558,7 +560,7 @@ final class DatabaseManager {
     }
 
     /// Get sessions within a specific group
-    func listSessionsInGroup(
+    nonisolated func listSessionsInGroup(
         by mode: GroupingMode,
         key: String,
         sources: Set<String> = [],
@@ -567,8 +569,7 @@ final class DatabaseManager {
         sort: SessionSort = .createdDesc,
         limit: Int = 100
     ) throws -> [Session] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+        try readInBackground { db in
             let groupColumn = mode == .project ? "project" : "source"
             var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
             var args: [DatabaseValueConvertible] = []
@@ -614,27 +615,30 @@ final class DatabaseManager {
         let projects: Int
     }
 
-    func countSessionsSince(_ since: String) throws -> Int {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
-            let row = try Row.fetchOne(db, sql: """
+    nonisolated func countSessionsSince(_ since: String) throws -> Int {
+        try readInBackground { db in
+            guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) as n FROM sessions
                 WHERE hidden_at IS NULL AND start_time >= ?
-            """, arguments: [since])!
+            """, arguments: [since]) else {
+                return 0
+            }
             return row["n"] as Int
         }
     }
 
     nonisolated func kpiStats() throws -> KPIStats {
         try readInBackground { db in
-            let row = try Row.fetchOne(db, sql: """
+            guard let row = try Row.fetchOne(db, sql: """
                 SELECT
                     COUNT(*) as sessions,
                     COUNT(DISTINCT source) as sources,
                     SUM(message_count) as messages,
                     COUNT(DISTINCT project) as projects
                 FROM sessions WHERE hidden_at IS NULL
-            """)!
+            """) else {
+                return KPIStats(sessions: 0, sources: 0, messages: 0, projects: 0)
+            }
             return KPIStats(
                 sessions: row["sessions"],
                 sources: row["sources"],
@@ -794,17 +798,16 @@ final class DatabaseManager {
 
     // MARK: - Git Repos
 
-    func listGitRepos() throws -> [GitRepo] {
-        try pool!.read { db in
+    nonisolated func listGitRepos() throws -> [GitRepo] {
+        try readInBackground { db in
             try GitRepo.fetchAll(db, sql: "SELECT * FROM git_repos ORDER BY last_commit_at DESC")
         }
     }
 
     /// Returns session counts for the last 7 days (index 0 = 6 days ago, index 6 = today)
     /// for sessions whose cwd starts with repoPath.
-    func sparklineData(for repoPath: String) throws -> [Int] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func sparklineData(for repoPath: String) throws -> [Int] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT date(start_time) as day, COUNT(*) as n
                 FROM sessions
@@ -830,9 +833,8 @@ final class DatabaseManager {
         }
     }
 
-    func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
+        try readInBackground { db in
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE hidden_at IS NULL AND project IS NOT NULL
@@ -931,9 +933,8 @@ final class DatabaseManager {
 
     // MARK: - Observability: Logs
 
-    func fetchLogs(level: String, module: String, limit: Int) throws -> LogQueryResult {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func fetchLogs(level: String, module: String, limit: Int) throws -> LogQueryResult {
+        try readInBackground { db in
             // Fetch available modules
             let modules = try String.fetchAll(db, sql: """
                 SELECT DISTINCT module FROM logs ORDER BY module
@@ -974,9 +975,8 @@ final class DatabaseManager {
 
     // MARK: - Observability: Errors
 
-    func countErrors24h() throws -> Int {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func countErrors24h() throws -> Int {
+        try readInBackground { db in
             try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM logs
                 WHERE level = 'error'
@@ -985,9 +985,8 @@ final class DatabaseManager {
         }
     }
 
-    func errorsByModule24h() throws -> [(module: String, count: Int)] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func errorsByModule24h() throws -> [(module: String, count: Int)] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT module, COUNT(*) as count FROM logs
                 WHERE level = 'error'
@@ -999,9 +998,8 @@ final class DatabaseManager {
         }
     }
 
-    func recentErrors(limit: Int) throws -> [LogEntry] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func recentErrors(limit: Int) throws -> [LogEntry] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT * FROM logs
                 WHERE level IN ('error', 'warn')
@@ -1025,9 +1023,8 @@ final class DatabaseManager {
 
     // MARK: - Observability: Traces
 
-    func fetchTraces(nameFilter: String, limit: Int) throws -> [TraceEntry] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func fetchTraces(nameFilter: String, limit: Int) throws -> [TraceEntry] {
+        try readInBackground { db in
             var parts = ["SELECT * FROM traces WHERE 1=1"]
             var args: [DatabaseValueConvertible] = []
             if !nameFilter.isEmpty {
@@ -1058,9 +1055,8 @@ final class DatabaseManager {
         }
     }
 
-    func slowTraces(minDurationMs: Int, limit: Int) throws -> [TraceEntry] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func slowTraces(minDurationMs: Int, limit: Int) throws -> [TraceEntry] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT * FROM traces
                 WHERE duration_ms > ?
@@ -1088,9 +1084,8 @@ final class DatabaseManager {
 
     // MARK: - Observability: Metrics
 
-    func recentHourlyMetrics(limit: Int) throws -> [HourlyMetric] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func recentHourlyMetrics(limit: Int) throws -> [HourlyMetric] {
+        try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT * FROM metrics_hourly
                 ORDER BY hour DESC
@@ -1171,9 +1166,8 @@ final class DatabaseManager {
             .start(in: pool, scheduling: .immediate, onError: onError, onChange: onChange)
     }
 
-    func observabilityTableCounts() throws -> [(table: String, count: Int)] {
-        guard let pool else { throw DatabaseError.notOpen }
-        return try pool.read { db in
+    nonisolated func observabilityTableCounts() throws -> [(table: String, count: Int)] {
+        try readInBackground { db in
             let tables = ["sessions", "logs", "traces", "metrics", "metrics_hourly", "sessions_fts"]
             var results: [(table: String, count: Int)] = []
             for table in tables {

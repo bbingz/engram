@@ -17,9 +17,13 @@ final class EngramWebUIServer: @unchecked Sendable {
         self.host = host
         self.port = port
         self.databaseQueue = try DatabaseQueue(path: databasePath)
-        self.adapters = Dictionary(
-            uniqueKeysWithValues: SessionAdapterFactory.defaultAdapters().map { ($0.source, $0) }
-        )
+        // First registration wins; a duplicate source must not crash the
+        // service at init (same hardening as AdapterRegistry).
+        var adapterMap: [SourceName: any SessionAdapter] = [:]
+        for adapter in SessionAdapterFactory.defaultAdapters() where adapterMap[adapter.source] == nil {
+            adapterMap[adapter.source] = adapter
+        }
+        self.adapters = adapterMap
     }
 
     func run() async throws {

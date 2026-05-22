@@ -4,7 +4,6 @@ import SwiftUI
 struct MainWindowView: View {
     @State private var selectedScreen: Screen = .home
     @State private var selectedSession: Session? = nil
-    @State private var searchQuery: String = ""
     @State private var showPalette: Bool = false
     @State private var paletteItems: [PaletteItem] = []
     @State private var paletteSelection: Int = 0
@@ -105,19 +104,6 @@ struct MainWindowView: View {
             if let session = try? db.getSession(id: id) {
                 await MainActor.run {
                     selectedSession = session
-                }
-            }
-        }
-    }
-
-    private func performSearch() {
-        guard !searchQuery.isEmpty else { return }
-        Task {
-            let query = searchQuery
-            let results = (try? db.search(query: query, limit: 20)) ?? []
-            await MainActor.run {
-                if let first = results.first {
-                    selectedSession = first
                 }
             }
         }

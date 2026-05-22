@@ -278,7 +278,7 @@ final class MCPDatabase {
         """
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let project {
-            sql += " AND s.project LIKE :project ESCAPE '\\\\'"
+            sql += " AND s.project LIKE :project ESCAPE '\\'"
             arguments["project"] = "%\(escapeLike(project))%"
         }
         if let since {
@@ -795,11 +795,13 @@ final class MCPDatabase {
 
     private func searchInsightsFTS(query: String, limit: Int) throws -> [Row] {
         if containsCJK(query) {
+            // Escape LIKE wildcards so literal "%"/"_" match verbatim.
+            let pattern = "%\(escapeLike(query))%"
             return try queue.read { db in
                 try Row.fetchAll(
                     db,
-                    sql: "SELECT * FROM insights WHERE content LIKE :pattern ORDER BY created_at DESC LIMIT :limit",
-                    arguments: ["pattern": "%\(query)%", "limit": limit]
+                    sql: "SELECT * FROM insights WHERE content LIKE :pattern ESCAPE '\\' ORDER BY created_at DESC LIMIT :limit",
+                    arguments: ["pattern": pattern, "limit": limit]
                 )
             }
         }

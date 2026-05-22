@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
+import { truncateJSON } from './_truncate.js';
 import { CascadeGrpcClient } from './grpc/cascade-client.js';
 import type {
   Message,
@@ -511,9 +512,7 @@ export class AntigravityAdapter implements SessionAdapter {
       .map((item) => {
         return {
           name: item.name as string,
-          input: item.args
-            ? JSON.stringify(item.args).slice(0, 500)
-            : undefined,
+          input: truncateJSON(item.args, 500),
         };
       });
   }
@@ -588,7 +587,19 @@ function parseMarkdownToMessages(
 }
 
 async function readFirstLine(filePath: string): Promise<string | null> {
-  const content = await readFile(filePath, 'utf8');
-  const line = content.split('\n')[0]?.trim();
-  return line || null;
+  // Stream the file and bail out after the first line. The cache meta file
+  // can grow to multiple MB, so readFile-then-split would load the entire
+  // payload into memory just to discard everything after the newline.
+  const stream = createReadStream(filePath, { encoding: 'utf8' });
+  const reader = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      const trimmed = line.trim();
+      return trimmed || null;
+    }
+    return null;
+  } finally {
+    reader.close();
+    stream.destroy();
+  }
 }

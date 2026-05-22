@@ -1,6 +1,10 @@
 // src/core/db/insight-repo.ts — text-only insight storage with FTS
 import type BetterSqlite3 from 'better-sqlite3';
-import { containsCJK } from './fts-repo.js';
+import {
+  containsCJK,
+  escapeLikePattern,
+  isFtsSyntaxError,
+} from './fts-repo.js';
 
 export const DEFAULT_IMPORTANCE = 5;
 
@@ -87,13 +91,18 @@ export function searchInsightsFts(
   query: string,
   limit = 10,
 ): InsightRow[] {
-  // CJK characters break trigram tokenizer — fall back to LIKE
+  // CJK characters break trigram tokenizer — fall back to LIKE.
+  // Escape user-supplied `%`, `_`, and `\` so the literal query "100%" does
+  // not turn into "100 + any suffix" via the LIKE wildcard.
   if (containsCJK(query)) {
     return db
       .prepare(
-        'SELECT * FROM insights WHERE content LIKE @pattern ORDER BY created_at DESC LIMIT @limit',
+        "SELECT * FROM insights WHERE content LIKE @pattern ESCAPE '\\' ORDER BY created_at DESC LIMIT @limit",
       )
-      .all({ pattern: `%${query}%`, limit }) as InsightRow[];
+      .all({
+        pattern: `%${escapeLikePattern(query)}%`,
+        limit,
+      }) as InsightRow[];
   }
 
   const doSearch = (q: string): InsightRow[] =>
@@ -110,7 +119,10 @@ export function searchInsightsFts(
 
   try {
     return doSearch(query);
-  } catch {
+  } catch (err) {
+    // Only retry on FTS syntax errors; let lock/I/O errors propagate so
+    // callers don't mask infrastructure failures as "weird query, retried".
+    if (!isFtsSyntaxError(err)) throw err;
     const escaped = `"${query.replace(/"/g, '""')}"`;
     return doSearch(escaped);
   }

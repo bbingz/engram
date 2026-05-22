@@ -246,22 +246,31 @@ export function runMigrations(
     db.exec('ALTER TABLE sync_state ADD COLUMN last_sync_session_id TEXT');
   }
 
-  // Migration: FTS version reset forces re-index of all sessions
+  // Migration: FTS version reset forces re-index of all sessions.
+  // All resets must commit atomically so a mid-migration crash does not leave
+  // the FTS table empty while the version metadata still mismatches.
   const ftsVersion = getMetadata('fts_version');
   if (ftsVersion !== FTS_VERSION) {
-    db.exec('DELETE FROM sessions_fts');
-    db.exec('UPDATE sessions SET size_bytes = 0');
+    db.exec('BEGIN IMMEDIATE');
     try {
-      db.exec('DELETE FROM session_embeddings');
-    } catch {
-      /* table may not exist yet */
+      db.exec('DELETE FROM sessions_fts');
+      db.exec('UPDATE sessions SET size_bytes = 0');
+      try {
+        db.exec('DELETE FROM session_embeddings');
+      } catch {
+        /* table may not exist yet */
+      }
+      try {
+        db.exec('DELETE FROM vec_sessions');
+      } catch {
+        /* table may not exist yet */
+      }
+      setMetadata('fts_version', FTS_VERSION);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
     }
-    try {
-      db.exec('DELETE FROM vec_sessions');
-    } catch {
-      /* table may not exist yet */
-    }
-    setMetadata('fts_version', FTS_VERSION);
   }
 
   setMetadata('schema_version', String(SCHEMA_VERSION));

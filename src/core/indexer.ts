@@ -432,61 +432,66 @@ export class Indexer {
       const ids = this.db.sessionsWithoutCosts();
       if (ids.length === 0) break;
       for (const id of ids) {
-        const session = this.db.getSession(id);
-        if (!session?.filePath) {
-          this.writeExtractedData(id, '', 0, 0, 0, 0, new Map());
-          total++;
-          continue;
-        }
-        const adapter = this.adapters.find((a) => a.name === session.source);
-        if (!adapter) {
-          this.writeExtractedData(
-            id,
-            session.model || '',
-            0,
-            0,
-            0,
-            0,
-            new Map(),
-          );
-          total++;
-          continue;
-        }
         try {
-          const acc = Indexer.newAccumulator();
-          for await (const msg of adapter.streamMessages(session.filePath)) {
-            Indexer.accumulateFromStream(msg, acc);
+          const session = this.db.getSession(id);
+          if (!session?.filePath) {
+            this.writeExtractedData(id, '', 0, 0, 0, 0, new Map());
+            total++;
+            continue;
           }
-          this.writeExtractedData(
-            id,
-            session.model || '',
-            acc.inputTokens,
-            acc.outputTokens,
-            acc.cacheReadTokens,
-            acc.cacheCreationTokens,
-            acc.toolCounts,
-            acc.fileCounts,
-          );
-          total++;
-        } catch (err) {
-          this.log?.warn(
-            'backfillCosts stream failed, writing zero costs',
-            { sessionId: id },
-            err,
-          );
-          this.writeExtractedData(
-            id,
-            session.model || '',
-            0,
-            0,
-            0,
-            0,
-            new Map(),
-          );
-          total++;
+          const adapter = this.adapters.find((a) => a.name === session.source);
+          if (!adapter) {
+            this.writeExtractedData(
+              id,
+              session.model || '',
+              0,
+              0,
+              0,
+              0,
+              new Map(),
+            );
+            total++;
+            continue;
+          }
+          try {
+            const acc = Indexer.newAccumulator();
+            for await (const msg of adapter.streamMessages(session.filePath)) {
+              Indexer.accumulateFromStream(msg, acc);
+            }
+            this.writeExtractedData(
+              id,
+              session.model || '',
+              acc.inputTokens,
+              acc.outputTokens,
+              acc.cacheReadTokens,
+              acc.cacheCreationTokens,
+              acc.toolCounts,
+              acc.fileCounts,
+            );
+            total++;
+          } catch (err) {
+            this.log?.warn(
+              'backfillCosts stream failed, writing zero costs',
+              { sessionId: id },
+              err,
+            );
+            this.writeExtractedData(
+              id,
+              session.model || '',
+              0,
+              0,
+              0,
+              0,
+              new Map(),
+            );
+            total++;
+          }
+        } finally {
+          // Rate limit: avoid I/O storms during large backfill. Must run for
+          // every iteration — including the no-adapter / no-filePath fast paths —
+          // otherwise tight loops over many such sessions stampede SQLite.
+          await new Promise((r) => setTimeout(r, 50));
         }
-        // Rate limit: avoid I/O storms during large backfill
-        await new Promise((r) => setTimeout(r, 50));
       }
       console.log(
         `[backfill] Costs: ${ids.length} sessions processed (running total: ${total})`,
@@ -514,6 +519,13 @@ export class Indexer {
         fileSize = (await stat(filePath)).size;
       } catch {
         /* intentional: virtual paths (e.g. cursor: dbPath?composer=id) don't have stat */
+      }
+
+      // Fast skip: file unchanged since the last index pass. Mirrors the dedup
+      // in indexAll so watcher-driven incremental updates don't reparse hot files.
+      if (fileSize > 0 && this.db.isIndexed(filePath, fileSize)) {
+        span?.end();
+        return { indexed: false };
       }
 
       const parseStart = performance.now();

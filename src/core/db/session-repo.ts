@@ -391,7 +391,7 @@ export function countSessions(
   db: BetterSqlite3.Database,
   opts: Pick<
     ListSessionsOptions,
-    'source' | 'sources' | 'project' | 'projects' | 'agents'
+    'source' | 'sources' | 'project' | 'projects' | 'agents' | 'includeOrphans'
   >,
   noiseFilter: NoiseFilter,
   resolveAliases: (projects: string[]) => string[],
@@ -592,7 +592,10 @@ export function upsertAuthoritativeSnapshot(
     sourceLocator: snapshot.sourceLocator,
     syncVersion: snapshot.syncVersion,
     snapshotHash: snapshot.snapshotHash,
-    tier: snapshot.tier ?? 'normal',
+    // Preserve NULL when the peer/sync snapshot has no tier yet so that
+    // backfillTiers can re-evaluate later. Coercing to 'normal' would
+    // silently make the session look already-classified.
+    tier: snapshot.tier ?? null,
     agentRole: snapshot.agentRole ?? null,
     qualityScore: computeQualityScore({
       userCount: snapshot.userMessageCount,

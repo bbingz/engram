@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "adb1088c",
+  "generatedAtCommit": "b80b3356",
   "inputPath": "commandcode/input/-Users-test-my-project/commandcode-session.jsonl",
   "insightFields": {
     "firstUserSummary": "检查解析器",

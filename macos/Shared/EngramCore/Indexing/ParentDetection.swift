@@ -176,7 +176,13 @@ public enum ParentDetection {
     }
 
     private static func compile(_ pattern: String) -> NSRegularExpression {
-        try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        do {
+            return try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        } catch {
+            // Surface which pattern is broken instead of a bare "Fatal error:
+            // 'try!' expression failed", so a typo gets fixed in seconds.
+            preconditionFailure("ParentDetection regex compile failed: \(pattern) — \(error)")
+        }
     }
 
     private static func matches(_ regex: NSRegularExpression, _ value: String) -> Bool {

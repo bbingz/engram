@@ -22,21 +22,24 @@ final class MCPStdioServer {
     4. Cite session IDs when referencing past work
     """
 
-    func run() {
-        while let line = readLine(strippingNewline: true) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            guard let requestData = trimmed.data(using: .utf8),
-                  let request = try? JSONDecoder().decode(JSONRPCRequest.self, from: requestData) else {
-                emitError(id: nil, code: -32700, message: "Parse error")
-                continue
+    func run() async {
+        do {
+            for try await line in FileHandle.standardInput.bytes.lines {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                guard let requestData = trimmed.data(using: .utf8),
+                      let request = try? JSONDecoder().decode(JSONRPCRequest.self, from: requestData) else {
+                    emitError(id: nil, code: -32700, message: "Parse error")
+                    continue
+                }
+                await handle(request)
             }
-
-            handle(request)
+        } catch {
+            // stdin closed or unreadable; exit the loop quietly.
         }
     }
 
-    private func handle(_ request: JSONRPCRequest) {
+    private func handle(_ request: JSONRPCRequest) async {
         switch request.method {
         case "initialize":
             emit(
@@ -66,32 +69,24 @@ final class MCPStdioServer {
                 ])
             )
         case "tools/call":
-            handleToolCall(request)
+            await handleToolCall(request)
         default:
             emitError(id: request.id, code: -32601, message: "Method not found")
         }
     }
 
-    private func handleToolCall(_ request: JSONRPCRequest) {
+    private func handleToolCall(_ request: JSONRPCRequest) async {
         guard let params = request.params?.objectValue,
               let name = params["name"]?.stringValue else {
             emitError(id: request.id, code: -32602, message: "Invalid params")
             return
         }
         let arguments = params["arguments"]?.objectValue ?? [:]
-
-        // TODO(swift6-async-loop): replace DispatchSemaphore with an async stdin loop.
-        let semaphore = DispatchSemaphore(value: 0)
-        var response: OrderedJSONValue?
-        Task {
-            response = await handleToolCall(name: name, arguments: arguments)
-            semaphore.signal()
-        }
-        semaphore.wait()
+        let response = await handleToolCall(name: name, arguments: arguments)
         emit(
             jsonrpc: "2.0",
             id: request.id,
-            result: response ?? .object([("content", .array([])), ("isError", .bool(true))])
+            result: response
         )
     }
 

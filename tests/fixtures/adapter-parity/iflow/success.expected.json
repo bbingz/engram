@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "adb1088c",
+  "generatedAtCommit": "b80b3356",
   "inputPath": "iflow/input/-Users-test-my-project/session-sample.jsonl",
   "insightFields": {
     "firstUserSummary": "帮我优化数据库查询",

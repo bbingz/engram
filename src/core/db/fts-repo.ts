@@ -8,6 +8,15 @@ export function containsCJK(text: string): boolean {
   return CJK_REGEX.test(text);
 }
 
+/**
+ * Escape `%`, `_`, and `\` in user input destined for `LIKE @pattern ESCAPE '\\'`.
+ * Without this, a literal user query like "50%" silently widens into "anything
+ * starting with 50" and "_" matches every single character.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}
+
 export function indexSessionContent(
   db: BetterSqlite3.Database,
   sessionId: string,
@@ -64,13 +73,16 @@ export function searchSessions(
     }
     if (filters?.project) {
       const expanded = resolveAliases([filters.project]);
+      // Exact-match the resolved project names. The previous LIKE '%name%'
+      // shape silently matched "engram-tools" when the user asked for
+      // "engram", which made cross-project search results misleading.
       if (expanded.length === 1) {
-        conditions.push('s.project LIKE @project');
-        params.project = `%${expanded[0]}%`;
+        conditions.push('s.project = @project');
+        params.project = expanded[0];
       } else {
         const clauses = expanded.map((p, i) => {
-          params[`proj${i}`] = `%${p}%`;
-          return `s.project LIKE @proj${i}`;
+          params[`proj${i}`] = p;
+          return `s.project = @proj${i}`;
         });
         conditions.push(`(${clauses.join(' OR ')})`);
       }
@@ -98,10 +110,33 @@ export function searchSessions(
 
   try {
     return doSearch(query);
-  } catch {
+  } catch (err) {
+    // Only swallow FTS5 syntax errors and retry with the query as a quoted
+    // phrase. DB lock / I/O / corruption errors must propagate; otherwise we
+    // misattribute infrastructure failures to a "weird query" and return
+    // misleading results.
+    if (!isFtsSyntaxError(err)) throw err;
     const escaped = `"${query.replace(/"/g, '""')}"`;
     return doSearch(escaped);
   }
+}
+
+export function isFtsSyntaxError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  const message =
+    'message' in err &&
+    typeof (err as { message?: unknown }).message === 'string'
+      ? (err as { message: string }).message.toLowerCase()
+      : '';
+  // FTS5 surfaces syntax problems via these strings; everything else (busy,
+  // locked, malformed, I/O) means "do not retry — propagate".
+  return (
+    message.includes('fts5: syntax error') ||
+    message.includes('unterminated string') ||
+    message.includes('no such column') ||
+    message.includes('syntax error') ||
+    message.includes('parse error')
+  );
 }
 
 /**
@@ -115,11 +150,17 @@ function searchSessionsLike(
   filters: SearchFilters | undefined,
   resolveAliases: (projects: string[]) => string[],
 ): FtsSearchResult[] {
+  // Escape user-supplied LIKE wildcards so "%/_" in the query are treated as
+  // literal characters rather than wildcards. Project filters likewise must
+  // be escaped because they take user-supplied project names.
   const conditions: string[] = [
-    'f.content LIKE @pattern',
+    "f.content LIKE @pattern ESCAPE '\\'",
     's.hidden_at IS NULL',
   ];
-  const params: Record<string, unknown> = { pattern: `%${query}%`, limit };
+  const params: Record<string, unknown> = {
+    pattern: `%${escapeLikePattern(query)}%`,
+    limit,
+  };
 
   if (filters?.source) {
     conditions.push('s.source = @source');
@@ -127,13 +168,15 @@ function searchSessionsLike(
   }
   if (filters?.project) {
     const expanded = resolveAliases([filters.project]);
+    // Exact-match resolved project names (see fts-repo doSearch); avoid the
+    // %name% silent partial match that surprised cross-project searches.
     if (expanded.length === 1) {
-      conditions.push('s.project LIKE @project');
-      params.project = `%${expanded[0]}%`;
+      conditions.push('s.project = @project');
+      params.project = expanded[0];
     } else {
       const clauses = expanded.map((p, i) => {
-        params[`proj${i}`] = `%${p}%`;
-        return `s.project LIKE @proj${i}`;
+        params[`proj${i}`] = p;
+        return `s.project = @proj${i}`;
       });
       conditions.push(`(${clauses.join(' OR ')})`);
     }
@@ -144,7 +187,9 @@ function searchSessionsLike(
   }
 
   const where = conditions.join(' AND ');
-  // Group by session_id so each session appears once; pick the first matching row's content for snippet
+  // Use a subquery to pick one representative row per session so the outer
+  // SELECT does not depend on non-grouped columns (f.content, f.rowid) which
+  // produce undefined results in non-strict SQLite and errors under strict.
   const rows = db
     .prepare(`
     SELECT
@@ -154,7 +199,11 @@ function searchSessionsLike(
     FROM sessions_fts f
     JOIN sessions s ON s.id = f.session_id
     WHERE ${where}
-    GROUP BY f.session_id
+      AND f.rowid = (
+        SELECT MIN(f2.rowid) FROM sessions_fts f2
+        WHERE f2.session_id = f.session_id
+          AND f2.content LIKE @pattern ESCAPE '\\'
+      )
     ORDER BY s.start_time DESC
     LIMIT @limit
   `)

@@ -1,3 +1,7 @@
 import Foundation
 
-MCPStdioServer().run()
+Task {
+    await MCPStdioServer().run()
+    exit(0)
+}
+dispatchMain()

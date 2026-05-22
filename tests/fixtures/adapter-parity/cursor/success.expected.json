@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "adb1088c",
+  "generatedAtCommit": "b80b3356",
   "inputPath": "cursor/input/state.vscdb?composer=abc-123",
   "insightFields": {
     "firstUserSummary": "Fix the login bug",
@@ -43,7 +43,7 @@
     "filePath": "<fixtureRoot>/cursor/input/state.vscdb?composer=abc-123",
     "id": "abc-123",
     "messageCount": 2,
-    "sizeBytes": 12288,
+    "sizeBytes": 382,
     "source": "cursor",
     "startTime": "2026-02-18T05:20:00.000Z",
     "summary": "Fix the login bug",

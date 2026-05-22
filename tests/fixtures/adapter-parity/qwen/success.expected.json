@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "adb1088c",
+  "generatedAtCommit": "b80b3356",
   "inputPath": "qwen/input/-Users-test-my-project/chats/sample.jsonl",
   "insightFields": {
     "firstUserSummary": "帮我重构这个模块",

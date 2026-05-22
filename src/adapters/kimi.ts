@@ -26,6 +26,13 @@ export class KimiAdapter implements SessionAdapter {
   readonly name = 'kimi' as const;
   private sessionsRoot: string;
   private kimiJsonPath: string;
+  // Cache the parsed kimi.json keyed by mtime so a re-index pass reads the
+  // file once instead of once per session. Indexing 50 Kimi sessions used to
+  // hit readFile() 50 times despite the work_dirs map being identical.
+  private kimiJsonCache: {
+    mtimeMs: number;
+    workDirs: Map<string, string>;
+  } | null = null;
 
   constructor(sessionsRoot?: string, kimiJsonPath?: string) {
     this.sessionsRoot = sessionsRoot ?? join(homedir(), '.kimi', 'sessions');
@@ -264,13 +271,22 @@ export class KimiAdapter implements SessionAdapter {
 
   private async resolveCwd(sessionId: string): Promise<string> {
     try {
-      const raw = await readFile(this.kimiJsonPath, 'utf8');
-      const data = JSON.parse(raw) as KimiJson;
-      for (const wd of data.work_dirs) {
-        if (wd.last_session_id === sessionId) {
-          return wd.path;
+      const fileStat = await stat(this.kimiJsonPath);
+      if (
+        !this.kimiJsonCache ||
+        this.kimiJsonCache.mtimeMs !== fileStat.mtimeMs
+      ) {
+        const raw = await readFile(this.kimiJsonPath, 'utf8');
+        const data = JSON.parse(raw) as KimiJson;
+        const workDirs = new Map<string, string>();
+        for (const wd of data.work_dirs) {
+          if (wd.last_session_id) {
+            workDirs.set(wd.last_session_id, wd.path);
+          }
         }
+        this.kimiJsonCache = { mtimeMs: fileStat.mtimeMs, workDirs };
       }
+      return this.kimiJsonCache.workDirs.get(sessionId) ?? '';
     } catch {
       // kimi.json not found or invalid
     }

@@ -332,4 +332,78 @@ describe('CodexAdapter', () => {
       expect(outputs).toEqual(['r1', 'r2']);
     });
   });
+
+  describe('extractText / isSystemInjection hardening (P0-9, P0-10)', () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-extract-${Date.now()}`);
+    const path = join(tmpRoot, 'rollout-extract.jsonl');
+
+    beforeAll(() => {
+      mkdirSync(tmpRoot, { recursive: true });
+      const lines = [
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:00.000Z',
+          type: 'session_meta',
+          payload: {
+            id: 'extract-1',
+            timestamp: '2026-01-15T10:00:00.000Z',
+            cwd: '/x',
+            model_provider: 'openai',
+          },
+        }),
+        // User content where the first block is a non-text-bearing block that
+        // happens to carry a `text` field (e.g. tool_use name). The adapter
+        // must skip it and surface the real user input from the next block.
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:01.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'tool_use', text: 'Bash' },
+              { type: 'input_text', text: 'real user question' },
+            ],
+          },
+        }),
+        // Each Claude-style system injection wrapper must be classified as a
+        // system message, not a user message.
+        ...[
+          '<local-command-caveat>caveat</local-command-caveat>',
+          '<local-command-stdout>out</local-command-stdout>',
+          '<command-name>foo</command-name>',
+          '<command-message>bar</command-message>',
+          'Unknown skill: foo',
+          'Invoke the superpowers: do-thing',
+          '<environment_context>env</environment_context>',
+        ].map((text, i) =>
+          JSON.stringify({
+            timestamp: `2026-01-15T10:00:${String(2 + i).padStart(2, '0')}.000Z`,
+            type: 'response_item',
+            payload: {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text }],
+            },
+          }),
+        ),
+      ];
+      writeFileSync(path, `${lines.join('\n')}\n`);
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('searches past non-text-bearing blocks to find the real text', async () => {
+      const messages = [];
+      for await (const m of adapter.streamMessages(path)) messages.push(m);
+      const user = messages.find((m) => m.role === 'user');
+      expect(user?.content).toBe('real user question');
+    });
+
+    it('classifies all known Claude-style injection wrappers as system', async () => {
+      const info = await adapter.parseSessionInfo(path);
+      // 1 real user message, 7 system-injection wrappers
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.systemMessageCount).toBe(7);
+    });
+  });
 });

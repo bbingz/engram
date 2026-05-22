@@ -310,11 +310,25 @@ toolRegistry.set('hide_session', (a) => {
   if (a.dry_run === true) {
     return { session_id: sessionId, hidden, dry_run: true };
   }
-  db.raw
-    .prepare(
-      `UPDATE sessions SET hidden_at = ${hidden ? "datetime('now')" : 'NULL'} WHERE id = ?`,
-    )
-    .run(sessionId);
+  // hide_session must update both `sessions.hidden_at` (read by local UI)
+  // and `session_local_state.hidden_at` (replicated to sync peers) atomically;
+  // otherwise the two views drift and remote nodes never see the hide.
+  const hiddenExpr = hidden ? "datetime('now')" : 'NULL';
+  const tx = db.raw.transaction((id: string) => {
+    db.raw
+      .prepare(`UPDATE sessions SET hidden_at = ${hiddenExpr} WHERE id = ?`)
+      .run(id);
+    db.raw
+      .prepare(
+        `
+        INSERT INTO session_local_state (session_id, hidden_at)
+        VALUES (?, ${hiddenExpr})
+        ON CONFLICT(session_id) DO UPDATE SET hidden_at = ${hiddenExpr}
+        `,
+      )
+      .run(id);
+  });
+  tx(sessionId);
   return { session_id: sessionId, hidden, dry_run: false };
 });
 

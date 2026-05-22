@@ -1,6 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CommandCodeAdapter } from '../../src/adapters/commandcode.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,5 +36,68 @@ describe('CommandCodeAdapter', () => {
     expect(messages.flatMap((m) => m.toolCalls ?? [])[0]?.name).toBe(
       'read_file',
     );
+  });
+
+  describe('system injection classification (round-4 NEW-2)', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'engram-commandcode-'));
+    const path = join(tmpRoot, 'inject.jsonl');
+
+    beforeAll(() => {
+      const lines = [
+        // A real user message
+        {
+          id: 'm1',
+          sessionId: 'cc-inject',
+          role: 'user',
+          cwd: '/x',
+          content: [{ type: 'text', text: 'real question' }],
+          timestamp: '2026-05-20T02:00:00.000Z',
+        },
+        // Claude-style injection wrappers — must count as system, not user
+        ...[
+          '<local-command-stdout>out</local-command-stdout>',
+          '<command-name>foo</command-name>',
+          'Unknown skill: foo',
+          'Base directory for this skill: /x',
+        ].map((text, i) => ({
+          id: `s${i}`,
+          sessionId: 'cc-inject',
+          role: 'user',
+          cwd: '/x',
+          content: [{ type: 'text', text }],
+          timestamp: `2026-05-20T02:0${i + 1}:00.000Z`,
+        })),
+      ];
+      writeFileSync(
+        path,
+        `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`,
+      );
+    });
+
+    afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
+
+    it('counts injection wrappers as system, not user', async () => {
+      const info = await adapter.parseSessionInfo(path);
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.systemMessageCount).toBe(4);
+      expect(info?.summary).toBe('real question');
+    });
+
+    it('falls back to file mtime when no timestamp present', async () => {
+      const noTsPath = join(tmpRoot, 'no-ts.jsonl');
+      writeFileSync(
+        noTsPath,
+        `${JSON.stringify({
+          id: 'm1',
+          sessionId: 'cc-no-ts',
+          role: 'user',
+          cwd: '/x',
+          content: [{ type: 'text', text: 'hi' }],
+        })}\n`,
+      );
+      const info = await adapter.parseSessionInfo(noTsPath);
+      expect(info?.startTime).toBeTruthy();
+      expect(Number.isNaN(Date.parse(info?.startTime ?? ''))).toBe(false);
+    });
   });
 });

@@ -39,6 +39,10 @@ if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] \
   if [ -f "$debug_dylib" ]; then
     codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$debug_dylib"
   fi
+  preview_dylib="${APP}/Contents/MacOS/__preview.dylib"
+  if [ -f "$preview_dylib" ]; then
+    codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$preview_dylib"
+  fi
   entitlements_args=()
   entitlements_path="${CODE_SIGN_ENTITLEMENTS:-}"
   if [ -n "$entitlements_path" ] && [ -f "${SRCROOT}/${entitlements_path}" ]; then

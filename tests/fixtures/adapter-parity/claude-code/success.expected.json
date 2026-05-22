@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "adb1088c",
+  "generatedAtCommit": "b80b3356",
   "inputPath": "claude-code/input/-Users-test-my-project/sample.jsonl",
   "insightFields": {
     "firstUserSummary": "请帮我添加用户注册功能",
