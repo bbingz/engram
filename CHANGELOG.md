@@ -7,6 +7,41 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Shipped — Round-6/7 deep review + full remediation (2026-05-22, Claude + Gemini + Codex)
+
+Two adversarial review rounds (17 Opus subagents) + cross-provider validation
+(Gemini 3.1 Pro and Codex/GPT-5.x independently confirmed the critical findings;
+Codex also caught one over-statement and one new bug — SEC-H3). Then completely
+remediated via 4 parallel worktree agents + a sequential integration/SST pass,
+merged to `main` (`286093f9..63d2b800`). See `docs/reviews/2026-05-22-FINAL-report.md`
+and `docs/reviews/2026-05-22-remediation-closeout.md`.
+
+Headline fixes (all behavioral + security + correctness landed; 384 framework
+tests green, app build SUCCEEDED):
+- **Composition root (P0)**: the running `EngramService` never wrote FTS content
+  nor called `migrate()`/`runInitialScan` — new sessions were unsearchable and a
+  fresh install produced a permanently empty DB. Wired `IndexJobRunner` (FTS
+  drain + content build), migrate + startup backfills + fresh-machine fail-fast.
+- **Security**: web UI now opt-in + token + Host/Origin + redaction (was always-on
+  unauthenticated, unredacted, DNS-rebindable); `project_move` path-confined;
+  peer-cred + capability token on destructive commands; `Library/Keychains` guard
+  fixed; socket `chmod 0600`.
+- **IPC**: accept() errno handling; snippet truncation + frame-cap symmetry;
+  real request-id on error.
+- **Write path / read adapters**: datetime window, change-count, cascade tier
+  reset, reconcile guard; CascadeDiscovery pipe deadlock; Antigravity cwd no
+  longer fabricated; WatchPathRules key.
+- **UI/observability**: 12 views off the main thread; observability views read
+  `OSLogStore`; index errors surfaced; real a11y; dead controls removed.
+- **Release**: no more un-notarizable ditto fallback; bundle-hygiene + Hardened
+  Runtime + version + deploy + CI gates; CLAUDE.md falsehoods corrected.
+- **Tiering**: Swift `SessionTier` parity with TS (probe/noise) + first tests.
+
+Deferred (rationale in closeout): SST full classifier/scoring consolidation
+(refactor, not a bug); service-side `.degraded` SLA (app-side already covers);
+P3 cross-validation omissions (WAL `-shm`/App Nap/JSON memory/UI refresh —
+unverified); advertised-but-inert features removed from UI rather than built.
+
 ### Shipped — EngramUITests fully restored (2026-05-22, Claude + Codex)
 
 Building on the data-loading fix (18 → 7), the remaining 7 UI failures are now
