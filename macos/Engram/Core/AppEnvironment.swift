@@ -44,11 +44,13 @@ struct AppEnvironment {
         arguments: [String] = CommandLine.arguments,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> AppEnvironment {
-        // Detect XCTest environment (TEST_HOST loads tests into app process)
-        if environment["XCTestConfigurationFilePath"] != nil {
-            return .test(fixturePath: "")
-        }
         let args = arguments
+        // An explicit `--test-mode` (UI tests, which launch the app as a fresh
+        // process via XCUIApplication and pass `--fixture-db`) must win over the
+        // XCTest-host detection below. XCUIApplication can leak
+        // XCTestConfigurationFilePath into the launched app's environment; if
+        // that check ran first it would discard the fixture path and load an
+        // empty DB, leaving every data-driven UI test with no sessions.
         if args.contains("--test-mode") {
             let fixturePath = args.firstIndex(of: "--fixture-db")
                 .flatMap { idx in args.indices.contains(idx + 1) ? args[idx + 1] : nil }
@@ -92,6 +94,12 @@ struct AppEnvironment {
                 windowSize: windowSize,
                 mockDaemon: mockDaemon
             )
+        }
+        // Unit-test host (EngramTests) loads into the app process without
+        // `--test-mode`; XCTestConfigurationFilePath signals that case and gets
+        // an empty fixture so the host doesn't touch the production DB.
+        if environment["XCTestConfigurationFilePath"] != nil {
+            return .test(fixturePath: "")
         }
         if let dataDir = args.firstIndex(of: "--data-dir")
             .flatMap({ idx in args.indices.contains(idx + 1) ? args[idx + 1] : nil }) {

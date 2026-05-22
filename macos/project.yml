@@ -272,7 +272,11 @@ targets:
       - path: EngramUITests
         excludes:
           - "baselines/**"
-      - path: ../tests/fixtures
+      # Bundle the macOS fixture DB (test-index.sqlite + sessions/) so
+      # TestLaunchConfig.fixtureDBPath resolves to a real bundled path and the
+      # launched app loads seeded sessions. Must be `test-fixtures` (the dir the
+      # lookup expects), not `../tests/fixtures` (repo-root TS fixtures, no DB).
+      - path: test-fixtures
         type: folder
         buildPhase: resources
     dependencies:
