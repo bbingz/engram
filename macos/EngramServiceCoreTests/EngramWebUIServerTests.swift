@@ -139,4 +139,56 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertFalse(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .system, content: "system")))
         XCTAssertFalse(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .assistant, content: "   ")))
     }
+
+    // MARK: - SEC-C1
+
+    func testWebUIServerFailsClosedWithoutAuthToken() {
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("webui-noauth-\(UUID().uuidString).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        XCTAssertThrowsError(try EngramWebUIServer(databasePath: dbPath, authToken: nil)) { error in
+            XCTAssertTrue(error is WebUIServerError)
+        }
+        XCTAssertThrowsError(try EngramWebUIServer(databasePath: dbPath, authToken: "")) { error in
+            XCTAssertTrue(error is WebUIServerError)
+        }
+    }
+
+    func testWebUIServerConstructsWithAuthToken() throws {
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("webui-auth-\(UUID().uuidString).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        XCTAssertNoThrow(try EngramWebUIServer(databasePath: dbPath, authToken: "secret-token"))
+    }
+
+    func testRedactionMatchesExportPatterns() {
+        let input = "here is api_key: ABCDEF0123456789 and sk-abcdefghij0123456789"
+        let redacted = EngramWebUIServer.redactSensitiveContent(input)
+        XCTAssertFalse(redacted.contains("ABCDEF0123456789"))
+        XCTAssertFalse(redacted.contains("sk-abcdefghij0123456789"))
+        XCTAssertTrue(redacted.contains("[REDACTED]"))
+    }
+
+    func testLoopbackHostAndOriginValidation() {
+        XCTAssertTrue(EngramWebUIServer.isLoopbackHost("127.0.0.1:3457", expectedPort: 3457))
+        XCTAssertTrue(EngramWebUIServer.isLoopbackHost("localhost:3457", expectedPort: 3457))
+        XCTAssertFalse(EngramWebUIServer.isLoopbackHost("evil.example.com", expectedPort: 3457))
+        XCTAssertTrue(EngramWebUIServer.isLoopbackOrigin("http://127.0.0.1:3457", expectedPort: 3457))
+        XCTAssertFalse(EngramWebUIServer.isLoopbackOrigin("http://evil.example.com", expectedPort: 3457))
+    }
+
+    func testConstantTimeEquals() {
+        XCTAssertTrue(EngramWebUIServer.constantTimeEquals("abc123", "abc123"))
+        XCTAssertFalse(EngramWebUIServer.constantTimeEquals("abc123", "abc124"))
+        XCTAssertFalse(EngramWebUIServer.constantTimeEquals("abc", "abc123"))
+    }
+
+    func testWebUIEnvOverride() {
+        // Env override is authoritative and deterministic regardless of any
+        // real ~/.engram/settings.json on the host.
+        XCTAssertTrue(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "1"]))
+        XCTAssertTrue(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "true"]))
+        XCTAssertFalse(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "0"]))
+        XCTAssertFalse(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "false"]))
+    }
 }

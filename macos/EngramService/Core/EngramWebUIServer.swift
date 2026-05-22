@@ -1,9 +1,21 @@
 import Foundation
 import GRDB
 import Hummingbird
+import HTTPTypes
 import Logging
 import NIOCore
 import EngramCoreRead
+
+enum WebUIServerError: Error, CustomStringConvertible {
+    case missingAuthToken
+
+    var description: String {
+        switch self {
+        case .missingAuthToken:
+            return "Web UI requires a per-launch auth token; none was provisioned"
+        }
+    }
+}
 
 final class EngramWebUIServer: @unchecked Sendable {
     private let databasePath: String
@@ -15,9 +27,16 @@ final class EngramWebUIServer: @unchecked Sendable {
     // deterministically rather than relying on ARC timing.
     private var databaseQueue: DatabaseQueue?
     private let adapters: [SourceName: any SessionAdapter]
+    private let authToken: String
 
-    init(databasePath: String, host: String = "127.0.0.1", port: Int = 3457) throws {
+    /// `authToken` is required (SEC-C1): every request must present it as a
+    /// Bearer token (or `?token=` query). Constructing without one fails closed.
+    init(databasePath: String, authToken: String?, host: String = "127.0.0.1", port: Int = 3457) throws {
+        guard let authToken, !authToken.isEmpty else {
+            throw WebUIServerError.missingAuthToken
+        }
         self.databasePath = databasePath
+        self.authToken = authToken
         self.host = host
         self.port = port
         var configuration = Configuration()
@@ -37,17 +56,22 @@ final class EngramWebUIServer: @unchecked Sendable {
         logger.logLevel = .warning
 
         let router = Router()
-        router.get("/") { [self] _, _ in
-            try htmlResponse(indexPage())
+        router.get("/") { [self] request, _ in
+            if let denied = guardRequest(request) { return denied }
+            return try htmlResponse(indexPage())
         }
         router.get("/session/:id") { [self] request, context in
+            if let denied = guardRequest(request) { return denied }
             guard let id = context.parameters.get("id")?.removingPercentEncoding else {
                 return try htmlResponse(layout(title: "Not Found", body: "<p>Session not found.</p>"), status: .notFound)
             }
             return try await htmlResponse(sessionPage(id: id, request: request))
         }
-        router.get("/health") { _, _ in
-            try textResponse("ok\n")
+        // /health is intentionally unauthenticated so the launcher's loopback
+        // readiness probe can confirm the server is up. It exposes no data.
+        router.get("/health") { [self] request, _ in
+            if let denied = guardHostOnly(request) { return denied }
+            return try textResponse("ok\n")
         }
 
         let app = Application(
@@ -91,6 +115,88 @@ final class EngramWebUIServer: @unchecked Sendable {
             throw WebUIServerError.databaseClosed
         }
         return databaseQueue
+    }
+
+    // MARK: - Request gating (SEC-C1)
+
+    /// Validates Host/Origin then the bearer token. Returns a denial `Response`
+    /// when the request must be rejected, or nil when it may proceed.
+    private func guardRequest(_ request: Request) -> Response? {
+        if let hostDenied = guardHostOnly(request) { return hostDenied }
+        guard isAuthorized(request) else {
+            return Self.unauthorizedResponse()
+        }
+        return nil
+    }
+
+    /// Rejects requests whose Host header is not loopback, or whose Origin is
+    /// cross-origin (DNS-rebinding / cross-site protection). Returns nil to allow.
+    private func guardHostOnly(_ request: Request) -> Response? {
+        if let hostName = HTTPField.Name("Host"),
+           let hostHeader = request.headers[hostName],
+           !Self.isLoopbackHost(hostHeader, expectedPort: port) {
+            return Self.forbiddenResponse("Invalid Host header")
+        }
+        if let origin = request.headers[.origin], !origin.isEmpty {
+            if !Self.isLoopbackOrigin(origin, expectedPort: port) {
+                return Self.forbiddenResponse("Cross-origin request rejected")
+            }
+        }
+        return nil
+    }
+
+    private func isAuthorized(_ request: Request) -> Bool {
+        if let authHeader = request.headers[.authorization] {
+            let prefix = "Bearer "
+            if authHeader.hasPrefix(prefix) {
+                let presented = String(authHeader.dropFirst(prefix.count))
+                if Self.constantTimeEquals(presented, authToken) { return true }
+            }
+        }
+        // Allow the token via query param for browser convenience over loopback.
+        if let queryToken = request.uri.queryParameters["token"].map(String.init),
+           Self.constantTimeEquals(queryToken, authToken) {
+            return true
+        }
+        return false
+    }
+
+    static func isLoopbackHost(_ host: String, expectedPort: Int) -> Bool {
+        let hostname = host.split(separator: ":").first.map(String.init) ?? host
+        return hostname == "127.0.0.1" || hostname == "localhost" || hostname == "[::1]" || hostname == "::1"
+    }
+
+    static func isLoopbackOrigin(_ origin: String, expectedPort: Int) -> Bool {
+        guard let url = URL(string: origin), let host = url.host else { return false }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1"
+    }
+
+    static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+        let a = Array(lhs.utf8)
+        let b = Array(rhs.utf8)
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<a.count {
+            diff |= a[i] ^ b[i]
+        }
+        return diff == 0
+    }
+
+    private static func unauthorizedResponse() -> Response {
+        var headers = HTTPFields()
+        headers[.contentType] = "text/plain; charset=utf-8"
+        headers[.wwwAuthenticate] = "Bearer"
+        let data = Data("401 Unauthorized\n".utf8)
+        headers[.contentLength] = "\(data.count)"
+        return Response(status: .unauthorized, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(data: data)))
+    }
+
+    private static func forbiddenResponse(_ message: String) -> Response {
+        var headers = HTTPFields()
+        headers[.contentType] = "text/plain; charset=utf-8"
+        let data = Data("403 Forbidden: \(message)\n".utf8)
+        headers[.contentLength] = "\(data.count)"
+        return Response(status: .forbidden, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(data: data)))
     }
 
     private func indexPage() throws -> String {
@@ -230,13 +336,38 @@ final class EngramWebUIServer: @unchecked Sendable {
         )
         var messages: [NormalizedMessage] = []
         for try await message in stream where Self.shouldDisplayTranscriptMessage(message) {
-            messages.append(message)
+            // SEC-C1: redact secrets before they ever reach the rendered page,
+            // matching the export path's behavior.
+            var redacted = message
+            redacted.content = Self.redactSensitiveContent(message.content)
+            messages.append(redacted)
         }
         let hasMore = messages.count > limit
         if hasMore {
             messages.removeLast(messages.count - limit)
         }
         return (messages, hasMore, offset + messages.count)
+    }
+
+    // TODO: share the canonical redaction with TranscriptExportService.redactSensitiveContent.
+    // It is currently `private static` there and that file is owned by another
+    // component; this is a minimal mirror of the same pattern set (SEC-C1).
+    static func redactSensitiveContent(_ content: String) -> String {
+        let patterns = [
+            #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_\-+=/.]{10,}["']?"#,
+            #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#,
+            #"\b(sk-[A-Za-z0-9_\-]{10,}|ghp_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"#,
+        ]
+        return patterns.reduce(content) { current, pattern in
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return current }
+            let range = NSRange(current.startIndex..<current.endIndex, in: current)
+            return regex.stringByReplacingMatches(
+                in: current,
+                options: [],
+                range: range,
+                withTemplate: "[REDACTED]"
+            )
+        }
     }
 
     static func shouldDisplayTranscriptMessage(_ message: NormalizedMessage) -> Bool {

@@ -370,11 +370,16 @@ public enum StartupBackfills {
                   AND id NOT IN (SELECT id FROM memory_insights WHERE deleted_at IS NULL)
                 """
             )
+            // Guard against an empty/partial `insights` table wiping the entire
+            // vector store: `id NOT IN (SELECT id FROM insights)` is true for every
+            // row when `insights` is empty. Only soft-delete orphaned vectors when
+            // the text table actually has rows to reconcile against.
             let orphanedVector = try db.executeAndCountChanges(
                 sql: """
                 UPDATE memory_insights
                 SET deleted_at = datetime('now')
                 WHERE deleted_at IS NULL
+                  AND EXISTS (SELECT 1 FROM insights)
                   AND id NOT IN (SELECT id FROM insights)
                 """
             )
@@ -727,8 +732,7 @@ public enum StartupBackfills {
                 sql: """
                 SELECT id, start_time, end_time, project, cwd FROM sessions
                 WHERE source IN ('claude-code', 'claude')
-                  AND start_time <= ?
-                  AND start_time >= datetime(?, '-24 hours')
+                  AND datetime(start_time) BETWEEN datetime(?, '-24 hours') AND datetime(?)
                   AND parent_session_id IS NULL
                 """,
                 arguments: [startTime, startTime]
@@ -1008,9 +1012,15 @@ public enum StartupBackfills {
 }
 
 private extension Database {
+    /// Executes a single statement and returns the rows changed by THAT statement
+    /// only (`db.changesCount`), not the connection-cumulative `totalChangesCount`.
+    /// The cumulative counter also includes rows changed by triggers (e.g. the
+    /// `trg_sessions_parent_cascade` cascade fired by `DELETE FROM sessions` in
+    /// `deduplicateFilePaths`), which inflates the reported counts surfaced as
+    /// maintenance event payloads. Per-statement `changesCount` reflects only the
+    /// directly affected rows.
     func executeAndCountChanges(sql: String, arguments: StatementArguments = StatementArguments()) throws -> Int {
-        let before = totalChangesCount
         try execute(sql: sql, arguments: arguments)
-        return totalChangesCount - before
+        return changesCount
     }
 }

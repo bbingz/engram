@@ -58,12 +58,22 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
             CREATE INDEX IF NOT EXISTS idx_sessions_orphan_status ON sessions(orphan_status);
 
-            CREATE TRIGGER IF NOT EXISTS trg_sessions_parent_cascade
+            DROP TRIGGER IF EXISTS trg_sessions_parent_cascade;
+            CREATE TRIGGER trg_sessions_parent_cascade
             AFTER DELETE ON sessions
             BEGIN
-              UPDATE sessions SET parent_session_id = NULL, link_source = NULL, tier = NULL
+              -- Confirmed children: orphan the link and reset tier for re-evaluation,
+              -- but preserve 'skip' for true subagents (accessed via parent, never independently).
+              UPDATE sessions
+                SET parent_session_id = NULL,
+                    link_source = NULL,
+                    tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
                 WHERE parent_session_id = OLD.id;
-              UPDATE sessions SET suggested_parent_id = NULL
+              -- Suggested (advisory) children: clear the suggestion and likewise reset
+              -- tier for re-evaluation, preserving 'skip' for true subagents.
+              UPDATE sessions
+                SET suggested_parent_id = NULL,
+                    tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
                 WHERE suggested_parent_id = OLD.id;
             END;
 

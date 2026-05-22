@@ -1,9 +1,11 @@
 import CryptoKit
 import Foundation
 import EngramCoreRead
+import os
 
 public final class SwiftIndexer {
     private static let writeBatchSize = 100
+    private static let log = os.Logger(subsystem: "com.engram.service", category: "indexer")
 
     private let sink: any IndexingWriteSink
     private let adapters: [any SessionAdapter]
@@ -26,6 +28,9 @@ public final class SwiftIndexer {
         try sink.upsertBatch(snapshots, reason: reason)
     }
 
+    /// Returns the number of snapshots that were actually written (merge/noop),
+    /// NOT the number attempted. Per-snapshot failures are subtracted so callers
+    /// see a truthful "indexed" count.
     @discardableResult
     public func indexAll(sources: Set<SourceName>? = nil) async throws -> Int {
         var batch: [AuthoritativeSessionSnapshot] = []
@@ -34,21 +39,33 @@ public final class SwiftIndexer {
         for try await snapshot in streamSnapshots(sources: sources) {
             batch.append(snapshot)
             if batch.count >= Self.writeBatchSize {
-                _ = try sink.upsertBatch(batch, reason: .initialScan)
-                indexed += batch.count
+                indexed += try writeBatchCountingSuccesses(batch)
                 batch.removeAll(keepingCapacity: true)
             }
         }
 
         if !batch.isEmpty {
-            _ = try sink.upsertBatch(batch, reason: .initialScan)
-            indexed += batch.count
+            indexed += try writeBatchCountingSuccesses(batch)
         }
 
         // Parent-link / suggested-parent backfills run in the writer's own
         // `write { db in ... }` scope (see EngramDatabaseWriter.indexSessions),
         // never against a Database handle held across the await loop above.
         return indexed
+    }
+
+    /// Writes one batch and returns the count of rows that did NOT fail.
+    /// Logs each per-snapshot failure so a silent fake-success cannot happen.
+    private func writeBatchCountingSuccesses(_ batch: [AuthoritativeSessionSnapshot]) throws -> Int {
+        let result = try sink.upsertBatch(batch, reason: .initialScan)
+        var failures = 0
+        for item in result.results where item.action == .failure {
+            failures += 1
+            Self.log.error(
+                "session upsert failed: session=\(item.sessionId, privacy: .public) error=\(item.error ?? "unknown", privacy: .public)"
+            )
+        }
+        return batch.count - failures
     }
 
     public func collectSnapshots(sources: Set<SourceName>? = nil) async throws -> [AuthoritativeSessionSnapshot] {
@@ -88,18 +105,46 @@ public final class SwiftIndexer {
             if let sources, !sources.contains(adapter.source) { continue }
             guard await adapter.detect() else { continue }
 
-            for locator in try await adapter.listSessionLocators() {
-                try Task.checkCancellation()
-                switch try await adapter.parseSessionInfo(locator: locator) {
-                case .failure:
-                    continue
-                case .success(var info):
-                    if info.project == nil, !info.cwd.isEmpty {
-                        info.project = URL(fileURLWithPath: info.cwd).lastPathComponent
-                    }
+            let locators: [String]
+            do {
+                locators = try await adapter.listSessionLocators()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Isolate per-adapter failures: one unreadable source must not
+                // abort the entire scan across all other adapters.
+                Self.log.error(
+                    "adapter listSessionLocators failed: source=\(adapter.source.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                )
+                continue
+            }
 
-                    let stats = try await streamStats(adapter: adapter, locator: locator)
-                    yield(buildSnapshot(info: info, locator: locator, stats: stats))
+            for locator in locators {
+                try Task.checkCancellation()
+                do {
+                    switch try await adapter.parseSessionInfo(locator: locator) {
+                    case .failure(let reason):
+                        Self.log.error(
+                            "session parse failed: source=\(adapter.source.rawValue, privacy: .public) reason=\(reason.rawValue, privacy: .public) locator=\(locator, privacy: .public)"
+                        )
+                        continue
+                    case .success(var info):
+                        if info.project == nil, !info.cwd.isEmpty {
+                            info.project = URL(fileURLWithPath: info.cwd).lastPathComponent
+                        }
+
+                        let stats = try await streamStats(adapter: adapter, locator: locator)
+                        yield(buildSnapshot(info: info, locator: locator, stats: stats))
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // Isolate per-session errors (e.g. transient stream failures)
+                    // so a single bad transcript does not abort the whole scan.
+                    Self.log.error(
+                        "session index error: source=\(adapter.source.rawValue, privacy: .public) locator=\(locator, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                    )
+                    continue
                 }
             }
         }

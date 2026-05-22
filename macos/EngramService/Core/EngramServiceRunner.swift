@@ -1,4 +1,7 @@
 import Foundation
+import Security
+import EngramCoreRead
+import EngramCoreWrite
 
 private func argumentValue(after flag: String, in arguments: [String]) -> String? {
     guard let index = arguments.firstIndex(of: flag),
@@ -50,6 +53,24 @@ public enum EngramServiceRunner {
         )
 
         let gate = try ServiceWriterGate(databasePath: databasePath, runtimeDirectory: runtimeDirectory)
+
+        // Composition root: run migrations ONCE before serving (idempotent), and
+        // fail fast if the schema is still absent afterward. A missing `sessions`
+        // table means migrations did not actually create the schema, which would
+        // otherwise surface as silent total:0 / empty results downstream.
+        do {
+            _ = try await gate.performWriteCommand(name: "migrate") { writer in
+                try writer.migrate()
+                try writer.verifySchemaPresent() // throws .missingSchema if schema absent
+            }
+            ServiceLogger.notice("schema migration complete", category: .runner)
+        } catch {
+            ServiceLogger.error("fatal: schema migration failed", category: .runner, error: error)
+            print(#"{"event":"fatal","stage":"migrate","error":"\#(error.localizedDescription)"}"#)
+            fflush(stdout)
+            exit(70) // EX_SOFTWARE
+        }
+
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
             readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath)
@@ -58,9 +79,14 @@ public enum EngramServiceRunner {
             await handler.handle(request)
         }
         try server.start()
-        let webTask = Task {
+
+        // SEC-C1: the web UI is opt-in. Default OFF; only start when the user has
+        // explicitly enabled `webUIEnabled` in ~/.engram/settings.json.
+        let webUIEnabled = Self.readWebUIEnabled(environment: environment)
+        let webToken = webUIEnabled ? Self.provisionWebToken(runtimeDirectory: runtimeDirectory) : nil
+        let webTask = webUIEnabled ? Task {
             do {
-                let webServer = try EngramWebUIServer(databasePath: databasePath)
+                let webServer = try EngramWebUIServer(databasePath: databasePath, authToken: webToken)
                 let readyTask = Task {
                     do {
                         try await waitForWebHealth(host: "127.0.0.1", port: 3457)
@@ -87,11 +113,22 @@ public enum EngramServiceRunner {
                 )
                 emit(ServiceWebErrorEvent(message: error.localizedDescription))
             }
+        } : nil
+        if !webUIEnabled {
+            ServiceLogger.info("web ui disabled (webUIEnabled=false); not starting", category: .runner)
         }
 
         ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
         print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
         fflush(stdout)
+
+        // V2: run the full startup scan ONCE, detached so it does not block the
+        // health probe / ready emission. Runs through the gate so writes are
+        // serialized with incoming commands. This also drains the FTS backlog
+        // (via IndexJobRunner) so search content is actually written.
+        let initialScanTask = Task {
+            await Self.runInitialScan(gate: gate)
+        }
 
         let indexingTask = Task {
             await Self.runIndexingLoop(gate: gate)
@@ -147,9 +184,10 @@ public enum EngramServiceRunner {
         }
 
         defer {
+            initialScanTask.cancel()
             indexingTask.cancel()
             checkpointTask.cancel()
-            webTask.cancel()
+            webTask?.cancel()
             server.stop()
         }
 
@@ -160,6 +198,20 @@ public enum EngramServiceRunner {
         } catch is CancellationError {
             // Fall through to the same shutdown path as an orderly stop.
         }
+
+        // Cancel and wait for in-flight gate write commands to unwind before the
+        // gate is torn down, so the writer/process flocks are released for the
+        // next launch. These are unstructured Tasks (not auto-cancelled when the
+        // parent `run()` task is cancelled), so cancel them explicitly here.
+        // The initial scan and periodic loop both hold the gate's write
+        // semaphore through `performWriteCommand`; cancellation is observed at
+        // the indexer's `Task.checkCancellation()` boundaries, so these return
+        // promptly once cancelled. Without this, a still-running scan keeps the
+        // gate alive (and its locks held) past `run()` returning.
+        initialScanTask.cancel()
+        indexingTask.cancel()
+        await initialScanTask.value
+        await indexingTask.value
 
         // Wait for the startup truncate to finish before tearing down the gate.
         // SQLite's PRAGMA call doesn't observe Task cancellation, so the value
@@ -205,16 +257,22 @@ public enum EngramServiceRunner {
 
             do {
                 let result = try await gate.performWriteCommand(name: "indexRecent") { writer in
-                    try await writer.indexRecentSessions()
+                    let scan = try await writer.indexRecentSessions()
+                    // Drain any FTS jobs enqueued by this scan so search content
+                    // is written (V1). Embedding jobs are marked not_applicable.
+                    let jobSummary = try await IndexJobRunner(writer: writer).runRecoverableJobs()
+                    return (scan: scan, jobs: jobSummary)
                 }
+                let scan = result.value.scan
+                let jobs = result.value.jobs
                 ServiceLogger.notice(
-                    "index scan completed: indexed=\(result.value.indexed) total=\(result.value.total) todayParents=\(result.value.todayParents)",
+                    "index scan completed: indexed=\(scan.indexed) total=\(scan.total) todayParents=\(scan.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable)",
                     category: .runner
                 )
                 emit(ServiceIndexEvent(
-                    indexed: result.value.indexed,
-                    total: result.value.total,
-                    todayParents: result.value.todayParents
+                    indexed: scan.indexed,
+                    total: scan.total,
+                    todayParents: scan.todayParents
                 ))
             } catch is CancellationError {
                 break
@@ -222,6 +280,34 @@ public enum EngramServiceRunner {
                 ServiceLogger.error("index scan failed", category: .runner, error: error)
                 emit(ServiceIndexErrorEvent(error: error.localizedDescription))
             }
+        }
+    }
+
+    /// V2 composition root: runs the full startup scan once, draining the FTS
+    /// backlog. Builds real conformers over the unit-tested static funcs and
+    /// runs through the gate so writes serialize with command dispatch.
+    private static func runInitialScan(gate: ServiceWriterGate) async {
+        do {
+            try await gate.performWriteCommand(name: "initialScan") { writer in
+                let adapters = SessionAdapterFactory.defaultAdapters()
+                let jobRunner = IndexJobRunner(writer: writer, adapters: adapters)
+                try await StartupBackfills.runInitialScan(
+                    emit: { event in Self.emit(StartupBackfillEventEnvelope(event: event)) },
+                    log: OSLogStartupBackfillLogging(),
+                    usageCollector: NoopStartupUsageCollector(),
+                    indexer: WriterStartupIndexing(writer: writer, adapters: adapters),
+                    indexJobRunner: jobRunner,
+                    database: WriterStartupBackfillDatabase(writer: writer),
+                    orphanScanner: WriterStartupOrphanScanning(writer: writer),
+                    adapters: adapters
+                )
+            }
+            ServiceLogger.notice("initial startup scan complete", category: .runner)
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.error("initial startup scan failed", category: .runner, error: error)
+            emit(ServiceIndexErrorEvent(error: error.localizedDescription))
         }
     }
 
@@ -262,6 +348,68 @@ public enum EngramServiceRunner {
         }
         print(text)
         fflush(stdout)
+    }
+
+    // MARK: - Web UI gating (SEC-C1)
+
+    /// Reads the opt-in `webUIEnabled` flag. Default FALSE. An env override
+    /// (`ENGRAM_WEB_UI_ENABLED=1`) is honored for tests/dev; otherwise the value
+    /// comes from `~/.engram/settings.json`.
+    static func readWebUIEnabled(environment: [String: String]) -> Bool {
+        if let envValue = environment["ENGRAM_WEB_UI_ENABLED"] {
+            return ["1", "true", "yes"].contains(envValue.lowercased())
+        }
+        let settingsURL = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent("settings.json")
+        guard let data = try? Data(contentsOf: settingsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return false
+        }
+        if let value = object["webUIEnabled"] as? Bool {
+            return value
+        }
+        return false
+    }
+
+    /// Generates a per-launch bearer token and writes it to
+    /// `<runtimeDirectory>/webui.token` with mode 0600. Returns nil on failure
+    /// (the web UI then refuses to start, failing closed).
+    static func provisionWebToken(runtimeDirectory: URL) -> String? {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            return nil
+        }
+        let token = Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let tokenURL = runtimeDirectory.appendingPathComponent("webui.token")
+        do {
+            try token.data(using: .utf8)?.write(to: tokenURL, options: [.atomic])
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenURL.path)
+            return token
+        } catch {
+            ServiceLogger.warn("failed to write web ui token: \(error.localizedDescription)", category: .runner)
+            return nil
+        }
+    }
+}
+
+private struct StartupBackfillEventEnvelope: Encodable {
+    let event: StartupBackfillEvent
+
+    enum CodingKeys: String, CodingKey {
+        case event
+        case payload
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(event.event, forKey: .event)
+        try container.encode(event.payload, forKey: .payload)
     }
 }
 
