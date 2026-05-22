@@ -112,16 +112,21 @@ struct SourcePulseView: View {
     private func loadData() async {
         isLoading = true; error = nil
         defer { isLoading = false }
+        let db = self.db
         do {
             sources = try await serviceClient.sources()
         } catch {
             self.error = error.localizedDescription
-            do {
-                sourceDist = try db.sourceDistribution()
-                sources = sourceDist.map { EngramServiceSourceInfo(name: $0.source, sessionCount: $0.count, latestIndexed: nil) }
-            } catch {}
+            // UI-C1/C2: DB fallback read runs off the main thread.
+            if let dist = try? await Task.detached(operation: { try db.sourceDistribution() }).value {
+                sourceDist = dist
+                sources = dist.map { EngramServiceSourceInfo(name: $0.source, sessionCount: $0.count, latestIndexed: nil) }
+            }
         }
-        do { sourceDist = try db.sourceDistribution() } catch {}
+        // Distribution chart read also off-main.
+        if let dist = try? await Task.detached(operation: { try db.sourceDistribution() }).value {
+            sourceDist = dist
+        }
     }
 
     @ViewBuilder

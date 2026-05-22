@@ -5,6 +5,7 @@ struct AgentsView: View {
     @Environment(DatabaseManager.self) var db
     @State private var agentSessions: [Session] = []
     @State private var isLoading = true
+    @State private var loadError: String? = nil
 
     private var activeCount: Int {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
@@ -17,6 +18,9 @@ struct AgentsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let loadError {
+                    AlertBanner(message: "Failed to load agent sessions: \(loadError)")
+                }
                 HStack(spacing: 12) {
                     KPICard(value: "\(agentSessions.count)", label: "Agent Sessions")
                     KPICard(value: "\(activeCount)", label: "Active (7d)")
@@ -45,10 +49,14 @@ struct AgentsView: View {
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
+        // UI-C1/C2: run the synchronous GRDB read off the main thread.
+        let db = self.db
         do {
-            agentSessions = try db.listSessions(subAgent: true, limit: 200)
+            agentSessions = try await Task.detached { try db.listSessions(subAgent: true, limit: 200) }.value
+            loadError = nil
         } catch {
             EngramLogger.error("AgentsView load failed", module: .ui, error: error)
+            loadError = error.localizedDescription
         }
     }
 }

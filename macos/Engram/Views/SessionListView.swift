@@ -32,6 +32,7 @@ struct SessionListView: View {
     @State private var lastSelectedSession: Session?
 
     @State private var columnStore = ColumnVisibilityStore()
+    @State private var loadError: String? = nil
 
     // MARK: - Derived bindings
 
@@ -173,6 +174,12 @@ struct SessionListView: View {
 
             Divider()
 
+            if let loadError {
+                AlertBanner(message: "Failed to load sessions: \(loadError)")
+                    .padding(.horizontal, 10)
+                    .padding(.top, 6)
+            }
+
             // Session list
             if filteredSessions.isEmpty && !sessions.isEmpty {
                 EmptyState(icon: "line.3.horizontal.decrease.circle", title: "No matches", message: "No sessions match your current filters")
@@ -283,6 +290,9 @@ struct SessionListView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
             }
             .buttonStyle(.plain)
+            // UI-H3: trash toggle is icon-only — give VoiceOver a label + state.
+            .accessibilityLabel(showingTrash ? "Showing trash" : "Show trash")
+            .accessibilityValue(hiddenCount > 0 ? "\(hiddenCount) hidden" : "")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
@@ -314,28 +324,40 @@ struct SessionListView: View {
     // MARK: - Data loading
 
     private func loadSessions() async {
-        hiddenCount = (try? db.countHiddenSessions()) ?? 0
-
-        if showingTrash {
-            sessions = (try? db.listHiddenSessions(limit: 500)) ?? []
-        } else {
-            let useTopLevel = agentFilterMode != 1 // top-level only except "agents only" mode
-            do {
-                sessions = try db.listSessions(
-                    subAgent: agentFilter,
-                    topLevelOnly: useTopLevel,
-                    limit: 2000
-                )
-            } catch {
-                EngramLogger.error("SessionListView load failed", module: .ui, error: error)
-                sessions = []
-            }
+        // UI-C1/C2: run the synchronous GRDB reads + child-count IN-queries off the
+        // main thread. `readInBackground` runs `pool.read` on the calling thread, so
+        // calling these directly from a @MainActor func froze the UI on a large DB.
+        let db = self.db
+        let showingTrash = self.showingTrash
+        let agentFilter = self.agentFilter
+        let useTopLevel = agentFilterMode != 1 // top-level only except "agents only" mode
+        do {
+            let loaded = try await Task.detached {
+                let hidden = (try? db.countHiddenSessions()) ?? 0
+                let sessions: [Session] = showingTrash
+                    ? ((try? db.listHiddenSessions(limit: 500)) ?? [])
+                    : try db.listSessions(
+                        subAgent: agentFilter,
+                        topLevelOnly: useTopLevel,
+                        limit: 2000
+                    )
+                let ids = sessions.map(\.id)
+                let confirmed = (try? db.childCount(parentIds: ids)) ?? [:]
+                let suggested = (try? db.suggestedChildCount(parentIds: ids)) ?? [:]
+                return (hidden, sessions, confirmed, suggested)
+            }.value
+            hiddenCount = loaded.0
+            sessions = loaded.1
+            confirmedCounts = loaded.2
+            suggestedCounts = loaded.3
+            loadError = nil
+        } catch {
+            EngramLogger.error("SessionListView load failed", module: .ui, error: error)
+            sessions = []
+            confirmedCounts = [:]
+            suggestedCounts = [:]
+            loadError = error.localizedDescription
         }
-
-        // Load child counts for expandable grouped view
-        let parentIds = sessions.map(\.id)
-        confirmedCounts = (try? db.childCount(parentIds: parentIds)) ?? [:]
-        suggestedCounts = (try? db.suggestedChildCount(parentIds: parentIds)) ?? [:]
 
         // Refresh cached selection after reload
         if let id = selectedSessionId,
@@ -345,7 +367,8 @@ struct SessionListView: View {
     }
 
     private func loadFavorites() async {
-        let favs = (try? db.listFavorites()) ?? []
+        let db = self.db
+        let favs = await Task.detached { (try? db.listFavorites()) ?? [] }.value
         favoriteIds = Set(favs.map(\.id))
     }
 

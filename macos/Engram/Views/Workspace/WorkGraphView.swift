@@ -50,6 +50,9 @@ struct WorkGraphView: View {
             .padding(24)
         }
         .accessibilityIdentifier("workGraph_container")
+        // UI-H3: summarize the graph for VoiceOver (keeps the test identifier).
+        .accessibilityLabel("Work graph")
+        .accessibilityValue("\(repos.count) repos, \(activeCount) active, \(totalCommitSessions) sessions")
         .task { await loadData() }
     }
 
@@ -68,8 +71,10 @@ struct WorkGraphView: View {
     private func loadData() async {
         isLoading = true; error = nil
         defer { isLoading = false }
+        // UI-C1/C2: run the synchronous GRDB read off the main thread.
+        let db = self.db
         do {
-            repos = try db.listGitRepos()
+            repos = try await Task.detached { try db.listGitRepos() }.value
         } catch {
             self.error = error.localizedDescription
         }
@@ -141,5 +146,9 @@ private struct WorkGraphRow: View {
         .background(Theme.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        // UI-H3: each repo row is a single labeled element with its session count.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(repo.name + (repo.branch.map { ", branch \($0)" } ?? ""))
+        .accessibilityValue("\(repo.sessionCount) sessions")
     }
 }

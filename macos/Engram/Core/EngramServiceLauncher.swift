@@ -30,12 +30,20 @@ final class EngramServiceLauncher {
     typealias StatusProbe = @Sendable () async throws -> EngramServiceStatus
     typealias StatusSink = @MainActor @Sendable (EngramServiceStatus) -> Void
 
+    /// OBS-O2: callback invoked for each structured event the service prints to
+    /// stdout (e.g. `index_error`). The status poll channel can only ever report
+    /// `.running`, so indexing failures are otherwise invisible to the app. The
+    /// launcher already drains stdout; here it parses the JSON line and forwards
+    /// the decoded event so `App.swift` can reflect it in the status store.
+    typealias EventSink = @MainActor @Sendable (EngramServiceEvent) -> Void
+
     private var process: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
     private var healthTask: Task<Void, Never>?
     private let healthIntervalNanoseconds: UInt64
     private let maximumRestartAttempts: Int
+    private var onEvent: EventSink?
 
     init(
         healthIntervalNanoseconds: UInt64 = 5_000_000_000,
@@ -60,7 +68,8 @@ final class EngramServiceLauncher {
         process?.isRunning == true
     }
 
-    func start(configuration: EngramServiceLaunchConfiguration) throws {
+    func start(configuration: EngramServiceLaunchConfiguration, onEvent: EventSink? = nil) throws {
+        if let onEvent { self.onEvent = onEvent }
         guard process?.isRunning != true else { return }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: configuration.executablePath)
@@ -190,6 +199,16 @@ final class EngramServiceLauncher {
                 EngramLogger.error("EngramService stderr: \(text)", module: .daemon)
             } else {
                 EngramLogger.debug("EngramService stdout: \(text)", module: .daemon)
+                // OBS-O2: parse structured events (one JSON object per line) and
+                // forward them so indexing failures surface in the status store.
+                for line in text.split(whereSeparator: \.isNewline) {
+                    guard let lineData = line.data(using: .utf8),
+                          let event = try? JSONDecoder().decode(EngramServiceEvent.self, from: lineData)
+                    else { continue }
+                    Task { @MainActor [weak self] in
+                        self?.onEvent?(event)
+                    }
+                }
             }
         }
     }

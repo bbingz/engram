@@ -128,12 +128,17 @@ struct RepoDetailView: View {
             .padding(20)
         }
         .task {
-            // Load CLAUDE.md
-            let claudePath = (repo.path as NSString).appendingPathComponent("CLAUDE.md")
-            claudeMdContent = try? String(contentsOfFile: claudePath, encoding: .utf8)
-
-            // Load related sessions by cwd path
-            relatedSessions = (try? db.getContext(cwd: repo.path, limit: 10)) ?? []
+            // Load CLAUDE.md + related sessions off the main thread (UI-C1/C2).
+            let db = self.db
+            let path = repo.path
+            let loaded = await Task.detached { () -> (String?, [Session]) in
+                let claudePath = (path as NSString).appendingPathComponent("CLAUDE.md")
+                let claude = try? String(contentsOfFile: claudePath, encoding: .utf8)
+                let related = (try? db.getContext(cwd: path, limit: 10)) ?? []
+                return (claude, related)
+            }.value
+            claudeMdContent = loaded.0
+            relatedSessions = loaded.1
         }
     }
 

@@ -51,5 +51,9 @@ struct TierBar: View {
                 }
             }
         }
+        // UI-H3: expose the tier proportions to VoiceOver.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Session tiers")
+        .accessibilityValue("premium \(premium), normal \(normal), lite \(lite), skip \(skip)")
     }
 }

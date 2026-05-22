@@ -178,10 +178,7 @@ private struct AdvancedSettingsSection: View {
     @State private var httpHost = "127.0.0.1"
     @State private var httpAllowCIDR = ""
     @State private var httpBearerToken = ""
-    @State private var embeddingProvider = "ollama"
-    @State private var embeddingModel = "nomic-embed-text"
-    @State private var embeddingDimension = 768
-    @State private var ollamaUrl = "http://localhost:11434"
+    // Embedding settings state removed — see Embeddings note in body.
     @State private var hideUsageSessions = true
     @State private var hideEmptySessions = true
     @State private var hideAutoSummary = true
@@ -240,46 +237,10 @@ private struct AdvancedSettingsSection: View {
                 .padding(.vertical, 4)
             }
 
-            GroupBox("Embeddings") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("Provider", selection: $embeddingProvider) {
-                        Text("Ollama").tag("ollama")
-                        Text("OpenAI").tag("openai")
-                        Text("Transformers").tag("transformers")
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: embeddingProvider) { saveAdvancedSettings() }
-
-                    HStack {
-                        Text("Ollama URL")
-                        Spacer()
-                        TextField("http://localhost:11434", text: $ollamaUrl)
-                            .frame(width: 260)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: ollamaUrl) { saveAdvancedSettings() }
-                    }
-                    HStack {
-                        Text("Embedding Model")
-                        Spacer()
-                        TextField("nomic-embed-text", text: $embeddingModel)
-                            .frame(width: 260)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: embeddingModel) { saveAdvancedSettings() }
-                    }
-                    HStack {
-                        Text("Dimension")
-                        Spacer()
-                        TextField("768", value: $embeddingDimension, format: .number)
-                            .frame(width: 80)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: embeddingDimension) { saveAdvancedSettings() }
-                    }
-                    Text("Changing provider, model, or dimension can require rebuilding vector indexes.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 4)
-            }
+            // Embeddings controls removed — duplicate of the (now-removed)
+            // AISettingsSection block. No Swift runtime reads these settings
+            // (semantic search/embeddings are unimplemented), so the controls
+            // were a false UI promise. See AISettingsSection for the rationale.
 
             GroupBox("Noise Details") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -400,15 +361,6 @@ private struct AdvancedSettingsSection: View {
         if let v = settings["httpHost"] as? String { httpHost = v }
         if let v = settings["httpAllowCIDR"] as? [String] { httpAllowCIDR = v.joined(separator: ", ") }
         if let v = settings["httpBearerToken"] as? String { httpBearerToken = v }
-        if let embedding = settings["embedding"] as? [String: Any] {
-            if let v = embedding["provider"] as? String { embeddingProvider = v }
-            if let v = embedding["model"] as? String { embeddingModel = v }
-            if let v = embedding["dimension"] as? Int { embeddingDimension = v }
-        } else {
-            if let v = settings["ollamaModel"] as? String { embeddingModel = v }
-            if let v = settings["embeddingDimension"] as? Int { embeddingDimension = v }
-        }
-        if let v = settings["ollamaUrl"] as? String { ollamaUrl = v }
         if let v = settings["hideUsageSessions"] as? Bool { hideUsageSessions = v }
         if let v = settings["hideEmptySessions"] as? Bool { hideEmptySessions = v }
         if let v = settings["hideAutoSummary"] as? Bool { hideAutoSummary = v }
@@ -458,19 +410,6 @@ private struct AdvancedSettingsSection: View {
                 settings.removeValue(forKey: "httpBearerToken")
             } else {
                 settings["httpBearerToken"] = httpBearerToken
-            }
-
-            settings["embedding"] = [
-                "provider": embeddingProvider,
-                "model": embeddingModel,
-                "dimension": embeddingDimension,
-            ]
-            settings["ollamaModel"] = embeddingModel
-            settings["embeddingDimension"] = embeddingDimension
-            if ollamaUrl == "http://localhost:11434" {
-                settings.removeValue(forKey: "ollamaUrl")
-            } else {
-                settings["ollamaUrl"] = ollamaUrl
             }
 
             settings["hideUsageSessions"] = hideUsageSessions

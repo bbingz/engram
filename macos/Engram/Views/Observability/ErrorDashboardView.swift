@@ -8,12 +8,21 @@ struct ErrorDashboardView: View {
     @State private var errorsByModule: [(module: String, count: Int)] = []
     @State private var recentErrors: [LogEntry] = []
     @State private var isLoading = true
+    @State private var logsUnavailable = false
+    @State private var loadError: String? = nil
 
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if logsUnavailable {
+                    // OBS-C1: do not render a false "all clear" when the unified
+                    // log is not accessible — say so explicitly.
+                    AlertBanner(message: "System log not available under current permissions — error data cannot be shown.")
+                } else if let loadError {
+                    AlertBanner(message: "Failed to load errors: \(loadError)")
+                }
                 // KPI
                 HStack(spacing: 12) {
                     KPICard(value: "\(totalErrors24h)", label: "Errors (24h)")
@@ -88,12 +97,25 @@ struct ErrorDashboardView: View {
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
+        // OBS-C1: read real signal from the unified log (com.engram.*), not the
+        // never-written `logs` table. Runs off the main thread (UI-C1/C2).
         do {
-            totalErrors24h = try db.countErrors24h()
-            errorsByModule = try db.errorsByModule24h()
-            recentErrors = try db.recentErrors(limit: 20)
+            let loaded = try await Task.detached { () -> (Int, [(module: String, count: Int)], [LogEntry]) in
+                let total = try OSLogReader.countErrors(hours: 24)
+                let byModule = try OSLogReader.errorsByModule(hours: 24)
+                let recent = try OSLogReader.recentLogs(level: "error", hours: 24, limit: 20).entries.reversed()
+                return (total, byModule, Array(recent))
+            }.value
+            totalErrors24h = loaded.0
+            errorsByModule = loaded.1
+            recentErrors = loaded.2
+            logsUnavailable = false
+            loadError = nil
+        } catch is OSLogReaderError {
+            logsUnavailable = true
         } catch {
             EngramLogger.error("ErrorDashboardView load failed", module: .ui, error: error)
+            loadError = error.localizedDescription
         }
     }
 

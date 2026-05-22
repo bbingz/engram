@@ -10,11 +10,12 @@ struct AISettingsSection: View {
     @State private var aiApiKey: String = ""
     @State private var aiModel: String = "gpt-4o-mini"
 
-    // Embeddings
-    @State private var embeddingProvider: String = "ollama"
-    @State private var embeddingModel: String = "nomic-embed-text"
-    @State private var embeddingDimension: Int = 768
-    @State private var ollamaUrl: String = "http://localhost:11434"
+    // NOTE (advertised-but-inert removal): the Embeddings controls (provider /
+    // model / dimension / Ollama URL) were removed here. No Swift runtime code
+    // constructs an embedding client, loads sqlite-vec, or reads these settings —
+    // semantic search/embeddings are not implemented — so the controls promised a
+    // capability that silently no-ops. Do not re-add until a real embedding path
+    // ships. (Defect: false UI promise, not a missing backend.)
 
     // Prompt template
     @State private var summaryLanguage: String = "中文"
@@ -101,49 +102,7 @@ struct AISettingsSection: View {
                 .padding(.vertical, 4)
             }
 
-            GroupBox("Embeddings") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("Provider", selection: $embeddingProvider) {
-                        Text("Ollama").tag("ollama")
-                        Text("OpenAI").tag("openai")
-                        Text("Transformers").tag("transformers")
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: embeddingProvider) { saveEmbeddingSettings() }
-
-                    HStack {
-                        Text("Ollama URL")
-                        Spacer()
-                        TextField("http://localhost:11434", text: $ollamaUrl)
-                            .frame(width: 260)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: ollamaUrl) { saveEmbeddingSettings() }
-                    }
-
-                    HStack {
-                        Text("Embedding Model")
-                        Spacer()
-                        TextField("nomic-embed-text", text: $embeddingModel)
-                            .frame(width: 260)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: embeddingModel) { saveEmbeddingSettings() }
-                    }
-
-                    HStack {
-                        Text("Dimension")
-                        Spacer()
-                        TextField("768", value: $embeddingDimension, format: .number)
-                            .frame(width: 80)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: embeddingDimension) { saveEmbeddingSettings() }
-                    }
-
-                    Text("These settings power semantic search and memory. Changing model or dimension may require rebuilding vector indexes.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 4)
-            }
+            // Embeddings controls removed — see note on state above.
 
             // Prompt Template
             GroupBox("Summary Prompt") {
@@ -452,23 +411,6 @@ struct AISettingsSection: View {
         }
     }
 
-    private func saveEmbeddingSettings() {
-        mutateEngramSettings { settings in
-            settings["embedding"] = [
-                "provider": embeddingProvider,
-                "model": embeddingModel,
-                "dimension": embeddingDimension,
-            ]
-            settings["ollamaModel"] = embeddingModel
-            settings["embeddingDimension"] = embeddingDimension
-            if ollamaUrl == "http://localhost:11434" {
-                settings.removeValue(forKey: "ollamaUrl")
-            } else {
-                settings["ollamaUrl"] = ollamaUrl
-            }
-        }
-    }
-
     private func loadAISettings() {
         guard let settings = readEngramSettings() else { return }
 
@@ -477,16 +419,6 @@ struct AISettingsSection: View {
         aiApiKey = KeychainHelper.get("aiApiKey")
             ?? { let v = settings["aiApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
         if let v = settings["aiModel"] as? String { aiModel = v }
-
-        if let embedding = settings["embedding"] as? [String: Any] {
-            if let v = embedding["provider"] as? String { embeddingProvider = v }
-            if let v = embedding["model"] as? String { embeddingModel = v }
-            if let v = embedding["dimension"] as? Int { embeddingDimension = v }
-        } else {
-            if let v = settings["ollamaModel"] as? String { embeddingModel = v }
-            if let v = settings["embeddingDimension"] as? Int { embeddingDimension = v }
-        }
-        if let v = settings["ollamaUrl"] as? String { ollamaUrl = v }
 
         if let v = settings["summaryLanguage"] as? String { summaryLanguage = v }
         if let v = settings["summaryMaxSentences"] as? Int { summaryMaxSentences = v }

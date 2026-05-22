@@ -17,9 +17,10 @@ struct SessionDetailView: View {
     @State private var showResume = false
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
-    @State private var isSummarizing = false
-    @State private var summaryError: String? = nil
-    @State private var currentSummary: String?
+    // UI-M3: removed dead summary state (`isSummarizing`/`summaryError`/
+    // `currentSummary`) + `generateSummary()` — there was no UI entry point and
+    // the service summary is extractive, not the advertised AI summary. Summary
+    // generation remains available via the MCP `generate_summary` tool.
 
     // Parent/child hierarchy
     @State private var confirmedParent: Session?
@@ -221,11 +222,6 @@ struct SessionDetailView: View {
                                         .id(indexed.id)
                                 }
                             case .text:
-                                ForEach(messages) { msg in
-                                    RawMessageRow(message: msg)
-                                    Divider().opacity(0.3)
-                                }
-                            case .json:
                                 ForEach(messages) { msg in
                                     RawMessageRow(message: msg)
                                     Divider().opacity(0.3)
@@ -546,26 +542,6 @@ struct SessionDetailView: View {
         }.joined(separator: "\n\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    func generateSummary() async {
-        guard !messages.isEmpty else { return }
-        isSummarizing = true
-        summaryError = nil
-        defer { isSummarizing = false }
-
-        do {
-            let response = try await serviceClient.generateSummary(
-                EngramServiceGenerateSummaryRequest(sessionId: session.id)
-            )
-            if response.summary.isEmpty {
-                summaryError = "Empty response from AI"
-            } else {
-                currentSummary = response.summary
-            }
-        } catch {
-            summaryError = "Summary failed: \(error.localizedDescription)"
-        }
     }
 }
 

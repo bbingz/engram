@@ -2,7 +2,9 @@
 import SwiftUI
 
 enum TranscriptViewMode: String, CaseIterable {
-    case session, text, json
+    // UI-M2: removed the "JSON" case — it rendered identically to "Text"
+    // (no raw-JSON data is retained on ChatMessage), so it was a false promise.
+    case session, text
     var label: String { rawValue.capitalized }
 }
 
@@ -52,6 +54,8 @@ struct TranscriptToolbar: View {
                         .font(.system(size: 13))
                 }
                 .buttonStyle(.plain)
+                // UI-H3: icon-only button needs a VoiceOver label.
+                .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
 
                 Divider().frame(height: 14)
 

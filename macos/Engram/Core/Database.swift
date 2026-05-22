@@ -411,8 +411,15 @@ final class DatabaseManager {
         }
     }
 
-    func dbSizeBytes() -> Int64 {
+    nonisolated func dbSizeBytes() -> Int64 {
         (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size] as? Int64) ?? 0
+    }
+
+    /// UI-M4: real journal mode via PRAGMA instead of a hardcoded "WAL Mode: OK".
+    nonisolated func journalMode() throws -> String {
+        try readInBackground { db in
+            (try String.fetchOne(db, sql: "PRAGMA journal_mode")) ?? "unknown"
+        }
     }
 
     // MARK: - get_context

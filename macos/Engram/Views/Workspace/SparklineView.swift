@@ -16,5 +16,9 @@ struct SparklineView: View {
             }
         }
         .frame(width: 25, height: 16)
+        // UI-H3: 7 bars are pure decoration to VoiceOver without this.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("7-day activity")
+        .accessibilityValue(values.map(String.init).joined(separator: ", ") + "; latest \(values.last ?? 0)")
     }
 }

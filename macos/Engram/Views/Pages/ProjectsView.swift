@@ -22,6 +22,7 @@ struct ProjectsView: View {
     /// daemon becomes unreachable was misleading. Now the Undo button is
     /// disabled when we can't confirm the log is reachable.
     @State private var hasRecentMigrations: Bool? = nil
+    @State private var loadError: String? = nil
 
     private var activeCount: Int {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
@@ -39,6 +40,9 @@ struct ProjectsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let loadError {
+                    AlertBanner(message: "Failed to load projects: \(loadError)")
+                }
                 HStack(spacing: 12) {
                     KPICard(value: "\(projectGroups.count)", label: "Total Projects")
                     KPICard(value: "\(activeCount)", label: "Active (7d)")
@@ -215,10 +219,14 @@ struct ProjectsView: View {
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
+        // UI-C1/C2: `listSessionsByProject()` fetches limit*10 rows + groups; run off-main.
+        let db = self.db
         do {
-            projectGroups = try db.listSessionsByProject()
+            projectGroups = try await Task.detached { try db.listSessionsByProject() }.value
+            loadError = nil
         } catch {
             EngramLogger.error("ProjectsView load failed", module: .ui, error: error)
+            loadError = error.localizedDescription
         }
         guard nativeProjectMigrationCommandsEnabled else {
             hasRecentMigrations = false
