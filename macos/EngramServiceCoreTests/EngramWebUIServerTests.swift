@@ -9,7 +9,7 @@ final class EngramWebUIServerTests: XCTestCase {
         // read-write (only the ServiceWriterGate owns writes).
         let dbPath = try makeMinimalDatabase()
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
-        let server = try EngramWebUIServer(databasePath: dbPath)
+        let server = try EngramWebUIServer(databasePath: dbPath, authToken: "test-token")
 
         XCTAssertTrue(try server.writeIsRejectedForTesting(), "Web UI DB handle must be read-only")
     }
@@ -19,7 +19,7 @@ final class EngramWebUIServerTests: XCTestCase {
         // reads after close fail loudly rather than relying on ARC timing.
         let dbPath = try makeMinimalDatabase()
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
-        let server = try EngramWebUIServer(databasePath: dbPath)
+        let server = try EngramWebUIServer(databasePath: dbPath, authToken: "test-token")
 
         XCTAssertFalse(server.isClosedForTesting)
         server.close()
@@ -155,8 +155,9 @@ final class EngramWebUIServerTests: XCTestCase {
     }
 
     func testWebUIServerConstructsWithAuthToken() throws {
-        let dbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("webui-auth-\(UUID().uuidString).sqlite").path
+        // The init opens the DB read-only (R5-23), so the file must exist —
+        // a read-only open of a missing file fails with SQLite error 14.
+        let dbPath = try makeMinimalDatabase()
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
         XCTAssertNoThrow(try EngramWebUIServer(databasePath: dbPath, authToken: "secret-token"))
     }

@@ -19,6 +19,17 @@ public enum SessionTier: String, Codable, Equatable, Sendable {
             return .lite
         }
 
+        // Probe sessions with very few messages are likely tooling noise.
+        // Mirrors the TypeScript reference (session-tier.ts) for parity.
+        if input.messageCount <= 3,
+           let summary = input.summary,
+           probeFirstLines.contains(
+               summary.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+           )
+        {
+            return .lite
+        }
+
         if input.messageCount >= 20 { return .premium }
         if input.messageCount >= 10, input.project != nil { return .premium }
         if durationMinutes(startTime: input.startTime, endTime: input.endTime) > 30 {
@@ -34,7 +45,19 @@ public enum SessionTier: String, Codable, Equatable, Sendable {
         return .normal
     }
 
-    private static let noisePatterns = ["/usage", "Generate a short, clear title"]
+    // Kept in parity with the TypeScript reference (session-tier.ts).
+    private static let noisePatterns = [
+        "/usage",
+        "Generate a short, clear title",
+        "Reply exactly:",
+        "Reply with exactly:",
+        "reply with just",
+        "/status/exit",
+    ]
+
+    private static let probeFirstLines: Set<String> = [
+        "ping", "hi", "hello", "test", "echo", "ok", "hey", "say hello", "reply: t4",
+    ]
 
     private static func durationMinutes(startTime: String?, endTime: String?) -> Double {
         guard let startTime,
