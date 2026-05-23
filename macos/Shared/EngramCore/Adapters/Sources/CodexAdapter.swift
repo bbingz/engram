@@ -50,28 +50,30 @@ enum JSONLAdapterSupport {
     }
 
     static func readObjects(locator: String, limits: ParserLimits) throws -> ([JSONObject], ParserFailure?) {
-        let (url, before) = try prepareFile(locator: locator, limits: limits)
-        let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
-        var objects: [JSONObject] = []
+        try autoreleasepool {
+            let (url, before) = try prepareFile(locator: locator, limits: limits)
+            let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
+            var objects: [JSONObject] = []
 
-        for line in try reader.readLines() {
-            guard let object = parseObject(line) else { continue }
-            objects.append(object)
-            if objects.count > limits.maxMessages {
-                return (objects, .messageLimitExceeded)
+            for line in try reader.readLines() {
+                guard let object = parseObject(line) else { continue }
+                objects.append(object)
+                if objects.count > limits.maxMessages {
+                    return (objects, .messageLimitExceeded)
+                }
             }
-        }
 
-        if let failure = reader.failures.first {
-            return (objects, failure)
-        }
+            if let failure = reader.failures.first {
+                return (objects, failure)
+            }
 
-        let after = try limits.fileIdentity(for: url)
-        guard limits.isSameFileIdentity(before, after) else {
-            return (objects, .fileModifiedDuringParse)
-        }
+            let after = try limits.fileIdentity(for: url)
+            guard limits.isSameFileIdentity(before, after) else {
+                return (objects, .fileModifiedDuringParse)
+            }
 
-        return (objects, nil)
+            return (objects, nil)
+        }
     }
 
     static func parseObject(_ line: String) -> JSONObject? {

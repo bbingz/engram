@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
@@ -203,6 +204,44 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertEqual(lines, ["ok"])
         XCTAssertEqual(reader.failures, [.lineTooLarge])
     }
+
+    func testJSONLRepeatedReadsDoNotRetainAutoreleasedParserObjects() throws {
+        let dir = try makeTempDir("jsonl-autorelease")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("session.jsonl")
+        let payload = String(repeating: "x", count: 2_048)
+        let lines = (0..<1_000).map { index in
+            #"{"type":"user","sessionId":"s","timestamp":"2026-05-24T00:00:00Z","message":{"content":[{"type":"text","text":"\#(payload)-\#(index)"}]}}"#
+        }
+        try lines.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let limits = ParserLimits(maxFileBytes: 16 * 1024 * 1024)
+        let baseline = currentResidentMemoryBytes()
+        for _ in 0..<60 {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: file.path, limits: limits)
+            XCTAssertNil(failure)
+            XCTAssertEqual(objects.count, 1_000)
+        }
+        let growth = currentResidentMemoryBytes() - baseline
+        XCTAssertLessThan(
+            growth,
+            128 * 1024 * 1024,
+            "Repeated JSONL reads should drain autoreleased JSONSerialization objects between files"
+        )
+    }
+}
+
+private func currentResidentMemoryBytes() -> UInt64 {
+    var info = proc_taskinfo()
+    let result = proc_pidinfo(
+        getpid(),
+        PROC_PIDTASKINFO,
+        0,
+        &info,
+        Int32(MemoryLayout<proc_taskinfo>.size)
+    )
+    guard result == Int32(MemoryLayout<proc_taskinfo>.size) else { return 0 }
+    return UInt64(info.pti_resident_size)
 }
 
 private final class FixedWatcherClock: WatcherClock {
