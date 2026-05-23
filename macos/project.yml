@@ -147,6 +147,7 @@ targets:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGN_IDENTITY: "-"
+      SKIP_INSTALL: YES
 
   Engram:
     type: application
@@ -224,6 +225,7 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.cli
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+      SKIP_INSTALL: YES
 
   EngramMCP:
     type: tool
@@ -239,6 +241,7 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.mcp
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+      SKIP_INSTALL: YES
 
   EngramTests:
     type: bundle.unit-test
@@ -303,11 +306,7 @@ schemes:
   Engram:
     build:
       targets:
-        EngramCoreRead: all
-        EngramCoreWrite: all
         Engram: all
-        EngramCLI: all
-        EngramMCP: all
     run:
       config: Debug
     test:
