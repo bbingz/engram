@@ -103,8 +103,10 @@ struct GlobalSearchOverlay: View {
         let db = self.db
         searchTask = Task {
             do {
+                // Keyword-only: the product has no vector search yet, so the
+                // quick overlay must not request an unimplemented hybrid mode.
                 let response = try await serviceClient.search(
-                    EngramServiceSearchRequest(query: q, mode: "hybrid", limit: 10)
+                    EngramServiceSearchRequest(query: q, mode: "keyword", limit: 10)
                 )
                 if Task.isCancelled { return }
                 results = response.items.map { item in

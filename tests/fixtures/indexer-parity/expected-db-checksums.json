@@ -93,7 +93,7 @@
           "cwd": "/Users/test/my-project",
           "end_time": "2026-01-15T10:05:00.000Z",
           "file_path": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
-          "generated_title": null,
+          "generated_title": "帮我修复登录 bug，用户无法登录",
           "hidden_at": null,
           "id": "codex-session-001",
           "indexed_at": "<volatile>",

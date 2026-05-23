@@ -218,7 +218,7 @@ struct SessionDetailView: View {
                             switch viewMode {
                             case .session:
                                 ForEach(displayIndexed) { indexed in
-                                    ColorBarMessageView(indexed: indexed, searchText: searchText)
+                                    ColorBarMessageView(indexed: indexed, searchText: searchText, onCopyAll: { copyAllTranscript() })
                                         .id(indexed.id)
                                 }
                             case .text:
@@ -525,21 +525,7 @@ struct SessionDetailView: View {
     }
 
     func copyAllTranscript() {
-        let text = displayIndexed.map { idx in
-            let prefix: String
-            switch idx.messageType {
-            case .user:       prefix = "> "
-            case .assistant:  prefix = ""
-            case .tool:       prefix = "› "
-            case .toolCall:   prefix = "› "
-            case .toolResult: prefix = "‹ "
-            case .thinking:   prefix = "~ "
-            case .error:      prefix = "! "
-            case .code:       prefix = "```\n"
-            case .system:     prefix = "[system] "
-            }
-            return prefix + idx.message.content
-        }.joined(separator: "\n\n")
+        let text = TranscriptText.conversationText(displayIndexed)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }

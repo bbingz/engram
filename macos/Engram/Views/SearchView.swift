@@ -3,6 +3,14 @@ import SwiftUI
 
 enum SearchMode: String, CaseIterable {
     case hybrid, keyword, semantic
+
+    /// Modes the product can actually serve. Semantic/hybrid require vector
+    /// embeddings (sqlite-vec), which the Swift product does not implement yet,
+    /// so when embeddings are unavailable only keyword is offered — no false
+    /// promise. When embeddings become available the richer modes return.
+    static func availableModes(embeddingAvailable: Bool) -> [SearchMode] {
+        embeddingAvailable ? [.hybrid, .keyword, .semantic] : [.keyword]
+    }
 }
 
 struct EmbeddingStatus {
@@ -30,8 +38,12 @@ struct SearchView: View {
     @State private var warning: String?
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
-    @State private var selectedMode: SearchMode = .hybrid
+    @State private var selectedMode: SearchMode = .keyword
     @State private var embeddingStatus: EmbeddingStatus?
+
+    private var availableModes: [SearchMode] {
+        SearchMode.availableModes(embeddingAvailable: embeddingStatus?.available ?? false)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,22 +79,25 @@ struct SearchView: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
 
-            // Mode toggle
+            // Mode toggle — only shown when more than one mode is actually
+            // serviceable (i.e. embeddings available). Keyword-only = no toggle.
             HStack(spacing: 4) {
-                ForEach(SearchMode.allCases, id: \.self) { mode in
-                    Button {
-                        selectedMode = mode
-                        if query.count >= 2 { performSearch() }
-                    } label: {
-                        Text(mode.rawValue)
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(selectedMode == mode ? Color.purple : Color(nsColor: .controlBackgroundColor))
-                            .foregroundStyle(selectedMode == mode ? .white : .secondary)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                if availableModes.count > 1 {
+                    ForEach(availableModes, id: \.self) { mode in
+                        Button {
+                            selectedMode = mode
+                            if query.count >= 2 { performSearch() }
+                        } label: {
+                            Text(mode.rawValue)
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(selectedMode == mode ? Color.purple : Color(nsColor: .controlBackgroundColor))
+                                .foregroundStyle(selectedMode == mode ? .white : .secondary)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 Spacer()
                 // Search modes indicator
@@ -211,6 +226,9 @@ struct SearchView: View {
                         totalSessions: resp.totalSessions,
                         progress: resp.progress
                     )
+                    if !availableModes.contains(selectedMode) {
+                        selectedMode = .keyword
+                    }
                 }
             } catch {
                 await MainActor.run {

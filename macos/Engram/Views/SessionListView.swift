@@ -10,6 +10,10 @@ struct SessionListView: View {
     @AppStorage("selectedSourcesStr") private var selectedSourcesStr: String = ""
     @AppStorage("selectedProjectsStr") private var selectedProjectsStr: String = ""
     @AppStorage("agentFilterMode") private var agentFilterMode: Int = 2  // 0=all, 1=agents, 2=hide
+    // Persisted table sort + project filter so they survive app restarts.
+    @AppStorage("sessionsSelectedProject") private var persistedProject: String = ""
+    @AppStorage("sessionsSortKey") private var persistedSortKey: String = "startTime"
+    @AppStorage("sessionsSortAscending") private var persistedSortAscending: Bool = false
 
     // MARK: - Local state
     @State private var sessions: [Session] = []
@@ -32,7 +36,36 @@ struct SessionListView: View {
     @State private var lastSelectedSession: Session?
 
     @State private var columnStore = ColumnVisibilityStore()
+    // Bumped when a column toggles so the table re-reads the (Observation-
+    // ignored, AppStorage-backed) visibility flags. Cheap: re-renders the
+    // already-loaded table, no data reload.
+    @State private var columnRevision = 0
     @State private var loadError: String? = nil
+
+    @ViewBuilder
+    private var columnsMenu: some View {
+        Menu {
+            Toggle("Favorite", isOn: columnBinding(\.favorite))
+            Toggle("Agent", isOn: columnBinding(\.agent))
+            Toggle("Title", isOn: columnBinding(\.title))
+            Toggle("Date", isOn: columnBinding(\.date))
+            Toggle("Project", isOn: columnBinding(\.project))
+            Toggle("Msgs", isOn: columnBinding(\.msgs))
+            Toggle("Size", isOn: columnBinding(\.size))
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Show or hide table columns")
+    }
+
+    private func columnBinding(_ keyPath: ReferenceWritableKeyPath<ColumnVisibilityStore, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { columnStore[keyPath: keyPath] },
+            set: { columnStore[keyPath: keyPath] = $0; columnRevision += 1 }
+        )
+    }
 
     // MARK: - Derived bindings
 
@@ -55,6 +88,33 @@ struct SessionListView: View {
     @State private var sourceCounts: [(source: String, count: Int)] = []
     @State private var projectList: [(name: String, count: Int)] = []
     @State private var filteredSessions: [Session] = []
+
+    // MARK: - Persisted sort/project
+
+    private func restorePersistedSortAndProject() {
+        selectedProject = persistedProject.isEmpty ? nil : persistedProject
+        sortOrder = [Self.comparator(forKey: persistedSortKey, ascending: persistedSortAscending)]
+    }
+
+    static func comparator(forKey key: String, ascending: Bool) -> KeyPathComparator<Session> {
+        let order: SortOrder = ascending ? .forward : .reverse
+        switch key {
+        case "source":       return .init(\.source, order: order)
+        case "displayTitle": return .init(\.displayTitle, order: order)
+        case "messageCount": return .init(\.messageCount, order: order)
+        case "sizeBytes":    return .init(\.sizeBytes, order: order)
+        default:             return .init(\.startTime, order: order)
+        }
+    }
+
+    static func sortKey(for comparator: KeyPathComparator<Session>) -> String {
+        let kp = comparator.keyPath
+        if kp == \Session.source { return "source" }
+        if kp == \Session.displayTitle { return "displayTitle" }
+        if kp == \Session.messageCount { return "messageCount" }
+        if kp == \Session.sizeBytes { return "sizeBytes" }
+        return "startTime"
+    }
 
     /// Recompute filtered sessions and derived counts from current state
     private func updateFilteredSessions() {
@@ -129,8 +189,18 @@ struct SessionListView: View {
             }
         }
         .onChange(of: selectedSourcesStr) { _, _ in updateFilteredSessions() }
-        .onChange(of: selectedProject) { _, _ in updateFilteredSessions() }
-        .onChange(of: sortOrder) { _, _ in updateFilteredSessions() }
+        .onChange(of: selectedProject) { _, new in
+            updateFilteredSessions()
+            persistedProject = new ?? ""
+        }
+        .onChange(of: sortOrder) { _, new in
+            updateFilteredSessions()
+            if let first = new.first {
+                persistedSortKey = Self.sortKey(for: first)
+                persistedSortAscending = first.order == .forward
+            }
+        }
+        .onAppear(perform: restorePersistedSortAndProject)
         .onChange(of: deepLinkSession) { _, session in
             handleDeepLink(session)
         }
@@ -168,6 +238,11 @@ struct SessionListView: View {
                     allProjects: projectList,
                     selectedProject: $selectedProject
                 )
+
+                // Column visibility — only meaningful for the flat table view.
+                if agentFilterMode == 1 {
+                    columnsMenu
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -202,6 +277,7 @@ struct SessionListView: View {
                     onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" },
                     onFilterProject: { project in selectedProject = project }
                 )
+                .id(columnRevision)
             } else {
                 // All (0) and Hide (2): expandable grouped view
                 ScrollView {

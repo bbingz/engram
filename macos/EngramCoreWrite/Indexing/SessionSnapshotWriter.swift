@@ -167,13 +167,13 @@ public final class SessionSnapshotWriter {
               message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
               summary, summary_message_count, file_path, size_bytes, indexed_at, origin,
               authoritative_node, source_locator, sync_version, snapshot_hash,
-              tier, agent_role, quality_score
+              tier, agent_role, quality_score, generated_title
             ) VALUES (
               ?, ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?,
-              ?, ?, ?
+              ?, ?, ?, ?
             )
             ON CONFLICT(id) DO UPDATE SET
               source = excluded.source,
@@ -204,7 +204,8 @@ public final class SessionSnapshotWriter {
               snapshot_hash = excluded.snapshot_hash,
               tier = excluded.tier,
               agent_role = excluded.agent_role,
-              quality_score = excluded.quality_score
+              quality_score = excluded.quality_score,
+              generated_title = COALESCE(NULLIF(TRIM(sessions.generated_title), ''), excluded.generated_title)
             """,
             arguments: [
                 snapshot.id,
@@ -231,9 +232,33 @@ public final class SessionSnapshotWriter {
                 snapshot.snapshotHash,
                 (snapshot.tier ?? .normal).rawValue,
                 snapshot.agentRole,
-                computeQualityScore(snapshot)
+                computeQualityScore(snapshot),
+                generatedTitle(for: snapshot)
             ]
         )
+    }
+
+    /// Derive a display title at index time so freshly indexed sessions are not
+    /// left with a NULL `generated_title` (only filled later by the on-demand
+    /// regenerate command). Prefers the summary's first line, then
+    /// project/cwd + start date, then the id. Never includes a user custom
+    /// name (that lives in `custom_name`); the ON CONFLICT COALESCE preserves
+    /// any existing generated/custom title.
+    private func generatedTitle(for snapshot: AuthoritativeSessionSnapshot) -> String {
+        if let summary = snapshot.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !summary.isEmpty {
+            let firstLine = summary.components(separatedBy: .newlines).first ?? summary
+            return String(firstLine.prefix(120))
+        }
+        let project = snapshot.project?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = (project?.isEmpty == false)
+            ? project!
+            : (snapshot.cwd as NSString).lastPathComponent
+        if snapshot.startTime.count >= 10 {
+            let day = String(snapshot.startTime.prefix(10))
+            return base.isEmpty ? day : "\(base) \(day)"
+        }
+        return base.isEmpty ? snapshot.id : base
     }
 
     private func upsertZeroCostRow(_ snapshot: AuthoritativeSessionSnapshot) throws {

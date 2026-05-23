@@ -7,6 +7,43 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — TDD remediation of all open roadmap items (2026-05-23, Claude)
+
+Drove every open item in `docs/roadmap.md` to resolution with failing-test-first
+TDD against the Swift product. All Swift suites + the TS fixture-generator test
+pass.
+
+- **Repos page no longer dormant (High):** new
+  `EngramCoreWrite/Indexing/RepoDiscovery.swift` populates `git_repos` from
+  distinct session `cwd`s (NUL-separated `git log`, never `|` — retiring the old
+  Node `git-probe.ts` pipe bug). Wired into the service recent-scan loop. Tests:
+  `RepoDiscoveryTests` (injected-probe aggregation/upsert + real-git probe).
+- **Auto-title on indexing (Med):** `SessionSnapshotWriter.upsert` now derives
+  `generated_title` (summary first line → project/cwd + date → id) at index
+  time; `ON CONFLICT` COALESCE never clobbers an existing/custom title. Tests:
+  `IndexAutoTitleTests`. Indexer-parity fixture + `gen-indexer-parity-fixtures.ts`
+  updated to mirror the derivation (regen-stable).
+- **Search false promise (Med):** `SearchMode.availableModes(embeddingAvailable:)`
+  restricts modes to keyword unless embeddings exist (sqlite-vec is unimplemented);
+  the mode toggle hides when only one mode is serviceable; `GlobalSearchOverlay`
+  requests `keyword` instead of hardcoded `hybrid`. Tests: `SearchModeTests`.
+- **Transcript (Low):** `ColorBarMessageView.displayLabel` surfaces `TOOL: <name>`
+  for tool rows; "Copy Entire Conversation" added to the message context menu,
+  backed by the new pure `TranscriptText.conversationText`. Tests:
+  `TranscriptLabelAndCopyTests`.
+- **Session list (Low):** column-visibility menu bound to `ColumnVisibilityStore`;
+  `selectedProject` / `sortOrder` persisted via `@AppStorage` (sort round-trips a
+  key+ascending pair). Tests: `SessionListPersistenceTests`.
+- **Perf (Low):** shared static `ISO8601DateFormatter` in `SwiftIndexer` and
+  `EngramServiceCommandHandler` (was per-call).
+- **PR5 usage probes (investigated):** not a defect — `usage_snapshots` is never
+  written and the collector is a no-op, but `PopoverUsageSection` already hides on
+  empty data (no fake bars). Real probes are deferred net-new work.
+
+Regression: `EngramCoreTests` 281/281, `EngramServiceCore` 63/63, `EngramTests`
+8/8 (run under developer signing, team `J25GS8J4XM`), `EngramService` builds,
+`stage2-fixture-generators` 9/9.
+
 ### Docs — issues.md verification + canonical roadmap (2026-05-23, Claude)
 
 Re-verified all 16 open items in `tasks/issues.md` (written 2026-04-29 against

@@ -1399,8 +1399,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return row["id"] as String? ?? "Untitled Session"
     }
 
+    private static let isoFormatter = ISO8601DateFormatter()
+
     private static func currentTimestamp() -> String {
-        ISO8601DateFormatter().string(from: Date())
+        isoFormatter.string(from: Date())
     }
 
     private static func unsupportedNativeCommand(_ command: String) throws -> Never {

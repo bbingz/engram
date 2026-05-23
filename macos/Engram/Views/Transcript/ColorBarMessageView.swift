@@ -4,12 +4,32 @@ import SwiftUI
 struct ColorBarMessageView: View {
     let indexed: IndexedMessage
     let searchText: String
+    var onCopyAll: (() -> Void)? = nil
     @AppStorage("contentFontSize") var fontSize: Double = 14
 
     private var barColor: Color { indexed.messageType.color }
 
     private var typeLabel: String {
-        "\(indexed.messageType.label.uppercased()) #\(indexed.typeIndex)"
+        Self.displayLabel(for: indexed.messageType, typeIndex: indexed.typeIndex, content: indexed.message.content)
+    }
+
+    /// Header label for a transcript row. Tool rows surface the concrete tool
+    /// name (e.g. "TOOL: Read #2") when it can be parsed from the content,
+    /// instead of the generic "TOOL CALL #N". Falls back to the type label.
+    static func displayLabel(for type: MessageType, typeIndex: Int, content: String) -> String {
+        let toolName: String?
+        switch type {
+        case .toolCall, .tool:
+            toolName = ToolCallParser.parseToolCall(content)?.toolName
+        case .toolResult:
+            toolName = ToolCallParser.parseToolResult(content)?.toolName
+        default:
+            toolName = nil
+        }
+        if let toolName, !toolName.isEmpty {
+            return "TOOL: \(toolName) #\(typeIndex)"
+        }
+        return "\(type.label.uppercased()) #\(typeIndex)"
     }
 
     private var isPrimaryDialogue: Bool {
@@ -136,6 +156,9 @@ struct ColorBarMessageView: View {
             Button("Copy Message") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(indexed.message.content, forType: .string)
+            }
+            if let onCopyAll {
+                Button("Copy Entire Conversation", action: onCopyAll)
             }
         }
     }

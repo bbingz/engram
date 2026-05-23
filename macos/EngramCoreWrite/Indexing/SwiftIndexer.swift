@@ -6,6 +6,8 @@ import os
 public final class SwiftIndexer {
     private static let writeBatchSize = 100
     private static let log = os.Logger(subsystem: "com.engram.service", category: "indexer")
+    // Shared formatter — allocating one per indexed session is wasteful.
+    private static let iso8601 = ISO8601DateFormatter()
 
     private let sink: any IndexingWriteSink
     private let adapters: [any SessionAdapter]
@@ -219,7 +221,7 @@ public final class SwiftIndexer {
             authoritativeNode: authoritativeNode,
             syncVersion: 1,
             snapshotHash: snapshotHash(info: info, summaryMessageCount: summaryMessageCount),
-            indexedAt: ISO8601DateFormatter().string(from: Date()),
+            indexedAt: Self.iso8601.string(from: Date()),
             sourceLocator: locator,
             sizeBytes: info.sizeBytes,
             startTime: info.startTime,

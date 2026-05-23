@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { basename, join, relative, resolve } from 'node:path';
 import { CodexAdapter } from '../src/adapters/codex.js';
 import { Database } from '../src/core/db.js';
 import { Indexer } from '../src/core/indexer.js';
@@ -34,6 +34,51 @@ function gitCommit(): string {
     }).trim();
   } catch {
     return 'unknown';
+  }
+}
+
+// Faithful mirror of Swift SessionSnapshotWriter.generatedTitle.
+function deriveGeneratedTitle(row: {
+  summary: string | null;
+  project: string | null;
+  cwd: string | null;
+  start_time: string | null;
+  id: string;
+}): string {
+  const summary = (row.summary ?? '').trim();
+  if (summary) {
+    return (summary.split('\n')[0] ?? summary).slice(0, 120);
+  }
+  const project = (row.project ?? '').trim();
+  const base = project || basename(row.cwd ?? '');
+  const start = row.start_time ?? '';
+  if (start.length >= 10) {
+    const day = start.slice(0, 10);
+    return base ? `${base} ${day}` : day;
+  }
+  return base || row.id;
+}
+
+function backfillGeneratedTitles(db: Database): void {
+  const raw = db.getRawDb();
+  const rows = raw
+    .prepare(
+      'SELECT id, summary, project, cwd, start_time, generated_title FROM sessions',
+    )
+    .all() as Array<{
+    id: string;
+    summary: string | null;
+    project: string | null;
+    cwd: string | null;
+    start_time: string | null;
+    generated_title: string | null;
+  }>;
+  const update = raw.prepare(
+    'UPDATE sessions SET generated_title = ? WHERE id = ?',
+  );
+  for (const row of rows) {
+    if (row.generated_title?.trim()) continue;
+    update.run(deriveGeneratedTitle(row), row.id);
   }
 }
 
@@ -139,6 +184,11 @@ export async function generateIndexerParityFixtures(
       authoritativeNode: 'fixture-node',
     });
     const indexedCount = await indexer.indexAll();
+    // Mirror the Swift product's index-time title generation
+    // (SessionSnapshotWriter.generatedTitle) so the reference fixture stays in
+    // parity with the Swift indexer. The Node Indexer itself does not set
+    // generated_title; this dev-only post-step derives it the same way.
+    backfillGeneratedTitles(db);
     const output = {
       schemaVersion: 1,
       sourceCommit: gitCommit(),
