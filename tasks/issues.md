@@ -2,6 +2,11 @@
 
 Issues found during autonomous execution that need human attention.
 
+> **2026-05-23 verification:** Every item below was re-checked against the Swift
+> product. Most are now RESOLVED or OBSOLETE (Node runtime gone). Canonical
+> open-work list now lives in `docs/roadmap.md`; this file is kept as historical
+> Node-era context only.
+
 ---
 
 ## Pre-existing Bug: claude-code sessions missing file_path (FIXED in Swift)

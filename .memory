@@ -1,5 +1,29 @@
 # Engram Local Memory
 
+## 2026-05-22 — Round-5 closeout + EngramUITests fully restored
+
+Durable, non-obvious lessons (not derivable from code alone):
+- Swift test topology is split across schemes. `xcodebuild -scheme Engram test`
+  runs ONLY EngramCoreTests + EngramTests. Service/MCP suites need their own
+  schemes: `-scheme EngramServiceCore` (EngramServiceCoreTests) and
+  `-scheme EngramMCPTests`. EngramUITests are in the Engram scheme but are
+  environment-sensitive (need the seeded fixture). A green "Engram scheme" run
+  does NOT cover service/MCP tests.
+- EngramUITests fixture wiring: the EngramUITests target must bundle
+  `macos/test-fixtures` (holds `test-index.sqlite`), not `../tests/fixtures`;
+  `AppEnvironment.fromCommandLine` must let `--test-mode` win over the
+  `XCTestConfigurationFilePath` host check; regenerate the DB via
+  `npm run generate:fixtures` after schema changes.
+- macOS 26 SwiftUI <-> XCUITest accessibility: `descendants(matching: .any)[id]`
+  forces a full deep AX snapshot that can stack-overflow/crash the app — prefer
+  typed collection queries (`buttons[id]`/`groups[id]`/`scrollViews[id]`).
+  SwiftUI's a11y merge heuristic can collapse a container's children (container
+  with a decorative sibling + `.accessibilityIdentifier`), hiding them from
+  XCUITest; add `.accessibilityElement(children: .contain)` to re-expose.
+- Round-5 fresh-angle review closeout: 61 findings fixed + EngramUITests back to
+  0 failures. See `HANDOFF-uitests-a11y-crash.md`, `review-round5.md`, CHANGELOG,
+  commits `a1f6369e` / `9eb932fc` / `cfae3ea3`.
+
 ## 2026-05-21 — Full remediation ship after multi-agent review
 
 - Starting point: `docs/superpowers/reports/2026-05-20-engram-review-findings.md`

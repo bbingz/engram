@@ -7,6 +7,49 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Docs — issues.md verification + canonical roadmap (2026-05-23, Claude)
+
+Re-verified all 16 open items in `tasks/issues.md` (written 2026-04-29 against
+the Node-era spec) against the **Swift product**, using 4 parallel exploration
+passes. Result recorded in new `docs/roadmap.md` (now the canonical pending-work
+list); `tasks/issues.md` keeps a header note pointing there.
+
+- **Resolved/obsolete** (closed out): claude-code `file_path`, PR1 JSON view
+  mode, RepoDetailView, git probe main-thread, git-log `|` separator (Node-only,
+  gone), CLI resume (ported to Swift `resumeCommand()`), Ghostty launch,
+  regenerate-all titles, displayTitle fallback, displayIndexed/matchIndices
+  caching.
+- **Confirmed still open**: `git_repos` is never populated — no Swift repo
+  discovery, so the Repos/Workspace page is dormant (**High**); auto-title on
+  indexing not wired (`generated_title` stays NULL); `SearchView` semantic-mode
+  toggle is a false promise (product search is keyword-only, no sqlite-vec);
+  plus low-priority UI/perf polish (transcript copy actions, tool-name labels,
+  column-visibility toggle UI, `@AppStorage` persistence, service-layer
+  `ISO8601DateFormatter` reuse).
+- **Investigate**: PR5 usage probes — UI/plumbing exist, but whether real
+  Claude-OAuth / Codex-tmux data flows is unconfirmed.
+- Hygiene: `.superpowers/` brainstorm artifacts (44 tracked files) untracked and
+  gitignored; `.claude/` runtime artifacts (`scheduled_tasks.lock`, `worktrees/`,
+  `settings.local.json`) gitignored.
+
+### Tooling — Claude Code automation hooks (2026-05-23, Claude)
+
+Added `.claude/settings.json` with two project-scoped Claude Code hooks, derived
+from running the `claude-automation-recommender` skill (claude-code-setup plugin)
+against this codebase:
+
+- **PostToolUse** (`Edit|Write|MultiEdit`): biome `check --write` on edited
+  `.ts/.tsx/.js/.jsx` via the project-local `node_modules/.bin/biome`. Complements
+  the husky `pre-commit` lint-staged pass by formatting at edit-time, closing the
+  edit→commit window where files sit unformatted.
+- **PreToolUse** (`Edit|Write|MultiEdit`): block (`exit 2`) edits to generated /
+  locked artifacts — `package-lock.json`, `dist/**`, `test-fixtures/**` — with a
+  message pointing at the `generate:*` npm scripts.
+
+Both validated via simulated hook payloads (block paths, allow src, format TS,
+skip non-JS). Hooks **fail-open** if `jq` is absent (protection silently disabled,
+never a false block). Hooks load at session startup, not in already-open sessions.
+
 ### Shipped — Round-6/7 deep review + full remediation (2026-05-22, Claude + Gemini + Codex)
 
 Two adversarial review rounds (17 Opus subagents) + cross-provider validation
