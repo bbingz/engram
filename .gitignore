@@ -23,3 +23,11 @@ tests/fixtures/antigravity/cache/*.jsonl
 
 # macOS
 .DS_Store
+
+# Claude Code local/runtime artifacts (commit only settings.json)
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.claude/settings.local.json
+
+# Accidentally-committed brainstorm artifacts
+.superpowers/
