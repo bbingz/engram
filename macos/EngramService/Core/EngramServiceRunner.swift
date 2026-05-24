@@ -244,17 +244,12 @@ public enum EngramServiceRunner {
 
     private static func runIndexingLoop(gate: ServiceWriterGate, statusMonitor: ServiceStatusMonitor) async {
         let intervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
-        var isFirstScan = true
 
         while !Task.isCancelled {
-            if isFirstScan {
-                isFirstScan = false
-            } else {
-                do {
-                    try await Task.sleep(nanoseconds: intervalNanoseconds)
-                } catch {
-                    break
-                }
+            do {
+                try await Task.sleep(nanoseconds: intervalNanoseconds)
+            } catch {
+                break
             }
 
             do {

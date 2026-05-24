@@ -22,6 +22,18 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(source.contains("writer.write { db in try RepoDiscovery.discover(db) }"))
     }
 
+    func testRunnerPeriodicScanDoesNotCompeteWithStartupScanImmediately() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+
+        XCTAssertFalse(
+            source.contains("var isFirstScan = true"),
+            "Periodic indexing must not run an immediate first scan while startup maintenance already holds the write gate"
+        )
+        let sleepRange = try XCTUnwrap(source.range(of: "try await Task.sleep(nanoseconds: intervalNanoseconds)"))
+        let writeRange = try XCTUnwrap(source.range(of: #"gate.performWriteCommand(name: "indexRecent")"#))
+        XCTAssertLessThan(sleepRange.lowerBound, writeRange.lowerBound)
+    }
+
     func testUnixSocketServiceServerLifecycleUsesTrackedSendableState() throws {
         let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
 
