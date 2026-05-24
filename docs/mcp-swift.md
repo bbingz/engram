@@ -82,16 +82,16 @@ Expected: single JSON line with `"serverInfo":{"name":"engram",...}`.
 
 ## Known limitations (MVP)
 
-Two intentional TODOs, tracked for the eventual Swift 6 migration, not
+One intentional limitation is tracked for the eventual Swift 6 migration, not
 blocking switchover:
 
-- **Protocol version hardcoded** to `"2025-03-26"` — negotiation with
-  clients that request a different version is deferred.
 - **Async/sync bridge** via `DispatchSemaphore` around the stdio loop —
   will migrate to structured concurrency under Swift 6.
 
-Neither affects tool contract behaviour, which is covered by 29
-byte-for-byte golden tests in `macos/EngramMCPTests/`.
+Protocol version handling is implemented for the supported `"2025-03-26"`
+version; unsupported initialize versions fail closed with a JSON-RPC
+`Invalid params` error. Tool contract behaviour is covered by
+`macos/EngramMCPTests/`.
 
 ## Troubleshooting
 

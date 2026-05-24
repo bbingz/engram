@@ -170,6 +170,14 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertTrue(redacted.contains("[REDACTED]"))
     }
 
+    func testWebUIRedactionUsesExportCanonicalRedaction() {
+        let input = "Authorization: Bearer ABCDEF0123456789"
+        XCTAssertEqual(
+            EngramWebUIServer.redactSensitiveContent(input),
+            TranscriptExportService.redactSensitiveContent(input)
+        )
+    }
+
     func testLoopbackHostAndOriginValidation() {
         XCTAssertTrue(EngramWebUIServer.isLoopbackHost("127.0.0.1:3457", expectedPort: 3457))
         XCTAssertTrue(EngramWebUIServer.isLoopbackHost("localhost:3457", expectedPort: 3457))

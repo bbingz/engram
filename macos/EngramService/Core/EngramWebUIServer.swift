@@ -352,25 +352,8 @@ final class EngramWebUIServer: @unchecked Sendable {
         return (messages, hasMore, offset + messages.count)
     }
 
-    // TODO: share the canonical redaction with TranscriptExportService.redactSensitiveContent.
-    // It is currently `private static` there and that file is owned by another
-    // component; this is a minimal mirror of the same pattern set (SEC-C1).
     static func redactSensitiveContent(_ content: String) -> String {
-        let patterns = [
-            #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_\-+=/.]{10,}["']?"#,
-            #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#,
-            #"\b(sk-[A-Za-z0-9_\-]{10,}|ghp_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"#,
-        ]
-        return patterns.reduce(content) { current, pattern in
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return current }
-            let range = NSRange(current.startIndex..<current.endIndex, in: current)
-            return regex.stringByReplacingMatches(
-                in: current,
-                options: [],
-                range: range,
-                withTemplate: "[REDACTED]"
-            )
-        }
+        TranscriptExportService.redactSensitiveContent(content)
     }
 
     static func shouldDisplayTranscriptMessage(_ message: NormalizedMessage) -> Bool {

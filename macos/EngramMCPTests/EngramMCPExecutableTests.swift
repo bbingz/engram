@@ -90,6 +90,18 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testInitializeRejectsUnsupportedProtocolVersion() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1900-01-01","capabilities":{},"clientInfo":{"name":"XCTest","version":"1.0"}}}
+            """
+        )
+
+        XCTAssertEqual(capture.response.error?.code, -32602)
+        XCTAssertEqual(capture.response.error?.message, "Unsupported protocolVersion: 1900-01-01")
+        XCTAssertNil(capture.response.result)
+    }
+
     func testStatsMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "stats",

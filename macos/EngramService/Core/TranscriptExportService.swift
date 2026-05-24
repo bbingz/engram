@@ -157,7 +157,7 @@ enum TranscriptExportService {
         return lines.joined(separator: "\n")
     }
 
-    private static func redactSensitiveContent(_ content: String) -> String {
+    static func redactSensitiveContent(_ content: String) -> String {
         let patterns = [
             #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_\-+=/.]{10,}["']?"#,
             #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#,
