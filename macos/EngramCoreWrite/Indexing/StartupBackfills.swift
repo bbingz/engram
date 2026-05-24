@@ -580,6 +580,7 @@ public enum StartupBackfills {
             FROM sessions
             WHERE parent_session_id IS NULL
               AND (link_source IS NULL OR link_source != 'manual')
+              AND link_checked_at IS NULL
               AND source IN ('claude-code', 'copilot', 'gemini-cli', 'kimi', 'opencode', 'pi', 'qwen')
               AND (
                 summary LIKE 'You are acting as % inside polycli.%'
@@ -628,6 +629,7 @@ public enum StartupBackfills {
                       best.score >= 7,
                       try isConcurrentProviderChild(db, childStartTime: childStartTime, parentId: best.parentId)
                 else {
+                    try markChecked(db, sessionId: id)
                     continue
                 }
             }
@@ -639,7 +641,8 @@ public enum StartupBackfills {
                 sql: """
                 UPDATE sessions
                 SET agent_role = COALESCE(agent_role, 'dispatched'),
-                    tier = 'skip'
+                    tier = 'skip',
+                    link_checked_at = datetime('now')
                 WHERE id = ?
                 """,
                 arguments: [id]

@@ -236,6 +236,51 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillPolycliProviderParentsSkipsAlreadyCheckedCandidates() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "host-codex",
+                source: "codex",
+                startTime: "2026-05-08T09:00:00.000Z",
+                endTime: "2026-05-08T11:00:00.000Z",
+                cwd: "/repo"
+            )
+            try insertSession(
+                db,
+                id: "qwen-linked",
+                source: "qwen",
+                startTime: "2026-05-08T10:00:00.000Z",
+                cwd: "/repo",
+                summary: "ping"
+            )
+            try insertSession(
+                db,
+                id: "kimi-unlinked",
+                source: "kimi",
+                startTime: "2026-05-08T10:00:01.000Z",
+                summary: "Use only snippets. P7.4 final review. Report only blocking/correctness issues."
+            )
+            try insertSession(
+                db,
+                id: "qwen-ordinary",
+                source: "qwen",
+                startTime: "2026-05-08T09:10:00.000Z",
+                cwd: "/repo",
+                summary: "What does this function do?"
+            )
+
+            let first = try StartupBackfills.backfillPolycliProviderParents(db)
+            let second = try StartupBackfills.backfillPolycliProviderParents(db)
+
+            XCTAssertEqual(first, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, linked: 1))
+            XCTAssertEqual(second, StartupBackfills.ProviderParentResult(checked: 0, classified: 0, linked: 0))
+            XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'qwen-linked'"))
+            XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'kimi-unlinked'"))
+            XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'qwen-ordinary'"))
+        }
+    }
+
     func testBackfillSuggestedParentsScoresClaudeParentsAndMarksOrphans() throws {
         try writer.write { db in
             try insertSession(
