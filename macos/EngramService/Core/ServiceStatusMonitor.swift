@@ -7,7 +7,7 @@ actor ServiceStatusMonitor {
     private var lastSuccessAt: Date?
     private var lastFailure: (message: String, at: Date)?
 
-    init(staleAfter: TimeInterval = 10 * 60, now: @escaping @Sendable () -> Date = Date.init) {
+    init(staleAfter: TimeInterval = 10 * 60, now: @escaping @Sendable () -> Date = { Date() }) {
         self.staleAfter = staleAfter
         self.now = now
     }
