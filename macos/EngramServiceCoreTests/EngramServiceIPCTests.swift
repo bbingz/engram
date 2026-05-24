@@ -5,6 +5,14 @@ import Foundation
 @testable import EngramServiceCore
 
 final class EngramServiceIPCTests: XCTestCase {
+    func testRunnerStartupScanUsesRecentActiveAdapters() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+
+        XCTAssertTrue(source.contains("let startupAdapters = SessionAdapterFactory.recentActiveAdapters()"))
+        XCTAssertTrue(source.contains("indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters)"))
+        XCTAssertTrue(source.contains("adapters: startupAdapters"))
+    }
+
     func testUnixSocketServiceServerLifecycleUsesTrackedSendableState() throws {
         let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
 

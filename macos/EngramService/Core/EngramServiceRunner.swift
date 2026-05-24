@@ -122,7 +122,7 @@ public enum EngramServiceRunner {
         print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
         fflush(stdout)
 
-        // V2: run the full startup scan ONCE, detached so it does not block the
+        // V2: run startup maintenance once, detached so it does not block the
         // health probe / ready emission. Runs through the gate so writes are
         // serialized with incoming commands. This also drains the FTS backlog
         // (via IndexJobRunner) so search content is actually written.
@@ -286,23 +286,23 @@ public enum EngramServiceRunner {
         }
     }
 
-    /// V2 composition root: runs the full startup scan once, draining the FTS
+    /// V2 composition root: runs the startup scan once, draining the FTS
     /// backlog. Builds real conformers over the unit-tested static funcs and
     /// runs through the gate so writes serialize with command dispatch.
     private static func runInitialScan(gate: ServiceWriterGate) async {
         do {
             try await gate.performWriteCommand(name: "initialScan") { writer in
-                let adapters = SessionAdapterFactory.defaultAdapters()
-                let jobRunner = IndexJobRunner(writer: writer, adapters: adapters)
+                let startupAdapters = SessionAdapterFactory.recentActiveAdapters()
+                let jobRunner = IndexJobRunner(writer: writer, adapters: SessionAdapterFactory.defaultAdapters())
                 try await StartupBackfills.runInitialScan(
                     emit: { event in Self.emit(StartupBackfillEventEnvelope(event: event)) },
                     log: OSLogStartupBackfillLogging(),
                     usageCollector: NoopStartupUsageCollector(),
-                    indexer: WriterStartupIndexing(writer: writer, adapters: adapters),
+                    indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters),
                     indexJobRunner: jobRunner,
                     database: WriterStartupBackfillDatabase(writer: writer),
                     orphanScanner: WriterStartupOrphanScanning(writer: writer),
-                    adapters: adapters
+                    adapters: startupAdapters
                 )
             }
             ServiceLogger.notice("initial startup scan complete", category: .runner)
