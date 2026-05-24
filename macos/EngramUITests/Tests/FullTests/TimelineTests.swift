@@ -45,6 +45,10 @@ final class TimelineTests: XCTestCase {
             previousButton.click()
             XCTAssertTrue(timeline.container.exists,
                           "Timeline should remain after date navigation")
+        } else if nextButton.waitForExistence(timeout: 3) {
+            nextButton.click()
+            XCTAssertTrue(timeline.container.exists,
+                          "Timeline should remain after date navigation")
         } else if datePicker.waitForExistence(timeout: 3) {
             XCTAssertTrue(true, "Date picker exists for navigation")
         } else if timeline.emptyState.exists {

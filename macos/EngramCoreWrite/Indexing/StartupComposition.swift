@@ -23,13 +23,6 @@ public final class OSLogStartupBackfillLogging: StartupBackfillLogging {
     }
 }
 
-// MARK: - Usage collector (no-op in service runtime)
-
-public final class NoopStartupUsageCollector: StartupUsageCollecting {
-    public init() {}
-    public func start() {}
-}
-
 // MARK: - Indexing
 
 public final class WriterStartupIndexing: StartupIndexing {

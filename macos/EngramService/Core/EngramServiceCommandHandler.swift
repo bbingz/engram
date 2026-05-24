@@ -132,6 +132,26 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(try await readProvider.resumeCommand(payload))
                 )
+            case "setParentSession":
+                let payload = try decodePayload(EngramServiceLinkRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.setParentSession(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "clearParentSession":
+                let payload = try decodePayload(EngramServiceUnlinkRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.clearParentSession(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
             case "confirmSuggestion":
                 let payload = try decodePayload(EngramServiceConfirmSuggestionRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
@@ -425,6 +445,52 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 arguments: [suggestedParentId, request.sessionId]
             )
             return EngramServiceLinkResponse(ok: true, error: nil)
+        }
+    }
+
+    private static func setParentSession(
+        _ request: EngramServiceLinkRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EngramServiceLinkResponse {
+        try writer.write { db in
+            guard try Row.fetchOne(db, sql: "SELECT id FROM sessions WHERE id = ?", arguments: [request.sessionId]) != nil else {
+                return EngramServiceLinkResponse(ok: false, error: "session-not-found")
+            }
+            let validation = try validateParentLink(db, sessionId: request.sessionId, parentId: request.parentId)
+            guard validation == "ok" else {
+                return EngramServiceLinkResponse(ok: false, error: validation)
+            }
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET parent_session_id = ?,
+                        link_source = 'manual',
+                        suggested_parent_id = NULL,
+                        link_checked_at = datetime('now')
+                    WHERE id = ?
+                """,
+                arguments: [request.parentId, request.sessionId]
+            )
+            return EngramServiceLinkResponse(ok: true, error: nil)
+        }
+    }
+
+    private static func clearParentSession(
+        _ request: EngramServiceUnlinkRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EngramServiceLinkResponse {
+        try writer.write { db in
+            let changed = try db.executeAndCountChanges(
+                sql: """
+                    UPDATE sessions
+                    SET parent_session_id = NULL,
+                        link_source = 'manual',
+                        link_checked_at = datetime('now')
+                    WHERE id = ?
+                """,
+                arguments: [request.sessionId]
+            )
+            return EngramServiceLinkResponse(ok: changed > 0, error: changed > 0 ? nil : "session-not-found")
         }
     }
 
@@ -1500,3 +1566,10 @@ private struct WriteIntentAck: Encodable, Sendable {
 }
 
 private struct EmptyEncodableResult: Encodable, Sendable {}
+
+private extension GRDB.Database {
+    func executeAndCountChanges(sql: String, arguments: StatementArguments = StatementArguments()) throws -> Int {
+        try execute(sql: sql, arguments: arguments)
+        return changesCount
+    }
+}

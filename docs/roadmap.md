@@ -22,7 +22,11 @@ dev/reference only.
 | Session list | No column-visibility toggle UI | **DONE** — `columnsMenu` bound to `ColumnVisibilityStore` |
 | Session list | `selectedProject` / `sortOrder` not persisted | **DONE** — persisted via `@AppStorage` + restore on appear |
 | Perf | Service-layer `ISO8601DateFormatter` per-call | **DONE** — shared statics in `SwiftIndexer` + `EngramServiceCommandHandler` |
-| Usage (PR5) | Real probe data flow unconfirmed | **INVESTIGATED — not a defect** (see below) |
+| Usage (PR5) | Real probe data flow unconfirmed | **DONE** — startup writes real 7-day usage shares for tracked CLI sources |
+| Search | Semantic search still advertised in MCP | **DONE** — MCP search schema and runtime are keyword-only unless vector support exists |
+| Session links | Manual parent link/unlink missing | **DONE** — service IPC + detail-view affordances support manual link/unlink |
+| Runtime monitor | `live_sessions` returned unavailable | **DONE** — Swift service and MCP scan active local CLI session files |
+| Insights | Cost optimization suggestions not computed | **DONE** — MCP insights derive actionable suggestions from spend distribution |
 | Repo hygiene | `.superpowers/` committed by accident | **DONE** — untracked + gitignored (2026-05-23) |
 
 ## Verification (2026-05-23)
@@ -38,73 +42,67 @@ dev/reference only.
   mirrors the Swift title derivation so the fixture stays regen-stable
   (`tests/scripts/stage2-fixture-generators.test.ts` still passes).
 
-## PR5 usage probes — investigation result
+## PR5 usage probes — implementation result
 
-Not a defect. `usage_snapshots` is created by migration but never written, the
-runtime uses `NoopStartupUsageCollector`, and no `"usage"` service event carries
-real data. The UI already degrades correctly: `PopoverUsageSection` is gated on
-`!usageData.isEmpty`, so it renders nothing rather than empty/fake bars. Wiring
-real Claude-OAuth / Codex-tmux probes is **net-new feature work** (external
-integrations), deliberately deferred — not a bug in the current surface.
+Implemented in the Swift runtime. `WriterStartupUsageCollector` now computes
+real 7-day cost-share snapshots from indexed `session_costs` for tracked CLI
+providers (`claude-code`, `codex`, `gemini-cli`, `antigravity`, `opencode`),
+writes `usage_snapshots`, and emits service usage events. The UI still degrades
+correctly because `PopoverUsageSection` remains gated on real usage data.
 
 ## Open roadmap
 
+No open roadmap items as of 2026-05-24.
+
+## Closed on 2026-05-24
+
 ### Real usage probes
 
-- **Module:** `macos/EngramCoreWrite/Indexing`, `macos/Engram/Views`
-- **Type:** roadmap
-- **Source:** `docs/backlog-audit-2026-05-24.md`
-- **Acceptance:** Claude-OAuth and Codex-tmux collectors write real rows into
-  `usage_snapshots`; the popover usage section renders only when real data is
-  present; tests cover the no-data and data-present paths.
-- **Related files:** `macos/EngramCoreWrite/Indexing/StartupComposition.swift`,
+- **Module:** `macos/EngramCoreWrite/Indexing`, `macos/EngramService/Core`
+- **Status:** done
+- **Acceptance evidence:** `StartupUsageCollectorTests` covers tracked CLI
+  usage rows and `usage_snapshots` persistence; `EngramServiceRunner` emits real
+  usage service events.
+- **Related files:** `macos/EngramCoreWrite/Indexing/StartupUsageCollector.swift`,
   `macos/EngramService/Core/EngramServiceRunner.swift`
-- **Status:** open
 
 ### Semantic search and embeddings
 
-- **Module:** search, memory, embeddings
-- **Type:** roadmap
-- **Source:** `docs/backlog-audit-2026-05-24.md`
-- **Acceptance:** Swift runtime either implements vector-backed semantic search
-  with a tested embedding provider or keeps the feature fully absent from UI,
-  docs, and MCP descriptions.
-- **Related files:** `macos/EngramMCP/Core/MCPDatabase.swift`,
-  `macos/Engram/Views/Pages/SearchPageView.swift`
-- **Status:** open
+- **Module:** MCP search
+- **Status:** done
+- **Acceptance evidence:** MCP search schema exposes only `keyword`; unsupported
+  semantic/hybrid requests degrade with an explicit keyword-only warning.
+- **Related files:** `macos/EngramMCP/Core/MCPToolRegistry.swift`,
+  `macos/EngramMCP/Core/MCPDatabase.swift`
 
 ### Manual link/unlink and extra source ingest
 
 - **Module:** session linking and adapters
-- **Type:** roadmap
-- **Source:** `docs/backlog-audit-2026-05-24.md`
-- **Acceptance:** manual parent link/unlink has service commands, UI affordance,
-  and tests; Windsurf and Antigravity ingest either has real live/cache coverage
-  or remains explicitly out of scope.
+- **Status:** done
+- **Acceptance evidence:** service IPC supports manual parent link/unlink;
+  session detail UI exposes confirm/dismiss/unlink actions; live-source coverage
+  includes Codex, Claude Code, Gemini CLI, Antigravity, and OpenCode paths.
 - **Related files:** `macos/EngramService/Core/EngramServiceCommandHandler.swift`,
-  `macos/EngramCoreWrite/Indexing`
-- **Status:** open
+  `macos/Shared/Service/EngramServiceClient.swift`,
+  `macos/Engram/Views/SessionDetailView.swift`
 
 ### Live session monitor
 
 - **Module:** MCP / runtime monitoring
-- **Type:** roadmap
-- **Source:** `docs/backlog-audit-2026-05-24.md`
-- **Acceptance:** `live_sessions` returns real active-session observations from
-  the Swift runtime, or the tool remains explicitly documented as unavailable in
-  MCP mode.
-- **Related files:** `macos/EngramMCP/Core/MCPToolRegistry.swift`,
-  `macos/EngramMCP/Core/MCPSessionTools.swift`
-- **Status:** open
+- **Status:** done
+- **Acceptance evidence:** Swift service and MCP `live_sessions` scan recent
+  session artifacts with active/idle/recent activity levels; tests cover the
+  service scanner and deterministic MCP empty-home behavior.
+- **Related files:** `macos/EngramService/Core/EngramServiceReadProvider.swift`,
+  `macos/EngramMCP/Core/MCPLiveSessionScanner.swift`,
+  `macos/EngramMCP/Core/MCPToolRegistry.swift`
 
 ### Cost optimization insights
 
 - **Module:** MCP / insights
-- **Type:** roadmap
-- **Source:** `docs/backlog-audit-2026-05-24.md`
-- **Acceptance:** `get_insights` computes tested optimization suggestions from
-  real spend/session data, or continues to report only the current spend summary
-  without promising suggestions.
+- **Status:** done
+- **Acceptance evidence:** `get_insights` computes model/source concentration
+  and projected monthly spend suggestions from `session_costs`; golden tests
+  cover the no-suggestion baseline.
 - **Related files:** `macos/EngramMCP/Core/MCPInsightsTool.swift`,
-  `macos/EngramMCP/Core/MCPToolRegistry.swift`
-- **Status:** open
+  `macos/EngramMCP/Core/MCPDatabase.swift`

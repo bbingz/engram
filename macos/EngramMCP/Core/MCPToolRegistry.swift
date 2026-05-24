@@ -246,14 +246,14 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "search",
-            description: "Full-text and semantic search across all session content. Supports Chinese and English.",
+            description: "Full-text keyword search across all session content. Supports Chinese and English.",
             inputSchema: .object([
                 "type": .string("object"),
                 "required": .array([.string("query")]),
                 "properties": .object([
                     "query": .object([
                         "type": .string("string"),
-                        "description": .string("Search keywords (at least 2 characters for semantic, 3 for keyword)"),
+                        "description": .string("Search keywords (at least 3 characters for keyword search)"),
                     ]),
                     "source": .object([
                         "type": .string("string"),
@@ -268,11 +268,9 @@ enum MCPToolRegistry {
                     "mode": .object([
                         "type": .string("string"),
                         "enum": .array([
-                            .string("hybrid"),
                             .string("keyword"),
-                            .string("semantic"),
                         ]),
-                        "description": .string("Search mode (default: hybrid)"),
+                        "description": .string("Search mode (keyword only)"),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
@@ -812,13 +810,7 @@ enum MCPToolRegistry {
             )
             return .toolSuccess(structured)
         case "live_sessions":
-            return .toolSuccess(
-                .object([
-                    ("sessions", .array([])),
-                    ("count", .int(0)),
-                    ("note", .string("Live session monitor not available (MCP server mode)")),
-                ])
-            )
+            return .toolSuccess(MCPLiveSessionScanner.scan(home: ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()))
         case "get_memory":
             let database = try MCPDatabase(path: config.dbPath)
             let structured = try database.getMemory(query: try requiredString("query", in: arguments))
@@ -831,7 +823,7 @@ enum MCPToolRegistry {
                 project: arguments["project"]?.stringValue,
                 since: arguments["since"]?.stringValue,
                 limit: min(arguments["limit"]?.intValue ?? 10, 50),
-                mode: arguments["mode"]?.stringValue ?? "hybrid"
+                mode: arguments["mode"]?.stringValue ?? "keyword"
             )
             return .toolSuccess(structured)
         case "get_context":

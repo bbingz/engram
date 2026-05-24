@@ -315,7 +315,10 @@ public enum EngramServiceRunner {
                 try await StartupBackfills.runInitialScan(
                     emit: { event in Self.emit(StartupBackfillEventEnvelope(event: event)) },
                     log: OSLogStartupBackfillLogging(),
-                    usageCollector: NoopStartupUsageCollector(),
+                    usageCollector: WriterStartupUsageCollector(
+                        writer: writer,
+                        emit: { snapshots in Self.emit(ServiceUsageEvent(snapshots: snapshots)) }
+                    ),
                     indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters),
                     indexJobRunner: jobRunner,
                     database: WriterStartupBackfillDatabase(writer: writer),
@@ -457,6 +460,24 @@ private struct ServiceIndexEvent: Encodable {
 private struct ServiceIndexErrorEvent: Encodable {
     let event = "index_error"
     let error: String
+}
+
+private struct ServiceUsageEvent: Encodable {
+    struct Item: Encodable {
+        let source: String
+        let metric: String
+        let value: Double
+        let status: String?
+    }
+
+    let event = "usage"
+    let usage: [Item]
+
+    init(snapshots: [StartupUsageSnapshot]) {
+        self.usage = snapshots.map {
+            Item(source: $0.source, metric: $0.metric, value: $0.value, status: $0.status)
+        }
+    }
 }
 
 private struct ServiceWebErrorEvent: Encodable {

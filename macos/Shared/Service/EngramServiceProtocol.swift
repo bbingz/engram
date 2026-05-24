@@ -18,6 +18,8 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func deleteInsight(_ request: EngramServiceDeleteInsightRequest) async throws -> EngramServiceJSONValue
     func manageProjectAlias(_ request: EngramServiceProjectAliasRequest) async throws -> EngramServiceJSONValue
     func resumeCommand(sessionId: String) async throws -> EngramServiceResumeCommandResponse
+    func setParentSession(sessionId: String, parentId: String) async throws -> EngramServiceLinkResponse
+    func clearParentSession(sessionId: String) async throws -> EngramServiceLinkResponse
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse
     func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse

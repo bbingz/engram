@@ -824,6 +824,72 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testManualParentLinkAndUnlinkRoundTripThroughClient() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        let linked = try await client.setParentSession(sessionId: "s2", parentId: "s1")
+        XCTAssertEqual(linked, EngramServiceLinkResponse(ok: true, error: nil))
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, suggested_parent_id, link_source FROM sessions WHERE id = 's2'"
+            )
+            XCTAssertEqual(row?["parent_session_id"] as String?, "s1")
+            XCTAssertNil(row?["suggested_parent_id"] as String?)
+            XCTAssertEqual(row?["link_source"] as String?, "manual")
+        }
+
+        let unlinked = try await client.clearParentSession(sessionId: "s2")
+        XCTAssertEqual(unlinked, EngramServiceLinkResponse(ok: true, error: nil))
+
+        try await queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = 's2'"
+            )
+            XCTAssertNil(row?["parent_session_id"] as String?)
+            XCTAssertEqual(row?["link_source"] as String?, "manual")
+        }
+    }
+
+    func testFileSystemProviderReportsRecentlyModifiedLiveSessions() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root
+            .appendingPathComponent(".codex/sessions/2026/05/24", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let sessionFile = sessionDir.appendingPathComponent("rollout.jsonl")
+        try """
+        {"type":"session_meta","payload":{"id":"live-codex","cwd":"/tmp/engram","model":"gpt-5"}}
+        {"type":"turn_context","cwd":"/tmp/engram"}
+        """.write(to: sessionFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: sessionFile.path)
+
+        let provider = FileSystemEngramServiceReadProvider(homeDirectory: root)
+        let response = try await provider.liveSessions()
+
+        XCTAssertEqual(response.count, 1)
+        XCTAssertEqual(response.sessions.first?.source, "codex")
+        XCTAssertEqual(response.sessions.first?.sessionId, "live-codex")
+        XCTAssertEqual(response.sessions.first?.activityLevel, "active")
+    }
+
     func testLinkSessionsRejectsPathsOutsideKnownSessionRoots() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

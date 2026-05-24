@@ -521,7 +521,7 @@ final class MCPDatabase {
     ) throws -> OrderedJSONValue {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let cappedLimit = min(max(limit, 1), 50)
-        let normalizedMode = mode.isEmpty ? "hybrid" : mode
+        let normalizedMode = mode.isEmpty ? "keyword" : mode
 
         if isUUID(normalizedQuery) {
             if let row = try fetchSessionRow(id: normalizedQuery) {
@@ -547,14 +547,14 @@ final class MCPDatabase {
             ])
         }
 
-        guard normalizedMode != "semantic", normalizedQuery.count >= 3 else {
+        guard normalizedQuery.count >= 3 else {
             var entries: [(String, OrderedJSONValue)] = [
                 ("results", .array([])),
                 ("query", .string(query)),
                 ("searchModes", .array([])),
             ]
             if normalizedQuery.count < 3 {
-                entries.append(("warning", .string("Search query needs at least 3 characters for keyword search (2 for semantic)")))
+                entries.append(("warning", .string("Search query needs at least 3 characters for keyword search")))
             }
             return .object(entries)
         }
@@ -604,8 +604,8 @@ final class MCPDatabase {
             }
         }
 
-        if normalizedMode == "semantic" || normalizedMode == "hybrid" {
-            entries.append(("warning", .string("Embedding provider unavailable — results are keyword-only (FTS).")))
+        if normalizedMode != "keyword" {
+            entries.append(("warning", .string("Search mode '\(normalizedMode)' is unavailable; results are keyword-only (FTS).")))
         }
 
         return .object(entries)
@@ -706,6 +706,39 @@ final class MCPDatabase {
                 arguments: [since]
             )
             return doubleValue(row?["cost"])
+        }
+    }
+
+    func topCostGroupsSince(_ since: String, groupBy: String, limit: Int) throws -> [(key: String, cost: Double, sessions: Int)] {
+        let groupExpr: String
+        switch groupBy {
+        case "source":
+            groupExpr = "s.source"
+        case "project":
+            groupExpr = "COALESCE(s.project, '(unknown)')"
+        default:
+            groupExpr = "COALESCE(c.model, '(unknown)')"
+        }
+        return try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT \(groupExpr) AS key,
+                       SUM(c.cost_usd) AS cost,
+                       COUNT(*) AS sessions
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.start_time >= ?
+                GROUP BY \(groupExpr)
+                HAVING SUM(c.cost_usd) > 0
+                ORDER BY cost DESC
+                LIMIT ?
+                """,
+                arguments: [since, limit]
+            )
+            return rows.map { row in
+                (stringValue(row["key"]) ?? "(unknown)", doubleValue(row["cost"]), intValue(row["sessions"]))
+            }
         }
     }
 

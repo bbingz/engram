@@ -162,19 +162,29 @@ struct SessionDetailView: View {
 
             // Confirmed parent breadcrumb
             if let parent = confirmedParent {
-                Button(action: { navigateToSession(parent) }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.left")
-                            .font(.caption2)
-                        Text("Parent: \(parent.displayTitle)")
-                            .font(.caption)
-                            .lineLimit(1)
+                HStack(spacing: 8) {
+                    Button(action: { navigateToSession(parent) }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.left")
+                                .font(.caption2)
+                            Text("Parent: \(parent.displayTitle)")
+                                .font(.caption)
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Theme.accent)
                     }
-                    .foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
+                    .buttonStyle(.plain)
+
+                    Button(action: unlinkParent) {
+                        Image(systemName: "link.badge.minus")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.tertiaryText)
+                    .help("Unlink parent")
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
             }
 
             // Suggested parent breadcrumb (only when no confirmed parent)
@@ -188,6 +198,22 @@ struct SessionDetailView: View {
                     Text("Suggested")
                         .font(.caption2)
                         .foregroundStyle(Theme.tertiaryText)
+
+                    Button(action: confirmSuggestedParent) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.accent)
+                    .help("Confirm parent")
+
+                    Button(action: dismissSuggestedParent) {
+                        Image(systemName: "xmark.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.tertiaryText)
+                    .help("Dismiss suggestion")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
@@ -428,6 +454,31 @@ struct SessionDetailView: View {
     private func confirmSuggestedChild(_ child: Session) {
         Task {
             _ = try? await serviceClient.confirmSuggestion(sessionId: child.id)
+            loadParentInfo()
+        }
+    }
+
+    private func confirmSuggestedParent() {
+        Task {
+            _ = try? await serviceClient.confirmSuggestion(sessionId: session.id)
+            loadParentInfo()
+        }
+    }
+
+    private func dismissSuggestedParent() {
+        guard let suggestedId = suggestedParent?.id ?? session.suggestedParentId else { return }
+        Task {
+            try? await serviceClient.dismissSuggestion(
+                sessionId: session.id,
+                suggestedParentId: suggestedId
+            )
+            loadParentInfo()
+        }
+    }
+
+    private func unlinkParent() {
+        Task {
+            _ = try? await serviceClient.clearParentSession(sessionId: session.id)
             loadParentInfo()
         }
     }

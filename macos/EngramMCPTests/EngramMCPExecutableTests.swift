@@ -75,6 +75,25 @@ final class EngramMCPExecutableTests: XCTestCase {
         }
     }
 
+    func testSearchSchemaDoesNotAdvertiseUnavailableSemanticModes() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"],
+              let search = tools.first(where: { $0["name"]?.stringValue == "search" })
+        else {
+            XCTFail("Expected search tool in tools/list")
+            return
+        }
+        let modeEnum = search["inputSchema"]?["properties"]?["mode"]?["enum"]?.arrayValue?
+            .compactMap(\.stringValue)
+        XCTAssertEqual(modeEnum, ["keyword"])
+        XCTAssertFalse(search["description"]?.stringValue?.localizedCaseInsensitiveContains("semantic") ?? true)
+    }
+
     func testInitializeMatchesGolden() throws {
         let capture = try rpc(
             """
@@ -176,7 +195,8 @@ final class EngramMCPExecutableTests: XCTestCase {
         try assertToolCallMatchesGolden(
             tool: "live_sessions",
             arguments: "{}",
-            goldenFixture: "mcp-golden/live_sessions.unavailable.json"
+            goldenFixture: "mcp-golden/live_sessions.unavailable.json",
+            environment: ["HOME": "/tmp/engram-mcp-empty-home-for-golden-tests"]
         )
     }
 

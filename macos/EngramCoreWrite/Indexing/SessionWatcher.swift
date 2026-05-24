@@ -118,7 +118,7 @@ public final class SessionWatcher {
             enqueueStablePath(path: path, sizeBytes: sizeBytes, modifiedAtMilliseconds: modifiedAtMilliseconds)
             return []
         case .unlinked(let path):
-            withStateLock {
+            _ = withStateLock {
                 pending.removeValue(forKey: path)
             }
             guard !shouldSkip(path) else { return [] }

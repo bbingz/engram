@@ -21,6 +21,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let deleteInsightResult: Result<EngramServiceJSONValue, Error>
     let manageProjectAliasResult: Result<EngramServiceJSONValue, Error>
     let resumeCommandResult: Result<EngramServiceResumeCommandResponse, Error>
+    let setParentSessionResult: Result<EngramServiceLinkResponse, Error>
+    let clearParentSessionResult: Result<EngramServiceLinkResponse, Error>
     let confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
     let dismissSuggestionResult: Result<Void, Error>
     let triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
@@ -60,6 +62,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
             args: ["--resume", "mock-session"],
             cwd: "/tmp/mock-session"
         ),
+        setParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        clearParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         confirmSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         triggerSync: EngramServiceTriggerSyncResponse = EngramServiceTriggerSyncResponse(results: []),
         regenerateAllTitles: EngramServiceRegenerateTitlesResponse = EngramServiceRegenerateTitlesResponse(
@@ -97,6 +101,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.deleteInsightResult = .success(deleteInsight)
         self.manageProjectAliasResult = .success(manageProjectAlias)
         self.resumeCommandResult = .success(resumeCommand)
+        self.setParentSessionResult = .success(setParentSession)
+        self.clearParentSessionResult = .success(clearParentSession)
         self.confirmSuggestionResult = .success(confirmSuggestion)
         self.dismissSuggestionResult = .success(())
         self.triggerSyncResult = .success(triggerSync)
@@ -164,6 +170,14 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func resumeCommand(sessionId: String) async throws -> EngramServiceResumeCommandResponse {
         try resumeCommandResult.get()
+    }
+
+    func setParentSession(sessionId: String, parentId: String) async throws -> EngramServiceLinkResponse {
+        try setParentSessionResult.get()
+    }
+
+    func clearParentSession(sessionId: String) async throws -> EngramServiceLinkResponse {
+        try clearParentSessionResult.get()
     }
 
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse {

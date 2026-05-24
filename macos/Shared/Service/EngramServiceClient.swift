@@ -91,6 +91,14 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("resumeCommand", payload: EngramServiceResumeCommandRequest(sessionId: sessionId))
     }
 
+    func setParentSession(sessionId: String, parentId: String) async throws -> EngramServiceLinkResponse {
+        try await command("setParentSession", payload: EngramServiceLinkRequest(sessionId: sessionId, parentId: parentId))
+    }
+
+    func clearParentSession(sessionId: String) async throws -> EngramServiceLinkResponse {
+        try await command("clearParentSession", payload: EngramServiceUnlinkRequest(sessionId: sessionId))
+    }
+
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse {
         try await command(
             "confirmSuggestion",

@@ -106,7 +106,8 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func liveSessions() async throws -> EngramServiceLiveSessionsResponse {
-        EngramServiceLiveSessionsResponse(sessions: [], count: 0)
+        let sessions = try scanLiveSessions(now: Date())
+        return EngramServiceLiveSessionsResponse(sessions: sessions, count: sessions.count)
     }
 
     func sources() async throws -> [EngramServiceSourceInfo] {
@@ -285,6 +286,113 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         let home = homeDirectory.path
         guard path.hasPrefix(home) else { return path }
         return "~" + String(path.dropFirst(home.count))
+    }
+
+    private func scanLiveSessions(now: Date) throws -> [EngramServiceLiveSessionInfo] {
+        let roots: [(source: String, url: URL, extensions: Set<String>)] = [
+            ("codex", homeDirectory.appendingPathComponent(".codex/sessions", isDirectory: true), ["jsonl"]),
+            ("claude-code", homeDirectory.appendingPathComponent(".claude/projects", isDirectory: true), ["jsonl"]),
+            ("gemini-cli", homeDirectory.appendingPathComponent(".gemini/tmp", isDirectory: true), ["json"]),
+            ("antigravity", homeDirectory.appendingPathComponent(".gemini/antigravity-cli/brain", isDirectory: true), ["json", "jsonl"]),
+            ("antigravity", homeDirectory.appendingPathComponent(".gemini/antigravity", isDirectory: true), ["json", "jsonl"]),
+            ("opencode", homeDirectory.appendingPathComponent(".local/share/opencode", isDirectory: true), ["db"]),
+        ]
+        let activeWindow: TimeInterval = 2 * 60
+        let idleWindow: TimeInterval = 15 * 60
+        let recentWindow: TimeInterval = 24 * 60 * 60
+        var results: [EngramServiceLiveSessionInfo] = []
+        var seen = Set<String>()
+
+        for root in roots {
+            guard FileManager.default.fileExists(atPath: root.url.path) else { continue }
+            let files: [URL]
+            if (try? root.url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                files = [root.url]
+            } else {
+                let enumerator = FileManager.default.enumerator(
+                    at: root.url,
+                    includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey, .fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                )
+                files = (enumerator?.compactMap { $0 as? URL } ?? [])
+            }
+
+            for file in files {
+                guard results.count < 100 else { break }
+                guard root.extensions.contains(file.pathExtension.lowercased()) else { continue }
+                let values = try file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+                guard values.isRegularFile == true, let modifiedAt = values.contentModificationDate else { continue }
+                let age = now.timeIntervalSince(modifiedAt)
+                guard age >= 0, age <= recentWindow else { continue }
+                guard seen.insert(file.path).inserted else { continue }
+                let metadata = parseLiveMetadata(from: file)
+                let level = age <= activeWindow ? "active" : (age <= idleWindow ? "idle" : "recent")
+                results.append(
+                    EngramServiceLiveSessionInfo(
+                        source: root.source,
+                        sessionId: metadata.sessionId,
+                        project: metadata.project,
+                        title: metadata.title,
+                        cwd: metadata.cwd,
+                        filePath: file.path,
+                        startedAt: metadata.startedAt,
+                        model: metadata.model,
+                        currentActivity: metadata.activity,
+                        lastModifiedAt: isoString(modifiedAt),
+                        activityLevel: level
+                    )
+                )
+            }
+        }
+        return results.sorted { $0.lastModifiedAt > $1.lastModifiedAt }
+    }
+
+    private struct LiveMetadata {
+        var sessionId: String?
+        var project: String?
+        var title: String?
+        var cwd: String?
+        var startedAt: String?
+        var model: String?
+        var activity: String?
+    }
+
+    private func parseLiveMetadata(from url: URL) -> LiveMetadata {
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
+            return LiveMetadata(title: url.lastPathComponent)
+        }
+        let prefix = Data(data.prefix(64 * 1024))
+        guard let text = String(data: prefix, encoding: .utf8) else {
+            return LiveMetadata(title: url.lastPathComponent)
+        }
+        return LiveMetadata(
+            sessionId: firstStringValue(keys: ["id", "session_id", "sessionId"], in: text),
+            project: firstStringValue(keys: ["project"], in: text),
+            title: firstStringValue(keys: ["generated_title", "title", "summary"], in: text),
+            cwd: firstStringValue(keys: ["cwd", "workspace"], in: text),
+            startedAt: firstStringValue(keys: ["timestamp", "start_time", "startedAt"], in: text),
+            model: firstStringValue(keys: ["model"], in: text),
+            activity: firstStringValue(keys: ["activity", "currentActivity"], in: text)
+        )
+    }
+
+    private func firstStringValue(keys: [String], in text: String) -> String? {
+        for key in keys {
+            let pattern = #""\#(NSRegularExpression.escapedPattern(for: key))"\s*:\s*"([^"]+)""#
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(text.startIndex..., in: text)
+            guard let match = regex.firstMatch(in: text, range: range),
+                  let valueRange = Range(match.range(at: 1), in: text) else { continue }
+            let value = String(text[valueRange])
+            if !value.isEmpty { return value }
+        }
+        return nil
+    }
+
+    private func isoString(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 }
 

@@ -24,6 +24,8 @@ enum ServiceCapabilityToken {
         "projectMoveBatch",
         "deleteInsight",
         "manageProjectAlias",
+        "setParentSession",
+        "clearParentSession",
         "confirmSuggestion",
         "dismissSuggestion",
         "regenerateAllTitles",

@@ -178,7 +178,7 @@ final class UnixSocketTransportTests: XCTestCase {
         }
 
         var length = UInt32(UnixSocketEngramServiceTransport.maximumFrameLength + 1).bigEndian
-        try withUnsafeBytes(of: &length) { buffer in
+        withUnsafeBytes(of: &length) { buffer in
             XCTAssertEqual(write(fds[0], buffer.baseAddress, buffer.count), buffer.count)
         }
 
@@ -199,7 +199,7 @@ final class UnixSocketTransportTests: XCTestCase {
         Task.detached {
             let client = accept(listener, nil, nil)
             if client >= 0 {
-                Thread.sleep(forTimeInterval: 1)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
                 close(client)
             }
         }
