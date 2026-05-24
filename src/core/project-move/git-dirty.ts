@@ -4,8 +4,6 @@
 // printing. Orchestrator decides policy:
 //   - default: warn + require user confirmation
 //   - --force: proceed anyway
-//   - v1.1 TODO: smart stash path for whitespace-only / untracked-only dirt
-//     (plan §9 TODO #2).
 
 import { execFile } from 'node:child_process';
 import { stat } from 'node:fs/promises';

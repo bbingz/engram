@@ -71,9 +71,11 @@ public enum EngramServiceRunner {
             exit(70) // EX_SOFTWARE
         }
 
+        let statusMonitor = ServiceStatusMonitor()
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
-            readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath)
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath),
+            statusMonitor: statusMonitor
         )
         let server = UnixSocketServiceServer(socketPath: socketPath) { request in
             await handler.handle(request)
@@ -127,11 +129,11 @@ public enum EngramServiceRunner {
         // serialized with incoming commands. This also drains the FTS backlog
         // (via IndexJobRunner) so search content is actually written.
         let initialScanTask = Task {
-            await Self.runInitialScan(gate: gate)
+            await Self.runInitialScan(gate: gate, statusMonitor: statusMonitor)
         }
 
         let indexingTask = Task {
-            await Self.runIndexingLoop(gate: gate)
+            await Self.runIndexingLoop(gate: gate, statusMonitor: statusMonitor)
         }
 
         // Best-effort startup TRUNCATE: PASSIVE never shrinks the WAL file on
@@ -240,7 +242,7 @@ public enum EngramServiceRunner {
         }
     }
 
-    private static func runIndexingLoop(gate: ServiceWriterGate) async {
+    private static func runIndexingLoop(gate: ServiceWriterGate, statusMonitor: ServiceStatusMonitor) async {
         let intervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
         var isFirstScan = true
 
@@ -291,11 +293,13 @@ public enum EngramServiceRunner {
                     total: scan.total,
                     todayParents: scan.todayParents
                 ))
+                await statusMonitor.recordScanSuccess()
             } catch is CancellationError {
                 break
             } catch {
                 ServiceLogger.error("index scan failed", category: .runner, error: error)
                 emit(ServiceIndexErrorEvent(error: error.localizedDescription))
+                await statusMonitor.recordScanFailure(error.localizedDescription)
             }
         }
     }
@@ -303,7 +307,7 @@ public enum EngramServiceRunner {
     /// V2 composition root: runs the startup scan once, draining the FTS
     /// backlog. Builds real conformers over the unit-tested static funcs and
     /// runs through the gate so writes serialize with command dispatch.
-    private static func runInitialScan(gate: ServiceWriterGate) async {
+    private static func runInitialScan(gate: ServiceWriterGate, statusMonitor: ServiceStatusMonitor) async {
         do {
                 _ = try await gate.performWriteCommand(name: "initialScan") { writer in
                 let startupAdapters = SessionAdapterFactory.recentActiveAdapters()
@@ -320,11 +324,13 @@ public enum EngramServiceRunner {
                 )
             }
             ServiceLogger.notice("initial startup scan complete", category: .runner)
+            await statusMonitor.recordScanSuccess()
         } catch is CancellationError {
             return
         } catch {
             ServiceLogger.error("initial startup scan failed", category: .runner, error: error)
             emit(ServiceIndexErrorEvent(error: error.localizedDescription))
+            await statusMonitor.recordScanFailure(error.localizedDescription)
         }
     }
 

@@ -216,45 +216,53 @@ public enum SessionSources {
     ) -> [String] {
         if needle.isEmpty { return [] }
         guard FileManager.default.fileExists(atPath: root) else { return [] }
-        if let viaGrep = tryGrepFastPath(root: root, needle: needle) {
+        let needles = Array(Set([needle, needle.decomposedStringWithCanonicalMapping]))
+            .sorted()
+        if let viaGrep = tryGrepFastPath(root: root, needles: needles) {
             return viaGrep.sorted()
         }
-        return walkAndGrepFallback(root: root, needle: needle).sorted()
+        return walkAndGrepFallback(root: root, needles: needles).sorted()
     }
 
     // MARK: - internals
 
-    private static func tryGrepFastPath(root: String, needle: String) -> [String]? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [
-            "grep", "-rlF",
-            "--include=*.jsonl",
-            "--include=*.json",
-            "--",
-            needle, root,
-        ]
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        do {
-            try process.run()
-        } catch {
+    private static func tryGrepFastPath(root: String, needles: [String]) -> [String]? {
+        var hits = Set<String>()
+        for needle in needles {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [
+                "grep", "-rlF",
+                "--include=*.jsonl",
+                "--include=*.json",
+                "--",
+                needle, root,
+            ]
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+            do {
+                try process.run()
+            } catch {
+                return nil
+            }
+            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+
+            if process.terminationStatus == 0 {
+                hits.formUnion(parseGrepOutput(stdoutData))
+                continue
+            }
+            // grep exits 1 on no-matches with empty stderr; keep trying the
+            // remaining normalized needles.
+            if process.terminationStatus == 1 && stderrData.isEmpty {
+                continue
+            }
             return nil
         }
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        if process.terminationStatus == 0 {
-            return parseGrepOutput(stdoutData)
-        }
-        // grep exits 1 on no-matches with empty stderr; treat that as success.
-        if process.terminationStatus == 1 && stderrData.isEmpty {
-            return []
-        }
-        return nil
+        return Array(hits)
     }
 
     private static func parseGrepOutput(_ data: Data) -> [String] {
@@ -265,15 +273,15 @@ public enum SessionSources {
             .filter { !$0.isEmpty }
     }
 
-    private static func walkAndGrepFallback(root: String, needle: String) -> [String] {
-        let needleData = Data(needle.utf8)
+    private static func walkAndGrepFallback(root: String, needles: [String]) -> [String] {
+        let needleData = needles.map { Data($0.utf8) }
         var hits: [String] = []
         walkSessionFiles(root: root, onIssue: nil) { filePath in
             if let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)),
-               data.range(of: needleData) != nil {
+               needleData.contains(where: { data.range(of: $0) != nil }) {
                 hits.append(filePath)
             }
         }
-        return hits
+        return Array(Set(hits))
     }
 }

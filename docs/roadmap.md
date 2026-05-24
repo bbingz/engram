@@ -1,7 +1,8 @@
 # Engram Roadmap
 
-Canonical pending-work list. Supersedes the per-PR gap notes in
-`tasks/issues.md`, which were written 2026-04-29 against the Node-era spec.
+Canonical product-level pending-work list. Engineering tasks live in
+`docs/TODO.md`; verification and low-priority follow-ups live in
+`docs/followups.md`.
 
 **2026-05-23 update:** every open item below was driven to resolution via TDD
 against the **Swift product** (`macos/`). New Swift tests + a fixture-generator
@@ -46,16 +47,40 @@ real data. The UI already degrades correctly: `PopoverUsageSection` is gated on
 real Claude-OAuth / Codex-tmux probes is **net-new feature work** (external
 integrations), deliberately deferred — not a bug in the current surface.
 
-## Deferred / follow-ups
+## Open roadmap
 
-- **Repo discovery cost:** `RepoDiscovery.discover` shells git inside the writer
-  transaction. Fine for typical repo counts; if a user has hundreds of repos,
-  move probing outside the write lock.
-- **Real usage probes:** implement Claude-OAuth / Codex-tmux collectors writing
-  `usage_snapshots`, then surface in `PopoverUsageSection`.
-- **Signing config:** `project.yml` sets the app's `DEVELOPMENT_TEAM` to
-  `J25GS8J4XM` with a generic "Apple Development" identity (whose cert in the
-  keychain is team `AE7P4G8656`). Hosted `EngramTests` need the team passed
-  explicitly (`DEVELOPMENT_TEAM=J25GS8J4XM`) or they fail to load with a Team-ID
-  mismatch. Consider pinning `DEVELOPMENT_TEAM` on the test target in
-  `project.yml` so `xcodebuild test -scheme Engram` works without an override.
+### Real usage probes
+
+- **Module:** `macos/EngramCoreWrite/Indexing`, `macos/Engram/Views`
+- **Type:** roadmap
+- **Source:** `docs/backlog-audit-2026-05-24.md`
+- **Acceptance:** Claude-OAuth and Codex-tmux collectors write real rows into
+  `usage_snapshots`; the popover usage section renders only when real data is
+  present; tests cover the no-data and data-present paths.
+- **Related files:** `macos/EngramCoreWrite/Indexing/StartupComposition.swift`,
+  `macos/EngramService/Core/EngramServiceRunner.swift`
+- **Status:** open
+
+### Semantic search and embeddings
+
+- **Module:** search, memory, embeddings
+- **Type:** roadmap
+- **Source:** `docs/backlog-audit-2026-05-24.md`
+- **Acceptance:** Swift runtime either implements vector-backed semantic search
+  with a tested embedding provider or keeps the feature fully absent from UI,
+  docs, and MCP descriptions.
+- **Related files:** `macos/EngramMCP/Core/MCPDatabase.swift`,
+  `macos/Engram/Views/Pages/SearchPageView.swift`
+- **Status:** open
+
+### Manual link/unlink and extra source ingest
+
+- **Module:** session linking and adapters
+- **Type:** roadmap
+- **Source:** `docs/backlog-audit-2026-05-24.md`
+- **Acceptance:** manual parent link/unlink has service commands, UI affordance,
+  and tests; Windsurf and Antigravity ingest either has real live/cache coverage
+  or remains explicitly out of scope.
+- **Related files:** `macos/EngramService/Core/EngramServiceCommandHandler.swift`,
+  `macos/EngramCoreWrite/Indexing`
+- **Status:** open

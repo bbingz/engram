@@ -82,11 +82,7 @@ Expected: single JSON line with `"serverInfo":{"name":"engram",...}`.
 
 ## Known limitations (MVP)
 
-One intentional limitation is tracked for the eventual Swift 6 migration, not
-blocking switchover:
-
-- **Async/sync bridge** via `DispatchSemaphore` around the stdio loop —
-  will migrate to structured concurrency under Swift 6.
+No MCP stdio-loop limitation is currently tracked here.
 
 Protocol version handling is implemented for the supported `"2025-03-26"`
 version; unsupported initialize versions fail closed with a JSON-RPC

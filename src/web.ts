@@ -17,11 +17,7 @@ import type { LogWriter } from './core/logger.js';
 import type { MetricsCollector } from './core/metrics.js';
 import { clearMockData, populateMockData } from './core/mock-data.js';
 import type { BackgroundMonitor } from './core/monitor.js';
-import {
-  buildErrorEnvelope,
-  type ErrorEnvelope,
-  mapErrorStatus,
-} from './core/project-move/retry-policy.js';
+import type { ErrorEnvelope } from './core/project-move/retry-policy.js';
 import { runWithContext } from './core/request-context.js';
 import type { SyncEngine, SyncPeer } from './core/sync.js';
 import type { TitleGenerator } from './core/title-generator.js';
@@ -38,6 +34,7 @@ import { handleSaveInsight } from './tools/save_insight.js';
 import { handleStats } from './tools/stats.js';
 import { registerAiAuditRoutes } from './web/routes/ai-audit.js';
 import { registerProjectAliasRoutes } from './web/routes/project-aliases.js';
+import { registerProjectMigrationRoutes } from './web/routes/project-migrations.js';
 import { registerSearchRoutes } from './web/routes/search.js';
 import { registerSessionRoutes } from './web/routes/sessions.js';
 import { registerStatsRoutes } from './web/routes/stats.js';
@@ -51,44 +48,6 @@ import {
   settingsPage,
   statsPage,
 } from './web/views.js';
-
-/** Round 4: retry_policy classification + error-envelope construction +
- *  message sanitization all live in src/core/project-move/retry-policy.ts
- *  so MCP (src/index.ts) and HTTP (here) share one implementation.
- *  Previously the two diverged — unknown errors got 'never' from MCP but
- *  'safe' from HTTP, and structured DirCollisionError fields were dropped. */
-function mapProjectMoveError(err: unknown): ErrorEnvelope {
-  return buildErrorEnvelope(err, { sanitize: true });
-}
-
-// Phase B Step 3: actor threads through to migration_log for audit. Originally
-// actor==='mcp' also bypassed $HOME confinement ("MCP is a trusted local
-// peer") but the 6-way review flagged this as weak defense-in-depth —
-// trust was being derived from an unauthenticated body string, so any local
-// process could self-declare as MCP and escape the guard. Reverted in Round
-// 1 hotfix: actor is audit-only; every actor respects $HOME confinement.
-// Invalid actor → hard 400 to keep the audit field honest.
-const KNOWN_ACTORS = ['cli', 'mcp', 'swift-ui', 'batch'] as const;
-type KnownActor = (typeof KNOWN_ACTORS)[number];
-function parseActor(
-  raw: unknown,
-): { ok: true; actor: KnownActor } | { ok: false; error: string } {
-  if (raw === undefined || raw === null) return { ok: true, actor: 'swift-ui' };
-  if (
-    typeof raw !== 'string' ||
-    !(KNOWN_ACTORS as readonly string[]).includes(raw)
-  ) {
-    return {
-      ok: false,
-      error: `actor must be one of: ${KNOWN_ACTORS.join(', ')}`,
-    };
-  }
-  return { ok: true, actor: raw as KnownActor };
-}
-
-function mapProjectMoveErrorStatus(err: unknown): 400 | 409 | 500 {
-  return mapErrorStatus((err as Error)?.name);
-}
 
 /** Build a 400 validation-error envelope identical in shape to the
  *  orchestrator error envelope so the Swift client can decode uniformly
@@ -543,255 +502,11 @@ export function createApp(
   // Project aliases
   registerProjectAliasRoutes(app, { db });
 
-  // --- Project migration API (powers Swift UI: Rename / Archive / Undo) ---
-  // Writes (POST) require bearer auth via the generic /api/* middleware above.
-  // The orchestrator enforces its own single-writer lock, so concurrent POSTs
-  // will fail with LockBusyError (returned as HTTP 409) instead of corrupting.
-
-  // GET /api/project/migrations — recent migrations (defaults to committed
-  // only, limit 20). Used by UndoSheet to pick a row to reverse.
-  //
-  // Round 4 Critical: previously fetched `limit` rows THEN filtered by
-  // state in JS. With state='committed' and limit=5, if the 5 most
-  // recent rows included any failed/pending ones, the user saw a
-  // truncated list even though many committed ones existed further
-  // back. listMigrations already supports state filtering — push it in.
-  app.get('/api/project/migrations', (c) => {
-    const parsedLimit = parseOptionalPositiveIntParam(
-      'limit',
-      c.req.query('limit'),
-      100,
-    );
-    if (!parsedLimit.ok) {
-      return c.json(validationError('InvalidParam', parsedLimit.error), 400);
-    }
-    const limit = parsedLimit.value ?? 20;
-    const stateFilter = c.req.query('state'); // undefined = all states
-    const validStates = ['fs_pending', 'fs_done', 'committed', 'failed'];
-    if (stateFilter && !validStates.includes(stateFilter)) {
-      return c.json(
-        validationError(
-          'InvalidParam',
-          `state must be one of ${validStates.join(', ')}`,
-        ),
-        400,
-      );
-    }
-    const rows = db.listMigrations({
-      limit,
-      state: stateFilter as
-        | 'fs_pending'
-        | 'fs_done'
-        | 'committed'
-        | 'failed'
-        | undefined,
-    });
-    return c.json({ migrations: rows });
-  });
-
-  // GET /api/project/cwds?project=<name> — distinct cwds for a project
-  // grouping. MVP assumes most projects map to a single cwd; multi-cwd
-  // cases let the UI present a picker.
-  app.get('/api/project/cwds', (c) => {
-    const project = c.req.query('project');
-    if (!project) {
-      return c.json(
-        validationError('MissingParam', 'project query param required'),
-        400,
-      );
-    }
-    const raw = db.getRawDb();
-    const rows = raw
-      .prepare(
-        `SELECT DISTINCT cwd FROM sessions
-         WHERE project = @project AND cwd IS NOT NULL AND cwd != ''
-         ORDER BY cwd`,
-      )
-      .all({ project }) as Array<{ cwd: string }>;
-    return c.json({ project, cwds: rows.map((r) => r.cwd) });
-  });
-
-  // POST /api/project/move — run a move (or dry-run).
-  app.post('/api/project/move', async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      src?: string;
-      dst?: string;
-      dryRun?: boolean;
-      force?: boolean;
-      auditNote?: string;
-      actor?: string;
-    };
-    if (!body.src || !body.dst) {
-      return c.json(
-        validationError('MissingParam', 'src and dst required'),
-        400,
-      );
-    }
-    const actorResult = parseActor(body.actor);
-    if (!actorResult.ok) {
-      return c.json(validationError('InvalidActor', actorResult.error), 400);
-    }
-    const srcResolved = normalizeHttpPath(body.src);
-    const dstResolved = normalizeHttpPath(body.dst);
-    if (!srcResolved.ok) {
-      return c.json(
-        validationError('InvalidPath', `src: ${srcResolved.error}`),
-        400,
-      );
-    }
-    if (!dstResolved.ok) {
-      return c.json(
-        validationError('InvalidPath', `dst: ${dstResolved.error}`),
-        400,
-      );
-    }
-    const { runProjectMove } = await import(
-      './core/project-move/orchestrator.js'
-    );
-    try {
-      const result = await runProjectMove(db, {
-        src: srcResolved.path,
-        dst: dstResolved.path,
-        dryRun: body.dryRun === true,
-        force: body.force === true,
-        auditNote: body.auditNote,
-        actor: actorResult.actor,
-      });
-      return c.json(result);
-    } catch (err) {
-      return c.json(mapProjectMoveError(err), mapProjectMoveErrorStatus(err));
-    }
-  });
-
-  // POST /api/project/undo — reverse a committed migration.
-  app.post('/api/project/undo', async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      migrationId?: string;
-      force?: boolean;
-      actor?: string;
-    };
-    if (!body.migrationId) {
-      return c.json(
-        validationError('MissingParam', 'migrationId required'),
-        400,
-      );
-    }
-    const actorResult = parseActor(body.actor);
-    if (!actorResult.ok) {
-      return c.json(validationError('InvalidActor', actorResult.error), 400);
-    }
-    const { undoMigration } = await import('./core/project-move/undo.js');
-    try {
-      const result = await undoMigration(db, body.migrationId, {
-        force: body.force === true,
-        actor: actorResult.actor,
-      });
-      return c.json(result);
-    } catch (err) {
-      return c.json(mapProjectMoveError(err), mapProjectMoveErrorStatus(err));
-    }
-  });
-
-  // POST /api/project/archive — auto-suggest + move to _archive/<category>/.
-  app.post('/api/project/archive', async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      src?: string;
-      archiveTo?: string;
-      force?: boolean;
-      dryRun?: boolean;
-      auditNote?: string;
-      actor?: string;
-    };
-    if (!body.src)
-      return c.json(validationError('MissingParam', 'src required'), 400);
-    const actorResult = parseActor(body.actor);
-    if (!actorResult.ok) {
-      return c.json(validationError('InvalidActor', actorResult.error), 400);
-    }
-    const srcResolved = normalizeHttpPath(body.src);
-    if (!srcResolved.ok) {
-      return c.json(
-        validationError('InvalidPath', `src: ${srcResolved.error}`),
-        400,
-      );
-    }
-    const { runProjectMove } = await import(
-      './core/project-move/orchestrator.js'
-    );
-    const { suggestArchiveTarget } = await import(
-      './core/project-move/archive.js'
-    );
-    try {
-      // Round 4 Critical (reviewer C1): archive.ts now owns alias
-      // normalization — pass the raw string in, suggestArchiveTarget
-      // will throw on unknowns with a consistent message. Previously
-      // this cast-through-`as never` produced _archive/archived-done/
-      // folders with English names instead of /归档完成/.
-      const suggestion = await suggestArchiveTarget(srcResolved.path, {
-        forceCategory: body.archiveTo,
-      });
-      // Round 4 Critical (Codex #4): only create the _archive/<cat>/
-      // parent dir on a real run. A dry-run used to mkdir unconditionally
-      // which left empty `_archive/<cat>/` folders on the FS even when
-      // the user only wanted a preview.
-      if (body.dryRun !== true) {
-        const { mkdir } = await import('node:fs/promises');
-        const { dirname } = await import('node:path');
-        await mkdir(dirname(suggestion.dst), { recursive: true });
-      }
-      const result = await runProjectMove(db, {
-        src: srcResolved.path,
-        dst: suggestion.dst,
-        archived: true,
-        force: body.force === true,
-        dryRun: body.dryRun === true,
-        auditNote: body.auditNote ?? `archive: ${suggestion.reason}`,
-        actor: actorResult.actor,
-      });
-      return c.json({ ...result, suggestion });
-    } catch (err) {
-      return c.json(mapProjectMoveError(err), mapProjectMoveErrorStatus(err));
-    }
-  });
-
-  // POST /api/project/move-batch — run a YAML-described batch of moves.
-  // Round 2 M3 (6-way review follow-up): previously project_move_batch was
-  // the last write tool still bypassing the single-writer discipline —
-  // dispatched directly in index.ts. Route it through daemon too. The
-  // `actor` field is fixed to 'batch' inside runBatch() per operation; no
-  // need to accept it on the HTTP body. $HOME confinement isn't enforced
-  // here because paths come from the YAML document itself (parsed inside
-  // runBatch via expandHome); the batch entrypoint is intentionally
-  // permissive to match the CLI variant.
-  app.post('/api/project/move-batch', async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      yaml?: string;
-      dryRun?: boolean;
-      force?: boolean;
-    };
-    if (!body.yaml || typeof body.yaml !== 'string') {
-      return c.json(
-        validationError('MissingParam', 'yaml (string) required'),
-        400,
-      );
-    }
-    const { parseBatchYaml } = await import('./tools/project.js');
-    const { normalizeBatchDocument, runBatch } = await import(
-      './core/project-move/batch.js'
-    );
-    try {
-      // parseBatchYaml enforces a size cap + bounded alias expansion so an
-      // untrusted YAML bomb can't exhaust memory on the daemon-fallback path.
-      const raw = parseBatchYaml(body.yaml);
-      const doc = normalizeBatchDocument(raw);
-      if (body.dryRun === true) {
-        doc.defaults = { ...doc.defaults, dryRun: true };
-      }
-      const result = await runBatch(db, doc, { force: body.force === true });
-      return c.json(result);
-    } catch (err) {
-      return c.json(mapProjectMoveError(err), mapProjectMoveErrorStatus(err));
-    }
+  // Project migration API (powers Swift UI: Rename / Archive / Undo)
+  registerProjectMigrationRoutes(app, {
+    db,
+    parseOptionalPositiveIntParam,
+    normalizeHttpPath,
   });
 
   // --- Summary API ---
@@ -1460,8 +1175,6 @@ export function createApp(
   });
 
   // --- Live Sessions API ---
-  // TODO: SSE endpoint (deferred) — add GET /api/live/stream that pushes live session
-  // updates and monitor alerts via Server-Sent Events instead of polling.
   app.get('/api/live', (c) => {
     const raw = opts?.liveMonitor?.getSessions() ?? [];
     // Filter out agent/subagent noise

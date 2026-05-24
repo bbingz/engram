@@ -143,8 +143,7 @@ export function autoFixDotQuote(
   return { buffer: Buffer.concat(parts), count };
 }
 
-/** Max size we'll patch in-memory. JSONL sessions above this are streamed
- *  line-by-line (TODO Phase 2.1). For now, error on oversized files. */
+/** Max size we'll patch in-memory. For now, error on oversized files. */
 const MAX_IN_MEMORY_BYTES = 128 * 1024 * 1024; // 128 MiB
 
 export class ConcurrentModificationError extends Error {

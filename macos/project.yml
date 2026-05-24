@@ -261,6 +261,8 @@ targets:
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
+      DEVELOPMENT_TEAM: J25GS8J4XM
+      CODE_SIGN_STYLE: Automatic
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Engram.app/Contents/MacOS/Engram"
       BUNDLE_LOADER: "$(TEST_HOST)"
 

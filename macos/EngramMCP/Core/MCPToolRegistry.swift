@@ -222,7 +222,7 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "live_sessions",
-            description: "List currently active coding sessions detected by file activity.",
+            description: "Live session monitoring is not available in MCP mode; returns an explicit unavailable result.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([:]),
@@ -324,7 +324,7 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "get_insights",
-            description: "Get actionable cost optimization suggestions with savings estimates",
+            description: "Report cost totals and projection. Swift MCP does not compute optimization suggestions yet.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([

@@ -354,6 +354,59 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         }
     }
 
+    func testEngramAppHostedTestsPinSameDevelopmentTeamAsHostApp() throws {
+        let project = try source("macos/project.yml")
+        guard
+            let appRange = project.range(of: "\n  Engram:\n"),
+            let cliRange = project.range(of: "\n  EngramCLI:\n"),
+            let testsRange = project.range(of: "\n  EngramTests:\n"),
+            let mcpTestsRange = project.range(of: "\n  EngramMCPTests:\n")
+        else {
+            return XCTFail("project.yml target ranges not found")
+        }
+
+        let appBlock = String(project[appRange.lowerBound..<cliRange.lowerBound])
+        let testsBlock = String(project[testsRange.lowerBound..<mcpTestsRange.lowerBound])
+
+        XCTAssertTrue(appBlock.contains("DEVELOPMENT_TEAM: J25GS8J4XM"))
+        XCTAssertTrue(
+            testsBlock.contains("DEVELOPMENT_TEAM: J25GS8J4XM"),
+            "EngramTests must pin the same team as the hosted app so xcodebuild test does not require a command-line override"
+        )
+    }
+
+    func testMcpToolDescriptionsDoNotPromiseUnavailableCapabilities() throws {
+        let registry = try source("macos/EngramMCP/Core/MCPToolRegistry.swift")
+        XCTAssertFalse(
+            registry.contains("List currently active coding sessions detected by file activity."),
+            "live_sessions is unavailable in MCP mode and must say so in its description"
+        )
+        XCTAssertTrue(
+            registry.contains("Live session monitoring is not available in MCP mode"),
+            "live_sessions should document the MCP-mode limitation"
+        )
+        XCTAssertFalse(
+            registry.contains("Get actionable cost optimization suggestions with savings estimates"),
+            "get_insights must not promise suggestions until Swift MCP computes them"
+        )
+        XCTAssertTrue(
+            registry.contains("Report cost totals and projection"),
+            "get_insights should describe the current spend-summary behavior"
+        )
+    }
+
+    func testMcpInsightsOutputDoesNotClaimSuggestionsWereComputed() throws {
+        let insights = try source("macos/EngramMCP/Core/MCPInsightsTool.swift")
+        XCTAssertFalse(
+            insights.contains("No cost optimization suggestions for this period. Spending looks healthy!"),
+            "A hardcoded no-suggestions message hides that suggestions are not computed"
+        )
+        XCTAssertTrue(
+            insights.contains("optimization suggestions are not computed"),
+            "Output should be honest about the current Swift MCP capability"
+        )
+    }
+
     private func source(_ relativePath: String) throws -> String {
         try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }

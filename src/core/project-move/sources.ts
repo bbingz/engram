@@ -251,9 +251,10 @@ export async function findReferencingFiles(
   } catch {
     return []; // root doesn't exist
   }
-  const viaGrep = await tryGrepFastPath(root, needle);
+  const needles = Array.from(new Set([needle, needle.normalize('NFD')]));
+  const viaGrep = await tryGrepFastPath(root, needles);
   if (viaGrep !== null) return viaGrep;
-  return await walkAndGrepFallback(root, needle);
+  return await walkAndGrepFallback(root, needles);
 }
 
 /**
@@ -264,49 +265,57 @@ export async function findReferencingFiles(
  */
 async function tryGrepFastPath(
   root: string,
-  needle: string,
+  needles: string[],
 ): Promise<string[] | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      'grep',
-      [
-        '-rlF',
-        '--include=*.jsonl',
-        '--include=*.json',
-        '--', // end of options (safety; `needle` may start with `-`)
-        needle,
-        root,
-      ],
-      { maxBuffer: 32 * 1024 * 1024 },
-    );
-    return stdout
-      .split('\n')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  } catch (err) {
-    // grep exits 1 when no matches — stdout is empty, stderr is empty.
-    // execFile throws on non-zero exit; inspect and distinguish.
-    const e = err as { code?: number; stdout?: string; stderr?: string };
-    if (e.code === 1 && !e.stderr) return [];
-    // Any other failure (grep missing, permission, etc.) — fall back
-    return null;
+  const hits = new Set<string>();
+  for (const needle of needles) {
+    try {
+      const { stdout } = await execFileAsync(
+        'grep',
+        [
+          '-rlF',
+          '--include=*.jsonl',
+          '--include=*.json',
+          '--', // end of options (safety; `needle` may start with `-`)
+          needle,
+          root,
+        ],
+        { maxBuffer: 32 * 1024 * 1024 },
+      );
+      for (const hit of stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)) {
+        hits.add(hit);
+      }
+    } catch (err) {
+      // grep exits 1 when no matches — stdout is empty, stderr is empty.
+      // execFile throws on non-zero exit; inspect and distinguish.
+      const e = err as { code?: number; stdout?: string; stderr?: string };
+      if (e.code === 1 && !e.stderr) continue;
+      // Any other failure (grep missing, permission, etc.) — fall back
+      return null;
+    }
   }
+  return Array.from(hits).sort();
 }
 
 async function walkAndGrepFallback(
   root: string,
-  needle: string,
+  needles: string[],
 ): Promise<string[]> {
   const { readFile } = await import('node:fs/promises');
   const hits: string[] = [];
-  const needleBuf = Buffer.from(needle, 'utf8');
+  const needleBufs = needles.map((needle) => Buffer.from(needle, 'utf8'));
   for await (const filePath of walkSessionFiles(root)) {
     try {
       const buf = await readFile(filePath);
-      if (buf.indexOf(needleBuf) !== -1) hits.push(filePath);
+      if (needleBufs.some((needleBuf) => buf.indexOf(needleBuf) !== -1)) {
+        hits.push(filePath);
+      }
     } catch {
       // unreadable — skip (tracked at higher level via walk errors)
     }
   }
-  return hits;
+  return Array.from(new Set(hits)).sort();
 }

@@ -411,7 +411,7 @@ None block product behavior; addressing them is a sweep pass.
 - **Native Swift MCP helper bundled into `Engram.app/Contents/Helpers/EngramMCP`**（`macos/EngramMCP/`, `macos/project.yml`, `macos/scripts/copy-mcp-helper.sh`）：26 个 MCP 工具全量 port 到 Swift,读走 GRDB readonly pool,写经 daemon HTTP API (`actor: "mcp"`,strict 模式无 direct-SQLite fallback)。Engram target 声明 `EngramMCP` 为非链接依赖,postbuild 脚本在 Xcode codesign 前把 helper ditto 到 `Contents/Helpers/`,外层签名天然覆盖。Node `dist/index.js` 保留作 fallback;用户改 `.claude/mcp.json` 的 `command` 就能切换(参见 `docs/mcp-swift.md`)。
 - **29 个 byte-equivalent contract 测试**(`macos/EngramMCPTests/EngramMCPExecutableTests.swift`):把 helper 作为 subprocess 起,灌 JSON-RPC,断言字节级等同于 check-in 的 `tests/fixtures/mcp-golden/*.json`;写类工具通过 `MockDaemonServer` 拦截 HTTP 流量。Generator (`scripts/gen-mcp-contract-fixtures.ts`) **必须用 `TZ=UTC` 跑**,否则 golden 时间戳按 host TZ 产生 (+8h CST) 而 xctest 在 UTC 下输出,5 个涉及 startTime/endTime 的 golden 会静默偏移 → 已在 generator header 注明。
 - **Release 部署 & 回归全绿**:`/Applications/Engram.app` Release 构建含 EngramMCP 10.6M helper,codesign `--validated` Helpers/EngramMCP;EngramMCPTests 29/29 + `npm test` 1210/1210 在 main 上均绿。
-- **2 个 MVP TODO 带标注**(`macos/EngramMCP/MCPStdioServer.swift`):`TODO(mcp-version-negotiation)` 目前 hardcode `"2025-03-26"` 协议版本,`TODO(swift6-async-loop)` `DispatchSemaphore` stdio 异步-同步桥接 —— 留到 Swift 6 迁移再动,非 ship 阻塞。
+- **2 个 MVP 限制曾带标注**(`macos/EngramMCP/MCPStdioServer.swift`):协议版本当时 hardcode `"2025-03-26"`,stdio 异步-同步桥接当时使用 `DispatchSemaphore` —— 后续已在 Swift MCP 合同处理中收口。
 
 ### Fixed — monitor/session-repo start_time 字符串格式跨日比较 (2026-04-23)
 

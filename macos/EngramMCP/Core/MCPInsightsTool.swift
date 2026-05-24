@@ -11,7 +11,7 @@ enum MCPInsightsTool {
             "",
             "**Period summary:** Spent \(currency(totalSpent)) · Projected monthly \(currency(projectedMonthly))",
             "",
-            "No cost optimization suggestions for this period. Spending looks healthy!",
+            "Swift MCP reports spend totals only; optimization suggestions are not computed yet.",
         ].joined(separator: "\n")
 
         return .object([

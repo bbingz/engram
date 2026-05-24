@@ -110,6 +110,38 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(status, .running(total: 0, todayParents: 0))
     }
 
+    func testStatusCommandReportsDegradedAfterIndexFailure() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let monitor = ServiceStatusMonitor(staleAfter: 600)
+        await monitor.recordScanFailure("adapter exploded", at: Date(timeIntervalSince1970: 100))
+        let handler = EngramServiceCommandHandler(writerGate: gate, statusMonitor: monitor)
+
+        let response = await handler.handle(EngramServiceRequestEnvelope(command: "status"))
+        guard case .success(_, let data, _) = response else {
+            return XCTFail("status should succeed")
+        }
+
+        let status = try JSONDecoder().decode(EngramServiceStatus.self, from: data)
+        XCTAssertEqual(status, .degraded(message: "Last index scan failed: adapter exploded"))
+    }
+
+    func testStatusCommandReportsDegradedWhenLastSuccessfulScanIsStale() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let monitor = ServiceStatusMonitor(staleAfter: 600, now: { Date(timeIntervalSince1970: 1_001) })
+        await monitor.recordScanSuccess(at: Date(timeIntervalSince1970: 100))
+        let handler = EngramServiceCommandHandler(writerGate: gate, statusMonitor: monitor)
+
+        let response = await handler.handle(EngramServiceRequestEnvelope(command: "status"))
+        guard case .success(_, let data, _) = response else {
+            return XCTFail("status should succeed")
+        }
+
+        let status = try JSONDecoder().decode(EngramServiceStatus.self, from: data)
+        XCTAssertEqual(status, .degraded(message: "Last successful index scan is stale (901s old)"))
+    }
+
     func testRunnerCancellationReleasesWriterGateAndRemovesSocket() async throws {
         let paths = try makeServiceIPCPaths()
 

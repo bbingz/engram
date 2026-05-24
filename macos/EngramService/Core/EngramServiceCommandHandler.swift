@@ -6,13 +6,16 @@ import EngramCoreWrite
 final class EngramServiceCommandHandler: @unchecked Sendable {
     private let writerGate: ServiceWriterGate
     private let readProvider: any EngramServiceReadProvider
+    private let statusMonitor: ServiceStatusMonitor
 
     init(
         writerGate: ServiceWriterGate,
-        readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider()
+        readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
+        statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor()
     ) {
         self.writerGate = writerGate
         self.readProvider = readProvider
+        self.statusMonitor = statusMonitor
     }
 
     func handle(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
@@ -22,9 +25,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 let status = try await writerGate.indexStatus()
                 return .success(
                     requestId: request.requestId,
-                    result: try Self.encode(
-                        EngramServiceStatus.running(total: status.total, todayParents: status.todayParents)
-                    )
+                    result: try Self.encode(await statusMonitor.status(indexStatus: status))
                 )
             case "search":
                 let payload = try decodePayload(EngramServiceSearchRequest.self, from: request)

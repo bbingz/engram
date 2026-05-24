@@ -98,6 +98,7 @@
 		30D5FB735DE8EEBA293E0E97 /* ObservabilityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FBC6551B99980938321BD0A /* ObservabilityView.swift */; };
 		32B088013D18B55566726F2C /* EngramWebUIServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCF30DFEB1290F768AF1FD36 /* EngramWebUIServerTests.swift */; };
 		33AE281B946683761C5B6EF7 /* OpenCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1980E982CA558FC94B9D15B /* OpenCodeAdapter.swift */; };
+		3487514B425379936B70F3A6 /* ServiceStatusMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6114E359808618C36CC25ECA /* ServiceStatusMonitor.swift */; };
 		35207A0C0D404AE57AFBE16D /* SourcePill.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5F6F2B845B79FBCD5EFE196 /* SourcePill.swift */; };
 		3584D986DFA0E76AA06310F5 /* SessionTier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78FD43E2ECCEAE95A5C32244 /* SessionTier.swift */; };
 		3615154299DCF3151E13951A /* CascadeDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6924AD99611DCB4CA26B7EAA /* CascadeDiscovery.swift */; };
@@ -717,6 +718,7 @@
 		5FE90809B9536D6ACEC06384 /* SourcePulseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcePulseView.swift; sourceTree = "<group>"; };
 		60B2E08F8FC96F3B282B08FB /* VectorRebuildPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VectorRebuildPolicyTests.swift; sourceTree = "<group>"; };
 		60DEC330A7DE9C3C55D1649C /* ArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveTests.swift; sourceTree = "<group>"; };
+		6114E359808618C36CC25ECA /* ServiceStatusMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceStatusMonitor.swift; sourceTree = "<group>"; };
 		61316EC32A6D20D7F9B78AAA /* UnixSocketServiceServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnixSocketServiceServer.swift; sourceTree = "<group>"; };
 		62F47966A5E1F2ABF9B12170 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
 		646CADEA017A524549A87802 /* StartupBackfillTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupBackfillTests.swift; sourceTree = "<group>"; };
@@ -1145,6 +1147,7 @@
 				DCDC3A01172C6C8CC0250ADD /* EngramServiceRunner.swift */,
 				DEB7F144143F77F3439A627F /* EngramWebUIServer.swift */,
 				14A1BB125FD97BF99C1B78C6 /* ServiceLogger.swift */,
+				6114E359808618C36CC25ECA /* ServiceStatusMonitor.swift */,
 				06E29A2603077A7C62850146 /* ServiceWriterGate.swift */,
 				E948CB379DA78A92DF7E633F /* TranscriptExportService.swift */,
 			);
@@ -2116,6 +2119,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
+					30D8E174D1B1B7E0305A85E7 = {
+						DevelopmentTeam = J25GS8J4XM;
+						ProvisioningStyle = Automatic;
+					};
 					3E8B4E524AA151B373A0BC91 = {
 						TestTargetID = CBCDC5ABCED1290D34EC5E45;
 					};
@@ -2314,6 +2321,7 @@
 				77367829BEE31987036D05ED /* MockEngramServiceClient.swift in Sources */,
 				B310CD096CD6F82A1C4842F8 /* ServiceCapabilityToken.swift in Sources */,
 				1DEBBEA1C1CC4DA429D3783A /* ServiceLogger.swift in Sources */,
+				3487514B425379936B70F3A6 /* ServiceStatusMonitor.swift in Sources */,
 				3C3A073EF9EE0CCC4340B613 /* ServiceWriterGate.swift in Sources */,
 				C622188C30D18F5E99CF6BCF /* TranscriptExportService.swift in Sources */,
 				36D9C246534965E81AC58ABA /* UnixSocketEngramServiceTransport.swift in Sources */,
@@ -3103,7 +3111,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = J25GS8J4XM;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -3122,7 +3132,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = J25GS8J4XM;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
