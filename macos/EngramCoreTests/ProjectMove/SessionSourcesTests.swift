@@ -261,6 +261,21 @@ final class SessionSourcesTests: XCTestCase {
         XCTAssertEqual(hits, [tmpRoot.appendingPathComponent("a.jsonl").path])
     }
 
+    func testFindMatchesNfcPathTextWhenCallerPassesNfdNeedle() throws {
+        let nfc = "/Users/bing/café"
+        let nfd = nfc.decomposedStringWithCanonicalMapping
+        try "{\"cwd\":\"\(nfc)\"}".write(
+            to: tmpRoot.appendingPathComponent("a.jsonl"),
+            atomically: true, encoding: .utf8
+        )
+        try "{\"cwd\":\"/other\"}".write(
+            to: tmpRoot.appendingPathComponent("b.jsonl"),
+            atomically: true, encoding: .utf8
+        )
+        let hits = SessionSources.findReferencingFiles(root: tmpRoot.path, needle: nfd)
+        XCTAssertEqual(hits, [tmpRoot.appendingPathComponent("a.jsonl").path])
+    }
+
     func testFindReturnsEmptyForEmptyNeedle() throws {
         try "x".write(
             to: tmpRoot.appendingPathComponent("a.jsonl"),

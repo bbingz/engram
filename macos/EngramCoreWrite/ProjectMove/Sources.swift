@@ -207,24 +207,46 @@ public enum SessionSources {
         }
     }
 
-    /// Find JSONL/JSON files under `root` containing `needle` as a literal
-    /// byte substring. Tries `grep -rlF` first (~100× faster); falls back
-    /// to the in-process walk on grep failure.
+    /// Find JSONL/JSON files under `root` containing `needle` or its canonical
+    /// Unicode path variants as literal byte substrings. Tries `grep -rlF`
+    /// first (~100× faster); falls back to the in-process walk on grep failure.
     public static func findReferencingFiles(
         root: String,
         needle: String
     ) -> [String] {
         if needle.isEmpty { return [] }
         guard FileManager.default.fileExists(atPath: root) else { return [] }
-        let needles = Array(Set([needle, needle.decomposedStringWithCanonicalMapping]))
-            .sorted()
-        if let viaGrep = tryGrepFastPath(root: root, needles: needles) {
+        let needles = uniqueByteNeedles([
+            needle,
+            needle.precomposedStringWithCanonicalMapping,
+            needle.decomposedStringWithCanonicalMapping,
+        ])
+        // Keep the grep fast path for ASCII trees, but verify Unicode no-hit
+        // cases in-process so canonical path forms are matched by raw bytes.
+        if let viaGrep = tryGrepFastPath(root: root, needles: needles),
+           !viaGrep.isEmpty || needles.allSatisfy(isASCII) {
             return viaGrep.sorted()
         }
         return walkAndGrepFallback(root: root, needles: needles).sorted()
     }
 
     // MARK: - internals
+
+    private static func uniqueByteNeedles(_ candidates: [String]) -> [String] {
+        var seen = Set<[UInt8]>()
+        var needles: [String] = []
+        for candidate in candidates {
+            let key = Array(candidate.utf8)
+            if seen.insert(key).inserted {
+                needles.append(candidate)
+            }
+        }
+        return needles
+    }
+
+    private static func isASCII(_ value: String) -> Bool {
+        value.utf8.allSatisfy { $0 < 0x80 }
+    }
 
     private static func tryGrepFastPath(root: String, needles: [String]) -> [String]? {
         var hits = Set<String>()

@@ -1,7 +1,7 @@
 // src/core/daemon-client.ts
 // Thin HTTP client used by the MCP process to forward write operations to the
-// daemon. Keeps MCP as a read-only DB client (Phase B of the single-writer
-// refactor — see PROGRESS.md). Call sites decide whether to fall back to a
+// daemon. Keeps MCP as a read-only DB client in the single-writer refactor.
+// Call sites decide whether to fall back to a
 // direct write when the daemon is unreachable, using `DaemonClientError`
 // or a thrown AbortError to signal the failure.
 

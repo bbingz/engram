@@ -233,8 +233,8 @@ export async function* walkSessionFiles(
 }
 
 /**
- * Find JSONL/JSON files under `root` that contain `needle` as a literal
- * byte substring. Mirrors `mvp.py:grep_files`.
+ * Find JSONL/JSON files under `root` that contain `needle` or its canonical
+ * Unicode path variants as literal byte substrings. Mirrors `mvp.py:grep_files`.
  *
  * Performance (Gemini blocker #3): 10万+ file trees would be seconds-slow
  * with pure TS walk. Prefer subprocess `grep -rlF` when available — ~100x
@@ -251,7 +251,9 @@ export async function findReferencingFiles(
   } catch {
     return []; // root doesn't exist
   }
-  const needles = Array.from(new Set([needle, needle.normalize('NFD')]));
+  const needles = Array.from(
+    new Set([needle, needle.normalize('NFC'), needle.normalize('NFD')]),
+  );
   const viaGrep = await tryGrepFastPath(root, needles);
   if (viaGrep !== null) return viaGrep;
   return await walkAndGrepFallback(root, needles);

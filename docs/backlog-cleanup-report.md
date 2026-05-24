@@ -16,18 +16,21 @@ docs/
 `docs/CONTRIBUTING.md` defines the backlog standard, required item format, and
 the path from short-lived code comments to documented backlog entries.
 
-`docs/TODO.md` and `docs/followups.md` currently have no open items.
+`docs/TODO.md` has no open confirmed engineering tasks. `docs/followups.md`
+keeps non-blocking verification and product-confirmation gaps open rather than
+closing them without matching UI/E2E or real-data evidence.
 
 ## Cleanup counts
 
 | Action | Count | Notes |
 |---|---:|---|
-| Migrated into `docs/roadmap.md` | 3 | Real usage probes; semantic search/embeddings; manual link-unlink and extra source ingest. |
+| Migrated into `docs/roadmap.md` | 5 | Real usage probes; semantic search/embeddings; manual link-unlink and extra source ingest; live session monitor; cost optimization insights. |
 | Completed TODO items | 5 | Signing config, MCP claims, service degraded status SLA, TypeScript route split. |
-| Closed follow-up items | 14 | Runtime checks, schema intent, project-move coverage, edge-case fixes, and explicit product decisions. |
+| Migrated into `docs/followups.md` | 9 | UI/manual smoke, project-move E2E, real-data/boundary coverage, CLI and policy confirmations. |
+| Closed follow-up items | 4 | Runtime checks, schema intent, session-classification refactor evidence, and NFC/NFD reference-search fix. |
 | Deleted historical backlog files | 27 | Removed stale `tasks/`, `plans/`, root review/progress/handoff files, and non-archive superpowers plan files. |
 | Removed code comment backlog markers | 3 | Cleared project-move smart-stash, oversized JSONL streaming, and live SSE comments after classification. |
-| Rewrote stale documentation references | 2 | Removed obsolete MCP stdio semaphore limitation and stale changelog TODO wording. |
+| Rewrote stale documentation references | 6 | Removed obsolete MCP stdio semaphore limitation, stale changelog TODO wording, and live references to deleted historical files. |
 
 ## Completed TODO evidence
 
@@ -39,24 +42,24 @@ the path from short-lived code comments to documented backlog entries.
 | Add service-side degraded status SLA | Service status now tracks scan failure and stale successful scan age via `ServiceStatusMonitor`. | `EngramServiceIPCTests.testStatusCommandReportsDegradedAfterIndexFailure`, `testStatusCommandReportsDegradedWhenLastSuccessfulScanIsStale`. |
 | Split TypeScript web routes | Project migration HTTP routes moved from `src/web.ts` to `src/web/routes/project-migrations.ts`; `src/web.ts` reduced from 1678 to 1393 lines. | `tests/web/route-modules.test.ts`, `tests/web/project-api.test.ts`, `tests/web/daemon-http-contract.test.ts`. |
 
-## Closed follow-up evidence
+## Follow-up classification evidence
 
 | Item | Resolution | Evidence |
 |---|---|---|
 | Verify Gemini cross-validation omissions | Closed as verified/covered. App Sandbox is not enabled (`Engram.entitlements` is empty), service is a helper child process with health monitoring/backoff, large JSONL reads use `StreamingJSONLReader`, and UI refresh strategy is event/poll based. | `macos/Engram/Engram.entitlements`, `EngramServiceLauncher.swift`, `StreamingJSONLReader.swift`, `ServiceEventRoutingTests`. |
-| Decide Swift CLI resume scope | Closed as product decision: `EngramCLI` remains an MCP stdio bridge; resume stays in app/MCP service surfaces, not a separate Swift CLI workflow. | `macos/EngramCLI/main.swift`, `ResumeDialog.swift`, `MCPToolRegistry.swift`. |
+| Decide Swift CLI resume scope | Reopened as product-confirmation follow-up. | `docs/followups.md`. |
 | Confirm `insights.deleted_at` intent | Closed as intentional legacy migration support: v2 insight migration filters old `deleted_at` rows out and removes their FTS entries; current `insights` table no longer carries `deleted_at`. | `EngramMigrations.migrateInsightsToV2`; `MigrationRunnerTests` legacy deleted insight migration coverage. |
-| Smoke test ProjectsView | Closed by current gated-state evidence: Rename/Archive menu is behind `nativeProjectMigrationCommandsEnabled`; Undo disables when committed migrations cannot be confirmed. | `ProjectsView.swift`, `RenameSheet.swift`, `ArchiveSheet.swift`, `UndoSheet.swift`, `EngramServiceClientTests`. |
-| Exercise project rename committed flow | Closed by service/core coverage of native project move command and committed migration flow; disposable UI E2E remains outside local automation scope. | `EngramServiceIPCTests` native project move command coverage; `OrchestratorTests`; `MigrationLogStore` transition tests. |
-| Cover `project_recover` fs_done path end-to-end | Already covered in Swift and TypeScript recover tests. | `RecoverMigrationsTests.testFsDoneRecommendationsByPathState`; `tests/core/project-move/undo-recover.test.ts`. |
-| Run batch moves on larger real data | Closed by disposable multi-operation batch tests covering stop-on-error and collect-all behavior. | `BatchTests.testRunStopsOnFirstFailureByDefault`, `testRunCollectsAllFailuresWhenStopOnErrorFalse`. |
-| Expand archive heuristic samples | Already covered by boundary corpus: date prefix, empty, README-only, git dir, git file worktree, ambiguous, aliases, unknown category, custom root, trailing slash. | `ArchiveTests.swift`, `tests/core/project-move/lock-and-archive.test.ts`. |
+| Smoke test ProjectsView | Reopened as UI smoke follow-up because current service/core tests do not exercise the committed GUI flow. | `docs/followups.md`. |
+| Exercise project rename committed flow | Reopened as UI smoke follow-up; service/core coverage is useful but not equivalent to disposable app flow verification. | `docs/followups.md`. |
+| Cover `project_recover` fs_done path end-to-end | Reopened as E2E follow-up; unit coverage exists, but the audit asked for actual filesystem/database recovery evidence. | `docs/followups.md`. |
+| Run batch moves on larger real data | Reopened as real-data smoke follow-up; existing unit tests do not prove large-corpus behavior. | `docs/followups.md`. |
+| Expand archive heuristic samples | Reopened as boundary-corpus follow-up. | `docs/followups.md`. |
 | Consolidate session classification logic | Closed as roadmap-level refactor already documented in the 2026-05-22 closeout; no open TODO until behavior changes are specified. | `docs/reviews/2026-05-22-remediation-closeout.md`; `SessionTierTests`; adapter parity tests. |
-| Improve UndoSheet keyboard and CAS precision | Closed by current UI/error handling plus CAS protection in patching. Further keyboard behavior needs user-observable UI feedback before becoming a task. | `UndoSheet.swift`; `JsonlPatch.patchFile` CAS checks; `ConcurrentModificationError`. |
-| Normalize project-move reference search | Fixed: `findReferencingFiles` now searches both NFC and NFD needles in TypeScript and Swift. | `tests/core/project-move/sources.test.ts`; `SessionSourcesTests.testFindMatchesNfdPathTextWhenCallerPassesNfcNeedle`. |
-| Add smart dirty-worktree handling | Closed as deliberate strict policy: both Swift and TypeScript expose `untrackedOnly`, but orchestrators block any dirty repo unless `force` is explicit. | `git-dirty.ts`, `GitDirty.swift`, `git-dirty.test.ts`, `GitDirtyTests.swift`. |
-| Stream oversized JSONL patching | Closed as documented deliberate limit: patching keeps the 128 MiB in-memory cap; oversized files are surfaced as issues rather than silently patched. | `jsonl-patch.ts`; `Sources.swift` too-large issue reporting; `tests/core/project-move/sources.test.ts`. |
-| Add live-session SSE endpoint | Closed as product decision: TypeScript web surface keeps polling-only `/api/live`; no SSE endpoint until product need is reintroduced. | `src/web.ts` `/api/live`; `SourcePulseView.swift` 10s auto-refresh. |
+| Improve UndoSheet keyboard and CAS precision | Reopened as follow-up; CAS code exists, but keyboard behavior and mtime precision still need explicit verification/decision. | `docs/followups.md`. |
+| Normalize project-move reference search | Fixed: `findReferencingFiles` now searches NFC and NFD needles in TypeScript and Swift, with tests for both caller/file normalization directions. | `tests/core/project-move/sources.test.ts`; `SessionSourcesTests`. |
+| Add smart dirty-worktree handling | Reopened as policy follow-up rather than hidden behind strict force-gating. | `docs/followups.md`. |
+| Stream oversized JSONL patching | Reopened as policy follow-up rather than hidden behind the current 128 MiB cap. | `docs/followups.md`. |
+| Add live-session SSE endpoint | Reopened as product-confirmation follow-up for polling versus SSE. | `docs/followups.md`. |
 
 ## Deleted historical files
 
@@ -116,8 +119,9 @@ Files there are not current backlog unless reintroduced into `docs/roadmap.md`,
 
 ## Manual confirmation needed
 
-None. Items that previously required manual confirmation were either verified
-from current code/tests or explicitly closed as product decisions above.
+The remaining manual/product-confirmation items are listed in
+`docs/followups.md`. They are not release blockers for the current cleanup
+commit, but they should not be reported as completed.
 
 ## Verification
 

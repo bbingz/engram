@@ -51,8 +51,8 @@ Durable, non-obvious lessons (not derivable from code alone):
   with a decorative sibling + `.accessibilityIdentifier`), hiding them from
   XCUITest; add `.accessibilityElement(children: .contain)` to re-expose.
 - Round-5 fresh-angle review closeout: 61 findings fixed + EngramUITests back to
-  0 failures. See `HANDOFF-uitests-a11y-crash.md`, `review-round5.md`, CHANGELOG,
-  commits `a1f6369e` / `9eb932fc` / `cfae3ea3`.
+  0 failures. See CHANGELOG and commits `a1f6369e` / `9eb932fc` /
+  `cfae3ea3`.
 
 ## 2026-05-21 — Full remediation ship after multi-agent review
 

@@ -179,6 +179,16 @@ describe('walkSessionFiles + findReferencingFiles', () => {
     expect(hits).toEqual([join(tmp, 'a.jsonl')]);
   });
 
+  it('findReferencingFiles finds NFC path text when caller passes NFD needle', async () => {
+    const nfc = '/Users/bing/café';
+    const nfd = nfc.normalize('NFD');
+    writeFileSync(join(tmp, 'a.jsonl'), JSON.stringify({ cwd: nfc }));
+    writeFileSync(join(tmp, 'b.jsonl'), JSON.stringify({ cwd: '/other' }));
+
+    const hits = await findReferencingFiles(tmp, nfd);
+    expect(hits).toEqual([join(tmp, 'a.jsonl')]);
+  });
+
   it('findReferencingFiles returns empty for empty needle', async () => {
     writeFileSync(join(tmp, 'a.jsonl'), 'x');
     expect(await findReferencingFiles(tmp, '')).toEqual([]);

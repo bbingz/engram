@@ -47,7 +47,7 @@ export class Database {
     this.db = new BetterSqlite3(dbPath);
     this.db.pragma('journal_mode = WAL');
     // 30s busy_timeout: watcher batch transactions + concurrent MCP writers
-    // regularly exceed the old 5s under load (see PROGRESS.md Phase A).
+    // regularly exceeded the old 5s under load before the single-writer path.
     this.db.pragma('busy_timeout = 30000');
     this.db.pragma('foreign_keys = ON');
     runMigrations(

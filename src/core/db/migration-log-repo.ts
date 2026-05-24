@@ -1,6 +1,6 @@
 // src/core/db/migration-log-repo.ts — migration_log CRUD and pending-migration guard
 //
-// Three-phase write protocol (see plans/project-move-takeover.md §2.1):
+// Three-phase project-move write protocol:
 //   Phase A: startMigration()     → state='fs_pending'  (BEFORE FS ops)
 //   Phase B: markFsDone()         → state='fs_done'     (AFTER FS + JSONL patch)
 //   Phase C: finishMigration()    → state='committed'   (in DB transaction)

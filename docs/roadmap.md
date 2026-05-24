@@ -84,3 +84,27 @@ integrations), deliberately deferred — not a bug in the current surface.
 - **Related files:** `macos/EngramService/Core/EngramServiceCommandHandler.swift`,
   `macos/EngramCoreWrite/Indexing`
 - **Status:** open
+
+### Live session monitor
+
+- **Module:** MCP / runtime monitoring
+- **Type:** roadmap
+- **Source:** `docs/backlog-audit-2026-05-24.md`
+- **Acceptance:** `live_sessions` returns real active-session observations from
+  the Swift runtime, or the tool remains explicitly documented as unavailable in
+  MCP mode.
+- **Related files:** `macos/EngramMCP/Core/MCPToolRegistry.swift`,
+  `macos/EngramMCP/Core/MCPSessionTools.swift`
+- **Status:** open
+
+### Cost optimization insights
+
+- **Module:** MCP / insights
+- **Type:** roadmap
+- **Source:** `docs/backlog-audit-2026-05-24.md`
+- **Acceptance:** `get_insights` computes tested optimization suggestions from
+  real spend/session data, or continues to report only the current spend summary
+  without promising suggestions.
+- **Related files:** `macos/EngramMCP/Core/MCPInsightsTool.swift`,
+  `macos/EngramMCP/Core/MCPToolRegistry.swift`
+- **Status:** open
