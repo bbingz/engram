@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionInfo } from '../../src/adapters/types.js';
 import { Database } from '../../src/core/db.js';
+import type { LiveSessionMonitor } from '../../src/core/live-sessions.js';
 import { createApp } from '../../src/web.js';
 
 const mockSession: SessionInfo = {
@@ -501,6 +502,34 @@ describe('Hono API server — additional endpoints', () => {
     expect(body).toHaveProperty('sessions');
     expect(body).toHaveProperty('count');
     expect(Array.isArray(body.sessions)).toBe(true);
+  });
+
+  it('GET /api/live/events returns SSE live session event using the same payload shape', async () => {
+    const liveMonitor = {
+      getSessions: () => [
+        {
+          source: 'codex',
+          sessionId: 'live-1',
+          project: 'my-project',
+          title: 'Working session',
+          cwd: '/Users/test/project',
+          filePath: '/Users/test/.codex/live-1.jsonl',
+          startedAt: '2026-01-01T10:00:00.000Z',
+          lastModifiedAt: '2026-01-01T10:01:00.000Z',
+          activityLevel: 'active',
+        },
+      ],
+    } as LiveSessionMonitor;
+    const liveApp = createApp(db, { liveMonitor });
+
+    const res = await liveApp.request('/api/live/events');
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    const body = await res.text();
+    expect(body).toContain('event: live');
+    expect(body).toContain('"count":1');
+    expect(body).toContain('"sessionId":"live-1"');
   });
 
   it('GET /api/monitor/alerts returns alerts list', async () => {

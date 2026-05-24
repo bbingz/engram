@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -228,6 +229,23 @@ describe('walkSessionFiles + findReferencingFiles', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].path).toBe(join(tmp, 'big.jsonl'));
     expect(issues[0].reason).toBe('too_large');
+  });
+
+  it('walkSessionFiles does not apply the old 128 MiB cap by default', async () => {
+    const big = join(tmp, 'big.jsonl');
+    writeFileSync(big, '{"cwd":"/old"}\n');
+    truncateSync(big, 128 * 1024 * 1024 + 4096);
+
+    const issues: WalkIssue[] = [];
+    const seen: string[] = [];
+    for await (const f of walkSessionFiles(tmp, {
+      onIssue: (i) => issues.push(i),
+    })) {
+      seen.push(f);
+    }
+
+    expect(seen).toEqual([big]);
+    expect(issues).toEqual([]);
   });
 
   it('walkSessionFiles reports symlinks via onIssue (not silently dropped)', async () => {

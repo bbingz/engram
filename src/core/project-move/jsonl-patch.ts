@@ -11,7 +11,17 @@
 // on the input. It operates at byte-level through Buffer/UTF-8 string round-
 // trip so Python mvp and TS produce byte-identical output (diff-test invariant).
 
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import {
+  chmod,
+  open,
+  readFile,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 /**
  * Strict UTF-8 decoder — throws on malformed sequences instead of silently
@@ -84,6 +94,16 @@ export function patchBuffer(
       `patchBuffer: input is not valid UTF-8 (${(err as Error).message})`,
     );
   }
+  const { text: out, count } = patchText(text, oldPath, newPath);
+  if (count === 0) return { buffer: data, count: 0 };
+  return { buffer: Buffer.from(out, 'utf8'), count };
+}
+
+function patchText(
+  text: string,
+  oldPath: string,
+  newPath: string,
+): { text: string; count: number } {
   const primary = buildRegex(oldPath);
   let count = 0;
   let out = text.replace(primary, () => {
@@ -104,8 +124,21 @@ export function patchBuffer(
       return newPath;
     });
   }
-  if (count === 0) return { buffer: data, count: 0 };
-  return { buffer: Buffer.from(out, 'utf8'), count };
+  return { text: out, count };
+}
+
+function patchTextWithDotQuote(
+  text: string,
+  oldPath: string,
+  newPath: string,
+): { text: string; count: number } {
+  const first = patchText(text, oldPath, newPath);
+  const needle = `${oldPath}."`;
+  if (!first.text.includes(needle)) return first;
+  let count = first.count;
+  const out = first.text.split(needle).join(`${newPath}."`);
+  count += first.text.split(needle).length - 1;
+  return { text: out, count };
 }
 
 /**
@@ -143,7 +176,7 @@ export function autoFixDotQuote(
   return { buffer: Buffer.concat(parts), count };
 }
 
-/** Max size we'll patch in-memory. For now, error on oversized files. */
+/** Max size we'll patch in-memory before switching to streaming I/O. */
 const MAX_IN_MEMORY_BYTES = 128 * 1024 * 1024; // 128 MiB
 
 export class ConcurrentModificationError extends Error {
@@ -208,44 +241,156 @@ export async function patchFile(
   newPath: string,
 ): Promise<number> {
   const stBefore = await stat(filePath);
+  const before = snapshot(stBefore);
   if (stBefore.size > MAX_IN_MEMORY_BYTES) {
-    throw new Error(
-      `patchFile: ${filePath} exceeds ${MAX_IN_MEMORY_BYTES} byte limit (got ${stBefore.size})`,
-    );
+    return await patchFileStreaming(filePath, oldPath, newPath, stBefore);
   }
-  const mtimeBefore = stBefore.mtimeMs;
 
   const buf = await readFile(filePath);
   const res = patchBufferWithDotQuote(buf, oldPath, newPath);
   if (res.count === 0) return 0;
 
   // Re-stat BEFORE we write — if the file changed since we read it, bail out.
-  const stAfter = await stat(filePath);
-  if (stAfter.mtimeMs !== mtimeBefore) {
-    throw new ConcurrentModificationError(
-      filePath,
-      mtimeBefore,
-      stAfter.mtimeMs,
-    );
-  }
+  assertUnchanged(filePath, before, await stat(filePath));
 
-  const tmp = `${filePath}.engram-tmp-${process.pid}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
+  const tmp = tempPath(filePath);
   await writeFile(tmp, res.buffer);
-  const { rename, unlink } = await import('node:fs/promises');
+  await chmod(tmp, stBefore.mode & 0o777).catch(() => {});
 
   // Final CAS — one more stat right before rename to close the gap between
   // the check above and the rename below.
-  const stFinal = await stat(filePath);
-  if (stFinal.mtimeMs !== mtimeBefore) {
-    await unlink(tmp).catch(() => {}); // cleanup temp
-    throw new ConcurrentModificationError(
-      filePath,
-      mtimeBefore,
-      stFinal.mtimeMs,
-    );
+  try {
+    assertUnchanged(filePath, before, await stat(filePath));
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
   }
   await rename(tmp, filePath);
+  await fsyncPath(dirname(filePath)).catch(() => {});
   return res.count;
+}
+
+type FileSnapshot = {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+};
+
+function snapshot(st: Awaited<ReturnType<typeof stat>>): FileSnapshot {
+  return {
+    dev: Number(st.dev),
+    ino: Number(st.ino),
+    size: Number(st.size),
+    mtimeMs: Number(st.mtimeMs),
+  };
+}
+
+function assertUnchanged(
+  filePath: string,
+  before: FileSnapshot,
+  after: Awaited<ReturnType<typeof stat>>,
+) {
+  const next = snapshot(after);
+  if (
+    next.dev !== before.dev ||
+    next.ino !== before.ino ||
+    next.size !== before.size ||
+    next.mtimeMs !== before.mtimeMs
+  ) {
+    throw new ConcurrentModificationError(
+      filePath,
+      before.mtimeMs,
+      next.mtimeMs,
+    );
+  }
+}
+
+function tempPath(filePath: string): string {
+  return `${filePath}.engram-tmp-${process.pid}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function streamingCarryChars(oldPath: string): number {
+  return Math.max(oldPath.length, oldPath.normalize('NFD').length) + 4;
+}
+
+async function fsyncPath(path: string) {
+  const handle = await open(path, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function patchFileStreaming(
+  filePath: string,
+  oldPath: string,
+  newPath: string,
+  stBefore: Awaited<ReturnType<typeof stat>>,
+): Promise<number> {
+  const before = snapshot(stBefore);
+  const tmp = tempPath(filePath);
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const carryChars = streamingCarryChars(oldPath);
+  let carry = '';
+  let total = 0;
+  let out: Awaited<ReturnType<typeof open>> | undefined;
+  const mode = Number(stBefore.mode) & 0o777;
+
+  try {
+    out = await open(tmp, 'wx', mode);
+    await chmod(tmp, mode).catch(() => {});
+
+    for await (const chunk of createReadStream(filePath, {
+      highWaterMark: 1024 * 1024,
+    })) {
+      let decoded: string;
+      try {
+        decoded = decoder.decode(chunk as Buffer, { stream: true });
+      } catch (err) {
+        throw new InvalidUtf8Error(
+          `patchFile: input is not valid UTF-8 (${(err as Error).message})`,
+        );
+      }
+      const working = carry + decoded;
+      if (working.length <= carryChars) {
+        carry = working;
+        continue;
+      }
+      const processText = working.slice(0, working.length - carryChars);
+      carry = working.slice(working.length - carryChars);
+      const patched = patchTextWithDotQuote(processText, oldPath, newPath);
+      total += patched.count;
+      await out.write(Buffer.from(patched.text, 'utf8'));
+    }
+
+    const finalText = decoder.decode();
+    const patchedTail = patchTextWithDotQuote(
+      carry + finalText,
+      oldPath,
+      newPath,
+    );
+    total += patchedTail.count;
+    await out.write(Buffer.from(patchedTail.text, 'utf8'));
+    await out.sync();
+    await out.close();
+    out = undefined;
+
+    if (total === 0) {
+      await unlink(tmp).catch(() => {});
+      return 0;
+    }
+
+    assertUnchanged(filePath, before, await stat(filePath));
+    await rename(tmp, filePath);
+    await fsyncPath(dirname(filePath)).catch(() => {});
+    return total;
+  } catch (err) {
+    await out?.close().catch(() => {});
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
 }

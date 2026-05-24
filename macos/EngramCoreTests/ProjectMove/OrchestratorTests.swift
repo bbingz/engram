@@ -257,6 +257,56 @@ final class OrchestratorTests: XCTestCase {
         }
     }
 
+    func testUntrackedOnlyGitStateProceedsWithoutForce() async throws {
+        try Self.skipIfGitMissing()
+        let (src, _) = try makeProjectFixture(name: "proj")
+        try makeRealGitRepo(atPath: src)
+        try "local scratch".write(
+            toFile: (src as NSString).appendingPathComponent("untracked.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let dst = tempRoot.appendingPathComponent("renamed-untracked").path
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertTrue(result.git.dirty)
+        XCTAssertTrue(result.git.untrackedOnly)
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: (dst as NSString).appendingPathComponent("untracked.txt")
+            )
+        )
+    }
+
+    func testWhitespaceOnlyTrackedGitStateRequiresForce() async throws {
+        try Self.skipIfGitMissing()
+        let (src, _) = try makeProjectFixture(name: "proj")
+        try makeRealGitRepo(atPath: src)
+        try "print(\"hi\")\n".write(
+            toFile: (src as NSString).appendingPathComponent("main.py"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let dst = tempRoot.appendingPathComponent("renamed-dirty").path
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected gitDirty")
+        } catch OrchestratorError.gitDirty {
+            // ok
+        } catch {
+            XCTFail("expected gitDirty, got \(error)")
+        }
+    }
+
     // MARK: - compensation
 
     func testCompensationRevertsPhysicalMoveWhenDirRenameFails() async throws {
@@ -349,6 +399,21 @@ final class OrchestratorTests: XCTestCase {
         return (projectDir.path, ccDir)
     }
 
+    private func makeRealGitRepo(atPath path: String) throws {
+        let gitDir = (path as NSString).appendingPathComponent(".git")
+        try? FileManager.default.removeItem(atPath: gitDir)
+        try "print(\"hi\")".write(
+            toFile: (path as NSString).appendingPathComponent("main.py"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try Self.runGit(atPath: path, ["init", "-q"])
+        try Self.runGit(atPath: path, ["config", "user.email", "t@t"])
+        try Self.runGit(atPath: path, ["config", "user.name", "t"])
+        try Self.runGit(atPath: path, ["add", "."])
+        try Self.runGit(atPath: path, ["commit", "-qm", "init"])
+    }
+
     private func writeJsonlSession(at url: URL, cwd: String) throws {
         let line = """
         {"sessionId":"\(UUID().uuidString)","cwd":"\(cwd)","type":"summary"}
@@ -386,5 +451,40 @@ final class OrchestratorTests: XCTestCase {
             lockPath: lockPath,
             rolledBackOf: rolledBackOf
         )
+    }
+
+    private static func skipIfGitMissing() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git", "--version"]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            throw XCTSkip("git is not available")
+        }
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            throw XCTSkip("git is not available")
+        }
+    }
+
+    private static func runGit(atPath path: String, _ args: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git"] + args
+        process.currentDirectoryURL = URL(fileURLWithPath: path, isDirectory: true)
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            throw NSError(
+                domain: "OrchestratorTests",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "git \(args.joined(separator: " ")) failed"]
+            )
+        }
     }
 }

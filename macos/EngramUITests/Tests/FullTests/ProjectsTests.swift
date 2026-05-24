@@ -39,4 +39,22 @@ final class ProjectsTests: XCTestCase {
         XCTAssertTrue(projects.container.exists,
                       "Projects container should be visible")
     }
+
+    func testProjectMigrationControlsAreReachable() {
+        let sidebar = SidebarScreen(app: app)
+        sidebar.navigateTo("projects")
+
+        let projects = ProjectsScreen(app: app)
+        projects.waitForLoad()
+
+        XCTAssertTrue(projects.undoButton.exists,
+                      "Projects page should expose the Undo Recent Move migration control")
+        let firstProject = projects.group(at: 0)
+        if firstProject.waitForExistence(timeout: 2) {
+            firstProject.rightClick()
+            XCTAssertTrue(app.menuItems["Rename\u{2026}"].waitForExistence(timeout: 2),
+                          "Project rows should expose migration commands via context menu")
+            app.typeKey(.escape, modifierFlags: [])
+        }
+    }
 }

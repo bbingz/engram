@@ -148,7 +148,7 @@ public enum SessionSources {
     public static func walkSessionFiles(
         root: String,
         extensions: Set<String> = [".jsonl", ".json"],
-        maxFileBytes: Int64 = 128 * 1024 * 1024,
+        maxFileBytes: Int64 = Int64.max,
         onIssue: ((WalkIssue) -> Void)? = nil,
         onFile: (String) -> Void
     ) {

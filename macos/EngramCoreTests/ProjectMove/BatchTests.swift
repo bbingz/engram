@@ -200,6 +200,30 @@ final class BatchTests: XCTestCase {
         XCTAssertEqual(result.completed.count, 1, "tilde must expand to override home; failures: \(result.failed.map(\.error))")
     }
 
+    func testRunPatchesLargeJsonlSessionFile() async throws {
+        let fixture = try makeProjectFixture(name: "large")
+        let dst = tempRoot.appendingPathComponent("large-renamed").path
+        let sessionFile = fixture.ccDir.appendingPathComponent("large.jsonl")
+        try "{\"cwd\":\"\(fixture.src)\"}\n".write(to: sessionFile, atomically: true, encoding: .utf8)
+        let handle = try FileHandle(forWritingTo: sessionFile)
+        try handle.truncate(atOffset: UInt64(JsonlPatch.maxInMemoryBytes + 4096))
+        try handle.close()
+
+        let doc = BatchDocument(operations: [
+            BatchOperation(src: fixture.src, dst: dst)
+        ])
+        let result = await Batch.run(doc, writer: writer, overrides: makeOverrides())
+
+        XCTAssertEqual(result.completed.count, 1, "failures: \(result.failed.map(\.error))")
+        let patchedSessionFile = tempRoot
+            .appendingPathComponent(".claude/projects/\(ClaudeCodeProjectDir.encode(dst))/large.jsonl")
+        let input = try FileHandle(forReadingFrom: patchedSessionFile)
+        let patched = try input.read(upToCount: 256)
+        try input.close()
+        let prefix = String(decoding: patched ?? Data(), as: UTF8.self)
+        XCTAssertTrue(prefix.contains(dst), "expected large JSONL prefix to be patched, got \(prefix)")
+    }
+
     // MARK: - helpers
 
     @discardableResult

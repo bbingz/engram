@@ -8,6 +8,7 @@
 //   5. review scan finds 0 own refs (all patched)
 //   6. project_aliases was created when basename differs
 
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -182,6 +183,45 @@ describe('runProjectMove — orchestrator integration', () => {
 
     // Review finds nothing
     expect(result.review.own).toEqual([]);
+  });
+
+  it('allows untracked-only git state without force and reports it', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: src });
+    execFileSync('git', ['config', 'user.email', 't@t'], { cwd: src });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: src });
+    execFileSync('git', ['add', '.'], { cwd: src });
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: src });
+    writeFileSync(join(src, 'untracked.txt'), 'local scratch');
+
+    const result = await runProjectMove(db, {
+      src,
+      dst,
+      home,
+      actor: 'cli',
+    });
+
+    expect(result.state).toBe('committed');
+    expect(result.git.dirty).toBe(true);
+    expect(result.git.untrackedOnly).toBe(true);
+    expect(existsSync(join(dst, 'untracked.txt'))).toBe(true);
+  });
+
+  it('rejects whitespace-only tracked git modifications without force', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: src });
+    execFileSync('git', ['config', 'user.email', 't@t'], { cwd: src });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: src });
+    execFileSync('git', ['add', '.'], { cwd: src });
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: src });
+    writeFileSync(join(src, 'main.py'), 'print("hi")\n');
+
+    await expect(
+      runProjectMove(db, {
+        src,
+        dst,
+        home,
+        actor: 'cli',
+      }),
+    ).rejects.toThrow(/uncommitted git changes/);
   });
 
   it('dry-run: no FS changes, no DB writes', async () => {

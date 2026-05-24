@@ -169,7 +169,7 @@ export async function* walkSessionFiles(
   } = {},
 ): AsyncGenerator<string> {
   const exts = opts.extensions ?? new Set(['.jsonl', '.json']);
-  const maxBytes = opts.maxFileBytes ?? 128 * 1024 * 1024;
+  const maxBytes = opts.maxFileBytes ?? Number.POSITIVE_INFINITY;
   const report = opts.onIssue ?? (() => {});
   try {
     await stat(root);

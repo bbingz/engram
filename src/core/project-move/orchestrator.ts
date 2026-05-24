@@ -196,7 +196,7 @@ export async function runProjectMove(
 
   // Step 0: git dirty check (mechanism; CLI layer decides policy)
   const git = await checkGitDirty(src);
-  if (git.dirty && !opts.force) {
+  if (git.dirty && !git.untrackedOnly && !opts.force) {
     throw new Error(
       `runProjectMove: ${src} has uncommitted git changes. ` +
         'Commit, stash, or pass force=true to proceed.',

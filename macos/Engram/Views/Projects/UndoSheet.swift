@@ -48,6 +48,7 @@ struct UndoSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    @FocusState private var focusedMigrationId: String?
     /// IDs where retry_policy: 'never' came back (UndoStale etc.) — these
     /// can't be retried, so the UI disables the row. Codex minor #5.
     @State private var disabledMigrationIds: Set<String> = []
@@ -84,8 +85,8 @@ struct UndoSheet: View {
                     .padding(.vertical, 10)
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(migrations) { m in
-                        migrationRow(m)
+                    ForEach(Array(migrations.enumerated()), id: \.element.id) { index, m in
+                        migrationRow(m, index: index)
                     }
                 }
                 if isExecuting {
@@ -160,14 +161,16 @@ struct UndoSheet: View {
             guard nativeProjectMigrationCommandsEnabled else { return }
             await loadMigrations()
         }
+        .onMoveCommand(perform: moveSelection)
         .onDisappear { activeTask?.cancel() }
     }
 
     @ViewBuilder
-    private func migrationRow(_ m: EngramServiceMigrationLogEntry) -> some View {
+    private func migrationRow(_ m: EngramServiceMigrationLogEntry, index: Int) -> some View {
         Button(action: {
             if !disabledMigrationIds.contains(m.id) {
                 selectedMigrationId = m.id
+                focusedMigrationId = m.id
             }
         }) {
             HStack(spacing: 10) {
@@ -233,7 +236,10 @@ struct UndoSheet: View {
             .opacity(disabledMigrationIds.contains(m.id) ? 0.5 : 1.0)
         }
         .buttonStyle(.plain)
+        .focusable(!disabledMigrationIds.contains(m.id))
+        .focused($focusedMigrationId, equals: m.id)
         .disabled(isExecuting || disabledMigrationIds.contains(m.id))
+        .accessibilityIdentifier("undo_migrationRow_\(index)")
         .accessibilityLabel(
             disabledMigrationIds.contains(m.id)
                 ? "Migration \(m.id.prefix(8)) — can't undo: \(disabledReasons[m.id] ?? "blocked")"
@@ -249,9 +255,39 @@ struct UndoSheet: View {
                 EngramServiceProjectMigrationsRequest(state: "committed", limit: 5)
             )
             migrations = response.migrations
+            if selectedMigrationId == nil {
+                selectFirstAvailableMigration()
+            }
         } catch {
             errorMessage = "Failed to load migrations: \(error.localizedDescription)"
         }
+    }
+
+    private func selectFirstAvailableMigration() {
+        guard let first = migrations.first(where: { !disabledMigrationIds.contains($0.id) }) else {
+            return
+        }
+        selectedMigrationId = first.id
+        focusedMigrationId = first.id
+    }
+
+    private func moveSelection(_ direction: MoveCommandDirection) {
+        guard !isExecuting else { return }
+        let selectable = migrations.filter { !disabledMigrationIds.contains($0.id) }
+        guard !selectable.isEmpty else { return }
+        let current = selectedMigrationId.flatMap { id in selectable.firstIndex { $0.id == id } } ?? 0
+        let nextIndex: Int
+        switch direction {
+        case .up, .left:
+            nextIndex = max(current - 1, 0)
+        case .down, .right:
+            nextIndex = min(current + 1, selectable.count - 1)
+        @unknown default:
+            nextIndex = current
+        }
+        let next = selectable[nextIndex].id
+        selectedMigrationId = next
+        focusedMigrationId = next
     }
 
     private func runUndo() async {

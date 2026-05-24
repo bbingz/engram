@@ -1,10 +1,53 @@
 import Foundation
 import Network
 
+if let resumeExitCode = runResumeCommandIfRequested() {
+    exit(resumeExitCode)
+}
+
 // EngramCLI — stdio bridge to MCPServer via Unix socket HTTP
 // Reads JSON-RPC lines from stdin, sends as HTTP POST /mcp, writes response to stdout.
 
 let socketPath = "/tmp/engram.sock"
+
+func runResumeCommandIfRequested() -> Int32? {
+    do {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        guard let options = try EngramCLIResumeOptions.parse(arguments: arguments) else {
+            return nil
+        }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: options.socketPath)
+        )
+        let semaphore = DispatchSemaphore(value: 0)
+        var exitCode: Int32 = 0
+
+        Task {
+            do {
+                let output = try await EngramCLIResumeCommand.render(options: options, client: client)
+                print(output)
+                await client.close()
+            } catch {
+                writeStderr("\(error)\n")
+                exitCode = 1
+                await client.close()
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return exitCode
+    } catch {
+        writeStderr("\(error)\n")
+        return 64
+    }
+}
+
+func writeStderr(_ text: String) {
+    if let data = text.data(using: .utf8) {
+        FileHandle.standardError.write(data)
+    }
+}
 
 // Read one line from stdin
 func readStdinLine() -> String? {

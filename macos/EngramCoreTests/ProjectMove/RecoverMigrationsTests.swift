@@ -209,6 +209,30 @@ final class RecoverMigrationsTests: XCTestCase {
         XCTAssertEqual(RecoverMigrations.defaultProbePath(url.path), .exists)
     }
 
+    func testFsDoneDiagnosisUsesRealFilesystemProbe() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-recover-fsdone-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project").path
+        let newPath = root.appendingPathComponent("new-project").path
+        try FileManager.default.createDirectory(atPath: newPath, withIntermediateDirectories: true)
+
+        let row = MigrationLogRecord(
+            id: "m-fsdone",
+            state: "fs_done",
+            oldPath: oldPath,
+            newPath: newPath,
+            startedAt: "T0"
+        )
+        let diagnoses = try RecoverMigrations.diagnose(log: StubLog(records: [row]))
+
+        XCTAssertEqual(diagnoses.count, 1)
+        XCTAssertEqual(diagnoses[0].oldPathProbe, .absent)
+        XCTAssertEqual(diagnoses[0].newPathProbe, .exists)
+        XCTAssertTrue(diagnoses[0].recommendation.contains("DB commit failed"))
+    }
+
     // MARK: - helpers
 
     private func recommendation(state: String, old: Bool, new: Bool) -> String {
@@ -234,7 +258,7 @@ final class RecoverMigrationsTests: XCTestCase {
     }
 }
 
-private struct StubLog: MigrationLogReader {
+private struct StubLog: MigrationLogReader, @unchecked Sendable {
     let records: [MigrationLogRecord]
     let onList: (([String], Date?) -> Void)?
 

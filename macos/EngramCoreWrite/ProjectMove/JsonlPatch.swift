@@ -164,28 +164,35 @@ public enum JsonlPatch {
         let attrsBefore = try FileManager.default.attributesOfItem(atPath: filePath)
         let sizeBefore = (attrsBefore[.size] as? NSNumber)?.int64Value ?? 0
         if sizeBefore > maxInMemoryBytes {
-            throw JsonlPatchError.fileTooLarge(
-                path: filePath, size: sizeBefore, limit: maxInMemoryBytes
+            return try patchFileStreaming(
+                at: filePath,
+                oldPath: oldPath,
+                newPath: newPath,
+                attrsBefore: attrsBefore
             )
         }
-        let mtimeBefore = mtimeMs(attrsBefore)
+        let before = try snapshot(path: filePath)
 
         let buf = try Data(contentsOf: URL(fileURLWithPath: filePath))
         let res = try patchBufferWithDotQuote(buf, oldPath: oldPath, newPath: newPath)
         if res.count == 0 { return 0 }
 
         // First CAS: file must not have moved between read and now.
-        let attrsAfter = try FileManager.default.attributesOfItem(atPath: filePath)
-        let mtimeAfter = mtimeMs(attrsAfter)
-        if mtimeAfter != mtimeBefore {
+        let after = try snapshot(path: filePath)
+        if after != before {
             throw ConcurrentModificationError(
-                filePath: filePath, oldMtime: mtimeBefore, newMtime: mtimeAfter
+                filePath: filePath,
+                oldMtime: Double(before.mtimeSec) * 1000 + Double(before.mtimeNsec) / 1_000_000,
+                newMtime: Double(after.mtimeSec) * 1000 + Double(after.mtimeNsec) / 1_000_000
             )
         }
 
         let tmpPath = "\(filePath).engram-tmp-\(getpid())-\(randomToken())"
         do {
             try res.data.write(to: URL(fileURLWithPath: tmpPath))
+            if let permissions = attrsBefore[.posixPermissions] as? NSNumber {
+                chmod(tmpPath, mode_t(permissions.intValue))
+            }
         } catch {
             throw JsonlPatchError.ioError(
                 path: tmpPath, errno: errno, message: error.localizedDescription
@@ -193,12 +200,13 @@ public enum JsonlPatch {
         }
 
         // Second CAS: closes the gap between the first stat and rename.
-        let attrsFinal = try FileManager.default.attributesOfItem(atPath: filePath)
-        let mtimeFinal = mtimeMs(attrsFinal)
-        if mtimeFinal != mtimeBefore {
+        let final = try snapshot(path: filePath)
+        if final != before {
             _ = try? FileManager.default.removeItem(atPath: tmpPath)
             throw ConcurrentModificationError(
-                filePath: filePath, oldMtime: mtimeBefore, newMtime: mtimeFinal
+                filePath: filePath,
+                oldMtime: Double(before.mtimeSec) * 1000 + Double(before.mtimeNsec) / 1_000_000,
+                newMtime: Double(final.mtimeSec) * 1000 + Double(final.mtimeNsec) / 1_000_000
             )
         }
 
@@ -209,10 +217,147 @@ public enum JsonlPatch {
                 path: filePath, errno: code, message: String(cString: strerror(code))
             )
         }
+        fsyncDirectory(for: filePath)
         return res.count
     }
 
     // MARK: - internals
+
+    private struct FileSnapshot: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let size: Int64
+        let mtimeSec: Int
+        let mtimeNsec: Int
+    }
+
+    private static func snapshot(path: String) throws -> FileSnapshot {
+        var info = stat()
+        if lstat(path, &info) != 0 {
+            throw JsonlPatchError.ioError(
+                path: path,
+                errno: errno,
+                message: String(cString: strerror(errno))
+            )
+        }
+        return FileSnapshot(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: Int64(info.st_size),
+            mtimeSec: Int(info.st_mtimespec.tv_sec),
+            mtimeNsec: Int(info.st_mtimespec.tv_nsec)
+        )
+    }
+
+    private static func patchFileStreaming(
+        at filePath: String,
+        oldPath: String,
+        newPath: String,
+        attrsBefore: [FileAttributeKey: Any]
+    ) throws -> Int {
+        let before = try snapshot(path: filePath)
+        let tmpPath = "\(filePath).engram-tmp-\(getpid())-\(randomToken())"
+        FileManager.default.createFile(atPath: tmpPath, contents: nil)
+        if let permissions = attrsBefore[.posixPermissions] as? NSNumber {
+            chmod(tmpPath, mode_t(permissions.intValue))
+        }
+
+        let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
+        let output = try FileHandle(forWritingTo: URL(fileURLWithPath: tmpPath))
+        var total = 0
+        var carry = Data()
+        let carryLimit = max(
+            oldPath.lengthOfBytes(using: .utf8),
+            oldPath.decomposedStringWithCanonicalMapping.lengthOfBytes(using: .utf8)
+        ) + 8
+
+        do {
+            while true {
+                let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
+                if chunk.isEmpty { break }
+                var combined = Data()
+                combined.reserveCapacity(carry.count + chunk.count)
+                combined.append(carry)
+                combined.append(chunk)
+
+                guard combined.count > carryLimit else {
+                    carry = combined
+                    continue
+                }
+                var processCount = combined.count - carryLimit
+                var segment = combined.prefix(processCount)
+                var decoded = String(data: segment, encoding: .utf8)
+                var attempts = 0
+                while decoded == nil && processCount > 0 && attempts < 4 {
+                    processCount -= 1
+                    attempts += 1
+                    segment = combined.prefix(processCount)
+                    decoded = String(data: segment, encoding: .utf8)
+                }
+                guard let decoded else {
+                    throw InvalidUtf8Error(detail: "input bytes are not a valid UTF-8 sequence")
+                }
+                let patched = try patchBufferWithDotQuote(
+                    Data(decoded.utf8),
+                    oldPath: oldPath,
+                    newPath: newPath
+                )
+                total += patched.count
+                try output.write(contentsOf: patched.data)
+                carry = combined.suffix(combined.count - processCount)
+            }
+
+            let tail = try patchBufferWithDotQuote(
+                carry,
+                oldPath: oldPath,
+                newPath: newPath
+            )
+            total += tail.count
+            try output.write(contentsOf: tail.data)
+            output.synchronizeFile()
+            try output.close()
+            try input.close()
+
+            if total == 0 {
+                _ = try? FileManager.default.removeItem(atPath: tmpPath)
+                return 0
+            }
+
+            let after = try snapshot(path: filePath)
+            if after != before {
+                _ = try? FileManager.default.removeItem(atPath: tmpPath)
+                throw ConcurrentModificationError(
+                    filePath: filePath,
+                    oldMtime: Double(before.mtimeSec) * 1000 + Double(before.mtimeNsec) / 1_000_000,
+                    newMtime: Double(after.mtimeSec) * 1000 + Double(after.mtimeNsec) / 1_000_000
+                )
+            }
+            if Darwin.rename(tmpPath, filePath) != 0 {
+                let code = errno
+                _ = try? FileManager.default.removeItem(atPath: tmpPath)
+                throw JsonlPatchError.ioError(
+                    path: filePath,
+                    errno: code,
+                    message: String(cString: strerror(code))
+                )
+            }
+            fsyncDirectory(for: filePath)
+            return total
+        } catch {
+            try? output.close()
+            try? input.close()
+            _ = try? FileManager.default.removeItem(atPath: tmpPath)
+            throw error
+        }
+    }
+
+    private static func fsyncDirectory(for filePath: String) {
+        let directory = (filePath as NSString).deletingLastPathComponent
+        let fd = Darwin.open(directory, O_RDONLY)
+        guard fd >= 0 else { return }
+        _ = Darwin.fsync(fd)
+        Darwin.close(fd)
+    }
 
     private static func replaceWithTerminator(
         in text: String,

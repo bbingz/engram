@@ -222,7 +222,7 @@ public enum ProjectMoveOrchestrator {
 
         // Step 0: git dirty (mechanism only — caller decides policy)
         let git = await GitDirty.check(src)
-        if git.dirty && !options.force {
+        if git.dirty && !git.untrackedOnly && !options.force {
             throw OrchestratorError.gitDirty(src: src)
         }
 

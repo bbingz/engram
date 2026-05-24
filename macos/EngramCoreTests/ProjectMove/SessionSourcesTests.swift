@@ -187,6 +187,26 @@ final class SessionSourcesTests: XCTestCase {
         XCTAssertEqual(issues[0].path, tmpRoot.appendingPathComponent("big.jsonl").path)
     }
 
+    func testWalkDoesNotApplyOld128MiBCapByDefault() throws {
+        let big = tmpRoot.appendingPathComponent("big.jsonl")
+        try "{\"cwd\":\"/old\"}\n".write(to: big, atomically: true, encoding: .utf8)
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(JsonlPatch.maxInMemoryBytes + 4096))
+        try handle.close()
+
+        var issues: [WalkIssue] = []
+        var seen: [String] = []
+        SessionSources.walkSessionFiles(
+            root: tmpRoot.path,
+            onIssue: { issues.append($0) }
+        ) {
+            seen.append($0)
+        }
+
+        XCTAssertEqual(seen, [big.path])
+        XCTAssertTrue(issues.isEmpty)
+    }
+
     func testWalkReportsSymlinks() throws {
         let real = tmpRoot.appendingPathComponent("real")
         try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)

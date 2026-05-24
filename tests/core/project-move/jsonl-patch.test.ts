@@ -3,9 +3,13 @@
 // designed to have. Golden diff-tests (separate file) cross-check byte parity.
 
 import {
+  closeSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   rmSync,
+  truncateSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -281,5 +285,23 @@ describe('patchFile — concurrent-write CAS (Gemini blocker #2)', () => {
     const count = await patchFile(p, '/old', '/new');
     expect(count).toBe(0);
     expect(readFileSync(p, 'utf8')).toBe('no match here');
+  });
+
+  it('streams files larger than the old in-memory cap instead of refusing them', async () => {
+    const p = join(tmp, 'large.jsonl');
+    writeFileSync(p, '{"cwd":"/old"}\n');
+    truncateSync(p, 128 * 1024 * 1024 + 4096);
+
+    const count = await patchFile(p, '/old', '/new');
+
+    expect(count).toBe(1);
+    const fd = openSync(p, 'r');
+    try {
+      const head = Buffer.alloc(32);
+      const bytes = readSync(fd, head, 0, head.length, 0);
+      expect(head.subarray(0, bytes).toString('utf8')).toContain('/new');
+    } finally {
+      closeSync(fd);
+    }
   });
 });

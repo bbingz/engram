@@ -8,6 +8,7 @@ struct ProjectsScreen {
     var container: XCUIElement { app.element(id: "projects_container") }
     var projectList: XCUIElement { app.element(id: "projects_list") }
     var emptyState: XCUIElement { app.element(id: "projects_emptyState") }
+    var undoButton: XCUIElement { app.element(id: "projects_undoButton") }
 
     // MARK: - Project Groups
 

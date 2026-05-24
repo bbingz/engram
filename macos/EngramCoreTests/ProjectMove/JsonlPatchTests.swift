@@ -276,6 +276,25 @@ final class JsonlPatchTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), original)
     }
 
+    func testPatchFileStreamsFilesLargerThanOldInMemoryCap() throws {
+        let path = tmpRoot.appendingPathComponent("large.jsonl").path
+        try "{\"cwd\":\"/old\"}\n".write(toFile: path, atomically: true, encoding: .utf8)
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try handle.truncate(atOffset: UInt64(JsonlPatch.maxInMemoryBytes + 4096))
+        try handle.close()
+
+        let count = try JsonlPatch.patchFile(at: path, oldPath: "/old", newPath: "/new")
+
+        XCTAssertEqual(count, 1)
+        let read = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        let head = try read.read(upToCount: 64) ?? Data()
+        try read.close()
+        XCTAssertTrue(
+            String(data: head, encoding: .utf8)?.contains("/new") == true,
+            "expected patched path in file head"
+        )
+    }
+
     func testConcurrentModificationErrorContractFields() {
         // The CAS race path inside `patchFile` is hard to drive
         // deterministically through the synchronous Foundation file APIs

@@ -85,6 +85,14 @@ final class ArchiveTests: XCTestCase {
         XCTAssertEqual(s.category, .emptyProject)
     }
 
+    func testHiddenFilesOnlyDirectorySuggestsEmptyProject() throws {
+        let src = try makeFixture(name: "dotfiles-only")
+        try writeFile(src + "/.DS_Store", "metadata")
+        let s = try Archive.suggestTarget(src: src)
+        XCTAssertEqual(s.category, .emptyProject)
+        XCTAssertTrue(s.reason.contains("empty"))
+    }
+
     // MARK: - rule 3: has-git substantive
 
     func testHasGitWithContentSuggestsArchivedDone() throws {
