@@ -399,13 +399,10 @@ struct SessionDetailView: View {
             let effectiveParentId = freshSession?.parentSessionId ?? parentId
             let effectiveSuggestedId = freshSession?.suggestedParentId ?? suggestedId
 
-            var confirmed: Session?
-            var suggested: Session?
-            if let pid = effectiveParentId {
-                confirmed = try? dbRef.getSession(id: pid)
-            } else if let spid = effectiveSuggestedId {
-                suggested = try? dbRef.getSession(id: spid)
-            }
+            let confirmed = effectiveParentId.flatMap { try? dbRef.getSession(id: $0) }
+            let suggested = effectiveParentId == nil
+                ? effectiveSuggestedId.flatMap { try? dbRef.getSession(id: $0) }
+                : nil
 
             let children = try? dbRef.childSessions(
                 parentId: sessionId,
