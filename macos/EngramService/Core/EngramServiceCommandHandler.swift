@@ -269,13 +269,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "exportSession":
                 let payload = try decodePayload(EngramServiceExportSessionRequest.self, from: request)
-                let result = try await writerGate.performWriteCommand(name: request.command) { _ in
-                    try await TranscriptExportService.exportSession(payload, databasePath: writerGate.databasePath)
-                }
                 return .success(
                     requestId: request.requestId,
-                    result: try Self.encode(result.value),
-                    databaseGeneration: result.databaseGeneration
+                    result: try Self.encode(
+                        try await TranscriptExportService.exportSession(payload, databasePath: writerGate.databasePath)
+                    )
                 )
             case "test.write_intent":
                 let result = try await writerGate.performWriteCommand(name: request.command) { _ in

@@ -79,7 +79,9 @@ final class UnixSocketServiceServer: Sendable {
                 try? UnixSocketEngramServiceTransport.disableSigPipe(client)
                 try? UnixSocketEngramServiceTransport.setSocketTimeout(client, seconds: Self.clientTimeoutSeconds)
                 let clientId = UUID()
+                let startGate = ClientTaskStartGate()
                 let clientTask = Task.detached {
+                    await startGate.wait()
                     defer {
                         close(client)
                         state.withLock { state in
@@ -118,6 +120,7 @@ final class UnixSocketServiceServer: Sendable {
                 if !shouldContinue {
                     clientTask.cancel()
                 }
+                Task { await startGate.release() }
             }
         }
 
@@ -157,6 +160,10 @@ final class UnixSocketServiceServer: Sendable {
 
     deinit {
         stop()
+    }
+
+    func activeClientTaskCountForTesting() -> Int {
+        state.withLock { state in state.clientTasks.count }
     }
 
     /// SEC-H1: verify the connected peer's effective uid matches the service.
@@ -225,6 +232,28 @@ private struct UnixSocketServerStateSnapshot: Sendable {
     var descriptor: Int32
     var acceptTask: Task<Void, Never>?
     var clientTasks: [Task<Void, Never>]
+}
+
+private actor ClientTaskStartGate {
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !released else { return }
+        released = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
+    }
 }
 
 private actor ServiceConnectionLimiter {

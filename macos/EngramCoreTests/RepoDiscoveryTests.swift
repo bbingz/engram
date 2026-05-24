@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import XCTest
+import Darwin
 @testable import EngramCoreRead
 @testable import EngramCoreWrite
 
@@ -119,6 +120,35 @@ final class RepoDiscoveryTests: XCTestCase {
         XCTAssertEqual(info.unpushedCount, 0) // no upstream
 
         XCTAssertNil(RepoDiscovery.probeGit("/tmp/definitely-not-a-repo-\(UUID().uuidString)"))
+    }
+
+    func testRunGitReturnsNilWhenCommandExceedsTimeout() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repo-discovery-timeout-\(UUID().uuidString)")
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        let work = root.appendingPathComponent("work", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fakeGit = bin.appendingPathComponent("git")
+        try """
+        #!/bin/sh
+        sleep 2
+        echo too-late
+        """.write(to: fakeGit, atomically: true, encoding: .utf8)
+        XCTAssertEqual(chmod(fakeGit.path, 0o755), 0)
+
+        let started = Date()
+        let output = RepoDiscovery.runGit(
+            ["status"],
+            cwd: work.path,
+            timeoutSeconds: 0.1,
+            environment: ["PATH": bin.path]
+        )
+
+        XCTAssertNil(output)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
     }
 
     private func insertSession(_ db: Database, id: String, cwd: String) throws {

@@ -13,6 +13,15 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("adapters: startupAdapters"))
     }
 
+    func testRunnerRepoDiscoveryProbesOutsideWriteGate() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+
+        XCTAssertTrue(source.contains("RepoDiscovery.sessionCwdCounts"))
+        XCTAssertTrue(source.contains("RepoDiscovery.probeRepositories"))
+        XCTAssertTrue(source.contains("RepoDiscovery.upsert"))
+        XCTAssertFalse(source.contains("writer.write { db in try RepoDiscovery.discover(db) }"))
+    }
+
     func testUnixSocketServiceServerLifecycleUsesTrackedSendableState() throws {
         let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
 
@@ -381,6 +390,50 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: response.outputPath))
     }
 
+    func testExportSessionDoesNotAdvanceDatabaseGeneration() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
+        try """
+        {"timestamp":"2026-04-23T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [transcript.path])
+        }
+
+        let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("HOME", exportHome.path, 1)
+        defer {
+            if let oldHome {
+                setenv("HOME", oldHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let request = EngramServiceRequestEnvelope(
+            command: "exportSession",
+            payload: try JSONEncoder().encode(
+                EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: exportHome.path, actor: "test")
+            )
+        )
+        let response = try await UnixSocketEngramServiceTransport(socketPath: paths.socket.path).send(request, timeout: 2)
+        guard case .success(_, _, let generation) = response else {
+            return XCTFail("Expected successful export response")
+        }
+        XCTAssertNil(generation, "exportSession must not pretend to mutate the database")
+    }
+
     func testExportSessionFiltersToolMessagesLikeSwiftDisplay() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -561,6 +614,56 @@ final class EngramServiceIPCTests: XCTestCase {
         } catch let error as EngramServiceError {
             XCTAssertEqual(error, .invalidRequest(message: "output_home must be within HOME"))
         }
+    }
+
+    func testExportSessionRejectsCodexExportsSymlink() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
+        try """
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"symlink"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [transcript.path])
+        }
+
+        let serviceHome = paths.runtime.appendingPathComponent("service-home", isDirectory: true)
+        let outside = paths.runtime.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: serviceHome, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: serviceHome.appendingPathComponent("codex-exports"),
+            withDestinationURL: outside
+        )
+        let oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("HOME", serviceHome.path, 1)
+        defer {
+            if let oldHome {
+                setenv("HOME", oldHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        do {
+            _ = try await client.exportSession(
+                EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: serviceHome.path, actor: "test")
+            )
+            XCTFail("Expected invalidRequest for symlinked codex-exports")
+        } catch let error as EngramServiceError {
+            XCTAssertEqual(error, .invalidRequest(message: "output_home must not traverse symlinks"))
+        }
+        XCTAssertTrue((try FileManager.default.contentsOfDirectory(atPath: outside.path)).isEmpty)
     }
 
     func testExportSessionRejectsInvalidFormat() async throws {

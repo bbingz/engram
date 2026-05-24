@@ -5,6 +5,8 @@ import Observation
 // `Sendable` values, so the compiler can verify `Sendable` without `@unchecked`.
 @Observable
 final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
+    private static let migrationCommandTimeout: TimeInterval = 10 * 60
+
     @ObservationIgnored
     private let transport: any EngramServiceTransport
     @ObservationIgnored
@@ -123,19 +125,19 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     }
 
     func projectMove(_ request: EngramServiceProjectMoveRequest) async throws -> EngramServiceProjectMoveResult {
-        try await command("projectMove", payload: request)
+        try await command("projectMove", payload: request, timeout: Self.migrationCommandTimeout)
     }
 
     func projectArchive(_ request: EngramServiceProjectArchiveRequest) async throws -> EngramServiceProjectMoveResult {
-        try await command("projectArchive", payload: request)
+        try await command("projectArchive", payload: request, timeout: Self.migrationCommandTimeout)
     }
 
     func projectUndo(_ request: EngramServiceProjectUndoRequest) async throws -> EngramServiceProjectMoveResult {
-        try await command("projectUndo", payload: request)
+        try await command("projectUndo", payload: request, timeout: Self.migrationCommandTimeout)
     }
 
     func projectMoveBatch(_ request: EngramServiceProjectMoveBatchRequest) async throws -> EngramServiceJSONValue {
-        try await command("projectMoveBatch", payload: request)
+        try await command("projectMoveBatch", payload: request, timeout: Self.migrationCommandTimeout)
     }
 
     func linkSessions(_ request: EngramServiceLinkSessionsRequest) async throws -> EngramServiceLinkSessionsResponse {

@@ -16,13 +16,23 @@ import Security
 enum ServiceCapabilityToken {
     /// Commands that mutate state and therefore require a valid capability token.
     static let protectedCommands: Set<String> = [
+        "generateSummary",
+        "saveInsight",
         "projectMove",
         "projectArchive",
         "projectUndo",
         "projectMoveBatch",
         "deleteInsight",
+        "manageProjectAlias",
+        "confirmSuggestion",
+        "dismissSuggestion",
+        "regenerateAllTitles",
+        "setFavorite",
         "setSessionHidden",
         "renameSession",
+        "hideEmptySessions",
+        "linkSessions",
+        "exportSession",
     ]
 
     static func requiresToken(_ command: String) -> Bool {

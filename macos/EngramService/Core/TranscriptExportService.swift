@@ -20,13 +20,16 @@ enum TranscriptExportService {
 
         let messages = await ServiceTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
         let home = try outputHome(from: request.outputHome)
-        let outputDir = URL(fileURLWithPath: home).appendingPathComponent("codex-exports")
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let outputDir = try outputDirectory(in: home)
 
         let safeId = String(session.id.prefix(8))
         let date = serviceLocalDate(session.startTime)
         let ext = request.format == "json" ? "json" : "md"
         let outputURL = outputDir.appendingPathComponent("\(session.source)-\(safeId)-\(date).\(ext)")
+        try rejectSymlinkAncestors(
+            from: outputURL.standardizedFileURL,
+            through: URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL
+        )
         let content = try exportContent(session: session, messages: messages, format: request.format)
         try content.write(to: outputURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
@@ -60,6 +63,18 @@ enum TranscriptExportService {
         }
         try rejectSymlinkAncestors(from: outputURL, through: serviceHome)
         return outputURL.path
+    }
+
+    private static func outputDirectory(in home: String) throws -> URL {
+        let homeURL = URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL
+        let outputDir = homeURL.appendingPathComponent("codex-exports", isDirectory: true).standardizedFileURL
+        guard outputDir.path.hasPrefix(homeURL.path + "/") else {
+            throw EngramServiceError.invalidRequest(message: "output_home must be within HOME")
+        }
+        try rejectSymlinkAncestors(from: outputDir, through: homeURL)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        try rejectSymlinkAncestors(from: outputDir, through: homeURL)
+        return outputDir
     }
 
     private static func rejectSymlinkAncestors(from outputURL: URL, through homeURL: URL) throws {

@@ -261,15 +261,29 @@ public enum EngramServiceRunner {
                     // Drain any FTS jobs enqueued by this scan so search content
                     // is written (V1). Embedding jobs are marked not_applicable.
                     let jobSummary = try await IndexJobRunner(writer: writer).runRecoverableJobs()
-                    // Refresh git_repos from session cwds (replaces removed Node
-                    // git-probe.ts; populates the otherwise-dormant Repos page).
-                    let repos = try writer.write { db in try RepoDiscovery.discover(db) }
-                    return (scan: scan, jobs: jobSummary, repos: repos)
+                    let repoCandidates = try writer.read { db in
+                        try RepoDiscovery.sessionCwdCounts(db)
+                    }
+                    return (scan: scan, jobs: jobSummary, repoCandidates: repoCandidates)
+                }
+                // Refresh git_repos from session cwds (replaces removed Node
+                // git-probe.ts; populates the otherwise-dormant Repos page).
+                // Git probes can be slow or wedged, so they run outside the
+                // serialized service write gate; only the final upsert is gated.
+                let repoEntries = RepoDiscovery.probeRepositories(result.value.repoCandidates)
+                let repos = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
+                    try writer.write { db in
+                        try RepoDiscovery.upsert(
+                            db,
+                            entries: repoEntries,
+                            probedAt: ISO8601DateFormatter().string(from: Date())
+                        )
+                    }
                 }
                 let scan = result.value.scan
                 let jobs = result.value.jobs
                 ServiceLogger.notice(
-                    "index scan completed: indexed=\(scan.indexed) total=\(scan.total) todayParents=\(scan.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(result.value.repos)",
+                    "index scan completed: indexed=\(scan.indexed) total=\(scan.total) todayParents=\(scan.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(repos.value)",
                     category: .runner
                 )
                 emit(ServiceIndexEvent(

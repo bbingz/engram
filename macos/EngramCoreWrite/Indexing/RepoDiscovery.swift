@@ -42,6 +42,26 @@ public struct GitRepoProbe: Equatable, Sendable {
     }
 }
 
+public struct GitRepoCandidate: Equatable, Sendable {
+    public let cwd: String
+    public let sessionCount: Int
+
+    public init(cwd: String, sessionCount: Int) {
+        self.cwd = cwd
+        self.sessionCount = sessionCount
+    }
+}
+
+public struct GitRepoDiscoveryEntry: Equatable, Sendable {
+    public let probe: GitRepoProbe
+    public let sessionCount: Int
+
+    public init(probe: GitRepoProbe, sessionCount: Int) {
+        self.probe = probe
+        self.sessionCount = sessionCount
+    }
+}
+
 public enum RepoDiscovery {
     /// Probe every distinct repo root referenced by a session `cwd` and upsert
     /// it into `git_repos`. `session_count` aggregates sessions whose `cwd`
@@ -51,9 +71,15 @@ public enum RepoDiscovery {
     @discardableResult
     public static func discover(
         _ db: Database,
-        probe: (String) -> GitRepoProbe? = RepoDiscovery.probeGit,
+        probe: (String) -> GitRepoProbe? = { RepoDiscovery.probeGit($0) },
         now: () -> String = { ISO8601DateFormatter().string(from: Date()) }
     ) throws -> Int {
+        let candidates = try sessionCwdCounts(db)
+        let entries = probeRepositories(candidates, probe: probe)
+        return try upsert(db, entries: entries, probedAt: now())
+    }
+
+    public static func sessionCwdCounts(_ db: Database) throws -> [GitRepoCandidate] {
         let rows = try Row.fetchAll(
             db,
             sql: """
@@ -64,22 +90,40 @@ public enum RepoDiscovery {
             """
         )
 
+        return rows.compactMap { row in
+            guard let cwd = row["cwd"] as String? else { return nil }
+            return GitRepoCandidate(cwd: cwd, sessionCount: (row["n"] as Int?) ?? 0)
+        }
+    }
+
+    public static func probeRepositories(
+        _ candidates: [GitRepoCandidate],
+        probe: (String) -> GitRepoProbe? = { RepoDiscovery.probeGit($0) }
+    ) -> [GitRepoDiscoveryEntry] {
         // Aggregate by resolved repo top-level: many cwds (sub-dirs) can map to
         // one repo. Cache probes per cwd to avoid re-shelling identical paths.
         var byRepo: [String: (probe: GitRepoProbe, sessions: Int)] = [:]
-        for row in rows {
-            guard let cwd = row["cwd"] as String? else { continue }
-            let sessions = (row["n"] as Int?) ?? 0
-            guard let info = probe(cwd) else { continue }
+        for candidate in candidates {
+            guard let info = probe(candidate.cwd) else { continue }
             if let existing = byRepo[info.path] {
-                byRepo[info.path] = (existing.probe, existing.sessions + sessions)
+                byRepo[info.path] = (existing.probe, existing.sessions + candidate.sessionCount)
             } else {
-                byRepo[info.path] = (info, sessions)
+                byRepo[info.path] = (info, candidate.sessionCount)
             }
         }
 
-        let probedAt = now()
-        for (_, entry) in byRepo {
+        return byRepo.values.map { entry in
+            GitRepoDiscoveryEntry(probe: entry.probe, sessionCount: entry.sessions)
+        }
+    }
+
+    @discardableResult
+    public static func upsert(
+        _ db: Database,
+        entries: [GitRepoDiscoveryEntry],
+        probedAt: String
+    ) throws -> Int {
+        for entry in entries {
             let p = entry.probe
             try db.execute(
                 sql: """
@@ -101,34 +145,34 @@ public enum RepoDiscovery {
                 """,
                 arguments: [
                     p.path, p.name, p.branch, p.dirtyCount, p.untrackedCount, p.unpushedCount,
-                    p.lastCommitHash, p.lastCommitMsg, p.lastCommitAt, entry.sessions, probedAt
+                    p.lastCommitHash, p.lastCommitMsg, p.lastCommitAt, entry.sessionCount, probedAt
                 ]
             )
         }
-        return byRepo.count
+        return entries.count
     }
 
     /// Real git probe. Returns `nil` when `cwd` is not inside a git repo or git
     /// is unavailable — never throws, so a missing tool just yields no repos.
-    public static func probeGit(_ cwd: String) -> GitRepoProbe? {
-        guard let top = runGit(["rev-parse", "--show-toplevel"], cwd: cwd)?
+    public static func probeGit(_ cwd: String, timeoutSeconds: TimeInterval = 3) -> GitRepoProbe? {
+        guard let top = runGit(["rev-parse", "--show-toplevel"], cwd: cwd, timeoutSeconds: timeoutSeconds)?
             .trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty
         else { return nil }
 
-        let branchRaw = runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd: top)?
+        let branchRaw = runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd: top, timeoutSeconds: timeoutSeconds)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let branch = (branchRaw?.isEmpty == false) ? branchRaw : nil
 
         var dirty = 0
         var untracked = 0
-        if let porcelain = runGit(["status", "--porcelain"], cwd: top) {
+        if let porcelain = runGit(["status", "--porcelain"], cwd: top, timeoutSeconds: timeoutSeconds) {
             for line in porcelain.split(separator: "\n", omittingEmptySubsequences: true) {
                 if line.hasPrefix("??") { untracked += 1 } else { dirty += 1 }
             }
         }
 
         // Unpushed commits vs upstream; 0 when no upstream is configured.
-        let unpushed = runGit(["rev-list", "--count", "@{u}..HEAD"], cwd: top)
+        let unpushed = runGit(["rev-list", "--count", "@{u}..HEAD"], cwd: top, timeoutSeconds: timeoutSeconds)
             .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
 
         var hash: String?
@@ -136,7 +180,7 @@ public enum RepoDiscovery {
         var at: String?
         // NUL-separated fields so commit messages containing any printable
         // character (including `|`) round-trip safely.
-        if let log = runGit(["log", "-1", "--pretty=format:%H%x00%s%x00%aI"], cwd: top) {
+        if let log = runGit(["log", "-1", "--pretty=format:%H%x00%s%x00%aI"], cwd: top, timeoutSeconds: timeoutSeconds) {
             let parts = log.components(separatedBy: "\u{0}")
             if parts.count == 3 {
                 hash = parts[0].isEmpty ? nil : parts[0]
@@ -160,22 +204,35 @@ public enum RepoDiscovery {
     }
 
     /// Run `git <args>` in `cwd`. Returns stdout on exit 0, else `nil`.
-    private static func runGit(_ args: [String], cwd: String) -> String? {
+    static func runGit(
+        _ args: [String],
+        cwd: String,
+        timeoutSeconds: TimeInterval = 3,
+        environment: [String: String]? = nil
+    ) -> String? {
+        guard timeoutSeconds > 0 else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-C", cwd] + args
+        process.environment = environment
         let out = Pipe()
         let err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
         do {
             try process.run()
         } catch {
             return nil
         }
+        guard finished.wait(timeout: .now() + timeoutSeconds) == .success else {
+            process.terminate()
+            _ = finished.wait(timeout: .now() + 1)
+            return nil
+        }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         _ = err.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
     }

@@ -186,6 +186,30 @@ final class EngramServiceClientTests: XCTestCase {
         XCTAssertEqual(undo.perSource?.first?.issues?.first?.reason, "too_large")
     }
 
+    func testProjectMigrationCommandsUseExtendedTimeouts() async throws {
+        let transport = RecordingServiceTransport { request in
+            switch request.command {
+            case "projectMove", "projectArchive", "projectUndo":
+                return .success(requestId: request.requestId, result: #"{"migrationId":"dry-run","state":"dry-run","ccDirRenamed":false,"totalFilesPatched":0,"totalOccurrences":0,"sessionsUpdated":0,"aliasCreated":false,"review":{"own":[],"other":[]}}"#.data(using: .utf8)!)
+            case "projectMoveBatch":
+                return .success(requestId: request.requestId, result: #"{"completed":[],"failed":[],"skipped":[]}"#.data(using: .utf8)!)
+            default:
+                XCTFail("Unexpected command \(request.command)")
+                return .success(requestId: request.requestId, result: Data("{}".utf8))
+            }
+        }
+        let client = EngramServiceClient(transport: transport)
+
+        _ = try await client.projectMove(EngramServiceProjectMoveRequest(src: "/old", dst: "/new", dryRun: true, force: false, auditNote: nil, actor: "app"))
+        _ = try await client.projectArchive(EngramServiceProjectArchiveRequest(src: "/old", archiveTo: nil, dryRun: true, force: false, auditNote: nil, actor: "app"))
+        _ = try await client.projectUndo(EngramServiceProjectUndoRequest(migrationId: "mig-1", force: false, actor: "app"))
+        _ = try await client.projectMoveBatch(EngramServiceProjectMoveBatchRequest(yaml: #"{"version":1,"operations":[]}"#, dryRun: true, force: false, actor: "app"))
+
+        let sent = await transport.sent
+        XCTAssertEqual(sent.map(\.command), ["projectMove", "projectArchive", "projectUndo", "projectMoveBatch"])
+        XCTAssertTrue(sent.allSatisfy { ($0.timeout ?? 0) >= 300 }, "migration commands need more than the 30s default timeout")
+    }
+
     func testConcurrentRequestsResolveAgainstMatchingRequestIds() async throws {
         let transport = RecordingServiceTransport { request in
             if request.command == "search" {
@@ -255,6 +279,7 @@ final class EngramServiceClientTests: XCTestCase {
 private actor RecordingServiceTransport: EngramServiceTransport {
     private let handler: @Sendable (EngramServiceRequestEnvelope) async throws -> EngramServiceResponseEnvelope
     private(set) var requests: [EngramServiceRequestEnvelope] = []
+    private(set) var sent: [(command: String, timeout: TimeInterval?)] = []
     private(set) var eventSubscriptionCancelled = false
 
     init(
@@ -265,6 +290,7 @@ private actor RecordingServiceTransport: EngramServiceTransport {
 
     func send(_ request: EngramServiceRequestEnvelope, timeout: TimeInterval?) async throws -> EngramServiceResponseEnvelope {
         requests.append(request)
+        sent.append((request.command, timeout))
         return try await handler(request)
     }
 

@@ -189,6 +189,52 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         XCTAssertEqual(response.requestId, request.requestId)
     }
 
+    func testEveryMutatingCommandRequiresCapabilityToken() async throws {
+        let paths = try makePaths()
+        try seedProjectFixture(at: paths.database.path, src: "/tmp")
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            XCTFail("unauthorized mutating command reached handler: \(request.command)")
+            return .success(requestId: request.requestId, result: Data("{}".utf8))
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let commands = [
+            "generateSummary",
+            "saveInsight",
+            "deleteInsight",
+            "manageProjectAlias",
+            "confirmSuggestion",
+            "dismissSuggestion",
+            "regenerateAllTitles",
+            "projectMove",
+            "projectArchive",
+            "projectUndo",
+            "projectMoveBatch",
+            "setFavorite",
+            "setSessionHidden",
+            "renameSession",
+            "hideEmptySessions",
+            "linkSessions",
+            "exportSession",
+        ]
+
+        for command in commands {
+            let transport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+            let request = EngramServiceRequestEnvelope(
+                command: command,
+                payload: Data("{}".utf8),
+                capabilityToken: "wrong-token"
+            )
+            let response = try await transport.send(request, timeout: 2)
+            guard case .failure(_, let error) = response else {
+                XCTFail("Expected unauthorized for \(command), got \(response)")
+                continue
+            }
+            XCTAssertEqual(error.name, "Unauthorized", command)
+        }
+    }
+
     func testCapabilityTokenFileIsWrittenWithOwnerOnlyPermissions() throws {
         let paths = try makePaths()
         let tokenPath = ServiceCapabilityToken.path(forSocketPath: paths.socket.path)
@@ -361,6 +407,25 @@ final class ServiceSecurityHardeningTests: XCTestCase {
                 return XCTFail("status must succeed on every connection")
             }
         }
+    }
+
+    func testFastClientHandlersDoNotLeaveCompletedTasksTracked() async throws {
+        let paths = try makePaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        for _ in 0..<64 {
+            let transport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+            _ = try await transport.send(EngramServiceRequestEnvelope(command: "status"), timeout: 2)
+        }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(server.activeClientTaskCountForTesting(), 0)
     }
 
     func testAcceptLoopSourceHandlesTransientErrnoWithoutBreaking() throws {
