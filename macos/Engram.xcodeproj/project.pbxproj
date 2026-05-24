@@ -348,6 +348,7 @@
 		BF4DE6B96114F35313E96132 /* ContentSegmentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75DB3A0F8CB94DAFEB010D70 /* ContentSegmentViews.swift */; };
 		BF725BA7AFD10506F3EE9938 /* SessionAdapterFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7164B497B5E7F41DEEFDA7CB /* SessionAdapterFactory.swift */; };
 		BFB86AFCAAF375C06979A994 /* EngramCoreWrite.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		BFD578D90D50FDC3E4549C36 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 58EEBAE2DCB1EB1017AD61F3 /* AppIntents.framework */; };
 		C090272F37D8BEF06F4E0396 /* Hummingbird in Frameworks */ = {isa = PBXBuildFile; productRef = 9F8B22D6ADE8EF642B0C924C /* Hummingbird */; };
 		C0ED889A9425E18A7D505B5E /* WindsurfAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EDCF96A3B2CE8B52F6153E /* WindsurfAdapter.swift */; };
 		C157ED81A707874C5C539EB6 /* SystemMessageClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42221DF48DF9F36A0556900B /* SystemMessageClassifier.swift */; };
@@ -702,6 +703,7 @@
 		5706AAA46EE67DDD8535D2E0 /* CascadeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CascadeClient.swift; sourceTree = "<group>"; };
 		5775C2E548BFDD3CCD79FB42 /* SessionDetailTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailTests.swift; sourceTree = "<group>"; };
 		57820F1F5D616AACBE130E18 /* MockURLProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockURLProtocol.swift; sourceTree = "<group>"; };
+		58EEBAE2DCB1EB1017AD61F3 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		58F564930C9AEF2E0AF20609 /* SharedPickers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedPickers.swift; sourceTree = "<group>"; };
 		59D55C7F11EF5C4CFC030FCC /* Engram.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Engram.entitlements; sourceTree = "<group>"; };
 		5A851FAB4E1FB6E1A0F01ADE /* GeminiProjectsJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiProjectsJSON.swift; sourceTree = "<group>"; };
@@ -1016,6 +1018,7 @@
 			files = (
 				28302B57A3C158B19A1E105F /* GRDB in Frameworks */,
 				45B79E7DB6DACCAADE576BD4 /* Hummingbird in Frameworks */,
+				BFD578D90D50FDC3E4549C36 /* AppIntents.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1424,6 +1427,7 @@
 				A8DE77EBAF4D0306A01EBB14 /* EngramTests */,
 				4879D667E5DCB8E295D66715 /* EngramUITests */,
 				546A83BCDE95FE76789717C4 /* Shared */,
+				BA522BF71FDA61848C794BF5 /* Frameworks */,
 				B62C45094E60FCB220425CA7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -1622,6 +1626,14 @@
 				C932AAA08558F981AD12642D /* EngramUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		BA522BF71FDA61848C794BF5 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				58EEBAE2DCB1EB1017AD61F3 /* AppIntents.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		BCD810C6311DC6400B482F88 /* Resources */ = {

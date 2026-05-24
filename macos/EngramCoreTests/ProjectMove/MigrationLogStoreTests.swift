@@ -3,6 +3,7 @@
 // Mirrors the contract of tests/core/db/migration-log-repo.test.ts +
 // applyMigrationDb covered in tests/core/db/maintenance.test.ts.
 import Foundation
+import EngramCoreRead
 import GRDB
 import XCTest
 @testable import EngramCoreWrite
@@ -98,7 +99,10 @@ final class MigrationLogStoreTests: XCTestCase {
                     filesPatched: 12,
                     occurrences: 47,
                     ccDirRenamed: true,
-                    detail: ["move_strategy": "rename", "renamed_dirs": ["claude-code"]]
+                    detail: [
+                        "move_strategy": .string("rename"),
+                        "renamed_dirs": .array([.string("claude-code")]),
+                    ]
                 )
             )
 

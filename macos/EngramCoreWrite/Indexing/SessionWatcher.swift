@@ -88,6 +88,12 @@ public final class SessionWatcher {
     private var pending: [String: PendingPath] = [:]
     private var nextSequence = 0
 
+    private func withStateLock<T>(_ body: () throws -> T) rethrows -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return try body()
+    }
+
     public init(
         home: String = NSHomeDirectory(),
         indexer: any SessionWatchIndexing,
@@ -112,9 +118,9 @@ public final class SessionWatcher {
             enqueueStablePath(path: path, sizeBytes: sizeBytes, modifiedAtMilliseconds: modifiedAtMilliseconds)
             return []
         case .unlinked(let path):
-            stateLock.lock()
-            pending.removeValue(forKey: path)
-            stateLock.unlock()
+            withStateLock {
+                pending.removeValue(forKey: path)
+            }
             guard !shouldSkip(path) else { return [] }
             let touched = try orphanMarker.markOrphanByPath(path, reason: .cleanedBySource)
             return touched > 0 ? [.orphaned(path: path, sessions: touched)] : []
@@ -137,20 +143,21 @@ public final class SessionWatcher {
         let now = clock.nowMilliseconds
         // Select and remove the ready batch atomically so a concurrent observe()
         // can't mutate `pending` between the snapshot and the removal.
-        stateLock.lock()
-        let ready = pending.values
-            .filter { $0.readyAtMilliseconds <= now }
-            .sorted { lhs, rhs in
-                if lhs.sequence == rhs.sequence {
-                    return lhs.path < rhs.path
+        let ready = withStateLock {
+            let ready = pending.values
+                .filter { $0.readyAtMilliseconds <= now }
+                .sorted { lhs, rhs in
+                    if lhs.sequence == rhs.sequence {
+                        return lhs.path < rhs.path
+                    }
+                    return lhs.sequence < rhs.sequence
                 }
-                return lhs.sequence < rhs.sequence
+                .prefix(config.maxDrainBatchSize)
+            for item in ready {
+                pending.removeValue(forKey: item.path)
             }
-            .prefix(config.maxDrainBatchSize)
-        for item in ready {
-            pending.removeValue(forKey: item.path)
+            return Array(ready)
         }
-        stateLock.unlock()
 
         var events: [SessionWatchEvent] = []
         for item in ready {

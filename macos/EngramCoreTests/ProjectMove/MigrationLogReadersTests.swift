@@ -1,6 +1,7 @@
 // macos/EngramCoreTests/ProjectMove/MigrationLogReadersTests.swift
 // GRDB-backed MigrationLogReader / SessionByIdReader (Stage 4.1).
 import Foundation
+import EngramCoreRead
 import GRDB
 import XCTest
 @testable import EngramCoreWrite
@@ -49,7 +50,7 @@ final class MigrationLogReadersTests: XCTestCase {
                     filesPatched: 1,
                     occurrences: 1,
                     ccDirRenamed: false,
-                    detail: ["affectedSessionIds": ["s-a", "s-b"]]
+                    detail: ["affectedSessionIds": .array([.string("s-a"), .string("s-b")])]
                 )
             )
             try MigrationLogStore.failMigration(db, id: "m1", error: "boom")

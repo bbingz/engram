@@ -163,6 +163,7 @@ targets:
         product: GRDB
       - package: Hummingbird
         product: Hummingbird
+      - sdk: AppIntents.framework
       - target: EngramMCP
         link: false
         embed: false
@@ -189,6 +190,7 @@ targets:
       path: Engram/Info.plist
       properties:
         LSUIElement: true
+        LSApplicationCategoryType: public.app-category.developer-tools
         CFBundleDisplayName: Engram
         NSPrincipalClass: NSApplication
         # Single-sourced from the MARKETING_VERSION / CURRENT_PROJECT_VERSION build

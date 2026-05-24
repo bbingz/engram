@@ -291,7 +291,7 @@ public enum EngramServiceRunner {
     /// runs through the gate so writes serialize with command dispatch.
     private static func runInitialScan(gate: ServiceWriterGate) async {
         do {
-            try await gate.performWriteCommand(name: "initialScan") { writer in
+                _ = try await gate.performWriteCommand(name: "initialScan") { writer in
                 let startupAdapters = SessionAdapterFactory.recentActiveAdapters()
                 let jobRunner = IndexJobRunner(writer: writer, adapters: SessionAdapterFactory.defaultAdapters())
                 try await StartupBackfills.runInitialScan(

@@ -21,6 +21,7 @@
 //   reverse-patch files → restore Gemini projects.json → reverse dir renames
 //   → safeMoveDir dst→src back → failMigration → release lock.
 import Foundation
+import EngramCoreRead
 import GRDB
 
 // MARK: - errors
@@ -849,34 +850,34 @@ private func buildFsDoneDetail(
     skippedDirs: [SkippedDirEntry],
     geminiProjectsApplied: Bool,
     manifest: [ManifestEntry]
-) -> [String: Any] {
-    let perSourceJson = perSource.map { stats -> [String: Any] in
-        [
-            "id": stats.id,
-            "files": stats.filesPatched,
-            "occ": stats.occurrences,
-            "issues": stats.issues.count,
-        ]
+) -> [String: JSONValue] {
+    let perSourceJson = perSource.map { stats -> JSONValue in
+        .object([
+            "id": .string(stats.id),
+            "files": .int(stats.filesPatched),
+            "occ": .int(stats.occurrences),
+            "issues": .int(stats.issues.count),
+        ])
     }
-    let renamedJson = renamedDirs.map { d -> [String: Any] in
-        [
-            "source": d.sourceId.rawValue,
-            "old": d.oldDir,
-            "new": d.newDir,
-        ]
+    let renamedJson = renamedDirs.map { d -> JSONValue in
+        .object([
+            "source": .string(d.sourceId.rawValue),
+            "old": .string(d.oldDir),
+            "new": .string(d.newDir),
+        ])
     }
-    let skippedJson = skippedDirs.map { e -> [String: Any] in
-        [
-            "sourceId": e.sourceId.rawValue,
-            "reason": e.reason.rawValue,
-        ]
+    let skippedJson = skippedDirs.map { e -> JSONValue in
+        .object([
+            "sourceId": .string(e.sourceId.rawValue),
+            "reason": .string(e.reason.rawValue),
+        ])
     }
     return [
-        "move_strategy": moveStrategy.rawValue,
-        "per_source": perSourceJson,
-        "renamed_dirs": renamedJson,
-        "skipped_dirs": skippedJson,
-        "gemini_projects_json_updated": geminiProjectsApplied,
-        "manifest_paths": manifest.map(\.path),
+        "move_strategy": .string(moveStrategy.rawValue),
+        "per_source": .array(perSourceJson),
+        "renamed_dirs": .array(renamedJson),
+        "skipped_dirs": .array(skippedJson),
+        "gemini_projects_json_updated": .bool(geminiProjectsApplied),
+        "manifest_paths": .array(manifest.map { .string($0.path) }),
     ]
 }

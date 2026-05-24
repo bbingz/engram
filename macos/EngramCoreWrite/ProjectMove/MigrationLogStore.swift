@@ -12,6 +12,7 @@
 // the transaction boundary. `applyMigrationDb` opens its own nested savepoint
 // inside the supplied connection.
 import Foundation
+import EngramCoreRead
 import GRDB
 
 public enum MigrationLogActor: String, Sendable {
@@ -63,16 +64,16 @@ public struct MarkFsDoneInput: Sendable {
     public var filesPatched: Int
     public var occurrences: Int
     public var ccDirRenamed: Bool
-    /// JSON-serializable detail map. Encoded with `JSONSerialization` so
-    /// the column matches Node's `JSON.stringify` shape exactly.
-    public var detail: [String: Any]?
+    /// JSON-serializable detail map. Uses the shared Sendable JSON model so
+    /// migration requests can safely cross concurrency domains.
+    public var detail: [String: JSONValue]?
 
     public init(
         id: String,
         filesPatched: Int,
         occurrences: Int,
         ccDirRenamed: Bool,
-        detail: [String: Any]? = nil
+        detail: [String: JSONValue]? = nil
     ) {
         self.id = id
         self.filesPatched = filesPatched
@@ -157,7 +158,7 @@ public enum MigrationLogStore {
 
     /// Phase B. `fs_pending` → `fs_done`.
     public static func markFsDone(_ db: GRDB.Database, input: MarkFsDoneInput) throws {
-        let detailJSON = try input.detail.map { try jsonString(from: $0) }
+        let detailJSON = try input.detail.map { try jsonString(from: .object($0)) }
         try db.execute(
             sql: """
             UPDATE migration_log
@@ -468,6 +469,13 @@ public enum MigrationLogStore {
             withJSONObject: object,
             options: [.sortedKeys]
         )
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func jsonString(from value: JSONValue) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(value)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 }
