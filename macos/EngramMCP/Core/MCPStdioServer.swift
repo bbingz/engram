@@ -5,6 +5,7 @@ final class MCPStdioServer {
     private static let supportedProtocolVersions: Set<String> = [
         "2024-11-05",
         "2025-03-26",
+        "2025-06-18",
     ]
     private static let instructions = """
     Engram is a cross-tool AI session aggregator. Key tools:
