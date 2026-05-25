@@ -24,6 +24,7 @@ tests/fixtures/antigravity/cache/*.jsonl
 # Local code intelligence / editor indexes
 .codegraph/
 .cursor/
+.commandcode/
 
 # macOS
 .DS_Store
