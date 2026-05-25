@@ -1,5 +1,9 @@
 import Foundation
 
+protocol ModificationFilteredSessionAdapter: SessionAdapter {
+    func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String]
+}
+
 public enum SessionAdapterFactory {
     public static func defaultAdapters() -> [any SessionAdapter] {
         [
@@ -93,7 +97,14 @@ public final class RecentlyModifiedSessionAdapter: SessionAdapter {
     }
 
     public func listSessionLocators() async throws -> [String] {
-        try await base.listSessionLocators().filter { locator in
+        if let filtered = base as? ModificationFilteredSessionAdapter {
+            return try await filtered.listSessionLocators(
+                modifiedSince: modifiedSince,
+                fileManager: fileManager
+            )
+        }
+
+        return try await base.listSessionLocators().filter { locator in
             guard let modifiedAt = try? Self.modifiedAt(locator: locator, fileManager: fileManager) else {
                 return false
             }

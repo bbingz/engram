@@ -386,24 +386,28 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             "live_sessions should document the MCP-mode limitation"
         )
         XCTAssertFalse(
-            registry.contains("Get actionable cost optimization suggestions with savings estimates"),
-            "get_insights must not promise suggestions until Swift MCP computes them"
+            registry.contains("Swift MCP does not compute optimization suggestions yet"),
+            "get_insights must not deny computed spend-distribution suggestions"
         )
         XCTAssertTrue(
-            registry.contains("Report cost totals and projection"),
-            "get_insights should describe the current spend-summary behavior"
+            registry.contains("Report cost totals, projection, and high-confidence spend-distribution suggestions"),
+            "get_insights should describe the current spend-summary and conservative suggestion behavior"
         )
     }
 
-    func testMcpInsightsOutputDoesNotClaimSuggestionsWereComputed() throws {
+    func testMcpInsightsOutputDescribesComputedSuggestionsConservatively() throws {
         let insights = try source("macos/EngramMCP/Core/MCPInsightsTool.swift")
         XCTAssertFalse(
             insights.contains("No cost optimization suggestions for this period. Spending looks healthy!"),
             "A hardcoded no-suggestions message hides that suggestions are not computed"
         )
         XCTAssertTrue(
-            insights.contains("optimization suggestions are not computed"),
-            "Output should be honest about the current Swift MCP capability"
+            insights.contains("No high-confidence optimization suggestions from current spend distribution."),
+            "Output should describe the conservative fallback when no threshold-based suggestion is available"
+        )
+        XCTAssertTrue(
+            insights.contains("Model concentration:"),
+            "Output should include computed spend-distribution suggestions when thresholds are met"
         )
     }
 

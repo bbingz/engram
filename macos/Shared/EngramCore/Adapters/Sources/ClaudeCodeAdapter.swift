@@ -1,9 +1,11 @@
 import Foundation
 
-final class ClaudeCodeAdapter: SessionAdapter, Sendable {
+final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName = .claudeCode
     private let projectsRoot: URL
     private let limits: ParserLimits
+    private static let sourceHintByteLimit = 256 * 1024
+    private static let sourceHintLineLimit = 64
 
     init(
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
@@ -40,6 +42,34 @@ final class ClaudeCodeAdapter: SessionAdapter, Sendable {
             }
         }
         return locators.sorted()
+    }
+
+    func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
+        try await listSessionLocators().filter {
+            guard let modifiedAt = try? Self.modifiedAt(locator: $0, fileManager: fileManager) else { return false }
+            return modifiedAt >= modifiedSince
+        }
+    }
+
+    func listDerivedSessionLocators(
+        source: SourceName,
+        modifiedSince: Date? = nil,
+        fileManager: FileManager = .default
+    ) async throws -> [String] {
+        var locators: [String] = []
+        for locator in try await listSessionLocators() {
+            if let modifiedSince {
+                guard let modifiedAt = try? Self.modifiedAt(locator: locator, fileManager: fileManager),
+                      modifiedAt >= modifiedSince
+                else {
+                    continue
+                }
+            }
+            if Self.detectSourceHint(locator: locator) == source {
+                locators.append(locator)
+            }
+        }
+        return locators
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -185,6 +215,49 @@ final class ClaudeCodeAdapter: SessionAdapter, Sendable {
                     lowercased.hasPrefix(".lobsterai_") ||
                     lowercased.hasPrefix(".lobsterai.")
             }
+    }
+
+    private static func detectSourceHint(locator: String) -> SourceName {
+        if hasLobsterAIPathComponent(locator) { return .lobsterai }
+        return detectSource(model: firstModelHint(locator: locator) ?? "")
+    }
+
+    private static func firstModelHint(locator: String) -> String? {
+        let url = URL(fileURLWithPath: locator)
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        let data = handle.readData(ofLength: sourceHintByteLimit)
+        guard !data.isEmpty else { return nil }
+
+        let lines = data.split(separator: 10, maxSplits: sourceHintLineLimit, omittingEmptySubsequences: true)
+        for line in lines.prefix(sourceHintLineLimit) {
+            guard let text = String(bytes: line, encoding: .utf8),
+                  let object = JSONLAdapterSupport.parseObject(text)
+            else {
+                continue
+            }
+            if let model = modelHint(in: object) { return model }
+        }
+        return nil
+    }
+
+    private static func modelHint(in object: JSONLAdapterSupport.JSONObject) -> String? {
+        if let model = JSONLAdapterSupport.string(object["model"]) { return model }
+        if let message = JSONLAdapterSupport.object(object["message"]),
+           let model = JSONLAdapterSupport.string(message["model"]) {
+            return model
+        }
+        if let payload = JSONLAdapterSupport.object(object["payload"]),
+           let model = JSONLAdapterSupport.string(payload["model"]) {
+            return model
+        }
+        return nil
+    }
+
+    private static func modifiedAt(locator: String, fileManager: FileManager) throws -> Date {
+        let attributes = try fileManager.attributesOfItem(atPath: locator)
+        return attributes[.modificationDate] as? Date ?? .distantPast
     }
 
     static func decodeCwd(_ encoded: String) -> String {
@@ -377,7 +450,7 @@ final class ClaudeCodeAdapter: SessionAdapter, Sendable {
     }
 }
 
-final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, Sendable {
+final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName
     private let base: ClaudeCodeAdapter
 
@@ -398,16 +471,15 @@ final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, Sendable {
     }
 
     func listSessionLocators() async throws -> [String] {
-        var locators: [String] = []
-        for locator in try await base.listSessionLocators() {
-            switch try await base.parseSessionInfo(locator: locator) {
-            case .success(let info) where info.source == source:
-                locators.append(locator)
-            default:
-                continue
-            }
-        }
-        return locators
+        try await base.listDerivedSessionLocators(source: source)
+    }
+
+    func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
+        try await base.listDerivedSessionLocators(
+            source: source,
+            modifiedSince: modifiedSince,
+            fileManager: fileManager
+        )
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {

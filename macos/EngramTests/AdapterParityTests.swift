@@ -157,6 +157,57 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(decoyInfo.source, .claudeCode)
     }
 
+    func testClaudeDerivedSourceLocatorFilteringDoesNotRequireFullParse() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-derived-lightweight-\(UUID().uuidString)", isDirectory: true)
+        let minimaxProject = root.appendingPathComponent("project", isDirectory: true)
+        let lobsterProject = root.appendingPathComponent("lobsterai-project", isDirectory: true)
+        let decoyProject = root.appendingPathComponent("notlobsterai-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: minimaxProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: lobsterProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: decoyProject, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let minimaxLocator = minimaxProject.appendingPathComponent("minimax.jsonl")
+        let lobsterLocator = lobsterProject.appendingPathComponent("claude.jsonl")
+        let decoyLocator = decoyProject.appendingPathComponent("claude.jsonl")
+        let extraClaudeLine = """
+        {"type":"user","sessionId":"extra","cwd":"/repo","timestamp":"2026-04-24T01:02:00.000Z","message":{"content":"extra"}}
+
+        """
+        try (claudeFixture(sessionId: "minimax-session", model: "minimax-m1") + extraClaudeLine).write(
+            to: minimaxLocator,
+            atomically: true,
+            encoding: .utf8
+        )
+        try claudeFixture(sessionId: "lobster-session", model: "claude-sonnet").write(
+            to: lobsterLocator,
+            atomically: true,
+            encoding: .utf8
+        )
+        try claudeFixture(sessionId: "claude-session", model: "claude-sonnet").write(
+            to: decoyLocator,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let minimax = ClaudeCodeDerivedSourceAdapter(
+            source: .minimax,
+            projectsRoot: root.path,
+            limits: ParserLimits(maxFileBytes: 1024 * 1024, maxLineBytes: 1024, maxMessages: 1)
+        )
+        let lobster = ClaudeCodeDerivedSourceAdapter(
+            source: .lobsterai,
+            projectsRoot: root.path,
+            limits: ParserLimits(maxFileBytes: 1, maxLineBytes: 1024, maxMessages: 1)
+        )
+
+        let minimaxLocators = try await minimax.listSessionLocators().map(standardizedPath)
+        let lobsterLocators = try await lobster.listSessionLocators().map(standardizedPath)
+        XCTAssertEqual(minimaxLocators, [standardizedPath(minimaxLocator.path)])
+        XCTAssertEqual(lobsterLocators, [standardizedPath(lobsterLocator.path)])
+    }
+
     func testClaudeAdapterKeepsRoutedProviderModelsUnderClaudeCodeSource() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("claude-routed-provider-\(UUID().uuidString)", isDirectory: true)

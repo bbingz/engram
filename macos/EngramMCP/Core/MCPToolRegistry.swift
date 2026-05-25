@@ -322,7 +322,7 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "get_insights",
-            description: "Report cost totals and projection. Swift MCP does not compute optimization suggestions yet.",
+            description: "Report cost totals, projection, and high-confidence spend-distribution suggestions.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
