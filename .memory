@@ -1,5 +1,27 @@
 # Engram Local Memory
 
+## 2026-05-25 — Codex v0.133 MCP protocol compatibility fix
+
+Durable, non-obvious lessons:
+- Codex v0.133 initializes MCP servers with `protocolVersion: 2025-06-18`.
+  EngramMCP previously accepted older versions only and returned
+  `-32602 Unsupported protocolVersion`, causing Codex TUI to show
+  `MCP startup incomplete (failed: engram)` and `Tools: (none)` for the
+  `/Users/bing/.engram/bin/engram-mcp` server.
+- The correct reproduction is a real Codex TUI startup or a stdio initialize
+  smoke against the installed shim, not merely running the app:
+  send `initialize` with `2025-06-18`, then `notifications/initialized`, then
+  `tools/list`. A healthy install returns `protocolVersion: 2025-06-18` and the
+  full Engram tool registry.
+- Fix landed in `70170e0e fix: support codex mcp protocol 2025-06-18` by adding
+  `2025-06-18` to `MCPStdioServer.supportedProtocolVersions` plus an executable
+  regression test in `EngramMCPExecutableTests`.
+- Local deployment after the fix installed `/Applications/Engram.app` build
+  `0.1.0 (691)`. Verification evidence: Team ID `J25GS8J4XM`, Hardened Runtime
+  present, installed shim smoke passes, `Engram` and `EngramService` run at
+  normal CPU/RSS, and `EngramMCP` exits after the client closes instead of
+  staying resident.
+
 ## 2026-05-23 — TDD closeout of all open roadmap items
 
 Durable, non-obvious lessons:

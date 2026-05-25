@@ -7,6 +7,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — Codex v0.133 MCP startup compatibility (2026-05-25, Codex)
+
+- Fixed Engram MCP startup in current Codex TUI sessions by accepting MCP
+  `protocolVersion: 2025-06-18`. Before this, `/Users/bing/.engram/bin/engram-mcp`
+  rejected initialize with `-32602 Unsupported protocolVersion`, so Codex showed
+  `MCP startup incomplete (failed: engram)` and `Tools: (none)`.
+- Added an executable regression test for the current Codex protocol version,
+  alongside the older-version and unsupported-version coverage.
+- Built and deployed `/Applications/Engram.app` build `0.1.0 (691)` with
+  Developer ID team `J25GS8J4XM`. Installed-shim smoke now returns
+  `protocolVersion: 2025-06-18` and the full Engram MCP tool list; app/service
+  process checks show normal CPU/RSS and no resident `EngramMCP` helper after
+  the client closes.
+
 ### Fixed — TDD remediation of all open roadmap items (2026-05-23, Claude)
 
 Drove every open item in `docs/roadmap.md` to resolution with failing-test-first
