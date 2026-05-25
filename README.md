@@ -125,11 +125,32 @@ claude mcp add --scope user engram /Applications/Engram.app/Contents/Helpers/Eng
 
 ### Codex
 
+Codex 会在会话启动时持有 MCP stdio 子进程。为了避免发布时替换
+`/Applications/Engram.app` 影响已经打开的 Codex 会话，建议先创建一个稳定
+shim：
+
+```bash
+mkdir -p ~/.engram/bin
+cat > ~/.engram/bin/engram-mcp <<'EOF'
+#!/bin/sh
+set -eu
+
+HELPER="/Applications/Engram.app/Contents/Helpers/EngramMCP"
+if [ ! -x "$HELPER" ]; then
+  echo "Engram MCP helper is not executable at $HELPER" >&2
+  exit 127
+fi
+
+exec "$HELPER" "$@"
+EOF
+chmod 755 ~/.engram/bin/engram-mcp
+```
+
 编辑 `~/.codex/config.toml`：
 
 ```toml
 [mcp_servers.engram]
-command = "/Applications/Engram.app/Contents/Helpers/EngramMCP"
+command = "/Users/<you>/.engram/bin/engram-mcp"
 args = []
 ```
 

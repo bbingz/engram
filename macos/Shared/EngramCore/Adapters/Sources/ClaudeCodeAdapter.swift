@@ -4,8 +4,10 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     let source: SourceName = .claudeCode
     private let projectsRoot: URL
     private let limits: ParserLimits
-    private static let sourceHintByteLimit = 256 * 1024
+    private static let sourceHintScanByteLimit = 1024 * 1024
+    private static let sourceHintMaxLineBytes = 512 * 1024
     private static let sourceHintLineLimit = 64
+    private static let sourceHintChunkSize = 64 * 1024
 
     init(
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
@@ -227,19 +229,61 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
 
-        let data = handle.readData(ofLength: sourceHintByteLimit)
-        guard !data.isEmpty else { return nil }
+        var buffer = Data()
+        var scannedBytes = 0
+        var scannedLines = 0
+        var droppingOversizedLine = false
+        var reachedEOF = false
 
-        let lines = data.split(separator: 10, maxSplits: sourceHintLineLimit, omittingEmptySubsequences: true)
-        for line in lines.prefix(sourceHintLineLimit) {
-            guard let text = String(bytes: line, encoding: .utf8),
-                  let object = JSONLAdapterSupport.parseObject(text)
-            else {
-                continue
+        while scannedBytes < sourceHintScanByteLimit && scannedLines < sourceHintLineLimit {
+            let remaining = sourceHintScanByteLimit - scannedBytes
+            let chunk = handle.readData(ofLength: min(sourceHintChunkSize, remaining))
+            if chunk.isEmpty {
+                reachedEOF = true
+                break
             }
-            if let model = modelHint(in: object) { return model }
+            scannedBytes += chunk.count
+
+            if droppingOversizedLine {
+                guard let newlineIndex = chunk.firstIndex(of: UInt8(ascii: "\n")) else { continue }
+                droppingOversizedLine = false
+                buffer = Data(chunk[(newlineIndex + 1)...])
+            } else {
+                buffer.append(chunk)
+            }
+
+            while scannedLines < sourceHintLineLimit,
+                  let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                let lineData = buffer[buffer.startIndex..<newlineIndex]
+                buffer = Data(buffer[(newlineIndex + 1)...])
+                scannedLines += 1
+                if let model = modelHint(inLine: lineData) { return model }
+            }
+
+            if buffer.count > sourceHintMaxLineBytes {
+                buffer.removeAll(keepingCapacity: false)
+                droppingOversizedLine = true
+            }
+        }
+
+        if reachedEOF,
+           !buffer.isEmpty,
+           scannedLines < sourceHintLineLimit,
+           let model = modelHint(inLine: buffer) {
+            return model
         }
         return nil
+    }
+
+    private static func modelHint(inLine lineData: Data) -> String? {
+        guard lineData.count <= sourceHintMaxLineBytes,
+              let text = String(data: lineData, encoding: .utf8),
+              !text.trimmingCharacters(in: .whitespaces).isEmpty,
+              let object = JSONLAdapterSupport.parseObject(text)
+        else {
+            return nil
+        }
+        return modelHint(in: object)
     }
 
     private static func modelHint(in object: JSONLAdapterSupport.JSONObject) -> String? {

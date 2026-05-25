@@ -3,6 +3,40 @@ import XCTest
 @testable import EngramCoreRead
 
 final class AdapterParityTests: XCTestCase {
+    func testDerivedClaudeSourceDetectsModelAfterLargeOpeningLine() async throws {
+        let projectsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-derived-source-\(UUID().uuidString)", isDirectory: true)
+        let projectDir = projectsRoot.appendingPathComponent("-repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: projectsRoot) }
+
+        let sessionFile = projectDir.appendingPathComponent("session.jsonl")
+        let largePrompt = String(repeating: "x", count: 300 * 1024)
+        let firstLine: [String: Any] = [
+            "type": "user",
+            "sessionId": "large-prefix",
+            "cwd": "/repo",
+            "timestamp": "2026-05-25T01:00:00Z",
+            "message": ["role": "user", "content": largePrompt],
+        ]
+        let secondLine: [String: Any] = [
+            "type": "assistant",
+            "sessionId": "large-prefix",
+            "cwd": "/repo",
+            "timestamp": "2026-05-25T01:00:01Z",
+            "message": ["role": "assistant", "model": "minimax-text-01", "content": "ok"],
+        ]
+        try [firstLine, secondLine]
+            .map(jsonLine)
+            .joined(separator: "\n")
+            .appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeDerivedSourceAdapter(source: .minimax, projectsRoot: projectsRoot.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(locators.map(standardizedPath), [standardizedPath(sessionFile.path)])
+    }
+
     func testSwiftAdaptersMatchNodeParityGoldensForAllProviders() async throws {
         let fixtureRoot = try copyBundledAdapterFixturesToTemporaryDirectory()
         defer {
@@ -87,6 +121,11 @@ final class AdapterParityTests: XCTestCase {
             )
         }
     }
+}
+
+private func jsonLine(_ object: [String: Any]) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+    return String(decoding: data, as: UTF8.self)
 }
 
 private func standardizedPath(_ path: String) -> String {

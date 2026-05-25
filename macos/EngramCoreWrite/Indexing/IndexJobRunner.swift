@@ -143,6 +143,11 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             return .completed
         } catch is CancellationError {
             throw CancellationError()
+        } catch let failure as ParserFailure where Self.isTerminalFtsFailure(failure) {
+            try writer.write { db in
+                try Self.markNotApplicable(db, id: job.id)
+            }
+            return .notApplicable
         } catch {
             // Transient failure (e.g. file changed during parse): leave the job
             // retryable so the next pass picks it up.
@@ -175,6 +180,25 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             contents.append(summary)
         }
         return contents
+    }
+
+    private static func isTerminalFtsFailure(_ failure: ParserFailure) -> Bool {
+        switch failure {
+        case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator:
+            return true
+        case .invalidUtf8,
+             .truncatedJSON,
+             .truncatedJSONL,
+             .malformedJSON,
+             .malformedToolCall,
+             .deeplyNestedRecord,
+             .messageLimitExceeded,
+             .lineTooLarge,
+             .fileModifiedDuringParse,
+             .sqliteUnreadable,
+             .grpcUnavailable:
+            return false
+        }
     }
 
     // MARK: - SQL helpers (static so they run inside writer.read/write blocks)

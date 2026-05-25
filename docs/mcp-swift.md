@@ -48,6 +48,38 @@ Edit `~/.claude/mcp.json` (project-scoped lives at `.claude/mcp.json`):
 Restart Claude Code. Verify with `/mcp` — the `engram` entry should
 show the 26 tools.
 
+## Switching Codex
+
+Codex keeps the MCP stdio process alive for the lifetime of a session. For Codex,
+prefer a stable shim outside the replaceable app bundle:
+
+```bash
+mkdir -p ~/.engram/bin
+cat > ~/.engram/bin/engram-mcp <<'EOF'
+#!/bin/sh
+set -eu
+
+HELPER="/Applications/Engram.app/Contents/Helpers/EngramMCP"
+if [ ! -x "$HELPER" ]; then
+  echo "Engram MCP helper is not executable at $HELPER" >&2
+  exit 127
+fi
+
+exec "$HELPER" "$@"
+EOF
+chmod 755 ~/.engram/bin/engram-mcp
+```
+
+Then configure `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.engram]
+command = "/Users/<you>/.engram/bin/engram-mcp"
+args = []
+```
+
+Existing Codex sessions still need a restart after changing MCP configuration.
+
 ## Switching other MCP clients
 
 Any client that accepts a `command` + `args` config works. Point
@@ -95,6 +127,7 @@ version; unsupported initialize versions fail closed with a JSON-RPC
 |---|---|---|
 | `engram` tools missing after restart | Service not running | Start Engram.app (it supervises EngramService) |
 | `spawn EACCES` from client | Binary not executable | `chmod +x` the Helpers/EngramMCP path |
+| `Transport closed` after deploying a new app build | Client session still holds an old stdio process/config | Use the stable Codex shim above, then restart the client session |
 | Write tool returns service unreachable | EngramService not running or socket missing | Start Engram.app and check Console.app `com.engram.app` logs |
 | Stale tool count (< 26) | Client cached old spec | Restart the client |
 

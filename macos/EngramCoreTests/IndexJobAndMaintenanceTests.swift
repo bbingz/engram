@@ -37,6 +37,31 @@ private final class StubFTSAdapter: SessionAdapter {
     }
 }
 
+private final class ThrowingFTSAdapter: SessionAdapter {
+    let source: SourceName
+    let error: Error
+
+    init(source: SourceName, error: Error) {
+        self.source = source
+        self.error = error
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [] }
+    func isAccessible(locator: String) async -> Bool { true }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.fileMissing)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        throw error
+    }
+}
+
 /// Sink that always reports failures, to prove the indexer does not fake-count.
 private final class AllFailUpsertSink: IndexingWriteSink {
     func upsertBatch(
@@ -216,6 +241,52 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id = 'emb-1:1:h:embedding'")
         }
         XCTAssertEqual(status, "not_applicable")
+    }
+
+    func testMissingFtsSourceIsMarkedNotApplicableInsteadOfRetryingForever() async throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('missing-fts', 'claude-code', '2026-05-25T11:00:00Z', '/tmp/engram-missing-fts.jsonl', 'normal')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                VALUES ('missing-fts:1:h:fts', 'missing-fts', 'fts', 1, 'pending')
+                """
+            )
+        }
+
+        let runner = IndexJobRunner(
+            writer: writer,
+            adapters: [ThrowingFTSAdapter(source: .claudeCode, error: ParserFailure.fileMissing)]
+        )
+        let summary = try await runner.runRecoverableJobs()
+        XCTAssertEqual(summary.notApplicable, 1)
+
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT status, retry_count, last_error
+                FROM session_index_jobs
+                WHERE id = 'missing-fts:1:h:fts'
+                """
+            )
+        }
+        XCTAssertEqual(row?["status"] as String?, "not_applicable")
+        XCTAssertEqual(row?["retry_count"] as Int?, 0)
+        XCTAssertNil(row?["last_error"] as String?)
+
+        let retryable = try writer.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM session_index_jobs WHERE status IN ('pending','failed_retryable')"
+            ) ?? -1
+        }
+        XCTAssertEqual(retryable, 0)
     }
 
     // MARK: - V3: indexAll counts only written rows, not attempts
