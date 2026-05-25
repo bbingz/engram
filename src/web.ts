@@ -4,6 +4,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve as pathResolve } from 'node:path';
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { Message, SessionAdapter, SessionInfo } from './adapters/types.js';
 import type { AiAuditQuery, AiAuditWriter } from './core/ai-audit.js';
 import { summarizeConversation } from './core/ai-client.js';
@@ -55,6 +56,9 @@ import {
 function validationError(name: string, message: string): ErrorEnvelope {
   return { error: { name, message, retry_policy: 'never' } };
 }
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+const MAX_API_BODY_BYTES = 256 * 1024;
 
 type IntegerParamResult =
   | { ok: true; value: number }
@@ -332,12 +336,12 @@ export function createApp(
         visibleSeen++;
         if (messages.length > limit) break;
       }
-    } catch (err) {
+    } catch {
       return {
         messages: [],
         hasMore: false,
         nextOffset: offset,
-        error: err instanceof Error ? err.message : String(err),
+        error: 'Failed to read session',
       };
     }
 
@@ -414,6 +418,14 @@ export function createApp(
     return runWithContext({ requestId, source: 'http' }, () => next());
   });
 
+  app.use(
+    '/api/*',
+    bodyLimit({
+      maxSize: MAX_API_BODY_BYTES,
+      onError: (c) => c.json({ error: 'Request body too large' }, 413),
+    }),
+  );
+
   // Request tracing — creates a span for every HTTP request
   if (opts?.tracer) {
     const tracerRef = opts.tracer;
@@ -478,7 +490,6 @@ export function createApp(
     }) as const;
 
   if (settings.httpBearerToken) {
-    const WRITE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
     app.use('/api/*', async (c, next) => {
       if (WRITE_METHODS.has(c.req.method)) {
         const currentToken = resolveBearerToken();
@@ -620,8 +631,8 @@ export function createApp(
       );
       messages = loaded.messages;
       totalSeen = loaded.totalSeen;
-    } catch (err) {
-      return c.json({ error: `Failed to read session: ${err}` }, 500);
+    } catch {
+      return c.json({ error: 'Failed to read session' }, 500);
     }
 
     if (messages.length === 0) {
@@ -739,8 +750,8 @@ export function createApp(
         opts?.adapters,
       );
       return c.json(result);
-    } catch (err) {
-      return c.json({ error: `Handoff failed: ${err}` }, 500);
+    } catch {
+      return c.json({ error: 'Handoff failed' }, 500);
     }
   });
 
@@ -788,8 +799,8 @@ export function createApp(
         messages.push({ role: msg.role, content: msg.content });
         if (messages.length >= 6) break;
       }
-    } catch (err) {
-      return c.json({ error: `Failed to read session: ${err}` }, 500);
+    } catch {
+      return c.json({ error: 'Failed to read session' }, 500);
     }
 
     const title = await opts.titleGenerator.generate(messages);
@@ -1297,26 +1308,21 @@ export function createApp(
     const cwd = (body as Record<string, unknown>).cwd as string | undefined;
     if (!cwd) return c.json({ error: 'cwd required' }, 400);
 
-    // Validate: must be absolute path
-    if (!cwd.startsWith('/'))
-      return c.json({ error: 'cwd must be an absolute path' }, 400);
-
-    // Defense-in-depth: reject paths outside $HOME
-    const home = homedir();
-    if (!cwd.startsWith(`${home}/`) && cwd !== home) {
-      return c.json({ error: 'cwd must be within the home directory' }, 400);
+    const norm = normalizeHttpPath(cwd);
+    if (!norm.ok) {
+      return c.json({ error: norm.error }, 400);
     }
 
     // Validate: must exist as a directory
     try {
-      const s = await stat(cwd);
+      const s = await stat(norm.path);
       if (!s.isDirectory())
         return c.json({ error: 'cwd is not a directory' }, 400);
     } catch {
       return c.json({ error: 'cwd does not exist' }, 400);
     }
 
-    const result = await handleLintConfig({ cwd });
+    const result = await handleLintConfig({ cwd: norm.path });
     return c.json(result);
   });
 

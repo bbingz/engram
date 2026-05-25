@@ -1,8 +1,12 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionInfo } from '../../src/adapters/types.js';
+import type {
+  Message,
+  SessionAdapter,
+  SessionInfo,
+} from '../../src/adapters/types.js';
 import { Database } from '../../src/core/db.js';
 import type { LiveSessionMonitor } from '../../src/core/live-sessions.js';
 import { createApp } from '../../src/web.js';
@@ -24,6 +28,26 @@ const mockSession: SessionInfo = {
   filePath: '/Users/test/.codex/sessions/rollout-123.jsonl',
   sizeBytes: 50000,
 };
+
+function throwingAdapter(message: string): SessionAdapter {
+  return {
+    name: 'codex',
+    async detect() {
+      return true;
+    },
+    async *listSessionFiles() {},
+    async parseSessionInfo() {
+      return null;
+    },
+    async *streamMessages(): AsyncGenerator<Message> {
+      for (const msg of [] as Message[]) yield msg;
+      throw new Error(message);
+    },
+    async isAccessible() {
+      return true;
+    },
+  };
+}
 
 describe('Web Server', () => {
   let db: Database;
@@ -719,6 +743,61 @@ describe('Hono API server — additional endpoints', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain('absolute');
+  });
+
+  it('POST /api/lint canonicalizes cwd before enforcing home confinement', async () => {
+    const home = join(tmpDir, 'home');
+    const outside = join(tmpDir, 'outside');
+    mkdirSync(home);
+    mkdirSync(outside);
+    vi.stubEnv('HOME', home);
+
+    const res = await app.request('/api/lint', {
+      method: 'POST',
+      body: JSON.stringify({ cwd: `${home}/../outside` }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('home');
+  });
+
+  it('POST /api/lint rejects oversized request bodies before parsing JSON', async () => {
+    const oversized = JSON.stringify({
+      cwd: '/',
+      pad: 'x'.repeat(1024 * 1024),
+    });
+
+    const res = await app.request('/api/lint', {
+      method: 'POST',
+      body: oversized,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(oversized)),
+      },
+    });
+
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('too large');
+  });
+
+  it('GET /api/sessions/:id/timeline hides parser exception details', async () => {
+    db.upsertSession(mockSession);
+    const appWithThrowingAdapter = createApp(db, {
+      adapters: [throwingAdapter('secret path /Users/bing/.ssh/id_ed25519')],
+    });
+
+    const res = await appWithThrowingAdapter.request(
+      '/api/sessions/session-001/timeline',
+    );
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Failed to read session');
+    expect(body.error).not.toContain('/Users/bing');
+    expect(body.error).not.toContain('id_ed25519');
   });
 
   it('GET /api/sessions supports limit and offset', async () => {

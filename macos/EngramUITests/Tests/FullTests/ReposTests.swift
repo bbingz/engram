@@ -5,6 +5,7 @@ final class ReposTests: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = false
+        FixtureAssertions.requireRowCount("git_repos")
         app = XCUIApplication()
         TestLaunchConfig.mainWindow.configure(app)
         app.launch()
@@ -21,10 +22,10 @@ final class ReposTests: XCTestCase {
         let repos = ReposScreen(app: app)
         repos.waitForLoad()
 
-        let hasList = repos.repoList.exists
-        let hasEmpty = repos.emptyState.waitForExistence(timeout: 3)
-        XCTAssertTrue(hasList || hasEmpty,
-                      "Repos should show a list or empty state")
+        XCTAssertTrue(
+            repos.repoList.waitForExistence(timeout: 3),
+            "Repos fixture should render a non-empty repo list"
+        )
         ScreenshotCapture.capture(name: "repos_list", app: app, screen: "repos", test: #function)
     }
 
@@ -35,19 +36,19 @@ final class ReposTests: XCTestCase {
         let repos = ReposScreen(app: app)
         repos.waitForLoad()
 
-        if repos.repoList.exists {
-            // Click first repo to open detail
-            let firstRepo = repos.repoList.otherElements.firstMatch
-            if firstRepo.waitForExistence(timeout: 3) {
-                firstRepo.click()
-                let detailLoaded = repos.detail.waitForExistence(timeout: 5)
-                XCTAssertTrue(detailLoaded || repos.repoList.exists,
-                              "Repo detail should load or list should remain visible")
-            }
-        } else {
-            // Empty state — pass
-            XCTAssertTrue(repos.emptyState.exists,
-                          "Repos empty state should be visible when no repos")
-        }
+        XCTAssertTrue(
+            repos.repoList.waitForExistence(timeout: 3),
+            "Repos fixture should render a non-empty repo list"
+        )
+        let firstRepo = repos.repoRows.firstMatch
+        XCTAssertTrue(
+            firstRepo.waitForExistence(timeout: 3),
+            "Repos fixture should expose at least one selectable repo row"
+        )
+        firstRepo.click()
+        XCTAssertTrue(
+            repos.detailBackButton.waitForExistence(timeout: 5),
+            "Repo detail should expose its back button after selecting a repo"
+        )
     }
 }

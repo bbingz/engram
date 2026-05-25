@@ -60,25 +60,30 @@ public extension EngramDatabaseWriter {
     func indexRecentSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.recentActiveAdapters()
     ) async throws -> EngramDatabaseIndexResult {
-        try await indexSessions(adapters: adapters)
+        try await indexSessions(adapters: adapters, runParentBackfills: false)
     }
 
     func indexAllSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters()
     ) async throws -> EngramDatabaseIndexResult {
-        try await indexSessions(adapters: adapters)
+        try await indexSessions(adapters: adapters, runParentBackfills: true)
     }
 
-    private func indexSessions(adapters: [any SessionAdapter]) async throws -> EngramDatabaseIndexResult {
+    private func indexSessions(
+        adapters: [any SessionAdapter],
+        runParentBackfills: Bool
+    ) async throws -> EngramDatabaseIndexResult {
         let indexer = SwiftIndexer(
             sink: EngramDatabaseIndexingSink(writer: self),
             adapters: adapters
         )
         let indexed = try await indexer.indexAll()
 
-        try write { db in
-            _ = try StartupBackfills.backfillPolycliProviderParents(db)
-            _ = try StartupBackfills.backfillSuggestedParents(db)
+        if runParentBackfills {
+            try write { db in
+                _ = try StartupBackfills.backfillPolycliProviderParents(db)
+                _ = try StartupBackfills.backfillSuggestedParents(db)
+            }
         }
 
         let status = try indexStatus()

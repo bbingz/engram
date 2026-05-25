@@ -180,5 +180,6 @@ private struct RepoRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("repos_row")
     }
 }

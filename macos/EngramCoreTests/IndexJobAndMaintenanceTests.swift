@@ -289,6 +289,42 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(retryable, 0)
     }
 
+    func testRecentIndexDoesNotRunHistoricalParentBackfills() async throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                    id, source, start_time, cwd, project, summary, file_path,
+                    message_count, user_message_count, assistant_message_count,
+                    tool_message_count, system_message_count
+                )
+                VALUES (
+                    'periodic-child', 'codex', '2026-05-25T10:00:00Z',
+                    '/repo', 'repo', 'No tools. Review the implementation.',
+                    '/tmp/periodic-child.jsonl', 1, 1, 0, 0, 0
+                )
+                """
+            )
+        }
+
+        _ = try await writer.indexRecentSessions(adapters: [])
+
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT agent_role, tier, link_checked_at
+                FROM sessions
+                WHERE id = 'periodic-child'
+                """
+            )
+        }
+
+        XCTAssertNil(row?["agent_role"] as String?)
+        XCTAssertNil(row?["tier"] as String?)
+        XCTAssertNil(row?["link_checked_at"] as String?)
+    }
+
     // MARK: - V3: indexAll counts only written rows, not attempts
 
     func testIndexAllDoesNotFakeCountOnFailure() async throws {

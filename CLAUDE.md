@@ -182,6 +182,19 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - Initial parent-session counts must be emitted only after parent-link / tier /
   provider-parent backfills complete.
 
+### Local Service Security
+- Swift production runtime is the authority: `EngramService` owns writes and
+  exposes a Unix socket in a private runtime directory (`0700` parent, `0600`
+  socket where the platform applies mode bits). Clients must pass the service
+  capability token and peer-UID checks must match the current user.
+- HTTP web UI is opt-in/dev-facing. When enabled, bind locally, enforce
+  Host/CORS allowlists, require bearer auth for mutating `/api/*` calls when a
+  token is configured, cap API bodies, and normalize filesystem paths before
+  any filesystem operation.
+- TypeScript `src/web.ts` is retained for migration/dev tooling. Security fixes
+  there should mirror Swift behavior, but product startup and MCP traffic should
+  go through the Swift service stack.
+
 ## Conventions
 
 - **Language**: TypeScript (strict, ES2022, Node16 modules) + Swift 5.9 (macOS 14+)

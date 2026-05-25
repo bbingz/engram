@@ -58,12 +58,12 @@ async function readTranscriptPage(
       visibleSeen++;
       if (messages.length > limit) break;
     }
-  } catch (err) {
+  } catch {
     return {
       messages: [],
       hasMore: false,
       nextOffset: offset,
-      error: err instanceof Error ? err.message : String(err),
+      error: 'Failed to read session',
     };
   }
 
@@ -302,8 +302,8 @@ export function registerSessionRoutes(
         idx++;
         collected++;
       }
-    } catch (err) {
-      return c.json({ error: `Failed to read session: ${err}` }, 500);
+    } catch {
+      return c.json({ error: 'Failed to read session' }, 500);
     }
 
     const hasMore = limit.value !== undefined && entries.length > limit.value;

@@ -21,6 +21,7 @@ struct RepoDetailView: View {
                     .foregroundStyle(.blue)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("repos_detail_back")
 
                 // Header
                 HStack(spacing: 8) {
@@ -140,6 +141,7 @@ struct RepoDetailView: View {
             claudeMdContent = loaded.0
             relatedSessions = loaded.1
         }
+        .accessibilityIdentifier("repos_detail")
     }
 
     private func quickActionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {

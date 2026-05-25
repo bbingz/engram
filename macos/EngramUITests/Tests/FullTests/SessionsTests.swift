@@ -5,6 +5,7 @@ final class SessionsTests: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = false
+        FixtureAssertions.requireRowCount("sessions")
         app = XCUIApplication()
         TestLaunchConfig.mainWindow.configure(app)
         app.launch()
@@ -84,7 +85,6 @@ final class SessionsTests: XCTestCase {
             }
         }
 
-        // Either session list or empty state should appear
         let hasContent = sessions.sessionList.waitForExistence(timeout: 3)
         let hasEmpty = sessions.emptyState.waitForExistence(timeout: 3)
         XCTAssertTrue(hasContent || hasEmpty,

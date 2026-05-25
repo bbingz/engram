@@ -47,6 +47,7 @@
 		14CCD69C380FF345EA328E66 /* SkillsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38B5597E3F88457F396E3A29 /* SkillsTests.swift */; };
 		15A263D30DD7CCDA70E40BC9 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = E481D384DBE06952D6DDFEE5 /* ArgumentParser */; };
 		15AEFAD02513485CD2E79FF6 /* MigrationRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A13BCA5842F3F6F0645B83 /* MigrationRunnerTests.swift */; };
+		164BE5A84351B04C5F405AFF /* FixtureAssertions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C393A33D07F4F9E3F3742EE /* FixtureAssertions.swift */; };
 		169AC57D1404DC98BAFDA5C5 /* WatcherSemanticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0A8DAE661A0D199388FCDD /* WatcherSemanticsTests.swift */; };
 		18CE5118160982669B036A68 /* FsOps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7859D1FC254C33B0BDD41DE8 /* FsOps.swift */; };
 		1904CD8F1394D4188F9D8563 /* CursorAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB7F18056590015EA9E85B5E /* CursorAdapter.swift */; };
@@ -644,6 +645,7 @@
 		1AC3AA3C44730AC0E7F3C527 /* FilterPills.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterPills.swift; sourceTree = "<group>"; };
 		1B9F654F382E1F1DA027FD9A /* AdapterRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdapterRegistry.swift; sourceTree = "<group>"; };
 		1C37BCCB1ACAB67E7F8B9C8E /* LiveSessionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSessionCard.swift; sourceTree = "<group>"; };
+		1C393A33D07F4F9E3F3742EE /* FixtureAssertions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureAssertions.swift; sourceTree = "<group>"; };
 		1D0235E45DAAFCBA57B29A6E /* ToolResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolResultView.swift; sourceTree = "<group>"; };
 		1D1BB361D9AC2D5B6AEB8F36 /* ServiceCapabilityToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceCapabilityToken.swift; sourceTree = "<group>"; };
 		1DCC15BD65EE2D506E36858C /* NonWatchableSourceRescanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NonWatchableSourceRescanner.swift; sourceTree = "<group>"; };
@@ -1394,6 +1396,7 @@
 		73F7412A98D1B0CEE3ECB3F4 /* Helpers */ = {
 			isa = PBXGroup;
 			children = (
+				1C393A33D07F4F9E3F3742EE /* FixtureAssertions.swift */,
 				7505C058060E916B3983C9CE /* ScreenshotCapture.swift */,
 				109661C042659F74CE3C59DB /* TestLaunchConfig.swift */,
 				1206FB9CDE9D765DCA88BD01 /* WaitUtils.swift */,
@@ -2569,6 +2572,7 @@
 				53768E7900719C77D51A952D /* AgentsScreen.swift in Sources */,
 				6202091E411BF6BA06A76491 /* AgentsTests.swift in Sources */,
 				AAD772B04826F4344896A2FE /* DarkModeTests.swift in Sources */,
+				164BE5A84351B04C5F405AFF /* FixtureAssertions.swift in Sources */,
 				F4894261C6A83364B2B94BFD /* HomeScreen.swift in Sources */,
 				C51998CBCF3E8D91AFA1CB59 /* HomeSmokeTests.swift in Sources */,
 				8CD9664157054378058BF411 /* HomeTests.swift in Sources */,
