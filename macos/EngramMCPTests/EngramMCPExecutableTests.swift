@@ -103,6 +103,8 @@ final class EngramMCPExecutableTests: XCTestCase {
 
         let response = capture.response
         XCTAssertEqual(response.error?.code, nil)
+        let instructions = capture.ordered["result"]?["instructions"]?.stringValue
+        XCTAssertFalse(instructions?.localizedCaseInsensitiveContains("semantic") ?? true)
         XCTAssertEqual(
             try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
             try String(contentsOfFile: fixturePath("mcp-golden/initialize.result.json"), encoding: .utf8)
