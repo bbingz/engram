@@ -2,8 +2,10 @@ import Foundation
 
 final class MCPStdioServer {
     private let config = MCPConfig.load()
-    private static let supportedProtocolVersions: Set<String> = ["2025-03-26"]
-    private static let defaultProtocolVersion = "2025-03-26"
+    private static let supportedProtocolVersions: Set<String> = [
+        "2024-11-05",
+        "2025-03-26",
+    ]
     private static let instructions = """
     Engram is a cross-tool AI session aggregator. Key tools:
     - search: Full-text keyword search across all AI coding sessions (17 sources)
@@ -56,7 +58,7 @@ final class MCPStdioServer {
                 jsonrpc: "2.0",
                 id: request.id,
                 result: .object([
-                    ("protocolVersion", .string(Self.defaultProtocolVersion)),
+                    ("protocolVersion", .string(protocolVersion)),
                     ("capabilities", .object([
                         ("tools", .object([])),
                     ])),

@@ -111,6 +111,18 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testInitializeAcceptsOlderCodexProtocolVersion() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"XCTest","version":"1.0"}}}
+            """
+        )
+
+        XCTAssertEqual(capture.response.error?.code, nil)
+        XCTAssertEqual(capture.ordered["result"]?["protocolVersion"]?.stringValue, "2024-11-05")
+        XCTAssertEqual(capture.ordered["result"]?["serverInfo"]?["name"]?.stringValue, "engram")
+    }
+
     func testInitializeRejectsUnsupportedProtocolVersion() throws {
         let capture = try rpc(
             """
