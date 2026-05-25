@@ -952,6 +952,55 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: linkPath), allowedFile.path)
     }
 
+    func testLinkSessionsRejectsTargetDirectoryOutsideHome() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let targetOutsideHome = paths.runtime.appendingPathComponent("outside-home", isDirectory: true)
+        let allowedDir = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
+        let allowedFile = allowedDir.appendingPathComponent("allowed.jsonl")
+        try "{}\n".write(to: allowedFile, atomically: true, encoding: .utf8)
+
+        let oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("HOME", home.path, 1)
+        defer {
+            if let oldHome {
+                setenv("HOME", oldHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [allowedFile.path])
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        do {
+            _ = try await client.linkSessions(
+                EngramServiceLinkSessionsRequest(targetDir: targetOutsideHome.path, actor: "test")
+            )
+            XCTFail("linkSessions target outside HOME should be rejected")
+        } catch {
+            XCTAssertTrue("\(error)".contains("targetDir path resolves outside the home directory"), "\(error)")
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: targetOutsideHome.path),
+            "Rejected linkSessions target must not be created"
+        )
+    }
+
     func testAppSessionMetadataMutationsAreOwnedByServiceWriterGate() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

@@ -1199,6 +1199,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 truncated: nil
             )
         }
+        try validateProjectPathConfined(normalizedTargetDir, label: "targetDir")
 
         let projectName = URL(fileURLWithPath: normalizedTargetDir).lastPathComponent
         let fileManager = FileManager.default

@@ -29,6 +29,23 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertThrowsError(try server.writeIsRejectedForTesting())
     }
 
+    func testHtmlResponsesDeclareContentSecurityPolicy() throws {
+        let source = try serviceCoreSource("EngramWebUIServer.swift")
+
+        XCTAssertTrue(
+            source.contains("headers[.contentSecurityPolicy]"),
+            "Swift Web UI HTML responses should send an enforcing Content-Security-Policy header"
+        )
+        XCTAssertTrue(
+            source.contains("default-src 'none'"),
+            "CSP should fail closed by default because the Swift Web UI is local and static"
+        )
+        XCTAssertTrue(
+            source.contains("frame-ancestors 'none'"),
+            "CSP should prevent the local Web UI from being framed"
+        )
+    }
+
     private func makeMinimalDatabase() throws -> String {
         let path = NSTemporaryDirectory() + "engram-webui-\(UUID().uuidString).sqlite"
         let queue = try DatabaseQueue(path: path)
@@ -56,6 +73,19 @@ final class EngramWebUIServerTests: XCTestCase {
             """)
         }
         return path
+    }
+
+    private func serviceCoreSource(_ relativePath: String) throws -> String {
+        var directory = URL(fileURLWithPath: #filePath)
+        while directory.lastPathComponent != "macos" {
+            directory.deleteLastPathComponent()
+        }
+        return try String(
+            contentsOf: directory
+                .appendingPathComponent("EngramService/Core")
+                .appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
     }
 
     func testSubagentNotificationRendersAsAgentCommunication() {

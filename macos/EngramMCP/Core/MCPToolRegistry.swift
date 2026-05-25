@@ -734,6 +734,11 @@ enum MCPToolRegistry {
         arguments: [String: JSONValue],
         config: MCPConfig
     ) async throws -> OrderedJSONValue {
+        guard let definition = tools.first(where: { $0.name == name }) else {
+            return .toolError(message: "Unknown tool: \(name)")
+        }
+        try validateArguments(arguments, for: definition)
+
         if unavailableNativeProjectOperationTools.contains(name) {
             return .toolError(
                 message: "\(name) is unavailable in the Swift-only runtime; use the Node CLI until the native project migration pipeline is ported."
@@ -1149,6 +1154,84 @@ enum MCPToolRegistry {
             throw MCPToolError.invalidArguments("\(key) is required")
         }
         return value
+    }
+
+    private static func validateArguments(
+        _ arguments: [String: JSONValue],
+        for definition: MCPToolDefinition
+    ) throws {
+        guard let schema = definition.inputSchema.objectValue else { return }
+        let properties = schema["properties"]?.objectValue ?? [:]
+
+        if schema["additionalProperties"]?.boolValue == false {
+            for key in arguments.keys where properties[key] == nil {
+                throw MCPToolError.invalidArguments("\(key) is not a valid argument")
+            }
+        }
+
+        for (key, value) in arguments {
+            guard let propertySchema = properties[key]?.objectValue else { continue }
+            try validateArgument(value, toolName: definition.name, key: key, schema: propertySchema)
+        }
+    }
+
+    private static func validateArgument(
+        _ value: JSONValue,
+        toolName: String,
+        key: String,
+        schema: [String: JSONValue]
+    ) throws {
+        if let type = schema["type"]?.stringValue {
+            try validateArgumentType(value, key: key, type: type)
+        }
+
+        // Keep legacy search clients working: unsupported modes are downgraded
+        // by the search path, while the advertised schema stays keyword-only.
+        if "\(toolName).\(key)" == "search.mode" {
+            return
+        }
+
+        if let allowed = schema["enum"]?.arrayValue, !allowed.contains(value) {
+            let formattedAllowed = allowed.compactMap(\.stringValue).joined(separator: ", ")
+            if formattedAllowed.isEmpty {
+                throw MCPToolError.invalidArguments("\(key) has an unsupported value")
+            }
+            throw MCPToolError.invalidArguments("\(key) must be one of: \(formattedAllowed)")
+        }
+    }
+
+    private static func validateArgumentType(
+        _ value: JSONValue,
+        key: String,
+        type: String
+    ) throws {
+        switch type {
+        case "string":
+            guard value.stringValue != nil else {
+                throw MCPToolError.invalidArguments("\(key) must be a string")
+            }
+        case "number", "integer":
+            switch value {
+            case .int, .double:
+                return
+            default:
+                throw MCPToolError.invalidArguments("\(key) must be a number")
+            }
+        case "boolean":
+            guard value.boolValue != nil else {
+                throw MCPToolError.invalidArguments("\(key) must be a boolean")
+            }
+        case "array":
+            guard value.arrayValue != nil else {
+                throw MCPToolError.invalidArguments("\(key) must be an array")
+            }
+        case "object":
+            guard value.objectValue != nil else {
+                throw MCPToolError.invalidArguments("\(key) must be an object")
+            }
+        default:
+            return
+        }
     }
 }
 

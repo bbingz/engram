@@ -473,6 +473,7 @@ private struct WebSession {
 private func htmlResponse(_ html: String, status: HTTPResponse.Status = .ok) throws -> Response {
     var headers = HTTPFields()
     headers[.contentType] = "text/html; charset=utf-8"
+    headers[.contentSecurityPolicy] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
     let data = Data(html.utf8)
     headers[.contentLength] = "\(data.count)"
     return Response(status: status, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(data: data)))

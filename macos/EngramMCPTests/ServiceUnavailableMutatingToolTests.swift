@@ -138,6 +138,52 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         assertServiceUnavailable(result, tool: "link_sessions", socketPath: socketPath)
     }
 
+    func testToolArgumentsRejectUnknownPropertiesBeforeExecution() throws {
+        let result = try callTool(
+            name: "live_sessions",
+            arguments: [
+                "unexpected": true,
+            ],
+            environment: [:]
+        )
+
+        assertToolError(result, contains: "unexpected is not a valid argument")
+    }
+
+    func testToolArgumentsRejectWrongOptionalTypesBeforeExecution() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let result = try callTool(
+            name: "list_sessions",
+            arguments: [
+                "limit": "many",
+            ],
+            environment: [
+                "ENGRAM_MCP_DB_PATH": temp.appendingPathComponent("missing.sqlite").path,
+            ]
+        )
+
+        assertToolError(result, contains: "limit must be a number")
+    }
+
+    func testToolArgumentsRejectEnumValuesBeforeExecution() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let result = try callTool(
+            name: "stats",
+            arguments: [
+                "group_by": "month",
+            ],
+            environment: [
+                "ENGRAM_MCP_DB_PATH": temp.appendingPathComponent("missing.sqlite").path,
+            ]
+        )
+
+        assertToolError(result, contains: "group_by must be one of: source, project, day, week")
+    }
+
     func testExportFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -307,6 +353,18 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
             file: file,
             line: line
         )
+    }
+
+    private func assertToolError(
+        _ result: [String: Any],
+        contains expectedMessage: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(result["isError"] as? Bool, true, file: file, line: line)
+        let content = result["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String
+        XCTAssertTrue(text?.contains(expectedMessage) == true, text ?? "(missing tool error text)", file: file, line: line)
     }
 
     private func executableURL() -> URL {

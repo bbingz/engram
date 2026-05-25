@@ -6,13 +6,23 @@ struct SearchPageView: View {
     @Environment(EngramServiceClient.self) var serviceClient
 
     @State private var query = ""
-    @State private var selectedMode: SearchMode = .hybrid
+    @State private var selectedMode: SearchMode = .keyword
     @State private var results: [SearchResult] = []
     @State private var searchModes: [String] = []
     @State private var warning: String? = nil
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var embeddingStatus: EmbeddingStatus? = nil
+
+    private var availableModes: [SearchMode] {
+        SearchMode.availableModes(embeddingAvailable: embeddingStatus?.available ?? false)
+    }
+
+    private var emptySearchMessage: String {
+        embeddingStatus?.available == true
+            ? "Search sessions by keyword, semantic meaning, or both"
+            : "Search sessions by keyword"
+    }
 
     var body: some View {
         ScrollView {
@@ -24,7 +34,7 @@ struct SearchPageView: View {
                         .textFieldStyle(.plain)
                         .onSubmit { triggerSearch() }
                     if !query.isEmpty {
-                        Button(action: { query = ""; results = []; searchModes = [] }) {
+                        Button(action: { query = ""; results = []; searchModes = []; warning = nil }) {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.tertiaryText)
                         }.buttonStyle(.plain)
                     }
@@ -36,21 +46,23 @@ struct SearchPageView: View {
 
                 // Mode selector + embedding status
                 HStack(spacing: 12) {
-                    ForEach(SearchMode.allCases, id: \.self) { mode in
-                        Button(action: { selectedMode = mode; triggerSearch() }) {
-                            Text(mode.rawValue.capitalized)
-                                .font(.caption)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(selectedMode == mode
-                                    ? Theme.accent.opacity(0.25)
-                                    : Theme.surface)
-                                .foregroundStyle(selectedMode == mode
-                                    ? Theme.sidebarSelectedText
-                                    : Theme.secondaryText)
-                                .clipShape(Capsule())
+                    if availableModes.count > 1 {
+                        ForEach(availableModes, id: \.self) { mode in
+                            Button(action: { selectedMode = mode; triggerSearch() }) {
+                                Text(mode.rawValue.capitalized)
+                                    .font(.caption)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(selectedMode == mode
+                                        ? Theme.accent.opacity(0.25)
+                                        : Theme.surface)
+                                    .foregroundStyle(selectedMode == mode
+                                        ? Theme.sidebarSelectedText
+                                        : Theme.secondaryText)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                     Spacer()
                     if let status = embeddingStatus, status.available {
@@ -94,7 +106,7 @@ struct SearchPageView: View {
                     EmptyState(icon: "magnifyingglass", title: "No results", message: "Try a different search term or mode")
                         .accessibilityIdentifier("search_emptyState")
                 } else if results.isEmpty && query.isEmpty {
-                    EmptyState(icon: "magnifyingglass", title: "Search sessions", message: "Hybrid search combines keyword (FTS) and semantic (embeddings)")
+                    EmptyState(icon: "magnifyingglass", title: "Search sessions", message: emptySearchMessage)
                         .accessibilityIdentifier("search_emptyState")
                 } else {
                     Text("\(results.count) results")
@@ -148,6 +160,9 @@ struct SearchPageView: View {
 
     private func performSearch() async {
         guard query.count >= 2 else { results = []; return }
+        if !availableModes.contains(selectedMode) {
+            selectedMode = availableModes.first ?? .keyword
+        }
         isSearching = true
         defer { isSearching = false }
 
@@ -186,8 +201,14 @@ struct SearchPageView: View {
                 totalSessions: resp.totalSessions,
                 progress: resp.progress
             )
+            if !availableModes.contains(selectedMode) {
+                selectedMode = availableModes.first ?? .keyword
+            }
         } catch {
             embeddingStatus = nil
+            if selectedMode != .keyword {
+                selectedMode = .keyword
+            }
         }
     }
 

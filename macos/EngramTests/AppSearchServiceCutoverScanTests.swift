@@ -71,6 +71,27 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         }
     }
 
+    func testSearchPageDoesNotAdvertiseUnavailableSemanticModes() throws {
+        let searchPage = try source("macos/Engram/Views/Pages/SearchPageView.swift")
+
+        XCTAssertTrue(
+            searchPage.contains("SearchMode.availableModes"),
+            "SearchPageView should use the shared embedding-aware mode gate"
+        )
+        XCTAssertTrue(
+            searchPage.contains("selectedMode: SearchMode = .keyword"),
+            "SearchPageView should default to keyword while sqlite-vec embeddings are unavailable"
+        )
+        XCTAssertFalse(
+            searchPage.contains("ForEach(SearchMode.allCases"),
+            "SearchPageView must not offer semantic/hybrid modes unless embeddings are available"
+        )
+        XCTAssertFalse(
+            searchPage.contains("Hybrid search combines keyword"),
+            "SearchPageView empty state must not claim semantic search works before sqlite-vec is wired"
+        )
+    }
+
     func testReadOnlyAppPagesDoNotCallDaemonHttpDirectly() throws {
         let expectations: [(path: String, forbidden: [String])] = [
             (
