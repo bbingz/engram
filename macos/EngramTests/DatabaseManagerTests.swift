@@ -50,13 +50,22 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testReadInBackgroundThrowsWhenNotOpen() throws {
+    func testReadInBackgroundLazilyOpensExistingDatabase() throws {
+        let lazyDb = DatabaseManager(path: dbPath)
+
+        let count = try lazyDb.readInBackground { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions")
+        }
+
+        XCTAssertEqual(count, 0)
+    }
+
+    @MainActor
+    func testReadInBackgroundThrowsForMissingDatabase() throws {
         let closedDb = DatabaseManager(path: "/tmp/nonexistent-\(UUID().uuidString).sqlite")
         XCTAssertThrowsError(try closedDb.readInBackground { db in
             try String.fetchAll(db, sql: "SELECT 1")
-        }) { error in
-            XCTAssertTrue(error is Engram.DatabaseError)
-        }
+        })
     }
 
     // MARK: - Favorites
@@ -381,6 +390,55 @@ final class DatabaseManagerTests: XCTestCase {
 
         let results = try db.search(query: "search terms")
         XCTAssertEqual(results.map(\.id), ["s-visible"])
+    }
+
+    @MainActor
+    func testSearchAppliesProjectSourceAndSinceFilters() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "match",
+            source: "codex",
+            project: "engram",
+            startTime: "2026-05-20T10:00:00Z",
+            endTime: nil
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "wrong-project",
+            source: "codex",
+            project: "other",
+            startTime: "2026-05-20T10:00:00Z",
+            endTime: nil
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "wrong-source",
+            source: "claude-code",
+            project: "engram",
+            startTime: "2026-05-20T10:00:00Z",
+            endTime: nil
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "too-old",
+            source: "codex",
+            project: "engram",
+            startTime: "2026-04-20T10:00:00Z",
+            endTime: nil
+        )
+        for id in ["match", "wrong-project", "wrong-source", "too-old"] {
+            try insertFTSContent(at: dbPath, sessionId: id, content: "filterable search terms")
+        }
+
+        let results = try db.search(
+            query: "search terms",
+            limit: 10,
+            sources: Set(["codex"]),
+            projects: Set(["engram"]),
+            since: "2026-05-01T00:00:00Z"
+        )
+
+        XCTAssertEqual(results.map(\.id), ["match"])
     }
 
     @MainActor

@@ -88,9 +88,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "generateSummary":
                 let payload = try decodePayload(EngramServiceGenerateSummaryRequest.self, from: request)
-                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
-                    try Self.generateSummary(payload, writer: writer)
-                }
+                let result = try await Self.generateSummary(payload, writerGate: writerGate)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -191,9 +189,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(Self.triggerSync(payload))
                 )
             case "regenerateAllTitles":
-                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
-                    try Self.regenerateAllTitles(writer: writer)
-                }
+                let result = try await Self.regenerateAllTitles(writerGate: writerGate)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -709,30 +705,27 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
     private static func generateSummary(
         _ request: EngramServiceGenerateSummaryRequest,
-        writer: EngramDatabaseWriter
-    ) throws -> EngramServiceGenerateSummaryResponse {
-        try writer.write { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time
-                    FROM sessions
-                    WHERE id = ?
-                """,
-                arguments: [request.sessionId]
-            ) else {
-                throw EngramServiceError.invalidRequest(message: "Session not found: \(request.sessionId)")
+        writerGate: ServiceWriterGate
+    ) async throws -> ServiceWriterGateResult<EngramServiceGenerateSummaryResponse> {
+        let context = try readAIContext(sessionId: request.sessionId, databasePath: writerGate.databasePath)
+        let settings = ServiceAISettings.read()
+        let summary: String
+        if let config = settings.summaryConfig {
+            summary = try await ServiceAIClient.summarize(context: context, config: config)
+        } else {
+            summary = context.nativeSummary
+        }
+        return try await writerGate.performWriteCommand(name: "generateSummary") { writer in
+            try writer.write { db in
+                try db.execute(
+                    sql: "UPDATE sessions SET summary = ?, summary_message_count = ? WHERE id = ?",
+                    arguments: [
+                        summary,
+                        context.messageCount,
+                        request.sessionId
+                    ]
+                )
             }
-
-            let summary = nativeSummary(row)
-            try db.execute(
-                sql: "UPDATE sessions SET summary = ?, summary_message_count = ? WHERE id = ?",
-                arguments: [
-                    summary,
-                    row["message_count"] as Int? ?? 0,
-                    request.sessionId
-                ]
-            )
             return EngramServiceGenerateSummaryResponse(summary: summary)
         }
     }
@@ -921,24 +914,38 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     private static func regenerateAllTitles(
-        writer: EngramDatabaseWriter
-    ) throws -> EngramServiceRegenerateTitlesResponse {
-        try writer.write { db in
-            let rows = try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT id, custom_name, summary, project, cwd, start_time
-                    FROM sessions
-                    WHERE generated_title IS NULL OR TRIM(generated_title) = ''
-                """
-            )
-            for row in rows {
-                try db.execute(
-                    sql: "UPDATE sessions SET generated_title = ? WHERE id = ?",
-                    arguments: [nativeTitle(row), row["id"] as String? ?? ""]
-                )
+        writerGate: ServiceWriterGate
+    ) async throws -> ServiceWriterGateResult<EngramServiceRegenerateTitlesResponse> {
+        let contexts = try readTitleContexts(databasePath: writerGate.databasePath)
+        let settings = ServiceAISettings.read()
+        let titleConfig = settings.titleConfig
+        ServiceLogger.notice(
+            "regenerateAllTitles started total=\(contexts.count) mode=\(titleConfig == nil ? "native" : "ai")",
+            category: .ai
+        )
+        var generated: [(id: String, title: String)] = []
+        generated.reserveCapacity(contexts.count)
+        for context in contexts {
+            let title: String
+            if let config = titleConfig {
+                title = try await ServiceAIClient.title(context: context, config: config)
+            } else {
+                title = context.nativeTitle
             }
-            return EngramServiceRegenerateTitlesResponse(status: "completed", total: rows.count, message: nil)
+            generated.append((id: context.id, title: title))
+        }
+        let generatedTitles = generated
+        return try await writerGate.performWriteCommand(name: "regenerateAllTitles") { writer in
+            try writer.write { db in
+                for item in generatedTitles {
+                    try db.execute(
+                        sql: "UPDATE sessions SET generated_title = ? WHERE id = ?",
+                        arguments: [item.title, item.id]
+                    )
+                }
+            }
+            ServiceLogger.notice("regenerateAllTitles completed total=\(generatedTitles.count)", category: .ai)
+            return EngramServiceRegenerateTitlesResponse(status: "completed", total: generatedTitles.count, message: nil)
         }
     }
 
@@ -1438,6 +1445,80 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return lines.joined(separator: "\n")
     }
 
+    struct AIContext: Sendable {
+        let id: String
+        let source: String
+        let project: String
+        let cwd: String
+        let messageCount: Int
+        let startTime: String
+        let nativeTitle: String
+        let nativeSummary: String
+        let transcript: String
+    }
+
+    private static func readAIContext(sessionId: String, databasePath: String) throws -> AIContext {
+        let pool = try readOnlyPool(path: databasePath)
+        return try pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time
+                    FROM sessions
+                    WHERE id = ?
+                """,
+                arguments: [sessionId]
+            ) else {
+                throw EngramServiceError.invalidRequest(message: "Session not found: \(sessionId)")
+            }
+            return try aiContext(from: row, db: db)
+        }
+    }
+
+    private static func readTitleContexts(databasePath: String) throws -> [AIContext] {
+        let pool = try readOnlyPool(path: databasePath)
+        return try pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time
+                    FROM sessions
+                    WHERE generated_title IS NULL OR TRIM(generated_title) = ''
+                    ORDER BY start_time DESC
+                """
+            )
+            return try rows.map { try aiContext(from: $0, db: db) }
+        }
+    }
+
+    private static func readOnlyPool(path: String) throws -> DatabasePool {
+        var configuration = Configuration()
+        configuration.readonly = true
+        return try DatabasePool(path: path, configuration: configuration)
+    }
+
+    private static func aiContext(from row: Row, db: Database) throws -> AIContext {
+        let id = row["id"] as String? ?? ""
+        let transcript = (try? String.fetchOne(
+            db,
+            sql: "SELECT content FROM sessions_fts WHERE session_id = ? LIMIT 1",
+            arguments: [id]
+        )) ?? ""
+        let cwd = row["cwd"] as String? ?? ""
+        let project = row["project"] as String? ?? URL(fileURLWithPath: cwd).lastPathComponent
+        return AIContext(
+            id: id,
+            source: row["source"] as String? ?? "unknown",
+            project: project,
+            cwd: cwd,
+            messageCount: row["message_count"] as Int? ?? 0,
+            startTime: row["start_time"] as String? ?? "unknown time",
+            nativeTitle: nativeTitle(row),
+            nativeSummary: nativeSummary(row),
+            transcript: transcript
+        )
+    }
+
     private static func nativeSummary(_ row: Row) -> String {
         let title = nativeTitle(row)
         let project = row["project"] as String? ?? URL(fileURLWithPath: row["cwd"] as String? ?? "").lastPathComponent
@@ -1558,6 +1639,295 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
             }
             return queue
+        }
+    }
+
+    struct ServiceAISettings: Sendable {
+        struct ChatConfig: Sendable {
+            let provider: String
+            let baseURL: String
+            let apiKey: String
+            let model: String
+            let maxTokens: Int
+            let temperature: Double
+        }
+
+        let summaryConfig: ChatConfig?
+        let titleConfig: ChatConfig?
+
+        static func read(
+            settingsPath: URL = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".engram/settings.json"),
+            environment: [String: String] = ProcessInfo.processInfo.environment
+        ) -> ServiceAISettings {
+            guard let data = try? Data(contentsOf: settingsPath),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                return ServiceAISettings(summaryConfig: nil, titleConfig: nil)
+            }
+            return ServiceAISettings(
+                summaryConfig: summaryConfig(from: object, environment: environment),
+                titleConfig: titleConfig(from: object, environment: environment)
+            )
+        }
+
+        private static func summaryConfig(
+            from object: [String: Any],
+            environment: [String: String]
+        ) -> ChatConfig? {
+            let provider = string(object["aiProtocol"]) ?? "openai"
+            guard provider == "openai" else { return nil }
+            guard let apiKey = apiKey(from: object["aiApiKey"], envName: "ENGRAM_KEYCHAIN_aiApiKey", environment: environment) else {
+                return nil
+            }
+            let baseURL = string(object["aiBaseURL"]) ?? "https://api.openai.com"
+            return ChatConfig(
+                provider: provider,
+                baseURL: baseURL,
+                apiKey: apiKey,
+                model: normalizeOpenAICompatibleModel(string(object["aiModel"]) ?? "gpt-4o-mini", baseURL: baseURL),
+                maxTokens: int(object["summaryMaxTokens"]) ?? maxTokens(for: string(object["summaryPreset"])),
+                temperature: double(object["summaryTemperature"]) ?? temperature(for: string(object["summaryPreset"]))
+            )
+        }
+
+        private static func titleConfig(
+            from object: [String: Any],
+            environment: [String: String]
+        ) -> ChatConfig? {
+            let provider = string(object["titleProvider"]) ?? "ollama"
+            guard provider != "ollama" else { return nil }
+            guard let apiKey = apiKey(from: object["titleApiKey"], envName: "ENGRAM_KEYCHAIN_titleApiKey", environment: environment) else {
+                return nil
+            }
+            let baseURL = string(object["titleBaseUrl"]) ?? string(object["titleBaseURL"]) ?? "https://api.openai.com"
+            return ChatConfig(
+                provider: provider,
+                baseURL: baseURL,
+                apiKey: apiKey,
+                model: normalizeOpenAICompatibleModel(string(object["titleModel"]) ?? "gpt-4o-mini", baseURL: baseURL),
+                maxTokens: 120,
+                temperature: 0.3
+            )
+        }
+
+        private static func apiKey(from value: Any?, envName: String, environment: [String: String]) -> String? {
+            if let key = string(value), !key.isEmpty, key != "@keychain" { return key }
+            if let key = environment[envName], !key.isEmpty { return key }
+            return nil
+        }
+
+        private static func normalizeOpenAICompatibleModel(_ model: String, baseURL: String) -> String {
+            guard baseURL.range(of: #"xiaomimimo\.com|mimo-v2\.com"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+                return model.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.range(of: #"^mimo-\d"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                return trimmed.replacingOccurrences(
+                    of: #"^mimo-"#,
+                    with: "mimo-v",
+                    options: [.regularExpression, .caseInsensitive]
+                )
+            }
+            return trimmed
+        }
+
+        private static func string(_ value: Any?) -> String? {
+            guard let value = value as? String else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        private static func int(_ value: Any?) -> Int? {
+            if let value = value as? Int { return value }
+            if let value = value as? Double { return Int(value) }
+            return nil
+        }
+
+        private static func double(_ value: Any?) -> Double? {
+            if let value = value as? Double { return value }
+            if let value = value as? Int { return Double(value) }
+            return nil
+        }
+
+        private static func maxTokens(for preset: String?) -> Int {
+            switch preset {
+            case "concise": return 100
+            case "detailed": return 400
+            default: return 200
+            }
+        }
+
+        private static func temperature(for preset: String?) -> Double {
+            switch preset {
+            case "concise": return 0.2
+            case "detailed": return 0.4
+            default: return 0.3
+            }
+        }
+    }
+
+    enum ServiceAIClient {
+        static func summarize(context: AIContext, config: ServiceAISettings.ChatConfig) async throws -> String {
+            let source = boundedTranscript(context)
+            let system = "请用中文简要总结这段 AI 编程会话，最多三句话。聚焦用户目标、处理过程和当前结果。"
+            let user = "会话元数据：source=\(context.source), project=\(context.project), messages=\(context.messageCount)\n\n会话内容：\n\(source)"
+            return try await chat(purpose: "summary", sessionID: context.id, config: config, messages: [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user]
+            ])
+        }
+
+        static func title(context: AIContext, config: ServiceAISettings.ChatConfig) async throws -> String {
+            let source = boundedTranscript(context, limit: 4_000)
+            let prompt = """
+            Generate a concise title (30 characters or fewer) for this AI coding conversation.
+            Match the conversation language. Return only the title, no quotes, no prefix.
+
+            Metadata: source=\(context.source), project=\(context.project)
+            Conversation:
+            \(source)
+            """
+            let raw = try await chat(purpose: "title", sessionID: context.id, config: config, messages: [["role": "user", "content": prompt]])
+            return cleanTitle(raw)
+        }
+
+        static func chat(
+            purpose: String,
+            sessionID: String,
+            config: ServiceAISettings.ChatConfig,
+            messages: [[String: String]]
+        ) async throws -> String {
+            let url = try chatCompletionsURL(baseURL: config.baseURL)
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 45
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+            var body: [String: Any] = [
+                "model": config.model,
+                "messages": messages,
+                "temperature": config.temperature
+            ]
+            if usesMiMoAPI(baseURL: config.baseURL) {
+                body["max_completion_tokens"] = config.maxTokens
+                body["thinking"] = ["type": "disabled"]
+            } else {
+                body["max_tokens"] = config.maxTokens
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+            ServiceLogger.notice(
+                "LLM request started purpose=\(purpose) session=\(sessionID) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) maxTokens=\(config.maxTokens) temperature=\(config.temperature)",
+                category: .ai
+            )
+            let started = Date()
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch {
+                ServiceLogger.error(
+                    "LLM request failed purpose=\(purpose) session=\(sessionID) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL))",
+                    category: .ai,
+                    error: error
+                )
+                throw error
+            }
+            let durationMs = Int(Date().timeIntervalSince(started) * 1000)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                ServiceLogger.error(
+                    "LLM request failed purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs)",
+                    category: .ai
+                )
+                throw EngramServiceError.commandFailed(
+                    name: "AIRequestFailed",
+                    message: "AI request failed (\(status)): \(String(body.prefix(300)))",
+                    retryPolicy: status == 429 || status >= 500 ? "safe" : "never",
+                    details: [
+                        "status": .number(Double(status)),
+                        "provider": .string(config.provider),
+                        "model": .string(config.model),
+                        "url": .string(redactedHost(config.baseURL))
+                    ]
+                )
+            }
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = object["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let content = message["content"] as? String
+            else {
+                ServiceLogger.error(
+                    "LLM request failed purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs) reason=invalid-response",
+                    category: .ai
+                )
+                throw EngramServiceError.commandFailed(
+                    name: "AIResponseInvalid",
+                    message: "AI response did not contain choices[0].message.content",
+                    retryPolicy: "safe",
+                    details: ["provider": .string(config.provider), "model": .string(config.model)]
+                )
+            }
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                ServiceLogger.error(
+                    "LLM request failed purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs) reason=empty-content",
+                    category: .ai
+                )
+                throw EngramServiceError.commandFailed(
+                    name: "AIResponseEmpty",
+                    message: "AI response content was empty",
+                    retryPolicy: "safe",
+                    details: ["provider": .string(config.provider), "model": .string(config.model)]
+                )
+            }
+            ServiceLogger.notice(
+                "LLM request succeeded purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs) outputChars=\(trimmed.count)",
+                category: .ai
+            )
+            return trimmed
+        }
+
+        static func chatCompletionsURL(baseURL: String) throws -> URL {
+            let base = baseURL.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+            let value = base.hasSuffix("/v1") ? "\(base)/chat/completions" : "\(base)/v1/chat/completions"
+            guard let url = URL(string: value) else {
+                throw EngramServiceError.invalidRequest(message: "Invalid AI base URL")
+            }
+            return url
+        }
+
+        private static func usesMiMoAPI(baseURL: String) -> Bool {
+            baseURL.range(
+                of: #"xiaomimimo\.com|mimo-v2\.com"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+        }
+
+        static func redactedHost(_ url: String) -> String {
+            guard let parsed = URL(string: url), let host = parsed.host else { return "<invalid-url>" }
+            return "\(parsed.scheme ?? "https")://\(host)\(parsed.path)"
+        }
+
+        private static func boundedTranscript(_ context: AIContext, limit: Int = 12_000) -> String {
+            let text = context.transcript.isEmpty ? context.nativeSummary : context.transcript
+            if text.count <= limit { return text }
+            let head = text.prefix(limit / 2)
+            let tail = text.suffix(limit / 2)
+            return "\(head)\n\n...[truncated]...\n\n\(tail)"
+        }
+
+        private static func cleanTitle(_ raw: String) -> String {
+            var title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            for prefix in ["Title:", "title:", "标题:", "标题："] where title.hasPrefix(prefix) {
+                title = String(title.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            title = title.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’「」"))
+            if title.count > 30 {
+                title = String(title.prefix(30))
+            }
+            return title
         }
     }
 }

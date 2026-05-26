@@ -444,16 +444,26 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 // Escape LIKE wildcards so a literal "%"/"_" in the query is
                 // matched verbatim instead of acting as a wildcard.
                 let pattern = "%\(escapeLikePattern(query))%"
-                let rows = try Row.fetchAll(db, sql: """
+                var parts = ["""
                     SELECT s.*, f.content AS snippet
                     FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
                     WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
                       AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                """]
+                var args: [DatabaseValueConvertible] = [pattern]
+                appendSearchFilters(for: request, to: &parts, args: &args)
+                parts.append("""
                     GROUP BY s.id
                     ORDER BY s.start_time DESC
                     LIMIT ?
-                """, arguments: [pattern, limit])
+                """)
+                args.append(limit)
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: parts.joined(separator: " "),
+                    arguments: StatementArguments(args)
+                )
                 return EngramServiceSearchResponse(
                     items: rows.map { item(from: $0) },
                     searchModes: ["keyword"],
@@ -465,16 +475,26 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: warning)
             }
 
-            let rows = try Row.fetchAll(db, sql: """
+            var parts = ["""
                 SELECT s.*, f.content AS snippet
                 FROM sessions_fts f
                 JOIN sessions s ON s.id = f.session_id
                 WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+            """]
+            var args: [DatabaseValueConvertible] = [query]
+            appendSearchFilters(for: request, to: &parts, args: &args)
+            parts.append("""
                 GROUP BY s.id
                 ORDER BY rank
                 LIMIT ?
-            """, arguments: [query, limit])
+            """)
+            args.append(limit)
+            let rows = try Row.fetchAll(
+                db,
+                sql: parts.joined(separator: " "),
+                arguments: StatementArguments(args)
+            )
             return EngramServiceSearchResponse(
                 items: rows.map { item(from: $0) },
                 searchModes: ["keyword"],
@@ -692,6 +712,25 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             arguments: [table]
         ) ?? 0
         return count > 0
+    }
+
+    private func appendSearchFilters(
+        for request: EngramServiceSearchRequest,
+        to parts: inout [String],
+        args: inout [DatabaseValueConvertible]
+    ) {
+        if let source = request.source?.trimmingCharacters(in: .whitespacesAndNewlines), !source.isEmpty {
+            parts.append("AND s.source = ?")
+            args.append(source)
+        }
+        if let project = request.project?.trimmingCharacters(in: .whitespacesAndNewlines), !project.isEmpty {
+            parts.append("AND s.project = ?")
+            args.append(project)
+        }
+        if let since = request.since?.trimmingCharacters(in: .whitespacesAndNewlines), !since.isEmpty {
+            parts.append("AND COALESCE(s.end_time, s.start_time) >= ?")
+            args.append(since)
+        }
     }
 
     private func containsCJK(_ text: String) -> Bool {

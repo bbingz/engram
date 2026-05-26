@@ -226,6 +226,32 @@ describe('summarizeConversation audit', () => {
     expect(entry.url).toContain('/v1/chat/completions');
   });
 
+  it('openai: accepts a base URL that already includes /v1', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: 'Summary text' } }],
+      }),
+    });
+    globalThis.fetch = fetchMock;
+
+    await summarizeConversation(messages, {
+      aiProtocol: 'openai',
+      aiApiKey: 'test-key',
+      aiModel: 'mimo-2.5-pro',
+      aiBaseURL: 'https://token-plan-sgp.xiaomimimo.com/v1',
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://token-plan-sgp.xiaomimimo.com/v1/chat/completions',
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).model).toBe(
+      'mimo-v2.5-pro',
+    );
+  });
+
   it('anthropic: records audit with usage.input_tokens/output_tokens', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,

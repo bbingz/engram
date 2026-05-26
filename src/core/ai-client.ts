@@ -2,7 +2,12 @@
 
 import type { AiAuditWriter } from './ai-audit.js';
 import type { AiProtocol, FileSettings } from './config.js';
-import { getBaseURL, resolveSummaryConfig } from './config.js';
+import {
+  getBaseURL,
+  joinApiUrl,
+  normalizeOpenAICompatibleModel,
+  resolveSummaryConfig,
+} from './config.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -115,9 +120,11 @@ export async function summarizeConversation(
   const start = Date.now();
   const protocol = settings.aiProtocol || 'openai';
   const apiKey = settings.aiApiKey || '';
-  const model = settings.aiModel || 'gpt-4o-mini';
-
   const baseURL = getBaseURL(settings);
+  const model = normalizeOpenAICompatibleModel(
+    settings.aiModel || 'gpt-4o-mini',
+    baseURL,
+  );
   if (!baseURL) {
     throw new Error(`No base URL configured for protocol: ${protocol}`);
   }
@@ -140,13 +147,16 @@ export async function summarizeConversation(
   let url: string;
   switch (protocol) {
     case 'openai':
-      url = `${baseURL}/v1/chat/completions`;
+      url = joinApiUrl(baseURL, '/v1/chat/completions');
       break;
     case 'anthropic':
-      url = `${baseURL}/v1/messages`;
+      url = joinApiUrl(baseURL, '/v1/messages');
       break;
     case 'gemini':
-      url = `${baseURL}/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      url = joinApiUrl(
+        baseURL,
+        `/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      );
       break;
     default:
       throw new Error(`Unsupported protocol: ${protocol as string}`);

@@ -321,4 +321,31 @@ describe('settings file permissions', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('reads legacy Swift titleBaseURL setting as titleBaseUrl', () => {
+    const home = mkdtempSync(join(tmpdir(), 'engram-config-'));
+    vi.stubEnv('HOME', home);
+    try {
+      const dir = join(home, '.engram');
+      const file = join(dir, 'settings.json');
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        file,
+        JSON.stringify({
+          titleProvider: 'custom',
+          titleBaseURL: 'https://token-plan-sgp.xiaomimimo.com',
+          titleModel: 'mimo-2.5-pro',
+        }),
+        { mode: 0o600 },
+      );
+
+      const settings = readFileSettings();
+
+      expect(settings.titleBaseUrl).toBe(
+        'https://token-plan-sgp.xiaomimimo.com',
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

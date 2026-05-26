@@ -143,6 +143,8 @@ export interface FileSettings {
   // ── Title generation ─────────────────────────────────────────────
   titleProvider?: 'ollama' | 'openai' | 'dashscope' | 'custom';
   titleBaseUrl?: string;
+  /** @deprecated Swift UI wrote this spelling before the daemon normalized it. */
+  titleBaseURL?: string;
   titleModel?: string;
   titleApiKey?: string;
   titleAutoGenerate?: boolean;
@@ -286,6 +288,26 @@ export function getBaseURL(settings: FileSettings): string | undefined {
   return undefined;
 }
 
+export function joinApiUrl(baseURL: string, path: string): string {
+  const base = baseURL.replace(/\/+$/, '');
+  const suffix = path.startsWith('/') ? path : `/${path}`;
+  if (base.endsWith('/v1') && suffix.startsWith('/v1/')) {
+    return `${base}${suffix.slice('/v1'.length)}`;
+  }
+  return `${base}${suffix}`;
+}
+
+export function normalizeOpenAICompatibleModel(
+  model: string,
+  baseURL?: string,
+): string {
+  const trimmed = model.trim();
+  if (!/xiaomimimo\.com|mimo-v2\.com/i.test(baseURL ?? '')) {
+    return trimmed;
+  }
+  return trimmed.replace(/^mimo-(\d)/i, 'mimo-v$1');
+}
+
 // ── Read / write ─────────────────────────────────────────────────────
 
 export function readFileSettings(): FileSettings {
@@ -295,6 +317,9 @@ export function readFileSettings(): FileSettings {
     const content = readFileSync(file, 'utf-8');
     const parsed = JSON.parse(content) as FileSettings;
     const migrated = migrateSettings(parsed);
+    if (migrated.titleBaseUrl === undefined && migrated.titleBaseURL) {
+      migrated.titleBaseUrl = migrated.titleBaseURL;
+    }
     // Persist migration if settings changed (one-time write-back)
     if (migrated !== parsed) {
       try {

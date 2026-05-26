@@ -1,6 +1,7 @@
 // src/core/title-generator.ts
 
 import type { AiAuditWriter } from './ai-audit.js';
+import { joinApiUrl, normalizeOpenAICompatibleModel } from './config.js';
 
 interface TitleGeneratorConfig {
   provider: 'ollama' | 'openai' | 'dashscope' | 'custom';
@@ -35,13 +36,16 @@ export class TitleGenerator {
   private async callLLM(prompt: string): Promise<string> {
     const isOllama = this.config.provider === 'ollama';
     const url = isOllama
-      ? `${this.config.baseUrl}/api/generate`
-      : `${this.config.baseUrl}/v1/chat/completions`;
+      ? joinApiUrl(this.config.baseUrl, '/api/generate')
+      : joinApiUrl(this.config.baseUrl, '/v1/chat/completions');
 
     const body = isOllama
       ? { model: this.config.model, prompt, stream: false }
       : {
-          model: this.config.model,
+          model: normalizeOpenAICompatibleModel(
+            this.config.model,
+            this.config.baseUrl,
+          ),
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 50,
           temperature: 0.3,

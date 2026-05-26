@@ -298,6 +298,25 @@ struct EngramServiceSearchRequest: Codable, Equatable, Sendable {
     let query: String
     let mode: String
     let limit: Int
+    let project: String?
+    let source: String?
+    let since: String?
+
+    init(
+        query: String,
+        mode: String,
+        limit: Int,
+        project: String? = nil,
+        source: String? = nil,
+        since: String? = nil
+    ) {
+        self.query = query
+        self.mode = mode
+        self.limit = limit
+        self.project = project
+        self.source = source
+        self.since = since
+    }
 }
 
 struct EngramServiceSearchResponse: Codable, Equatable, Sendable {

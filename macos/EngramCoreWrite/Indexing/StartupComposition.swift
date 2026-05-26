@@ -126,6 +126,10 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
         try writer.write { db in try StartupBackfills.backfillSuggestedParents(db) }
     }
 
+    public func enqueueStaleFtsJobs() throws -> Int {
+        try writer.write { db in try StartupBackfills.enqueueStaleFtsJobs(db) }
+    }
+
     public func cleanupStaleMigrations() throws -> Int {
         try writer.write { db in try StartupBackfills.cleanupStaleMigrations(db) }
     }

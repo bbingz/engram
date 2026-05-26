@@ -135,6 +135,37 @@ describe('TitleGenerator audit', () => {
     expect(call.url).toContain('/v1/chat/completions');
   });
 
+  it('custom/openai-compatible providers accept a base URL that already includes /v1', async () => {
+    const audit = makeAudit();
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          choices: [{ message: { content: 'Mimo Title' } }],
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const gen = new TitleGenerator({
+      provider: 'custom',
+      baseUrl: 'https://token-plan-sgp.xiaomimimo.com/v1',
+      model: 'mimo-2.5-pro',
+      apiKey: 'test-key',
+      autoGenerate: true,
+      audit,
+    });
+    const title = await gen.generate(messages);
+
+    expect(title).toBe('Mimo Title');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://token-plan-sgp.xiaomimimo.com/v1/chat/completions',
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).model).toBe(
+      'mimo-v2.5-pro',
+    );
+  });
+
   it('records audit with error on fetch failure', async () => {
     const audit = makeAudit();
     vi.stubGlobal(

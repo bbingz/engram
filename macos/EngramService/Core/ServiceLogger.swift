@@ -8,6 +8,7 @@ public enum ServiceLogCategory: String, CaseIterable {
     case checkpoint
     case writer
     case reader
+    case ai
 }
 
 public enum ServiceLogger {

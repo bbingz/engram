@@ -278,16 +278,26 @@ struct AISettingsSection: View {
                             let url = titleBaseURL.isEmpty ? "http://localhost:11434" : titleBaseURL
                             let testURL = titleProvider == "ollama"
                                 ? "\(url)/api/tags"
-                                : "\(url)/v1/models"
+                                : appendAPIPath("/v1/chat/completions", to: url)
                             Task {
                                 do {
                                     var req = URLRequest(url: URL(string: testURL)!)
+                                    if titleProvider != "ollama" {
+                                        req.httpMethod = "POST"
+                                        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                                        req.httpBody = try JSONSerialization.data(withJSONObject: [
+                                            "model": normalizeOpenAICompatibleModel(titleModel, baseURL: url),
+                                            "messages": [["role": "user", "content": "Return exactly: ok"]],
+                                            "max_tokens": 8,
+                                            "temperature": 0
+                                        ])
+                                    }
                                     if !titleApiKey.isEmpty {
                                         req.setValue("Bearer \(titleApiKey)", forHTTPHeaderField: "Authorization")
                                     }
                                     let (_, resp) = try await URLSession.shared.data(for: req)
                                     let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                                    titleTestStatus = code == 200 ? .connected : .http(code)
+                                    titleTestStatus = code == 200 ? .connected : (code == 429 ? .quotaExhausted : .http(code))
                                 } catch {
                                     titleTestStatus = .failed(error.localizedDescription)
                                 }
@@ -356,7 +366,7 @@ struct AISettingsSection: View {
         mutateEngramSettings { settings in
             settings["aiProtocol"] = aiProtocol
             if !aiBaseURL.isEmpty { settings["aiBaseURL"] = aiBaseURL } else { settings.removeValue(forKey: "aiBaseURL") }
-            settings["aiModel"] = aiModel
+            settings["aiModel"] = normalizeOpenAICompatibleModel(aiModel, baseURL: aiBaseURL)
 
             settings["summaryLanguage"] = summaryLanguage
             settings["summaryMaxSentences"] = summaryMaxSentences
@@ -404,8 +414,14 @@ struct AISettingsSection: View {
         }
         mutateEngramSettings { settings in
             settings["titleProvider"] = titleProvider
-            if !titleBaseURL.isEmpty { settings["titleBaseURL"] = titleBaseURL } else { settings.removeValue(forKey: "titleBaseURL") }
-            settings["titleModel"] = titleModel
+            if !titleBaseURL.isEmpty {
+                settings["titleBaseUrl"] = titleBaseURL
+                settings.removeValue(forKey: "titleBaseURL")
+            } else {
+                settings.removeValue(forKey: "titleBaseUrl")
+                settings.removeValue(forKey: "titleBaseURL")
+            }
+            settings["titleModel"] = normalizeOpenAICompatibleModel(titleModel, baseURL: titleBaseURL)
             // titleApiKey handled above via Keychain
             settings["titleAutoGenerate"] = titleAutoGenerate
         }
@@ -418,7 +434,7 @@ struct AISettingsSection: View {
         if let v = settings["aiBaseURL"] as? String { aiBaseURL = v }
         aiApiKey = KeychainHelper.get("aiApiKey")
             ?? { let v = settings["aiApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
-        if let v = settings["aiModel"] as? String { aiModel = v }
+        if let v = settings["aiModel"] as? String { aiModel = normalizeOpenAICompatibleModel(v, baseURL: aiBaseURL) }
 
         if let v = settings["summaryLanguage"] as? String { summaryLanguage = v }
         if let v = settings["summaryMaxSentences"] as? Int { summaryMaxSentences = v }
@@ -439,11 +455,35 @@ struct AISettingsSection: View {
         if let v = settings["autoSummaryRefreshThreshold"] as? Int { autoSummaryRefreshThreshold = v }
 
         if let v = settings["titleProvider"] as? String { titleProvider = v }
-        if let v = settings["titleBaseURL"] as? String { titleBaseURL = v }
-        if let v = settings["titleModel"] as? String { titleModel = v }
+        if let v = settings["titleBaseUrl"] as? String { titleBaseURL = v }
+        else if let v = settings["titleBaseURL"] as? String { titleBaseURL = v }
+        if let v = settings["titleModel"] as? String { titleModel = normalizeOpenAICompatibleModel(v, baseURL: titleBaseURL) }
         titleApiKey = KeychainHelper.get("titleApiKey")
             ?? { let v = settings["titleApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
         if let v = settings["titleAutoGenerate"] as? Bool { titleAutoGenerate = v }
+    }
+
+    private func appendAPIPath(_ path: String, to baseURL: String) -> String {
+        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if base.hasSuffix("/v1"), path.hasPrefix("/v1/") {
+            return base + String(path.dropFirst(3))
+        }
+        return base + path
+    }
+
+    private func normalizeOpenAICompatibleModel(_ model: String, baseURL: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard baseURL.range(of: #"xiaomimimo\.com|mimo-v2\.com"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+            return trimmed
+        }
+        if trimmed.range(of: #"^mimo-\d"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return trimmed.replacingOccurrences(
+                of: #"^mimo-"#,
+                with: "mimo-v",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        return trimmed
     }
 }
 
@@ -451,6 +491,7 @@ enum TitleConnectionStatus: Equatable {
     case idle
     case testing
     case connected
+    case quotaExhausted
     case http(Int)
     case failed(String)
 
@@ -462,6 +503,8 @@ enum TitleConnectionStatus: Equatable {
             return "Testing…"
         case .connected:
             return "Connected"
+        case .quotaExhausted:
+            return "Quota exhausted"
         case .http(let code):
             return "HTTP \(code)"
         case .failed(let message):

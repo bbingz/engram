@@ -63,6 +63,12 @@ struct ProjectsView: View {
                         Spacer()
                     }
                     SectionHeader(icon: "folder", title: selected.project)
+                    SearchPageView(
+                        projectFilter: selected.project,
+                        locksProject: true,
+                        embeddedInParentScroll: true,
+                        contentPadding: 0
+                    )
                     ForEach(selected.sessions) { session in
                         SessionCard(session: session) {
                             NotificationCenter.default.post(name: .openSession, object: SessionBox(session))

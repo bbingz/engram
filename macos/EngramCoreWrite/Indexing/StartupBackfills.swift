@@ -86,6 +86,7 @@ public protocol StartupBackfillDatabase: AnyObject {
     func backfillCodexOriginator() throws -> Int
     func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult
+    func enqueueStaleFtsJobs() throws -> Int
     func cleanupStaleMigrations() throws -> Int
 }
 
@@ -283,6 +284,15 @@ public enum StartupBackfills {
         }
 
         do {
+            let staleFtsJobs = try database.enqueueStaleFtsJobs()
+            if staleFtsJobs > 0 {
+                emit(StartupBackfillEvent(event: "backfill", payload: ["type": .string("stale_fts_jobs"), "count": .int(staleFtsJobs)]))
+            }
+        } catch {
+            log.warn("stale fts job enqueue failed", error: error)
+        }
+
+        do {
             let jobSummary = try await indexJobRunner.runRecoverableJobs()
             if jobSummary.completed > 0 || jobSummary.notApplicable > 0 {
                 emit(
@@ -439,6 +449,42 @@ public enum StartupBackfills {
                 finished_at = datetime('now')
             WHERE state IN ('fs_pending', 'fs_done')
               AND started_at <= datetime('now', '-86400 seconds')
+            """
+        )
+    }
+
+    public static func enqueueStaleFtsJobs(_ db: Database) throws -> Int {
+        try db.executeAndCountChanges(
+            sql: """
+            INSERT INTO session_index_jobs (
+                id, session_id, job_kind, target_sync_version, status,
+                retry_count, last_error, created_at, updated_at
+            )
+            SELECT
+                s.id || ':' || s.sync_version || ':' || s.snapshot_hash || ':fts',
+                s.id,
+                'fts',
+                s.sync_version,
+                'pending',
+                0,
+                NULL,
+                datetime('now'),
+                datetime('now')
+            FROM sessions s
+            WHERE COALESCE(s.tier, 'normal') != 'skip'
+              AND COALESCE(s.snapshot_hash, '') != ''
+              AND EXISTS (
+                SELECT 1
+                FROM session_index_jobs old
+                WHERE old.session_id = s.id
+                  AND old.job_kind = 'fts'
+                  AND old.status = 'completed'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM session_index_jobs current
+                WHERE current.id = s.id || ':' || s.sync_version || ':' || s.snapshot_hash || ':fts'
+              )
             """
         )
     }

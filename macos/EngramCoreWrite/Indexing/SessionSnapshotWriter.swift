@@ -437,10 +437,10 @@ public final class SessionSnapshotWriter {
     }
 
     private func searchText(_ snapshot: AuthoritativeSessionSnapshot) -> String {
-        [snapshot.summary ?? "", snapshot.project ?? "", snapshot.model ?? ""].joined(separator: "\n")
+        [snapshot.snapshotHash, snapshot.summary ?? "", snapshot.project ?? "", snapshot.model ?? ""].joined(separator: "\n")
     }
 
     private func embeddingText(_ snapshot: AuthoritativeSessionSnapshot) -> String {
-        [snapshot.summary ?? "", "\(snapshot.messageCount)"].joined(separator: "\n")
+        [snapshot.snapshotHash, snapshot.summary ?? "", "\(snapshot.messageCount)"].joined(separator: "\n")
     }
 }

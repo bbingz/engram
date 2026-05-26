@@ -5,6 +5,53 @@ import Foundation
 @testable import EngramServiceCore
 
 final class EngramServiceIPCTests: XCTestCase {
+    func testAIChatURLDoesNotDoubleV1Path() throws {
+        let url = try EngramServiceCommandHandler.ServiceAIClient.chatCompletionsURL(
+            baseURL: "https://token-plan-sgp.xiaomimimo.com/v1"
+        )
+        XCTAssertEqual(url.absoluteString, "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions")
+    }
+
+    func testServiceAISettingsReadsLegacySwiftTitleBaseURLAndKeychainEnv() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-settings-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try """
+        {
+          "titleProvider": "custom",
+          "titleBaseURL": "https://token-plan-sgp.xiaomimimo.com",
+          "titleApiKey": "@keychain",
+          "titleModel": "mimo-2.5-pro"
+        }
+        """.data(using: .utf8)!.write(to: settingsURL)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            environment: ["ENGRAM_KEYCHAIN_titleApiKey": "secret"]
+        )
+
+        XCTAssertEqual(settings.titleConfig?.baseURL, "https://token-plan-sgp.xiaomimimo.com")
+        XCTAssertEqual(settings.titleConfig?.apiKey, "secret")
+        XCTAssertEqual(settings.titleConfig?.model, "mimo-v2.5-pro")
+        XCTAssertEqual(settings.titleConfig?.maxTokens, 120)
+    }
+
+    func testServiceAIClientLogsLLMRequestLifecycle() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
+
+        XCTAssertTrue(source.contains("LLM request started purpose="))
+        XCTAssertTrue(source.contains("LLM request succeeded purpose="))
+        XCTAssertTrue(source.contains("LLM request failed purpose="))
+        XCTAssertTrue(source.contains("durationMs="))
+        XCTAssertTrue(source.contains("status="))
+        XCTAssertTrue(source.contains("reason=empty-content"))
+        XCTAssertTrue(source.contains("\"max_completion_tokens\""))
+        XCTAssertTrue(source.contains("\"thinking\""))
+        XCTAssertTrue(source.contains("ServiceLogger.notice("))
+    }
+
     func testRunnerStartupScanUsesRecentActiveAdapters() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
 
@@ -336,6 +383,43 @@ final class EngramServiceIPCTests: XCTestCase {
         let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
 
         let search = try await provider.search(EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10))
+
+        XCTAssertEqual(search.items.map(\.id), ["s1"])
+    }
+
+    func testSQLiteReadProviderSearchAppliesProjectSourceAndSinceFilters() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at
+                ) VALUES
+                  ('wrong-project', 'codex', '2026-05-20T10:00:00Z', '/tmp/other', 'other', 'gpt-5.4', 2, 1, 1, '/tmp/wrong-project.jsonl', 46, '2026-05-20T10:00:00Z'),
+                  ('wrong-source', 'claude-code', '2026-05-20T10:00:00Z', '/tmp/engram', 'engram', 'sonnet', 2, 1, 1, '/tmp/wrong-source.jsonl', 47, '2026-05-20T10:00:00Z'),
+                  ('too-old', 'codex', '2026-04-20T10:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/too-old.jsonl', 48, '2026-04-20T10:00:00Z');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('wrong-project', 'hello from swift service');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('wrong-source', 'hello from swift service');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('too-old', 'hello from swift service');
+                """
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(
+                query: "hello",
+                mode: "keyword",
+                limit: 10,
+                project: "engram",
+                source: "codex",
+                since: "2026-04-22T00:00:00Z"
+            )
+        )
 
         XCTAssertEqual(search.items.map(\.id), ["s1"])
     }

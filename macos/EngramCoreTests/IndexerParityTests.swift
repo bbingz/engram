@@ -620,6 +620,31 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testSnapshotHashChangeWithSameSummaryStillEnqueuesFtsJob() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "same-summary", snapshotHash: "h1"))
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'same-summary'")
+
+            let result = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "same-summary",
+                    snapshotHash: "h2",
+                    sizeBytes: 256
+                )
+            )
+
+            XCTAssertEqual(result.changeSet.flags, [.syncPayloadChanged, .searchTextChanged, .embeddingTextChanged])
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT job_kind FROM session_index_jobs WHERE session_id = 'same-summary' AND status = 'pending' ORDER BY job_kind"
+                ),
+                ["embedding", "fts"]
+            )
+        }
+    }
+
     func testDowngradingSessionToSkipDeletesStaleSearchArtifacts() throws {
         try writer.write { db in
             let snapshotWriter = SessionSnapshotWriter(db: db)

@@ -366,7 +366,8 @@ final class StartupBackfillTests: XCTestCase {
                 "backfillSuggestedParents",
                 "cleanupStaleMigrations",
                 "countSessions",
-                "countTodayParentSessions"
+                "countTodayParentSessions",
+                "enqueueStaleFtsJobs"
             ]
         )
         XCTAssertEqual(
@@ -422,6 +423,7 @@ final class StartupBackfillTests: XCTestCase {
                         "skipped": .int(22)
                     ]
                 ),
+                StartupBackfillEvent(event: "backfill", payload: ["type": .string("stale_fts_jobs"), "count": .int(29)]),
                 StartupBackfillEvent(
                     event: "index_jobs_recovered",
                     payload: ["completed": .int(23), "notApplicable": .int(24)]
@@ -590,6 +592,35 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'stale'"), "failed")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'fresh'"), "fs_done")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'done'"), "committed")
+        }
+    }
+
+    func testEnqueueStaleFtsJobsAddsPendingJobForCurrentSnapshotHash() throws {
+        try writer.write { db in
+            try insertSession(db, id: "stale", source: "codex", tier: "normal")
+            try insertSession(db, id: "fresh", source: "codex", tier: "normal")
+            try insertSession(db, id: "skip", source: "codex", tier: "skip")
+            try db.execute(sql: "UPDATE sessions SET sync_version = 1, snapshot_hash = 'current' WHERE id IN ('stale', 'fresh', 'skip')")
+            try db.execute(
+                sql: """
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES
+                  ('stale:1:old:fts', 'stale', 'fts', 1, 'completed'),
+                  ('fresh:1:current:fts', 'fresh', 'fts', 1, 'completed'),
+                  ('skip:1:old:fts', 'skip', 'fts', 1, 'completed')
+                """
+            )
+
+            let enqueued = try StartupBackfills.enqueueStaleFtsJobs(db)
+
+            XCTAssertEqual(enqueued, 1)
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT id FROM session_index_jobs WHERE status = 'pending' ORDER BY id"
+                ),
+                ["stale:1:current:fts"]
+            )
         }
     }
 
@@ -845,6 +876,11 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult {
         callOrder.append("backfillSuggestedParents")
         return StartupBackfills.SuggestedParentResult(checked: 13, suggested: 14)
+    }
+
+    func enqueueStaleFtsJobs() throws -> Int {
+        callOrder.append("enqueueStaleFtsJobs")
+        return 29
     }
 
     func cleanupStaleMigrations() throws -> Int {

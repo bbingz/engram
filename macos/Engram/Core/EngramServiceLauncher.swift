@@ -74,6 +74,13 @@ final class EngramServiceLauncher {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: configuration.executablePath)
         proc.arguments = Self.arguments(for: configuration)
+        var environment = ProcessInfo.processInfo.environment
+        for key in ["aiApiKey", "titleApiKey"] {
+            if let value = KeychainHelper.get(key), !value.isEmpty {
+                environment["ENGRAM_KEYCHAIN_\(key)"] = value
+            }
+        }
+        proc.environment = environment
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         proc.standardOutput = stdoutPipe

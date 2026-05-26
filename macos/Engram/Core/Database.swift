@@ -53,14 +53,14 @@ struct SessionListStats {
 final class DatabaseManager {
     @ObservationIgnored private let dbPath: String
     @ObservationIgnored nonisolated(unsafe) private var pool: DatabasePool?
+    @ObservationIgnored private let poolLock = NSLock()
 
     /// File path to the SQLite database (nonisolated for background FileManager access)
     nonisolated var path: String { dbPath }
 
     // Thread-safe read accessor — GRDB DatabasePool.read is internally thread-safe.
-    // pool is set once in open() and never mutated again, so nonisolated access is safe.
     nonisolated func readInBackground<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
-        guard let pool = pool else { throw DatabaseError.notOpen }
+        let pool = try currentPool()
         return try pool.read(block)
     }
 
@@ -70,9 +70,30 @@ final class DatabaseManager {
     }
 
     func open() throws {
+        poolLock.lock()
+        defer { poolLock.unlock() }
+        guard pool == nil else { return }
+        pool = try Self.openReadOnlyPool(at: dbPath)
+    }
+
+    nonisolated private func currentPool() throws -> DatabasePool {
+        if let pool {
+            return pool
+        }
+        poolLock.lock()
+        defer { poolLock.unlock() }
+        if let pool {
+            return pool
+        }
+        let opened = try Self.openReadOnlyPool(at: dbPath)
+        pool = opened
+        return opened
+    }
+
+    nonisolated private static func openReadOnlyPool(at path: String) throws -> DatabasePool {
         var configuration = Configuration()
         configuration.readonly = true
-        pool = try DatabasePool(path: dbPath, configuration: configuration)
+        return try DatabasePool(path: path, configuration: configuration)
     }
 
     // MARK: - list_sessions
@@ -334,7 +355,36 @@ final class DatabaseManager {
         return count > 0
     }
 
-    nonisolated func search(query: String, limit: Int = 10) throws -> [Session] {
+    nonisolated private static func appendSearchFilters(
+        to parts: inout [String],
+        args: inout [DatabaseValueConvertible],
+        sources: Set<String>,
+        projects: Set<String>,
+        since: String?
+    ) {
+        if !sources.isEmpty {
+            let ph = sources.map { _ in "?" }.joined(separator: ", ")
+            parts.append("AND s.source IN (\(ph))")
+            sources.forEach { args.append($0) }
+        }
+        if !projects.isEmpty {
+            let ph = projects.map { _ in "?" }.joined(separator: ", ")
+            parts.append("AND s.project IN (\(ph))")
+            projects.forEach { args.append($0) }
+        }
+        if let since {
+            parts.append("AND COALESCE(s.end_time, s.start_time) >= ?")
+            args.append(since)
+        }
+    }
+
+    nonisolated func search(
+        query: String,
+        limit: Int = 10,
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        since: String? = nil
+    ) throws -> [Session] {
         guard query.count >= 2 else { return [] }
 
         // CJK: use LIKE fallback (trigram MATCH broken for CJK)
@@ -342,36 +392,60 @@ final class DatabaseManager {
             // Escape LIKE wildcards so literal "%"/"_" match verbatim.
             let pattern = "%\(Self.escapeLikePattern(query))%"
             return try readInBackground { db in
-                try Session.fetchAll(db, sql: """
+                var parts = ["""
                     SELECT DISTINCT s.* FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
                     WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
                       AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                """]
+                var args: [DatabaseValueConvertible] = [pattern]
+                Self.appendSearchFilters(
+                    to: &parts,
+                    args: &args,
+                    sources: sources,
+                    projects: projects,
+                    since: since
+                )
+                parts.append("""
                     ORDER BY s.start_time DESC
                     LIMIT ?
-                """, arguments: [pattern, limit])
+                """)
+                args.append(limit)
+                return try Session.fetchAll(db, sql: """
+                    \(parts.joined(separator: " "))
+                """, arguments: StatementArguments(args))
             }
         }
 
         // ASCII/Latin: use fast FTS MATCH
         guard query.count >= 3 else { return [] }
         return try readInBackground { db in
-            let matches = try FtsMatch.fetchAll(db,
-                sql: "SELECT session_id, content FROM sessions_fts WHERE sessions_fts MATCH ? ORDER BY rank LIMIT ?",
-                arguments: [query, limit * 3])
-            var seen = Set<String>()
-            var results: [Session] = []
-            for match in matches {
-                guard !seen.contains(match.sessionId) else { continue }
-                seen.insert(match.sessionId)
-                if let s = try Session.fetchOne(db,
-                    sql: "SELECT * FROM sessions WHERE id = ? AND hidden_at IS NULL AND (tier IS NULL OR tier NOT IN ('skip', 'lite'))",
-                    arguments: [match.sessionId]) {
-                    results.append(s)
-                    if results.count >= limit { break }
-                }
-            }
-            return results
+            var parts = ["""
+                SELECT s.*
+                FROM sessions_fts f
+                JOIN sessions s ON s.id = f.session_id
+                WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+            """]
+            var args: [DatabaseValueConvertible] = [query]
+            Self.appendSearchFilters(
+                to: &parts,
+                args: &args,
+                sources: sources,
+                projects: projects,
+                since: since
+            )
+            parts.append("""
+                GROUP BY s.id
+                ORDER BY rank
+                LIMIT ?
+            """)
+            args.append(limit)
+            return try Session.fetchAll(
+                db,
+                sql: parts.joined(separator: " "),
+                arguments: StatementArguments(args)
+            )
         }
     }
 
@@ -1128,7 +1202,7 @@ final class DatabaseManager {
         onError: @escaping @Sendable (Error) -> Void,
         onChange: @escaping @Sendable (LogQueryResult) -> Void
     ) throws -> AnyDatabaseCancellable {
-        guard let pool else { throw DatabaseError.notOpen }
+        let pool = try currentPool()
 
         let observation = ValueObservation.tracking { db -> LogQueryResult in
             // Fetch available modules
