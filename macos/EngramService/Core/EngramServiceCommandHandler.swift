@@ -928,7 +928,19 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         for context in contexts {
             let title: String
             if let config = titleConfig {
-                title = try await ServiceAIClient.title(context: context, config: config)
+                // Resilient: a single AI failure (rate limit, timeout) must not
+                // discard every other title. Skip the failed session; it stays
+                // untitled and is retried on the next run.
+                do {
+                    title = try await ServiceAIClient.title(context: context, config: config)
+                } catch {
+                    ServiceLogger.error(
+                        "regenerateAllTitles skipped session=\(context.id)",
+                        category: .ai,
+                        error: error
+                    )
+                    continue
+                }
             } else {
                 title = context.nativeTitle
             }
@@ -1457,7 +1469,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         let transcript: String
     }
 
-    private static func readAIContext(sessionId: String, databasePath: String) throws -> AIContext {
+    static func readAIContext(sessionId: String, databasePath: String) throws -> AIContext {
         let pool = try readOnlyPool(path: databasePath)
         return try pool.read { db in
             guard let row = try Row.fetchOne(
@@ -1475,7 +1487,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
     }
 
-    private static func readTitleContexts(databasePath: String) throws -> [AIContext] {
+    static func readTitleContexts(databasePath: String) throws -> [AIContext] {
         let pool = try readOnlyPool(path: databasePath)
         return try pool.read { db in
             let rows = try Row.fetchAll(
@@ -1483,7 +1495,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 sql: """
                     SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time
                     FROM sessions
-                    WHERE generated_title IS NULL OR TRIM(generated_title) = ''
+                    WHERE (generated_title IS NULL OR TRIM(generated_title) = '')
+                      AND COALESCE(tier, 'normal') != 'skip'
                     ORDER BY start_time DESC
                 """
             )
@@ -1497,13 +1510,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return try DatabasePool(path: path, configuration: configuration)
     }
 
-    private static func aiContext(from row: Row, db: Database) throws -> AIContext {
+    static func aiContext(from row: Row, db: Database) throws -> AIContext {
         let id = row["id"] as String? ?? ""
-        let transcript = (try? String.fetchOne(
+        // FTS stores one row per message; aggregate them in order so the AI
+        // sees the whole conversation, not just the first message.
+        let transcript = ((try? String.fetchAll(
             db,
-            sql: "SELECT content FROM sessions_fts WHERE session_id = ? LIMIT 1",
+            sql: "SELECT content FROM sessions_fts WHERE session_id = ? ORDER BY rowid",
             arguments: [id]
-        )) ?? ""
+        )) ?? []).joined(separator: "\n")
         let cwd = row["cwd"] as String? ?? ""
         let project = row["project"] as String? ?? URL(fileURLWithPath: cwd).lastPathComponent
         return AIContext(
@@ -1650,6 +1665,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             let model: String
             let maxTokens: Int
             let temperature: Double
+            // Summary-only tuning (ignored by the title path).
+            var summaryLanguage: String = "中文"
+            var summaryMaxSentences: Int = 3
+            var summaryStyle: String = ""
+            var summaryPrompt: String = ""
         }
 
         let summaryConfig: ChatConfig?
@@ -1687,7 +1707,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 apiKey: apiKey,
                 model: normalizeOpenAICompatibleModel(string(object["aiModel"]) ?? "gpt-4o-mini", baseURL: baseURL),
                 maxTokens: int(object["summaryMaxTokens"]) ?? maxTokens(for: string(object["summaryPreset"])),
-                temperature: double(object["summaryTemperature"]) ?? temperature(for: string(object["summaryPreset"]))
+                temperature: double(object["summaryTemperature"]) ?? temperature(for: string(object["summaryPreset"])),
+                summaryLanguage: string(object["summaryLanguage"]) ?? "中文",
+                summaryMaxSentences: int(object["summaryMaxSentences"]) ?? 3,
+                summaryStyle: string(object["summaryStyle"]) ?? "",
+                summaryPrompt: string(object["summaryPrompt"]) ?? ""
             )
         }
 
@@ -1768,9 +1792,42 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     enum ServiceAIClient {
+        static let defaultSummaryTemplate = """
+        请用不超过 {{maxSentences}} 句话，以 {{language}} 总结以下 AI 编程对话的核心内容。
+        总结应包括：1) 主要讨论的问题或任务 2) 达成的结论、解决方案或关键成果
+        {{style}}
+        保持简洁。
+        """
+
+        /// Mirrors `renderPromptTemplate` in src/core/ai-client.ts so the Swift
+        /// service honors the same summaryLanguage / summaryMaxSentences /
+        /// summaryStyle / summaryPrompt settings as the TypeScript reference.
+        static func renderSummaryPrompt(
+            language: String,
+            maxSentences: Int,
+            style: String,
+            template: String
+        ) -> String {
+            let base = template.isEmpty ? defaultSummaryTemplate : template
+            let styleLine = style.isEmpty ? "" : "风格要求：\(style)"
+            let rendered = base
+                .replacingOccurrences(of: "{{language}}", with: language)
+                .replacingOccurrences(of: "{{maxSentences}}", with: String(maxSentences))
+                .replacingOccurrences(of: "{{style}}", with: styleLine)
+            return rendered
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .joined(separator: "\n")
+        }
+
         static func summarize(context: AIContext, config: ServiceAISettings.ChatConfig) async throws -> String {
             let source = boundedTranscript(context)
-            let system = "请用中文简要总结这段 AI 编程会话，最多三句话。聚焦用户目标、处理过程和当前结果。"
+            let system = renderSummaryPrompt(
+                language: config.summaryLanguage,
+                maxSentences: config.summaryMaxSentences,
+                style: config.summaryStyle,
+                template: config.summaryPrompt
+            )
             let user = "会话元数据：source=\(context.source), project=\(context.project), messages=\(context.messageCount)\n\n会话内容：\n\(source)"
             return try await chat(purpose: "summary", sessionID: context.id, config: config, messages: [
                 ["role": "system", "content": system],

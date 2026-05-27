@@ -77,9 +77,8 @@ final class DatabaseManager {
     }
 
     nonisolated private func currentPool() throws -> DatabasePool {
-        if let pool {
-            return pool
-        }
+        // Always read `pool` under the lock: it is `nonisolated(unsafe)`, so a
+        // lock-free fast-path read would race with the write below.
         poolLock.lock()
         defer { poolLock.unlock() }
         if let pool {

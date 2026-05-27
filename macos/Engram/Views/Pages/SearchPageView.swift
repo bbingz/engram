@@ -71,10 +71,6 @@ struct SearchPageView: View {
             : "Search sessions by keyword"
     }
 
-    private var hasActiveFilters: Bool {
-        selectedProjectFilter != nil || selectedSourceFilter != nil || selectedTimeFilter != .all
-    }
-
     private var hasClearableFilters: Bool {
         selectedSourceFilter != nil || selectedTimeFilter != .all || (lockedProject == nil && selectedProjectFilter != nil)
     }

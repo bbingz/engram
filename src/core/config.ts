@@ -291,8 +291,13 @@ export function getBaseURL(settings: FileSettings): string | undefined {
 export function joinApiUrl(baseURL: string, path: string): string {
   const base = baseURL.replace(/\/+$/, '');
   const suffix = path.startsWith('/') ? path : `/${path}`;
-  if (base.endsWith('/v1') && suffix.startsWith('/v1/')) {
-    return `${base}${suffix.slice('/v1'.length)}`;
+  // Collapse a duplicated leading path segment so a base that already includes
+  // the version segment doesn't double it: base ".../v1" + "/v1/messages" →
+  // ".../v1/messages", base ".../v1beta" + "/v1beta/models/..." → ".../v1beta/...".
+  const baseSegment = base.match(/\/([^/]+)$/)?.[1];
+  const suffixSegment = suffix.match(/^\/([^/]+)/)?.[1];
+  if (baseSegment && suffixSegment && baseSegment === suffixSegment) {
+    return `${base}${suffix.slice(suffixSegment.length + 1)}`;
   }
   return `${base}${suffix}`;
 }
@@ -317,11 +322,19 @@ export function readFileSettings(): FileSettings {
     const content = readFileSync(file, 'utf-8');
     const parsed = JSON.parse(content) as FileSettings;
     const migrated = migrateSettings(parsed);
-    if (migrated.titleBaseUrl === undefined && migrated.titleBaseURL) {
-      migrated.titleBaseUrl = migrated.titleBaseURL;
+    let changed = migrated !== parsed;
+    // Migrate the legacy Swift `titleBaseURL` spelling to `titleBaseUrl` and
+    // drop the deprecated key. Force a write-back even when migrateSettings
+    // returned the same object reference, otherwise the cleanup never persists.
+    if (migrated.titleBaseURL) {
+      if (migrated.titleBaseUrl === undefined) {
+        migrated.titleBaseUrl = migrated.titleBaseURL;
+      }
+      delete migrated.titleBaseURL;
+      changed = true;
     }
     // Persist migration if settings changed (one-time write-back)
-    if (migrated !== parsed) {
+    if (changed) {
       try {
         writeSettingsFileSecurely(migrated);
       } catch {

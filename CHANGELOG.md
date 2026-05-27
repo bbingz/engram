@@ -7,6 +7,54 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — AI title/summary observability defects, 5-round review (2026-05-27, Claude)
+
+Fixed seven correctness/robustness defects in the "filtered search and AI title
+observability" change (`168b4abc`), each with regression coverage:
+
+- **AI saw only the first message.** `EngramServiceCommandHandler.aiContext`
+  read the transcript with `LIMIT 1`, but `sessions_fts` stores one row per
+  message, so every AI summary/title was generated from just the opening
+  message. Now aggregates all rows `ORDER BY rowid`.
+  Test: `EngramServiceIPCTests.testReadAIContextAggregatesAllFtsRows`.
+- **`regenerateAllTitles` was all-or-nothing + included noise.** A single AI
+  failure (rate limit/timeout) aborted the whole batch and discarded every
+  generated title; it also issued paid AI calls for `skip`-tier sessions.
+  Now per-item failures are caught and skipped, and `readTitleContexts`
+  excludes `tier = 'skip'`.
+  Test: `EngramServiceIPCTests.testReadTitleContextsExcludesSkipTierAndTitledSessions`.
+- **Summary prompt ignored user settings.** The service hardcoded a Chinese
+  3-sentence prompt. Added `ServiceAIClient.renderSummaryPrompt` (mirrors
+  `renderPromptTemplate` in `src/core/ai-client.ts`) honoring
+  `summaryLanguage` / `summaryMaxSentences` / `summaryStyle` / `summaryPrompt`.
+  Tests: `testRenderSummaryPromptHonorsLanguageMaxSentencesAndStyle`,
+  `testServiceAISettingsSummaryConfigCarriesTuning`.
+- **`DatabaseManager.currentPool()` data race.** Removed the lock-free read of
+  the `nonisolated(unsafe)` `pool`; it is now always read under `poolLock`.
+- **Dead code.** Removed unused `SearchPageView.hasActiveFilters`.
+- **TS settings migration not persisted.** `readFileSettings` only wrote back
+  when `migrateSettings` returned a new object, so the legacy Swift
+  `titleBaseURL → titleBaseUrl` rename never reached disk and the deprecated
+  key was never removed. Now forces write-back and deletes `titleBaseURL`.
+  Test: extended `tests/core/config.test.ts` to assert the on-disk result.
+- **`joinApiUrl` doubled the gemini path.** It only collapsed an exact `/v1`
+  segment, so a base ending `/v1beta` produced `/v1beta/v1beta/...`. Generalized
+  to collapse any duplicated leading path segment.
+  Tests: new `joinApiUrl` + `normalizeOpenAICompatibleModel` suites.
+
+Verification: `npx vitest run tests/core/{config,ai-client,title-generator}.test.ts`
+→ 63 pass; `npm run build` (tsc) exit 0; `./node_modules/.bin/biome check .`
+0 errors (note: `npm run lint` exit 1 is an rtk-wrapper artifact, biome itself
+passes); `xcodebuild -scheme Engram build-for-testing` exit 0;
+`xcodebuild -scheme EngramServiceCore test` → 85 pass;
+`-only-testing:EngramTests/DatabaseManagerTests` → 43 pass.
+
+Known residual (intentionally deferred): anthropic/gemini summary protocols
+still fall back to native (service implements OpenAI shape only, pre-PR
+behavior); Keychain API key is injected to the service via env at launch, so
+key rotation needs a service restart; `enqueueStaleFtsJobs` first-run reindex
+is unbounded by design.
+
 ### Fixed — Codex v0.133 MCP startup compatibility (2026-05-25, Codex)
 
 - Fixed Engram MCP startup in current Codex TUI sessions by accepting MCP

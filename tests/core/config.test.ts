@@ -17,6 +17,8 @@ const {
   migrateSettings,
   resolveSummaryConfig,
   getBaseURL,
+  joinApiUrl,
+  normalizeOpenAICompatibleModel,
   readFileSettings,
   writeFileSettings,
 } = await import('../../src/core/config.js');
@@ -344,8 +346,82 @@ describe('settings file permissions', () => {
       expect(settings.titleBaseUrl).toBe(
         'https://token-plan-sgp.xiaomimimo.com',
       );
+
+      // The migration must be persisted to disk and the deprecated key removed,
+      // even though migrateSettings returned the same object (no aiProvider).
+      const onDisk = JSON.parse(readFileSync(file, 'utf-8'));
+      expect(onDisk.titleBaseUrl).toBe('https://token-plan-sgp.xiaomimimo.com');
+      expect(onDisk.titleBaseURL).toBeUndefined();
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+// ── joinApiUrl ───────────────────────────────────────────────────────
+
+describe('joinApiUrl', () => {
+  it('appends the versioned path to a bare base URL', () => {
+    expect(joinApiUrl('https://api.openai.com', '/v1/chat/completions')).toBe(
+      'https://api.openai.com/v1/chat/completions',
+    );
+  });
+
+  it('does not double /v1 when the base already includes it', () => {
+    expect(joinApiUrl('https://host/v1', '/v1/chat/completions')).toBe(
+      'https://host/v1/chat/completions',
+    );
+    expect(joinApiUrl('https://host/v1/', '/v1/chat/completions')).toBe(
+      'https://host/v1/chat/completions',
+    );
+  });
+
+  it('collapses an anthropic /v1 segment', () => {
+    expect(joinApiUrl('https://host/v1', '/v1/messages')).toBe(
+      'https://host/v1/messages',
+    );
+  });
+
+  it('does not double a /v1beta segment for gemini', () => {
+    expect(
+      joinApiUrl(
+        'https://host/v1beta',
+        '/v1beta/models/gemini:generateContent?key=K',
+      ),
+    ).toBe('https://host/v1beta/models/gemini:generateContent?key=K');
+  });
+
+  it('appends the gemini path when the base has no version segment', () => {
+    expect(
+      joinApiUrl('https://host', '/v1beta/models/gemini:generateContent?key=K'),
+    ).toBe('https://host/v1beta/models/gemini:generateContent?key=K');
+  });
+});
+
+// ── normalizeOpenAICompatibleModel ───────────────────────────────────
+
+describe('normalizeOpenAICompatibleModel', () => {
+  it('leaves models untouched for non-mimo base URLs', () => {
+    expect(
+      normalizeOpenAICompatibleModel('mimo-2.5-pro', 'https://api.openai.com'),
+    ).toBe('mimo-2.5-pro');
+  });
+
+  it('rewrites mimo-<digit> to mimo-v<digit> on mimo hosts', () => {
+    expect(
+      normalizeOpenAICompatibleModel(
+        'mimo-2.5-pro',
+        'https://token-plan-sgp.xiaomimimo.com/v1',
+      ),
+    ).toBe('mimo-v2.5-pro');
+  });
+
+  it('is idempotent for already-normalized models', () => {
+    expect(
+      normalizeOpenAICompatibleModel(
+        'mimo-v2.5-pro',
+        'https://token-plan-sgp.xiaomimimo.com',
+      ),
+    ).toBe('mimo-v2.5-pro');
   });
 });

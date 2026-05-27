@@ -1,5 +1,46 @@
 # Engram Local Memory
 
+## 2026-05-27 — AI title/summary observability defect fixes (5-round review)
+
+Durable, non-obvious lessons:
+- The AI title/summary service path added in `168b4abc` had a critical bug:
+  `EngramServiceCommandHandler.aiContext` read the transcript with
+  `SELECT content FROM sessions_fts WHERE session_id = ? LIMIT 1`, but
+  `sessions_fts` stores ONE ROW PER MESSAGE (see
+  `IndexJobRunner.buildSearchContent` → `replaceFtsContent`). So the LLM only
+  saw the first message of every multi-message session. Fixed by aggregating
+  all rows `ORDER BY rowid` and joining with `\n`.
+- Non-obvious and previously misleading: `SessionSnapshotWriter.searchText()` /
+  `embeddingText()` are CHANGE-DETECTION ONLY (compared to set the
+  `.searchTextChanged` / `.embeddingTextChanged` flags). They are NOT written
+  into `sessions_fts.content`. The real FTS content comes from
+  `IndexJobRunner.replaceFtsContent`. So `168b4abc` prepending `snapshotHash`
+  to those strings does not pollute keyword search.
+- `titleProvider` enum is only `ollama|openai|dashscope|custom` (no
+  anthropic/gemini); all non-ollama title providers are OpenAI-compatible, so
+  the service's OpenAI-only `chat()` is correct for titles. By contrast
+  `aiProtocol` (summary) may be anthropic/gemini, but the Swift service only
+  implements the OpenAI chat shape, so those protocols silently fall back to
+  native summaries. That is a known gap, not a regression (pre-PR summary was
+  always native).
+- The service summary now honors `summaryLanguage` / `summaryMaxSentences` /
+  `summaryStyle` / `summaryPrompt` via `ServiceAIClient.renderSummaryPrompt`,
+  which mirrors `renderPromptTemplate` in `src/core/ai-client.ts`. Previously
+  the prompt was hardcoded Chinese + "三句话".
+- Tooling gotchas confirmed this session:
+  - `npm run lint` can exit 1 as an rtk-wrapper artifact (it tries to parse
+    biome output as ESLint JSON and fails). Verify lint with
+    `./node_modules/.bin/biome check .` directly — it reported 0 errors.
+  - `EngramServiceCoreTests` run under the `EngramServiceCore` xcode SCHEME,
+    not a standalone test scheme, and they are NOT in the `Engram` scheme's
+    test plan (`-only-testing:EngramServiceCoreTests/...` under `Engram` fails
+    with "isn't a member of the specified test plan or scheme").
+- Verification this session: `npx vitest run tests/core/config.test.ts
+  tests/core/ai-client.test.ts tests/core/title-generator.test.ts` → 63 pass;
+  `npm run build` (tsc) exit 0; `xcodebuild -scheme Engram build-for-testing`
+  exit 0; `xcodebuild -scheme EngramServiceCore test` → 85 pass (incl. 4 new
+  AI tests); `-only-testing:EngramTests/DatabaseManagerTests` → 43 pass.
+
 ## 2026-05-25 — Codex v0.133 MCP protocol compatibility fix
 
 Durable, non-obvious lessons:

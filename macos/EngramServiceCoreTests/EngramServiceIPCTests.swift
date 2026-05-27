@@ -5,6 +5,105 @@ import Foundation
 @testable import EngramServiceCore
 
 final class EngramServiceIPCTests: XCTestCase {
+    func testReadAIContextAggregatesAllFtsRows() throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes, indexed_at
+                ) VALUES (
+                  'multi', 'codex', '2026-04-23T06:00:00Z', '/tmp/engram', 'engram',
+                  'gpt-5.4', 3, 2, 1, '/tmp/multi.jsonl', 45, '2026-04-23T06:00:00Z'
+                );
+                INSERT INTO sessions_fts(session_id, content) VALUES ('multi', 'first message');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('multi', 'second message');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('multi', 'third message');
+                """
+            )
+        }
+
+        let context = try EngramServiceCommandHandler.readAIContext(
+            sessionId: "multi",
+            databasePath: paths.database.path
+        )
+
+        XCTAssertTrue(context.transcript.contains("first message"))
+        XCTAssertTrue(context.transcript.contains("second message"))
+        XCTAssertTrue(context.transcript.contains("third message"))
+    }
+
+    func testReadTitleContextsExcludesSkipTierAndTitledSessions() throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes, indexed_at, tier
+                ) VALUES (
+                  'skip-untitled', 'codex', '2026-04-23T05:00:00Z', '/tmp/engram', 'engram',
+                  'gpt-5.4', 2, 1, 1, '/tmp/skip.jsonl', 44, '2026-04-23T05:00:00Z', 'skip'
+                );
+                """
+            )
+        }
+
+        let ids = try EngramServiceCommandHandler
+            .readTitleContexts(databasePath: paths.database.path)
+            .map(\.id)
+
+        XCTAssertTrue(ids.contains("s2"), "untitled normal-tier session should be included")
+        XCTAssertFalse(ids.contains("skip-untitled"), "skip-tier session must be excluded")
+        XCTAssertFalse(ids.contains("s1"), "already-titled session must be excluded")
+    }
+
+    func testRenderSummaryPromptHonorsLanguageMaxSentencesAndStyle() throws {
+        let prompt = EngramServiceCommandHandler.ServiceAIClient.renderSummaryPrompt(
+            language: "English",
+            maxSentences: 5,
+            style: "bullet points",
+            template: ""
+        )
+
+        XCTAssertTrue(prompt.contains("English"))
+        XCTAssertTrue(prompt.contains("5"))
+        XCTAssertTrue(prompt.contains("风格要求：bullet points"))
+        XCTAssertFalse(prompt.contains("{{"), "all placeholders must be substituted")
+    }
+
+    func testServiceAISettingsSummaryConfigCarriesTuning() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-summary-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try """
+        {
+          "aiProtocol": "openai",
+          "aiApiKey": "@keychain",
+          "aiModel": "gpt-4o-mini",
+          "summaryLanguage": "English",
+          "summaryMaxSentences": 5,
+          "summaryStyle": "bullet points"
+        }
+        """.data(using: .utf8)!.write(to: settingsURL)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            environment: ["ENGRAM_KEYCHAIN_aiApiKey": "secret"]
+        )
+
+        XCTAssertEqual(settings.summaryConfig?.summaryLanguage, "English")
+        XCTAssertEqual(settings.summaryConfig?.summaryMaxSentences, 5)
+        XCTAssertEqual(settings.summaryConfig?.summaryStyle, "bullet points")
+    }
+
     func testAIChatURLDoesNotDoubleV1Path() throws {
         let url = try EngramServiceCommandHandler.ServiceAIClient.chatCompletionsURL(
             baseURL: "https://token-plan-sgp.xiaomimimo.com/v1"
