@@ -139,7 +139,7 @@ final class UnixSocketTransportTests: XCTestCase {
         defer { server.stop() }
 
         let transport = UnixSocketEngramServiceTransport(socketPath: socketPath)
-        let client = EngramServiceClient(transport: transport)
+        let client = EngramServiceClient(transport: transport, defaultTimeout: 5)
 
         async let first = client.status()
         async let second = client.status()
@@ -223,7 +223,6 @@ private final class UnixSocketFixtureServer: @unchecked Sendable {
     private let socketPath: String
     private let fd: Int32
     private let task: Task<Void, Never>
-    private let decoder = JSONDecoder()
 
     init(
         socketPath: String,
@@ -232,7 +231,6 @@ private final class UnixSocketFixtureServer: @unchecked Sendable {
         self.socketPath = socketPath
         self.fd = try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)
         let fd = self.fd
-        let decoder = self.decoder
         self.task = Task.detached {
             while !Task.isCancelled {
                 let client = accept(fd, nil, nil)
@@ -241,11 +239,9 @@ private final class UnixSocketFixtureServer: @unchecked Sendable {
                     defer { close(client) }
                     do {
                         let data = try UnixSocketEngramServiceTransport.readFrame(from: client)
-                        let request = try decoder.decode(EngramServiceRequestEnvelope.self, from: data)
+                        let request = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: data)
                         try UnixSocketEngramServiceTransport.writeFrame(try handler(request), to: client)
-                    } catch {
-                        close(client)
-                    }
+                    } catch {}
                 }
             }
         }

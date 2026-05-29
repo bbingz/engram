@@ -19,6 +19,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Removed an empty `ReplayState` `nonisolated deinit` that compiled locally on
   Xcode 26.4 but failed GitHub's Xcode 16.4 runner without the experimental
   `IsolatedDeinit` frontend flag.
+- Hardened the CI-sensitive Swift tests uncovered after that fix: `runGit`
+  now treats wall-clock timeout overruns as nil even if the process finishes
+  before a delayed semaphore wake, the timeout regression test no longer uses a
+  0.1s timing cliff, and the Unix socket fixture no longer shares one
+  `JSONDecoder` across concurrent client handlers.
 - Restored test strength from the handoff: release bundle forbidden-artifact
   hygiene remains cross-platform, and the resume API test asserts the
   deterministic Cursor `open` command instead of allowing a broad error shape.
@@ -30,8 +35,10 @@ targeted `EngramCoreTests/FTSRebuildPolicyTests`; full local Swift unit run
 (227 tests, 1 skipped, 0 failures); literal `grep -Fq` success-marker smoke on
 the xcodebuild log. First PR #18 rerun after `90f869dc` passed lint,
 dead-code, fixture-check, and typescript, then exposed the Xcode 16.4
-`nonisolated deinit` compiler error fixed here. Pre-existing untracked
-`docs/full-review-report.md` was not touched.
+`nonisolated deinit` compiler error fixed here. Second rerun after `5f572403`
+passed the same non-Swift checks and progressed to CI-only Swift timing/fixture
+failures fixed here. Pre-existing untracked `docs/full-review-report.md` was
+not touched.
 
 ### Fixed — AI title/summary observability defects, 5-round review (2026-05-27, Claude)
 

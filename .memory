@@ -39,6 +39,13 @@ Durable, non-obvious lessons:
 - GitHub PR #18 rerun after `90f869dc`: lint, dead-code, fixture-check, and
   typescript passed; swift-unit then failed only on the Xcode 16.4
   `nonisolated deinit` compiler error above.
+- GitHub PR #18 rerun after `5f572403`: compile progressed past the deinit
+  issue; lint, dead-code, fixture-check, and typescript passed; swift-unit
+  then exposed two more CI-only timing/fixture problems. `runGit` could return
+  late output if the semaphore wake lagged past a very small timeout, so it now
+  also checks elapsed wall time. `UnixSocketFixtureServer` no longer shares one
+  `JSONDecoder` across concurrent handler tasks, and the concurrent socket
+  test has a bounded client timeout to avoid opaque one-minute XCTest restarts.
 - Pre-existing untracked `docs/full-review-report.md` was left untouched.
 
 ## 2026-05-27 — AI title/summary observability defect fixes (5-round review)
