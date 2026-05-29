@@ -222,7 +222,12 @@ final class UnixSocketTransportTests: XCTestCase {
 private final class UnixSocketFixtureServer: @unchecked Sendable {
     private let socketPath: String
     private let fd: Int32
-    private let task: Task<Void, Never>
+    private let acceptQueue = DispatchQueue(label: "UnixSocketFixtureServer.accept", qos: .userInitiated)
+    private let handlerQueue = DispatchQueue(
+        label: "UnixSocketFixtureServer.handlers",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
 
     init(
         socketPath: String,
@@ -231,11 +236,12 @@ private final class UnixSocketFixtureServer: @unchecked Sendable {
         self.socketPath = socketPath
         self.fd = try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)
         let fd = self.fd
-        self.task = Task.detached {
-            while !Task.isCancelled {
+        let handlerQueue = self.handlerQueue
+        self.acceptQueue.async {
+            while true {
                 let client = accept(fd, nil, nil)
                 if client < 0 { break }
-                Task.detached {
+                handlerQueue.async {
                     defer { close(client) }
                     do {
                         let data = try UnixSocketEngramServiceTransport.readFrame(from: client)
@@ -248,7 +254,6 @@ private final class UnixSocketFixtureServer: @unchecked Sendable {
     }
 
     func stop() {
-        task.cancel()
         close(fd)
         try? FileManager.default.removeItem(atPath: socketPath)
     }

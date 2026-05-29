@@ -43,9 +43,11 @@ Durable, non-obvious lessons:
   issue; lint, dead-code, fixture-check, and typescript passed; swift-unit
   then exposed two more CI-only timing/fixture problems. `runGit` could return
   late output if the semaphore wake lagged past a very small timeout, so it now
-  also checks elapsed wall time. `UnixSocketFixtureServer` no longer shares one
-  `JSONDecoder` across concurrent handler tasks, and the concurrent socket
-  test has a bounded client timeout to avoid opaque one-minute XCTest restarts.
+  also checks elapsed monotonic time and the fake-git test no longer emits late
+  stdout. `UnixSocketFixtureServer` now uses GCD accept/handler queues instead
+  of detached Swift tasks, no longer shares one `JSONDecoder` across concurrent
+  handlers, and the concurrent socket test has a bounded client timeout to
+  avoid opaque XCTest restarts.
 - Pre-existing untracked `docs/full-review-report.md` was left untouched.
 
 ## 2026-05-27 — AI title/summary observability defect fixes (5-round review)

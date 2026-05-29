@@ -20,10 +20,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   Xcode 26.4 but failed GitHub's Xcode 16.4 runner without the experimental
   `IsolatedDeinit` frontend flag.
 - Hardened the CI-sensitive Swift tests uncovered after that fix: `runGit`
-  now treats wall-clock timeout overruns as nil even if the process finishes
+  now treats monotonic timeout overruns as nil even if the process finishes
   before a delayed semaphore wake, the timeout regression test no longer uses a
-  0.1s timing cliff, and the Unix socket fixture no longer shares one
-  `JSONDecoder` across concurrent client handlers.
+  0.1s timing cliff or late stdout, and the Unix socket fixture now uses GCD
+  accept/handler queues without sharing one `JSONDecoder` across concurrent
+  client handlers.
 - Restored test strength from the handoff: release bundle forbidden-artifact
   hygiene remains cross-platform, and the resume API test asserts the
   deterministic Cursor `open` command instead of allowing a broad error shape.

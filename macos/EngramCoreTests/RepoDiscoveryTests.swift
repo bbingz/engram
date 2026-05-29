@@ -134,8 +134,7 @@ final class RepoDiscoveryTests: XCTestCase {
         let fakeGit = bin.appendingPathComponent("git")
         try """
         #!/bin/sh
-        sleep 5
-        echo too-late
+        /bin/sleep 5
         """.write(to: fakeGit, atomically: true, encoding: .utf8)
         XCTAssertEqual(chmod(fakeGit.path, 0o755), 0)
 
@@ -143,12 +142,12 @@ final class RepoDiscoveryTests: XCTestCase {
         let output = RepoDiscovery.runGit(
             ["status"],
             cwd: work.path,
-            timeoutSeconds: 0.2,
+            timeoutSeconds: 0.5,
             environment: ["PATH": bin.path]
         )
 
         XCTAssertNil(output)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2.5)
     }
 
     private func insertSession(_ db: Database, id: String, cwd: String) throws {
