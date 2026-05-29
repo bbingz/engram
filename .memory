@@ -19,6 +19,11 @@ Durable, non-obvious lessons:
   "unable to type-check this expression in reasonable time" on CI. Splitting
   the large tuple into named local values preserved behavior and removed the
   type-check hot spot.
+- A later PR #18 `swift-unit` rerun exposed an Xcode 16.4 compatibility break
+  that local Xcode 26.4 did not catch: empty `nonisolated deinit` in
+  `ReplayState` requires experimental `IsolatedDeinit` on the runner. Removing
+  the empty deinit is the best compatibility fix; do not enable an experimental
+  frontend flag for a no-op destructor.
 - Two test-quality regressions from the handoff were restored:
   `release-verify` forbidden-artifact hygiene stays cross-platform while
   plist/signing assertions remain macOS-only, and the resume API test uses a
@@ -31,6 +36,9 @@ Durable, non-obvious lessons:
   `EngramCoreTests/FTSRebuildPolicyTests`; full local Swift unit run with
   227 tests, 1 skipped, 0 failures; literal `grep -Fq` success-marker smoke
   against `/tmp/engram-swift-unit-final.log`.
+- GitHub PR #18 rerun after `90f869dc`: lint, dead-code, fixture-check, and
+  typescript passed; swift-unit then failed only on the Xcode 16.4
+  `nonisolated deinit` compiler error above.
 - Pre-existing untracked `docs/full-review-report.md` was left untouched.
 
 ## 2026-05-27 — AI title/summary observability defect fixes (5-round review)
