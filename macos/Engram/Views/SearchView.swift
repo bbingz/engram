@@ -29,6 +29,33 @@ struct SearchResult: Identifiable {
     let score: Double
 }
 
+/// Renders an FTS5 search snippet that may contain `<mark>…</mark>` highlight
+/// tags into an `AttributedString`: matched runs are bolded so they stand out
+/// against the secondary-styled snippet body, and the tags are removed. Unlike
+/// the previous `cleanSnippet` regex, other `<…>` text is preserved verbatim —
+/// the FTS snippet only emits `<mark>` markers, so any other angle brackets are
+/// real transcript content, not tags to strip.
+enum SnippetHighlighter {
+    static func attributed(_ snippet: String) -> AttributedString {
+        var result = AttributedString()
+        var rest = Substring(snippet)
+        while let open = rest.range(of: "<mark>") {
+            result.append(AttributedString(String(rest[..<open.lowerBound])))
+            let afterOpen = rest[open.upperBound...]
+            guard let close = afterOpen.range(of: "</mark>") else {
+                result.append(AttributedString(String(afterOpen)))
+                return result
+            }
+            var marked = AttributedString(String(afterOpen[..<close.lowerBound]))
+            marked.inlinePresentationIntent = .stronglyEmphasized
+            result.append(marked)
+            rest = afterOpen[close.upperBound...]
+        }
+        result.append(AttributedString(String(rest)))
+        return result
+    }
+}
+
 struct SearchView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
@@ -142,7 +169,7 @@ struct SearchView: View {
                                 matchBadge(result.matchType)
                             }
                             if !result.snippet.isEmpty {
-                                Text(cleanSnippet(result.snippet))
+                                Text(SnippetHighlighter.attributed(result.snippet))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
@@ -318,9 +345,6 @@ struct SearchView: View {
         }
     }
 
-    func cleanSnippet(_ snippet: String) -> String {
-        snippet.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-    }
 }
 
 extension EngramServiceSearchResponse.Item {

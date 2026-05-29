@@ -217,7 +217,7 @@ struct SearchPageView: View {
                                 if !result.snippet.isEmpty {
                                     HStack(spacing: 6) {
                                         matchBadge(result.matchType)
-                                        Text(cleanSnippet(result.snippet))
+                                        Text(SnippetHighlighter.attributed(result.snippet))
                                             .font(.caption)
                                             .foregroundStyle(Theme.tertiaryText)
                                             .lineLimit(1)
@@ -453,10 +453,6 @@ struct SearchPageView: View {
         case "both", "hybrid": return Theme.green
         default: return .secondary
         }
-    }
-
-    private func cleanSnippet(_ snippet: String) -> String {
-        snippet.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
     }
 
     private func projectLabel(_ project: String) -> String {
