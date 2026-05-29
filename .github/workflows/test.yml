@@ -148,6 +148,10 @@ jobs:
       - run: brew install xcodegen
       - run: cd macos && xcodegen generate
       - run: npm run generate:fixtures
+      - name: Dismiss macOS setup assistant
+        run: |
+          osascript -e 'tell application id "com.apple.SetupAssistant" to quit' || true
+          pkill -x "Setup Assistant" || true
       - name: Run UI smoke tests
         run: |
           xcodebuild test \
@@ -241,6 +245,10 @@ jobs:
       - run: brew install xcodegen
       - run: cd macos && xcodegen generate
       - run: npm run generate:fixtures
+      - name: Dismiss macOS setup assistant
+        run: |
+          osascript -e 'tell application id "com.apple.SetupAssistant" to quit' || true
+          pkill -x "Setup Assistant" || true
       - name: Run full UI test suite
         run: |
           xcodebuild test \

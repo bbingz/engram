@@ -56,6 +56,11 @@ Durable, non-obvious lessons:
   resolution. `scripts/screenshot-compare.ts` now normalizes same-aspect
   screenshots to the smaller image size before pixel/SSIM/hash comparison, and
   still reports `size_mismatch` when aspect ratio differs.
+- GitHub PR #18 rerun after `818cb599`: `ui-test-smoke` progressed past
+  screenshot comparison, but the XCUITest step was canceled at the job timeout
+  after a GitHub-hosted runner `com.apple.SetupAssistant` / `DiagnosticsAndUsage`
+  window intercepted activation. The workflow now quits/kills Setup Assistant
+  immediately before smoke/full UI tests.
 - Pre-existing untracked `docs/full-review-report.md` was left untouched.
 
 ## 2026-05-27 — AI title/summary observability defect fixes (5-round review)

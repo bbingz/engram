@@ -32,6 +32,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   green: same-aspect UI screenshots are now normalized to the smaller
   resolution before pixel/SSIM/hash comparison, while true aspect-ratio
   mismatches still fail as `size_mismatch`.
+- Hardened UI CI against GitHub-hosted macOS Setup Assistant popups by
+  quitting/killing Setup Assistant before smoke/full XCUITest runs.
 
 Verification: no-xcodegen Vitest skip smoke under a restricted PATH; targeted
 Vitest suites for server, release-verify, and Swift boundary scripts; full
@@ -45,8 +47,10 @@ passed the same non-Swift checks and progressed to CI-only Swift timing/fixture
 failures fixed here. The next rerun after `c561d0fb` passed swift-unit and
 typescript, then exposed a UI smoke screenshot comparison size-mismatch gate;
 the UI tests themselves passed and the comparison script now handles runner
-resolution differences. Pre-existing untracked `docs/full-review-report.md`
-was not touched.
+resolution differences. The next rerun after `818cb599` progressed past
+comparison and failed only because `com.apple.SetupAssistant` /
+`DiagnosticsAndUsage` intercepted app activation until the UI job timeout.
+Pre-existing untracked `docs/full-review-report.md` was not touched.
 
 ### Fixed — AI title/summary observability defects, 5-round review (2026-05-27, Claude)
 
