@@ -612,16 +612,17 @@ describe('Hono API server — additional endpoints', () => {
   });
 
   it('POST /api/session/:id/resume returns resume command for existing session', async () => {
-    db.upsertSession(mockSession);
+    db.upsertSession({
+      ...mockSession,
+      source: 'cursor',
+    });
     const res = await app.request('/api/session/session-001/resume', {
       method: 'POST',
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    // Resume command generation needs the session's CLI (e.g. codex) on PATH;
-    // CI may lack it, in which case the handler returns a structured error with
-    // 200 instead of a command. Accept either shape so CI (no CLI) stays green.
-    expect('command' in body || typeof body.error === 'string').toBe(true);
+    expect(body).toHaveProperty('command', 'open');
+    expect(body.args).toContain('Cursor');
   });
 
   it('POST /api/handoff returns 400 when cwd missing', async () => {

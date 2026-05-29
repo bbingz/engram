@@ -100,7 +100,7 @@ jobs:
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee xcodebuild.log
-          grep -q '** TEST SUCCEEDED **' xcodebuild.log
+          grep -Fq '** TEST SUCCEEDED **' xcodebuild.log
 
   fixture-check:
     runs-on: macos-15

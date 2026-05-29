@@ -4,6 +4,16 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
+const hasXcodegen = (() => {
+  try {
+    execFileSync('bash', ['-c', 'command -v xcodegen'], {
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 function runScript(path: string): string {
   return execFileSync('bash', [path], {
@@ -13,7 +23,7 @@ function runScript(path: string): string {
   });
 }
 
-describe('Swift module boundary scripts', () => {
+describe.skipIf(!hasXcodegen)('Swift module boundary scripts', () => {
   it('enforces app, MCP, and CLI cannot depend on EngramCoreWrite', () => {
     const script = resolve(
       repoRoot,

@@ -7,6 +7,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — PR #18 CI/test follow-up after Claude handoff (2026-05-30, Codex)
+
+- Fixed the Linux TypeScript coverage failure by making the Swift boundary
+  script test skip only when `xcodegen` is truly unavailable, while avoiding a
+  login-shell PATH probe that would hide the CI condition.
+- Fixed the macOS Swift CI success-marker check by using literal
+  `grep -Fq '** TEST SUCCEEDED **'` instead of an invalid BSD grep regex.
+- Reduced Swift compiler type-check pressure in
+  `FTSRebuildPolicyTests.readCounts` without changing test behavior.
+- Restored test strength from the handoff: release bundle forbidden-artifact
+  hygiene remains cross-platform, and the resume API test asserts the
+  deterministic Cursor `open` command instead of allowing a broad error shape.
+
+Verification: no-xcodegen Vitest skip smoke under a restricted PATH; targeted
+Vitest suites for server, release-verify, and Swift boundary scripts; full
+`npm run test:coverage` (1424 pass); `npm run typecheck:test`; `npm run lint`;
+targeted `EngramCoreTests/FTSRebuildPolicyTests`; full local Swift unit run
+(227 tests, 1 skipped, 0 failures); literal `grep -Fq` success-marker smoke on
+the xcodebuild log. Pre-existing untracked `docs/full-review-report.md` was not
+touched.
+
 ### Fixed — AI title/summary observability defects, 5-round review (2026-05-27, Claude)
 
 Fixed seven correctness/robustness defects in the "filtered search and AI title

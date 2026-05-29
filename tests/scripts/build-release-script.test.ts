@@ -87,51 +87,56 @@ function runVerify(
   }
 }
 
-// release-verify.sh reads CFBundleVersion via macOS-only plist tooling
-// (PlistBuddy/defaults), which is absent on Linux CI — gate to darwin.
-describe.skipIf(process.platform !== 'darwin')(
-  'macOS release-verify bundle hygiene',
-  () => {
-    beforeEach(() => {
-      workdir = mkdtempSync(join(tmpdir(), 'engram-release-verify-'));
-    });
-    afterEach(() => {
-      rmSync(workdir, { recursive: true, force: true });
-    });
+describe('macOS release-verify bundle hygiene', () => {
+  beforeEach(() => {
+    workdir = mkdtempSync(join(tmpdir(), 'engram-release-verify-'));
+  });
+  afterEach(() => {
+    rmSync(workdir, { recursive: true, force: true });
+  });
 
-    // A hand-built stub .app cannot pass `codesign --verify --deep --strict`
-    // (its nested Helpers are not real Mach-O objects), so we assert that the
-    // identity-independent stages (hygiene, structure, version) all report "ok"
-    // before the script reaches the signature stage. The deep-verify + Hardened
-    // Runtime + Developer ID assertions are validated against a real built bundle
-    // in CI and during manual release runs, not against a stub.
-    it('reports hygiene + structure + version ok for a clean stub bundle', () => {
-      const app = buildStubApp({ bundleVersion: '777' });
-      const { out } = runVerify(app, ['--expected-build', '777']);
-      expect(out).toContain('bundle hygiene clean');
-      expect(out).toContain('structure present');
-      expect(out).toContain('version short=0.1.0 build=777');
-    });
-
-    // Hygiene detection does not require codesign — it is a pure filesystem scan,
-    // so this runs on every platform.
-    for (const forbidden of [
-      'Contents/Resources/node',
-      'Contents/Resources/dist/index.js',
-      'Contents/Resources/node_modules/foo.js',
-      'Contents/Resources/daemon.js',
-      'Contents/Resources/web.js',
-    ]) {
-      it(`fails when forbidden artifact is present: ${forbidden}`, () => {
-        const app = buildStubApp({ forbidden });
-        const { code, out } = runVerify(app, []);
-        expect(code).not.toBe(0);
-        expect(out).toContain('forbidden');
+  // release-verify.sh reads CFBundleVersion via macOS-only PlistBuddy, which
+  // is absent on Linux CI. Keep version/signature assertions macOS-only while
+  // retaining the earlier filesystem-only hygiene checks on every platform.
+  describe.skipIf(process.platform !== 'darwin')(
+    'macOS plist + signing checks',
+    () => {
+      // A hand-built stub .app cannot pass `codesign --verify --deep --strict`
+      // (its nested Helpers are not real Mach-O objects), so we assert that the
+      // identity-independent stages (hygiene, structure, version) all report "ok"
+      // before the script reaches the signature stage. The deep-verify + Hardened
+      // Runtime + Developer ID assertions are validated against a real built bundle
+      // in CI and during manual release runs, not against a stub.
+      it('reports hygiene + structure + version ok for a clean stub bundle', () => {
+        const app = buildStubApp({ bundleVersion: '777' });
+        const { out } = runVerify(app, ['--expected-build', '777']);
+        expect(out).toContain('bundle hygiene clean');
+        expect(out).toContain('structure present');
+        expect(out).toContain('version short=0.1.0 build=777');
       });
-    }
+    },
+  );
 
+  // Hygiene detection happens before plist/codesign checks, so it remains a
+  // useful cross-platform guard even when PlistBuddy is unavailable.
+  for (const forbidden of [
+    'Contents/Resources/node',
+    'Contents/Resources/dist/index.js',
+    'Contents/Resources/node_modules/foo.js',
+    'Contents/Resources/daemon.js',
+    'Contents/Resources/web.js',
+  ]) {
+    it(`fails when forbidden artifact is present: ${forbidden}`, () => {
+      const app = buildStubApp({ forbidden });
+      const { code, out } = runVerify(app, []);
+      expect(code).not.toBe(0);
+      expect(out).toContain('forbidden');
+    });
+  }
+
+  describe.skipIf(process.platform !== 'darwin')('macOS version checks', () => {
     // Version checks run at stage 3, before the signature stage, so they do not
-    // depend on codesign and run on every platform.
+    // depend on codesign.
     it('fails on an empty / unsubstituted version token', () => {
       const app = buildStubApp({ bundleVersion: '$(CURRENT_PROJECT_VERSION)' });
       const { code, out } = runVerify(app, []);
@@ -145,8 +150,8 @@ describe.skipIf(process.platform !== 'darwin')(
       expect(code).not.toBe(0);
       expect(out).toContain("!= expected '200'");
     });
-  },
-);
+  });
+});
 
 describe('macOS release build script: no silent non-notarizable fallback', () => {
   // Guard against REL-C1 regression: the old script ditto-fell-back to the

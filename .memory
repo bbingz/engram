@@ -1,5 +1,38 @@
 # Engram Local Memory
 
+## 2026-05-30 — PR #18 CI/test follow-up after Claude handoff
+
+Durable, non-obvious lessons:
+- Waited for Claude to stop modifying the worktree before intervening on
+  `fix/ci-test-failures`; the branch was already tied to PR #18 and GitHub CI
+  showed failing `typescript` and `swift-unit` checks.
+- The Linux TypeScript coverage failure was not a source boundary violation.
+  `tests/scripts/swift-boundary-scripts.test.ts` invoked
+  `scripts/check-swift-module-boundaries.sh`, which exits early when `xcodegen`
+  is absent. The test now skips only when `command -v xcodegen` fails. Use
+  `bash -c`, not `bash -lc`, for that probe, because login shells can re-add
+  Homebrew paths and mask the no-xcodegen CI case.
+- The macOS Swift CI post-test check used `grep -q '** TEST SUCCEEDED **'`.
+  BSD grep treats that as an invalid regex; fixed the workflow to use
+  `grep -Fq` so the xcodebuild success marker is matched literally.
+- `FTSRebuildPolicyTests.readCounts` could pass locally but hit Swift's
+  "unable to type-check this expression in reasonable time" on CI. Splitting
+  the large tuple into named local values preserved behavior and removed the
+  type-check hot spot.
+- Two test-quality regressions from the handoff were restored:
+  `release-verify` forbidden-artifact hygiene stays cross-platform while
+  plist/signing assertions remain macOS-only, and the resume API test uses a
+  `cursor` session so it can keep asserting the deterministic `open` command
+  instead of accepting either a command or an error.
+- Verification this session: targeted no-xcodegen Vitest skip under
+  `PATH=/usr/bin:/bin:/usr/sbin:/sbin`; targeted TS tests for server,
+  release-verify, and Swift boundary scripts; full `npm run test:coverage`
+  (1424 pass); `npm run typecheck:test`; `npm run lint`; targeted
+  `EngramCoreTests/FTSRebuildPolicyTests`; full local Swift unit run with
+  227 tests, 1 skipped, 0 failures; literal `grep -Fq` success-marker smoke
+  against `/tmp/engram-swift-unit-final.log`.
+- Pre-existing untracked `docs/full-review-report.md` was left untouched.
+
 ## 2026-05-27 — AI title/summary observability defect fixes (5-round review)
 
 Durable, non-obvious lessons:
