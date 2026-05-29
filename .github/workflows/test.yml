@@ -128,9 +128,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    env:
-      SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
     steps:
+      - name: Set screenshots dir
+        run: echo "SCREENSHOTS_DIR=$RUNNER_TEMP/screenshots" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           lfs: true
@@ -221,9 +221,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 20
     needs: [typescript, swift-unit]
-    env:
-      SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
     steps:
+      - name: Set screenshots dir
+        run: echo "SCREENSHOTS_DIR=$RUNNER_TEMP/screenshots" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           lfs: true
