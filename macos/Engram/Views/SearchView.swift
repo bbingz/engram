@@ -285,39 +285,19 @@ struct SearchView: View {
                     results = response.items.map(\.searchResult)
                 }
             } catch {
-                // Fallback to local FTS — run query off main thread
-                // CJK: use LIKE (trigram MATCH broken for CJK byte alignment)
+                // Fallback to local FTS — run query off main thread. Shares the
+                // DatabaseManager search path so offline results get the same
+                // <mark> highlighted snippets (and LIKE escaping / dedup) as the
+                // service path, instead of an empty snippet.
                 let db = self.db
-                let isCJK = q.unicodeScalars.contains { (0x2E80...0x9FFF).contains($0.value) || (0xF900...0xFAFF).contains($0.value) }
-                let sessions: [Session] = (try? await Task.detached {
-                    if isCJK {
-                        return try db.readInBackground { d in
-                            try Session.fetchAll(d, sql: """
-                                SELECT DISTINCT s.* FROM sessions_fts f
-                                JOIN sessions s ON s.id = f.session_id
-                                WHERE f.content LIKE ? AND s.hidden_at IS NULL
-                                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-                                ORDER BY s.start_time DESC
-                                LIMIT 20
-                            """, arguments: ["%\(q)%"])
-                        }
-                    } else {
-                        return try db.readInBackground { d in
-                            try Session.fetchAll(d, sql: """
-                                SELECT s.* FROM sessions_fts f
-                                JOIN sessions s ON s.id = f.session_id
-                                WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
-                                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-                                LIMIT 20
-                            """, arguments: [q])
-                        }
-                    }
+                let hits = (try? await Task.detached {
+                    try db.searchWithSnippets(query: q, limit: 20)
                 }.value) ?? []
                 await MainActor.run {
                     searchModes = ["keyword (offline)"]
                     warning = nil
-                    results = sessions.map { s in
-                        SearchResult(id: s.id, session: s, snippet: "", matchType: "keyword", score: 0)
+                    results = hits.map { r in
+                        SearchResult(id: r.session.id, session: r.session, snippet: r.snippet, matchType: "keyword", score: 0)
                     }
                 }
             }

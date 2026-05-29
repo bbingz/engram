@@ -448,6 +448,97 @@ final class DatabaseManager {
         }
     }
 
+    /// Builds a match-centered, `<mark>`-highlighted preview for the CJK/LIKE
+    /// path, where FTS5 `snippet()` is unavailable (LIKE is not a MATCH query).
+    /// Mirrors the service-side helper so the UI's SnippetHighlighter renders
+    /// offline and online results identically. Returns nil when the query is
+    /// empty or not found (caller falls back to plain content).
+    nonisolated static func cjkHighlightedSnippet(content: String, query: String, window: Int = 40) -> String? {
+        guard !query.isEmpty,
+              let first = content.range(of: query, options: .caseInsensitive) else {
+            return nil
+        }
+        let lower = content.index(first.lowerBound, offsetBy: -window, limitedBy: content.startIndex)
+            ?? content.startIndex
+        let upper = content.index(first.upperBound, offsetBy: window, limitedBy: content.endIndex)
+            ?? content.endIndex
+        var highlighted = ""
+        var rest = content[lower..<upper]
+        while let match = rest.range(of: query, options: .caseInsensitive) {
+            highlighted += rest[..<match.lowerBound]
+            highlighted += "<mark>"
+            highlighted += rest[match]
+            highlighted += "</mark>"
+            rest = rest[match.upperBound...]
+        }
+        highlighted += rest
+        let prefixEllipsis = lower > content.startIndex ? "…" : ""
+        let suffixEllipsis = upper < content.endIndex ? "…" : ""
+        return prefixEllipsis + highlighted + suffixEllipsis
+    }
+
+    /// Like `search`, but returns each session paired with a match-centered,
+    /// `<mark>`-highlighted snippet. Used by the GUI offline-fallback path so a
+    /// service outage still shows the same windowed highlights as the live
+    /// (service) path, instead of an empty snippet.
+    nonisolated func searchWithSnippets(
+        query: String,
+        limit: Int = 10,
+        sources: Set<String> = [],
+        projects: Set<String> = [],
+        since: String? = nil
+    ) throws -> [(session: Session, snippet: String)] {
+        guard query.count >= 2 else { return [] }
+
+        if Self.containsCJK(query) {
+            let pattern = "%\(Self.escapeLikePattern(query))%"
+            return try readInBackground { db in
+                var parts = ["""
+                    SELECT s.*, f.content AS snippet FROM sessions_fts f
+                    JOIN sessions s ON s.id = f.session_id
+                    WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
+                      AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                """]
+                var args: [DatabaseValueConvertible] = [pattern]
+                Self.appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
+                parts.append("GROUP BY s.id ORDER BY s.start_time DESC LIMIT ?")
+                args.append(limit)
+                let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
+                return rows.map { row in
+                    let content = (row["snippet"] as String?) ?? ""
+                    let snippet = Self.cjkHighlightedSnippet(content: content, query: query) ?? content
+                    return (try! Session(row: row), snippet)
+                }
+            }
+        }
+
+        guard query.count >= 3 else { return [] }
+        return try readInBackground { db in
+            var parts = ["""
+                SELECT s.*, (
+                    SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
+                    FROM sessions_fts
+                    WHERE sessions_fts MATCH ? AND session_id = s.id
+                    ORDER BY rank
+                    LIMIT 1
+                ) AS snippet
+                FROM sessions_fts f
+                JOIN sessions s ON s.id = f.session_id
+                WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+            """]
+            // Two binds: the snippet() subquery and the main MATCH.
+            var args: [DatabaseValueConvertible] = [query, query]
+            Self.appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
+            parts.append("GROUP BY s.id ORDER BY rank LIMIT ?")
+            args.append(limit)
+            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
+            return rows.map { row in
+                (try! Session(row: row), (row["snippet"] as String?) ?? "")
+            }
+        }
+    }
+
     // MARK: - project_timeline
     nonisolated func projectTimeline(project: String? = nil) throws -> [TimelineEntry] {
         try readInBackground { db in

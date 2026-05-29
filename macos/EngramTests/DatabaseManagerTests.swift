@@ -345,6 +345,34 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(results.first?.id, "s1")
     }
 
+    // searchWithSnippets powers the GUI offline-fallback path: it must return a
+    // match-centered <mark> highlight, not the transcript from char 0.
+    @MainActor
+    func testSearchWithSnippetsLatinHighlightsWindow() throws {
+        try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
+        let filler = String(repeating: "lorem ipsum dolor sit amet ", count: 200)
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "\(filler) needle \(filler)")
+
+        let hits = try db.searchWithSnippets(query: "needle", limit: 10)
+        XCTAssertEqual(hits.map(\.session.id), ["s1"])
+        let snippet = try XCTUnwrap(hits.first?.snippet)
+        XCTAssertTrue(snippet.contains("<mark>needle</mark>"), "got: \(snippet.prefix(80))")
+        XCTAssertLessThan(snippet.count, filler.count)
+    }
+
+    @MainActor
+    func testSearchWithSnippetsCJKHighlightsWindow() throws {
+        try insertTestSession(at: dbPath, id: "s-cjk", source: "claude-code")
+        let filler = String(repeating: "你好世界这是填充内容", count: 80)
+        try insertFTSContent(at: dbPath, sessionId: "s-cjk", content: "\(filler)需要修复这个缺陷\(filler)")
+
+        let hits = try db.searchWithSnippets(query: "需要修复", limit: 10)
+        XCTAssertEqual(hits.map(\.session.id), ["s-cjk"])
+        let snippet = try XCTUnwrap(hits.first?.snippet)
+        XCTAssertTrue(snippet.contains("<mark>需要修复</mark>"), "got: \(snippet.prefix(60))")
+        XCTAssertLessThan(snippet.count, filler.count)
+    }
+
     @MainActor
     func testSearchWithCJKContent() throws {
         try insertTestSession(at: dbPath, id: "s-cjk", source: "claude-code")

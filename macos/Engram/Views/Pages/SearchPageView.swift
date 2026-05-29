@@ -374,7 +374,7 @@ struct SearchPageView: View {
         } catch {
             // Fallback to local FTS
             do {
-                let localResults = try db.search(
+                let localResults = try db.searchWithSnippets(
                     query: query,
                     limit: 30,
                     sources: selectedSourceFilter.map { Set([$0]) } ?? [],
@@ -383,8 +383,8 @@ struct SearchPageView: View {
                 )
                 searchModes = ["keyword (offline)"]
                 warning = nil
-                results = localResults.map { s in
-                    SearchResult(id: s.id, session: s, snippet: "", matchType: "keyword", score: 0)
+                results = localResults.map { r in
+                    SearchResult(id: r.session.id, session: r.session, snippet: r.snippet, matchType: "keyword", score: 0)
                 }
             } catch {
                 EngramLogger.error("SearchPage fallback search failed", module: .ui, error: error)
