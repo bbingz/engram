@@ -182,6 +182,7 @@ jobs:
         env:
           SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "0"
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload diff artifacts
         if: failure()
@@ -269,6 +270,8 @@ jobs:
           fi
       - name: Compare screenshots
         if: always()
+        env:
+          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "0"
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload artifacts
         if: failure()

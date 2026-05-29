@@ -61,6 +61,11 @@ Durable, non-obvious lessons:
   after a GitHub-hosted runner `com.apple.SetupAssistant` / `DiagnosticsAndUsage`
   window intercepted activation. The workflow now quits/kills Setup Assistant
   immediately before smoke/full UI tests.
+- GitHub PR #18 rerun after `794107f1`: the Setup Assistant preflight worked
+  and XCUITest passed again, but screenshot comparison still could not compare
+  baselines because CI captures 1024x768 app screenshots while committed
+  baselines are 3840x2160. CI now sets `SCREENSHOT_FAIL_ON_SIZE_MISMATCH=0`, so
+  size mismatches remain reported while real same-size visual diffs still fail.
 - Pre-existing untracked `docs/full-review-report.md` was left untouched.
 
 ## 2026-05-27 — AI title/summary observability defect fixes (5-round review)

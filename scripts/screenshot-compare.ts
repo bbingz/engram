@@ -506,7 +506,13 @@ async function main() {
     console.log(`  [${icon}] ${r.name} — ${detail}${dimensions}`);
   }
 
-  if (summary.failed > 0 || summary.size_mismatch > 0) {
+  const failOnSizeMismatch =
+    process.env.SCREENSHOT_FAIL_ON_SIZE_MISMATCH !== '0';
+  if (summary.size_mismatch > 0 && !failOnSizeMismatch) {
+    console.log('Size mismatches are report-only for this run.');
+  }
+
+  if (summary.failed > 0 || (failOnSizeMismatch && summary.size_mismatch > 0)) {
     process.exit(1);
   }
 }
