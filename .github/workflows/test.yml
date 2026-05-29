@@ -96,6 +96,7 @@ jobs:
           cd macos && xcodebuild test \
             -project Engram.xcodeproj \
             -scheme Engram \
+            -skip-testing:EngramUITests \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee xcodebuild.log

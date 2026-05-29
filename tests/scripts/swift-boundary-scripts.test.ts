@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = resolve(import.meta.dirname, '../..');
 
 function runScript(path: string): string {
-  return execFileSync('sh', [path], {
+  return execFileSync('bash', [path], {
     cwd: repoRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
