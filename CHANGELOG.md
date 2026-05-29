@@ -28,6 +28,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Restored test strength from the handoff: release bundle forbidden-artifact
   hygiene remains cross-platform, and the resume API test asserts the
   deterministic Cursor `open` command instead of allowing a broad error shape.
+- Fixed the screenshot comparison gate reached after Swift/TypeScript were
+  green: same-aspect UI screenshots are now normalized to the smaller
+  resolution before pixel/SSIM/hash comparison, while true aspect-ratio
+  mismatches still fail as `size_mismatch`.
 
 Verification: no-xcodegen Vitest skip smoke under a restricted PATH; targeted
 Vitest suites for server, release-verify, and Swift boundary scripts; full
@@ -38,8 +42,11 @@ the xcodebuild log. First PR #18 rerun after `90f869dc` passed lint,
 dead-code, fixture-check, and typescript, then exposed the Xcode 16.4
 `nonisolated deinit` compiler error fixed here. Second rerun after `5f572403`
 passed the same non-Swift checks and progressed to CI-only Swift timing/fixture
-failures fixed here. Pre-existing untracked `docs/full-review-report.md` was
-not touched.
+failures fixed here. The next rerun after `c561d0fb` passed swift-unit and
+typescript, then exposed a UI smoke screenshot comparison size-mismatch gate;
+the UI tests themselves passed and the comparison script now handles runner
+resolution differences. Pre-existing untracked `docs/full-review-report.md`
+was not touched.
 
 ### Fixed — AI title/summary observability defects, 5-round review (2026-05-27, Claude)
 

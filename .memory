@@ -48,6 +48,14 @@ Durable, non-obvious lessons:
   of detached Swift tasks, no longer shares one `JSONDecoder` across concurrent
   handlers, and the concurrent socket test has a bounded client timeout to
   avoid opaque XCTest restarts.
+- GitHub PR #18 rerun after `c561d0fb`: swift-unit and typescript passed, then
+  the previously-unreached `ui-test-smoke` failed only in screenshot comparison.
+  The XCUITest smoke tests themselves passed; all 4 smoke screenshots were
+  reported as size mismatches because committed baselines are 3840x2160 while
+  the GitHub runner captures the same-aspect app window at a different
+  resolution. `scripts/screenshot-compare.ts` now normalizes same-aspect
+  screenshots to the smaller image size before pixel/SSIM/hash comparison, and
+  still reports `size_mismatch` when aspect ratio differs.
 - Pre-existing untracked `docs/full-review-report.md` was left untouched.
 
 ## 2026-05-27 — AI title/summary observability defect fixes (5-round review)

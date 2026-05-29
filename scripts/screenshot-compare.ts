@@ -59,6 +59,12 @@ interface ComparisonResult {
   status: 'passed' | 'failed' | 'new' | 'size_mismatch';
   metrics: ComparisonMetrics;
   paths: { baseline: string; actual: string; diff: string | null };
+  dimensions?: {
+    actual: { width: number; height: number };
+    baseline: { width: number; height: number };
+    compared: { width: number; height: number };
+    resized: boolean;
+  };
   environment: Record<string, string>;
   ai_triage: AiTriage | null;
 }
@@ -92,11 +98,16 @@ function loadConfig(): Config {
 function applyIgnoreRegions(
   buf: Buffer,
   width: number,
+  height: number,
   regions: { x: number; y: number; w: number; h: number }[],
 ): void {
   for (const r of regions) {
-    for (let row = r.y; row < r.y + r.h; row++) {
-      for (let col = r.x; col < r.x + r.w; col++) {
+    const startY = Math.max(0, r.y);
+    const endY = Math.min(height, r.y + r.h);
+    const startX = Math.max(0, r.x);
+    const endX = Math.min(width, r.x + r.w);
+    for (let row = startY; row < endY; row++) {
+      for (let col = startX; col < endX; col++) {
         const idx = (row * width + col) * 4;
         buf[idx] = 0;
         buf[idx + 1] = 0;
@@ -105,6 +116,33 @@ function applyIgnoreRegions(
       }
     }
   }
+}
+
+function scaleIgnoreRegions(
+  regions: { x: number; y: number; w: number; h: number }[],
+  from: { width: number; height: number },
+  to: { width: number; height: number },
+): { x: number; y: number; w: number; h: number }[] {
+  const xScale = to.width / from.width;
+  const yScale = to.height / from.height;
+  return regions.map((r) => ({
+    x: Math.round(r.x * xScale),
+    y: Math.round(r.y * yScale),
+    w: Math.round(r.w * xScale),
+    h: Math.round(r.h * yScale),
+  }));
+}
+
+async function rgbaBufferAtSize(
+  imgPath: string,
+  width: number,
+  height: number,
+): Promise<Buffer> {
+  return sharp(imgPath)
+    .resize(width, height, { fit: 'fill' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
 }
 
 /**
@@ -202,31 +240,61 @@ async function compareOne(
   const ah = actualMeta.height!;
   const bw = baselineMeta.width!;
   const bh = baselineMeta.height!;
+  const actualDimensions = { width: aw, height: ah };
+  const baselineDimensions = { width: bw, height: bh };
+  let compareWidth = aw;
+  let compareHeight = ah;
+  const resized = aw !== bw || ah !== bh;
 
-  if (aw !== bw || ah !== bh) {
-    return {
-      name: entry.name,
-      status: 'size_mismatch',
-      metrics: { ...emptyMetrics, pixel_diff_percent: 100 },
-      paths: { baseline: baselinePath, actual: actualPath, diff: null },
-      environment,
-      ai_triage: null,
-    };
+  if (resized) {
+    const aspectDelta = Math.abs(aw / ah - bw / bh);
+    if (aspectDelta > 0.01) {
+      return {
+        name: entry.name,
+        status: 'size_mismatch',
+        metrics: { ...emptyMetrics, pixel_diff_percent: 100 },
+        paths: { baseline: baselinePath, actual: actualPath, diff: null },
+        dimensions: {
+          actual: actualDimensions,
+          baseline: baselineDimensions,
+          compared: { width: 0, height: 0 },
+          resized: false,
+        },
+        environment,
+        ai_triage: null,
+      };
+    }
+    if (aw * ah > bw * bh) {
+      compareWidth = bw;
+      compareHeight = bh;
+    }
   }
 
-  // Extract raw RGBA
-  const actualBuf = await sharp(actualPath).ensureAlpha().raw().toBuffer();
-  const baselineBuf = await sharp(baselinePath).ensureAlpha().raw().toBuffer();
+  // Extract raw RGBA, normalizing same-aspect screenshots across runner display sizes.
+  const actualBuf = await rgbaBufferAtSize(
+    actualPath,
+    compareWidth,
+    compareHeight,
+  );
+  const baselineBuf = await rgbaBufferAtSize(
+    baselinePath,
+    compareWidth,
+    compareHeight,
+  );
 
   // Apply ignore regions
-  const ignoreRegions = config.ignore_regions[entry.name] || [];
+  const ignoreRegions = scaleIgnoreRegions(
+    config.ignore_regions[entry.name] || [],
+    baselineDimensions,
+    { width: compareWidth, height: compareHeight },
+  );
   if (ignoreRegions.length) {
-    applyIgnoreRegions(actualBuf, aw, ignoreRegions);
-    applyIgnoreRegions(baselineBuf, bw, ignoreRegions);
+    applyIgnoreRegions(actualBuf, compareWidth, compareHeight, ignoreRegions);
+    applyIgnoreRegions(baselineBuf, compareWidth, compareHeight, ignoreRegions);
   }
 
   // 1. Pixelmatch
-  const diffBuf = Buffer.alloc(aw * ah * 4);
+  const diffBuf = Buffer.alloc(compareWidth * compareHeight * 4);
   const pixelDiffCount = pixelmatch(
     new Uint8Array(actualBuf.buffer, actualBuf.byteOffset, actualBuf.length),
     new Uint8Array(
@@ -235,31 +303,37 @@ async function compareOne(
       baselineBuf.length,
     ),
     new Uint8Array(diffBuf.buffer, diffBuf.byteOffset, diffBuf.length),
-    aw,
-    ah,
+    compareWidth,
+    compareHeight,
     { threshold: 0.1 },
   );
-  const totalPixels = aw * ah;
+  const totalPixels = compareWidth * compareHeight;
   const pixelDiffPercent = (pixelDiffCount / totalPixels) * 100;
 
   // Write diff PNG
-  await sharp(diffBuf, { raw: { width: aw, height: ah, channels: 4 } })
+  await sharp(diffBuf, {
+    raw: { width: compareWidth, height: compareHeight, channels: 4 },
+  })
     .png()
     .toFile(diffPath);
 
   // 2. SSIM (grayscale Matrix)
-  const grayActual = rgbaToGrayscale(actualBuf, aw, ah);
-  const grayBaseline = rgbaToGrayscale(baselineBuf, bw, bh);
+  const grayActual = rgbaToGrayscale(actualBuf, compareWidth, compareHeight);
+  const grayBaseline = rgbaToGrayscale(
+    baselineBuf,
+    compareWidth,
+    compareHeight,
+  );
 
   let ssimValue: number;
   // ssim.js needs images at least windowSize (default 11) in both dimensions
-  if (aw < 11 || ah < 11) {
+  if (compareWidth < 11 || compareHeight < 11) {
     // Too small for SSIM — fall back to pixel comparison only
     ssimValue = pixelDiffCount === 0 ? 1.0 : 0.0;
   } else {
     const ssimResult = computeSSIM(
-      { data: grayActual, width: aw, height: ah },
-      { data: grayBaseline, width: bw, height: bh },
+      { data: grayActual, width: compareWidth, height: compareHeight },
+      { data: grayBaseline, width: compareWidth, height: compareHeight },
       { windowSize: 11 } as any,
     ) as any;
     ssimValue = ssimResult.mssim;
@@ -288,6 +362,12 @@ async function compareOne(
     status: passed ? 'passed' : 'failed',
     metrics,
     paths: { baseline: baselinePath, actual: actualPath, diff: diffPath },
+    dimensions: {
+      actual: actualDimensions,
+      baseline: baselineDimensions,
+      compared: { width: compareWidth, height: compareHeight },
+      resized,
+    },
     environment,
     ai_triage: null,
   };
@@ -419,7 +499,11 @@ async function main() {
         : r.status === 'size_mismatch'
           ? '(size mismatch)'
           : `SSIM=${r.metrics.ssim} pHash=${r.metrics.phash_distance} diff=${r.metrics.pixel_diff_percent}%`;
-    console.log(`  [${icon}] ${r.name} — ${detail}`);
+    const dimensions =
+      r.dimensions?.resized && r.status !== 'size_mismatch'
+        ? ` normalized=${r.dimensions.actual.width}x${r.dimensions.actual.height}->${r.dimensions.compared.width}x${r.dimensions.compared.height}`
+        : '';
+    console.log(`  [${icon}] ${r.name} — ${detail}${dimensions}`);
   }
 
   if (summary.failed > 0 || summary.size_mismatch > 0) {
