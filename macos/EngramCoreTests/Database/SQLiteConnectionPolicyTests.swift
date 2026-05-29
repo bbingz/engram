@@ -40,6 +40,19 @@ final class SQLiteConnectionPolicyTests: XCTestCase {
         XCTAssertEqual(pragmas.4, 1)
     }
 
+    // Engine pragmas for the hundreds-of-MB FTS-heavy DB: mmap maps the file via
+    // the OS page cache, and a larger page cache keeps hot FTS pages resident.
+    // cache_size is negative (KiB) per the SQLite convention.
+    func testConnectionAppliesMmapAndCacheSizePragmas() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("pragmas.sqlite"))
+        let (mmap, cache) = try writer.read { db in
+            (try Int.fetchOne(db, sql: "PRAGMA mmap_size") ?? 0,
+             try Int.fetchOne(db, sql: "PRAGMA cache_size") ?? 0)
+        }
+        XCTAssertEqual(mmap, SQLiteConnectionPolicy.mmapSizeBytes)
+        XCTAssertEqual(cache, -SQLiteConnectionPolicy.cacheSizeKiB)
+    }
+
     func testReaderCanReadExistingWalDatabaseWithoutWrites() throws {
         let path = databasePath("reader.sqlite")
         let writer = try EngramDatabaseWriter(path: path)
