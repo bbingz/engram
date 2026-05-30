@@ -139,7 +139,7 @@ final class UnixSocketTransportTests: XCTestCase {
         defer { server.stop() }
 
         let transport = UnixSocketEngramServiceTransport(socketPath: socketPath)
-        let client = EngramServiceClient(transport: transport)
+        let client = EngramServiceClient(transport: transport, defaultTimeout: 5)
 
         async let first = client.status()
         async let second = client.status()
@@ -222,8 +222,12 @@ final class UnixSocketTransportTests: XCTestCase {
 private final class UnixSocketFixtureServer: @unchecked Sendable {
     private let socketPath: String
     private let fd: Int32
-    private let task: Task<Void, Never>
-    private let decoder = JSONDecoder()
+    private let acceptQueue = DispatchQueue(label: "UnixSocketFixtureServer.accept", qos: .userInitiated)
+    private let handlerQueue = DispatchQueue(
+        label: "UnixSocketFixtureServer.handlers",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
 
     init(
         socketPath: String,
@@ -232,27 +236,24 @@ private final class UnixSocketFixtureServer: @unchecked Sendable {
         self.socketPath = socketPath
         self.fd = try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)
         let fd = self.fd
-        let decoder = self.decoder
-        self.task = Task.detached {
-            while !Task.isCancelled {
+        let handlerQueue = self.handlerQueue
+        self.acceptQueue.async {
+            while true {
                 let client = accept(fd, nil, nil)
                 if client < 0 { break }
-                Task.detached {
+                handlerQueue.async {
                     defer { close(client) }
                     do {
                         let data = try UnixSocketEngramServiceTransport.readFrame(from: client)
-                        let request = try decoder.decode(EngramServiceRequestEnvelope.self, from: data)
+                        let request = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: data)
                         try UnixSocketEngramServiceTransport.writeFrame(try handler(request), to: client)
-                    } catch {
-                        close(client)
-                    }
+                    } catch {}
                 }
             }
         }
     }
 
     func stop() {
-        task.cancel()
         close(fd)
         try? FileManager.default.removeItem(atPath: socketPath)
     }
