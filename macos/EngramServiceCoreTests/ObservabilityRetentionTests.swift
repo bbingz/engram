@@ -48,4 +48,34 @@ final class ObservabilityRetentionTests: XCTestCase {
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM logs"), 1)
         }
     }
+
+    // The runtime loops prune() in bounded batches (each its own gated write) so
+    // the one-time ~661k-row backlog doesn't spike the WAL or hold the gate.
+    func testPruneRespectsBatchLimitAndLoopDrains() throws {
+        let queue = try DatabaseQueue(path: tmpPath())
+        let now = Date()
+        let old = ISO8601DateFormatter().string(from: now.addingTimeInterval(-100 * 86_400))
+        try queue.write { db in
+            try self.makeSchema(db)
+            for _ in 0..<5 {
+                try db.execute(sql: "INSERT INTO metrics (name,type,value,tags,ts) VALUES ('m','counter',1,NULL,?)", arguments: [old])
+            }
+        }
+
+        // One bounded call deletes at most `limit` rows per table.
+        let first = try queue.write { db in try ObservabilityRetention.prune(db, limit: 2, now: now) }
+        XCTAssertEqual(first, 2)
+
+        // Looping (as runObservabilityRetention does) drains the rest.
+        var total = first
+        while true {
+            let d = try queue.write { db in try ObservabilityRetention.prune(db, limit: 2, now: now) }
+            total += d
+            if d == 0 { break }
+        }
+        XCTAssertEqual(total, 5)
+        try queue.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM metrics"), 0)
+        }
+    }
 }

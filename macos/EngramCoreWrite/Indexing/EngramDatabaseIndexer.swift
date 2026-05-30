@@ -120,6 +120,8 @@ public extension EngramDatabaseWriter {
                 FROM sessions
                 WHERE hidden_at IS NULL
                   AND parent_session_id IS NULL
+                  AND suggested_parent_id IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
                   AND start_time >= ?
                 """,
                 arguments: [since]
