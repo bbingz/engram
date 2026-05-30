@@ -66,8 +66,7 @@ public enum EngramServiceRunner {
             ServiceLogger.notice("schema migration complete", category: .runner)
         } catch {
             ServiceLogger.error("fatal: schema migration failed", category: .runner, error: error)
-            print(#"{"event":"fatal","stage":"migrate","error":"\#(error.localizedDescription)"}"#)
-            fflush(stdout)
+            writeStdoutLine(#"{"event":"fatal","stage":"migrate","error":"\#(error.localizedDescription)"}"#)
             exit(70) // EX_SOFTWARE
         }
 
@@ -121,8 +120,7 @@ public enum EngramServiceRunner {
         }
 
         ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
-        print(#"{"event":"ready","socket":"\#(socketPath)"}"#)
-        fflush(stdout)
+        writeStdoutLine(#"{"event":"ready","socket":"\#(socketPath)"}"#)
 
         // V2: run startup maintenance once, detached so it does not block the
         // health probe / ready emission. Runs through the gate so writes are
@@ -175,16 +173,14 @@ public enum EngramServiceRunner {
                 do {
                     try await gate.checkpointWal()
                     ServiceLogger.info("wal checkpoint succeeded (mode=PASSIVE)", category: .checkpoint)
-                    print(#"{"event":"checkpoint","mode":"PASSIVE","ok":true}"#)
-                    fflush(stdout)
+                    writeStdoutLine(#"{"event":"checkpoint","mode":"PASSIVE","ok":true}"#)
                 } catch {
                     ServiceLogger.error(
                         "wal checkpoint failed (mode=PASSIVE)",
                         category: .checkpoint,
                         error: error
                     )
-                    print(#"{"event":"checkpoint","mode":"PASSIVE","ok":false,"error":"\#(error.localizedDescription)"}"#)
-                    fflush(stdout)
+                    writeStdoutLine(#"{"event":"checkpoint","mode":"PASSIVE","ok":false,"error":"\#(error.localizedDescription)"}"#)
                 }
             }
         }
@@ -392,9 +388,21 @@ public enum EngramServiceRunner {
         }
     }
 
-    private static func emitWebReady(host: String, port: Int) {
-        print(#"{"event":"web_ready","host":"\#(host)","port":\#(port)}"#)
+    private static let stdoutLock = NSLock()
+
+    /// Serialize every structured-JSON line written to stdout. Multiple startup
+    /// tasks (initial scan, indexing loop, checkpoint, web-ready) emit events
+    /// concurrently; without a lock their `print()` + `fflush` can interleave or
+    /// drop partial lines on the shared stdout stream.
+    private static func writeStdoutLine(_ text: String) {
+        stdoutLock.lock()
+        defer { stdoutLock.unlock() }
+        print(text)
         fflush(stdout)
+    }
+
+    private static func emitWebReady(host: String, port: Int) {
+        writeStdoutLine(#"{"event":"web_ready","host":"\#(host)","port":\#(port)}"#)
     }
 
     private static func emit<T: Encodable>(_ value: T) {
@@ -403,8 +411,7 @@ public enum EngramServiceRunner {
         else {
             return
         }
-        print(text)
-        fflush(stdout)
+        writeStdoutLine(text)
     }
 
     // MARK: - Web UI gating (SEC-C1)

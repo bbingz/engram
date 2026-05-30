@@ -79,7 +79,12 @@ public enum RepoDiscovery {
         return try upsert(db, entries: entries, probedAt: now())
     }
 
-    public static func sessionCwdCounts(_ db: Database) throws -> [GitRepoCandidate] {
+    /// Distinct session cwds to probe, capped to the `limit` busiest. Each
+    /// candidate shells out to several `git` subprocesses, and this runs every
+    /// indexing cycle, so an unbounded list of one-off cwds (temp dirs, etc.)
+    /// would fan out unboundedly. The long tail beyond the busiest repos is not
+    /// worth re-probing every cycle.
+    public static func sessionCwdCounts(_ db: Database, limit: Int = 200) throws -> [GitRepoCandidate] {
         let rows = try Row.fetchAll(
             db,
             sql: """
@@ -87,7 +92,10 @@ public enum RepoDiscovery {
             FROM sessions
             WHERE cwd IS NOT NULL AND TRIM(cwd) != ''
             GROUP BY cwd
-            """
+            ORDER BY n DESC
+            LIMIT ?
+            """,
+            arguments: [limit]
         )
 
         return rows.compactMap { row in

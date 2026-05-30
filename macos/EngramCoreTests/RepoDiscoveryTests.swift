@@ -22,6 +22,28 @@ final class RepoDiscoveryTests: XCTestCase {
         tempDB = nil
     }
 
+    // sessionCwdCounts caps the per-cycle git fan-out to the busiest cwds so an
+    // unbounded list of one-off cwds can't spawn unbounded git subprocesses.
+    func testSessionCwdCountsCapsToBusiestCwds() throws {
+        try writer.write { db in
+            let rows: [(String, Int)] = [("/a", 3), ("/b", 2), ("/c", 1)]
+            var n = 0
+            for (cwd, count) in rows {
+                for _ in 0..<count {
+                    n += 1
+                    try db.execute(
+                        sql: "INSERT INTO sessions(id, source, start_time, cwd, file_path) VALUES (?, 'codex', '2026-05-08T09:00:00.000Z', ?, ?)",
+                        arguments: ["s\(n)", cwd, "/tmp/s\(n).jsonl"]
+                    )
+                }
+            }
+        }
+
+        let top2 = try writer.read { db in try RepoDiscovery.sessionCwdCounts(db, limit: 2) }
+        XCTAssertEqual(top2.count, 2, "limit caps the candidate count")
+        XCTAssertEqual(Set(top2.map(\.cwd)), ["/a", "/b"], "keeps the busiest cwds, drops the long tail")
+    }
+
     // Injected-probe path: deterministic field assertions + session_count
     // aggregation across sub-dir cwds that map to one repo top-level.
     func testDiscoverAggregatesSessionsByRepoAndSkipsNonRepos() throws {
