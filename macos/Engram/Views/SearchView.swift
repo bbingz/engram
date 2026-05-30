@@ -358,7 +358,8 @@ extension EngramServiceSearchResponse.Item {
             generatedTitle: generatedTitle ?? title,
             parentSessionId: parentSessionId,
             suggestedParentId: suggestedParentId,
-            linkSource: linkSource
+            linkSource: linkSource,
+            qualityScore: qualityScore
         )
         return SearchResult(
             id: id,

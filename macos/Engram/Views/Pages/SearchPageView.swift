@@ -208,22 +208,31 @@ struct SearchPageView: View {
                         .accessibilityIdentifier("search_resultCount")
                     LazyVStack(spacing: 4) {
                         ForEach(results) { result in
-                            VStack(alignment: .leading, spacing: 4) {
-                                if let session = result.session {
-                                    SessionCard(session: session) {
-                                        NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                            HStack(spacing: 8) {
+                                // Value-band cue: a thin colored bar on the row's
+                                // leading edge (high=green, medium=neutral, low=dim,
+                                // unknown=clear to keep alignment).
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(valueBandColor(result.session?.valueBand))
+                                    .frame(width: 3)
+                                    .accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if let session = result.session {
+                                        SessionCard(session: session) {
+                                            NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                                        }
                                     }
-                                }
-                                if !result.snippet.isEmpty {
-                                    HStack(spacing: 6) {
-                                        matchBadge(result.matchType)
-                                        Text(SnippetHighlighter.attributed(result.snippet))
-                                            .font(.caption)
-                                            .foregroundStyle(Theme.tertiaryText)
-                                            .lineLimit(1)
+                                    if !result.snippet.isEmpty {
+                                        HStack(spacing: 6) {
+                                            matchBadge(result.matchType)
+                                            Text(SnippetHighlighter.attributed(result.snippet))
+                                                .font(.caption)
+                                                .foregroundStyle(Theme.tertiaryText)
+                                                .lineLimit(1)
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .padding(.bottom, 4)
                                     }
-                                    .padding(.horizontal, 12)
-                                    .padding(.bottom, 4)
                                 }
                             }
                         }
@@ -457,6 +466,17 @@ struct SearchPageView: View {
 
     private func projectLabel(_ project: String) -> String {
         project.split(separator: "/").last.map(String.init) ?? project
+    }
+
+    /// Leading value-band bar color (from Session.qualityScore). `.clear` for
+    /// unknown so the bar still reserves width and result titles stay aligned.
+    private func valueBandColor(_ band: Session.ValueBand?) -> Color {
+        switch band {
+        case .high: return Theme.green
+        case .medium: return Theme.tertiaryText
+        case .low: return Theme.tertiaryText.opacity(0.4)
+        case .unknown, .none: return .clear
+        }
     }
 }
 
