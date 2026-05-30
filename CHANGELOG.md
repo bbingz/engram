@@ -46,9 +46,11 @@ Two larger items were deferred to their own focused PRs. **#6 shipped as PR #24*
 command then drains the FTS backlog one batch per gated command, releasing the
 single write gate between batches so user writes no longer time out with
 WriterBusy behind a long startup scan (indexAll itself still holds the gate for
-its run). **#11** remains open (plumb `quality_score` through
-`EngramServiceSearchResponse.Item` + a value-band UI, re-introducing the band
-removed in #21 — a feature needing UI design).
+its run). **#11 shipped as PR #25** — `quality_score` is now plumbed through
+`EngramServiceSearchResponse.Item` so the value band (re-introduced from #21)
+reaches the primary online search path, rendered as a thin leading value-band
+bar on each search result row (high=green, medium=neutral, low=dim, unknown
+hidden). All 15 deduped audit issues are now resolved across PR #19–#25.
 
 ### Reviewed + hardened PR #15; merged PR #18/#15/#16 (2026-05-30, Claude)
 
