@@ -195,6 +195,17 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanOrphans")"#))
     }
 
+    func testRunnerPeriodicScanRunsParentBackfills() throws {
+        // idx-1: the periodic indexRecent scan must run parent-link / dispatch
+        // detection so agent children created mid-run are grouped under their
+        // parent (and skip-tiered) without waiting for a service restart.
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertTrue(
+            source.contains("runPeriodicParentBackfills"),
+            "the periodic indexing loop must run parent backfills after indexing new sessions"
+        )
+    }
+
     func testUnixSocketServiceServerLifecycleUsesTrackedSendableState() throws {
         let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
 

@@ -287,6 +287,12 @@ public enum EngramServiceRunner {
             do {
                 let result = try await gate.performWriteCommand(name: "indexRecent") { writer in
                     let scan = try await writer.indexRecentSessions()
+                    // Run parent-link / dispatch detection on the freshly indexed
+                    // sessions so agent children created mid-run are grouped under
+                    // their parent (and skip-tiered) without waiting for a restart.
+                    if scan.indexed > 0 {
+                        try writer.runPeriodicParentBackfills()
+                    }
                     // Drain any FTS jobs enqueued by this scan so search content
                     // is written (V1). Embedding jobs are marked not_applicable.
                     let jobSummary = try await IndexJobRunner(writer: writer).runRecoverableJobs()

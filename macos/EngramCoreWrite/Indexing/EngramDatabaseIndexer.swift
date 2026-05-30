@@ -69,6 +69,22 @@ public extension EngramDatabaseWriter {
         try await indexSessions(adapters: adapters, runParentBackfills: true)
     }
 
+    /// Run the deterministic parent-link backfills after a periodic scan so
+    /// agent/dispatched child sessions created mid-run are grouped under their
+    /// parent (and skip-tiered) without waiting for a service restart. The
+    /// periodic `indexRecentSessions` path indexes with `runParentBackfills:
+    /// false`, and the FSEvents watcher is not wired into the runtime, so
+    /// without this the only live path leaves new children top-level until the
+    /// next restart.
+    func runPeriodicParentBackfills() throws {
+        try write { db in
+            _ = try StartupBackfills.backfillParentLinks(db)
+            _ = try StartupBackfills.backfillCodexOriginator(db)
+            _ = try StartupBackfills.backfillPolycliProviderParents(db)
+            _ = try StartupBackfills.backfillSuggestedParents(db)
+        }
+    }
+
     private func indexSessions(
         adapters: [any SessionAdapter],
         runParentBackfills: Bool
