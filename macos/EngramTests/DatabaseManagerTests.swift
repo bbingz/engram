@@ -345,6 +345,55 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(results.first?.id, "s1")
     }
 
+    // quality_score (already computed at index time) must decode into the GUI
+    // read model. Session uses an explicit CodingKeys enum, so qualityScore must
+    // be a listed key or it silently stays nil.
+    @MainActor
+    func testSearchPopulatesQualityScore() throws {
+        try insertTestSession(at: dbPath, id: "s-hi", source: "claude-code")
+        try insertTestSession(at: dbPath, id: "s-lo", source: "claude-code")
+        try insertFTSContent(at: dbPath, sessionId: "s-hi", content: "alpha widget refactor")
+        try insertFTSContent(at: dbPath, sessionId: "s-lo", content: "alpha widget refactor")
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET quality_score = 65 WHERE id = 's-hi'")
+            try db.execute(sql: "UPDATE sessions SET quality_score = 20 WHERE id = 's-lo'")
+        }
+
+        let results = try db.search(query: "widget")
+        let byId = Dictionary(uniqueKeysWithValues: results.map { ($0.id, $0) })
+        XCTAssertEqual(byId["s-hi"]?.qualityScore, 65)
+        XCTAssertEqual(byId["s-lo"]?.qualityScore, 20)
+    }
+
+    // searchWithSnippets powers the GUI offline-fallback path: it must return a
+    // match-centered <mark> highlight, not the transcript from char 0.
+    @MainActor
+    func testSearchWithSnippetsLatinHighlightsWindow() throws {
+        try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
+        let filler = String(repeating: "lorem ipsum dolor sit amet ", count: 200)
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "\(filler) needle \(filler)")
+
+        let hits = try db.searchWithSnippets(query: "needle", limit: 10)
+        XCTAssertEqual(hits.map(\.session.id), ["s1"])
+        let snippet = try XCTUnwrap(hits.first?.snippet)
+        XCTAssertTrue(snippet.contains("<mark>needle</mark>"), "got: \(snippet.prefix(80))")
+        XCTAssertLessThan(snippet.count, filler.count)
+    }
+
+    @MainActor
+    func testSearchWithSnippetsCJKHighlightsWindow() throws {
+        try insertTestSession(at: dbPath, id: "s-cjk", source: "claude-code")
+        let filler = String(repeating: "你好世界这是填充内容", count: 80)
+        try insertFTSContent(at: dbPath, sessionId: "s-cjk", content: "\(filler)需要修复这个缺陷\(filler)")
+
+        let hits = try db.searchWithSnippets(query: "需要修复", limit: 10)
+        XCTAssertEqual(hits.map(\.session.id), ["s-cjk"])
+        let snippet = try XCTUnwrap(hits.first?.snippet)
+        XCTAssertTrue(snippet.contains("<mark>需要修复</mark>"), "got: \(snippet.prefix(60))")
+        XCTAssertLessThan(snippet.count, filler.count)
+    }
+
     @MainActor
     func testSearchWithCJKContent() throws {
         try insertTestSession(at: dbPath, id: "s-cjk", source: "claude-code")

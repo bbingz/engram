@@ -465,7 +465,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     arguments: StatementArguments(args)
                 )
                 return EngramServiceSearchResponse(
-                    items: rows.map { item(from: $0) },
+                    items: rows.map { item(from: $0, query: query) },
                     searchModes: ["keyword"],
                     warning: warning
                 )
@@ -476,13 +476,24 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             }
 
             var parts = ["""
-                SELECT s.*, f.content AS snippet
+                SELECT s.*, (
+                    SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
+                    FROM sessions_fts
+                    WHERE sessions_fts MATCH ? AND session_id = s.id
+                    ORDER BY rank
+                    LIMIT 1
+                ) AS snippet
                 FROM sessions_fts f
                 JOIN sessions s ON s.id = f.session_id
                 WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
             """]
-            var args: [DatabaseValueConvertible] = [query]
+            // Two `query` binds: the snippet() subquery in the SELECT list and
+            // the main MATCH each reference the FTS query. snippet() is invalid
+            // alongside GROUP BY, so it runs in a correlated subquery that picks
+            // the best-ranked FTS row per session; the outer query keeps the
+            // existing GROUP BY/ORDER BY (sessions_fts is not 1:1 with sessions).
+            var args: [DatabaseValueConvertible] = [query, query]
             appendSearchFilters(for: request, to: &parts, args: &args)
             parts.append("""
                 GROUP BY s.id
@@ -759,11 +770,23 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     /// waste bandwidth. Bound it server-side to a preview-sized window.
     static let maxSnippetLength = 600
 
-    private func item(from row: Row) -> EngramServiceSearchResponse.Item {
-        EngramServiceSearchResponse.Item(
+    private func item(from row: Row, query: String? = nil) -> EngramServiceSearchResponse.Item {
+        // The Latin/MATCH path already returns an FTS5 snippet() with <mark>
+        // tags. The CJK/LIKE path returns full `f.content` (snippet() needs a
+        // MATCH query), so when a query is supplied we build the match-centered
+        // highlight here in Swift; otherwise the raw content is used as-is.
+        let rawSnippet = row["snippet"] as String?
+        let snippetText: String?
+        if let query, let content = rawSnippet,
+           let windowed = Self.cjkHighlightedSnippet(content: content, query: query) {
+            snippetText = windowed
+        } else {
+            snippetText = rawSnippet
+        }
+        return EngramServiceSearchResponse.Item(
             id: row["id"],
             title: (row["generated_title"] as String?) ?? (row["summary"] as String?),
-            snippet: Self.truncateSnippet(row["snippet"] as String?),
+            snippet: Self.truncateSnippet(snippetText),
             matchType: "keyword",
             score: nil,
             source: row["source"] as String?,
@@ -797,6 +820,37 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         guard snippet.count > maxSnippetLength else { return snippet }
         let prefix = snippet.prefix(maxSnippetLength)
         return String(prefix) + "…"
+    }
+
+    /// Builds a match-centered, `<mark>`-highlighted preview for the CJK/LIKE
+    /// search path, where FTS5 `snippet()` is unavailable (LIKE is not a MATCH
+    /// query). Windows `content` around the first case-insensitive occurrence of
+    /// `query` and wraps every occurrence within that window in `<mark>…</mark>`.
+    /// Returns nil when the query is empty or not found, so the caller falls back
+    /// to the plain (truncated) content. Mirrors the Latin path's `<mark>` output
+    /// so the UI's SnippetHighlighter renders both identically.
+    static func cjkHighlightedSnippet(content: String, query: String, window: Int = 40) -> String? {
+        guard !query.isEmpty,
+              let first = content.range(of: query, options: .caseInsensitive) else {
+            return nil
+        }
+        let lower = content.index(first.lowerBound, offsetBy: -window, limitedBy: content.startIndex)
+            ?? content.startIndex
+        let upper = content.index(first.upperBound, offsetBy: window, limitedBy: content.endIndex)
+            ?? content.endIndex
+        var highlighted = ""
+        var rest = content[lower..<upper]
+        while let match = rest.range(of: query, options: .caseInsensitive) {
+            highlighted += rest[..<match.lowerBound]
+            highlighted += "<mark>"
+            highlighted += rest[match]
+            highlighted += "</mark>"
+            rest = rest[match.upperBound...]
+        }
+        highlighted += rest
+        let prefixEllipsis = lower > content.startIndex ? "…" : ""
+        let suffixEllipsis = upper < content.endIndex ? "…" : ""
+        return prefixEllipsis + highlighted + suffixEllipsis
     }
 
     private func resumeCLICommand(

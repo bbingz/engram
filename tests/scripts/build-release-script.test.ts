@@ -95,22 +95,30 @@ describe('macOS release-verify bundle hygiene', () => {
     rmSync(workdir, { recursive: true, force: true });
   });
 
-  // A hand-built stub .app cannot pass `codesign --verify --deep --strict`
-  // (its nested Helpers are not real Mach-O objects), so we assert that the
-  // identity-independent stages (hygiene, structure, version) all report "ok"
-  // before the script reaches the signature stage. The deep-verify + Hardened
-  // Runtime + Developer ID assertions are validated against a real built bundle
-  // in CI and during manual release runs, not against a stub.
-  it('reports hygiene + structure + version ok for a clean stub bundle', () => {
-    const app = buildStubApp({ bundleVersion: '777' });
-    const { out } = runVerify(app, ['--expected-build', '777']);
-    expect(out).toContain('bundle hygiene clean');
-    expect(out).toContain('structure present');
-    expect(out).toContain('version short=0.1.0 build=777');
-  });
+  // release-verify.sh reads CFBundleVersion via macOS-only PlistBuddy, which
+  // is absent on Linux CI. Keep version/signature assertions macOS-only while
+  // retaining the earlier filesystem-only hygiene checks on every platform.
+  describe.skipIf(process.platform !== 'darwin')(
+    'macOS plist + signing checks',
+    () => {
+      // A hand-built stub .app cannot pass `codesign --verify --deep --strict`
+      // (its nested Helpers are not real Mach-O objects), so we assert that the
+      // identity-independent stages (hygiene, structure, version) all report "ok"
+      // before the script reaches the signature stage. The deep-verify + Hardened
+      // Runtime + Developer ID assertions are validated against a real built bundle
+      // in CI and during manual release runs, not against a stub.
+      it('reports hygiene + structure + version ok for a clean stub bundle', () => {
+        const app = buildStubApp({ bundleVersion: '777' });
+        const { out } = runVerify(app, ['--expected-build', '777']);
+        expect(out).toContain('bundle hygiene clean');
+        expect(out).toContain('structure present');
+        expect(out).toContain('version short=0.1.0 build=777');
+      });
+    },
+  );
 
-  // Hygiene detection does not require codesign — it is a pure filesystem scan,
-  // so this runs on every platform.
+  // Hygiene detection happens before plist/codesign checks, so it remains a
+  // useful cross-platform guard even when PlistBuddy is unavailable.
   for (const forbidden of [
     'Contents/Resources/node',
     'Contents/Resources/dist/index.js',
@@ -126,20 +134,22 @@ describe('macOS release-verify bundle hygiene', () => {
     });
   }
 
-  // Version checks run at stage 3, before the signature stage, so they do not
-  // depend on codesign and run on every platform.
-  it('fails on an empty / unsubstituted version token', () => {
-    const app = buildStubApp({ bundleVersion: '$(CURRENT_PROJECT_VERSION)' });
-    const { code, out } = runVerify(app, []);
-    expect(code).not.toBe(0);
-    expect(out).toContain('unsubstituted build-setting token');
-  });
+  describe.skipIf(process.platform !== 'darwin')('macOS version checks', () => {
+    // Version checks run at stage 3, before the signature stage, so they do not
+    // depend on codesign.
+    it('fails on an empty / unsubstituted version token', () => {
+      const app = buildStubApp({ bundleVersion: '$(CURRENT_PROJECT_VERSION)' });
+      const { code, out } = runVerify(app, []);
+      expect(code).not.toBe(0);
+      expect(out).toContain('unsubstituted build-setting token');
+    });
 
-  it('fails when expected build number does not match', () => {
-    const app = buildStubApp({ bundleVersion: '100' });
-    const { code, out } = runVerify(app, ['--expected-build', '200']);
-    expect(code).not.toBe(0);
-    expect(out).toContain("!= expected '200'");
+    it('fails when expected build number does not match', () => {
+      const app = buildStubApp({ bundleVersion: '100' });
+      const { code, out } = runVerify(app, ['--expected-build', '200']);
+      expect(code).not.toBe(0);
+      expect(out).toContain("!= expected '200'");
+    });
   });
 });
 

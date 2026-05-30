@@ -146,8 +146,4 @@ class ReplayState {
             }
         }
     }
-
-    nonisolated deinit {
-        // Timer cleanup handled by stop() or pause() calls
-    }
 }

@@ -486,6 +486,78 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(search.items.map(\.id), ["s1"])
     }
 
+    // Latin/MATCH search must return a match-centered, highlighted snippet
+    // (FTS5 snippet()) rather than the transcript from char 0, so humans get the
+    // same windowed result the MCP/AI path already produces. Regression guard:
+    // snippet() is invalid alongside GROUP BY, so it runs in a correlated
+    // subquery; a naive `snippet(...) ... GROUP BY` throws at query time.
+    func testSQLiteReadProviderSearchReturnsHighlightedWindowedSnippet() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        // Push the match far from the start so a whole-content snippet would show
+        // only leading filler; a windowed snippet surfaces the matched term.
+        let filler = String(repeating: "lorem ipsum dolor sit amet ", count: 200)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions_fts SET content = ? WHERE session_id = 's1'",
+                arguments: ["\(filler) needle \(filler)"]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(query: "needle", mode: "keyword", limit: 10)
+        )
+
+        XCTAssertEqual(search.items.map(\.id), ["s1"])
+        let snippet = try XCTUnwrap(search.items.first?.snippet)
+        XCTAssertTrue(
+            snippet.contains("<mark>needle</mark>"),
+            "expected highlighted match, got: \(snippet.prefix(120))"
+        )
+        XCTAssertLessThan(
+            snippet.count, filler.count,
+            "snippet must be a match-centered window, not the full content"
+        )
+    }
+
+    // CJK search uses LIKE (FTS5 trigram MATCH is unreliable for CJK), so FTS5
+    // snippet() can't run; the windowed `<mark>` highlight is built in Swift
+    // (cjkHighlightedSnippet). Without it CJK users got the transcript from
+    // char 0 with no highlight — the "AI can search, humans can't" gap for
+    // Chinese projects.
+    func testSQLiteReadProviderCJKSearchReturnsHighlightedWindowedSnippet() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        // 800-char CJK filler with the needle buried in the middle, so a
+        // whole-content snippet would show only leading filler.
+        let filler = String(repeating: "你好世界这是填充内容", count: 80)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions_fts SET content = ? WHERE session_id = 's1'",
+                arguments: ["\(filler)需要修复这个缺陷\(filler)"]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(query: "需要修复", mode: "keyword", limit: 10)
+        )
+
+        XCTAssertEqual(search.items.map(\.id), ["s1"])
+        let snippet = try XCTUnwrap(search.items.first?.snippet)
+        XCTAssertTrue(
+            snippet.contains("<mark>需要修复</mark>"),
+            "expected highlighted CJK match, got: \(snippet.prefix(80))"
+        )
+        XCTAssertLessThan(
+            snippet.count, filler.count,
+            "snippet must be a match-centered window, not the full content"
+        )
+    }
+
     func testSQLiteReadProviderSearchAppliesProjectSourceAndSinceFilters() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

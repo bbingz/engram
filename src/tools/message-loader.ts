@@ -16,7 +16,7 @@ interface StreamedMessage {
   timestamp?: string;
 }
 
-export interface BoundedLoadOptions {
+interface BoundedLoadOptions {
   /** Messages to retain from the start of the session. */
   head?: number;
   /** Messages to retain from the end of the session. */
@@ -25,7 +25,7 @@ export interface BoundedLoadOptions {
   maxContentChars?: number;
 }
 
-export interface BoundedLoadResult {
+interface BoundedLoadResult {
   messages: StreamedMessage[];
   /** Total messages seen in the stream (not the retained count). */
   totalSeen: number;
