@@ -40,11 +40,15 @@ CI-green, squash-merged PRs:
   busiest cwds to bound the per-cycle git fan-out.
 
 Every behavior change has Swift tests; each PR was CI-green before squash-merge.
-Two larger items are deferred to their own focused PRs: **#6** (split the initial
-startup scan so it doesn't hold the single write gate for its whole duration — an
-architectural refactor of `StartupBackfills.runInitialScan`) and **#11**
-(plumb `quality_score` through `EngramServiceSearchResponse.Item` + a value-band
-UI, re-introducing the band removed in #21 — a feature needing UI design).
+Two larger items were deferred to their own focused PRs. **#6 shipped as PR #24**
+— `StartupBackfills.runInitialScan` now delegates to `runStartupBackfills` +
+`drainStartupIndexJobs`, and the service runs the structural scan in one gated
+command then drains the FTS backlog one batch per gated command, releasing the
+single write gate between batches so user writes no longer time out with
+WriterBusy behind a long startup scan (indexAll itself still holds the gate for
+its run). **#11** remains open (plumb `quality_score` through
+`EngramServiceSearchResponse.Item` + a value-band UI, re-introducing the band
+removed in #21 — a feature needing UI design).
 
 ### Reviewed + hardened PR #15; merged PR #18/#15/#16 (2026-05-30, Claude)
 
