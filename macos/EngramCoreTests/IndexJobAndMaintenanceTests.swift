@@ -217,6 +217,80 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(remaining, 0)
     }
 
+    func testFtsVersionRebuildSwapsOnlyAfterShadowTableIsComplete() async throws {
+        let locator = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fts-rebuild-\(UUID().uuidString).jsonl")
+        try Data("{}".utf8).write(to: locator)
+        defer { try? FileManager.default.removeItem(at: locator) }
+
+        let snapshot = AuthoritativeSessionSnapshot(
+            id: "fts-rebuild-1",
+            source: .claudeCode,
+            authoritativeNode: "node-a",
+            syncVersion: 1,
+            snapshotHash: "h1",
+            indexedAt: "2026-05-30T12:00:00Z",
+            sourceLocator: locator.path,
+            sizeBytes: 128,
+            startTime: "2026-05-30T11:00:00Z",
+            endTime: nil,
+            cwd: "/repo",
+            project: "demo",
+            model: "claude",
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolMessageCount: 0,
+            systemMessageCount: 0,
+            summary: nil,
+            summaryMessageCount: nil,
+            origin: nil,
+            tier: .normal,
+            agentRole: nil,
+            toolCallCounts: [:]
+        )
+
+        try writer.write { db in
+            _ = try SessionBatchUpsert(db: db).upsertBatch([snapshot], reason: .initialScan)
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'fts-rebuild-1'")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('fts-rebuild-1', 'legacy searchable phrase')")
+            try db.execute(sql: """
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """)
+            try FTSRebuildPolicy.apply(db)
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id = 'fts-rebuild-1'"),
+                ["legacy searchable phrase"],
+                "active search table must remain live until the rebuild table is complete"
+            )
+            XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_rebuild_version'"))
+        }
+
+        let adapter = StubFTSAdapter(
+            source: .claudeCode,
+            messages: [
+                NormalizedMessage(role: .user, content: "rebuilt searchable phrase"),
+            ]
+        )
+        let runner = IndexJobRunner(writer: writer, adapters: [adapter])
+        let summary = try await runner.runRecoverableJobs()
+        XCTAssertEqual(summary.completed, 1)
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id = 'fts-rebuild-1'"),
+                ["rebuilt searchable phrase"]
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_version'"), "3")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_rebuild_version'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT name FROM sqlite_master WHERE name = 'sessions_fts_rebuild'"))
+        }
+    }
+
     func testEmbeddingJobsAreMarkedNotApplicable() async throws {
         try writer.write { db in
             try db.execute(

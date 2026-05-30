@@ -7,6 +7,11 @@ final class UnixSocketServiceServer: Sendable {
 
     private static let maximumConcurrentClients = 32
     private static let clientTimeoutSeconds: TimeInterval = 10
+    private static let blockingIOQueue = DispatchQueue(
+        label: "com.engram.service.ipc.blocking-io",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
 
     private let socketPath: String
     private let handler: Handler
@@ -106,7 +111,7 @@ final class UnixSocketServiceServer: Sendable {
                     // tripping the client's response-id match guard.
                     var decodedRequestId: String?
                     do {
-                        let frame = try UnixSocketEngramServiceTransport.readFrame(from: client)
+                        let frame = try await Self.readFrameOffCooperativePool(from: client)
                         let request = try JSONDecoder().decode(EngramServiceRequestEnvelope.self, from: frame)
                         decodedRequestId = request.requestId
                         // SEC-H1: destructive commands require a matching token.
@@ -117,10 +122,10 @@ final class UnixSocketServiceServer: Sendable {
                             )
                         }
                         let response = await handler(request)
-                        try UnixSocketEngramServiceTransport.writeFrame(try JSONEncoder().encode(response), to: client)
+                        try await Self.writeFrameOffCooperativePool(try JSONEncoder().encode(response), to: client)
                     } catch {
                         let response = Self.errorResponse(for: error, requestId: decodedRequestId)
-                        try? UnixSocketEngramServiceTransport.writeFrame(try JSONEncoder().encode(response), to: client)
+                        try? await Self.writeFrameOffCooperativePool(try JSONEncoder().encode(response), to: client)
                     }
                 }
                 let shouldContinue = state.withLock { state in
@@ -229,6 +234,31 @@ final class UnixSocketServiceServer: Sendable {
             )
         case .commandFailed(let name, let message, let retryPolicy, let details):
             return EngramServiceErrorEnvelope(name: name, message: message, retryPolicy: retryPolicy, details: details)
+        }
+    }
+
+    private static func readFrameOffCooperativePool(from fd: Int32) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            blockingIOQueue.async {
+                do {
+                    continuation.resume(returning: try UnixSocketEngramServiceTransport.readFrame(from: fd))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func writeFrameOffCooperativePool(_ data: Data, to fd: Int32) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            blockingIOQueue.async {
+                do {
+                    try UnixSocketEngramServiceTransport.writeFrame(data, to: fd)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 }

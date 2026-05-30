@@ -30,15 +30,17 @@ final class FTSRebuildPolicyTests: XCTestCase {
         }
 
         let counts = try readCounts(writer)
-        XCTAssertEqual(counts.ftsRows, 0)
+        XCTAssertEqual(counts.ftsRows, 1)
         XCTAssertEqual(counts.sessionsWithSize, 1)
         XCTAssertEqual(counts.sessionEmbeddings, 0)
         XCTAssertEqual(counts.vecSessions, 0)
         XCTAssertEqual(counts.sessionChunks, 1)
         XCTAssertEqual(counts.insights, 1)
         XCTAssertEqual(counts.insightsFts, 1)
-        XCTAssertEqual(counts.ftsVersion, "3")
+        XCTAssertEqual(counts.ftsVersion, "2")
+        XCTAssertEqual(counts.pendingFtsVersion, "3")
         XCTAssertTrue((try tableSQL(writer, "sessions_fts") ?? "").contains("CREATE VIRTUAL TABLE sessions_fts"))
+        XCTAssertTrue(try tableExists(writer, "sessions_fts_rebuild"))
     }
 
     func testCurrentFTSVersionIsNoOp() throws {
@@ -58,9 +60,26 @@ final class FTSRebuildPolicyTests: XCTestCase {
         XCTAssertEqual(counts.insightsFts, 1)
     }
 
-    // A version bump drops sessions_fts; enqueueStaleFtsJobs only re-enqueues
-    // sessions whose content version changed, so the rebuild must re-open the
-    // already-completed FTS jobs or unchanged sessions vanish from search.
+    func testFreshEmptyDatabaseMarksCurrentVersionWithoutShadowRebuild() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("fresh.sqlite"))
+        try writer.migrate()
+
+        let (ftsRows, ftsVersion, pendingFtsVersion) = try writer.read { db in
+            (
+                try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts") ?? -1,
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_version'"),
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_rebuild_version'")
+            )
+        }
+        XCTAssertEqual(ftsRows, 0)
+        XCTAssertEqual(ftsVersion, "3")
+        XCTAssertNil(pendingFtsVersion)
+        XCTAssertFalse(try tableExists(writer, "sessions_fts_rebuild"))
+    }
+
+    // A version bump must not drop the live sessions_fts table before the rebuilt
+    // table is ready. Re-open completed jobs and build into a shadow table first
+    // so old keyword search results remain available during the rebuild window.
     func testRebuildReopensCompletedFtsJobsForReindex() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("reopen-fts.sqlite"))
         try writer.migrate()
@@ -68,6 +87,7 @@ final class FTSRebuildPolicyTests: XCTestCase {
             try db.execute(sql: """
                 INSERT INTO sessions(id, source, start_time, cwd, file_path, size_bytes)
                 VALUES ('s1', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/s.jsonl', 42);
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'still searchable while rebuilding');
                 INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
                 VALUES ('s1:0::fts', 's1', 'fts', 0, 'completed');
                 INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
@@ -83,6 +103,11 @@ final class FTSRebuildPolicyTests: XCTestCase {
         }
         XCTAssertEqual(pending, 1, "completed FTS jobs must be re-opened so unchanged sessions get re-indexed")
         XCTAssertEqual(completed, 0)
+        let liveRows = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id = 's1'")
+        }
+        XCTAssertEqual(liveRows, ["still searchable while rebuilding"])
+        XCTAssertEqual(try writer.read { db in try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts_rebuild") }, 0)
     }
 
     private func seedRebuildState(_ writer: EngramDatabaseWriter, ftsVersion: String) throws {
@@ -113,7 +138,8 @@ final class FTSRebuildPolicyTests: XCTestCase {
         sessionChunks: Int,
         insights: Int,
         insightsFts: Int,
-        ftsVersion: String?
+        ftsVersion: String?,
+        pendingFtsVersion: String?
     ) {
         try writer.read { db in
             let ftsRows = try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts") ?? 0
@@ -124,6 +150,7 @@ final class FTSRebuildPolicyTests: XCTestCase {
             let insights = try Int.fetchOne(db, sql: "SELECT count(*) FROM insights") ?? 0
             let insightsFts = try Int.fetchOne(db, sql: "SELECT count(*) FROM insights_fts") ?? 0
             let ftsVersion = try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_version'")
+            let pendingFtsVersion = try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_rebuild_version'")
             return (
                 ftsRows,
                 sessionsWithSize,
@@ -132,7 +159,8 @@ final class FTSRebuildPolicyTests: XCTestCase {
                 sessionChunks,
                 insights,
                 insightsFts,
-                ftsVersion
+                ftsVersion,
+                pendingFtsVersion
             )
         }
     }
@@ -149,5 +177,9 @@ final class FTSRebuildPolicyTests: XCTestCase {
                 arguments: [name]
             )
         }
+    }
+
+    private func tableExists(_ writer: EngramDatabaseWriter, _ name: String) throws -> Bool {
+        try tableSQL(writer, name) != nil
     }
 }

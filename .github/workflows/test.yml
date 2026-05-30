@@ -57,7 +57,7 @@ jobs:
 
   swift-unit:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -93,14 +93,25 @@ jobs:
 
       - name: Run Swift unit tests
         run: |
-          cd macos && xcodebuild test \
-            -project Engram.xcodeproj \
-            -scheme Engram \
-            -skip-testing:EngramUITests \
-            -destination 'platform=macOS' \
-            CODE_SIGNING_ALLOWED=NO \
-            2>&1 | tee xcodebuild.log
-          grep -Fq '** TEST SUCCEEDED **' xcodebuild.log
+          cd macos
+
+          run_xcode_tests() {
+            local scheme="$1"
+            shift
+            local log="xcodebuild-${scheme}.log"
+            xcodebuild test \
+              -project Engram.xcodeproj \
+              -scheme "$scheme" \
+              -destination 'platform=macOS' \
+              CODE_SIGNING_ALLOWED=NO \
+              "$@" \
+              2>&1 | tee "$log"
+            grep -Fq '** TEST SUCCEEDED **' "$log"
+          }
+
+          run_xcode_tests Engram -skip-testing:EngramUITests
+          run_xcode_tests EngramServiceCore
+          run_xcode_tests EngramMCPTests
 
   fixture-check:
     runs-on: macos-15

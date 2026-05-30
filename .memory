@@ -1,5 +1,49 @@
 # Engram Local Memory
 
+## 2026-05-30 — deferred follow-ups closed and local app deployed (Codex)
+
+Resumed from Claude session `93d5af5d-80b5-42ee-bca2-b397732c0dd0` and chose
+the bundled continuation scope the user requested: include the two deferred
+items plus all follow-ups instead of only counting them.
+
+Closed deferred items:
+- **mig-2**: `FTSRebuildPolicy` now builds `sessions_fts_rebuild` as a shadow
+  table, keeps the live `sessions_fts` searchable while rebuild jobs run, and
+  atomically swaps the shadow into place only after recoverable FTS jobs drain.
+  Fresh empty databases mark `fts_version=3` immediately so parity/fresh-schema
+  checks still see current metadata.
+- **conc-1**: `UnixSocketServiceServer` now offloads blocking frame read/write
+  calls to a dedicated concurrent GCD queue, keeping per-client socket I/O off
+  Swift's cooperative executor while preserving #32's socket-timeout behavior.
+
+Closed follow-ups:
+- CI `swift-unit` now runs `Engram`, `EngramServiceCore`, and `EngramMCPTests`,
+  so service-core and MCP regressions are no longer only compile-gated.
+- Added `docs/reviews/2026-05-30-pr26-32-post-merge-regression-audit.md` with a
+  PASS verdict for the post-merge regression audit of PR #26-#32.
+- Updated the GitHub-facing `README.md` to match current reality: 28 Swift MCP
+  tools, keyword-only Swift search with semantic/hybrid downgrade behavior,
+  current App capabilities, and local release/deploy commands.
+
+Verification completed:
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -skip-testing:EngramUITests -destination 'platform=macOS'
+  CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`
+- `npm run lint`, `npm run build`, `npm run typecheck:test`,
+  `npm run test:coverage`, `npm run knip`, and `git diff --check`
+- `macos/scripts/build-release.sh --local-only` produced a full Developer ID
+  export at `macos/build/EngramExport/Engram.app`, version `0.1.0 (719)`, and
+  `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app` installed
+  matching build `719` into `/Applications/Engram.app`.
+
+Resume point: implementation, verification, local install, and app relaunch are
+complete. Remaining external release work, if needed later, is notarization and
+DMG packaging from the already exported Developer ID app.
+
 ## 2026-05-30 — deep-dimension audit round 2 complete (Claude)
 
 Chose option (a) from the prior resume point: a DEEPER 8-dimension

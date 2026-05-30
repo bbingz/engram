@@ -151,8 +151,9 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         do {
             let contents = try await buildSearchContent(adapter: adapter, source: contentSource)
             try writer.write { db in
-                try Self.replaceFtsContent(db, sessionId: job.sessionId, contents: contents)
+                try FTSRebuildPolicy.replaceFtsContent(db, sessionId: job.sessionId, contents: contents)
                 try Self.markCompleted(db, id: job.id)
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db)
             }
             return .completed
         } catch is CancellationError {
@@ -160,6 +161,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         } catch let failure as ParserFailure where Self.isTerminalFtsFailure(failure) {
             try writer.write { db in
                 try Self.markNotApplicable(db, id: job.id)
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db)
             }
             return .notApplicable
         } catch {
@@ -259,17 +261,6 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             locator: row["locator"] ?? "",
             summary: row["summary"]
         )
-    }
-
-    static func replaceFtsContent(_ db: Database, sessionId: String, contents: [String]) throws {
-        try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [sessionId])
-        for content in contents {
-            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            try db.execute(
-                sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
-                arguments: [sessionId, content]
-            )
-        }
     }
 
     static func markCompleted(_ db: Database, id: String) throws {

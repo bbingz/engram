@@ -7,6 +7,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Deferred follow-ups closed + local release build deployed (2026-05-30, Codex)
+
+Resumed from Claude session `93d5af5d-80b5-42ee-bca2-b397732c0dd0` and handled
+the combined continuation scope: the two deferred items plus all documented
+follow-ups from the prior audit handoff.
+
+- **Closed mig-2**: `FTSRebuildPolicy` now rebuilds into
+  `sessions_fts_rebuild`, keeps the live `sessions_fts` searchable during the
+  rebuild, and atomically swaps the shadow table into place only after
+  recoverable FTS jobs drain. Fresh empty databases mark `fts_version=3`
+  immediately so fresh-schema and parity checks stay current.
+- **Closed conc-1**: `UnixSocketServiceServer` now offloads blocking frame
+  reads/writes to a dedicated concurrent GCD queue, keeping per-client socket I/O
+  off Swift's cooperative executor while preserving the #32 receive-timeout
+  behavior.
+- **Closed CI follow-up**: `.github/workflows/test.yml` now runs the `Engram`,
+  `EngramServiceCore`, and `EngramMCPTests` schemes in `swift-unit`.
+- **Closed post-merge audit follow-up**:
+  `docs/reviews/2026-05-30-pr26-32-post-merge-regression-audit.md` records a
+  PASS verdict for PR #26-#32 with source-grounded evidence.
+- **Updated README reality map**: the GitHub-facing README now documents 28 Swift
+  MCP tools, keyword-only Swift search with semantic/hybrid downgrade behavior,
+  current App capabilities, and local release/deploy commands.
+- **Verified and deployed locally**: full Swift/Node verification passed, a full
+  Developer ID export was produced at `macos/build/EngramExport/Engram.app`, and
+  build `0.1.0 (719)` was installed into `/Applications/Engram.app`.
+
 ### Deep-dimension audit of main + 16 fixes across PR #26–#32 (2026-05-30, Claude)
 
 A second, deeper adversarially-verified audit (8 dimensions beyond the first

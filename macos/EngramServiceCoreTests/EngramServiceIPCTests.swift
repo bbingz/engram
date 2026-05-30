@@ -234,6 +234,24 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testUnixSocketServiceServerOffloadsBlockingFrameIO() throws {
+        // conc-1: per-client readFrame/writeFrame are POSIX blocking calls. They
+        // must run on a dedicated GCD queue instead of occupying Swift cooperative
+        // executor threads while a client is slow or idle.
+        let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
+        XCTAssertTrue(source.contains("blockingIOQueue.async"))
+        XCTAssertTrue(source.contains("readFrameOffCooperativePool"))
+        XCTAssertTrue(source.contains("writeFrameOffCooperativePool"))
+        XCTAssertFalse(
+            source.contains("let frame = try UnixSocketEngramServiceTransport.readFrame(from: client)"),
+            "client tasks must not call blocking readFrame directly"
+        )
+        XCTAssertFalse(
+            source.contains("try UnixSocketEngramServiceTransport.writeFrame(try JSONEncoder().encode(response), to: client)"),
+            "client tasks must not call blocking writeFrame directly"
+        )
+    }
+
     func testUnixSocketServiceServerStopCancelsInFlightClientHandlers() async throws {
         let paths = try makeServiceIPCPaths()
         let requestStarted = expectation(description: "request handler started")
