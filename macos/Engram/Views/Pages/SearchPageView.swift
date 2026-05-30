@@ -377,6 +377,10 @@ struct SearchPageView: View {
                 )
             )
 
+            // A slower in-flight search must not clobber the results of a newer
+            // query that superseded it: triggerSearch cancels this task, but the
+            // round-trip already returned, so guard before mutating @State.
+            guard !Task.isCancelled else { return }
             searchModes = response.searchModes ?? []
             warning = response.warning
             results = response.items.map(\.searchResult)
@@ -390,6 +394,7 @@ struct SearchPageView: View {
                     projects: selectedProjectFilter.map { Set([$0]) } ?? [],
                     since: selectedTimeFilter.sinceString()
                 )
+                guard !Task.isCancelled else { return }
                 searchModes = ["keyword (offline)"]
                 warning = nil
                 results = localResults.map { r in

@@ -156,8 +156,9 @@ struct ExpandableSessionCard: View {
                 .padding(.top, 2)
             }
         }
-        .onChange(of: confirmedChildCount + suggestedChildCount) {
-            // Invalidate cached children when counts change
+        .onChange(of: [confirmedChildCount, suggestedChildCount]) {
+            // Invalidate on EITHER count changing, not just their sum — a
+            // confirmed/suggested swap that preserves the total must still reload.
             children = []
             suggestedChildren = []
             if isExpanded {

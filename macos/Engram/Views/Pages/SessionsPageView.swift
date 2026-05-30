@@ -84,10 +84,12 @@ struct SessionsPageView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessions_container")
-        .task { await loadData() }
-        .onChange(of: timeFilter) { _, _ in Task { await loadData() } }
-        .onChange(of: sourceFilter) { _, _ in Task { await loadData() } }
-        .onChange(of: showHiddenSessions) { _, _ in Task { await loadData() } }
+        // Single id-keyed task: any filter change cancels the in-flight load and
+        // starts a fresh one, so a slower older load can't land last and leave
+        // the list showing the previous filter's sessions.
+        .task(id: [AnyHashable(timeFilter), AnyHashable(sourceFilter), AnyHashable(showHiddenSessions)]) {
+            await loadData()
+        }
     }
 
     private func loadData() async {

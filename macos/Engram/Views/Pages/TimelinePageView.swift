@@ -87,8 +87,9 @@ struct TimelinePageView: View {
             .padding(24)
         }
         .accessibilityIdentifier("timeline_container")
-        .task { await loadData() }
-        .onChange(of: sortMode) { _, _ in Task { await loadData() } }
+        // .task(id:) cancels the in-flight load when the sort changes, so a
+        // slower older load can't land last and show the previous sort's data.
+        .task(id: sortMode) { await loadData() }
     }
 
     private func loadData() async {
