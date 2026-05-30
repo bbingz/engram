@@ -29,6 +29,11 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let parentSessionId: String?
     let suggestedParentId: String?
     let linkSource: String?
+    /// 0–100 engagement/quality score computed at index time. Already stored and
+    /// consumed by the MCP path for ranking; decoded into the read model here.
+    /// Optional + defaulted so a missing column decodes to nil and the memberwise
+    /// init stays source-compatible.
+    var qualityScore: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -51,6 +56,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case parentSessionId  = "parent_session_id"
         case suggestedParentId = "suggested_parent_id"
         case linkSource       = "link_source"
+        case qualityScore     = "quality_score"
     }
 
     /// Prefer filePath; fall back to sourceLocator when filePath is empty.

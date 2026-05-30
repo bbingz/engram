@@ -130,6 +130,10 @@ public enum EngramServiceRunner {
         // (via IndexJobRunner) so search content is actually written.
         let initialScanTask = Task {
             await Self.runInitialScan(gate: gate, statusMonitor: statusMonitor)
+            // First product caller of observability retention. Restart-cadence
+            // prune is adequate (the legacy metrics writer is dormant, so this
+            // is largely a one-time backlog cleanup of unbounded tables).
+            await Self.runObservabilityRetention(gate: gate)
         }
 
         let indexingTask = Task {
@@ -239,6 +243,28 @@ public enum EngramServiceRunner {
                 "shutdown wal truncate failed: \(error.localizedDescription)",
                 category: .checkpoint
             )
+        }
+    }
+
+    /// Prune observability tables past their retention windows, through the
+    /// single-writer gate so it serializes with indexing writes.
+    private static func runObservabilityRetention(gate: ServiceWriterGate) async {
+        do {
+            let result = try await gate.performWriteCommand(name: "observabilityRetention") { writer in
+                try writer.write { db in
+                    try ObservabilityRetention.prune(db)
+                }
+            }
+            if result.value > 0 {
+                ServiceLogger.notice(
+                    "observability retention pruned \(result.value) rows",
+                    category: .runner
+                )
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.error("observability retention failed", category: .runner, error: error)
         }
     }
 

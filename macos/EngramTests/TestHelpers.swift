@@ -35,7 +35,8 @@ func createSessionsTable(at path: String) throws {
                 hidden_at TEXT,
                 custom_name TEXT,
                 tier TEXT,
-                generated_title TEXT
+                generated_title TEXT,
+                quality_score INTEGER
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
                 session_id UNINDEXED,
