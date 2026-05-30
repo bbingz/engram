@@ -7,6 +7,45 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Multi-expert audit of main + 13 fixes across PR #19–#23 (2026-05-30, Claude)
+
+After the PR #18/#15/#16 merge train, ran a 7-dimension adversarially-verified
+audit of the Swift product runtime (29 surviving findings, 0 refuted), deduped
+to ~15 real issues, and shipped 13 fixes as five focused, individually
+CI-green, squash-merged PRs:
+
+- **#19 search robustness** — (#1) FTS version bump dropped `sessions_fts` but
+  `enqueueStaleFtsJobs` only re-enqueues content-changed sessions, so unchanged
+  sessions vanished from search after an upgrade → re-open completed FTS jobs in
+  `FTSRebuildPolicy`. (#2) Raw queries with FTS5 syntax chars threw `fts5: syntax
+  error` → new `ftsMatchQuery` quotes each token. (#3) `containsCJK` missed
+  Hangul Syllables (≥ U+AC00) → Korean now routes through the LIKE fallback.
+  (#9) `GROUP BY … ORDER BY rank` used an arbitrary message bm25 → `MIN(rank)`.
+- **#20 runtime/data** — (#5) one-shot ~661k-row `metrics` prune (no `ts` index,
+  single transaction) → add `idx_metrics_ts` + rowid-bounded batched prune looped
+  via separate gated writes. (#4) menu-bar today's-parents badge over-counted →
+  add `suggested_parent_id IS NULL` + `tier != 'skip'`.
+- **#21 read-pool + shared helpers** — (#8) extracted the verbatim-duplicated
+  CJK/FTS helpers into `Shared/EngramCore/CJKText` (compiled into both app +
+  EngramCoreRead, no new dependency). (#15) app read-pool `cache_size` literal →
+  shared `SharedDBConfig.cacheSizeKiB`. (#10) `EngramServiceCommandHandler.readOnlyPool`
+  → `SQLiteConnectionPolicy.readerConfiguration()`.
+- **#22 dead-code removal** — (#7) deleted the never-instantiated
+  `MCPServer`/`MCPTools`/`IndexerProcess` cluster (incl. a Node-daemon spawner)
+  + its test.
+- **#23 parent-detection + service** — (#12) polycli review-content match scoped
+  to provider sources (`source != 'claude-code'`) so genuine claude-code review
+  sessions aren't hidden. (#13) all stdout JSON serialized through a lock-guarded
+  `writeStdoutLine`. (#14) `RepoDiscovery.sessionCwdCounts` capped to the 200
+  busiest cwds to bound the per-cycle git fan-out.
+
+Every behavior change has Swift tests; each PR was CI-green before squash-merge.
+Two larger items are deferred to their own focused PRs: **#6** (split the initial
+startup scan so it doesn't hold the single write gate for its whole duration — an
+architectural refactor of `StartupBackfills.runInitialScan`) and **#11**
+(plumb `quality_score` through `EngramServiceSearchResponse.Item` + a value-band
+UI, re-introducing the band removed in #21 — a feature needing UI design).
+
 ### Reviewed + hardened PR #15; merged PR #18/#15/#16 (2026-05-30, Claude)
 
 Multi-agent review of `feat/search-snippet-highlight` (6 dimensions,
