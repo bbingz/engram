@@ -1759,7 +1759,10 @@ private func sendWriteIntent(transport: UnixSocketEngramServiceTransport) async 
     databaseGeneration: Int
 ) {
     let request = EngramServiceRequestEnvelope(command: "test.write_intent")
-    let response = try await transport.send(request, timeout: 2)
+    // This helper verifies writer-gate serialization, not the transport's short
+    // default read timeout. CI macOS runners can briefly delay the second client
+    // while both connections and xcodebuild logging compete for executor time.
+    let response = try await transport.send(request, timeout: 10)
     guard case .success(_, let data, let generation?) = response else {
         throw EngramServiceError.invalidRequest(message: "Expected successful write intent response")
     }
