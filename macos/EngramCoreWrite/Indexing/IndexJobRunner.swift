@@ -51,36 +51,50 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         // Drain in batches so a 137k backlog doesn't load entirely into memory
         // and so each batch commits incrementally.
         while !Task.isCancelled {
-            let batch = try writer.read { db in
-                try Self.takeRecoverableJobs(db, limit: Self.drainBatchSize)
-            }
-            guard !batch.isEmpty else { break }
-
-            var batchProgress = 0
-            for job in batch {
-                try Task.checkCancellation()
-                let outcome = try await process(job)
-                switch outcome {
-                case .completed:
-                    totalCompleted += 1
-                    batchProgress += 1
-                case .notApplicable:
-                    totalNotApplicable += 1
-                    batchProgress += 1
-                case .retryable:
-                    break
-                }
-            }
-
-            // A short batch means we drained everything currently pending.
-            if batch.count < Self.drainBatchSize { break }
-            // A full batch that made zero terminal progress means every job is
-            // stuck retryable (e.g. transient I/O). Stop to avoid spinning on the
-            // same rows; the next periodic pass retries them.
-            if batchProgress == 0 { break }
+            let (result, drained) = try await runRecoverableJobsOnce()
+            totalCompleted += result.completed
+            totalNotApplicable += result.notApplicable
+            if drained { break }
         }
 
         return StartupIndexJobRecoveryResult(completed: totalCompleted, notApplicable: totalNotApplicable)
+    }
+
+    /// Process ONE batch of recoverable jobs. Returns the batch result and whether
+    /// the backlog is now drained (short batch, or a stuck full batch that made no
+    /// terminal progress). The startup drain loop calls this in its own gated
+    /// write command per batch so the (potentially 100k+) drain releases the
+    /// single write gate between batches and user write commands can interleave.
+    public func runRecoverableJobsOnce() async throws -> (result: StartupIndexJobRecoveryResult, drained: Bool) {
+        let batch = try writer.read { db in
+            try Self.takeRecoverableJobs(db, limit: Self.drainBatchSize)
+        }
+        guard !batch.isEmpty else {
+            return (StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0), true)
+        }
+
+        var completed = 0
+        var notApplicable = 0
+        var batchProgress = 0
+        for job in batch {
+            try Task.checkCancellation()
+            switch try await process(job) {
+            case .completed:
+                completed += 1
+                batchProgress += 1
+            case .notApplicable:
+                notApplicable += 1
+                batchProgress += 1
+            case .retryable:
+                break
+            }
+        }
+
+        // A short batch means we drained everything currently pending. A full
+        // batch with zero terminal progress means every job is stuck retryable
+        // (e.g. transient I/O); stop to avoid spinning on the same rows.
+        let drained = batch.count < Self.drainBatchSize || batchProgress == 0
+        return (StartupIndexJobRecoveryResult(completed: completed, notApplicable: notApplicable), drained)
     }
 
     /// No Swift embedding provider exists; insight embedding promotion is a no-op.

@@ -121,12 +121,45 @@ public enum StartupBackfills {
         }
     }
 
+    /// Full startup scan: structural backfills followed by the FTS-job drain.
+    /// Kept as a single entry point (and exercised whole by tests); the product
+    /// service instead calls `runStartupBackfills` and `drainStartupIndexJobs`
+    /// in separate gated write commands so the write gate is released between the
+    /// (long) structural scan and the (chunked) drain.
     public static func runInitialScan(
         emit: (StartupBackfillEvent) -> Void,
         log: any StartupBackfillLogging,
         usageCollector: any StartupUsageCollecting,
         indexer: any StartupIndexing,
         indexJobRunner: any StartupIndexJobRunning,
+        database: any StartupBackfillDatabase,
+        orphanScanner: any StartupOrphanScanning,
+        adapters: [any SessionAdapter] = []
+    ) async throws {
+        try await runStartupBackfills(
+            emit: emit,
+            log: log,
+            indexer: indexer,
+            database: database,
+            orphanScanner: orphanScanner,
+            adapters: adapters
+        )
+        try await drainStartupIndexJobs(
+            emit: emit,
+            log: log,
+            usageCollector: usageCollector,
+            indexJobRunner: indexJobRunner
+        )
+    }
+
+    /// Structural startup backfills: index, maintenance, parent-link detection,
+    /// emit "ready", orphan scan, and enqueue stale FTS jobs. Does NOT drain the
+    /// FTS backlog (see `drainStartupIndexJobs`), so the caller can run the drain
+    /// in separate gated write commands.
+    public static func runStartupBackfills(
+        emit: (StartupBackfillEvent) -> Void,
+        log: any StartupBackfillLogging,
+        indexer: any StartupIndexing,
         database: any StartupBackfillDatabase,
         orphanScanner: any StartupOrphanScanning,
         adapters: [any SessionAdapter] = []
@@ -291,7 +324,18 @@ public enum StartupBackfills {
         } catch {
             log.warn("stale fts job enqueue failed", error: error)
         }
+    }
 
+    /// Drain the FTS backlog enqueued by `runStartupBackfills`, then start the
+    /// usage collector. Separate from the structural scan so the product service
+    /// can run it in its own gated write command(s) and release the write gate
+    /// between batches.
+    public static func drainStartupIndexJobs(
+        emit: (StartupBackfillEvent) -> Void,
+        log: any StartupBackfillLogging,
+        usageCollector: any StartupUsageCollecting,
+        indexJobRunner: any StartupIndexJobRunning
+    ) async throws {
         do {
             let jobSummary = try await indexJobRunner.runRecoverableJobs()
             if jobSummary.completed > 0 || jobSummary.notApplicable > 0 {
