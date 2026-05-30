@@ -440,10 +440,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
         let limit = max(1, min(request.limit, 100))
         return try read { db in
-            if containsCJK(query) {
+            if CJKText.containsCJK(query) {
                 // Escape LIKE wildcards so a literal "%"/"_" in the query is
                 // matched verbatim instead of acting as a wildcard.
-                let pattern = "%\(escapeLikePattern(query))%"
+                let pattern = "%\(CJKText.escapeLikePattern(query))%"
                 var parts = ["""
                     SELECT s.*, f.content AS snippet
                     FROM sessions_fts f
@@ -493,7 +493,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             // alongside GROUP BY, so it runs in a correlated subquery that picks
             // the best-ranked FTS row per session; the outer query keeps the
             // existing GROUP BY/ORDER BY (sessions_fts is not 1:1 with sessions).
-            let match = ftsMatchQuery(query)
+            let match = CJKText.ftsMatchQuery(query)
             var args: [DatabaseValueConvertible] = [match, match]
             appendSearchFilters(for: request, to: &parts, args: &args)
             parts.append("""
@@ -745,41 +745,6 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
     }
 
-    private func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x2E80...0x9FFF).contains(scalar.value) ||
-                (0xF900...0xFAFF).contains(scalar.value) ||
-                (0xFE30...0xFE4F).contains(scalar.value) ||
-                (0x1100...0x11FF).contains(scalar.value) ||   // Hangul Jamo
-                (0xAC00...0xD7FF).contains(scalar.value)       // Hangul Syllables + Jamo Ext-B
-        }
-    }
-
-    /// Escape `\`, `%`, `_` for use with `LIKE ? ESCAPE '\'`.
-    private func escapeLikePattern(_ value: String) -> String {
-        var out = ""
-        out.reserveCapacity(value.count)
-        for ch in value {
-            if ch == "\\" || ch == "%" || ch == "_" {
-                out.append("\\")
-            }
-            out.append(ch)
-        }
-        return out
-    }
-
-    /// Build a safe FTS5 MATCH string from raw user input: each whitespace token
-    /// is wrapped in a double-quoted phrase (internal quotes doubled), so FTS5
-    /// special characters (`"`, `(`, `*`, `:`, `^`, `-`, `OR`/`AND`/`NEAR` …) are
-    /// matched literally instead of parsed as query syntax (which throws). Tokens
-    /// are space-joined, preserving multi-word implicit-AND semantics.
-    private func ftsMatchQuery(_ raw: String) -> String {
-        let tokens = raw.split(whereSeparator: { $0.isWhitespace })
-        guard !tokens.isEmpty else { return "\"\"" }
-        return tokens
-            .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-            .joined(separator: " ")
-    }
     /// Upper bound on the search snippet length returned over IPC. `f.content`
     /// in `sessions_fts` holds the full session text, which can be megabytes;
     /// returning it verbatim per result can blow the transport frame cap and
@@ -794,7 +759,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let rawSnippet = row["snippet"] as String?
         let snippetText: String?
         if let query, let content = rawSnippet,
-           let windowed = Self.cjkHighlightedSnippet(content: content, query: query) {
+           let windowed = CJKText.cjkHighlightedSnippet(content: content, query: query) {
             snippetText = windowed
         } else {
             snippetText = rawSnippet
@@ -836,37 +801,6 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         guard snippet.count > maxSnippetLength else { return snippet }
         let prefix = snippet.prefix(maxSnippetLength)
         return String(prefix) + "…"
-    }
-
-    /// Builds a match-centered, `<mark>`-highlighted preview for the CJK/LIKE
-    /// search path, where FTS5 `snippet()` is unavailable (LIKE is not a MATCH
-    /// query). Windows `content` around the first case-insensitive occurrence of
-    /// `query` and wraps every occurrence within that window in `<mark>…</mark>`.
-    /// Returns nil when the query is empty or not found, so the caller falls back
-    /// to the plain (truncated) content. Mirrors the Latin path's `<mark>` output
-    /// so the UI's SnippetHighlighter renders both identically.
-    static func cjkHighlightedSnippet(content: String, query: String, window: Int = 40) -> String? {
-        guard !query.isEmpty,
-              let first = content.range(of: query, options: .caseInsensitive) else {
-            return nil
-        }
-        let lower = content.index(first.lowerBound, offsetBy: -window, limitedBy: content.startIndex)
-            ?? content.startIndex
-        let upper = content.index(first.upperBound, offsetBy: window, limitedBy: content.endIndex)
-            ?? content.endIndex
-        var highlighted = ""
-        var rest = content[lower..<upper]
-        while let match = rest.range(of: query, options: .caseInsensitive) {
-            highlighted += rest[..<match.lowerBound]
-            highlighted += "<mark>"
-            highlighted += rest[match]
-            highlighted += "</mark>"
-            rest = rest[match.upperBound...]
-        }
-        highlighted += rest
-        let prefixEllipsis = lower > content.startIndex ? "…" : ""
-        let suffixEllipsis = upper < content.endIndex ? "…" : ""
-        return prefixEllipsis + highlighted + suffixEllipsis
     }
 
     private func resumeCLICommand(

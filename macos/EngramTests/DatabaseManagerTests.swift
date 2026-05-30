@@ -49,6 +49,15 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertNotEqual(mode, "unknown")
     }
 
+    // The GUI read pool must apply the shared cache_size (SharedDBConfig), so it
+    // cannot drift from SQLiteConnectionPolicy. cache_size is negative (KiB).
+    func testReadPoolAppliesSharedCacheSize() throws {
+        let cacheSize = try db.readInBackground { d in
+            try Int.fetchOne(d, sql: "PRAGMA cache_size") ?? 0
+        }
+        XCTAssertEqual(cacheSize, -SharedDBConfig.cacheSizeKiB)
+    }
+
     @MainActor
     func testReadInBackgroundLazilyOpensExistingDatabase() throws {
         let lazyDb = DatabaseManager(path: dbPath)

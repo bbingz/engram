@@ -98,7 +98,7 @@ final class DatabaseManager {
         // ~2 MiB default. (mmap is intentionally NOT enabled; see
         // SQLiteConnectionPolicy for the VACUUM/SIGBUS rationale.)
         configuration.prepareDatabase { db in
-            try db.execute(sql: "PRAGMA cache_size = -16000")
+            try db.execute(sql: "PRAGMA cache_size = -\(SharedDBConfig.cacheSizeKiB)")
         }
         return try DatabasePool(path: path, configuration: configuration)
     }
@@ -330,44 +330,6 @@ final class DatabaseManager {
 
     // MARK: - search (FTS5 trigram)
 
-    /// SQLite trigram tokenizer uses byte-level 3-byte windows — CJK chars (3 bytes each)
-    /// produce cross-character garbage trigrams. Detect CJK and fall back to LIKE.
-    nonisolated private static func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { s in
-            (0x2E80...0x9FFF).contains(s.value) ||
-            (0xF900...0xFAFF).contains(s.value) ||
-            (0xFE30...0xFE4F).contains(s.value) ||
-            (0x1100...0x11FF).contains(s.value) ||   // Hangul Jamo
-            (0xAC00...0xD7FF).contains(s.value)      // Hangul Syllables + Jamo Ext-B
-        }
-    }
-
-    /// Escape `\`, `%`, `_` for use with `LIKE ? ESCAPE '\'`.
-    nonisolated private static func escapeLikePattern(_ value: String) -> String {
-        var out = ""
-        out.reserveCapacity(value.count)
-        for ch in value {
-            if ch == "\\" || ch == "%" || ch == "_" {
-                out.append("\\")
-            }
-            out.append(ch)
-        }
-        return out
-    }
-
-    /// Build a safe FTS5 MATCH string from raw user input: each whitespace token
-    /// is wrapped in a double-quoted phrase (internal quotes doubled), so FTS5
-    /// special characters (`"`, `(`, `*`, `:`, `^`, `-`, `OR`/`AND`/`NEAR` …) are
-    /// matched literally instead of parsed as query syntax (which throws). Tokens
-    /// are space-joined, preserving multi-word implicit-AND semantics.
-    nonisolated private static func ftsMatchQuery(_ raw: String) -> String {
-        let tokens = raw.split(whereSeparator: { $0.isWhitespace })
-        guard !tokens.isEmpty else { return "\"\"" }
-        return tokens
-            .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-            .joined(separator: " ")
-    }
-
     nonisolated private static func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
         let count = try Int.fetchOne(
             db,
@@ -410,9 +372,9 @@ final class DatabaseManager {
         guard query.count >= 2 else { return [] }
 
         // CJK: use LIKE fallback (trigram MATCH broken for CJK)
-        if Self.containsCJK(query) {
+        if CJKText.containsCJK(query) {
             // Escape LIKE wildcards so literal "%"/"_" match verbatim.
-            let pattern = "%\(Self.escapeLikePattern(query))%"
+            let pattern = "%\(CJKText.escapeLikePattern(query))%"
             return try readInBackground { db in
                 var parts = ["""
                     SELECT DISTINCT s.* FROM sessions_fts f
@@ -449,7 +411,7 @@ final class DatabaseManager {
                 WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
             """]
-            var args: [DatabaseValueConvertible] = [Self.ftsMatchQuery(query)]
+            var args: [DatabaseValueConvertible] = [CJKText.ftsMatchQuery(query)]
             Self.appendSearchFilters(
                 to: &parts,
                 args: &args,
@@ -471,35 +433,6 @@ final class DatabaseManager {
         }
     }
 
-    /// Builds a match-centered, `<mark>`-highlighted preview for the CJK/LIKE
-    /// path, where FTS5 `snippet()` is unavailable (LIKE is not a MATCH query).
-    /// Mirrors the service-side helper so the UI's SnippetHighlighter renders
-    /// offline and online results identically. Returns nil when the query is
-    /// empty or not found (caller falls back to plain content).
-    nonisolated static func cjkHighlightedSnippet(content: String, query: String, window: Int = 40) -> String? {
-        guard !query.isEmpty,
-              let first = content.range(of: query, options: .caseInsensitive) else {
-            return nil
-        }
-        let lower = content.index(first.lowerBound, offsetBy: -window, limitedBy: content.startIndex)
-            ?? content.startIndex
-        let upper = content.index(first.upperBound, offsetBy: window, limitedBy: content.endIndex)
-            ?? content.endIndex
-        var highlighted = ""
-        var rest = content[lower..<upper]
-        while let match = rest.range(of: query, options: .caseInsensitive) {
-            highlighted += rest[..<match.lowerBound]
-            highlighted += "<mark>"
-            highlighted += rest[match]
-            highlighted += "</mark>"
-            rest = rest[match.upperBound...]
-        }
-        highlighted += rest
-        let prefixEllipsis = lower > content.startIndex ? "…" : ""
-        let suffixEllipsis = upper < content.endIndex ? "…" : ""
-        return prefixEllipsis + highlighted + suffixEllipsis
-    }
-
     /// Like `search`, but returns each session paired with a match-centered,
     /// `<mark>`-highlighted snippet. Used by the GUI offline-fallback path so a
     /// service outage still shows the same windowed highlights as the live
@@ -513,8 +446,8 @@ final class DatabaseManager {
     ) throws -> [(session: Session, snippet: String)] {
         guard query.count >= 2 else { return [] }
 
-        if Self.containsCJK(query) {
-            let pattern = "%\(Self.escapeLikePattern(query))%"
+        if CJKText.containsCJK(query) {
+            let pattern = "%\(CJKText.escapeLikePattern(query))%"
             return try readInBackground { db in
                 var parts = ["""
                     SELECT s.*, f.content AS snippet FROM sessions_fts f
@@ -529,7 +462,7 @@ final class DatabaseManager {
                 let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
                 return try rows.map { row in
                     let content = (row["snippet"] as String?) ?? ""
-                    let snippet = Self.cjkHighlightedSnippet(content: content, query: query) ?? content
+                    let snippet = CJKText.cjkHighlightedSnippet(content: content, query: query) ?? content
                     return (try Session(row: row), snippet)
                 }
             }
@@ -552,7 +485,7 @@ final class DatabaseManager {
             """]
             // Two binds: the snippet() subquery and the main MATCH. Escape the raw
             // query so FTS5 special characters don't throw a syntax error.
-            let match = Self.ftsMatchQuery(query)
+            let match = CJKText.ftsMatchQuery(query)
             var args: [DatabaseValueConvertible] = [match, match]
             Self.appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
             parts.append("GROUP BY s.id ORDER BY MIN(rank) LIMIT ?")

@@ -1505,9 +1505,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     private static func readOnlyPool(path: String) throws -> DatabasePool {
-        var configuration = Configuration()
-        configuration.readonly = true
-        return try DatabasePool(path: path, configuration: configuration)
+        // Use the hardened reader policy (busy_timeout, cache_size, WAL/FK guards)
+        // shared with the main service read pool, not a bare Configuration.
+        try DatabasePool(path: path, configuration: SQLiteConnectionPolicy.readerConfiguration())
     }
 
     static func aiContext(from row: Row, db: Database) throws -> AIContext {
