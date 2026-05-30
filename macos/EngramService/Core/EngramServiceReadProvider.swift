@@ -493,11 +493,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             // alongside GROUP BY, so it runs in a correlated subquery that picks
             // the best-ranked FTS row per session; the outer query keeps the
             // existing GROUP BY/ORDER BY (sessions_fts is not 1:1 with sessions).
-            var args: [DatabaseValueConvertible] = [query, query]
+            let match = ftsMatchQuery(query)
+            var args: [DatabaseValueConvertible] = [match, match]
             appendSearchFilters(for: request, to: &parts, args: &args)
             parts.append("""
                 GROUP BY s.id
-                ORDER BY rank
+                ORDER BY MIN(rank)
                 LIMIT ?
             """)
             args.append(limit)
@@ -748,7 +749,9 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         text.unicodeScalars.contains { scalar in
             (0x2E80...0x9FFF).contains(scalar.value) ||
                 (0xF900...0xFAFF).contains(scalar.value) ||
-                (0xFE30...0xFE4F).contains(scalar.value)
+                (0xFE30...0xFE4F).contains(scalar.value) ||
+                (0x1100...0x11FF).contains(scalar.value) ||   // Hangul Jamo
+                (0xAC00...0xD7FF).contains(scalar.value)       // Hangul Syllables + Jamo Ext-B
         }
     }
 
@@ -763,6 +766,19 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             out.append(ch)
         }
         return out
+    }
+
+    /// Build a safe FTS5 MATCH string from raw user input: each whitespace token
+    /// is wrapped in a double-quoted phrase (internal quotes doubled), so FTS5
+    /// special characters (`"`, `(`, `*`, `:`, `^`, `-`, `OR`/`AND`/`NEAR` …) are
+    /// matched literally instead of parsed as query syntax (which throws). Tokens
+    /// are space-joined, preserving multi-word implicit-AND semantics.
+    private func ftsMatchQuery(_ raw: String) -> String {
+        let tokens = raw.split(whereSeparator: { $0.isWhitespace })
+        guard !tokens.isEmpty else { return "\"\"" }
+        return tokens
+            .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
+            .joined(separator: " ")
     }
     /// Upper bound on the search snippet length returned over IPC. `f.content`
     /// in `sessions_fts` holds the full session text, which can be megabytes;

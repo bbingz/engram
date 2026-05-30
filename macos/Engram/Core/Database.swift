@@ -336,7 +336,9 @@ final class DatabaseManager {
         text.unicodeScalars.contains { s in
             (0x2E80...0x9FFF).contains(s.value) ||
             (0xF900...0xFAFF).contains(s.value) ||
-            (0xFE30...0xFE4F).contains(s.value)
+            (0xFE30...0xFE4F).contains(s.value) ||
+            (0x1100...0x11FF).contains(s.value) ||   // Hangul Jamo
+            (0xAC00...0xD7FF).contains(s.value)      // Hangul Syllables + Jamo Ext-B
         }
     }
 
@@ -351,6 +353,19 @@ final class DatabaseManager {
             out.append(ch)
         }
         return out
+    }
+
+    /// Build a safe FTS5 MATCH string from raw user input: each whitespace token
+    /// is wrapped in a double-quoted phrase (internal quotes doubled), so FTS5
+    /// special characters (`"`, `(`, `*`, `:`, `^`, `-`, `OR`/`AND`/`NEAR` …) are
+    /// matched literally instead of parsed as query syntax (which throws). Tokens
+    /// are space-joined, preserving multi-word implicit-AND semantics.
+    nonisolated private static func ftsMatchQuery(_ raw: String) -> String {
+        let tokens = raw.split(whereSeparator: { $0.isWhitespace })
+        guard !tokens.isEmpty else { return "\"\"" }
+        return tokens
+            .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
+            .joined(separator: " ")
     }
 
     nonisolated private static func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
@@ -434,7 +449,7 @@ final class DatabaseManager {
                 WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
             """]
-            var args: [DatabaseValueConvertible] = [query]
+            var args: [DatabaseValueConvertible] = [Self.ftsMatchQuery(query)]
             Self.appendSearchFilters(
                 to: &parts,
                 args: &args,
@@ -444,7 +459,7 @@ final class DatabaseManager {
             )
             parts.append("""
                 GROUP BY s.id
-                ORDER BY rank
+                ORDER BY MIN(rank)
                 LIMIT ?
             """)
             args.append(limit)
@@ -535,10 +550,12 @@ final class DatabaseManager {
                 WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
             """]
-            // Two binds: the snippet() subquery and the main MATCH.
-            var args: [DatabaseValueConvertible] = [query, query]
+            // Two binds: the snippet() subquery and the main MATCH. Escape the raw
+            // query so FTS5 special characters don't throw a syntax error.
+            let match = Self.ftsMatchQuery(query)
+            var args: [DatabaseValueConvertible] = [match, match]
             Self.appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
-            parts.append("GROUP BY s.id ORDER BY rank LIMIT ?")
+            parts.append("GROUP BY s.id ORDER BY MIN(rank) LIMIT ?")
             args.append(limit)
             let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
             return try rows.map { row in
