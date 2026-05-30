@@ -1,5 +1,53 @@
 # Engram Local Memory
 
+## 2026-05-30 — main audit round complete; resume point for next round (Claude)
+
+State at save: `main` is at the "docs: mark audit follow-up #11 shipped" commit
+(`dfa0fe7c`). Open PRs: 0. Working tree clean. CHANGELOG `[Unreleased]` has the
+full per-issue detail.
+
+What shipped this round: a 7-dimension adversarially-verified audit of the Swift
+product runtime (29 surviving findings / 0 refuted) → ~15 deduped real issues →
+all fixed across seven CI-green squash-merged PRs:
+- #19 search robustness (FTS version-bump reindex, FTS5 query escaping via
+  ftsMatchQuery, Hangul in containsCJK, ORDER BY MIN(rank)).
+- #20 runtime/data (idx_metrics_ts + rowid-batched observability prune looped
+  via separate gated writes; today-parents badge filters).
+- #21 read-pool + shared helpers (Shared/EngramCore/CJKText — compiled into both
+  the Engram app AND EngramCoreRead with NO new module dep; SharedDBConfig
+  cache_size; readOnlyPool → readerConfiguration).
+- #22 deleted dead MCPServer/MCPTools/IndexerProcess (+ node-daemon spawner).
+- #23 polycli review match scoped to `source != 'claude-code'`; stdout serialized
+  via writeStdoutLine lock; RepoDiscovery.sessionCwdCounts capped to top-200.
+- #24 (#6) startup gate split: StartupBackfills.runInitialScan now delegates to
+  runStartupBackfills + drainStartupIndexJobs; IndexJobRunner.runRecoverableJobsOnce
+  (single batch); EngramServiceRunner runs structural scan in one gated command
+  then drains FTS one batch per gated command. indexAll itself still holds the
+  gate (inherent to single-writer model) — only the FTS-drain tail is bounded.
+- #25 (#11) value band online: quality_score → EngramServiceSearchResponse.Item →
+  Item.searchResult → Session; Session.ValueBand re-added; SearchPageView draws a
+  thin leading value-band bar (high=green/medium=neutral/low=dim/unknown=clear).
+  SearchView struct itself is UNUSED but its `Item.searchResult` extension IS the
+  live online-path mapping.
+
+Durable non-obvious lessons:
+- Workflow that worked: one git worktree per batch off latest `origin/main`,
+  implement + Swift tests, build/run affected test classes, squash-merge after CI
+  green, then next batch off updated main (no PR stacking). xcodegen generate
+  after adding/removing Swift files.
+- CI polling MUST use Bash run_in_background:true (harness-tracked, notifies on
+  completion). A `&`-detached subshell is NOT tracked and never notifies — I hit
+  this twice. Convert +0800 commit times to UTC before judging gh statusCheckRollup.
+- The user picked the value-band UI as a LEFT BAR (not dot/pill).
+
+Resume point — user wants EITHER: (a) a DEEPER-dimension audit of `main` (beyond
+the 7 dims already run: e.g. concurrency/actor-isolation deep dive, GRDB txn
+correctness, IPC/transport edge cases, migration idempotency, embedding/vector
+paths, UI state races), OR (b) a post-merge REGRESSION audit specifically of the
+PR #19–#25 changes (verify the fixes didn't introduce new issues; re-check the
+gate-split startup ordering, the batched prune, the CJKText extraction, the
+value-band plumbing). Start from current `main` HEAD.
+
 ## 2026-05-30 — PR #18 review/confirmation (Claude)
 
 Durable, non-obvious lessons:
