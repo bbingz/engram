@@ -504,10 +504,10 @@ final class DatabaseManager {
                 parts.append("GROUP BY s.id ORDER BY s.start_time DESC LIMIT ?")
                 args.append(limit)
                 let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
-                return rows.map { row in
+                return try rows.map { row in
                     let content = (row["snippet"] as String?) ?? ""
                     let snippet = Self.cjkHighlightedSnippet(content: content, query: query) ?? content
-                    return (try! Session(row: row), snippet)
+                    return (try Session(row: row), snippet)
                 }
             }
         }
@@ -533,8 +533,8 @@ final class DatabaseManager {
             parts.append("GROUP BY s.id ORDER BY rank LIMIT ?")
             args.append(limit)
             let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
-            return rows.map { row in
-                (try! Session(row: row), (row["snippet"] as String?) ?? "")
+            return try rows.map { row in
+                (try Session(row: row), (row["snippet"] as String?) ?? "")
             }
         }
     }

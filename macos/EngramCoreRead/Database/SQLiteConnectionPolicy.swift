@@ -10,13 +10,17 @@ public enum SQLiteConnectionPolicy {
     public static let busyTimeoutMilliseconds = 30_000
     public static let minimumBusyTimeoutMilliseconds = 5_000
     public static let walAutocheckpointPages = 1_000
-    /// Memory-map window for the DB file. The index DB is hundreds of MB and is
-    /// dominated by FTS reads; mmap lets SQLite page it in via the OS page cache
-    /// instead of read() syscalls. 256 MiB caps the mapping.
-    public static let mmapSizeBytes = 256 * 1024 * 1024
     /// Page cache per connection. Negative = KiB (not pages), so ~16 MiB
     /// regardless of page size — larger than the default ~2 MiB to keep hot FTS
-    /// b-tree pages resident across queries.
+    /// b-tree pages resident across queries. This is the primary read accelerator
+    /// for the hundreds-of-MB FTS-heavy index DB.
+    ///
+    /// We deliberately do NOT enable `PRAGMA mmap_size`. The service runs an
+    /// in-process startup `VACUUM` (StartupBackfills.vacuumIfNeeded) that rewrites
+    /// and can shrink the DB file while reader connections in the SAME process are
+    /// already serving socket requests; a large mmap window over a file truncated
+    /// underneath a live reader is a SIGBUS hazard. cache_size delivers the
+    /// hot-page residency benefit without that risk.
     public static let cacheSizeKiB = 16_000
 
     public static func writerConfiguration() -> Configuration {
@@ -54,7 +58,6 @@ public enum SQLiteConnectionPolicy {
         try db.execute(sql: "PRAGMA foreign_keys = ON")
         try db.execute(sql: "PRAGMA synchronous = NORMAL")
         try db.execute(sql: "PRAGMA wal_autocheckpoint = \(walAutocheckpointPages)")
-        try db.execute(sql: "PRAGMA mmap_size = \(mmapSizeBytes)")
         try db.execute(sql: "PRAGMA cache_size = -\(cacheSizeKiB)")
         let timeout = try Int.fetchOne(db, sql: "PRAGMA busy_timeout") ?? 0
         guard timeout >= minimumBusyTimeoutMilliseconds else {
