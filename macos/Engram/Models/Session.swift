@@ -30,9 +30,9 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let suggestedParentId: String?
     let linkSource: String?
     /// 0–100 engagement/quality score computed at index time. Already stored and
-    /// consumed by the MCP path for ranking; surfaced to the GUI here. Optional +
-    /// defaulted so a missing column decodes to nil and the memberwise init stays
-    /// source-compatible.
+    /// consumed by the MCP path for ranking; decoded into the read model here.
+    /// Optional + defaulted so a missing column decodes to nil and the memberwise
+    /// init stays source-compatible.
     var qualityScore: Int? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -63,21 +63,6 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     var effectiveFilePath: String {
         if filePath.isEmpty, let sl = sourceLocator, !sl.isEmpty { return sl }
         return filePath
-    }
-
-    /// Coarse value tier from `qualityScore` for at-a-glance value
-    /// differentiation. Thresholds are measured on the live distribution
-    /// (n=2578 non-skip; min 0 / max 74 / avg 42; scores cluster in 30–39):
-    /// <=35 low, >=60 high — NOT 33/67-of-100, since scores top out near 74.
-    /// nil score → unknown.
-    enum ValueBand: String { case high, medium, low, unknown }
-    static let valueBandLowMax = 35
-    static let valueBandHighMin = 60
-    var valueBand: ValueBand {
-        guard let score = qualityScore else { return .unknown }
-        if score >= Self.valueBandHighMin { return .high }
-        if score <= Self.valueBandLowMax { return .low }
-        return .medium
     }
 
     var displayTitle: String {

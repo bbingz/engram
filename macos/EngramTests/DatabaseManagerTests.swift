@@ -346,10 +346,10 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     // quality_score (already computed at index time) must decode into the GUI
-    // read model and map to a value band. Session uses an explicit CodingKeys
-    // enum, so qualityScore must be a listed key or it silently stays nil.
+    // read model. Session uses an explicit CodingKeys enum, so qualityScore must
+    // be a listed key or it silently stays nil.
     @MainActor
-    func testSearchPopulatesQualityScoreAndValueBand() throws {
+    func testSearchPopulatesQualityScore() throws {
         try insertTestSession(at: dbPath, id: "s-hi", source: "claude-code")
         try insertTestSession(at: dbPath, id: "s-lo", source: "claude-code")
         try insertFTSContent(at: dbPath, sessionId: "s-hi", content: "alpha widget refactor")
@@ -363,9 +363,7 @@ final class DatabaseManagerTests: XCTestCase {
         let results = try db.search(query: "widget")
         let byId = Dictionary(uniqueKeysWithValues: results.map { ($0.id, $0) })
         XCTAssertEqual(byId["s-hi"]?.qualityScore, 65)
-        XCTAssertEqual(byId["s-hi"]?.valueBand, .high)
         XCTAssertEqual(byId["s-lo"]?.qualityScore, 20)
-        XCTAssertEqual(byId["s-lo"]?.valueBand, .low)
     }
 
     // searchWithSnippets powers the GUI offline-fallback path: it must return a

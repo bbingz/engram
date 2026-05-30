@@ -92,6 +92,14 @@ final class DatabaseManager {
     nonisolated private static func openReadOnlyPool(at path: String) throws -> DatabasePool {
         var configuration = Configuration()
         configuration.readonly = true
+        // Match SQLiteConnectionPolicy.cacheSizeKiB (16 MiB page cache) so the GUI
+        // read path — including searchWithSnippets over the hundreds-of-MB FTS
+        // index — keeps hot FTS pages resident across queries instead of the
+        // ~2 MiB default. (mmap is intentionally NOT enabled; see
+        // SQLiteConnectionPolicy for the VACUUM/SIGBUS rationale.)
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA cache_size = -16000")
+        }
         return try DatabasePool(path: path, configuration: configuration)
     }
 
