@@ -419,6 +419,22 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(subTier, "skip", "true subagent tier must stay 'skip'")
     }
 
+    // The menu-bar "today's parents" badge must match the UI top-level filter:
+    // exclude sessions that have a suggested parent and skip-tier noise, not just
+    // confirmed children. Future start_time keeps every row inside the badge's
+    // `start_time >= startOfToday` window deterministically.
+    func testIndexStatusTodayParentsExcludesSuggestedAndSkip() throws {
+        try writer.write { db in
+            try db.execute(sql: "INSERT INTO sessions (id, source, start_time, file_path, tier) VALUES ('top', 'claude-code', '2099-01-01T00:00:00Z', '/tmp/top.jsonl', 'normal')")
+            try db.execute(sql: "INSERT INTO sessions (id, source, start_time, file_path, suggested_parent_id, tier) VALUES ('sug', 'codex', '2099-01-01T00:00:00Z', '/tmp/sug.jsonl', 'top', 'normal')")
+            try db.execute(sql: "INSERT INTO sessions (id, source, start_time, file_path, parent_session_id, tier, agent_role) VALUES ('sub', 'codex', '2099-01-01T00:00:00Z', '/tmp/sub.jsonl', 'top', 'skip', 'subagent')")
+            try db.execute(sql: "INSERT INTO sessions (id, source, start_time, file_path, tier) VALUES ('skipTop', 'codex', '2099-01-01T00:00:00Z', '/tmp/skip.jsonl', 'skip')")
+        }
+
+        let status = try writer.indexStatus()
+        XCTAssertEqual(status.todayParents, 1, "only the genuine top-level normal session counts")
+    }
+
     // MARK: - WP-M1: reconcileInsights does not wipe vector store when insights empty
 
     func testReconcileInsightsDoesNotWipeVectorStoreWhenInsightsEmpty() throws {

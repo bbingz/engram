@@ -247,17 +247,27 @@ public enum EngramServiceRunner {
     }
 
     /// Prune observability tables past their retention windows, through the
-    /// single-writer gate so it serializes with indexing writes.
+    /// single-writer gate so it serializes with indexing writes. The one-time
+    /// backlog can be ~661k rows; delete it in bounded batches, each its own
+    /// gated write transaction, so the prune neither holds the writer gate nor
+    /// spikes the WAL for its whole duration. The gate is released between
+    /// batches, letting user write commands interleave.
     private static func runObservabilityRetention(gate: ServiceWriterGate) async {
+        let batchLimit = 5_000
+        var total = 0
         do {
-            let result = try await gate.performWriteCommand(name: "observabilityRetention") { writer in
-                try writer.write { db in
-                    try ObservabilityRetention.prune(db)
+            while !Task.isCancelled {
+                let deleted = try await gate.performWriteCommand(name: "observabilityRetention") { writer in
+                    try writer.write { db in
+                        try ObservabilityRetention.prune(db, limit: batchLimit)
+                    }
                 }
+                total += deleted.value
+                if deleted.value == 0 { break }
             }
-            if result.value > 0 {
+            if total > 0 {
                 ServiceLogger.notice(
-                    "observability retention pruned \(result.value) rows",
+                    "observability retention pruned \(total) rows",
                     category: .runner
                 )
             }

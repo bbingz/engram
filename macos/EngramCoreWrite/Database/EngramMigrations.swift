@@ -251,6 +251,9 @@ enum EngramMigrations {
             );
             CREATE INDEX IF NOT EXISTS idx_metrics_name_ts ON metrics(name, ts);
             CREATE INDEX IF NOT EXISTS idx_metrics_name_type ON metrics(name, type);
+            -- Standalone ts index so age-based retention pruning is index-driven
+            -- instead of a full table scan (idx_metrics_name_ts leads with `name`).
+            CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
 
             CREATE TABLE IF NOT EXISTS metrics_hourly (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
