@@ -221,6 +221,7 @@ public enum RepoDiscovery {
         process.standardError = err
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
+        let started = DispatchTime.now().uptimeNanoseconds
         do {
             try process.run()
         } catch {
@@ -229,6 +230,10 @@ public enum RepoDiscovery {
         guard finished.wait(timeout: .now() + timeoutSeconds) == .success else {
             process.terminate()
             _ = finished.wait(timeout: .now() + 1)
+            return nil
+        }
+        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - started
+        guard Double(elapsedNanoseconds) / 1_000_000_000 <= timeoutSeconds else {
             return nil
         }
         let data = out.fileHandleForReading.readDataToEndOfFile()

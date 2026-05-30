@@ -612,13 +612,17 @@ describe('Hono API server — additional endpoints', () => {
   });
 
   it('POST /api/session/:id/resume returns resume command for existing session', async () => {
-    db.upsertSession(mockSession);
+    db.upsertSession({
+      ...mockSession,
+      source: 'cursor',
+    });
     const res = await app.request('/api/session/session-001/resume', {
       method: 'POST',
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toHaveProperty('command');
+    expect(body).toHaveProperty('command', 'open');
+    expect(body.args).toContain('Cursor');
   });
 
   it('POST /api/handoff returns 400 when cwd missing', async () => {
