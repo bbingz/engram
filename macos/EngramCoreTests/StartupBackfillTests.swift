@@ -65,6 +65,32 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testRunPeriodicParentBackfillsLinksAgentChildren() throws {
+        try writer.write { db in
+            try insertSession(db, id: "parent-1", source: "codex", tier: "normal")
+            try insertSession(
+                db,
+                id: "child-1",
+                source: "codex",
+                filePath: "/tmp/parent-1/subagents/worker.jsonl",
+                agentRole: "subagent",
+                tier: "skip"
+            )
+        }
+
+        // idx-1: the periodic indexing loop must run parent detection so a
+        // freshly indexed subagent child is grouped under its parent without
+        // waiting for a service restart.
+        try writer.runPeriodicParentBackfills()
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child-1'"),
+                "parent-1"
+            )
+        }
+    }
+
     func testResetStaleDetectionsStoresVersionAndSkipsManualLinks() throws {
         try writer.write { db in
             try db.execute(sql: "INSERT INTO metadata(key, value) VALUES ('detection_version', '3')")
