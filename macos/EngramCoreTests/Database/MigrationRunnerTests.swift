@@ -210,6 +210,41 @@ final class MigrationRunnerTests: XCTestCase {
         }
     }
 
+    func testMigrationDropsOrphanedAuxRowsInsteadOfFailing() throws {
+        let path = databasePath("orphan-aux.sqlite")
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try seedLegacyAuxiliarySchema(db)
+            // Aux rows whose session_id has NO matching sessions row. The v2
+            // tables declare session_id REFERENCES sessions(id) with
+            // foreign_keys=ON, so copying these would raise "FOREIGN KEY
+            // constraint failed" and abort the whole migration -> the service
+            // exits 70 on every boot with no automatic recovery.
+            try db.execute(sql: "INSERT INTO session_tools(session_id, tool_name, count) VALUES ('ghost', 'Read', 9)")
+            try db.execute(sql: "INSERT INTO session_files(session_id, file_path, action, count) VALUES ('ghost', '/tmp/x.txt', 'read', 1)")
+            try db.execute(sql: "INSERT INTO session_costs(session_id, model, computed_at) VALUES ('ghost', 'gpt', '2026-01-01T00:00:00.000Z')")
+        }
+
+        let writer = try EngramDatabaseWriter(path: path)
+        // Must NOT throw: orphaned aux rows are filtered out during the rebuild.
+        try writer.migrate()
+
+        try writer.write { db in
+            XCTAssertNil(
+                try Int.fetchOne(db, sql: "SELECT call_count FROM session_tools WHERE session_id = 'ghost'"),
+                "orphaned tool row must be dropped, not migrated"
+            )
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT action FROM session_files WHERE session_id = 'ghost'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT computed_at FROM session_costs WHERE session_id = 'ghost'"))
+            // Legitimate rows are still migrated to the v2 schema.
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT call_count FROM session_tools WHERE session_id = 'legacy-1'"), 2)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT computed_at FROM session_costs WHERE session_id = 'legacy-1'"),
+                "2026-01-01T00:00:00.000Z"
+            )
+        }
+    }
+
     private func databasePath(_ name: String) -> String {
         tempDir.appendingPathComponent(name).path
     }

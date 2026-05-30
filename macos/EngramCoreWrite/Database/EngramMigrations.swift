@@ -433,6 +433,7 @@ enum EngramMigrations {
             SELECT session_id, tool_name, \(countExpr)
             FROM session_tools
             WHERE session_id IS NOT NULL AND tool_name IS NOT NULL
+              AND session_id IN (SELECT id FROM sessions)
         """)
         try replaceTable(db, old: "session_tools", replacement: "__engram_session_tools_v2")
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_session_tools_name ON session_tools(tool_name)")
@@ -459,6 +460,7 @@ enum EngramMigrations {
             SELECT session_id, file_path, COALESCE(action, 'unknown'), SUM(\(countExpr))
             FROM session_files
             WHERE session_id IS NOT NULL AND file_path IS NOT NULL
+              AND session_id IN (SELECT id FROM sessions)
             GROUP BY session_id, file_path, COALESCE(action, 'unknown')
         """)
         try replaceTable(db, old: "session_files", replacement: "__engram_session_files_v2")
@@ -830,6 +832,7 @@ enum EngramMigrations {
               \(columnExpr(columns, "computed_at", fallback: "NULL"))
             FROM session_costs
             WHERE session_id IS NOT NULL
+              AND session_id IN (SELECT id FROM sessions)
         """)
         try replaceTable(db, old: "session_costs", replacement: "__engram_session_costs_v2")
     }
