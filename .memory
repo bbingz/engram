@@ -19,6 +19,11 @@ Closed deferred items:
 Closed follow-ups:
 - CI `swift-unit` now runs `Engram`, `EngramServiceCore`, and `EngramMCPTests`,
   so service-core and MCP regressions are no longer only compile-gated.
+- Post-push CI exposed that `mcp-contract.sqlite` stores an absolute transcript
+  path from the fixture-generation machine. `testGetSessionMatchesGolden` now
+  copies the fixture DB and rewrites `mcp-transcript-01.file_path` to the current
+  checkout before invoking `get_session`, preserving the golden while making the
+  test portable across local and GitHub runner paths.
 - Added `docs/reviews/2026-05-30-pr26-32-post-merge-regression-audit.md` with a
   PASS verdict for the post-merge regression audit of PR #26-#32.
 - Updated the GitHub-facing `README.md` to match current reality: 28 Swift MCP

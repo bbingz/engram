@@ -30,6 +30,10 @@ follow-ups from the prior audit handoff.
 - **Updated README reality map**: the GitHub-facing README now documents 28 Swift
   MCP tools, keyword-only Swift search with semantic/hybrid downgrade behavior,
   current App capabilities, and local release/deploy commands.
+- **Hardened CI follow-up tests**: `testGetSessionMatchesGolden` now runs
+  against a temporary fixture DB with the transcript path rewritten to the
+  current checkout, so Swift MCP contract tests no longer depend on the absolute
+  path that existed when `mcp-contract.sqlite` was generated.
 - **Verified and deployed locally**: full Swift/Node verification passed, a full
   Developer ID export was produced at `macos/build/EngramExport/Engram.app`, and
   build `0.1.0 (719)` was installed into `/Applications/Engram.app`.

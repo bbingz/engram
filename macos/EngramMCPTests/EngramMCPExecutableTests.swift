@@ -390,12 +390,30 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     func testGetSessionMatchesGolden() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-get-session-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: fixturePath("mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl"),
+            messageCount: 3,
+            userMessageCount: 2,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
         try assertToolCallMatchesGolden(
             tool: "get_session",
             arguments: """
             {"id":"mcp-transcript-01","page":1}
             """,
-            goldenFixture: "mcp-golden/get_session.transcript.json"
+            goldenFixture: "mcp-golden/get_session.transcript.json",
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
         )
     }
 
