@@ -358,21 +358,24 @@ final class DatabaseManagerTests: XCTestCase {
     // read model. Session uses an explicit CodingKeys enum, so qualityScore must
     // be a listed key or it silently stays nil.
     @MainActor
-    func testSearchPopulatesQualityScore() throws {
-        try insertTestSession(at: dbPath, id: "s-hi", source: "claude-code")
-        try insertTestSession(at: dbPath, id: "s-lo", source: "claude-code")
-        try insertFTSContent(at: dbPath, sessionId: "s-hi", content: "alpha widget refactor")
-        try insertFTSContent(at: dbPath, sessionId: "s-lo", content: "alpha widget refactor")
+    func testSearchPopulatesQualityScoreAndValueBand() throws {
+        for id in ["s-hi", "s-lo", "s-mid", "s-none"] {
+            try insertTestSession(at: dbPath, id: id, source: "claude-code")
+            try insertFTSContent(at: dbPath, sessionId: id, content: "alpha widget refactor")
+        }
         let queue = try DatabaseQueue(path: dbPath)
         try queue.write { db in
             try db.execute(sql: "UPDATE sessions SET quality_score = 65 WHERE id = 's-hi'")
             try db.execute(sql: "UPDATE sessions SET quality_score = 20 WHERE id = 's-lo'")
+            try db.execute(sql: "UPDATE sessions SET quality_score = 45 WHERE id = 's-mid'")
         }
 
-        let results = try db.search(query: "widget")
-        let byId = Dictionary(uniqueKeysWithValues: results.map { ($0.id, $0) })
+        let byId = Dictionary(uniqueKeysWithValues: try db.search(query: "widget").map { ($0.id, $0) })
         XCTAssertEqual(byId["s-hi"]?.qualityScore, 65)
-        XCTAssertEqual(byId["s-lo"]?.qualityScore, 20)
+        XCTAssertEqual(byId["s-hi"]?.valueBand, .high)      // >= 60
+        XCTAssertEqual(byId["s-lo"]?.valueBand, .low)       // <= 35
+        XCTAssertEqual(byId["s-mid"]?.valueBand, .medium)   // 36..59
+        XCTAssertEqual(byId["s-none"]?.valueBand, .unknown) // no quality_score
     }
 
     // searchWithSnippets powers the GUI offline-fallback path: it must return a

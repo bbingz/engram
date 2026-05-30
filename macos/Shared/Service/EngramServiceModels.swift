@@ -349,6 +349,7 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
         let parentSessionId: String?
         let suggestedParentId: String?
         let linkSource: String?
+        let qualityScore: Int?
 
         init(
             id: String,
@@ -378,7 +379,8 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
             generatedTitle: String? = nil,
             parentSessionId: String? = nil,
             suggestedParentId: String? = nil,
-            linkSource: String? = nil
+            linkSource: String? = nil,
+            qualityScore: Int? = nil
         ) {
             self.id = id
             self.title = title
@@ -408,6 +410,7 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
             self.parentSessionId = parentSessionId
             self.suggestedParentId = suggestedParentId
             self.linkSource = linkSource
+            self.qualityScore = qualityScore
         }
     }
 

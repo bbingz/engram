@@ -792,7 +792,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             generatedTitle: row["generated_title"] as String?,
             parentSessionId: row["parent_session_id"] as String?,
             suggestedParentId: row["suggested_parent_id"] as String?,
-            linkSource: row["link_source"] as String?
+            linkSource: row["link_source"] as String?,
+            qualityScore: row["quality_score"] as Int?
         )
     }
 
