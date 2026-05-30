@@ -50,6 +50,32 @@ final class IndexAutoTitleTests: XCTestCase {
         }
     }
 
+    func testSnapshotWriteRollsBackPartialWritesOnIndexJobFailure() throws {
+        // Drop session_index_jobs so insertIndexJobs (the LAST write in the merge
+        // sequence) fails AFTER the sessions upsert. upsertBatch catches a
+        // per-snapshot error and still commits the batch transaction, so without
+        // a per-snapshot savepoint the sessions row would be left advanced to the
+        // new snapshot_hash with NO matching pending FTS job (search divergence).
+        try writer.write { db in try db.execute(sql: "DROP TABLE session_index_jobs") }
+
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            do {
+                _ = try w.writeAuthoritativeSnapshot(snapshot(id: "s1", summary: "hello"))
+                XCTFail("expected the index-job insert to throw (table dropped)")
+            } catch {
+                // Swallowed like upsertBatch does; the outer batch transaction commits.
+            }
+        }
+
+        try writer.read { db in
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE id='s1'"),
+                "a snapshot whose index-job write failed must not leave a committed sessions row"
+            )
+        }
+    }
+
     func testFreshIndexFallsBackToProjectAndDateWhenNoSummary() throws {
         try writer.write { db in
             _ = try SessionSnapshotWriter(db: db)

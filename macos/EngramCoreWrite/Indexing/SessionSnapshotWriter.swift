@@ -25,22 +25,33 @@ public final class SessionSnapshotWriter {
             return SessionWriteResult(action: .noop, changeSet: merge.changeSet)
         }
 
-        try upsert(merge.snapshot)
-        try upsertZeroCostRow(merge.snapshot)
-        try replaceSessionTools(merge.snapshot)
+        // Apply the snapshot's writes atomically. upsertBatch runs every
+        // snapshot inside one outer transaction and, on a per-snapshot failure,
+        // records a .failure result and CONTINUES — committing the batch. Without
+        // this savepoint, a mid-sequence failure (e.g. the index-job insert)
+        // would leave the sessions row already advanced to the new
+        // sync_version/snapshot_hash with NO matching pending FTS job, so search
+        // content silently stays stale. The savepoint rolls back the partial
+        // snapshot while the rest of the batch still commits.
+        try db.inSavepoint {
+            try upsert(merge.snapshot)
+            try upsertZeroCostRow(merge.snapshot)
+            try replaceSessionTools(merge.snapshot)
 
-        if shouldDeleteIndexArtifacts(current: current, merged: merge.snapshot) {
-            try deleteIndexArtifacts(sessionId: snapshot.id)
-        }
+            if shouldDeleteIndexArtifacts(current: current, merged: merge.snapshot) {
+                try deleteIndexArtifacts(sessionId: snapshot.id)
+            }
 
-        let jobs = jobKinds(for: merge.snapshot.tier ?? .normal, changeSet: merge.changeSet)
-        if !jobs.isEmpty {
-            try insertIndexJobs(
-                sessionId: snapshot.id,
-                targetSyncVersion: snapshot.syncVersion,
-                targetSnapshotHash: merge.snapshot.snapshotHash,
-                jobKinds: jobs
-            )
+            let jobs = jobKinds(for: merge.snapshot.tier ?? .normal, changeSet: merge.changeSet)
+            if !jobs.isEmpty {
+                try insertIndexJobs(
+                    sessionId: snapshot.id,
+                    targetSyncVersion: snapshot.syncVersion,
+                    targetSnapshotHash: merge.snapshot.snapshotHash,
+                    jobKinds: jobs
+                )
+            }
+            return .commit
         }
 
         return SessionWriteResult(action: .merge, changeSet: merge.changeSet)
