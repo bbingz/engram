@@ -17,6 +17,11 @@ enum ObservabilityRetention {
         var tracesDays = 14
         var auditDays = 30
         var logsDays = 14
+        // usage_snapshots gets a fresh row-set appended every service start with
+        // no dedup/upsert (StartupUsageCollector), so without retention it grows
+        // unbounded like the tables above. Keep a longer window since the rows
+        // are tiny and the Usage page reads only the latest per source.
+        var usageSnapshotsDays = 90
         init() {}
     }
 
@@ -55,6 +60,7 @@ enum ObservabilityRetention {
         total += try delete("traces", "start_ts", config.tracesDays)
         total += try delete("ai_audit_log", "ts", config.auditDays)
         total += try delete("logs", "ts", config.logsDays)
+        total += try delete("usage_snapshots", "collected_at", config.usageSnapshotsDays)
         return total
     }
 }

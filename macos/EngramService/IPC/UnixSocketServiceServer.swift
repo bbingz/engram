@@ -77,7 +77,18 @@ final class UnixSocketServiceServer: Sendable {
                     continue
                 }
                 try? UnixSocketEngramServiceTransport.disableSigPipe(client)
-                try? UnixSocketEngramServiceTransport.setSocketTimeout(client, seconds: Self.clientTimeoutSeconds)
+                do {
+                    // The receive timeout is the ONLY bound on the blocking
+                    // readFrame below. If it can't be armed, reject the
+                    // connection rather than spawn a client task that could
+                    // block forever and permanently leak its connection-limiter
+                    // permit (32 such leaks wedge ALL future connections).
+                    try UnixSocketEngramServiceTransport.setSocketTimeout(client, seconds: Self.clientTimeoutSeconds)
+                } catch {
+                    close(client)
+                    await connectionLimiter.signal()
+                    continue
+                }
                 let clientId = UUID()
                 let startGate = ClientTaskStartGate()
                 let clientTask = Task.detached {

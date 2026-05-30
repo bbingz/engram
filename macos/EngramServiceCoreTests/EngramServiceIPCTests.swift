@@ -223,6 +223,17 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testServerRejectsClientWhenSocketTimeoutCannotBeArmed() throws {
+        // ipc-3: setSocketTimeout is the only bound on the blocking readFrame, so
+        // a failure must reject the connection (close + signal) rather than be
+        // swallowed with try? and leak a connection-limiter permit.
+        let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
+        XCTAssertFalse(
+            source.contains("try? UnixSocketEngramServiceTransport.setSocketTimeout"),
+            "setSocketTimeout failure must reject the connection, not be swallowed with try?"
+        )
+    }
+
     func testUnixSocketServiceServerStopCancelsInFlightClientHandlers() async throws {
         let paths = try makeServiceIPCPaths()
         let requestStarted = expectation(description: "request handler started")
