@@ -94,6 +94,17 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
                         continuation.finish()
                         return
                     } catch {
+                        // Transient connectivity errors (the socket file is gone
+                        // during a service restart, or a connect timeout under
+                        // load) must NOT permanently end the status stream. Yield
+                        // a degraded event and keep polling so the snappy 5s
+                        // status/badge path self-heals instead of relying solely
+                        // on the launcher's health monitor.
+                        if Self.isTransientStreamError(error) {
+                            continuation.yield(EngramServiceEvent(event: "warning", message: "Service unavailable"))
+                            try? await Task.sleep(nanoseconds: 5_000_000_000)
+                            continue
+                        }
                         continuation.finish(throwing: error)
                         return
                     }
@@ -107,6 +118,14 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
     }
 
     func close() async {}
+
+    /// Transient errors the status stream should ride out (yield degraded +
+    /// retry) rather than terminate on — the socket briefly disappears during a
+    /// service restart and connect can time out under load.
+    private static func isTransientStreamError(_ error: Error) -> Bool {
+        if case EngramServiceError.serviceUnavailable = error { return true }
+        return false
+    }
 
     private static func event(from status: EngramServiceStatus) -> EngramServiceEvent {
         switch status {

@@ -166,12 +166,27 @@ final class EngramWebUIServer: @unchecked Sendable {
 
     static func isLoopbackHost(_ host: String, expectedPort: Int) -> Bool {
         let hostname = host.split(separator: ":").first.map(String.init) ?? host
-        return hostname == "127.0.0.1" || hostname == "localhost" || hostname == "[::1]" || hostname == "::1"
+        guard hostname == "127.0.0.1" || hostname == "localhost" || hostname == "[::1]" || hostname == "::1" else {
+            return false
+        }
+        // `expectedPort` was previously ignored: a forged `Host: 127.0.0.1:<other
+        // local service port>` passed. When the simple host:port form carries a
+        // parseable port, require it to match the bound port (defense in depth).
+        let trailing = host.split(separator: ":", omittingEmptySubsequences: false).dropFirst()
+        if trailing.count == 1, let port = Int(trailing.first!) {
+            return port == expectedPort
+        }
+        return true
     }
 
     static func isLoopbackOrigin(_ origin: String, expectedPort: Int) -> Bool {
         guard let url = URL(string: origin), let host = url.host else { return false }
-        return host == "127.0.0.1" || host == "localhost" || host == "::1"
+        guard host == "127.0.0.1" || host == "localhost" || host == "::1" else { return false }
+        // A cross-port Origin (e.g. another local service) must be rejected too.
+        if let port = url.port {
+            return port == expectedPort
+        }
+        return true
     }
 
     static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {

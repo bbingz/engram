@@ -214,6 +214,13 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertFalse(EngramWebUIServer.isLoopbackHost("evil.example.com", expectedPort: 3457))
         XCTAssertTrue(EngramWebUIServer.isLoopbackOrigin("http://127.0.0.1:3457", expectedPort: 3457))
         XCTAssertFalse(EngramWebUIServer.isLoopbackOrigin("http://evil.example.com", expectedPort: 3457))
+
+        // expectedPort is now enforced: a loopback Host/Origin on a DIFFERENT
+        // local port is rejected (the parameter was previously ignored).
+        XCTAssertFalse(EngramWebUIServer.isLoopbackHost("127.0.0.1:9999", expectedPort: 3457))
+        XCTAssertFalse(EngramWebUIServer.isLoopbackOrigin("http://127.0.0.1:9999", expectedPort: 3457))
+        // A bare loopback host with no port is still allowed.
+        XCTAssertTrue(EngramWebUIServer.isLoopbackHost("127.0.0.1", expectedPort: 3457))
     }
 
     func testConstantTimeEquals() {

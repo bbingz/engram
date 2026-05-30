@@ -18,6 +18,21 @@ final class UnixSocketTransportTests: XCTestCase {
         }
     }
 
+    func testEventsStreamRidesOutTransientUnavailable() async throws {
+        // No service is listening -> connectSocket throws serviceUnavailable. The
+        // status stream must yield a degraded 'warning' event and keep polling
+        // (ipc-4) instead of finishing-throwing on the first failed poll, so it
+        // self-heals when the service comes back.
+        let transport = UnixSocketEngramServiceTransport(socketPath: temporarySocketPath())
+        var iterator = transport.events().makeAsyncIterator()
+        let first = try await iterator.next()
+        XCTAssertEqual(
+            first?.event,
+            "warning",
+            "events() must degrade, not terminate, on a transient outage"
+        )
+    }
+
     func testSecureRuntimeDirectoryCreatesFreshWith0700() throws {
         let home = temporaryDirectory()
         let runDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home)

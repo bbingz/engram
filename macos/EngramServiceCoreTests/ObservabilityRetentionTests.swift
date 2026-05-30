@@ -14,6 +14,7 @@ final class ObservabilityRetentionTests: XCTestCase {
             CREATE TABLE traces (id INTEGER PRIMARY KEY, trace_id TEXT, span_id TEXT, name TEXT, module TEXT, start_ts TEXT NOT NULL, source TEXT);
             CREATE TABLE ai_audit_log (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, caller TEXT, operation TEXT);
             CREATE TABLE logs (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, level TEXT, module TEXT, message TEXT, source TEXT);
+            CREATE TABLE usage_snapshots (id INTEGER PRIMARY KEY, source TEXT NOT NULL, metric TEXT NOT NULL, value REAL NOT NULL, unit TEXT, reset_at TEXT, collected_at TEXT NOT NULL);
         """)
     }
 
@@ -34,18 +35,21 @@ final class ObservabilityRetentionTests: XCTestCase {
             try db.execute(sql: "INSERT INTO traces (trace_id,span_id,name,module,start_ts,source) VALUES ('t','a','n','m',?,'daemon'),('t','b','n','m',?,'daemon')", arguments: [oldZ, recentZ])
             try db.execute(sql: "INSERT INTO ai_audit_log (ts,caller,operation) VALUES (?,'c','o'),(?,'c','o')", arguments: [oldNoZ, recentNoZ])
             try db.execute(sql: "INSERT INTO logs (ts,level,module,message,source) VALUES (?,'info','m','x','daemon'),(?,'info','m','x','daemon')", arguments: [oldZ, recentZ])
+            // usage_snapshots: -100d is older than the 90d window, -1d is kept (idx-5).
+            try db.execute(sql: "INSERT INTO usage_snapshots (source,metric,value,collected_at) VALUES ('codex','7d cost share',1,?),('codex','7d cost share',2,?)", arguments: [oldZ, recentZ])
         }
 
         let deleted = try queue.write { db in
             try ObservabilityRetention.prune(db, now: now)
         }
-        XCTAssertEqual(deleted, 4, "one old row per table")
+        XCTAssertEqual(deleted, 5, "one old row per table")
 
         try queue.read { db in
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM metrics"), 1)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM traces"), 1)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ai_audit_log"), 1)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM logs"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM usage_snapshots"), 1)
         }
     }
 
