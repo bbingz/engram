@@ -135,8 +135,9 @@ final class UnixSocketServiceServer: Sendable {
                 }
                 if !shouldContinue {
                     clientTask.cancel()
+                } else {
+                    await startGate.release()
                 }
-                Task { await startGate.release() }
             }
         }
 
