@@ -236,6 +236,34 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillPolycliProviderParentsLeavesGenuineClaudeCodeReviewAlone() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "host-codex",
+                source: "codex",
+                startTime: "2026-05-08T09:00:00.000Z",
+                endTime: "2026-05-08T11:00:00.000Z",
+                cwd: "/repo"
+            )
+            // A genuine claude-code session that merely mentions "review" must stay
+            // a top-level session, not be classified as a dispatched provider child.
+            try insertSession(
+                db,
+                id: "cc-review",
+                source: "claude-code",
+                startTime: "2026-05-08T10:00:00.000Z",
+                cwd: "/repo",
+                summary: "Please review the auth refactor and update the review checklist."
+            )
+
+            let result = try StartupBackfills.backfillPolycliProviderParents(db)
+            XCTAssertEqual(result.classified, 0, "claude-code review session must not be classified")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'cc-review'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'cc-review'"))
+        }
+    }
+
     func testBackfillPolycliProviderParentsSkipsAlreadyCheckedCandidates() throws {
         try writer.write { db in
             try insertSession(

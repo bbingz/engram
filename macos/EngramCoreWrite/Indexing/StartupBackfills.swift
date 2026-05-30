@@ -638,8 +638,14 @@ public enum StartupBackfills {
                   'quick ping check',
                   'ping-pong test'
                 )
-                OR lower(summary) LIKE '%review%'
-                OR lower(summary) LIKE '%re-review%'
+                -- The bare review-content match is a PROVIDER probe behavior, so
+                -- exclude 'claude-code': otherwise a genuine claude-code session
+                -- whose summary merely mentions "review" was mis-classified as a
+                -- dispatched provider child and hidden.
+                OR (
+                  source != 'claude-code'
+                  AND (lower(summary) LIKE '%review%' OR lower(summary) LIKE '%re-review%')
+                )
                 OR lower(summary) LIKE 'no tools.%stage %'
                 OR (
                   source IN ('copilot', 'gemini-cli', 'kimi', 'opencode', 'pi', 'qwen')
