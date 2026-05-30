@@ -341,15 +341,33 @@ public enum EngramServiceRunner {
             Self.emit(StartupBackfillEventEnvelope(event: event))
         }
         do {
-            // Phase 1 — structural backfills (index, maintenance, parent links,
-            // "ready", orphan scan, enqueue stale FTS jobs). One gated command.
-            _ = try await gate.performWriteCommand(name: "initialScan") { writer in
-                try await StartupBackfills.runStartupBackfills(
+            // Phase 1 — structural backfills, split into THREE gated write
+            // commands so the single write gate is RELEASED between them and
+            // user write commands (project move, save_insight, manual link) can
+            // interleave instead of waiting out the whole multi-minute scan. The
+            // heavy re-index and the per-row orphan scan previously held the gate
+            // for the entire run, so any user write queued in that window timed
+            // out with WriterBusy.
+            let indexed = try await gate.performWriteCommand(name: "initialScanIndex") { writer in
+                try await StartupBackfills.runStartupIndex(
+                    indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters)
+                )
+            }.value
+            _ = try await gate.performWriteCommand(name: "initialScanBackfills") { writer in
+                try await StartupBackfills.runStartupMaintenanceAndParents(
+                    indexed: indexed,
                     emit: emitBackfill,
                     log: OSLogStartupBackfillLogging(),
                     indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters),
-                    database: WriterStartupBackfillDatabase(writer: writer),
+                    database: WriterStartupBackfillDatabase(writer: writer)
+                )
+            }
+            _ = try await gate.performWriteCommand(name: "initialScanOrphans") { writer in
+                try await StartupBackfills.runStartupOrphanScan(
+                    emit: emitBackfill,
+                    log: OSLogStartupBackfillLogging(),
                     orphanScanner: WriterStartupOrphanScanning(writer: writer),
+                    database: WriterStartupBackfillDatabase(writer: writer),
                     adapters: startupAdapters
                 )
             }
