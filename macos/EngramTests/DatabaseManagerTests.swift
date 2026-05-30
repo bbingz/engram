@@ -405,6 +405,32 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(results.first?.id, "s-cjk")
     }
 
+    // FTS5 syntax characters in a raw query used to throw "fts5: syntax error".
+    // ftsMatchQuery quotes each token so they are matched literally.
+    @MainActor
+    func testSearchToleratesFTS5SyntaxCharacters() throws {
+        try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "the call site is handleRequest(payload) in the router")
+
+        let results = try db.search(query: "handleRequest(payload)")
+        XCTAssertEqual(results.map(\.id), ["s1"])
+        // Quotes and bareword operators must be literal too, not FTS5 syntax.
+        XCTAssertNoThrow(try db.search(query: "a \"b\" OR c"))
+        XCTAssertNoThrow(try db.searchWithSnippets(query: "handleRequest(payload)", limit: 5))
+    }
+
+    // Hangul must route through the CJK LIKE fallback (trigram MATCH is broken for
+    // Korean). Before the containsCJK fix, Hangul Syllables (>= U+AC00) were not
+    // detected, so this took the MATCH path and returned nothing.
+    @MainActor
+    func testSearchWithKoreanContent() throws {
+        try insertTestSession(at: dbPath, id: "s-ko", source: "claude-code")
+        try insertFTSContent(at: dbPath, sessionId: "s-ko", content: "데이터베이스 연결 풀 로직을 리팩터링했다")
+
+        let results = try db.search(query: "데이터베이스")
+        XCTAssertEqual(results.map(\.id), ["s-ko"])
+    }
+
     @MainActor
     func testSearchWithJapaneseContent() throws {
         try insertTestSession(at: dbPath, id: "s-jp", source: "claude-code")

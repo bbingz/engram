@@ -58,6 +58,33 @@ final class FTSRebuildPolicyTests: XCTestCase {
         XCTAssertEqual(counts.insightsFts, 1)
     }
 
+    // A version bump drops sessions_fts; enqueueStaleFtsJobs only re-enqueues
+    // sessions whose content version changed, so the rebuild must re-open the
+    // already-completed FTS jobs or unchanged sessions vanish from search.
+    func testRebuildReopensCompletedFtsJobsForReindex() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("reopen-fts.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, cwd, file_path, size_bytes)
+                VALUES ('s1', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/s.jsonl', 42);
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES ('s1:0::fts', 's1', 'fts', 0, 'completed');
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """)
+        }
+
+        try writer.write { db in try FTSRebuildPolicy.apply(db) }
+
+        let (pending, completed) = try writer.read { db in
+            (try Int.fetchOne(db, sql: "SELECT count(*) FROM session_index_jobs WHERE job_kind='fts' AND status='pending'") ?? -1,
+             try Int.fetchOne(db, sql: "SELECT count(*) FROM session_index_jobs WHERE job_kind='fts' AND status='completed'") ?? -1)
+        }
+        XCTAssertEqual(pending, 1, "completed FTS jobs must be re-opened so unchanged sessions get re-indexed")
+        XCTAssertEqual(completed, 0)
+    }
+
     private func seedRebuildState(_ writer: EngramDatabaseWriter, ftsVersion: String) throws {
         try writer.write { db in
             try db.execute(sql: """

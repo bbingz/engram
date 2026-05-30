@@ -25,6 +25,19 @@ public enum FTSRebuildPolicy {
         if try tableExists(db, "vec_sessions") {
             try db.execute(sql: "DELETE FROM vec_sessions")
         }
+        // The FTS table was just dropped and recreated empty. `enqueueStaleFtsJobs`
+        // only re-enqueues sessions whose content version changed, so without this
+        // every UNCHANGED session would stay absent from search until it next
+        // changes. Re-open the already-completed FTS jobs so IndexJobRunner
+        // re-indexes every previously-indexed session into the fresh table.
+        if try tableExists(db, "session_index_jobs") {
+            try db.execute(sql: """
+                UPDATE session_index_jobs
+                SET status = 'pending', retry_count = 0, last_error = NULL,
+                    updated_at = datetime('now')
+                WHERE job_kind = 'fts' AND status = 'completed'
+            """)
+        }
         try db.execute(
             sql: """
             INSERT INTO metadata(key, value) VALUES ('fts_version', ?)
