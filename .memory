@@ -1,5 +1,27 @@
 # Engram Local Memory
 
+## 2026-05-30 — PR #18 review/confirmation (Claude)
+
+Durable, non-obvious lessons:
+- Confirmed Codex's CI cascade fix on `fix/ci-test-failures`/PR #18 is real,
+  committed, and pushed: 8 commits `824bf8f2..adffb9bf`. The latest CI run
+  `26656946687` (HEAD `adffb9bf`) is fully green — lint, dead-code, typescript,
+  swift-unit, fixture-check, ui-test-smoke all SUCCESS; ui-test-full SKIPPED by
+  condition. Branch synced to origin (+0 −0); PR #18 OPEN + MERGEABLE. Only
+  untouched untracked file left is `docs/full-review-report.md`.
+- CI-rollup timezone trap (links to the timezone-trap lesson): repo commits are
+  authored `+0800`, so `gh pr view ... statusCheckRollup` showing a run
+  `completedAt 2026-05-29T19:22Z` is NOT stale — it maps to HEAD commit
+  `2026-05-30 03:10 +0800`. Convert before judging whether CI ran on HEAD.
+- Memory layout decision (2026-05-30): the Claude structured-memory dir at
+  `~/.claude/projects/-Users-bing--Code--engram/memory` is a symlink (created
+  2026-04-26 10:25) to THIS git-tracked flat `.memory` file. The older 39
+  structured memories are archived in `memory.bak.20260426-102517/` and are NOT
+  loaded at session start. Decision: keep this flat `.memory` as the unified
+  Claude+Codex memory; append Claude memory as new dated sections here. Do NOT
+  try to write per-file structured memories to `memory/<slug>.md` — the path is
+  a file, not a dir, so those writes fail with "Not a directory".
+
 ## 2026-05-30 — PR #18 CI/test follow-up after Claude handoff
 
 Durable, non-obvious lessons:

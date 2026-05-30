@@ -7,6 +7,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Reviewed + hardened PR #15; merged PR #18/#15/#16 (2026-05-30, Claude)
+
+Multi-agent review of `feat/search-snippet-highlight` (6 dimensions,
+adversarially verified — 17 findings, 0 refuted), then fixes and a clean
+squash-merge train. Fixes landed on PR #15 (`e1a557e5`, `57b76e90`):
+
+- Removed `PRAGMA mmap_size = 256MiB` from the shared connection policy. The
+  service runs an in-process startup `VACUUM` (`StartupBackfills.vacuumIfNeeded`)
+  that can shrink the DB file while reader connections in the SAME process are
+  already serving socket requests — a large mmap window over a truncated file is
+  a SIGBUS hazard. Kept `cache_size = -16000` (the primary read accelerator) and
+  also applied it to `DatabaseManager.openReadOnlyPool` so the GUI search path
+  (`searchWithSnippets`) actually benefits. Verified macOS system SQLite default
+  `mmap_size` is 0, so dropping the pragma genuinely disables mmap.
+- Replaced `try! Session(row:)` with throwing `try` in both `searchWithSnippets`
+  map closures. Force-try turned a recoverable GRDB decode error into a hard
+  crash the callers' `try?`/`catch` could not handle; the throwing form restores
+  graceful degradation.
+- Dropped the unwired `Session.ValueBand`/`valueBand`/thresholds. No view
+  consumed them and the online/service search path never carries `quality_score`
+  (so a band would only ever render in the offline fallback). Kept the
+  `quality_score` decode. Value-band UI deferred to a follow-up that plumbs
+  `quality_score` through `EngramServiceSearchResponse.Item`.
+
+Merge train (all squash; CI green at each step): #18 → main; main merged into
+#15 (0 conflicts) → #15 CI green → merged; main merged into #16 → CI green →
+merged. Open PR queue is now empty.
+
+Deferred follow-ups: `cache_size` on `EngramServiceCommandHandler.readOnlyPool`;
+value-band online plumbing + UI; extract the duplicated `cjkHighlightedSnippet`
+into a shared module.
+
 ### Fixed — PR #18 CI/test follow-up after Claude handoff (2026-05-30, Codex)
 
 - Fixed the Linux TypeScript coverage failure by making the Swift boundary
