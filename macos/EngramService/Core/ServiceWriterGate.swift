@@ -144,7 +144,7 @@ public actor ServiceWriterGate {
     }
 }
 
-private actor ServiceAsyncSemaphore {
+actor ServiceAsyncSemaphore {
     private struct Waiter {
         let id: UUID
         let continuation: CheckedContinuation<Void, Error>
@@ -156,6 +156,11 @@ private actor ServiceAsyncSemaphore {
     init(value: Int) {
         permits = value
     }
+
+    /// Test support: number of currently-queued waiters. Used to
+    /// deterministically confirm a waiter has enqueued before driving the
+    /// cancel/signal race in tests.
+    var waiterCount: Int { waiters.count }
 
     /// Acquire a permit. If `timeoutNanoseconds` is non-nil, a queued waiter
     /// that has not been signalled within the window throws
@@ -197,7 +202,18 @@ private actor ServiceAsyncSemaphore {
             throw error
         }
         timeoutTask?.cancel()
-        try Task.checkCancellation()
+        if Task.isCancelled {
+            // Reaching here means the continuation resumed NORMALLY (signal()
+            // handed us the permit) — cancel()/timeOut() resume by throwing and
+            // are caught above. If our task was cancelled in the window before
+            // the async cancel handler could dequeue us, signal() still picked
+            // us as `waiters.first` and gave us the permit. Release it before
+            // surfacing cancellation, otherwise the permit is lost and the
+            // single writer gate wedges permanently (every later write times
+            // out with writerBusy).
+            signal()
+            throw CancellationError()
+        }
     }
 
     private func cancel(id: UUID) {
