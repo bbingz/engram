@@ -243,6 +243,39 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(status, "not_applicable")
     }
 
+    // runRecoverableJobsOnce processes a single batch and reports whether the
+    // backlog is drained, so the service can loop it across separate gated write
+    // commands instead of holding the write gate for the whole drain.
+    func testRunRecoverableJobsOnceProcessesOneBatchAndReportsDrained() async throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (id, source, start_time, file_path, tier)
+                VALUES ('s', 'claude-code', '2026-03-18T11:00:00Z', '/tmp/x.jsonl', 'normal')
+                """
+            )
+            for i in 1...3 {
+                try db.execute(
+                    sql: """
+                    INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                    VALUES ('s:\(i):h:embedding', 's', 'embedding', \(i), 'pending')
+                    """
+                )
+            }
+        }
+
+        let runner = IndexJobRunner(writer: writer, adapters: [])
+        // A sub-batch-size backlog is fully processed in one call, reports drained.
+        let first = try await runner.runRecoverableJobsOnce()
+        XCTAssertEqual(first.result.notApplicable, 3)
+        XCTAssertTrue(first.drained)
+
+        // A second call finds nothing pending and reports drained immediately.
+        let second = try await runner.runRecoverableJobsOnce()
+        XCTAssertEqual(second.result.completed + second.result.notApplicable, 0)
+        XCTAssertTrue(second.drained)
+    }
+
     func testMissingFtsSourceIsMarkedNotApplicableInsteadOfRetryingForever() async throws {
         try writer.write { db in
             try db.execute(

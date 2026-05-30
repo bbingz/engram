@@ -335,24 +335,46 @@ public enum EngramServiceRunner {
     /// backlog. Builds real conformers over the unit-tested static funcs and
     /// runs through the gate so writes serialize with command dispatch.
     private static func runInitialScan(gate: ServiceWriterGate, statusMonitor: ServiceStatusMonitor) async {
+        let startupAdapters = SessionAdapterFactory.recentActiveAdapters()
+        let defaultAdapters = SessionAdapterFactory.defaultAdapters()
+        let emitBackfill: (StartupBackfillEvent) -> Void = { event in
+            Self.emit(StartupBackfillEventEnvelope(event: event))
+        }
         do {
-                _ = try await gate.performWriteCommand(name: "initialScan") { writer in
-                let startupAdapters = SessionAdapterFactory.recentActiveAdapters()
-                let jobRunner = IndexJobRunner(writer: writer, adapters: SessionAdapterFactory.defaultAdapters())
-                try await StartupBackfills.runInitialScan(
-                    emit: { event in Self.emit(StartupBackfillEventEnvelope(event: event)) },
+            // Phase 1 — structural backfills (index, maintenance, parent links,
+            // "ready", orphan scan, enqueue stale FTS jobs). One gated command.
+            _ = try await gate.performWriteCommand(name: "initialScan") { writer in
+                try await StartupBackfills.runStartupBackfills(
+                    emit: emitBackfill,
                     log: OSLogStartupBackfillLogging(),
-                    usageCollector: WriterStartupUsageCollector(
-                        writer: writer,
-                        emit: { snapshots in Self.emit(ServiceUsageEvent(snapshots: snapshots)) }
-                    ),
                     indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters),
-                    indexJobRunner: jobRunner,
                     database: WriterStartupBackfillDatabase(writer: writer),
                     orphanScanner: WriterStartupOrphanScanning(writer: writer),
                     adapters: startupAdapters
                 )
             }
+
+            // Phase 2 — drain the FTS backlog one batch per gated command, so a
+            // large (100k+) drain releases the single write gate BETWEEN batches
+            // and user write commands can interleave instead of failing with
+            // WriterBusy after the gate is held for the whole scan.
+            while !Task.isCancelled {
+                let drained = try await gate.performWriteCommand(name: "initialFtsDrain") { writer in
+                    try await IndexJobRunner(writer: writer, adapters: defaultAdapters)
+                        .runRecoverableJobsOnce()
+                        .drained
+                }
+                if drained.value { break }
+            }
+
+            // Phase 3 — start the usage collector (cheap); its own gated command.
+            _ = try await gate.performWriteCommand(name: "initialUsage") { writer in
+                WriterStartupUsageCollector(
+                    writer: writer,
+                    emit: { snapshots in Self.emit(ServiceUsageEvent(snapshots: snapshots)) }
+                ).start()
+            }
+
             ServiceLogger.notice("initial startup scan complete", category: .runner)
             await statusMonitor.recordScanSuccess()
         } catch is CancellationError {
