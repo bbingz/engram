@@ -1,5 +1,51 @@
 # Engram Local Memory
 
+## 2026-05-30 — deep-dimension audit round 2 complete (Claude)
+
+Chose option (a) from the prior resume point: a DEEPER 8-dimension
+adversarially-verified audit of `main` (concurrency, GRDB txns, IPC, migration
+idempotency, parsing/path-safety, UI races, ProjectMove, indexing lifecycle).
+22 raw → 18 confirmed (≥2/3 skeptic lenses) → 16 deduped. All shipped as seven
+focused, individually-verified, squash-merged PRs #26–#32 (CHANGELOG
+`[Unreleased]` has the full per-issue detail):
+- #26 pm-1 lock leak + pm-2 partial-patch (HIGH, project-move)
+- #27 grdb_txn-1 writer-gate permit-leak deadlock (HIGH)
+- #28 idx-2 startup-scan gate split + stale FTS test fix
+- #29 mig-1 FK-orphan fatal migration + grdb_txn-2 snapshot savepoint
+- #30 idx-1 periodic parent detection + idx-4 git pipe deadlock
+- #31 ui-1..7 SwiftUI off-main reads + async ordering
+- #32 ipc-3/4 + idx-5 + WebUI expectedPort (LOW service hardening)
+
+Deferred as documented conscious tradeoffs (LOW severity, risk > value):
+- **mig-2** FTS_VERSION-bump empty-search window — clean fix is a risky
+  side-table-build + atomic-swap rewrite of the rebuild/drain path.
+- **conc-1** per-client blocking readFrame on the cooperative pool — bounded by
+  the 10s SO_RCVTIMEO once ipc-3 always arms it; offload is a transport refactor.
+
+Verified clean (no fix): parsing/path-safety — MCP transcript reads DB-resolved
+paths (ID lookup, not caller input), lint refs cwd-confined, JSONL readers skip
+malformed/invalid-UTF-8 without crashing, regexes ReDoS-safe.
+
+DURABLE LESSONS this round:
+- **CI gap**: `swift-unit` runs only the `Engram` scheme (EngramCoreTests +
+  EngramTests). It does NOT run `EngramServiceCoreTests` or `EngramMCPTests`. So
+  service-core/MCP changes are only compile-gated by CI; run them locally with
+  `-scheme EngramServiceCore` / `-scheme EngramMCP`. This gap let #19's stale FTS
+  test slip into main. Backend (non-UI) PRs can merge on the 5 fast checks (no
+  branch protection / required checks); only wait for ui-test-smoke on UI PRs.
+- The grdb_txn-1 writer-gate bug also caused an INTERMITTENT hang in the existing
+  `testCancelledQueuedWriteCommandDoesNotExecuteLater`; #27 fixed both.
+- Two automated audit prompts hit an AUP cyber false-positive (the
+  completeness-critic and a "path-traversal security auditor" agent). Reframe
+  security-flavored reviews as ordinary defensive code review, or do them inline.
+- TS test `npm run test:coverage` (the `typescript` CI job) is occasionally
+  flaky on Swift-only PRs; `gh run rerun <id> --failed` clears it.
+
+Resume point: round is complete. Natural next options if asked: (b) a post-merge
+regression audit of #26–#32, (c) the deferred mig-2 side-table swap and/or the
+conc-1 cooperative-pool offload, or (d) add EngramServiceCoreTests/EngramMCPTests
+to CI (needs a socket/timing-test stability review first).
+
 ## 2026-05-30 — main audit round complete; resume point for next round (Claude)
 
 State at save: `main` is at the "docs: mark audit follow-up #11 shipped" commit

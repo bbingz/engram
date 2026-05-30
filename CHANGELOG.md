@@ -7,6 +7,74 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Deep-dimension audit of main + 16 fixes across PR #26–#32 (2026-05-30, Claude)
+
+A second, deeper adversarially-verified audit (8 dimensions beyond the first
+round's 7: concurrency/actor-isolation, GRDB transactions, IPC/transport edges,
+migration idempotency, parsing/path-safety, UI state races, ProjectMove
+integrity, indexing lifecycle). 22 raw findings → 18 confirmed (≥2/3 skeptic
+lenses) → 16 deduped, shipped as seven focused, individually-verified,
+squash-merged PRs:
+
+- **#26 project-move integrity** (HIGH) — (pm-1) `MigrationLock.acquire` + the
+  Phase-A write sat outside the do/catch, so a transient DB error leaked the
+  lock holding the live pid → permanent DoS for all moves until restart; fixed
+  with a function-scoped `defer` release. (pm-2) the patch loop threw on the
+  first hard error before recording a later-index success, so compensation left
+  it rewritten-but-unreverted (silent corruption); two-pass manifest build.
+- **#27 writer-gate permit leak** (HIGH) — `ServiceAsyncSemaphore.wait()` could
+  hand a permit to a waiter whose task was cancelled-after-signal, then throw at
+  the post-resume `checkCancellation()` without releasing → permanent
+  single-writer deadlock (every later write WriterBusy). Release on cancel. Also
+  fixed a flaky existing gate test this bug caused.
+- **#28 startup-scan gate split** (idx-2) — the whole structural backfill ran as
+  one gated command, starving user writes with WriterBusy for minutes after
+  start; split `runStartupBackfills` into index|maintenance+parents|orphan,
+  gated separately. Also fixed a stale FTS test (`testFTSSyntaxErrorIsTagged…`)
+  broken by #19's escaping and hidden by the CI gap (below).
+- **#29 DB write atomicity** — (mig-1, HIGH-impact) aux-table v2 migrations
+  copied rows into FK-bearing tables without orphan filtering → `FOREIGN KEY
+  constraint failed` fataled `migrate()` → `exit(70)` every boot; add
+  `AND session_id IN (SELECT id FROM sessions)`. (grdb_txn-2) per-snapshot writes
+  weren't atomic → a mid-sequence failure left the sessions row advanced with no
+  FTS job; wrap in `db.inSavepoint`.
+- **#30 live indexing** — (idx-1) the 5-min periodic scan never ran
+  parent-link/dispatch detection, so agent children created mid-run stayed
+  top-level until restart; run `runPeriodicParentBackfills()` after each scan.
+  (idx-4) `RepoDiscovery.runGit` read pipes only after exit → deadlock on >64KB
+  git output; drain concurrently.
+- **#31 SwiftUI off-main + async ordering** (ui-1..7) — four views read SQLite
+  on the main thread (Timeline/Favorites/About/command-palette nav); search
+  could clobber results with a stale response; ExpandableSessionCard invalidated
+  on the count SUM; filter `.onChange` spawned uncancelled Tasks. Task.detached,
+  cancellation guards, `[confirmed,suggested]` key, `.task(id:)`.
+- **#32 IPC liveness + retention + web-host** (LOW) — (ipc-3) reject on
+  `setSocketTimeout` failure (was `try?` → unbounded read + permit leak). (ipc-4)
+  events() rides out transient `serviceUnavailable` instead of terminating the
+  status stream. (idx-5) add `usage_snapshots` to observability retention.
+  (web-port) enforce `expectedPort` in WebUI loopback Host/Origin checks.
+
+Verified clean (no fix): **parsing/path-safety** — MCP transcript reads
+DB-resolved paths (ID lookup, not caller input), lint refs are cwd-confined,
+JSONL readers skip malformed lines / invalid UTF-8 without crashing, regexes are
+ReDoS-safe.
+
+Deferred as documented conscious tradeoffs (risk > value at LOW severity):
+- **mig-2** — an FTS_VERSION bump drops + rebuilds `sessions_fts`, so keyword
+  search returns empty during the background re-index. Crash recovery is correct;
+  no data loss. The clean fix (side-table build + atomic swap) is an invasive,
+  risky rewrite of the rebuild + drain path; left for a dedicated effort.
+- **conc-1** — per-client blocking `readFrame` runs on the cooperative pool, but
+  with #32's ipc-3 the read is always bounded by the 10s SO_RCVTIMEO, so
+  starvation is bounded + self-recovering + same-user-gated. Offloading I/O off
+  the cooperative pool is a larger transport refactor.
+
+Process note: **CI does not run `EngramServiceCoreTests` or `EngramMCPTests`**
+(the `swift-unit` job only runs the `Engram` scheme = EngramCoreTests +
+EngramTests). Service-core/MCP fixes were compile-gated by CI and unit-verified
+locally; this gap let #19's stale FTS test slip into main. Adding those targets
+to CI is a follow-up (socket/timing tests need a stability review first).
+
 ### Multi-expert audit of main + 13 fixes across PR #19–#23 (2026-05-30, Claude)
 
 After the PR #18/#15/#16 merge train, ran a 7-dimension adversarially-verified
