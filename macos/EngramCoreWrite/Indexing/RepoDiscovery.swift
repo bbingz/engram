@@ -227,6 +227,15 @@ public enum RepoDiscovery {
         let err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        // Drain both pipes CONCURRENTLY with the process. The OS pipe buffer is
+        // ~64KB; reading only after the process exits deadlocks once git writes
+        // more than that (git blocks on write(), the termination handler never
+        // fires, the wait times out, and the repo is silently skipped).
+        let ioGroup = DispatchGroup()
+        let ioQueue = DispatchQueue(label: "com.engram.repo-discovery.git-io", attributes: .concurrent)
+        var outData = Data()
+        ioQueue.async(group: ioGroup) { outData = out.fileHandleForReading.readDataToEndOfFile() }
+        ioQueue.async(group: ioGroup) { _ = err.fileHandleForReading.readDataToEndOfFile() }
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
         let started = DispatchTime.now().uptimeNanoseconds
@@ -238,15 +247,16 @@ public enum RepoDiscovery {
         guard finished.wait(timeout: .now() + timeoutSeconds) == .success else {
             process.terminate()
             _ = finished.wait(timeout: .now() + 1)
+            ioGroup.wait() // terminate() closes the pipes -> reads hit EOF
             return nil
         }
         let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - started
         guard Double(elapsedNanoseconds) / 1_000_000_000 <= timeoutSeconds else {
+            ioGroup.wait()
             return nil
         }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        _ = err.fileHandleForReading.readDataToEndOfFile()
+        ioGroup.wait() // process exited -> both reads have reached EOF
         guard process.terminationStatus == 0 else { return nil }
-        return String(data: data, encoding: .utf8)
+        return String(data: outData, encoding: .utf8)
     }
 }

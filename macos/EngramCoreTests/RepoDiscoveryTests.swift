@@ -172,6 +172,41 @@ final class RepoDiscoveryTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2.5)
     }
 
+    func testRunGitDrainsLargeOutputWithoutDeadlock() throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repo-large-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repo) }
+
+        func git(_ args: [String]) throws {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            p.arguments = ["git", "-C", repo.path] + args
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run(); p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0, "git \(args.joined(separator: " "))")
+        }
+        try git(["init", "-q"])
+        try git(["config", "user.email", "t@t.t"])
+        try git(["config", "user.name", "t"])
+        // A blob much larger than the ~64KB OS pipe buffer. The old runGit read
+        // stdout only AFTER the process exited, so git blocked on write() once
+        // the buffer filled, the termination handler never fired, and runGit
+        // hit its timeout and returned nil (the repo was silently skipped).
+        let big = String(repeating: "abcdefABCDEF0123456789\n", count: 8000) // ~180KB
+        try big.write(to: repo.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-q", "-m", "big"])
+
+        let output = RepoDiscovery.runGit(["show", "HEAD:big.txt"], cwd: repo.path, timeoutSeconds: 5)
+        let unwrapped = try XCTUnwrap(
+            output,
+            "runGit must drain >64KB output concurrently instead of deadlocking to a timeout"
+        )
+        XCTAssertGreaterThan(unwrapped.utf8.count, 64 * 1024)
+    }
+
     private func insertSession(_ db: Database, id: String, cwd: String) throws {
         try db.execute(
             sql: """
