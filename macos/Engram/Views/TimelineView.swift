@@ -124,30 +124,42 @@ struct TimelineView: View {
     }
 
     func reload() async {
-        sessions = (try? db.listSessionsChronologically(
-            sources: selectedSources,
-            projects: selectedProjects,
-            subAgent: agentFilter,
-            limit: pageSize
-        )) ?? []
-        totalCount = (try? db.countSessions(
-            sources: selectedSources,
-            projects: selectedProjects,
-            subAgent: agentFilter
-        )) ?? 0
+        // Run the SQLite reads off the main thread (readInBackground runs on the
+        // calling thread), matching HomeView.loadData — countSessions scans the
+        // whole table on every filter change.
+        let db = self.db
+        let sources = selectedSources
+        let projects = selectedProjects
+        let agent = agentFilter
+        let limit = pageSize
+        let (loaded, total): ([Session], Int) = await Task.detached {
+            let loaded = (try? db.listSessionsChronologically(
+                sources: sources, projects: projects, subAgent: agent, limit: limit
+            )) ?? []
+            let total = (try? db.countSessions(
+                sources: sources, projects: projects, subAgent: agent
+            )) ?? 0
+            return (loaded, total)
+        }.value
+        sessions = loaded
+        totalCount = total
         hasMore = sessions.count < totalCount
         groupSessionsByDate()
     }
 
     func loadMore() async {
         guard hasMore else { return }
-        let next = (try? db.listSessionsChronologically(
-            sources: selectedSources,
-            projects: selectedProjects,
-            subAgent: agentFilter,
-            limit: pageSize,
-            offset: sessions.count
-        )) ?? []
+        let db = self.db
+        let sources = selectedSources
+        let projects = selectedProjects
+        let agent = agentFilter
+        let limit = pageSize
+        let offset = sessions.count
+        let next = await Task.detached {
+            (try? db.listSessionsChronologically(
+                sources: sources, projects: projects, subAgent: agent, limit: limit, offset: offset
+            )) ?? []
+        }.value
         sessions.append(contentsOf: next)
         hasMore = sessions.count < totalCount
         groupSessionsByDate()

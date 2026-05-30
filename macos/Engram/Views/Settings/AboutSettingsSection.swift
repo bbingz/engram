@@ -60,17 +60,25 @@ struct DatabaseInfoView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .onAppear { loadInfo() }
+        .task { await loadInfo() }
     }
 
-    private func loadInfo() {
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: dbPath),
-           let size = attrs[.size] as? Int {
-            let mb = Double(size) / 1024 / 1024
-            dbSize = String(format: "%.1f MB", mb)
-        } else {
-            dbSize = "N/A"
-        }
-        sessionCount = "\((try? db.countSessions()) ?? 0)"
+    private func loadInfo() async {
+        // Off the main thread: a file stat plus a COUNT(*) over sessions.
+        let db = self.db
+        let path = dbPath
+        let (size, count): (String, String) = await Task.detached {
+            let size: String
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let bytes = attrs[.size] as? Int {
+                size = String(format: "%.1f MB", Double(bytes) / 1024 / 1024)
+            } else {
+                size = "N/A"
+            }
+            let count = "\((try? db.countSessions()) ?? 0)"
+            return (size, count)
+        }.value
+        dbSize = size
+        sessionCount = count
     }
 }

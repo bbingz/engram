@@ -100,11 +100,13 @@ struct MainWindowView: View {
     }
 
     private func navigateToSession(id: String) {
-        Task {
-            if let session = try? db.getSession(id: id) {
-                await MainActor.run {
-                    selectedSession = session
-                }
+        // Detached so the SQLite lookup runs off the main thread (an unstructured
+        // Task started here inherits the MainActor executor).
+        let db = self.db
+        Task.detached {
+            guard let session = try? db.getSession(id: id) else { return }
+            await MainActor.run {
+                selectedSession = session
             }
         }
     }

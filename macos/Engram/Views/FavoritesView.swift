@@ -19,6 +19,11 @@ struct FavoritesView: View {
                 }
             }
         }
-        .task { sessions = (try? db.listFavorites()) ?? [] }
+        .task {
+            // Off the main thread: listFavorites is a sessions JOIN favorites
+            // (readInBackground runs on the calling thread).
+            let db = self.db
+            sessions = await Task.detached { (try? db.listFavorites()) ?? [] }.value
+        }
     }
 }
