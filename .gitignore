@@ -43,3 +43,7 @@ tests/fixtures/antigravity/cache/*.jsonl
 
 # Accidentally-committed brainstorm artifacts
 .superpowers/
+
+# Local one-off review snapshot (2026-05-25 multi-expert audit; partly stale).
+# Kept locally, not tracked. `rm` it anytime to drop it for good.
+docs/full-review-report.md
