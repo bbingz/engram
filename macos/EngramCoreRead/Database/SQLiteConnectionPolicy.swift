@@ -20,8 +20,10 @@ public enum SQLiteConnectionPolicy {
     /// and can shrink the DB file while reader connections in the SAME process are
     /// already serving socket requests; a large mmap window over a file truncated
     /// underneath a live reader is a SIGBUS hazard. cache_size delivers the
-    /// hot-page residency benefit without that risk.
-    public static let cacheSizeKiB = 16_000
+    /// hot-page residency benefit without that risk. Shared with the app read
+    /// pool (`DatabaseManager.openReadOnlyPool`) via `SharedDBConfig` so the two
+    /// cannot drift.
+    public static let cacheSizeKiB = SharedDBConfig.cacheSizeKiB
 
     public static func writerConfiguration() -> Configuration {
         var configuration = Configuration()
