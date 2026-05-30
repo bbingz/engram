@@ -288,23 +288,15 @@ final class EngramServiceIPCTests: XCTestCase {
         requestTask.cancel()
     }
 
-    func testTwoClientsSerializeWriteIntentThroughOneServiceGate() async throws {
+    func testConcurrentWriteIntentsSerializeThroughOneServiceGate() async throws {
         let paths = try makeServiceIPCPaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
-        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
-            await handler.handle(request)
-        }
-        try server.start()
-        defer { server.stop() }
 
-        let firstTransport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
-        let secondTransport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        async let first = handler.handle(EngramServiceRequestEnvelope(command: "test.write_intent"))
+        async let second = handler.handle(EngramServiceRequestEnvelope(command: "test.write_intent"))
 
-        async let first = sendWriteIntent(transport: firstTransport)
-        async let second = sendWriteIntent(transport: secondTransport)
-
-        let generations = try await [first.databaseGeneration, second.databaseGeneration].sorted()
+        let generations = try await [writeIntentGeneration(from: first), writeIntentGeneration(from: second)].sorted()
         XCTAssertEqual(generations, [1, 2])
     }
 
@@ -1750,23 +1742,13 @@ private func assertUnsupportedNativeCommand(
     }
 }
 
-private struct WriteIntentAck: Decodable {
-    let ok: Bool
-}
-
-private func sendWriteIntent(transport: UnixSocketEngramServiceTransport) async throws -> (
-    ack: WriteIntentAck,
-    databaseGeneration: Int
-) {
-    let request = EngramServiceRequestEnvelope(command: "test.write_intent")
-    // This helper verifies writer-gate serialization, not the transport's short
-    // default read timeout. CI macOS runners can briefly delay the second client
-    // while both connections and xcodebuild logging compete for executor time.
-    let response = try await transport.send(request, timeout: 10)
+private func writeIntentGeneration(from response: EngramServiceResponseEnvelope) throws -> Int {
     guard case .success(_, let data, let generation?) = response else {
         throw EngramServiceError.invalidRequest(message: "Expected successful write intent response")
     }
-    return (try JSONDecoder().decode(WriteIntentAck.self, from: data), generation)
+    let decoded = try JSONDecoder().decode([String: Bool].self, from: data)
+    XCTAssertEqual(decoded["ok"], true)
+    return generation
 }
 
 private func makeServiceIPCPaths() throws -> (runtime: URL, socket: URL, database: URL) {
