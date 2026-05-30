@@ -244,6 +244,12 @@ public enum ProjectMoveOrchestrator {
         // Lock BEFORE startMigration: a LockBusyError must not leave a stale
         // fs_pending row that blocks the watcher for the TTL window.
         try MigrationLock.acquire(migrationId: migrationId, lockPath: lockPath)
+        // Release on EVERY exit path — including a throw from the Phase-A write
+        // below, which sits outside the do/catch. The original code released
+        // only on the success and catch paths, so a Phase-A failure leaked the
+        // lock (holding the live service pid) and permanently wedged all future
+        // project moves until a service restart.
+        defer { MigrationLock.release(lockPath: lockPath) }
 
         // (SIGINT handler intentionally omitted in the Swift port — Engram
         // services run as launchd helpers without a controlling terminal.
@@ -399,23 +405,31 @@ public enum ProjectMoveOrchestrator {
                 }
                 var filesPatched = 0
                 var occurrences = 0
+                // First pass: record EVERY successful patch in the manifest so
+                // compensation can revert all physical writes, regardless of
+                // where a hard error sits in the result order. The original
+                // single pass threw on the first hard error before recording a
+                // success at a later index, leaving that file rewritten but
+                // unreverted on rollback (silent corruption).
+                for r in perFile where r.error == nil && r.count > 0 {
+                    manifest.append(ManifestEntry(path: r.file, occurrences: r.count))
+                    filesPatched += 1
+                    occurrences += r.count
+                }
+                // Second pass: surface hard errors only after the manifest
+                // covers every successful patch.
                 for r in perFile {
-                    if let err = r.error {
-                        // Hard errors mean we cannot guarantee the file was
-                        // patched correctly — propagate so compensation runs.
-                        if err is InvalidUtf8Error || err is ConcurrentModificationError {
-                            throw err
-                        }
-                        issues.append(WalkIssue(
-                            path: r.file,
-                            reason: .statFailed,
-                            detail: errorMessage(err)
-                        ))
-                    } else if r.count > 0 {
-                        manifest.append(ManifestEntry(path: r.file, occurrences: r.count))
-                        filesPatched += 1
-                        occurrences += r.count
+                    guard let err = r.error else { continue }
+                    // Hard errors mean we cannot guarantee the file was
+                    // patched correctly — propagate so compensation runs.
+                    if err is InvalidUtf8Error || err is ConcurrentModificationError {
+                        throw err
                     }
+                    issues.append(WalkIssue(
+                        path: r.file,
+                        reason: .statFailed,
+                        detail: errorMessage(err)
+                    ))
                 }
                 perSource.append(PerSourceStats(
                     id: root.id.rawValue,
@@ -471,8 +485,6 @@ public enum ProjectMoveOrchestrator {
                 homeDirectory: options.homeDirectory
             )
 
-            MigrationLock.release(lockPath: lockPath)
-
             return PipelineResult(
                 migrationId: migrationId,
                 state: .committed,
@@ -516,7 +528,6 @@ public enum ProjectMoveOrchestrator {
             try? writer.write { db in
                 try? MigrationLogStore.failMigration(db, id: migrationId, error: combined)
             }
-            MigrationLock.release(lockPath: lockPath)
             throw error
         }
     }

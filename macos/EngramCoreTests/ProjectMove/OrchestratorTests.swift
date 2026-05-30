@@ -374,6 +374,84 @@ final class OrchestratorTests: XCTestCase {
         }
     }
 
+    // MARK: - lock leak on Phase-A failure (audit round 2: pm-1)
+
+    /// A transient failure of the Phase-A `startMigration` write must still
+    /// release the migration lock. The original code acquired the lock and ran
+    /// the Phase-A write OUTSIDE the do/catch, so a throw there leaked the lock
+    /// holding the live service pid — permanently wedging all future moves
+    /// (isProcessAlive returns true, so stale-lock breaking never reclaims it).
+    func testLockReleasedWhenStartMigrationWriteFails() async throws {
+        let (src, _) = try makeProjectFixture(name: "proj")
+        let dst = tempRoot.appendingPathComponent("renamed").path
+        // Force the Phase-A startMigration INSERT to throw by removing its table.
+        try writer.write { db in try db.execute(sql: "DROP TABLE migration_log") }
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected the Phase-A startMigration write to throw")
+        } catch {
+            // expected: the migration_log INSERT fails
+        }
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: lockPath),
+            "lock must be released even when the Phase-A write fails"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: src),
+            "Phase-A failure precedes any FS move; src must be untouched"
+        )
+    }
+
+    // MARK: - partial JSONL patch rollback (audit round 2: pm-2)
+
+    /// When a hard patch error (InvalidUtf8Error) aborts the patch loop, every
+    /// file that WAS successfully patched before the throw surfaced must still
+    /// be recorded in the manifest so compensation reverts it. The original
+    /// code appended to the manifest only as it walked results and threw on the
+    /// first hard error, leaving a successful patch at a LATER result index
+    /// rewritten-but-unreverted (silent corruption).
+    func testRollbackRevertsSuccessfulPatchOrderedAfterHardError() async throws {
+        let (src, ccDir) = try makeProjectFixture(name: "proj")
+        let dst = tempRoot.appendingPathComponent("renamed").path
+
+        // findReferencingFiles returns sorted paths, so "a-bad" is processed
+        // before "b-ok": the hard error surfaces FIRST while b-ok's successful
+        // patch sits at a later index — exactly the file the bug leaves unreverted.
+        var bad = Data("{\"cwd\":\"\(src)\"}\n".utf8)
+        bad.append(contentsOf: [0xFF, 0xFE]) // invalid UTF-8 → InvalidUtf8Error
+        try bad.write(to: ccDir.appendingPathComponent("a-bad.jsonl"))
+        try writeJsonlSession(at: ccDir.appendingPathComponent("b-ok.jsonl"), cwd: src)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected InvalidUtf8Error to abort the migration")
+        } catch is InvalidUtf8Error {
+            // expected
+        }
+
+        // Compensation must have reverted the good file AND moved the dir back.
+        let restored = try String(
+            contentsOf: ccDir.appendingPathComponent("b-ok.jsonl"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            restored.contains(src),
+            "rolled-back file must be reverted to the old path"
+        )
+        XCTAssertFalse(
+            restored.contains(dst),
+            "rolled-back file must not retain the new path (silent corruption)"
+        )
+    }
+
     // MARK: - helpers
 
     /// Build `<tempRoot>/Code/<name>/` plus the encoded Claude Code projects
