@@ -180,6 +180,21 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertLessThan(sleepRange.lowerBound, writeRange.lowerBound)
     }
 
+    func testRunnerInitialScanSplitsWriteGateAcrossPhases() throws {
+        // idx-2: the structural startup scan must NOT hold the single write gate
+        // for the whole multi-minute run. It is split into separate gated write
+        // commands (index | maintenance+parents | orphan scan) so user writes can
+        // interleave between phases instead of timing out with WriterBusy.
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertFalse(
+            source.contains(#"performWriteCommand(name: "initialScan")"#),
+            "the whole structural scan must not run as one gated write command"
+        )
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanIndex")"#))
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanBackfills")"#))
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanOrphans")"#))
+    }
+
     func testUnixSocketServiceServerLifecycleUsesTrackedSendableState() throws {
         let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
 
@@ -421,10 +436,13 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertNil(keyword.warning)
     }
 
-    func testFTSSyntaxErrorIsTaggedNeverRetry() async throws {
-        // R5-61: a malformed FTS5 MATCH query is deterministic — retrying it is
-        // futile, so the failure must be tagged retryPolicy "never" rather than
-        // the conservative "safe" default.
+    func testFtsMetacharacterQueryIsEscapedNotASyntaxError() async throws {
+        // Audit round 1 (#19): a query containing FTS5 metacharacters (here an
+        // unbalanced double-quote) must NOT reach SQLite as a raw MATCH and fail
+        // with a syntax error. ftsMatchQuery quotes each token, so the query is
+        // treated as a literal search and returns gracefully. (The never-retry
+        // tagging of genuine syntax errors is still locked by
+        // testSyntaxErrorEnvelopeClassification below.)
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -433,8 +451,8 @@ final class EngramServiceIPCTests: XCTestCase {
             readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
         )
 
-        // Unbalanced double-quote → fts5 syntax error. >=3 chars so it reaches
-        // the MATCH branch (not the short-query early return).
+        // Unbalanced double-quote would be a raw fts5 syntax error; escaping
+        // must turn it into a safe literal query instead.
         let request = EngramServiceRequestEnvelope(
             command: "search",
             payload: try JSONEncoder().encode(
@@ -442,10 +460,9 @@ final class EngramServiceIPCTests: XCTestCase {
             )
         )
         let response = await handler.handle(request)
-        guard case .failure(_, let error) = response else {
-            return XCTFail("expected FTS syntax error to fail, got \(response)")
+        guard case .success = response else {
+            return XCTFail("escaped FTS metacharacter query must succeed, got \(response)")
         }
-        XCTAssertEqual(error.retryPolicy, "never")
     }
 
     func testSyntaxErrorEnvelopeClassification() {

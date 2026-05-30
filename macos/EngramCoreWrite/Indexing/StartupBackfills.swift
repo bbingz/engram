@@ -164,8 +164,42 @@ public enum StartupBackfills {
         orphanScanner: any StartupOrphanScanning,
         adapters: [any SessionAdapter] = []
     ) async throws {
-        let indexed = try await indexer.indexAll()
+        let indexed = try await runStartupIndex(indexer: indexer)
+        try await runStartupMaintenanceAndParents(
+            indexed: indexed,
+            emit: emit,
+            log: log,
+            indexer: indexer,
+            database: database
+        )
+        try await runStartupOrphanScan(
+            emit: emit,
+            log: log,
+            orphanScanner: orphanScanner,
+            database: database,
+            adapters: adapters
+        )
+    }
 
+    /// Phase 1 of the structural startup scan: (re)index recent sessions. This
+    /// is the heaviest step (it re-parses session files), so the product service
+    /// runs it as its own gated write command and releases the write gate before
+    /// the maintenance/parent phase — letting user writes interleave instead of
+    /// waiting out the whole scan.
+    public static func runStartupIndex(indexer: any StartupIndexing) async throws -> Int {
+        try await indexer.indexAll()
+    }
+
+    /// Phase 2: count/cost/score backfills, DB maintenance, parent-link
+    /// detection, migration cleanup, and the "ready" emit. Takes the indexed
+    /// count from phase 1.
+    public static func runStartupMaintenanceAndParents(
+        indexed: Int,
+        emit: (StartupBackfillEvent) -> Void,
+        log: any StartupBackfillLogging,
+        indexer: any StartupIndexing,
+        database: any StartupBackfillDatabase
+    ) async throws {
         do {
             let backfilled = try await indexer.backfillCounts()
             if backfilled > 0 {
@@ -295,7 +329,18 @@ public enum StartupBackfills {
                 ]
             )
         )
+    }
 
+    /// Phase 3: orphan scan + stale-FTS-job enqueue. Runs after "ready" so the
+    /// service is already answering reads; gated separately so its per-row
+    /// writes don't hold the write gate across the whole structural scan.
+    public static func runStartupOrphanScan(
+        emit: (StartupBackfillEvent) -> Void,
+        log: any StartupBackfillLogging,
+        orphanScanner: any StartupOrphanScanning,
+        database: any StartupBackfillDatabase,
+        adapters: [any SessionAdapter]
+    ) async throws {
         do {
             let orphanScan = try await orphanScanner.detectOrphans(adapters: adapters)
             if orphanScan.newlyFlagged > 0 || orphanScan.confirmed > 0 || orphanScan.recovered > 0 {
