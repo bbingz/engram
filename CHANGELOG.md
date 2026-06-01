@@ -43,10 +43,10 @@ and Minor follow-ups from that review.
   visible-message predicate, matching App/Web/TS behavior for system prompts and
   agent communication messages.
 - **Transcript classifier parity expanded**: shared fixtures now cover leading
-  whitespace, Antigravity `<SYSTEM_MESSAGE>` wrappers, Qwen prompts,
-  local-command output, and skill/system wrappers. TS classification now trims
-  prefix input and only treats `<SYSTEM_MESSAGE>` as a system prompt for
-  Antigravity transcripts.
+  whitespace, Antigravity and `antigravity-legacy` `<SYSTEM_MESSAGE>` wrappers,
+  Qwen prompts, local-command output, and skill/system wrappers. TS
+  classification now trims prefix input and treats `<SYSTEM_MESSAGE>` as a
+  system prompt only for Antigravity-family transcripts.
 - **Swift test HOME isolation hardened**: HOME-mutating service-core tests now
   use a serialized `ServiceCoreTestHomeScope` that restores process-global HOME
   even after failures.

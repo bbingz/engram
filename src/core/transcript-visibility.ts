@@ -13,7 +13,8 @@ export function classifySystemContent(
 ): SystemCategory {
   const prefixContent = content.trim();
   const sourceName = String(source ?? '').toLowerCase();
-  const isAntigravity = sourceName === 'antigravity';
+  const isAntigravity =
+    sourceName === 'antigravity' || sourceName === 'antigravity-legacy';
 
   if (prefixContent.startsWith('# AGENTS.md instructions for '))
     return 'systemPrompt';

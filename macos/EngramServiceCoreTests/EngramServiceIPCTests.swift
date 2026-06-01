@@ -700,14 +700,17 @@ final class EngramServiceIPCTests: XCTestCase {
         try seedSearchFixture(at: paths.database.path)
         let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
         try """
-        {"timestamp":"2026-04-23T01:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp\\nhidden system"}]}}
-        {"timestamp":"2026-04-23T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}
-        {"timestamp":"2026-04-23T01:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"world"}]}}
-        {"timestamp":"2026-04-23T01:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<local-command-stdout>hidden agent comm</local-command-stdout>"}]}}
+        {"role":"user","content":"<SYSTEM_MESSAGE>hidden legacy system</SYSTEM_MESSAGE>"}
+        {"role":"user","content":"hello"}
+        {"role":"assistant","content":"world"}
+        {"role":"user","content":"<local-command-stdout>hidden agent comm</local-command-stdout>"}
         """.write(to: transcript, atomically: true, encoding: .utf8)
         let queue = try DatabaseQueue(path: paths.database.path)
         try await queue.write { db in
-            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [transcript.path])
+            try db.execute(
+                sql: "UPDATE sessions SET source = 'antigravity-legacy', file_path = ?, message_count = 4, user_message_count = 3, assistant_message_count = 1, tool_message_count = 0 WHERE id = 's1'",
+                arguments: [transcript.path]
+            )
         }
 
         let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
@@ -729,12 +732,12 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(response.format, "json")
         XCTAssertEqual(response.messageCount, 2)
-        XCTAssertEqual(response.outputPath, exportHome.appendingPathComponent("codex-exports/codex-s1-2026-04-23.json").path)
+        XCTAssertEqual(response.outputPath, exportHome.appendingPathComponent("codex-exports/antigravity-legacy-s1-2026-04-23.json").path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: response.outputPath))
         let exported = try String(contentsOfFile: response.outputPath, encoding: .utf8)
         XCTAssertTrue(exported.contains("hello"), exported)
         XCTAssertTrue(exported.contains("world"), exported)
-        XCTAssertFalse(exported.contains("hidden system"), exported)
+        XCTAssertFalse(exported.contains("hidden legacy system"), exported)
         XCTAssertFalse(exported.contains("hidden agent comm"), exported)
     }
 

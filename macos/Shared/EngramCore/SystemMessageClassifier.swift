@@ -10,7 +10,7 @@ public enum SystemMessageClassifier {
     public static func classify(content: String, source: String) -> SharedSystemMessageCategory {
         let prefixContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         let source = source.lowercased()
-        let isAntigravity = source == "antigravity"
+        let isAntigravity = source == "antigravity" || source == "antigravity-legacy"
 
         if prefixContent.hasPrefix("# AGENTS.md instructions for ") ||
             content.contains("<INSTRUCTIONS>") ||

@@ -503,6 +503,7 @@ final class EngramMCPExecutableTests: XCTestCase {
 
         try """
         {"type":"metadata","id":"legacy-ag","createdAt":"2026-05-20T03:00:00Z","updatedAt":"2026-05-20T03:00:02Z"}
+        {"role":"user","content":"<SYSTEM_MESSAGE>hidden legacy system</SYSTEM_MESSAGE>"}
         {"role":"user","content":"Review legacy cache"}
         {"role":"assistant","content":"Done"}
         """.write(to: transcript, atomically: true, encoding: .utf8)
@@ -516,8 +517,8 @@ final class EngramMCPExecutableTests: XCTestCase {
             dbPath: dbPath,
             source: "antigravity-legacy",
             filePath: transcript.path,
-            messageCount: 2,
-            userMessageCount: 1,
+            messageCount: 3,
+            userMessageCount: 2,
             assistantMessageCount: 1,
             toolMessageCount: 0
         )
@@ -526,6 +527,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(result.contains(#""source": "antigravity-legacy""#), result)
         XCTAssertTrue(result.contains("Review legacy cache"), result)
         XCTAssertTrue(result.contains("Done"), result)
+        XCTAssertFalse(result.contains("hidden legacy system"), result)
     }
 
     func testExportMatchesGolden() throws {

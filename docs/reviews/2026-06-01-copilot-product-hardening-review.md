@@ -119,6 +119,20 @@ parity gaps.
      `classifySystemContent` trims prefix input and source-gates the Antigravity
      `<SYSTEM_MESSAGE>` wrapper.
 
+## 2026-06-01 Antigravity Legacy Follow-up
+
+Copilot's second follow-up review found one remaining Important gap:
+`antigravity-legacy` transcripts could still leak `<SYSTEM_MESSAGE>` content
+because Swift MCP/export passed the original source string into
+`SystemMessageClassifier`, while the classifier only treated `antigravity` as an
+Antigravity source.
+
+- Status: fixed. Swift and TS classifiers now treat `antigravity-legacy` as an
+  Antigravity-family source for `<SYSTEM_MESSAGE>` classification. The shared
+  fixture corpus includes an `antigravity-legacy` wrapper case, MCP
+  `get_session` covers hiding a legacy wrapper, and service export covers hiding
+  the same wrapper when exporting a legacy transcript.
+
 ## Minor
 
 - Split oversized Swift service/MCP registry files by command domain once the

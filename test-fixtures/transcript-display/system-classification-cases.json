@@ -42,6 +42,12 @@
     "category": "systemPrompt"
   },
   {
+    "name": "antigravity-legacy-system-message-wrapper",
+    "source": "antigravity-legacy",
+    "content": "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-05-20T00:02:44Z priority=MESSAGE_PRIORITY_HIGH\ncontent=Legacy task finished.\n</SYSTEM_MESSAGE>",
+    "category": "systemPrompt"
+  },
+  {
     "name": "codex-system-message-wrapper-is-normal-text",
     "source": "codex",
     "content": "\n  <SYSTEM_MESSAGE>\nPlease explain this wrapper format.\n</SYSTEM_MESSAGE>",

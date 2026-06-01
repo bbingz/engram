@@ -44,9 +44,10 @@ two Critical items before product UI expansion:
     system prompts and agent communication are hidden consistently across
     App/Web/MCP/export defaults.
   - Shared transcript display fixtures now cover leading whitespace,
-    Antigravity `<SYSTEM_MESSAGE>` wrappers, Qwen prompts, local-command output,
-    and skill/system wrappers. TS `classifySystemContent` now trims prefix input
-    and source-gates the Antigravity wrapper.
+    Antigravity and `antigravity-legacy` `<SYSTEM_MESSAGE>` wrappers, Qwen
+    prompts, local-command output, and skill/system wrappers. TS
+    `classifySystemContent` now trims prefix input and source-gates the
+    Antigravity-family wrapper.
   - HOME-mutating Swift service-core tests now use `ServiceCoreTestHomeScope`,
     a serialized process-global HOME guard that restores the original value even
     on failure.
@@ -92,6 +93,7 @@ Verified:
   -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
 - `xcodebuild test -project Engram.xcodeproj -scheme EngramMCPTests
   -only-testing:EngramMCPTests/EngramMCPExecutableTests/testGetSessionFiltersSystemAndAgentCommMessagesLikeSwiftDisplay
+  -only-testing:EngramMCPTests/EngramMCPExecutableTests/testGetSessionReadsAntigravityLegacySourceThroughAdapterRegistry
   -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
 - `xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore
   -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionWritesThroughServiceCommand
