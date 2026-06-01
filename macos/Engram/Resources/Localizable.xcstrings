@@ -466,6 +466,9 @@
     "Session Filter" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "会话过滤" } } }
     },
+    "Transcript Diagnostics" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "转录诊断" } } }
+    },
     "Service status: %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务状态：%@" } } }
     },

@@ -4,15 +4,11 @@ import SwiftUI
 struct GeneralSettingsSection: View {
     @AppStorage("appLanguage") var appLanguage: String = AppLanguage.system.rawValue
     @AppStorage("contentFontSize") var contentFontSize: Double = 14
-    @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
-    @AppStorage("showAgentComm") var showAgentComm: Bool = false
     @AppStorage("showDockIcon") var showDockIcon: Bool = false
     @AppStorage("httpPort") var httpPort: Int = 3456
     @AppStorage("nodejsPath") var nodejsPath: String = "/usr/local/bin/node"
 
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
-
-    @State private var noiseFilter: String = "hide-skip"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -47,33 +43,6 @@ struct GeneralSettingsSection: View {
                         .font(.system(size: contentFontSize))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-
-                    Toggle("Show System Prompts", isOn: $showSystemPrompts)
-                    Text("CLAUDE.md, AGENTS.md, environment context, and other injected instructions")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Toggle("Show Agent Communication", isOn: $showAgentComm)
-                    Text("Tool calls, skill invocations, and command outputs")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 4)
-            }
-
-            // Session Filter
-            GroupBox("Session Filter") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Picker("Session Filter", selection: $noiseFilter) {
-                        Text("Show All").tag("all")
-                        Text("Hide Agents & Noise").tag("hide-skip")
-                        Text("Clean View").tag("hide-noise")
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: noiseFilter) { saveNoiseSettings() }
-
-                    Text(noiseFilterDescription)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
                 }
                 .padding(.vertical, 4)
             }
@@ -158,15 +127,6 @@ struct GeneralSettingsSection: View {
                 .padding(.vertical, 4)
             }
         }
-        .onAppear { loadNoiseSettings() }
-    }
-
-    private var noiseFilterDescription: LocalizedStringKey {
-        switch noiseFilter {
-        case "all": return "Show all sessions including agents and noise"
-        case "hide-noise": return "Hide agents, empty sessions, and low-signal sessions"
-        default: return "Hide sub-agents and trivial sessions (default)"
-        }
     }
 
     @ViewBuilder
@@ -199,14 +159,4 @@ struct GeneralSettingsSection: View {
         return URL(string: "http://\(host):\(port)/")
     }
 
-    private func saveNoiseSettings() {
-        mutateEngramSettings { settings in
-            settings["noiseFilter"] = noiseFilter
-        }
-    }
-
-    private func loadNoiseSettings() {
-        guard let settings = readEngramSettings() else { return }
-        if let v = settings["noiseFilter"] as? String { noiseFilter = v }
-    }
 }

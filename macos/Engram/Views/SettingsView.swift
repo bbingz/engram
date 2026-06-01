@@ -175,10 +175,14 @@ private struct SettingsCardGroupBoxStyle: GroupBoxStyle {
 }
 
 private struct AdvancedSettingsSection: View {
+    @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
+    @AppStorage("showAgentComm") var showAgentComm: Bool = false
+
     @State private var httpHost = "127.0.0.1"
     @State private var httpAllowCIDR = ""
     @State private var httpBearerToken = ""
     // Embedding settings state removed — see Embeddings note in body.
+    @State private var noiseFilter = "hide-skip"
     @State private var hideUsageSessions = true
     @State private var hideEmptySessions = true
     @State private var hideAutoSummary = true
@@ -241,6 +245,37 @@ private struct AdvancedSettingsSection: View {
             // AISettingsSection block. No Swift runtime reads these settings
             // (semantic search/embeddings are unimplemented), so the controls
             // were a false UI promise. See AISettingsSection for the rationale.
+
+            GroupBox("Transcript Diagnostics") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Show System Prompts", isOn: $showSystemPrompts)
+                    Text("CLAUDE.md, AGENTS.md, environment context, and other injected instructions")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Toggle("Show Agent Communication", isOn: $showAgentComm)
+                    Text("Tool calls, skill invocations, and command outputs")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 4)
+            }
+
+            GroupBox("Session Filter") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("Session Filter", selection: $noiseFilter) {
+                        Text("Show All").tag("all")
+                        Text("Hide Agents & Noise").tag("hide-skip")
+                        Text("Clean View").tag("hide-noise")
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: noiseFilter) { saveAdvancedSettings() }
+
+                    Text(noiseFilterDescription)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 4)
+            }
 
             GroupBox("Noise Details") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -353,6 +388,14 @@ private struct AdvancedSettingsSection: View {
         .onAppear { loadAdvancedSettings() }
     }
 
+    private var noiseFilterDescription: LocalizedStringKey {
+        switch noiseFilter {
+        case "all": return "Show all sessions including agents and noise"
+        case "hide-noise": return "Hide agents, empty sessions, and low-signal sessions"
+        default: return "Hide sub-agents and trivial sessions (default)"
+        }
+    }
+
     private func loadAdvancedSettings() {
         isLoadingSettings = true
         defer { isLoadingSettings = false }
@@ -361,6 +404,7 @@ private struct AdvancedSettingsSection: View {
         if let v = settings["httpHost"] as? String { httpHost = v }
         if let v = settings["httpAllowCIDR"] as? [String] { httpAllowCIDR = v.joined(separator: ", ") }
         if let v = settings["httpBearerToken"] as? String { httpBearerToken = v }
+        if let v = settings["noiseFilter"] as? String { noiseFilter = v }
         if let v = settings["hideUsageSessions"] as? Bool { hideUsageSessions = v }
         if let v = settings["hideEmptySessions"] as? Bool { hideEmptySessions = v }
         if let v = settings["hideAutoSummary"] as? Bool { hideAutoSummary = v }
@@ -412,6 +456,7 @@ private struct AdvancedSettingsSection: View {
                 settings["httpBearerToken"] = httpBearerToken
             }
 
+            settings["noiseFilter"] = noiseFilter
             settings["hideUsageSessions"] = hideUsageSessions
             settings["hideEmptySessions"] = hideEmptySessions
             settings["hideAutoSummary"] = hideAutoSummary

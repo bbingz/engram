@@ -119,6 +119,8 @@ First UI pass landed on 2026-06-01:
 - `SearchPageView` keeps the search box and mode selector first, with
   project/source/time filters collapsed under one `Advanced filters`
   disclosure.
+- `SettingsView` now keeps the low-level `Session Filter` and raw transcript
+  diagnostic toggles under Advanced instead of General.
 - Home UI tests now assert the Today Workbench sections instead of the previous
   chart-heavy dashboard.
 

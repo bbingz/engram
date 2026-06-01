@@ -147,6 +147,54 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         }
     }
 
+    func testSessionFilterLivesUnderAdvancedSettings() throws {
+        let generalSettings = try source("macos/Engram/Views/Settings/GeneralSettingsSection.swift")
+        let settingsView = try source("macos/Engram/Views/SettingsView.swift")
+
+        XCTAssertFalse(
+            generalSettings.contains("GroupBox(\"Session Filter\")"),
+            "General settings should stay quiet; the low-level session noise filter belongs in Advanced"
+        )
+        XCTAssertTrue(
+            settingsView.contains("GroupBox(\"Session Filter\")"),
+            "Advanced settings should expose the simplified session noise filter"
+        )
+        XCTAssertTrue(
+            settingsView.contains("GroupBox(\"Noise Details\")"),
+            "Advanced settings should keep the low-level noise detail toggles near the simplified filter"
+        )
+        XCTAssertTrue(
+            settingsView.contains("settings[\"noiseFilter\"] = noiseFilter"),
+            "Moving the control must preserve the existing noiseFilter settings contract"
+        )
+    }
+
+    func testTranscriptDiagnosticTogglesLiveUnderAdvancedSettings() throws {
+        let generalSettings = try source("macos/Engram/Views/Settings/GeneralSettingsSection.swift")
+        let settingsView = try source("macos/Engram/Views/SettingsView.swift")
+
+        XCTAssertFalse(
+            generalSettings.contains("Show System Prompts"),
+            "General settings should not expose raw transcript diagnostic toggles"
+        )
+        XCTAssertFalse(
+            generalSettings.contains("Show Agent Communication"),
+            "General settings should not expose raw transcript diagnostic toggles"
+        )
+        XCTAssertTrue(
+            settingsView.contains("GroupBox(\"Transcript Diagnostics\")"),
+            "Advanced settings should group raw transcript diagnostic visibility"
+        )
+        XCTAssertTrue(
+            settingsView.contains("@AppStorage(\"showSystemPrompts\")"),
+            "Moving diagnostics must preserve the existing showSystemPrompts setting"
+        )
+        XCTAssertTrue(
+            settingsView.contains("@AppStorage(\"showAgentComm\")"),
+            "Moving diagnostics must preserve the existing showAgentComm setting"
+        )
+    }
+
     func testPopoverStatusLabelsServiceInsteadOfMcpWhenUsingServiceStatus() throws {
         let popover = try source("macos/Engram/Views/PopoverView.swift")
         XCTAssertFalse(

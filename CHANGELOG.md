@@ -7,6 +7,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Advanced noise controls quieted (2026-06-01, Codex)
+
+Continued the approved Today Workbench + Advanced noise-reduction direction.
+
+- Moved the simplified `Session Filter` from General settings into Advanced,
+  while preserving the existing `noiseFilter` settings contract.
+- Moved raw transcript diagnostic toggles (`Show System Prompts` and
+  `Show Agent Communication`) from General display settings into a new
+  Advanced `Transcript Diagnostics` group, preserving the existing
+  `@AppStorage` keys.
+- Added `zh-Hans` localization for the new diagnostics group.
+- Added scan tests that keep these low-level noise/diagnostic controls out of
+  General settings.
+
+Verified with:
+- red targeted tests for the session-filter and transcript-diagnostics moves
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests/testSessionFilterLivesUnderAdvancedSettings
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests/testTranscriptDiagnosticTogglesLiveUnderAdvancedSettings
+  CODE_SIGNING_ALLOWED=NO`
+
 ### Today Workbench completion pass (2026-06-01, Codex)
 
 Closed the concrete gaps left by the first Today Workbench UI pass.

@@ -1,5 +1,41 @@
 # Engram Local Memory
 
+## 2026-06-01 — Advanced noise controls quieted (Codex)
+
+Continued the approved Today Workbench + Advanced noise-reduction goal after
+the Today completion pass. The remaining concrete gap addressed here was that
+General settings still exposed low-level transcript/session-noise controls.
+
+Implemented:
+- Moved the simplified `Session Filter` control from
+  `GeneralSettingsSection` into `AdvancedSettingsSection`, preserving the
+  existing `noiseFilter` settings key.
+- Moved raw transcript diagnostic toggles (`showSystemPrompts` and
+  `showAgentComm`) from General display settings into a new Advanced
+  `Transcript Diagnostics` group, preserving their existing `@AppStorage`
+  keys.
+- Added `zh-Hans` localization for the new `Transcript Diagnostics` group.
+- Added targeted scan tests that prevent the session filter and raw transcript
+  diagnostic toggles from drifting back into General.
+
+Verified:
+- Red tests first:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests/testSessionFilterLivesUnderAdvancedSettings
+  CODE_SIGNING_ALLOWED=NO`
+  and
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests/testTranscriptDiagnosticTogglesLiveUnderAdvancedSettings
+  CODE_SIGNING_ALLOWED=NO`.
+- Green targeted test:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests/testSessionFilterLivesUnderAdvancedSettings
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests/testTranscriptDiagnosticTogglesLiveUnderAdvancedSettings
+  CODE_SIGNING_ALLOWED=NO`.
+
 ## 2026-06-01 — Today Workbench completion pass (Codex)
 
 User asked to resume the previously blocked product goal after reviewing what
