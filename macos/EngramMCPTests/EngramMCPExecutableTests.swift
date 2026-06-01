@@ -458,6 +458,42 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(result.contains(#""content": "   ""#), result)
     }
 
+    func testGetSessionFiltersSystemAndAgentCommMessagesLikeSwiftDisplay() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-mcp-codex-visibility-\(UUID().uuidString)", isDirectory: true)
+        let transcript = root.appendingPathComponent("codex-session.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try """
+        {"timestamp":"2026-04-23T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp\\nhidden system"}]}}
+        {"timestamp":"2026-04-23T01:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<command-name>hidden agent comm</command-name>"}]}}
+        {"timestamp":"2026-04-23T01:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"visible user"}]}}
+        {"timestamp":"2026-04-23T01:00:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"visible assistant"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-codex-visibility-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: transcript.path,
+            messageCount: 4,
+            userMessageCount: 3,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
+        let result = try getSessionTextFromMCP(dbPath: dbPath)
+        XCTAssertTrue(result.contains("visible user"), result)
+        XCTAssertTrue(result.contains("visible assistant"), result)
+        XCTAssertFalse(result.contains("hidden system"), result)
+        XCTAssertFalse(result.contains("hidden agent comm"), result)
+    }
+
     func testGetSessionReadsAntigravityLegacySourceThroughAdapterRegistry() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("engram-mcp-antigravity-legacy-\(UUID().uuidString)", isDirectory: true)

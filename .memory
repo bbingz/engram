@@ -36,7 +36,17 @@ two Critical items before product UI expansion:
     of a filtered visible count, so hidden messages no longer cause skipped or
     repeated visible pages.
   - `EngramServiceLauncher` stdout event parsing now buffers newline-delimited
-    JSON events across pipe chunks and logs decode failures with the raw line.
+    JSON events across pipe chunks, appends stdout data before trimming complete
+    lines, and logs decode failures with the raw line. The split
+    JSON-then-newline chunk case from Copilot's re-review is covered.
+  - Swift MCP `get_session` and service transcript export now apply
+    `SystemMessageClassifier` in their default visible-message predicate, so
+    system prompts and agent communication are hidden consistently across
+    App/Web/MCP/export defaults.
+  - Shared transcript display fixtures now cover leading whitespace,
+    Antigravity `<SYSTEM_MESSAGE>` wrappers, Qwen prompts, local-command output,
+    and skill/system wrappers. TS `classifySystemContent` now trims prefix input
+    and source-gates the Antigravity wrapper.
   - HOME-mutating Swift service-core tests now use `ServiceCoreTestHomeScope`,
     a serialized process-global HOME guard that restores the original value even
     on failure.
@@ -76,6 +86,16 @@ Verified:
 - `xcodebuild test -project Engram.xcodeproj -scheme Engram
   -only-testing:EngramTests/EngramServiceLauncherTests/testServiceOutputLineBufferWaitsForCompleteJSONLines
   -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project Engram.xcodeproj -scheme Engram
+  -only-testing:EngramTests/MessageParserTests/testClassifySystemMatchesSharedTranscriptDisplayFixtures
+  -only-testing:EngramTests/EngramServiceLauncherTests/testServiceStdoutDecoderFlushesWhenNewlineArrivesSeparately
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project Engram.xcodeproj -scheme EngramMCPTests
+  -only-testing:EngramMCPTests/EngramMCPExecutableTests/testGetSessionFiltersSystemAndAgentCommMessagesLikeSwiftDisplay
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionWritesThroughServiceCommand
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
 - `npm run build`
 - `npm run typecheck:test`
 - `npm run lint`
@@ -108,8 +128,8 @@ Verified:
   `EngramUITests` shared schemes.
 - `npm run lint`
 
-Remaining queue from Copilot review: none. Critical, Important, and Minor items
-are closed and recorded in
+Remaining queue from Copilot review and follow-up re-review: none. Critical,
+Important, and Minor items are closed and recorded in
 `docs/reviews/2026-06-01-copilot-product-hardening-review.md`.
 
 ## 2026-05-30 — deferred follow-ups closed and local app deployed (Codex)

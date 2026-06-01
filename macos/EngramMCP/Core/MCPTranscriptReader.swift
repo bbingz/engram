@@ -14,15 +14,15 @@ enum MCPTranscriptReader {
 
         switch source {
         case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
-            return parseTypeMessageFormat(filePath: filePath)
+            return visibleMessages(parseTypeMessageFormat(filePath: filePath), source: source)
         case "kimi", "antigravity", "windsurf":
-            return parseRoleDirectFormat(filePath: filePath)
+            return visibleMessages(parseRoleDirectFormat(filePath: filePath), source: source)
         case "commandcode":
-            return parseCommandCodeFormat(filePath: filePath)
+            return visibleMessages(parseCommandCodeFormat(filePath: filePath), source: source)
         case "codex":
-            return parseCodexFormat(filePath: filePath)
+            return visibleMessages(parseCodexFormat(filePath: filePath), source: source)
         case "gemini-cli":
-            return parseGeminiFormat(filePath: filePath)
+            return visibleMessages(parseGeminiFormat(filePath: filePath), source: source)
         default:
             return []
         }
@@ -46,11 +46,11 @@ enum MCPTranscriptReader {
             )
             var messages: [MCPTranscriptMessage] = []
             for try await message in stream {
-                guard message.role == .user || message.role == .assistant,
-                      !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                else {
-                    continue
-                }
+                guard isDefaultVisibleMessage(
+                    role: message.role.rawValue,
+                    content: message.content,
+                    source: source
+                ) else { continue }
                 messages.append(
                     MCPTranscriptMessage(
                         role: message.role.rawValue,
@@ -68,6 +68,24 @@ enum MCPTranscriptReader {
     private static func adapterSourceName(for source: String) -> SourceName? {
         if source == "antigravity-legacy" { return .antigravity }
         return SourceName(rawValue: source)
+    }
+
+    private static func visibleMessages(
+        _ messages: [MCPTranscriptMessage],
+        source: String
+    ) -> [MCPTranscriptMessage] {
+        messages.filter { message in
+            isDefaultVisibleMessage(role: message.role, content: message.content, source: source)
+        }
+    }
+
+    private static func isDefaultVisibleMessage(role: String, content: String, source: String) -> Bool {
+        guard role == "user" || role == "assistant" else { return false }
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if role == "user" {
+            return SystemMessageClassifier.classify(content: content, source: source) == .none
+        }
+        return true
     }
 
     private static func parseTypeMessageFormat(filePath: String) -> [MCPTranscriptMessage] {

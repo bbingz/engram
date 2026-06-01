@@ -88,6 +88,26 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertEqual(warning.message, "slow")
     }
 
+    func testServiceStdoutDecoderFlushesWhenNewlineArrivesSeparately() {
+        let buffer = ServiceOutputLineBuffer()
+        let json = #"{"event":"indexed","total":4,"todayParents":2}"#
+
+        XCTAssertEqual(
+            EngramServiceLauncher.decodeServiceStdoutEvents(from: Data(json.utf8), lineBuffer: buffer),
+            []
+        )
+
+        let events = EngramServiceLauncher.decodeServiceStdoutEvents(
+            from: Data("\n".utf8),
+            lineBuffer: buffer
+        )
+
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events[0].event, "indexed")
+        XCTAssertEqual(events[0].total, 4)
+        XCTAssertEqual(events[0].todayParents, 2)
+    }
+
     func testDefaultConfigurationUsesEngramRunSocketAndServiceHelperName() {
         let home = URL(fileURLWithPath: "/tmp/engram-home", isDirectory: true)
         let config = EngramServiceLaunchConfiguration.default(

@@ -9,26 +9,31 @@ export interface VisibleTranscriptMessageInput {
 
 export function classifySystemContent(
   content: string,
-  _source?: SourceName | string,
+  source?: SourceName | string,
 ): SystemCategory {
-  if (content.startsWith('# AGENTS.md instructions for '))
+  const prefixContent = content.trim();
+  const sourceName = String(source ?? '').toLowerCase();
+  const isAntigravity = sourceName === 'antigravity';
+
+  if (prefixContent.startsWith('# AGENTS.md instructions for '))
     return 'systemPrompt';
   if (content.includes('<INSTRUCTIONS>')) return 'systemPrompt';
-  if (content.startsWith('<system-reminder>')) return 'systemPrompt';
-  if (content.startsWith('<environment_context>')) return 'systemPrompt';
-  if (content.startsWith('<EXTREMELY_IMPORTANT>')) return 'systemPrompt';
-  if (isSystemMessageWrapper(content)) return 'systemPrompt';
-  if (content.startsWith('\nYou are Qwen Code')) return 'systemPrompt';
-  if (content.startsWith('You are Qwen Code')) return 'systemPrompt';
+  if (prefixContent.startsWith('<system-reminder>')) return 'systemPrompt';
+  if (prefixContent.startsWith('<environment_context>')) return 'systemPrompt';
+  if (prefixContent.startsWith('<EXTREMELY_IMPORTANT>')) return 'systemPrompt';
+  if (isAntigravity && isSystemMessageWrapper(prefixContent))
+    return 'systemPrompt';
+  if (prefixContent.startsWith('You are Qwen Code')) return 'systemPrompt';
 
-  if (content.startsWith('<subagent_notification>')) return 'agentComm';
+  if (prefixContent.startsWith('<subagent_notification>')) return 'agentComm';
   if (content.includes('<command-name>')) return 'agentComm';
   if (content.includes('<command-message>')) return 'agentComm';
-  if (content.startsWith('<local-command-caveat>')) return 'agentComm';
-  if (content.startsWith('<local-command-stdout>')) return 'agentComm';
-  if (content.startsWith('Unknown skill: ')) return 'agentComm';
-  if (content.startsWith('Invoke the superpowers:')) return 'agentComm';
-  if (content.startsWith('Base directory for this skill:')) return 'agentComm';
+  if (prefixContent.startsWith('<local-command-caveat>')) return 'agentComm';
+  if (prefixContent.startsWith('<local-command-stdout>')) return 'agentComm';
+  if (prefixContent.startsWith('Unknown skill: ')) return 'agentComm';
+  if (prefixContent.startsWith('Invoke the superpowers:')) return 'agentComm';
+  if (prefixContent.startsWith('Base directory for this skill:'))
+    return 'agentComm';
 
   return 'none';
 }

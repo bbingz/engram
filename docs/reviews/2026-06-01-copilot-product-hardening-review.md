@@ -65,7 +65,7 @@ handoff.
      queued waiter count instead of sleeping for a fixed duration.
 8. `EmbeddingIndexer` tests need a real DB/vector-store integration case with a
    deterministic embedding client.
-   - Status: fixed. `EmbeddingIndexer` now has an integration test using
+  - Status: fixed. `EmbeddingIndexer` now has an integration test using
      `Database`, `SqliteVecStore`, and a deterministic `EmbeddingClient`,
      covering persisted model metadata and restart skip behavior.
 9. Adapter parity fixture checking should compare committed fixtures against
@@ -75,11 +75,49 @@ handoff.
 10. CI/release gates should harden screenshot regression skip/fail semantics,
     artifact path consistency, adapter parity freshness, and local-only release
     documentation paths.
-    - Status: fixed for the cited CI gaps. CI now runs adapter parity freshness;
-      screenshot comparison requires a manifest in UI jobs, fails on true size
-      mismatches, and writes diffs under the uploaded `screenshots/diffs/`
-      artifact path. Local-only release documentation was already corrected in
-      the README refresh.
+  - Status: fixed for the cited CI gaps. CI now runs adapter parity freshness;
+     screenshot comparison requires a manifest in UI jobs, fails on true size
+     mismatches, and writes diffs under the uploaded `screenshots/diffs/`
+     artifact path. Local-only release documentation was already corrected in
+     the README refresh.
+
+## 2026-06-01 Copilot Re-review Follow-up
+
+Copilot's follow-up review confirmed the two original Critical items were fixed
+and identified one remaining Critical plus three Important transcript/service
+parity gaps.
+
+### Critical
+
+1. Service stdout event buffering still dropped JSON when a complete JSON chunk
+   and its trailing newline arrived separately.
+   - Evidence cited by reviewer:
+     `macos/Engram/Core/EngramServiceLauncher.swift`.
+   - Problem: the stdout handler trimmed and returned on a newline-only chunk
+     before flushing the already-buffered JSON line.
+   - Status: fixed. `EngramServiceLauncher` now appends every non-empty stdout
+     data chunk to `ServiceOutputLineBuffer` before trimming complete lines for
+     JSON decoding. `EngramServiceLauncherTests` covers the split
+     JSON-then-newline case.
+
+### Important
+
+1. Swift MCP `get_session` did not reuse the system/agent-communication
+   classifier.
+   - Status: fixed. `MCPTranscriptReader` now applies the default visible
+     transcript predicate through `SystemMessageClassifier` for adapter and
+     fallback parser paths.
+2. Service transcript export did not reuse the system/agent-communication
+   classifier.
+   - Status: fixed. `TranscriptExportService` now applies the same default
+     visible transcript predicate before exporting JSON or Markdown.
+3. Swift and TS system-message classifiers could drift on whitespace,
+   source-specific Antigravity wrappers, Qwen prompts, local-command output, and
+   skill/system wrappers.
+   - Status: fixed. Shared transcript display fixtures now cover those cases,
+     Swift consumes them through `MessageParserTests`, and TS
+     `classifySystemContent` trims prefix input and source-gates the Antigravity
+     `<SYSTEM_MESSAGE>` wrapper.
 
 ## Minor
 

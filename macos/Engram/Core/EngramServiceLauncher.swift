@@ -199,31 +199,41 @@ final class EngramServiceLauncher {
                 handle.readabilityHandler = nil
                 return
             }
-            guard let text = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                !text.isEmpty
-            else { return }
             if level == "stderr" {
-                EngramLogger.error("EngramService stderr: \(text)", module: .daemon)
+                if let text = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                    !text.isEmpty {
+                    EngramLogger.error("EngramService stderr: \(text)", module: .daemon)
+                }
             } else {
-                EngramLogger.debug("EngramService stdout: \(text)", module: .daemon)
+                if let text = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                    !text.isEmpty {
+                    EngramLogger.debug("EngramService stdout: \(text)", module: .daemon)
+                }
                 // OBS-O2: parse structured events (one JSON object per line) and
                 // forward them so indexing failures surface in the status store.
-                for line in lineBuffer.append(data) {
-                    let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard trimmedLine.first == "{" else { continue }
-                    let lineData = Data(trimmedLine.utf8)
-                    let event: EngramServiceEvent
-                    do {
-                        event = try JSONDecoder().decode(EngramServiceEvent.self, from: lineData)
-                    } catch {
-                        EngramLogger.error("EngramService stdout JSON decode failed: \(error); line=\(trimmedLine)", module: .daemon)
-                        continue
-                    }
+                for event in Self.decodeServiceStdoutEvents(from: data, lineBuffer: lineBuffer) {
                     Task { @MainActor [weak self] in
                         self?.onEvent?(event)
                     }
                 }
+            }
+        }
+    }
+
+    nonisolated static func decodeServiceStdoutEvents(
+        from data: Data,
+        lineBuffer: ServiceOutputLineBuffer
+    ) -> [EngramServiceEvent] {
+        lineBuffer.append(data).compactMap { line in
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmedLine.first == "{" else { return nil }
+            do {
+                return try JSONDecoder().decode(EngramServiceEvent.self, from: Data(trimmedLine.utf8))
+            } catch {
+                EngramLogger.error("EngramService stdout JSON decode failed: \(error); line=\(trimmedLine)", module: .daemon)
+                return nil
             }
         }
     }

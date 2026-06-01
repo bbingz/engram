@@ -6,9 +6,21 @@
     "category": "systemPrompt"
   },
   {
+    "name": "leading-whitespace-agents-md-instructions",
+    "source": "codex",
+    "content": " \n\t# AGENTS.md instructions for /Users/bing/-Code-/engram\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>",
+    "category": "systemPrompt"
+  },
+  {
     "name": "qwen-system-prompt",
     "source": "qwen",
     "content": "You are Qwen Code, a coding agent.",
+    "category": "systemPrompt"
+  },
+  {
+    "name": "leading-whitespace-qwen-system-prompt",
+    "source": "qwen",
+    "content": "\n  You are Qwen Code, a coding agent.",
     "category": "systemPrompt"
   },
   {
@@ -22,6 +34,18 @@
     "source": "antigravity",
     "content": "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-05-20T00:02:44Z priority=MESSAGE_PRIORITY_HIGH\ncontent=Task finished with result.\n</SYSTEM_MESSAGE>",
     "category": "systemPrompt"
+  },
+  {
+    "name": "leading-whitespace-antigravity-system-message-wrapper",
+    "source": "antigravity",
+    "content": "\n  <SYSTEM_MESSAGE>\n[Message] timestamp=2026-05-20T00:02:44Z priority=MESSAGE_PRIORITY_HIGH\ncontent=Task finished with result.\n</SYSTEM_MESSAGE>",
+    "category": "systemPrompt"
+  },
+  {
+    "name": "codex-system-message-wrapper-is-normal-text",
+    "source": "codex",
+    "content": "\n  <SYSTEM_MESSAGE>\nPlease explain this wrapper format.\n</SYSTEM_MESSAGE>",
+    "category": "none"
   },
   {
     "name": "system-message-mentioned-in-normal-text",
@@ -39,6 +63,18 @@
     "name": "command-name-tag",
     "source": "claude-code",
     "content": "text with <command-name>test</command-name>",
+    "category": "agentComm"
+  },
+  {
+    "name": "leading-whitespace-local-command-stdout",
+    "source": "claude-code",
+    "content": "\n  <local-command-stdout>output</local-command-stdout>",
+    "category": "agentComm"
+  },
+  {
+    "name": "unknown-skill-agent-comm",
+    "source": "codex",
+    "content": "  Unknown skill: missing-skill",
     "category": "agentComm"
   },
   {

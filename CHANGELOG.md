@@ -34,8 +34,19 @@ and Minor follow-ups from that review.
   adapter position instead of filtered visible-message count, avoiding missing or
   repeated visible messages when hidden messages sit between pages.
 - **Service stdout event parsing hardened**: `EngramServiceLauncher` now buffers
-  stdout by newline before decoding JSON events, so pipe chunk boundaries no
-  longer silently drop structured service events.
+  stdout by newline before decoding JSON events and appends stdout data before
+  trimming complete lines, so pipe chunk boundaries, including a JSON chunk
+  followed by a separate newline chunk, no longer silently drop structured
+  service events.
+- **Swift transcript exports aligned**: Swift MCP `get_session` and service
+  JSON/Markdown export now apply `SystemMessageClassifier` in their default
+  visible-message predicate, matching App/Web/TS behavior for system prompts and
+  agent communication messages.
+- **Transcript classifier parity expanded**: shared fixtures now cover leading
+  whitespace, Antigravity `<SYSTEM_MESSAGE>` wrappers, Qwen prompts,
+  local-command output, and skill/system wrappers. TS classification now trims
+  prefix input and only treats `<SYSTEM_MESSAGE>` as a system prompt for
+  Antigravity transcripts.
 - **Swift test HOME isolation hardened**: HOME-mutating service-core tests now
   use a serialized `ServiceCoreTestHomeScope` that restores process-global HOME
   even after failures.

@@ -289,25 +289,25 @@ private enum ServiceTranscriptReader {
 
         switch source {
         case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
-            return parseTypeMessageFormat(filePath: filePath)
+            return visibleMessages(parseTypeMessageFormat(filePath: filePath), source: source)
         case "commandcode":
-            return parseCommandCodeFormat(filePath: filePath)
+            return visibleMessages(parseCommandCodeFormat(filePath: filePath), source: source)
         case "kimi", "antigravity", "windsurf":
-            return parseRoleDirectFormat(filePath: filePath)
+            return visibleMessages(parseRoleDirectFormat(filePath: filePath), source: source)
         case "codex":
-            return parseCodexFormat(filePath: filePath)
+            return visibleMessages(parseCodexFormat(filePath: filePath), source: source)
         case "copilot":
-            return parseCopilotFormat(filePath: filePath)
+            return visibleMessages(parseCopilotFormat(filePath: filePath), source: source)
         case "gemini-cli":
-            return parseGeminiFormat(filePath: filePath)
+            return visibleMessages(parseGeminiFormat(filePath: filePath), source: source)
         case "cline":
-            return parseClineFormat(filePath: filePath)
+            return visibleMessages(parseClineFormat(filePath: filePath), source: source)
         case "cursor":
-            return parseCursorFormat(filePath: filePath)
+            return visibleMessages(parseCursorFormat(filePath: filePath), source: source)
         case "opencode":
-            return parseOpenCodeFormat(filePath: filePath)
+            return visibleMessages(parseOpenCodeFormat(filePath: filePath), source: source)
         case "vscode":
-            return parseVSCodeFormat(filePath: filePath)
+            return visibleMessages(parseVSCodeFormat(filePath: filePath), source: source)
         default:
             return []
         }
@@ -330,11 +330,11 @@ private enum ServiceTranscriptReader {
             )
             var messages: [ServiceTranscriptMessage] = []
             for try await message in stream {
-                guard message.role == .user || message.role == .assistant,
-                      !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                else {
-                    continue
-                }
+                guard isDefaultVisibleMessage(
+                    role: message.role.rawValue,
+                    content: message.content,
+                    source: source
+                ) else { continue }
                 messages.append(
                     ServiceTranscriptMessage(
                         role: message.role.rawValue,
@@ -352,6 +352,24 @@ private enum ServiceTranscriptReader {
     private static func adapterSourceName(for source: String) -> SourceName? {
         if source == "antigravity-legacy" { return .antigravity }
         return SourceName(rawValue: source)
+    }
+
+    private static func visibleMessages(
+        _ messages: [ServiceTranscriptMessage],
+        source: String
+    ) -> [ServiceTranscriptMessage] {
+        messages.filter { message in
+            isDefaultVisibleMessage(role: message.role, content: message.content, source: source)
+        }
+    }
+
+    private static func isDefaultVisibleMessage(role: String, content: String, source: String) -> Bool {
+        guard role == "user" || role == "assistant" else { return false }
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if role == "user" {
+            return SystemMessageClassifier.classify(content: content, source: source) == .none
+        }
+        return true
     }
 
     private static func parseCommandCodeFormat(filePath: String) -> [ServiceTranscriptMessage] {

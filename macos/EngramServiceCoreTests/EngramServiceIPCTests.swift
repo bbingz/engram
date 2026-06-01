@@ -700,8 +700,10 @@ final class EngramServiceIPCTests: XCTestCase {
         try seedSearchFixture(at: paths.database.path)
         let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
         try """
+        {"timestamp":"2026-04-23T01:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp\\nhidden system"}]}}
         {"timestamp":"2026-04-23T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}
         {"timestamp":"2026-04-23T01:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"world"}]}}
+        {"timestamp":"2026-04-23T01:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<local-command-stdout>hidden agent comm</local-command-stdout>"}]}}
         """.write(to: transcript, atomically: true, encoding: .utf8)
         let queue = try DatabaseQueue(path: paths.database.path)
         try await queue.write { db in
@@ -729,6 +731,11 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(response.messageCount, 2)
         XCTAssertEqual(response.outputPath, exportHome.appendingPathComponent("codex-exports/codex-s1-2026-04-23.json").path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: response.outputPath))
+        let exported = try String(contentsOfFile: response.outputPath, encoding: .utf8)
+        XCTAssertTrue(exported.contains("hello"), exported)
+        XCTAssertTrue(exported.contains("world"), exported)
+        XCTAssertFalse(exported.contains("hidden system"), exported)
+        XCTAssertFalse(exported.contains("hidden agent comm"), exported)
     }
 
     func testExportSessionDoesNotAdvanceDatabaseGeneration() async throws {
