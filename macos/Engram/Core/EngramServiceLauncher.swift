@@ -192,6 +192,7 @@ final class EngramServiceLauncher {
     }
 
     private func drain(pipe: Pipe, level: String) {
+        let lineBuffer = ServiceOutputLineBuffer()
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else {
@@ -208,15 +209,44 @@ final class EngramServiceLauncher {
                 EngramLogger.debug("EngramService stdout: \(text)", module: .daemon)
                 // OBS-O2: parse structured events (one JSON object per line) and
                 // forward them so indexing failures surface in the status store.
-                for line in text.split(whereSeparator: \.isNewline) {
-                    guard let lineData = line.data(using: .utf8),
-                          let event = try? JSONDecoder().decode(EngramServiceEvent.self, from: lineData)
-                    else { continue }
+                for line in lineBuffer.append(data) {
+                    let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard trimmedLine.first == "{" else { continue }
+                    let lineData = Data(trimmedLine.utf8)
+                    let event: EngramServiceEvent
+                    do {
+                        event = try JSONDecoder().decode(EngramServiceEvent.self, from: lineData)
+                    } catch {
+                        EngramLogger.error("EngramService stdout JSON decode failed: \(error); line=\(trimmedLine)", module: .daemon)
+                        continue
+                    }
                     Task { @MainActor [weak self] in
                         self?.onEvent?(event)
                     }
                 }
             }
         }
+    }
+}
+
+final class ServiceOutputLineBuffer {
+    private var buffer = Data()
+
+    func append(_ data: Data) -> [String] {
+        buffer.append(data)
+        var lines: [String] = []
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let lineData = buffer[..<newline]
+            buffer.removeSubrange(...newline)
+            guard !lineData.isEmpty else { continue }
+            var line = String(decoding: lineData, as: UTF8.self)
+            if line.last == "\r" {
+                line.removeLast()
+            }
+            if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append(line)
+            }
+        }
+        return lines
     }
 }

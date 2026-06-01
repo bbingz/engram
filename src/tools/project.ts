@@ -4,12 +4,11 @@
 //   - Take structured JSON input instead of argv
 //   - Return structured result objects (no ANSI, no prompts)
 //   - AI agent must be explicit: `force`/`dry_run` default false
-//   - Batch input is inline YAML text (not a file path — MCP env may not
+//   - Batch input is inline JSON text (not a file path — MCP env may not
 //     share FS with the Engram process in future multi-host setups)
 
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { parse as parseYaml } from 'yaml';
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 import {
@@ -452,23 +451,24 @@ export const projectMoveBatchTool = {
   name: 'project_move_batch',
   description:
     '⚠️ Cannot run concurrently with other project_* tools; execute sequentially. ' +
-    'Run multiple project moves sequentially from an inline YAML document. ' +
+    'Run multiple project moves sequentially from an inline JSON document. ' +
     'Schema v1: version + defaults(stop_on_error, dry_run) + operations ' +
     '[{src, dst|archive:true, archive_to?, note?}]. Halts on first error by ' +
     'default. Use top-level `dry_run: true` to preview the entire batch ' +
-    'without side effects (overrides YAML defaults).',
+    'without side effects (overrides JSON defaults).',
   inputSchema: {
     type: 'object' as const,
     required: ['yaml'],
     properties: {
       yaml: {
         type: 'string',
-        description: 'Inline YAML document conforming to schema v1',
+        description:
+          'Inline JSON document conforming to schema v1. Field name is retained for IPC compatibility.',
       },
       dry_run: {
         type: 'boolean',
         description:
-          'If true, all operations run as dry-run regardless of YAML defaults. Useful for previewing a full batch without editing the YAML.',
+          'If true, all operations run as dry-run regardless of JSON defaults. Useful for previewing a full batch without editing the JSON.',
         default: false,
       },
       force: {
@@ -481,24 +481,32 @@ export const projectMoveBatchTool = {
   },
 };
 
-// Cap on raw batch-YAML size. A multi-megabyte document (or one engineered as
-// a YAML bomb) would otherwise be parsed into memory unbounded. 1MB is far
+// Cap on raw batch-JSON size. A multi-megabyte document would otherwise be
+// parsed into memory unbounded. 1MB is far
 // larger than any legitimate batch of project moves.
-export const MAX_BATCH_YAML_BYTES = 1_000_000;
+export const MAX_BATCH_JSON_BYTES = 1_000_000;
+export const MAX_BATCH_YAML_BYTES = MAX_BATCH_JSON_BYTES;
 
 /**
- * Parse batch YAML defensively: reject oversized input before parsing and cap
- * alias expansion so anchor/alias bombs can't blow up memory. `maxAliasCount`
- * is a hard limit the `yaml` parser enforces while building the tree.
+ * Parse MCP/API batch JSON defensively. The field name `yaml` remains at the
+ * service boundary for compatibility, but the payload format is JSON.
  */
-export function parseBatchYaml(text: string): Record<string, unknown> {
+export function parseBatchJson(text: string): Record<string, unknown> {
   const byteLength = Buffer.byteLength(text, 'utf8');
-  if (byteLength > MAX_BATCH_YAML_BYTES) {
+  if (byteLength > MAX_BATCH_JSON_BYTES) {
     throw new Error(
-      `Batch YAML too large (${byteLength} bytes, maximum ${MAX_BATCH_YAML_BYTES}).`,
+      `Batch JSON too large (${byteLength} bytes, maximum ${MAX_BATCH_JSON_BYTES}).`,
     );
   }
-  return parseYaml(text, { maxAliasCount: 100 }) as Record<string, unknown>;
+  try {
+    const raw = JSON.parse(text) as unknown;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('document must be a JSON object');
+    }
+    return raw as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(`Batch JSON invalid: ${(err as Error).message}`);
+  }
 }
 
 export async function handleProjectMoveBatch(
@@ -507,9 +515,9 @@ export async function handleProjectMoveBatch(
   opts?: ToolHandlerOpts,
 ) {
   opts?.log?.info('project_move_batch', { bytes: params.yaml.length });
-  const raw = parseBatchYaml(params.yaml);
+  const raw = parseBatchJson(params.yaml);
   const doc = normalizeBatchDocument(raw);
-  // Top-level dry_run overrides the YAML's defaults.dry_run — lets AI
+  // Top-level dry_run overrides the JSON's defaults.dry_run — lets AI
   // preview a batch without modifying the document.
   if (params.dry_run) {
     doc.defaults = { ...doc.defaults, dryRun: true };

@@ -577,6 +577,9 @@
     "Version" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "版本" } } }
     },
+    "Project migration tools always require the Swift service. When on, remaining MCP write tools such as save_insight also fail if the Swift service can't be reached, instead of falling back to a direct DB write. Takes effect on the next Swift MCP spawn." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "项目迁移工具始终需要 Swift 服务。开启后，save_insight 等其余 MCP 写入工具在无法连接 Swift 服务时也会失败，而不是回退到直接写数据库。下次启动 Swift MCP 时生效。" } } }
+    },
     "When on, MCP write tools (save_insight, project_move, …) fail if the Swift service can't be reached, instead of falling back to a direct DB write. Reduces lock contention to zero; requires the service IPC socket. Takes effect on the next Swift MCP spawn." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "开启后，MCP 写入工具（save_insight、project_move 等）在无法连接 Swift 服务时会失败，而不是回退到直接写数据库。这样可将锁竞争降为零；需要服务 IPC socket。下次启动 Swift MCP 时生效。" } } }
     },

@@ -24,6 +24,7 @@ import type { SyncEngine, SyncPeer } from './core/sync.js';
 import type { TitleGenerator } from './core/title-generator.js';
 import type { Tracer } from './core/tracer.js';
 import { withSpan } from './core/tracer.js';
+import { isDefaultVisibleTranscriptMessage } from './core/transcript-visibility.js';
 import type { UsageCollector } from './core/usage-collector.js';
 import type { VectorStore } from './core/vector-store.js';
 import { WATCHED_SOURCES } from './core/watcher.js';
@@ -325,17 +326,28 @@ export function createApp(
 
     const messages: Pick<Message, 'role' | 'content'>[] = [];
     try {
-      let visibleSeen = 0;
+      let rawIndex = 0;
+      let nextOffset = offset;
+      let hasMore = false;
       for await (const msg of adapter.streamMessages(session.filePath)) {
-        if (msg.role !== 'user' && msg.role !== 'assistant') continue;
-        if (visibleSeen < offset) {
-          visibleSeen++;
+        if (rawIndex < offset) {
+          rawIndex++;
           continue;
         }
+        rawIndex++;
+        if (!isDefaultVisibleTranscriptMessage(msg, session.source)) continue;
+        if (messages.length >= limit) {
+          hasMore = true;
+          break;
+        }
         messages.push({ role: msg.role, content: msg.content });
-        visibleSeen++;
-        if (messages.length > limit) break;
+        nextOffset = rawIndex;
       }
+      return {
+        messages,
+        hasMore,
+        nextOffset,
+      };
     } catch {
       return {
         messages: [],
@@ -344,14 +356,6 @@ export function createApp(
         error: 'Failed to read session',
       };
     }
-
-    const hasMore = messages.length > limit;
-    if (hasMore) messages.length = limit;
-    return {
-      messages,
-      hasMore,
-      nextOffset: offset + messages.length,
-    };
   }
 
   // CIDR access control — only active when listening beyond localhost

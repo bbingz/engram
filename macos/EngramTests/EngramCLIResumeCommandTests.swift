@@ -39,6 +39,32 @@ final class EngramCLIResumeCommandTests: XCTestCase {
         )
     }
 
+    func testTerminalLauncherShellCommandEscapesMetacharacters() {
+        let rendered = TerminalLauncher.shellCommandLine(
+            command: "codex; touch /tmp/pwned",
+            args: ["--resume", "$(touch /tmp/pwned)", "quote'and space"],
+            cwd: "/tmp/a; touch /tmp/pwned"
+        )
+
+        XCTAssertEqual(
+            rendered,
+            "cd '/tmp/a; touch /tmp/pwned' && 'codex; touch /tmp/pwned' --resume '$(touch /tmp/pwned)' 'quote'\\''and space'"
+        )
+    }
+
+    func testTerminalLauncherAppleScriptCommandEscapesAfterShellQuoting() {
+        let rendered = TerminalLauncher.appleScriptCommandLine(
+            command: "co\"dex",
+            args: ["back\\slash", "$HOME"],
+            cwd: "/tmp/path with spaces"
+        )
+
+        XCTAssertEqual(
+            rendered,
+            "cd '/tmp/path with spaces' && 'co\\\"dex' 'back\\\\slash' '$HOME'"
+        )
+    }
+
     func testRenderJSONReturnsServicePayload() throws {
         let response = EngramServiceResumeCommandResponse(
             tool: "codex",

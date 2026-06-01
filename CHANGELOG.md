@@ -7,6 +7,46 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Copilot hardening triage + Today Workbench spec (2026-06-01, Codex)
+
+Recorded the Copilot multi-expert review and closed the two Critical security
+items before continuing product UI expansion. Continued into the highest-priority
+Important follow-ups that affected MCP/Web transcript behavior.
+
+- **Resume command injection fixed**: `TerminalLauncher` now shell-quotes `cwd`,
+  command, and args before AppleScript interpolation, reusing the CLI resume
+  shell escaping behavior. Added malicious-character coverage for semicolons,
+  command substitution, quotes, spaces, and AppleScript escaping after shell
+  quoting.
+- **Project mutators fail closed**: `project_move`, `project_archive`,
+  `project_undo`, and `project_move_batch` now force the Swift service
+  single-writer path and do not direct-write fallback when the daemon/service is
+  unreachable, regardless of the user-level strict toggle.
+- **`project_move_batch` contract aligned**: TS MCP/API now require inline JSON
+  in the legacy `yaml` field, matching Swift service/MCP/docs. YAML payloads are
+  rejected on the MCP/API path; the CLI file-based `move-batch <yaml>` entry
+  remains unchanged.
+- **Transcript defaults aligned**: TS `get_session`, TS HTTP transcript routes,
+  and Swift WebUI now default to non-empty user/assistant messages and hide tool,
+  system prompt, and agent communication messages unless a diagnostic/raw path is
+  used.
+- **Transcript pagination fixed**: HTTP transcript `offset` now tracks consumed
+  adapter position instead of filtered visible-message count, avoiding missing or
+  repeated visible messages when hidden messages sit between pages.
+- **Service stdout event parsing hardened**: `EngramServiceLauncher` now buffers
+  stdout by newline before decoding JSON events, so pipe chunk boundaries no
+  longer silently drop structured service events.
+- **Settings copy aligned**: Network settings now says project migration tools
+  always require the Swift service and the strict toggle only controls remaining
+  MCP write fallbacks.
+- **Review captured**:
+  `docs/reviews/2026-06-01-copilot-product-hardening-review.md` tracks the full
+  Critical/Important/Minor queue from Copilot's review.
+- **Product direction captured**:
+  `docs/superpowers/specs/2026-06-01-today-workbench-design.md` records the
+  approved Today Workbench + Advanced noise-reduction direction and names these
+  hardening items as prerequisites.
+
 ### Deferred follow-ups closed + local release build deployed (2026-05-30, Codex)
 
 Resumed from Claude session `93d5af5d-80b5-42ee-bca2-b397732c0dd0` and handled

@@ -17,16 +17,32 @@ struct TerminalLauncher {
          .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
+    static func shellEscaped(_ value: String) -> String {
+        EngramCLIResumeCommand.shellEscaped(value)
+    }
+
+    static func shellCommandLine(command: String, args: [String], cwd: String) -> String {
+        let commandLine = ([command] + args)
+            .map(shellEscaped)
+            .joined(separator: " ")
+        guard !cwd.isEmpty else { return commandLine }
+        return "cd \(shellEscaped(cwd)) && \(commandLine)"
+    }
+
+    static func appleScriptCommandLine(command: String, args: [String], cwd: String) -> String {
+        escapeForAppleScript(shellCommandLine(command: command, args: args, cwd: cwd))
+    }
+
     static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) {
-        let safeCwd = escapeForAppleScript(cwd)
-        let safeCmd = ([command] + args).map { escapeForAppleScript($0) }.joined(separator: " ")
+        let shellCmd = shellCommandLine(command: command, args: args, cwd: cwd)
+        let appleScriptCmd = escapeForAppleScript(shellCmd)
         let script: String
         switch terminal {
         case .terminal:
             script = """
             tell application "Terminal"
                 activate
-                do script "cd \\"\(safeCwd)\\" && \(safeCmd)"
+                do script "\(appleScriptCmd)"
             end tell
             """
         case .iterm:
@@ -35,16 +51,13 @@ struct TerminalLauncher {
                 activate
                 set newWindow to (create window with default profile)
                 tell current session of newWindow
-                    write text "cd \\"\(safeCwd)\\" && \(safeCmd)"
+                    write text "\(appleScriptCmd)"
                 end tell
             end tell
             """
         case .ghostty:
             let ghosttyBin = "/Applications/Ghostty.app/Contents/MacOS/ghostty"
             if FileManager.default.isExecutableFile(atPath: ghosttyBin) {
-                // Launch Ghostty CLI directly with -e flag
-                let escapedCwd = safeCwd.replacingOccurrences(of: "$", with: "\\$")
-                let shellCmd = "cd \"\(escapedCwd)\" && \(safeCmd.replacingOccurrences(of: "$", with: "\\$"))"
                 let logMsg = "[TerminalLauncher] Launching Ghostty: \(ghosttyBin) -e \(shellCmd)\n"
                 try? logMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
                 let process = Process()

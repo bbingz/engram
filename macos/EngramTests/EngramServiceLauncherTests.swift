@@ -68,6 +68,26 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertFalse(arguments.contains { $0.contains("node") || $0.contains("daemon.js") })
     }
 
+    func testServiceOutputLineBufferWaitsForCompleteJSONLines() throws {
+        let buffer = ServiceOutputLineBuffer()
+
+        XCTAssertEqual(buffer.append(Data(#"{"event":"indexed","#.utf8)), [])
+
+        let firstChunk = Data((#""total":2,"todayParents":1}"# + "\n{\"event\":\"warning\"").utf8)
+        let first = buffer.append(firstChunk)
+        XCTAssertEqual(first.count, 1)
+        let indexed = try JSONDecoder().decode(EngramServiceEvent.self, from: Data(first[0].utf8))
+        XCTAssertEqual(indexed.event, "indexed")
+        XCTAssertEqual(indexed.total, 2)
+        XCTAssertEqual(indexed.todayParents, 1)
+
+        let second = buffer.append(Data((#","message":"slow"}"# + "\n").utf8))
+        XCTAssertEqual(second.count, 1)
+        let warning = try JSONDecoder().decode(EngramServiceEvent.self, from: Data(second[0].utf8))
+        XCTAssertEqual(warning.event, "warning")
+        XCTAssertEqual(warning.message, "slow")
+    }
+
     func testDefaultConfigurationUsesEngramRunSocketAndServiceHelperName() {
         let home = URL(fileURLWithPath: "/tmp/engram-home", isDirectory: true)
         let config = EngramServiceLaunchConfiguration.default(

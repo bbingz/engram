@@ -11,6 +11,7 @@ import { createMCPDeps } from './core/bootstrap.js';
 import {
   createDaemonClientFromSettings,
   shouldFallbackToDirect,
+  shouldFallbackToDirectForTool,
 } from './core/daemon-client.js';
 import { setupProcessLifecycle } from './core/lifecycle.js';
 import { createLogger } from './core/logger.js';
@@ -92,8 +93,9 @@ const {
 const vectorDeps: GetContextDeps = { vectorStore, embed };
 
 // Phase B: HTTP client for forwarding write operations to the daemon.
-// Tool dispatch below routes writes here first; unreachable → direct fallback
-// unless fileSettings.mcpStrictSingleWriter is set.
+// Tool dispatch below routes writes here first. Most writes may still direct
+// fallback unless fileSettings.mcpStrictSingleWriter is set; project migration
+// mutators are fail-closed to preserve the Swift service single-writer pipeline.
 const daemonClient = createDaemonClientFromSettings(fileSettings, log);
 // Hard single-writer toggle — when true, dispatch fallback to direct writes is
 // disabled and daemon-unreachable errors bubble up. Read once at startup; UI
@@ -575,7 +577,8 @@ toolRegistry.set('project_move', async (a) => {
     }
     return result;
   } catch (err) {
-    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    if (!shouldFallbackToDirectForTool('project_move', err, strictSingleWriter))
+      throw err;
     log.warn(
       'project_move: daemon unreachable, direct fallback',
       { endpoint: daemonClient.endpoint },
@@ -624,7 +627,10 @@ toolRegistry.set('project_archive', async (a) => {
       },
     };
   } catch (err) {
-    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    if (
+      !shouldFallbackToDirectForTool('project_archive', err, strictSingleWriter)
+    )
+      throw err;
     log.warn(
       'project_archive: daemon unreachable, direct fallback',
       { endpoint: daemonClient.endpoint },
@@ -648,7 +654,8 @@ toolRegistry.set('project_undo', async (a) => {
   try {
     return await daemonClient.post('/api/project/undo', body);
   } catch (err) {
-    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    if (!shouldFallbackToDirectForTool('project_undo', err, strictSingleWriter))
+      throw err;
     log.warn(
       'project_undo: daemon unreachable, direct fallback',
       { endpoint: daemonClient.endpoint },
@@ -679,7 +686,14 @@ toolRegistry.set('project_move_batch', async (a) => {
   try {
     return await daemonClient.post('/api/project/move-batch', body);
   } catch (err) {
-    if (!shouldFallbackToDirect(err, strictSingleWriter)) throw err;
+    if (
+      !shouldFallbackToDirectForTool(
+        'project_move_batch',
+        err,
+        strictSingleWriter,
+      )
+    )
+      throw err;
     log.warn(
       'project_move_batch: daemon unreachable, direct fallback',
       { endpoint: daemonClient.endpoint },

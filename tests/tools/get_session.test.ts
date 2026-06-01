@@ -6,6 +6,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CodexAdapter } from '../../src/adapters/codex.js';
+import type {
+  Message,
+  SessionAdapter,
+  SessionInfo,
+} from '../../src/adapters/types.js';
 import { Database } from '../../src/core/db.js';
 import { handleGetSession } from '../../src/tools/get_session.js';
 
@@ -74,5 +79,52 @@ describe('get_session', () => {
       roles: ['user'],
     });
     expect(r.messages.every((m) => m.role === 'user')).toBe(true);
+  });
+
+  it('defaults to non-empty human-visible user and assistant messages', async () => {
+    const session: SessionInfo = {
+      id: 'visibility-session',
+      source: 'codex',
+      startTime: '2026-01-01T00:00:00.000Z',
+      cwd: tmpDir,
+      messageCount: 6,
+      userMessageCount: 4,
+      assistantMessageCount: 1,
+      toolMessageCount: 1,
+      systemMessageCount: 0,
+      filePath: join(tmpDir, 'visibility.jsonl'),
+      sizeBytes: 1,
+    };
+    db.upsertSession(session);
+    const rawMessages: Message[] = [
+      { role: 'user', content: '# AGENTS.md instructions for /tmp\nhidden' },
+      { role: 'tool', content: 'hidden tool output' },
+      { role: 'user', content: '   ' },
+      {
+        role: 'user',
+        content: '<command-name>hidden agent comm</command-name>',
+      },
+      { role: 'assistant', content: 'visible assistant' },
+      { role: 'user', content: 'visible user' },
+    ];
+    const adapter: SessionAdapter = {
+      name: 'codex',
+      detect: async () => true,
+      listSessionFiles: async function* () {},
+      parseSessionInfo: async () => null,
+      streamMessages: async function* () {
+        for (const message of rawMessages) yield message;
+      },
+      isAccessible: async () => true,
+    };
+
+    const r = await handleGetSession(db, adapter, {
+      id: 'visibility-session',
+    });
+
+    expect(r.messages.map((m) => m.content)).toEqual([
+      'visible assistant',
+      'visible user',
+    ]);
   });
 });

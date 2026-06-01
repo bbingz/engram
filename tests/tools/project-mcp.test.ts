@@ -25,8 +25,8 @@ import {
   handleProjectReview,
   handleProjectUndo,
   MAX_AUDIT_NOTE_CHARS,
-  MAX_BATCH_YAML_BYTES,
-  parseBatchYaml,
+  MAX_BATCH_JSON_BYTES,
+  parseBatchJson,
 } from '../../src/tools/project.js';
 
 describe('project MCP tools', () => {
@@ -163,17 +163,14 @@ describe('project MCP tools', () => {
     });
   });
 
-  it('project_move_batch runs inline YAML doc', async () => {
+  it('project_move_batch runs inline JSON doc', async () => {
     const alt = join(tmp, 'proj', 'alt');
-    const yaml = `
-version: 1
-operations:
-  - src: ${src}
-    dst: ${alt}
-    note: batch smoke
-`;
+    const json = JSON.stringify({
+      version: 1,
+      operations: [{ src, dst: alt, note: 'batch smoke' }],
+    });
     await withHome(async () => {
-      const r = await handleProjectMoveBatch(db, { yaml });
+      const r = await handleProjectMoveBatch(db, { yaml: json });
       expect(r.completed.length).toBe(1);
       expect(r.failed).toEqual([]);
       expect(existsSync(alt)).toBe(true);
@@ -181,37 +178,39 @@ operations:
   });
 
   it('project_move_batch throws on continue_from (not-yet-supported)', async () => {
-    const yaml = `
-version: 1
-continue_from: abc123
-operations:
-  - { src: /a, dst: /b }
-`;
+    const json = JSON.stringify({
+      version: 1,
+      continue_from: 'abc123',
+      operations: [{ src: '/a', dst: '/b' }],
+    });
     await withHome(async () => {
-      await expect(handleProjectMoveBatch(db, { yaml })).rejects.toThrow(
+      await expect(handleProjectMoveBatch(db, { yaml: json })).rejects.toThrow(
         /continue_from/,
       );
     });
   });
 
-  // R5-12: oversized batch YAML must be rejected before parsing.
-  it('project_move_batch rejects oversized YAML', async () => {
-    const huge = `x: ${'a'.repeat(MAX_BATCH_YAML_BYTES + 10)}`;
+  it('project_move_batch rejects YAML payloads on the MCP path', async () => {
+    const yaml = `
+version: 1
+operations:
+  - { src: /a, dst: /b }
+`;
+    await expect(handleProjectMoveBatch(db, { yaml })).rejects.toThrow(
+      /Batch JSON invalid/,
+    );
+  });
+
+  // R5-12: oversized batch JSON must be rejected before parsing.
+  it('project_move_batch rejects oversized JSON', async () => {
+    const huge = `{"x":"${'a'.repeat(MAX_BATCH_JSON_BYTES + 10)}"}`;
     await expect(handleProjectMoveBatch(db, { yaml: huge })).rejects.toThrow(
       /too large/,
     );
   });
 
-  // R5-12: alias bombs are capped by maxAliasCount.
-  it('parseBatchYaml caps alias expansion', () => {
-    const bomb = `
-a: &a [x,x,x,x,x,x,x,x,x,x]
-b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a,*a]
-c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b,*b]
-d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c,*c]
-e: [*d,*d,*d,*d,*d,*d,*d,*d,*d,*d]
-`;
-    expect(() => parseBatchYaml(bomb)).toThrow();
+  it('parseBatchJson rejects non-object JSON', () => {
+    expect(() => parseBatchJson('[]')).toThrow(/JSON object/);
   });
 
   // R5-41: audit note is trimmed + length-capped.
@@ -277,18 +276,17 @@ e: [*d,*d,*d,*d,*d,*d,*d,*d,*d,*d]
     });
   });
 
-  it('project_move_batch top-level dry_run overrides YAML defaults', async () => {
+  it('project_move_batch top-level dry_run overrides JSON defaults', async () => {
     const alt = join(tmp, 'proj', 'alt-batch');
-    const yaml = `
-version: 1
-defaults: { dry_run: false }
-operations:
-  - { src: ${src}, dst: ${alt} }
-`;
+    const json = JSON.stringify({
+      version: 1,
+      defaults: { dry_run: false },
+      operations: [{ src, dst: alt }],
+    });
     await withHome(async () => {
       const r = await handleProjectMoveBatch(db, {
-        yaml,
-        dry_run: true, // overrides YAML defaults.dry_run=false
+        yaml: json,
+        dry_run: true, // overrides JSON defaults.dry_run=false
       });
       expect(r.completed.length).toBe(1);
       expect(r.completed[0].state).toBe('dry-run');

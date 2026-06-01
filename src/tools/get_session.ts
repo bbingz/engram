@@ -3,6 +3,7 @@
 import type { SessionAdapter } from '../adapters/types.js';
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
+import { isDefaultVisibleTranscriptMessage } from '../core/transcript-visibility.js';
 
 const PAGE_SIZE = 50;
 
@@ -18,7 +19,8 @@ export const getSessionTool = {
       roles: {
         type: 'array',
         items: { type: 'string', enum: ['user', 'assistant'] },
-        description: '只返回指定角色的消息，默认返回全部',
+        description:
+          '只返回指定角色的可见消息；默认返回非空 user/assistant，隐藏 tool/system/agent communication',
       },
     },
     additionalProperties: false,
@@ -44,6 +46,7 @@ export async function handleGetSession(
   const messages: { role: string; content: string; timestamp?: string }[] = [];
   let matched = 0;
   for await (const msg of adapter.streamMessages(session.filePath)) {
+    if (!isDefaultVisibleTranscriptMessage(msg, session.source)) continue;
     if (params.roles && !params.roles.includes(msg.role)) continue;
     if (matched >= offset && messages.length < PAGE_SIZE) {
       messages.push({

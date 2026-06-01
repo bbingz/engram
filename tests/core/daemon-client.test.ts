@@ -3,6 +3,7 @@ import {
   DaemonClient,
   DaemonClientError,
   shouldFallbackToDirect,
+  shouldFallbackToDirectForTool,
 } from '../../src/core/daemon-client.js';
 
 function makeFetch(
@@ -189,6 +190,44 @@ describe('shouldFallbackToDirect', () => {
         new DaemonClientError(500, { error: 'boom' }, 'HTTP 500'),
         true,
       ),
+    ).toBe(false);
+  });
+});
+
+describe('shouldFallbackToDirectForTool', () => {
+  it('forces project migration mutators to fail closed even when strict mode is off', () => {
+    for (const tool of [
+      'project_move',
+      'project_archive',
+      'project_undo',
+      'project_move_batch',
+    ]) {
+      expect(shouldFallbackToDirectForTool(tool, new Error('net'), false)).toBe(
+        false,
+      );
+      expect(
+        shouldFallbackToDirectForTool(
+          tool,
+          new DaemonClientError(500, { error: 'boom' }, 'HTTP 500'),
+          false,
+        ),
+      ).toBe(false);
+      expect(
+        shouldFallbackToDirectForTool(
+          tool,
+          new DaemonClientError(404, 'missing endpoint', 'HTTP 404'),
+          false,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it('keeps legacy fallback behavior for non-project writes unless strict mode is on', () => {
+    expect(
+      shouldFallbackToDirectForTool('save_insight', new Error('net'), false),
+    ).toBe(true);
+    expect(
+      shouldFallbackToDirectForTool('save_insight', new Error('net'), true),
     ).toBe(false);
   });
 });

@@ -162,3 +162,21 @@ export function shouldFallbackToDirect(err: unknown, strict: boolean): boolean {
   if (err.status >= 500) return true;
   return false; // 4xx with envelope (or without) — real rejection
 }
+
+const failClosedProjectMutationTools = new Set([
+  'project_move',
+  'project_archive',
+  'project_undo',
+  'project_move_batch',
+]);
+
+export function shouldFallbackToDirectForTool(
+  toolName: string,
+  err: unknown,
+  strict: boolean,
+): boolean {
+  return shouldFallbackToDirect(
+    err,
+    strict || failClosedProjectMutationTools.has(toolName),
+  );
+}

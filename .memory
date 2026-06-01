@@ -1,5 +1,66 @@
 # Engram Local Memory
 
+## 2026-06-01 — Copilot Critical hardening + Today Workbench spec (Codex)
+
+User approved the Today Workbench + Advanced noise-reduction direction, then
+provided a Copilot multi-expert review. Recorded the review in
+`docs/reviews/2026-06-01-copilot-product-hardening-review.md` and handled the
+two Critical items before product UI expansion:
+
+- `TerminalLauncher` now builds one shell-safe command line by shell-quoting
+  `cwd`, command, and args before AppleScript interpolation. It reuses
+  `EngramCLIResumeCommand.shellEscaped`, and `EngramCLIResumeCommandTests`
+  covers semicolons, `$()` command substitution, quotes, spaces, backslashes,
+  and AppleScript escaping after shell quoting.
+- TS MCP project migration mutators now force fail-closed behavior through
+  `shouldFallbackToDirectForTool`: `project_move`, `project_archive`,
+  `project_undo`, and `project_move_batch` require the Swift service pipeline
+  even when `mcpStrictSingleWriter` is false. `save_insight` keeps the old
+  fallback semantics unless strict mode is enabled.
+- Network settings copy now reflects the new boundary: project migration tools
+  always require the Swift service; the toggle only controls remaining MCP write
+  fallbacks.
+- `docs/superpowers/specs/2026-06-01-today-workbench-design.md` records the
+  approved product direction: Today as the default workbench, Search as
+  retrieval, Advanced as the home for low-level filters/diagnostics, and shared
+  visible-message rules for transcript noise reduction.
+- Continued into the top Important follow-ups:
+  - TS MCP/API `project_move_batch` now accepts inline JSON in the legacy
+    `yaml` field, matching Swift service/MCP/docs. YAML payloads are rejected on
+    MCP/API paths; CLI `move-batch <yaml-file>` remains YAML-compatible.
+  - TS `get_session`, TS HTTP transcript routes, and Swift WebUI now share the
+    default transcript predicate: non-empty user/assistant only, excluding tool,
+    system prompt, and agent communication content. Diagnostic/raw routes remain
+    available for low-level inspection.
+  - HTTP transcript pagination now returns the next raw adapter offset instead
+    of a filtered visible count, so hidden messages no longer cause skipped or
+    repeated visible pages.
+  - `EngramServiceLauncher` stdout event parsing now buffers newline-delimited
+    JSON events across pipe chunks and logs decode failures with the raw line.
+
+Verified:
+- `npm test -- tests/core/daemon-client.test.ts
+  tests/core/mcp-write-policy-wiring.test.ts tests/tools/project-mcp.test.ts
+  tests/web/project-api.test.ts tests/tools/get_session.test.ts
+  tests/web/api.test.ts tests/web/views.test.ts`
+- `xcodebuild test -project Engram.xcodeproj -scheme Engram
+  -only-testing:EngramTests/EngramCLIResumeCommandTests
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore
+  -only-testing:EngramServiceCoreTests/EngramWebUIServerTests
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project Engram.xcodeproj -scheme Engram
+  -only-testing:EngramTests/EngramServiceLauncherTests/testServiceOutputLineBufferWaitsForCompleteJSONLines
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `npm run build`
+- `npm run typecheck:test`
+- `npm run lint`
+- `git diff --check`
+
+Remaining queue from Copilot review: Swift test HOME isolation, writer-gate
+cancellation synchronization, embedding indexer integration coverage, adapter
+parity fixture freshness, and CI gate hardening.
+
 ## 2026-05-30 — deferred follow-ups closed and local app deployed (Codex)
 
 Resumed from Claude session `93d5af5d-80b5-42ee-bca2-b397732c0dd0` and chose

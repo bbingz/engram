@@ -24,14 +24,13 @@ struct NetworkSettingsSection: View {
                 .padding(.vertical, 4)
             }
 
-            // MCP single-writer policy. When ON, MCP write tools fail fast if
-            // the Swift service is unreachable instead of falling back to a
-            // direct DB write. Default OFF preserves Stage 3 rollback behavior.
+            // MCP single-writer policy. Project migration mutators always fail
+            // closed; this toggle controls the remaining MCP write fallbacks.
             GroupBox("MCP") {
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle("Strict single writer", isOn: $mcpStrictSingleWriter)
                         .onChange(of: mcpStrictSingleWriter) { saveMcpSettings() }
-                    Text("When on, MCP write tools (save_insight, project_move, …) fail if the Swift service can't be reached, instead of falling back to a direct DB write. Reduces lock contention to zero; requires the service IPC socket. Takes effect on the next Swift MCP spawn.")
+                    Text("Project migration tools always require the Swift service. When on, remaining MCP write tools such as save_insight also fail if the Swift service can't be reached, instead of falling back to a direct DB write. Takes effect on the next Swift MCP spawn.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

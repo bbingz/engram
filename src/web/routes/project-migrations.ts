@@ -259,12 +259,12 @@ export function registerProjectMigrationRoutes(
         400,
       );
     }
-    const { parseBatchYaml } = await import('../../tools/project.js');
+    const { parseBatchJson } = await import('../../tools/project.js');
     const { normalizeBatchDocument, runBatch } = await import(
       '../../core/project-move/batch.js'
     );
     try {
-      const raw = parseBatchYaml(body.yaml);
+      const raw = parseBatchJson(body.yaml);
       const doc = normalizeBatchDocument(raw);
       if (body.dryRun === true) {
         doc.defaults = { ...doc.defaults, dryRun: true };

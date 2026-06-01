@@ -199,6 +199,15 @@ describe('Web API', () => {
     const messages = [
       { role: 'user' as const, content: 'visible 1' },
       { role: 'tool' as const, content: 'hidden tool 1' },
+      {
+        role: 'user' as const,
+        content: '# AGENTS.md instructions for /tmp\nhidden system',
+      },
+      { role: 'user' as const, content: '   ' },
+      {
+        role: 'user' as const,
+        content: '<command-name>hidden agent comm</command-name>',
+      },
       { role: 'tool' as const, content: 'hidden tool 2' },
       { role: 'assistant' as const, content: 'visible 2' },
       { role: 'user' as const, content: 'visible 3' },
@@ -223,11 +232,22 @@ describe('Web API', () => {
     const body = await res.json();
     expect(body.count).toBe(2);
     expect(body.hasMore).toBe(true);
-    expect(body.nextOffset).toBe(2);
+    expect(body.nextOffset).toBe(7);
     expect(body.html).toContain('visible 1');
     expect(body.html).toContain('visible 2');
     expect(body.html).not.toContain('visible 3');
     expect(body.html).not.toContain('hidden tool');
+    expect(body.html).not.toContain('hidden system');
+    expect(body.html).not.toContain('hidden agent comm');
+
+    const nextRes = await appWithAdapter.request(
+      `/api/sessions/api-test-session-001/messages?offset=${body.nextOffset}&limit=2`,
+    );
+    const nextBody = await nextRes.json();
+    expect(nextBody.hasMore).toBe(false);
+    expect(nextBody.nextOffset).toBe(8);
+    expect(nextBody.html).toContain('visible 3');
+    expect(nextBody.html).not.toContain('visible 1');
   });
 
   it('GET /session/:id renders only the first transcript page', async () => {

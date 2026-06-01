@@ -8,6 +8,7 @@ import type {
 import { getAdapter } from '../../core/bootstrap.js';
 import type { Database } from '../../core/db.js';
 import { buildResumeCommand } from '../../core/resume-coordinator.js';
+import { isDefaultVisibleTranscriptMessage } from '../../core/transcript-visibility.js';
 import { renderSessionMessagesHtml } from '../views.js';
 
 type WebApp = Hono<{ Variables: { traceId: string } }>;
@@ -47,17 +48,28 @@ async function readTranscriptPage(
 
   const messages: Pick<Message, 'role' | 'content'>[] = [];
   try {
-    let visibleSeen = 0;
+    let rawIndex = 0;
+    let nextOffset = offset;
+    let hasMore = false;
     for await (const msg of adapter.streamMessages(session.filePath)) {
-      if (msg.role !== 'user' && msg.role !== 'assistant') continue;
-      if (visibleSeen < offset) {
-        visibleSeen++;
+      if (rawIndex < offset) {
+        rawIndex++;
         continue;
       }
+      rawIndex++;
+      if (!isDefaultVisibleTranscriptMessage(msg, session.source)) continue;
+      if (messages.length >= limit) {
+        hasMore = true;
+        break;
+      }
       messages.push({ role: msg.role, content: msg.content });
-      visibleSeen++;
-      if (messages.length > limit) break;
+      nextOffset = rawIndex;
     }
+    return {
+      messages,
+      hasMore,
+      nextOffset,
+    };
   } catch {
     return {
       messages: [],
@@ -66,14 +78,6 @@ async function readTranscriptPage(
       error: 'Failed to read session',
     };
   }
-
-  const hasMore = messages.length > limit;
-  if (hasMore) messages.length = limit;
-  return {
-    messages,
-    hasMore,
-    nextOffset: offset + messages.length,
-  };
 }
 
 export function registerSessionRoutes(

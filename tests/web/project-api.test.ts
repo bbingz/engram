@@ -235,18 +235,15 @@ describe('Web API — /api/project/*', () => {
     const savedHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const yaml = [
-        'version: 1',
-        'defaults:',
-        '  dry_run: true',
-        'operations:',
-        `  - src: "${src}"`,
-        `    dst: "${home}/newbatch"`,
-      ].join('\n');
+      const json = JSON.stringify({
+        version: 1,
+        defaults: { dry_run: true },
+        operations: [{ src, dst: `${home}/newbatch` }],
+      });
       const res = await app.request('/api/project/move-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ yaml, force: true }),
+        body: JSON.stringify({ yaml: json, force: true }),
       });
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
@@ -262,6 +259,23 @@ describe('Web API — /api/project/*', () => {
       if (savedHome) process.env.HOME = savedHome;
       else delete process.env.HOME;
     }
+  });
+
+  it('POST /api/project/move-batch rejects YAML payload drift', async () => {
+    const yaml = [
+      'version: 1',
+      'operations:',
+      `  - src: "${src}"`,
+      `    dst: "${home}/newbatch"`,
+    ].join('\n');
+    const res = await app.request('/api/project/move-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yaml, force: true }),
+    });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/Batch JSON invalid/);
   });
 
   it('actor:mcp still respects $HOME confinement (Round 1 hotfix)', async () => {

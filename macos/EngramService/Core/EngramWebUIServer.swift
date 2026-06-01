@@ -350,30 +350,40 @@ final class EngramWebUIServer: @unchecked Sendable {
 
         let stream = try await adapter.streamMessages(
             locator: locator,
-            options: StreamMessagesOptions(offset: offset, limit: limit + 1)
+            options: StreamMessagesOptions(offset: offset, limit: nil)
         )
         var messages: [NormalizedMessage] = []
-        for try await message in stream where Self.shouldDisplayTranscriptMessage(message) {
+        var consumed = offset
+        var nextOffset = offset
+        var hasMore = false
+        for try await message in stream {
+            consumed += 1
+            guard Self.shouldDisplayTranscriptMessage(message, source: session.source) else { continue }
+            if messages.count >= limit {
+                hasMore = true
+                break
+            }
             // SEC-C1: redact secrets before they ever reach the rendered page,
             // matching the export path's behavior.
             var redacted = message
             redacted.content = Self.redactSensitiveContent(message.content)
             messages.append(redacted)
+            nextOffset = consumed
         }
-        let hasMore = messages.count > limit
-        if hasMore {
-            messages.removeLast(messages.count - limit)
-        }
-        return (messages, hasMore, offset + messages.count)
+        return (messages, hasMore, nextOffset)
     }
 
     static func redactSensitiveContent(_ content: String) -> String {
         TranscriptExportService.redactSensitiveContent(content)
     }
 
-    static func shouldDisplayTranscriptMessage(_ message: NormalizedMessage) -> Bool {
+    static func shouldDisplayTranscriptMessage(_ message: NormalizedMessage, source: String) -> Bool {
         guard message.role == .user || message.role == .assistant else { return false }
-        return !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if message.role == .user, WebSystemMessageCategory(content: message.content, source: source) != nil {
+            return false
+        }
+        return true
     }
 
     static func renderMessageHTML(_ message: NormalizedMessage, source: String) -> String {
