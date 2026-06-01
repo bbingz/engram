@@ -51,6 +51,16 @@ two Critical items before product UI expansion:
   - CI now runs adapter parity freshness and makes screenshot comparison fail
     when UI jobs produce no manifest or a true size mismatch. Diff images are
     written to `screenshots/diffs/`, matching the uploaded artifact path.
+  - Closed the remaining Minor cleanup:
+    - Project migration service command handling moved into
+      `EngramServiceCommandHandler+ProjectMigration.swift`.
+    - MCP project result ordering moved into
+      `MCPToolRegistry+ProjectResults.swift`.
+    - `EngramTests` and `EngramUITests` are generated shared schemes in
+      `macos/project.yml`.
+    - Stage 2 fixture-generator tests now use Node filesystem traversal and
+      `npm exec -- tsx`; active baseline docs and CI fixture checks no longer
+      call `./node_modules/.bin/tsx` directly.
 
 Verified:
 - `npm test -- tests/core/daemon-client.test.ts
@@ -82,10 +92,25 @@ Verified:
   -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
 - `SCREENSHOT_REQUIRE_MANIFEST=1 npx tsx scripts/screenshot-compare.ts` with an
   empty temp screenshots dir, verified it exits 1 instead of silently skipping.
+- `xcodegen generate`
+- `npm test -- tests/scripts/stage2-fixture-generators.test.ts
+  tests/scripts/emit-current-schema.test.ts`
+- `xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testProjectMigrationCommandsSurfacePipelineErrors
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project Engram.xcodeproj -scheme EngramMCPTests
+  -only-testing:EngramMCPTests/EngramMCPExecutableTests/testNativeProjectOperationsRouteThroughTheService
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project Engram.xcodeproj -scheme EngramTests
+  -only-testing:EngramTests/EngramCLIResumeCommandTests
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild -project Engram.xcodeproj -list` confirmed `EngramTests` and
+  `EngramUITests` shared schemes.
+- `npm run lint`
 
-Remaining queue from Copilot review: only Minor cleanup remains: split oversized
-Swift service/MCP registry files, add smaller Swift test schemes, and replace
-fixture-generator tests that shell out to Unix `find` / hard-coded `tsx`.
+Remaining queue from Copilot review: none. Critical, Important, and Minor items
+are closed and recorded in
+`docs/reviews/2026-06-01-copilot-product-hardening-review.md`.
 
 ## 2026-05-30 — deferred follow-ups closed and local app deployed (Codex)
 

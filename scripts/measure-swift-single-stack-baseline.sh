@@ -7,7 +7,7 @@ ITERATIONS="${ITERATIONS:-50}"
 
 cd "$ROOT_DIR"
 
-exec ./node_modules/.bin/tsx scripts/perf/capture-node-baseline.ts \
+exec npm exec -- tsx scripts/perf/capture-node-baseline.ts \
   --out "$OUT" \
   --fixture-db "$ROOT_DIR/tests/fixtures/mcp-contract.sqlite" \
   --fixture-root "$ROOT_DIR/tests/fixtures" \

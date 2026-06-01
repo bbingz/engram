@@ -320,6 +320,24 @@ schemes:
         - EngramTests
         - EngramUITests
       environmentVariables: []
+  EngramTests:
+    build:
+      targets:
+        Engram: all
+        EngramTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramTests
+  EngramUITests:
+    build:
+      targets:
+        Engram: all
+        EngramUITests: all
+    test:
+      config: Debug
+      targets:
+        - EngramUITests
   EngramCLI:
     build:
       targets:

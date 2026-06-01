@@ -125,13 +125,13 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Check fixture schema version
-        run: npx tsx scripts/check-fixture-schema.ts
+        run: npm exec -- tsx scripts/check-fixture-schema.ts
       - name: Check adapter parity fixture freshness
         run: npm run check:adapter-parity-fixtures
       - name: Verify fixture determinism
         run: |
           test -f test-fixtures/test-index.sqlite || (echo "ERROR: fixture not committed" && exit 1)
-          npx tsx scripts/generate-test-fixtures.ts
+          npm run generate:fixtures
           git diff --exit-code test-fixtures/test-index.sqlite
 
   ui-test-smoke:

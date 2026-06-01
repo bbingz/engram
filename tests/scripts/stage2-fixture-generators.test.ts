@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -20,7 +21,7 @@ function runScript(
   args: string[] = [],
   cwd = repoRoot,
 ): string {
-  return execFileSync('./node_modules/.bin/tsx', [script, ...args], {
+  return execFileSync('npm', ['exec', '--', 'tsx', script, ...args], {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -28,16 +29,30 @@ function runScript(
 }
 
 function snapshotFixtureFiles(root: string): Map<string, string> {
-  const files = execFileSync('find', [root, '-type', 'f'], {
-    encoding: 'utf8',
-  })
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .sort();
+  const files = listFiles(root).sort();
   return new Map(
     files.map((file) => [relative(root, file), readFileSync(file, 'utf8')]),
   );
+}
+
+function listFiles(root: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listFiles(path));
+    } else if (entry.isFile()) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
+function listDirectories(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
 }
 
 describe('stage2 Node parity fixture generators', () => {
@@ -120,26 +135,7 @@ describe('stage2 Node parity fixture generators', () => {
     const fixtureRoot = join(tmp, 'adapter-parity');
 
     runScript('scripts/gen-adapter-parity-fixtures.ts', ['--out', fixtureRoot]);
-    const generatedSources = execFileSync(
-      'find',
-      [
-        fixtureRoot,
-        '-maxdepth',
-        '1',
-        '-mindepth',
-        '1',
-        '-type',
-        'd',
-        '-exec',
-        'basename',
-        '{}',
-        ';',
-      ],
-      { encoding: 'utf8' },
-    )
-      .trim()
-      .split('\n')
-      .sort();
+    const generatedSources = listDirectories(fixtureRoot);
 
     expect(generatedSources).toEqual(
       expect.arrayContaining(['antigravity', 'commandcode', 'qoder']),

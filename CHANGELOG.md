@@ -11,7 +11,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 Recorded the Copilot multi-expert review and closed the two Critical security
 items before continuing product UI expansion. Continued through all Important
-follow-ups from that review.
+and Minor follow-ups from that review.
 
 - **Resume command injection fixed**: `TerminalLauncher` now shell-quotes `cwd`,
   command, and args before AppleScript interpolation, reusing the CLI resume
@@ -51,6 +51,17 @@ follow-ups from that review.
   fail true size mismatches, and write diff images under the uploaded
   `screenshots/diffs/` artifact path. The fixture-check job now runs adapter
   parity freshness.
+- **Swift review surfaces split**: project migration service commands now live
+  in `EngramServiceCommandHandler+ProjectMigration.swift`, and MCP project
+  result ordering now lives in `MCPToolRegistry+ProjectResults.swift`, reducing
+  the main handler/registry audit surface without changing tool contracts.
+- **Focused Swift test schemes added**: `EngramTests` and `EngramUITests` are
+  now generated shared schemes alongside the existing aggregate `Engram`
+  scheme.
+- **Fixture-generator test shell assumptions removed**: Stage 2 fixture
+  generator tests now use Node filesystem traversal instead of Unix `find`, and
+  script/test/active-doc invocations use `npm exec` or package scripts instead
+  of hard-coded `./node_modules/.bin/tsx`.
 - **Settings copy aligned**: Network settings now says project migration tools
   always require the Swift service and the strict toggle only controls remaining
   MCP write fallbacks.

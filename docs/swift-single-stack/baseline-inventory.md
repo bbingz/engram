@@ -68,7 +68,7 @@ Adapter fixtures under `tests/fixtures` cover Antigravity, Claude Code, Codex, C
 Node direct-tool baseline:
 
 ```bash
-rtk ./node_modules/.bin/tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --out docs/performance/baselines/2026-04-23-node-runtime-baseline.json
+rtk npm exec -- tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --out docs/performance/baselines/2026-04-23-node-runtime-baseline.json
 ```
 
 Output: `docs/performance/baselines/2026-04-23-node-runtime-baseline.json`.
@@ -78,7 +78,7 @@ The capture script copies fixture DB/root to a temporary directory before measur
 Compare-only command:
 
 ```bash
-rtk ./node_modules/.bin/tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --compare-only docs/performance/baselines/2026-04-23-node-runtime-baseline.json
+rtk npm exec -- tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --compare-only docs/performance/baselines/2026-04-23-node-runtime-baseline.json
 ```
 
 ## Baseline Gaps

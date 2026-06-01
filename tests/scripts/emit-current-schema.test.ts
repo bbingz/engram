@@ -18,15 +18,15 @@ describe('emit-current-schema', () => {
     const out = join(tmp, 'schema.json');
 
     execFileSync(
-      './node_modules/.bin/tsx',
-      ['scripts/db/emit-current-schema.ts', '--out', out],
+      'npm',
+      ['exec', '--', 'tsx', 'scripts/db/emit-current-schema.ts', '--out', out],
       { cwd: repoRoot, stdio: 'pipe' },
     );
 
     const first = readFileSync(out, 'utf8');
     execFileSync(
-      './node_modules/.bin/tsx',
-      ['scripts/db/emit-current-schema.ts', '--out', out],
+      'npm',
+      ['exec', '--', 'tsx', 'scripts/db/emit-current-schema.ts', '--out', out],
       { cwd: repoRoot, stdio: 'pipe' },
     );
     const second = readFileSync(out, 'utf8');

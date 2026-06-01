@@ -11,7 +11,7 @@ These gates define when each migration stage can advance. They are intentionally
 - `rtk sh -lc 'test -f docs/swift-single-stack/baseline-inventory.md'` exits `0`.
 - `rtk sh -lc 'test -f docs/swift-single-stack/performance-baseline.md'` exits `0`.
 - `rtk sh -lc 'test -f docs/performance/baselines/2026-04-23-node-runtime-baseline.json'` exits `0`.
-- `rtk ./node_modules/.bin/tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --compare-only docs/performance/baselines/2026-04-23-node-runtime-baseline.json` exits successfully and does not modify fixtures.
+- `rtk npm exec -- tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --compare-only docs/performance/baselines/2026-04-23-node-runtime-baseline.json` exits successfully and does not modify fixtures.
 - Stage0 docs exist: `inventory.md`, `file-disposition.md`, `app-write-inventory.md`, `baseline-inventory.md`, `node-behavior-snapshots.md`, `performance-baseline.md`, `stage-gates.md`.
 - Baseline JSON contains finite numeric metrics and `p95 >= p50` for measured tool latency.
 

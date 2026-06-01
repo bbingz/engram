@@ -24,7 +24,7 @@ Stage0 canonical baseline path: `docs/performance/baselines/2026-04-23-node-runt
 ## Capture Command
 
 ```bash
-rtk ./node_modules/.bin/tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --out docs/performance/baselines/2026-04-23-node-runtime-baseline.json
+rtk npm exec -- tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --out docs/performance/baselines/2026-04-23-node-runtime-baseline.json
 ```
 
 Result: exited `0` and created the canonical baseline.
@@ -32,7 +32,7 @@ Result: exited `0` and created the canonical baseline.
 ## Compare-Only Command
 
 ```bash
-rtk sh -lc 'before=$(shasum -a 256 docs/performance/baselines/2026-04-23-node-runtime-baseline.json tests/fixtures/mcp-contract.sqlite | tr "\n" ";"); ./node_modules/.bin/tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --compare-only docs/performance/baselines/2026-04-23-node-runtime-baseline.json; after=$(shasum -a 256 docs/performance/baselines/2026-04-23-node-runtime-baseline.json tests/fixtures/mcp-contract.sqlite | tr "\n" ";"); test "$before" = "$after"'
+rtk sh -lc 'before=$(shasum -a 256 docs/performance/baselines/2026-04-23-node-runtime-baseline.json tests/fixtures/mcp-contract.sqlite | tr "\n" ";"); npm exec -- tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 50 --compare-only docs/performance/baselines/2026-04-23-node-runtime-baseline.json; after=$(shasum -a 256 docs/performance/baselines/2026-04-23-node-runtime-baseline.json tests/fixtures/mcp-contract.sqlite | tr "\n" ";"); test "$before" = "$after"'
 ```
 
 Result: exited `0`; baseline and fixture DB checksums were unchanged.
@@ -53,7 +53,7 @@ Comparison output:
 ## Existing Baseline Refusal
 
 ```bash
-rtk ./node_modules/.bin/tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 1 --out docs/performance/baselines/2026-04-23-node-runtime-baseline.json
+rtk npm exec -- tsx scripts/perf/capture-node-baseline.ts --fixture-db tests/fixtures/mcp-contract.sqlite --fixture-root tests/fixtures --session-fixture-root test-fixtures/sessions --iterations 1 --out docs/performance/baselines/2026-04-23-node-runtime-baseline.json
 ```
 
 Result: exited non-zero and printed `Baseline exists; use --compare-only or --force-baseline-update with --reason`.

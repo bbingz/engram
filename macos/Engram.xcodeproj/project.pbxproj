@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		00567A682097C6B4CC93309D /* CodexAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6241BC63B4B0010E1081420 /* CodexAdapter.swift */; };
+		007BC1632203120448FD6342 /* MCPToolRegistry+ProjectResults.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01D22437F623F806929580A /* MCPToolRegistry+ProjectResults.swift */; };
 		014068EE324CDC59F0E0EC97 /* QoderAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31F84C4D0860A06E7036F321 /* QoderAdapter.swift */; };
 		01614F658F840D99897A07CB /* SchemaIntrospection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2A7E854FAAD8237569D3489 /* SchemaIntrospection.swift */; };
 		01F7D2BA6B52C8700E83F925 /* IndexedMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADF2EE99A3CE1AA9A41435CE /* IndexedMessage.swift */; };
@@ -452,6 +453,7 @@
 		EDCD0DAE5DDA06C8D05E6C81 /* ClineAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26908CE145527769B518B628 /* ClineAdapter.swift */; };
 		F0058B16812CA801B208BB59 /* WorkGraphTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525B6DB78548A39BA0CBC75E /* WorkGraphTests.swift */; };
 		F05AEAE6801A6859E41848C9 /* DatabaseManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B43EB84B465B6F88E97F893 /* DatabaseManagerTests.swift */; };
+		F05D2AECC0364106F4854500 /* EngramServiceCommandHandler+ProjectMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FB575E548BE8BC56AA457E /* EngramServiceCommandHandler+ProjectMigration.swift */; };
 		F1B35422C4966E3F7B1C2A45 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BE0F3D0EF2B41203834B93F /* ContentView.swift */; };
 		F2DBC01188AE286A3264B864 /* IndexingEventTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7012F7B41FBCB1E2B95076 /* IndexingEventTypes.swift */; };
 		F33F8806F816F9AD599DFABB /* SourceColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67EE4A65A9D897846E86326E /* SourceColors.swift */; };
@@ -870,6 +872,7 @@
 		C364B6E7717447C519ABFCCE /* SourceColorsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceColorsTests.swift; sourceTree = "<group>"; };
 		C3B2347B21F997A69221E40B /* MemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryTests.swift; sourceTree = "<group>"; };
 		C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = EngramCoreWrite.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		C4FB575E548BE8BC56AA457E /* EngramServiceCommandHandler+ProjectMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EngramServiceCommandHandler+ProjectMigration.swift"; sourceTree = "<group>"; };
 		C50DE90FB3D7536CB18399B7 /* MessageTypeClassifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageTypeClassifierTests.swift; sourceTree = "<group>"; };
 		C62F48F2296F24C91C48040D /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
 		C6FD37A350223CD0C9786D4C /* SessionReplayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReplayView.swift; sourceTree = "<group>"; };
@@ -903,6 +906,7 @@
 		DDFCC5EAA4FCA45CCC95A55C /* SnippetHighlighterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetHighlighterTests.swift; sourceTree = "<group>"; };
 		DEB7F144143F77F3439A627F /* EngramWebUIServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramWebUIServer.swift; sourceTree = "<group>"; };
 		DF9A31971F74EDB6FF75103C /* SourcePulseScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcePulseScreen.swift; sourceTree = "<group>"; };
+		E01D22437F623F806929580A /* MCPToolRegistry+ProjectResults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MCPToolRegistry+ProjectResults.swift"; sourceTree = "<group>"; };
 		E0772E092AF8F9ED356B158C /* HooksScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HooksScreen.swift; sourceTree = "<group>"; };
 		E0A0D42A550E1B0A3E2AD1FF /* FTSRebuildPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTSRebuildPolicy.swift; sourceTree = "<group>"; };
 		E0CA2448347026DBF8CAB0DD /* TimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineTests.swift; sourceTree = "<group>"; };
@@ -1163,6 +1167,7 @@
 			isa = PBXGroup;
 			children = (
 				4A4BE77C3F2998DF1CB6A1B7 /* EngramServiceCommandHandler.swift */,
+				C4FB575E548BE8BC56AA457E /* EngramServiceCommandHandler+ProjectMigration.swift */,
 				1544BE45F851B69E9F5DD3EE /* EngramServiceReadProvider.swift */,
 				DCDC3A01172C6C8CC0250ADD /* EngramServiceRunner.swift */,
 				DEB7F144143F77F3439A627F /* EngramWebUIServer.swift */,
@@ -1516,6 +1521,7 @@
 				4CD7F8FA902D69317E8C49DC /* MCPLiveSessionScanner.swift */,
 				41D7F49B7C0C0A2950AFA232 /* MCPStdioServer.swift */,
 				D1C92C3A64479C2893628E50 /* MCPToolRegistry.swift */,
+				E01D22437F623F806929580A /* MCPToolRegistry+ProjectResults.swift */,
 				E0F2789AF20A7B5048BA4C86 /* MCPTranscriptReader.swift */,
 				72212C1765EA46875DAFAF93 /* MCPTranscriptTools.swift */,
 				A17FA103A775D3548BD09BBA /* OrderedJSON.swift */,
@@ -2337,6 +2343,7 @@
 			files = (
 				8641694F9139C54C2BA20ACC /* EngramCLIResumeCommand.swift in Sources */,
 				E24985EAEB18CFBB418B0CC7 /* EngramServiceClient.swift in Sources */,
+				F05D2AECC0364106F4854500 /* EngramServiceCommandHandler+ProjectMigration.swift in Sources */,
 				D92C79E07A3DC9A74F242B5B /* EngramServiceCommandHandler.swift in Sources */,
 				9B33C72F6878F32EAFCB5842 /* EngramServiceError.swift in Sources */,
 				24DC6D9C73C9E0ED906533DF /* EngramServiceModels.swift in Sources */,
@@ -2549,6 +2556,7 @@
 				F35A36B60F5C88D2EEBCC017 /* MCPLiveSessionScanner.swift in Sources */,
 				ACD374C4B3B602CE7A682547 /* MCPProtocol.swift in Sources */,
 				DE69D46D383E0569C1CF00B5 /* MCPStdioServer.swift in Sources */,
+				007BC1632203120448FD6342 /* MCPToolRegistry+ProjectResults.swift in Sources */,
 				7EF91E9207A3A349436387AB /* MCPToolRegistry.swift in Sources */,
 				C8DA98DBAA40191E559E7537 /* MCPTranscriptReader.swift in Sources */,
 				46B22E80FCC71F53FF8A4A5C /* MCPTranscriptTools.swift in Sources */,

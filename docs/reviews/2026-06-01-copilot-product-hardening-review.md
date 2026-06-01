@@ -85,9 +85,19 @@ handoff.
 
 - Split oversized Swift service/MCP registry files by command domain once the
   security fixes are stable.
+  - Status: fixed. Project migration service commands moved to
+    `EngramServiceCommandHandler+ProjectMigration.swift`, and MCP project
+    result ordering moved to `MCPToolRegistry+ProjectResults.swift`, reducing
+    the main service command handler and MCP registry review surfaces without
+    changing command contracts.
 - Add smaller Swift test schemes for app and UI test ergonomics.
+  - Status: fixed. `EngramTests` and `EngramUITests` are now first-class
+    shared Xcode schemes generated from `macos/project.yml`.
 - Replace fixture-generator tests that shell out to Unix `find` and hard-coded
   `./node_modules/.bin/tsx` with Node APIs and npm execution.
+  - Status: fixed. Stage 2 fixture-generator tests now use Node filesystem
+    traversal and `npm exec -- tsx`; active baseline docs and CI fixture checks
+    no longer call a hard-coded local tsx binary.
 
 ## Execution Order
 
@@ -101,3 +111,6 @@ handoff.
    visible count.
 6. Harden writer-gate tests, HOME isolation, fixture freshness, embedding indexer
    integration coverage, and CI gates.
+7. Close Minor cleanup: split project migration Swift review surfaces, add
+   focused app/UI test schemes, and remove fixture-generator test shell
+   assumptions.
