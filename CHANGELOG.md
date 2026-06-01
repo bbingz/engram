@@ -7,6 +7,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Today Workbench completion pass (2026-06-01, Codex)
+
+Closed the concrete gaps left by the first Today Workbench UI pass.
+
+- Added safe copy-resume-command actions to Today session rows. The copied
+  command is rendered through the same shell-safe `EngramCLIResumeCommand`
+  path used by CLI resume.
+- Added durable local follow-up handling: marking a Today follow-up handled
+  stores the session id in UserDefaults and removes it from the Follow-ups
+  section.
+- Ranked Continue sessions by resume-oriented usefulness instead of pure
+  recency, boosting known direct-resume sources, cwd availability, and
+  agent-child context.
+- Added Changed Repos warnings for recent migrations and dirty/unpushed repo
+  state, plus string-catalog entries for the new labels.
+
+Verified with:
+- `python3 -m json.tool macos/Engram/Resources/Localizable.xcstrings`
+- `git diff --check`
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  -only-testing:EngramTests/TodayWorkbenchTests
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests
+  CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild build -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  CODE_SIGNING_ALLOWED=NO`
+
 ### Today Workbench i18n sync (2026-06-01, Codex)
 
 Fixed the localization gap left by the Today Workbench UI pass.

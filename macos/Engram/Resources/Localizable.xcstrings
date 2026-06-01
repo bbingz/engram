@@ -137,11 +137,17 @@
     "%lld agents" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个代理" } } }
     },
+    "%lld changed" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个变更" } } }
+    },
     "%lld parent sessions" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个父会话" } } }
     },
     "%lld recent transcripts" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个最近转录" } } }
+    },
+    "%lld unpushed" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个未推送" } } }
     },
     "•" : {
 
@@ -211,6 +217,9 @@
     "Clean View" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "干净视图" } } }
     },
+    "Copy resume command" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "复制恢复命令" } } }
+    },
     "CONFIG" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "配置" } } }
     },
@@ -267,6 +276,9 @@
     },
     "Failed to load Today: %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "加载 Today 失败：%@" } } }
+    },
+    "Failed to copy resume command" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "复制恢复命令失败" } } }
     },
     "Follow-ups" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "跟进项" } } }
@@ -346,6 +358,9 @@
     "Max Body Size" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最大正文大小" } } }
     },
+    "Mark follow-up handled" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标记跟进已处理" } } }
+    },
     "Memory" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "记忆" } } }
     },
@@ -363,6 +378,9 @@
     },
     "Monthly Budget" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "每月预算" } } }
+    },
+    "Migrated" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已迁移" } } }
     },
     "Network" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络" } } }
@@ -432,6 +450,9 @@
     },
     "Resume session" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "恢复会话" } } }
+    },
+    "Resume command copied" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已复制恢复命令" } } }
     },
     "Running" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行中" } } }

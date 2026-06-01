@@ -1,5 +1,40 @@
 # Engram Local Memory
 
+## 2026-06-01 — Today Workbench completion pass (Codex)
+
+User asked to resume the previously blocked product goal after reviewing what
+remained unfinished. The concrete remaining Today Workbench gaps were copy
+command, follow-up handling, Continue ranking, and Changed Repos warning
+signals.
+
+Implemented:
+- `TodaySessionRow` now exposes a copy-resume-command button next to open and
+  resume. The command is fetched from `EngramServiceClient.resumeCommand` and
+  rendered with `EngramCLIResumeCommand.render`, preserving the hardened shell
+  quoting path before writing to `NSPasteboard`.
+- Follow-up rows now expose a handled button. Handled session ids persist in
+  UserDefaults through `TodayHandledFollowUps` and are excluded from future
+  Today follow-up searches.
+- `TodayWorkbenchRanking` ranks Continue candidates by direct-resume source,
+  cwd availability, and confirmed/suggested child context instead of raw
+  recency only.
+- `TodayProjectWarning` adds Changed Repos warning labels for committed
+  migrations and dirty/unpushed repo state.
+- Added `TodayWorkbenchTests` plus localized strings for the new Today actions
+  and warning labels.
+
+Verified:
+- `python3 -m json.tool macos/Engram/Resources/Localizable.xcstrings`
+- `git diff --check`
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  -only-testing:EngramTests/TodayWorkbenchTests
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests
+  CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild build -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  CODE_SIGNING_ALLOWED=NO`
+
 ## 2026-06-01 — Today Workbench i18n sync (Codex)
 
 After the first Today Workbench UI implementation, the visible macOS UI changed

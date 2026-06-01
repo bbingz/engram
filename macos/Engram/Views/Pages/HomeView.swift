@@ -9,17 +9,21 @@ private let todayISOFormatter: ISO8601DateFormatter = {
 
 struct HomeView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceClient.self) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
 
     @State private var kpi: DatabaseManager.KPIStats?
     @State private var recentSessions: [Session] = []
     @State private var followUpSessions: [Session] = []
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
+    @State private var projectWarnings: [String: String] = [:]
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
+    @State private var handledFollowUps = TodayHandledFollowUps()
     @State private var isLoading = true
     @State private var alertMessage: String? = nil
     @State private var resumeSession: Session?
+    @State private var copyingSessionId: String?
 
     var body: some View {
         ScrollView {
@@ -115,7 +119,9 @@ struct HomeView: View {
                             session: session,
                             detail: session.project.map(projectLabel) ?? compactPath(session.cwd),
                             countBadge: childBadge(for: session),
+                            isCopying: copyingSessionId == session.id,
                             onOpen: { open(session) },
+                            onCopyCommand: { copyResumeCommand(session) },
                             onResume: { resumeSession = session }
                         )
                         .accessibilityIdentifier("home_recentSession_\(index)")
@@ -146,8 +152,11 @@ struct HomeView: View {
                             session: session,
                             detail: String(localized: "Needs review") + " · \(session.displayUpdatedDate)",
                             countBadge: nil,
+                            isCopying: copyingSessionId == session.id,
                             onOpen: { open(session) },
-                            onResume: { resumeSession = session }
+                            onCopyCommand: { copyResumeCommand(session) },
+                            onResume: { resumeSession = session },
+                            onMarkHandled: { markFollowUpHandled(session) }
                         )
                         .accessibilityIdentifier("home_followUpSession_\(index)")
                     }
@@ -175,6 +184,7 @@ struct HomeView: View {
                     ForEach(Array(projectGroups.prefix(5).enumerated()), id: \.element.id) { index, group in
                         ChangedRepoRow(
                             group: group,
+                            warning: projectWarnings[group.id],
                             onOpen: {
                                 if let session = group.sessions.first {
                                     open(session)
@@ -240,23 +250,45 @@ struct HomeView: View {
         defer { isLoading = false }
 
         let db = self.db
+        let serviceClient = self.serviceClient
+        let handledIds = handledFollowUps.handledIds
         do {
             let data = try await Task.detached {
                 let kpi = try db.kpiStats()
-                let recent = try db.recentSessions(limit: 8)
-                let followUps = try loadTodayFollowUps(from: db, limit: 8)
+                let rawRecent = try db.recentSessions(limit: 12)
+                let followUps = try loadTodayFollowUps(from: db, limit: 8, excluding: handledIds)
                 let projects = try db.listSessionsByProject(limit: 5)
-                let countIds = Array(Set((recent + followUps).map(\.id)))
+                let repos = try db.listGitRepos()
+                let countIds = Array(Set((rawRecent + followUps).map(\.id)))
                 let confirmed = try db.childCount(parentIds: countIds)
                 let suggested = try db.suggestedChildCount(parentIds: countIds)
-                return (kpi, recent, followUps, projects, confirmed, suggested)
+                let recent = TodayWorkbenchRanking.continueSessions(
+                    from: rawRecent,
+                    confirmedCounts: confirmed,
+                    suggestedCounts: suggested,
+                    limit: 8
+                )
+                return (kpi, recent, followUps, projects, repos, confirmed, suggested)
             }.value
+            let migrations = (try? await serviceClient.projectMigrations(
+                EngramServiceProjectMigrationsRequest(state: "committed", limit: 25)
+            ).migrations) ?? []
             kpi = data.0
             recentSessions = data.1
             followUpSessions = data.2
             projectGroups = data.3
-            confirmedCounts = data.4
-            suggestedCounts = data.5
+            projectWarnings = Dictionary(uniqueKeysWithValues: data.3.compactMap { group in
+                guard let warning = TodayProjectWarning.warning(
+                    for: group,
+                    repos: data.4,
+                    migrations: migrations
+                ) else {
+                    return nil
+                }
+                return (group.id, warning)
+            })
+            confirmedCounts = data.5
+            suggestedCounts = data.6
             alertMessage = nil
         } catch {
             EngramLogger.error("HomeView load failed", module: .ui, error: error)
@@ -269,6 +301,28 @@ struct HomeView: View {
 
     private func open(_ session: Session) {
         NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+    }
+
+    private func copyResumeCommand(_ session: Session) {
+        copyingSessionId = session.id
+        Task {
+            defer { copyingSessionId = nil }
+            do {
+                let response = try await serviceClient.resumeCommand(sessionId: session.id)
+                let command = try TodayResumeCommand.copyableCommand(from: response)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(command, forType: .string)
+                alertMessage = String(localized: "Resume command copied")
+            } catch {
+                EngramLogger.error("HomeView copy resume command failed", module: .ui, error: error)
+                alertMessage = String(localized: "Failed to copy resume command")
+            }
+        }
+    }
+
+    private func markFollowUpHandled(_ session: Session) {
+        handledFollowUps.markHandled(session.id)
+        followUpSessions.removeAll { $0.id == session.id }
     }
 
     private func childBadge(for session: Session) -> String? {
@@ -315,8 +369,11 @@ private struct TodaySessionRow: View {
     let session: Session
     let detail: String
     let countBadge: String?
+    let isCopying: Bool
     let onOpen: () -> Void
+    let onCopyCommand: () -> Void
     let onResume: () -> Void
+    var onMarkHandled: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -347,11 +404,24 @@ private struct TodaySessionRow: View {
             }
             .buttonStyle(.borderless)
             .help("Open transcript")
+            Button(action: onCopyCommand) {
+                Image(systemName: isCopying ? "clock" : "doc.on.doc")
+            }
+            .buttonStyle(.borderless)
+            .help("Copy resume command")
+            .disabled(isCopying)
             Button(action: onResume) {
                 Image(systemName: "play.fill")
             }
             .buttonStyle(.borderless)
             .help("Resume session")
+            if let onMarkHandled {
+                Button(action: onMarkHandled) {
+                    Image(systemName: "checkmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Mark follow-up handled")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -374,6 +444,7 @@ private struct TodaySessionRow: View {
 
 private struct ChangedRepoRow: View {
     let group: DatabaseManager.ProjectGroup
+    let warning: String?
     let onOpen: () -> Void
 
     var body: some View {
@@ -387,13 +458,19 @@ private struct ChangedRepoRow: View {
                         .font(.callout)
                         .lineLimit(1)
                         .foregroundStyle(Theme.primaryText)
-                    Text(
-                        String.localizedStringWithFormat(
-                            String(localized: "%lld recent transcripts"),
-                            group.sessionCount
+                    HStack(spacing: 6) {
+                        Text(
+                            String.localizedStringWithFormat(
+                                String(localized: "%lld recent transcripts"),
+                                group.sessionCount
+                            )
+                            + " · \(String(group.lastActive.prefix(10)))"
                         )
-                        + " · \(String(group.lastActive.prefix(10)))"
-                    )
+                        if let warning {
+                            Text(warning)
+                                .foregroundStyle(Theme.orange)
+                        }
+                    }
                         .font(.caption2)
                         .lineLimit(1)
                         .foregroundStyle(Theme.tertiaryText)
@@ -417,13 +494,13 @@ private struct ChangedRepoRow: View {
     }
 }
 
-private func loadTodayFollowUps(from db: DatabaseManager, limit: Int) throws -> [Session] {
+private func loadTodayFollowUps(from db: DatabaseManager, limit: Int, excluding handledIds: Set<String>) throws -> [Session] {
     let queries = ["follow-up", "followup", "deferred", "todo", "review", "remaining", "延后", "跟进"]
     var seen = Set<String>()
     var matches: [Session] = []
     for query in queries {
         let results = try db.searchWithSnippets(query: query, limit: limit)
-        for result in results where seen.insert(result.session.id).inserted {
+        for result in results where !handledIds.contains(result.session.id) && seen.insert(result.session.id).inserted {
             matches.append(result.session)
             if matches.count >= limit {
                 return matches
