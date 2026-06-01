@@ -6,6 +6,16 @@ Continued the approved Today Workbench + Advanced noise-reduction goal after
 the Today completion pass. The remaining concrete gap addressed here was that
 General settings still exposed low-level transcript/session-noise controls.
 
+Closeout:
+- Commit `9ed04448` (`Quiet advanced noise settings`) is pushed to `main`.
+- Local release build `0.1.0 (732)` was exported, verified, installed into
+  `/Applications/Engram.app`, and relaunched from that path.
+- Current engineering backlog surfaces (`docs/TODO.md`, `docs/followups.md`,
+  `docs/roadmap.md`) report no open items. The broad product goal remains a
+  higher-level blocked/undivided goal, not a code blocker for this slice.
+- User will use the installed app seriously for two days before turning the
+  next product-friction observations into new acceptance-sized slices.
+
 Implemented:
 - Moved the simplified `Session Filter` control from
   `GeneralSettingsSection` into `AdvancedSettingsSection`, preserving the

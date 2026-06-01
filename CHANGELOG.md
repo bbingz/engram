@@ -20,6 +20,12 @@ Continued the approved Today Workbench + Advanced noise-reduction direction.
 - Added `zh-Hans` localization for the new diagnostics group.
 - Added scan tests that keep these low-level noise/diagnostic controls out of
   General settings.
+- Closed out the slice by pushing commit `9ed04448`, building release
+  `0.1.0 (732)`, installing it to `/Applications/Engram.app`, and relaunching
+  the app from that path.
+- Confirmed there is no current code blocker for this slice. The remaining
+  product goal is intentionally deferred to real use: use the installed build
+  for two days, then convert observed friction into new acceptance-sized work.
 
 Verified with:
 - red targeted tests for the session-filter and transcript-diagnostics moves
