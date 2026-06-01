@@ -211,7 +211,8 @@ async function compareOne(
 ): Promise<ComparisonResult> {
   const actualPath = path.join(screenshotsDir, `${entry.name}.png`);
   const baselinePath = path.join(config.baselines_dir, `${entry.name}.png`);
-  const diffPath = path.join(screenshotsDir, `diff-${`${entry.name}.png`}`);
+  const diffDir = path.join(screenshotsDir, 'diffs');
+  const diffPath = path.join(diffDir, `diff-${entry.name}.png`);
 
   const emptyMetrics: ComparisonMetrics = {
     ssim: 0,
@@ -311,6 +312,7 @@ async function compareOne(
   const pixelDiffPercent = (pixelDiffCount / totalPixels) * 100;
 
   // Write diff PNG
+  fs.mkdirSync(diffDir, { recursive: true });
   await sharp(diffBuf, {
     raw: { width: compareWidth, height: compareHeight, channels: 4 },
   })
@@ -394,15 +396,24 @@ async function main() {
 
   const manifestPath = path.join(screenshotsDir, 'test-manifest.json');
   if (!fs.existsSync(manifestPath)) {
-    console.log(
-      `No test-manifest.json found at ${manifestPath}. No screenshots to compare.`,
-    );
+    const message = `No test-manifest.json found at ${manifestPath}. No screenshots to compare.`;
+    if (process.env.SCREENSHOT_REQUIRE_MANIFEST === '1') {
+      console.error(message);
+      process.exit(1);
+    }
+    console.log(message);
     process.exit(0);
   }
   console.log(`Using screenshots from: ${screenshotsDir}`);
 
   const manifest: Manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   const entries = manifest.screenshots;
+  if (entries.length === 0 && process.env.SCREENSHOT_REQUIRE_MANIFEST === '1') {
+    console.error(
+      `Screenshot manifest at ${manifestPath} contains no screenshots.`,
+    );
+    process.exit(1);
+  }
 
   const summary = {
     total: entries.length,

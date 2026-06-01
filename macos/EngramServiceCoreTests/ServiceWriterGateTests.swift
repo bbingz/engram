@@ -133,7 +133,9 @@ final class ServiceWriterGateTests: XCTestCase {
                 return "queued"
             }
         }
-        try await Task.sleep(nanoseconds: 20_000_000)
+        while await gate.queuedWriteWaiterCountForTesting() == 0 {
+            await Task.yield()
+        }
         queued.cancel()
         await probe.releaseFirst()
 

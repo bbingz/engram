@@ -56,15 +56,30 @@ handoff.
      decoding JSON events and logs decode errors with the raw JSON-looking line.
 6. Swift service tests mutate global `HOME`, which can leak across parallel or
    failed tests.
+   - Status: fixed. HOME-mutating service-core tests now use
+     `ServiceCoreTestHomeScope`, a serialized scope that restores HOME on
+     failure and prevents parallel tests from racing on process-global state.
 7. `ServiceWriterGate` cancellation tests depend on fixed sleep instead of an
    event that proves the task entered the queue.
+   - Status: fixed. The cancellation test waits for the writer-gate semaphore's
+     queued waiter count instead of sleeping for a fixed duration.
 8. `EmbeddingIndexer` tests need a real DB/vector-store integration case with a
    deterministic embedding client.
+   - Status: fixed. `EmbeddingIndexer` now has an integration test using
+     `Database`, `SqliteVecStore`, and a deterministic `EmbeddingClient`,
+     covering persisted model metadata and restart skip behavior.
 9. Adapter parity fixture checking should compare committed fixtures against
    regenerated canonical output.
+   - Status: fixed. `check-adapter-parity-fixtures` regenerates fixtures into a
+     temp tree and compares canonical JSON with volatile metadata normalized.
 10. CI/release gates should harden screenshot regression skip/fail semantics,
     artifact path consistency, adapter parity freshness, and local-only release
     documentation paths.
+    - Status: fixed for the cited CI gaps. CI now runs adapter parity freshness;
+      screenshot comparison requires a manifest in UI jobs, fails on true size
+      mismatches, and writes diffs under the uploaded `screenshots/diffs/`
+      artifact path. Local-only release documentation was already corrected in
+      the README refresh.
 
 ## Minor
 

@@ -1,5 +1,13 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { generateAdapterParityFixtures } from './gen-adapter-parity-fixtures.js';
 
 type SupportedFixtureSource =
   | 'antigravity'
@@ -79,6 +87,24 @@ function parseArgs(argv = process.argv.slice(2)): { fixtureRoot: string } {
 
 function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    const nested = (value as Record<string, unknown>)[key];
+    out[key] =
+      key === 'generatedAtCommit' || key === 'nodeVersion'
+        ? '<volatile>'
+        : sortJson(nested);
+  }
+  return out;
+}
+
+function stableJson(value: unknown): string {
+  return `${JSON.stringify(sortJson(value), null, 2)}\n`;
 }
 
 function walkFiles(root: string): string[] {
@@ -163,6 +189,64 @@ function assertMalformedManifest(
   }
 }
 
+function comparableJsonFiles(fixtureRoot: string): string[] {
+  const roots = [fixtureRoot, resolve(fixtureRoot, '..', 'adapter-malformed')];
+  const files: string[] = [];
+  for (const root of roots) {
+    for (const file of walkFiles(root)) {
+      if (file.endsWith('.json')) files.push(file);
+    }
+  }
+  return files.sort();
+}
+
+async function assertRegeneratedFixturesMatch(
+  fixtureRoot: string,
+  failures: string[],
+): Promise<void> {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'adapter-parity-check-'));
+  const tempFixtureRoot = join(tempRoot, 'adapter-parity');
+  try {
+    await generateAdapterParityFixtures(tempFixtureRoot);
+    const committedFiles = comparableJsonFiles(fixtureRoot).map((file) =>
+      relative(resolve(fixtureRoot, '..'), file),
+    );
+    const generatedFiles = comparableJsonFiles(tempFixtureRoot).map((file) =>
+      relative(resolve(tempFixtureRoot, '..'), file),
+    );
+    const expected = new Set(committedFiles);
+    const actual = new Set(generatedFiles);
+    for (const file of committedFiles) {
+      if (!actual.has(file)) {
+        failures.push(`regenerated fixtures missing committed file: ${file}`);
+      }
+    }
+    for (const file of generatedFiles) {
+      if (!expected.has(file)) {
+        failures.push(
+          `regenerated fixtures produced uncommitted file: ${file}`,
+        );
+      }
+    }
+    for (const file of committedFiles) {
+      if (!actual.has(file)) continue;
+      const committedPath = join(resolve(fixtureRoot, '..'), file);
+      const generatedPath = join(resolve(tempFixtureRoot, '..'), file);
+      const committed = stableJson(
+        JSON.parse(readFileSync(committedPath, 'utf8')),
+      );
+      const generated = stableJson(
+        JSON.parse(readFileSync(generatedPath, 'utf8')),
+      );
+      if (committed !== generated) {
+        failures.push(`fixture stale versus generator: ${file}`);
+      }
+    }
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 export function checkAdapterParityFixtures(fixtureRoot: string): string[] {
   const failures: string[] = [];
   for (const source of supportedSources) {
@@ -232,6 +316,7 @@ export function checkAdapterParityFixtures(fixtureRoot: string): string[] {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { fixtureRoot } = parseArgs();
   const failures = checkAdapterParityFixtures(fixtureRoot);
+  await assertRegeneratedFixturesMatch(fixtureRoot, failures);
   if (failures.length > 0) {
     console.error(failures.join('\n'));
     process.exit(1);

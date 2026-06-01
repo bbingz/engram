@@ -709,15 +709,8 @@ final class EngramServiceIPCTests: XCTestCase {
         }
 
         let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", exportHome.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
@@ -751,15 +744,8 @@ final class EngramServiceIPCTests: XCTestCase {
         }
 
         let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", exportHome.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
@@ -801,15 +787,8 @@ final class EngramServiceIPCTests: XCTestCase {
         }
 
         let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", exportHome.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
@@ -847,15 +826,8 @@ final class EngramServiceIPCTests: XCTestCase {
         }
 
         let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", exportHome.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
@@ -894,15 +866,8 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let serviceHome = paths.runtime.appendingPathComponent("service-home", isDirectory: true)
         let clientHome = serviceHome.appendingPathComponent("client-home", isDirectory: true)
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", serviceHome.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: serviceHome)
+        defer { homeScope.restore() }
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
@@ -935,15 +900,8 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let serviceHome = paths.runtime.appendingPathComponent("service-home", isDirectory: true)
         let outsideHome = paths.runtime.appendingPathComponent("outside-home", isDirectory: true)
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", serviceHome.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: serviceHome)
+        defer { homeScope.restore() }
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
@@ -984,15 +942,8 @@ final class EngramServiceIPCTests: XCTestCase {
             at: serviceHome.appendingPathComponent("codex-exports"),
             withDestinationURL: outside
         )
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", serviceHome.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: serviceHome)
+        defer { homeScope.restore() }
 
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
@@ -1062,15 +1013,8 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
         let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", exportHome.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
         let response = try await client.exportSession(
             EngramServiceExportSessionRequest(id: "copilot-1", format: "json", outputHome: exportHome.path, actor: "test")
         )
@@ -1219,15 +1163,8 @@ final class EngramServiceIPCTests: XCTestCase {
         try "{}\n".write(to: allowedFile, atomically: true, encoding: .utf8)
         try "secret\n".write(to: deniedFile, atomically: true, encoding: .utf8)
 
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", home.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
 
         let queue = try DatabaseQueue(path: paths.database.path)
         try await queue.write { db in
@@ -1266,15 +1203,8 @@ final class EngramServiceIPCTests: XCTestCase {
         let allowedFile = allowedDir.appendingPathComponent("allowed.jsonl")
         try "{}\n".write(to: allowedFile, atomically: true, encoding: .utf8)
 
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", home.path, 1)
-        defer {
-            if let oldHome {
-                setenv("HOME", oldHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-        }
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
 
         let queue = try DatabaseQueue(path: paths.database.path)
         try await queue.write { db in

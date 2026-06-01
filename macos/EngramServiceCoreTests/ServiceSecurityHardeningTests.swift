@@ -17,10 +17,9 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         let home = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("engram-sec-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        let oldHome = getenv("HOME").map { String(cString: $0) }
-        setenv("HOME", home.path, 1)
+        let homeScope = ServiceCoreTestHomeScope(home: home)
         defer {
-            if let oldHome { setenv("HOME", oldHome, 1) } else { unsetenv("HOME") }
+            homeScope.restore()
             try? FileManager.default.removeItem(at: home)
         }
         return try await body(home)
@@ -442,5 +441,32 @@ final class ServiceSecurityHardeningTests: XCTestCase {
             directory.deleteLastPathComponent()
         }
         return try String(contentsOf: directory.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+}
+
+final class ServiceCoreTestHomeScope {
+    private static let lock = NSLock()
+    private let oldHome: String?
+    private var restored = false
+
+    init(home: URL) {
+        Self.lock.lock()
+        oldHome = getenv("HOME").map { String(cString: $0) }
+        setenv("HOME", home.path, 1)
+    }
+
+    func restore() {
+        guard !restored else { return }
+        restored = true
+        if let oldHome {
+            setenv("HOME", oldHome, 1)
+        } else {
+            unsetenv("HOME")
+        }
+        Self.lock.unlock()
+    }
+
+    deinit {
+        restore()
     }
 }

@@ -10,8 +10,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ### Copilot hardening triage + Today Workbench spec (2026-06-01, Codex)
 
 Recorded the Copilot multi-expert review and closed the two Critical security
-items before continuing product UI expansion. Continued into the highest-priority
-Important follow-ups that affected MCP/Web transcript behavior.
+items before continuing product UI expansion. Continued through all Important
+follow-ups from that review.
 
 - **Resume command injection fixed**: `TerminalLauncher` now shell-quotes `cwd`,
   command, and args before AppleScript interpolation, reusing the CLI resume
@@ -36,6 +36,21 @@ Important follow-ups that affected MCP/Web transcript behavior.
 - **Service stdout event parsing hardened**: `EngramServiceLauncher` now buffers
   stdout by newline before decoding JSON events, so pipe chunk boundaries no
   longer silently drop structured service events.
+- **Swift test HOME isolation hardened**: HOME-mutating service-core tests now
+  use a serialized `ServiceCoreTestHomeScope` that restores process-global HOME
+  even after failures.
+- **WriterGate cancellation test stabilized**: the queued-cancellation test now
+  waits for a real queued waiter instead of relying on fixed sleep timing.
+- **EmbeddingIndexer integration covered**: added a real
+  `Database` + `SqliteVecStore` + deterministic `EmbeddingClient` test that
+  verifies model persistence and restart skip behavior.
+- **Adapter parity freshness gated**: `check-adapter-parity-fixtures` now
+  regenerates fixtures into a temp tree and compares canonical JSON against the
+  committed corpus, ignoring only volatile commit/node metadata.
+- **CI screenshot gate hardened**: UI screenshot jobs now require a manifest,
+  fail true size mismatches, and write diff images under the uploaded
+  `screenshots/diffs/` artifact path. The fixture-check job now runs adapter
+  parity freshness.
 - **Settings copy aligned**: Network settings now says project migration tools
   always require the Swift service and the strict toggle only controls remaining
   MCP write fallbacks.

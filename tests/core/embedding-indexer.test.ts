@@ -6,6 +6,7 @@ import { Database } from '../../src/core/db.js';
 import { EmbeddingIndexer } from '../../src/core/embedding-indexer.js';
 import type { EmbeddingClient } from '../../src/core/embeddings.js';
 import type { VectorStore } from '../../src/core/vector-store.js';
+import { SqliteVecStore } from '../../src/core/vector-store.js';
 
 describe('EmbeddingIndexer', () => {
   let db: Database;
@@ -141,5 +142,63 @@ describe('EmbeddingIndexer', () => {
     const result = await indexer.indexOne('s1');
     expect(result).toBe(true);
     expect(mockStore.upsert).toHaveBeenCalledOnce();
+  });
+
+  it('persists embeddings through the real sqlite vector store and skips them after restart', async () => {
+    const dbPath = join(tmpDir, 'integration.sqlite');
+    db.close();
+    db = new Database(dbPath);
+    const store = new SqliteVecStore(db.getRawDb());
+    const embedCalls: string[] = [];
+    const client: EmbeddingClient = {
+      dimension: 768,
+      model: 'deterministic-test-model',
+      embed: vi.fn(async (text: string) => {
+        embedCalls.push(text);
+        return new Float32Array(768).fill(text.includes('restart') ? 0.7 : 0.2);
+      }),
+    };
+
+    db.upsertSession({
+      id: 'persisted-session',
+      source: 'codex',
+      startTime: '2026-01-01T10:00:00Z',
+      cwd: '/p',
+      messageCount: 3,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      filePath: '/f1',
+      sizeBytes: 100,
+    });
+    db.indexSessionContent('persisted-session', [
+      { role: 'user', content: 'restart-safe embedding content' },
+    ]);
+
+    const firstIndexer = new EmbeddingIndexer(db, store, client);
+    expect(await firstIndexer.indexAll()).toBe(1);
+    expect(store.count()).toBe(1);
+    expect(store.search(new Float32Array(768).fill(0.7), 1)[0]?.sessionId).toBe(
+      'persisted-session',
+    );
+    expect(
+      db
+        .getRawDb()
+        .prepare('SELECT model FROM session_embeddings WHERE session_id = ?')
+        .pluck()
+        .get('persisted-session'),
+    ).toBe('deterministic-test-model');
+
+    db.close();
+    db = new Database(dbPath);
+    const restartedStore = new SqliteVecStore(db.getRawDb());
+    const restartedIndexer = new EmbeddingIndexer(db, restartedStore, client);
+    vi.mocked(client.embed).mockClear();
+
+    expect(await restartedIndexer.indexAll()).toBe(0);
+    expect(client.embed).not.toHaveBeenCalled();
+    expect(embedCalls).toHaveLength(1);
+    expect(restartedStore.count()).toBe(1);
   });
 });

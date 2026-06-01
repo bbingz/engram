@@ -37,6 +37,20 @@ two Critical items before product UI expansion:
     repeated visible pages.
   - `EngramServiceLauncher` stdout event parsing now buffers newline-delimited
     JSON events across pipe chunks and logs decode failures with the raw line.
+  - HOME-mutating Swift service-core tests now use `ServiceCoreTestHomeScope`,
+    a serialized process-global HOME guard that restores the original value even
+    on failure.
+  - `ServiceWriterGateTests.testCancelledQueuedWriteCommandDoesNotExecuteLater`
+    now waits for the semaphore waiter count instead of sleeping.
+  - `EmbeddingIndexer` now has a real `Database` + `SqliteVecStore` integration
+    test with a deterministic embedding client, covering persisted model fields
+    and restart skip.
+  - `check-adapter-parity-fixtures` now regenerates fixtures to a temp tree and
+    canonical-compares the committed corpus, normalizing volatile commit/node
+    metadata only.
+  - CI now runs adapter parity freshness and makes screenshot comparison fail
+    when UI jobs produce no manifest or a true size mismatch. Diff images are
+    written to `screenshots/diffs/`, matching the uploaded artifact path.
 
 Verified:
 - `npm test -- tests/core/daemon-client.test.ts
@@ -56,10 +70,22 @@ Verified:
 - `npm run typecheck:test`
 - `npm run lint`
 - `git diff --check`
+- `npm run check:adapter-parity-fixtures`
+- `npm test -- tests/core/embedding-indexer.test.ts`
+- `xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore
+  -only-testing:EngramServiceCoreTests/ServiceWriterGateTests/testCancelledQueuedWriteCommandDoesNotExecuteLater
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore
+  -only-testing:EngramServiceCoreTests/ServiceSecurityHardeningTests/testProjectMoveRejectsSourceOutsideHome
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionWritesThroughServiceCommand
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testLinkSessionsRejectsPathsOutsideKnownSessionRoots
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO`
+- `SCREENSHOT_REQUIRE_MANIFEST=1 npx tsx scripts/screenshot-compare.ts` with an
+  empty temp screenshots dir, verified it exits 1 instead of silently skipping.
 
-Remaining queue from Copilot review: Swift test HOME isolation, writer-gate
-cancellation synchronization, embedding indexer integration coverage, adapter
-parity fixture freshness, and CI gate hardening.
+Remaining queue from Copilot review: only Minor cleanup remains: split oversized
+Swift service/MCP registry files, add smaller Swift test schemes, and replace
+fixture-generator tests that shell out to Unix `find` / hard-coded `tsx`.
 
 ## 2026-05-30 — deferred follow-ups closed and local app deployed (Codex)
 

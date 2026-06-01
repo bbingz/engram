@@ -126,6 +126,8 @@ jobs:
       - run: npm run build
       - name: Check fixture schema version
         run: npx tsx scripts/check-fixture-schema.ts
+      - name: Check adapter parity fixture freshness
+        run: npm run check:adapter-parity-fixtures
       - name: Verify fixture determinism
         run: |
           test -f test-fixtures/test-index.sqlite || (echo "ERROR: fixture not committed" && exit 1)
@@ -193,7 +195,8 @@ jobs:
         env:
           SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
-          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "0"
+          SCREENSHOT_REQUIRE_MANIFEST: "1"
+          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "1"
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload diff artifacts
         if: failure()
@@ -282,7 +285,9 @@ jobs:
       - name: Compare screenshots
         if: always()
         env:
-          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "0"
+          SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
+          SCREENSHOT_REQUIRE_MANIFEST: "1"
+          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "1"
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload artifacts
         if: failure()
