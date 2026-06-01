@@ -7,6 +7,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Today Workbench i18n sync (2026-06-01, Codex)
+
+Fixed the localization gap left by the Today Workbench UI pass.
+
+- Added `zh-Hans` entries for the new Today Workbench and Search Advanced
+  labels, empty states, service rows, tooltips, and count-format strings in
+  `Localizable.xcstrings`.
+- Routed dynamic Today values through localization APIs: service KPI state,
+  unavailable Web UI state, follow-up detail text, parent/agent/recent
+  transcript counts, and the Today load error message.
+
+Verified with:
+- `python3 -m json.tool macos/Engram/Resources/Localizable.xcstrings`
+- `git diff --check`
+- `xcodebuild build -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  CODE_SIGNING_ALLOWED=NO`
+
 ### Today Workbench UI first pass (2026-06-01, Codex)
 
 Implemented the approved Today Workbench + Advanced noise-reduction direction

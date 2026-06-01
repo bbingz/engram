@@ -1,5 +1,26 @@
 # Engram Local Memory
 
+## 2026-06-01 — Today Workbench i18n sync (Codex)
+
+After the first Today Workbench UI implementation, the visible macOS UI changed
+but the string catalog had not been updated. The missing surface was
+`macos/Engram/Resources/Localizable.xcstrings`, plus several dynamic strings in
+`HomeView` that were being passed as plain `String` values.
+
+Fixed:
+- Added `zh-Hans` translations for the new Today Workbench sections, empty
+  states, service rows, Search `Advanced filters`, tooltip labels, and
+  count-format strings.
+- Changed dynamic Today values to use `String(localized:)`,
+  `String.localizedStringWithFormat`, or `LocalizedStringKey` where appropriate.
+
+Verified:
+- `python3 -m json.tool macos/Engram/Resources/Localizable.xcstrings`
+- `git diff --check`
+- `xcodebuild build -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  CODE_SIGNING_ALLOWED=NO`
+
 ## 2026-06-01 — Today Workbench UI first pass (Codex)
 
 User clarified that approving and recording the Today Workbench + Advanced

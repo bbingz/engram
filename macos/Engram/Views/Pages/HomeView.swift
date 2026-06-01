@@ -144,7 +144,7 @@ struct HomeView: View {
                     ForEach(Array(followUpSessions.prefix(5).enumerated()), id: \.element.id) { index, session in
                         TodaySessionRow(
                             session: session,
-                            detail: "Needs review · \(session.displayUpdatedDate)",
+                            detail: String(localized: "Needs review") + " · \(session.displayUpdatedDate)",
                             countBadge: nil,
                             onOpen: { open(session) },
                             onResume: { resumeSession = session }
@@ -201,7 +201,10 @@ struct HomeView: View {
                 ServiceStateRow(
                     icon: "calendar",
                     title: "Today indexed",
-                    value: "\(serviceStatusStore.todayParentSessions) parent sessions",
+                    value: String.localizedStringWithFormat(
+                        String(localized: "%lld parent sessions"),
+                        serviceStatusStore.todayParentSessions
+                    ),
                     tint: Theme.accent
                 )
                 ServiceStateRow(
@@ -213,7 +216,7 @@ struct HomeView: View {
                 ServiceStateRow(
                     icon: "brain",
                     title: "Embeddings",
-                    value: serviceStatusStore.embeddingStatus ?? "Check Advanced diagnostics",
+                    value: serviceStatusStore.embeddingStatus ?? String(localized: "Check Advanced diagnostics"),
                     tint: serviceStatusStore.embeddingStatus == "unavailable" ? Theme.orange : Theme.secondaryText
                 )
             }
@@ -222,12 +225,12 @@ struct HomeView: View {
     }
 
     private var serviceStateValue: String {
-        serviceStatusStore.isRunning ? "Running" : "Check"
+        serviceStatusStore.isRunning ? String(localized: "Running") : String(localized: "Check")
     }
 
     private var webEndpointLabel: String {
         guard let port = serviceStatusStore.endpointPort else {
-            return "Unavailable"
+            return String(localized: "Unavailable")
         }
         return "\(serviceStatusStore.endpointHost ?? "127.0.0.1"):\(port)"
     }
@@ -257,7 +260,10 @@ struct HomeView: View {
             alertMessage = nil
         } catch {
             EngramLogger.error("HomeView load failed", module: .ui, error: error)
-            alertMessage = "Failed to load Today: \(error.localizedDescription)"
+            alertMessage = String.localizedStringWithFormat(
+                String(localized: "Failed to load Today: %@"),
+                error.localizedDescription
+            )
         }
     }
 
@@ -267,10 +273,10 @@ struct HomeView: View {
 
     private func childBadge(for session: Session) -> String? {
         if let confirmed = confirmedCounts[session.id], confirmed > 0 {
-            return "\(confirmed) agents"
+            return String.localizedStringWithFormat(String(localized: "%lld agents"), confirmed)
         }
         if let suggested = suggestedCounts[session.id], suggested > 0 {
-            return "\(suggested) suggested"
+            return String.localizedStringWithFormat(String(localized: "%lld suggested"), suggested)
         }
         return nil
     }
@@ -381,7 +387,13 @@ private struct ChangedRepoRow: View {
                         .font(.callout)
                         .lineLimit(1)
                         .foregroundStyle(Theme.primaryText)
-                    Text("\(group.sessionCount) recent transcripts · \(String(group.lastActive.prefix(10)))")
+                    Text(
+                        String.localizedStringWithFormat(
+                            String(localized: "%lld recent transcripts"),
+                            group.sessionCount
+                        )
+                        + " · \(String(group.lastActive.prefix(10)))"
+                    )
                         .font(.caption2)
                         .lineLimit(1)
                         .foregroundStyle(Theme.tertiaryText)
@@ -432,7 +444,7 @@ private struct ServiceStateRow: View {
             Image(systemName: icon)
                 .foregroundStyle(tint)
                 .frame(width: 18)
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.callout)
                 .foregroundStyle(Theme.primaryText)
             Spacer()

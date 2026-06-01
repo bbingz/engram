@@ -134,6 +134,15 @@
         }
       }
     },
+    "%lld agents" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个代理" } } }
+    },
+    "%lld parent sessions" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个父会话" } } }
+    },
+    "%lld recent transcripts" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个最近转录" } } }
+    },
     "•" : {
 
     },
@@ -154,6 +163,9 @@
     "All Time" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部时间" } } }
     },
+    "All tools" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部工具" } } }
+    },
     "Activity" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "活动" } } }
     },
@@ -165,6 +177,9 @@
     },
     "Advanced" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "高级" } } }
+    },
+    "Advanced filters" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "高级筛选" } } }
     },
     "Agents" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "代理" } } }
@@ -232,6 +247,9 @@
     "Embeddings" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "向量嵌入" } } }
     },
+    "Deferred, follow-up, TODO, and review markers land here" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "延后、跟进、TODO 和 review 标记会出现在这里" } } }
+    },
     "Enable AI audit" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用 AI 审计" } } }
     },
@@ -246,6 +264,12 @@
     },
     "Failed: %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "失败：%@" } } }
+    },
+    "Failed to load Today: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "加载 Today 失败：%@" } } }
+    },
+    "Follow-ups" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "跟进项" } } }
     },
     "General" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "通用" } } }
@@ -295,6 +319,9 @@
     "Hygiene" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "健康检查" } } }
     },
+    "Indexer" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "索引器" } } }
+    },
     "Info" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "信息" } } }
     },
@@ -340,6 +367,18 @@
     "Network" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络" } } }
     },
+    "Needs review" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要复核" } } }
+    },
+    "No follow-ups found" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未发现跟进项" } } }
+    },
+    "No project activity" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无项目活动" } } }
+    },
+    "No recent work" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无最近工作" } } }
+    },
     "No sessions yet" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无会话" } } }
     },
@@ -354,6 +393,9 @@
     },
     "Open Web UI" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开 Web UI" } } }
+    },
+    "Open transcript" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开转录" } } }
     },
     "Optional" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选" } } }
@@ -373,6 +415,12 @@
     "Recent Sessions" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近会话" } } }
     },
+    "Recent resumable sessions will appear here" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近可恢复的会话会显示在这里" } } }
+    },
+    "Recently touched projects will appear here" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近改动过的项目会显示在这里" } } }
+    },
     "Regenerate All" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部重新生成" } } }
     },
@@ -381,6 +429,12 @@
     },
     "Repos" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仓库" } } }
+    },
+    "Resume session" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "恢复会话" } } }
+    },
+    "Running" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行中" } } }
     },
     "Runtime Infrastructure" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行时基础设施" } } }
@@ -574,6 +628,9 @@
     "USD" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "美元" } } }
     },
+    "Unavailable" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "不可用" } } }
+    },
     "Version" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "版本" } } }
     },
@@ -721,6 +778,15 @@
         }
       }
     },
+    "Changed Repos" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "变更仓库" } } }
+    },
+    "Check" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "检查" } } }
+    },
+    "Check Advanced diagnostics" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "检查高级诊断" } } }
+    },
     "Clear" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -735,8 +801,17 @@
     "Clear Filter" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清除筛选" } } }
     },
+    "Clear search filters" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清除搜索筛选" } } }
+    },
     "Concise" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "简洁" } } }
+    },
+    "Continue" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "继续" } } }
+    },
+    "Continue work, close follow-ups, and check service readiness." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "继续工作、收口跟进项，并检查服务就绪状态。" } } }
     },
     "Content Font Size" : {
       "localizations" : {
@@ -1349,6 +1424,12 @@
         }
       }
     },
+    "Service" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务" } } }
+    },
+    "Service State" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务状态" } } }
+    },
     "Sessions will appear here after indexing" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "索引完成后，会话会显示在这里" } } }
     },
@@ -1483,6 +1564,9 @@
     },
     "Today" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "今天" } } }
+    },
+    "Today indexed" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "今日已索引" } } }
     },
     "Yesterday" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "昨天" } } }
