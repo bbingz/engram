@@ -1,8 +1,8 @@
 import type { SourceName } from '../adapters/types.js';
 
-export type SystemCategory = 'none' | 'systemPrompt' | 'agentComm';
+type SystemCategory = 'none' | 'systemPrompt' | 'agentComm';
 
-export interface VisibleTranscriptMessageInput {
+interface VisibleTranscriptMessageInput {
   role: string;
   content: string;
 }

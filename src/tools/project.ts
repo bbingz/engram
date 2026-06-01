@@ -485,7 +485,6 @@ export const projectMoveBatchTool = {
 // parsed into memory unbounded. 1MB is far
 // larger than any legitimate batch of project moves.
 export const MAX_BATCH_JSON_BYTES = 1_000_000;
-export const MAX_BATCH_YAML_BYTES = MAX_BATCH_JSON_BYTES;
 
 /**
  * Parse MCP/API batch JSON defensively. The field name `yaml` remains at the

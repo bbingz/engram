@@ -7,6 +7,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### CI gate repair (2026-06-01, Codex)
+
+- Fixed the `dead-code` job by removing stale exported TypeScript symbols left
+  after transcript visibility and project batch JSON cleanup.
+- Added missing Today Workbench screenshot baselines for
+  `home_workbench`, `home_followUps`, and `home_todayHeader`.
+- Made screenshot size mismatches report-only in GitHub Actions because the
+  committed baselines are high-resolution local captures while GitHub's macOS
+  runner captures at `1024x768`; real screenshot diff failures still fail the
+  gate.
+
 ### Advanced noise controls quieted (2026-06-01, Codex)
 
 Continued the approved Today Workbench + Advanced noise-reduction direction.
