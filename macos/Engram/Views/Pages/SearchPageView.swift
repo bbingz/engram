@@ -60,6 +60,7 @@ struct SearchPageView: View {
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var embeddingStatus: EmbeddingStatus? = nil
+    @State private var showAdvancedFilters = false
 
     private var availableModes: [SearchMode] {
         SearchMode.availableModes(embeddingAvailable: embeddingStatus?.available ?? false)
@@ -136,8 +137,6 @@ struct SearchPageView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .accessibilityIdentifier("search_input")
 
-                filterBar
-
                 // Mode selector + embedding status
                 HStack(spacing: 12) {
                     if availableModes.count > 1 {
@@ -168,6 +167,8 @@ struct SearchPageView: View {
                         }
                     }
                 }
+
+                advancedFilterDisclosure
 
                 // Active search modes
                 if !searchModes.isEmpty {
@@ -242,29 +243,71 @@ struct SearchPageView: View {
         }
     }
 
+    private var advancedFilterDisclosure: some View {
+        DisclosureGroup(isExpanded: $showAdvancedFilters) {
+            filterBar
+                .padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Label("Advanced filters", systemImage: "slider.horizontal.3")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                if hasClearableFilters {
+                    Text(activeFilterSummary)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+                Spacer()
+                if hasClearableFilters {
+                    Button {
+                        clearFilters()
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .foregroundStyle(Theme.tertiaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear search filters")
+                    .accessibilityIdentifier("search_clearFilters")
+                }
+            }
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 2)
+        .accessibilityIdentifier("search_advancedFilters")
+    }
+
     private var filterBar: some View {
         HStack(spacing: 8) {
             projectFilterControl
             sourceFilterControl
             timeFilterControl
-            if hasClearableFilters {
-                Button {
-                    if lockedProject == nil {
-                        selectedProjectFilter = nil
-                    }
-                    selectedSourceFilter = nil
-                    selectedTimeFilter = .all
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                }
-                .buttonStyle(.borderless)
-                .help("Clear search filters")
-                .accessibilityIdentifier("search_clearFilters")
-            }
             Spacer()
         }
         .controlSize(.small)
         .accessibilityIdentifier("search_filters")
+    }
+
+    private var activeFilterSummary: String {
+        var parts: [String] = []
+        if let selectedProjectFilter, lockedProject == nil {
+            parts.append(projectLabel(selectedProjectFilter))
+        }
+        if let selectedSourceFilter {
+            parts.append(SourceColors.label(for: selectedSourceFilter))
+        }
+        if selectedTimeFilter != .all {
+            parts.append(selectedTimeFilter.label)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func clearFilters() {
+        if lockedProject == nil {
+            selectedProjectFilter = nil
+        }
+        selectedSourceFilter = nil
+        selectedTimeFilter = .all
     }
 
     @ViewBuilder

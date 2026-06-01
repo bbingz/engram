@@ -28,7 +28,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .home:        return "Home"
+        case .home:        return "Today"
         case .search:      return "Search"
         case .sessions:    return "Sessions"
         case .timeline:    return "Timeline"
@@ -49,7 +49,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
 
     var localizedTitle: String {
         switch self {
-        case .home:        return String(localized: "Home")
+        case .home:        return String(localized: "Today")
         case .search:      return String(localized: "Search")
         case .sessions:    return String(localized: "Sessions")
         case .timeline:    return String(localized: "Timeline")
@@ -70,7 +70,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
 
     var icon: String {
         switch self {
-        case .home:        return "house"
+        case .home:        return "calendar.badge.clock"
         case .search:      return "magnifyingglass"
         case .sessions:    return "bubble.left.and.bubble.right"
         case .timeline:    return "chart.bar.xaxis"

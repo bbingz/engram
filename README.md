@@ -65,7 +65,7 @@
 
 Engram 的产品解析路径在 Swift 侧：`macos/Shared/EngramCore/Adapters/Sources/` 负责读取各工具原始日志，`macos/EngramCoreWrite/Indexing/` 负责写入索引库。TypeScript 适配器保留为 dev/reference/fixture tooling，用于生成和校验 fixture parity。
 
-会话详情只把 `user` / `assistant` 消息作为可见正文展示；tool/event/system-like 数据用于索引、工具统计或诊断，不作为普通对话气泡混入正文。历史 HTTP/API reference 视图也遵循同一可见消息规则，因此分页 offset 按可见消息计算，而不是按原始日志行数计算。
+会话详情只把 `user` / `assistant` 消息作为可见正文展示；tool/event/system-like 数据用于索引、工具统计或诊断，不作为普通对话气泡混入正文。历史 HTTP/API reference 视图也遵循同一可见消息规则；分页 offset 按 adapter 原始消费位置推进，避免隐藏消息造成可见消息漏页或重复页。
 
 Antigravity CLI、Command Code、Qoder 是重点覆盖来源。Antigravity CLI 使用 `~/.gemini/antigravity-cli/brain/` 下的 CLI transcript，并兼容旧 gRPC cache；Qoder 覆盖顶层 session 与 nested `subagents/` 父子关系；Command Code 覆盖 `tool-call` 的 `input` / `args` 形态。发布前的 parser/parity smoke：
 
@@ -170,11 +170,12 @@ args = []
 Engram 的产品 UI 是原生 macOS App。`Engram.app` 启动后会管理 `EngramService`，并通过 Swift/GRDB 读取索引库。
 
 App 功能：
+- **Today Workbench**：默认入口聚合 Continue、Follow-ups、Changed Repos、Service State，直接面向继续工作和收口
 - **会话列表**：按来源、项目、时间筛选，支持多选过滤和分页
 - **父子会话归组**：Claude Code → Codex/Gemini 等派发子会话自动挂到父会话下
 - **今日父会话 badge**：菜单栏徽标显示今天的顶层父会话数量，而不是全部子任务总数
 - **会话详情**：完整对话内容、Markdown 渲染、收藏、导出
-- **搜索**：Swift 产品路径使用 SQLite FTS5 trigram 关键词搜索，支持中英文、UUID 直查和结果高亮
+- **搜索**：Swift 产品路径使用 SQLite FTS5 trigram 关键词搜索，支持中英文、UUID 直查和结果高亮；project/source/time 等低层过滤收在 Advanced filters 里
 - **价值提示**：索引时计算 `quality_score`，列表/搜索结果用高/中/低 value band 做快速判断
 - **会话整理**：收藏、重命名、隐藏低信号/空会话
 - **项目视图**：项目 rename / move / archive / undo 走 Swift service single-writer pipeline

@@ -1,5 +1,49 @@
 # Engram Local Memory
 
+## 2026-06-01 — Today Workbench UI first pass (Codex)
+
+User clarified that approving and recording the Today Workbench + Advanced
+noise-reduction direction was not enough; the visible macOS UI had not changed.
+Implemented the first product UI pass:
+
+- `Screen.home` still uses raw id `home` for compatibility but now displays as
+  `Today` with a calendar badge icon, preserving the launch default while
+  making the entry point visible to users.
+- `HomeView` was converted from the old chart-heavy dashboard into a Today
+  Workbench with four sections:
+  - Continue: recent top-level resumable sessions with open-transcript and
+    resume buttons.
+  - Follow-ups: indexed marker search over `follow-up`, `followup`, `deferred`,
+    `todo`, `review`, `remaining`, `延后`, and `跟进`, deduped by session id.
+  - Changed Repos: recent project groups with latest transcript navigation.
+  - Service State: service/indexer, today indexed count, Web UI endpoint, and
+    embedding status.
+- `SearchPageView` now keeps the search field and mode selector prominent while
+  collapsing project/source/time filters under a single `Advanced filters`
+  disclosure.
+- README now describes Today Workbench, Advanced filters, and the corrected raw
+  adapter-offset transcript pagination behavior. The Today spec status is
+  updated to first UI pass implemented.
+- UI test page objects and full Home UI tests now assert Today Workbench
+  sections instead of the old daily chart / heatmap / source-distribution
+  dashboard.
+
+Verified:
+- `git diff --check`
+- `xcodebuild build -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  -only-testing:EngramTests/ViewMainThreadReadTests
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests
+  CODE_SIGNING_ALLOWED=NO`
+
+Known verification gap: selected `EngramUITests` failed before assertions
+because `EngramUITests-Runner` was killed before establishing its XCTest
+connection. Result bundle:
+`macos/build/DerivedData/Logs/Test/Test-Engram-2026.06.01_10-43-57-+0800.xcresult`.
+
 ## 2026-06-01 — Copilot Critical hardening + Today Workbench spec (Codex)
 
 User approved the Today Workbench + Advanced noise-reduction direction, then

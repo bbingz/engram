@@ -1,80 +1,78 @@
 // macos/Engram/Views/Pages/HomeView.swift
 import SwiftUI
 
+private let todayISOFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
 struct HomeView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
 
     @State private var kpi: DatabaseManager.KPIStats?
-    @State private var dailySourceActivity: [(date: String, segments: [(source: String, count: Int)])] = []
-    @State private var hourlyActivity: [Int] = Array(repeating: 0, count: 24)
-    @State private var sourceDist: [(source: String, count: Int)] = []
-    @State private var tiers: (premium: Int, normal: Int, lite: Int, skip: Int) = (0, 0, 0, 0)
     @State private var recentSessions: [Session] = []
+    @State private var followUpSessions: [Session] = []
+    @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
     @State private var isLoading = true
     @State private var alertMessage: String? = nil
+    @State private var resumeSession: Session?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                greetingSection
+                headerSection
                 kpiSection
                 if let alertMessage {
                     AlertBanner(message: alertMessage)
                 }
-                chartsSection
-                recentSessionsSection
+                workbenchGrid
             }
             .padding(24)
         }
         .modernScrollIndicators()
         .accessibilityIdentifier("home_container")
         .task { await loadData() }
+        .sheet(item: $resumeSession) { session in
+            ResumeDialog(session: session)
+        }
     }
 
-    // MARK: - Greeting
-
-    private var greetingSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            greetingText
-                .font(.title2)
-                .fontWeight(.bold)
-                .foregroundStyle(Theme.primaryText)
-            if let kpi {
-                Text("\(kpi.sessions) sessions across \(kpi.sources) sources")
+    private var headerSection: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Today")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .foregroundStyle(Theme.primaryText)
+                Text("Continue work, close follow-ups, and check service readiness.")
                     .font(.callout)
                     .foregroundStyle(Theme.secondaryText)
             }
+            Spacer()
+            ServiceStatusPill(
+                isRunning: serviceStatusStore.isRunning,
+                label: serviceStatusStore.displayString
+            )
         }
+        .accessibilityIdentifier("home_todayHeader")
     }
-
-    @ViewBuilder
-    private var greetingText: some View {
-        let hour = Calendar.current.component(.hour, from: Date())
-        let name = NSFullUserName().components(separatedBy: " ").first ?? NSUserName()
-        switch hour {
-        case 5..<12:  Text("Good morning, \(name)")
-        case 12..<17: Text("Good afternoon, \(name)")
-        case 17..<22: Text("Good evening, \(name)")
-        default:      Text("Good night, \(name)")
-        }
-    }
-
-    // MARK: - KPI
 
     @ViewBuilder
     private var kpiSection: some View {
         if let kpi {
             HStack(spacing: 12) {
+                KPICard(value: "\(serviceStatusStore.todayParentSessions)", label: "Today")
+                    .accessibilityIdentifier("home_kpiCard_today")
                 KPICard(value: formatNumber(kpi.sessions), label: "Sessions")
                     .accessibilityIdentifier("home_kpiCard_sessions")
-                KPICard(value: "\(kpi.sources)", label: "Sources")
-                    .accessibilityIdentifier("home_kpiCard_sources")
-                KPICard(value: formatNumber(kpi.messages), label: "Messages")
-                    .accessibilityIdentifier("home_kpiCard_messages")
                 KPICard(value: "\(kpi.projects)", label: "Projects")
                     .accessibilityIdentifier("home_kpiCard_projects")
+                KPICard(value: serviceStateValue, label: "Service")
+                    .accessibilityIdentifier("home_kpiCard_service")
             }
             .accessibilityIdentifier("home_kpiCards")
         } else {
@@ -84,107 +82,155 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Charts
-
-    private var chartsSection: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 10) {
-                SectionHeader(icon: "chart.bar", title: "Activity", badge: "30d")
-                StackedActivityChart(data: dailySourceActivity, sourceOrder: sourceDist.map(\.source))
-                    .frame(height: 140)
-                sourceLegend
+    private var workbenchGrid: some View {
+        VStack(spacing: 16) {
+            HStack(alignment: .top, spacing: 16) {
+                continueSection
+                followUpsSection
             }
-            .frame(maxWidth: .infinity)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("home_dailyChart")
-
-            VStack(alignment: .leading, spacing: 16) {
-                SectionHeader(icon: "clock", title: "When You Work")
-                HeatmapGrid(data: hourlyActivity)
-                tierSummary
+            HStack(alignment: .top, spacing: 16) {
+                changedReposSection
+                serviceStateSection
             }
-            .frame(maxWidth: .infinity)
-            .accessibilityIdentifier("home_heatmap")
         }
     }
 
-    private var sourceLegend: some View {
-        HStack(spacing: 10) {
-            ForEach(sourceDist.prefix(6), id: \.source) { item in
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(SourceColors.color(for: item.source))
-                        .frame(width: 6, height: 6)
-                    Text(SourceColors.label(for: item.source))
-                        .font(.caption2)
-                        .foregroundStyle(Theme.secondaryText)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .accessibilityIdentifier("home_sourceDistribution")
-    }
-
-    private var tierSummary: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "square.stack.3d.up")
-                    .foregroundStyle(Theme.tertiaryText)
-                Text("Tiers")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.primaryText)
-            }
-            TierBar(
-                premium: tiers.premium,
-                normal: tiers.normal,
-                lite: tiers.lite,
-                skip: tiers.skip
-            )
-        }
-        .padding(.top, 6)
-        .accessibilityIdentifier("home_tierDistribution")
-    }
-
-    // MARK: - Recent Sessions
-
-    private var recentSessionsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(icon: "clock.arrow.circlepath", title: "Recent Sessions")
+    private var continueSection: some View {
+        WorkbenchPanel(
+            icon: "play.circle",
+            title: "Continue",
+            badge: recentSessions.isEmpty ? nil : "\(recentSessions.count)"
+        ) {
             if recentSessions.isEmpty && !isLoading {
                 EmptyState(
                     icon: "bubble.left.and.bubble.right",
-                    title: "No sessions yet",
-                    message: "Sessions will appear here after indexing"
+                    title: "No recent work",
+                    message: "Recent resumable sessions will appear here"
                 )
-                .frame(height: 100)
+                .frame(height: 120)
             } else {
-                ForEach(Array(recentSessions.enumerated()), id: \.element.id) { index, session in
-                    ExpandableSessionCard(
-                        session: session,
-                        confirmedChildCount: confirmedCounts[session.id] ?? 0,
-                        suggestedChildCount: suggestedCounts[session.id] ?? 0,
-                        onTap: {
-                            NotificationCenter.default.post(
-                                name: .openSession,
-                                object: SessionBox(session)
-                            )
-                        },
-                        onChildTap: { child in
-                            NotificationCenter.default.post(
-                                name: .openSession,
-                                object: SessionBox(child)
-                            )
-                        }
-                    )
-                    .accessibilityIdentifier("home_recentSession_\(index)")
+                VStack(spacing: 8) {
+                    ForEach(Array(recentSessions.prefix(5).enumerated()), id: \.element.id) { index, session in
+                        TodaySessionRow(
+                            session: session,
+                            detail: session.project.map(projectLabel) ?? compactPath(session.cwd),
+                            countBadge: childBadge(for: session),
+                            onOpen: { open(session) },
+                            onResume: { resumeSession = session }
+                        )
+                        .accessibilityIdentifier("home_recentSession_\(index)")
+                    }
                 }
             }
         }
         .accessibilityIdentifier("home_recentSessions")
     }
 
-    // MARK: - Data Loading
+    private var followUpsSection: some View {
+        WorkbenchPanel(
+            icon: "checklist",
+            title: "Follow-ups",
+            badge: followUpSessions.isEmpty ? nil : "\(followUpSessions.count)"
+        ) {
+            if followUpSessions.isEmpty && !isLoading {
+                EmptyState(
+                    icon: "checklist",
+                    title: "No follow-ups found",
+                    message: "Deferred, follow-up, TODO, and review markers land here"
+                )
+                .frame(height: 120)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(followUpSessions.prefix(5).enumerated()), id: \.element.id) { index, session in
+                        TodaySessionRow(
+                            session: session,
+                            detail: "Needs review · \(session.displayUpdatedDate)",
+                            countBadge: nil,
+                            onOpen: { open(session) },
+                            onResume: { resumeSession = session }
+                        )
+                        .accessibilityIdentifier("home_followUpSession_\(index)")
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("home_followUps")
+    }
+
+    private var changedReposSection: some View {
+        WorkbenchPanel(
+            icon: "arrow.triangle.branch",
+            title: "Changed Repos",
+            badge: projectGroups.isEmpty ? nil : "\(projectGroups.count)"
+        ) {
+            if projectGroups.isEmpty && !isLoading {
+                EmptyState(
+                    icon: "folder",
+                    title: "No project activity",
+                    message: "Recently touched projects will appear here"
+                )
+                .frame(height: 120)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(projectGroups.prefix(5).enumerated()), id: \.element.id) { index, group in
+                        ChangedRepoRow(
+                            group: group,
+                            onOpen: {
+                                if let session = group.sessions.first {
+                                    open(session)
+                                }
+                            }
+                        )
+                        .accessibilityIdentifier("home_changedRepo_\(index)")
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("home_changedRepos")
+    }
+
+    private var serviceStateSection: some View {
+        WorkbenchPanel(icon: "checkmark.shield", title: "Service State") {
+            VStack(spacing: 10) {
+                ServiceStateRow(
+                    icon: serviceStatusStore.isRunning ? "checkmark.circle.fill" : "xmark.octagon.fill",
+                    title: "Indexer",
+                    value: serviceStatusStore.displayString,
+                    tint: serviceStatusStore.isRunning ? Theme.green : Theme.red
+                )
+                ServiceStateRow(
+                    icon: "calendar",
+                    title: "Today indexed",
+                    value: "\(serviceStatusStore.todayParentSessions) parent sessions",
+                    tint: Theme.accent
+                )
+                ServiceStateRow(
+                    icon: "network",
+                    title: "Web UI",
+                    value: webEndpointLabel,
+                    tint: serviceStatusStore.endpointPort == nil ? Theme.orange : Theme.green
+                )
+                ServiceStateRow(
+                    icon: "brain",
+                    title: "Embeddings",
+                    value: serviceStatusStore.embeddingStatus ?? "Check Advanced diagnostics",
+                    tint: serviceStatusStore.embeddingStatus == "unavailable" ? Theme.orange : Theme.secondaryText
+                )
+            }
+        }
+        .accessibilityIdentifier("home_serviceState")
+    }
+
+    private var serviceStateValue: String {
+        serviceStatusStore.isRunning ? "Running" : "Check"
+    }
+
+    private var webEndpointLabel: String {
+        guard let port = serviceStatusStore.endpointPort else {
+            return "Unavailable"
+        }
+        return "\(serviceStatusStore.endpointHost ?? "127.0.0.1"):\(port)"
+    }
 
     private func loadData() async {
         isLoading = true
@@ -194,35 +240,233 @@ struct HomeView: View {
         do {
             let data = try await Task.detached {
                 let kpi = try db.kpiStats()
-                let dailySource = try db.dailySourceActivity(days: 30)
-                let hourly = try db.hourlyActivity()
-                let source = try db.sourceDistribution()
-                let tiers = try db.tierDistribution()
                 let recent = try db.recentSessions(limit: 8)
-                let parentIds = recent.map(\.id)
-                let confirmed = try db.childCount(parentIds: parentIds)
-                let suggested = try db.suggestedChildCount(parentIds: parentIds)
-                return (kpi, dailySource, hourly, source, tiers, recent, confirmed, suggested)
+                let followUps = try loadTodayFollowUps(from: db, limit: 8)
+                let projects = try db.listSessionsByProject(limit: 5)
+                let countIds = Array(Set((recent + followUps).map(\.id)))
+                let confirmed = try db.childCount(parentIds: countIds)
+                let suggested = try db.suggestedChildCount(parentIds: countIds)
+                return (kpi, recent, followUps, projects, confirmed, suggested)
             }.value
             kpi = data.0
-            dailySourceActivity = data.1
-            hourlyActivity = data.2
-            sourceDist = data.3
-            tiers = data.4
-            recentSessions = data.5
-            confirmedCounts = data.6
-            suggestedCounts = data.7
+            recentSessions = data.1
+            followUpSessions = data.2
+            projectGroups = data.3
+            confirmedCounts = data.4
+            suggestedCounts = data.5
             alertMessage = nil
         } catch {
             EngramLogger.error("HomeView load failed", module: .ui, error: error)
-            // UI-M1: surface the failure to the user instead of only logging.
-            alertMessage = "Failed to load dashboard: \(error.localizedDescription)"
+            alertMessage = "Failed to load Today: \(error.localizedDescription)"
         }
+    }
+
+    private func open(_ session: Session) {
+        NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+    }
+
+    private func childBadge(for session: Session) -> String? {
+        if let confirmed = confirmedCounts[session.id], confirmed > 0 {
+            return "\(confirmed) agents"
+        }
+        if let suggested = suggestedCounts[session.id], suggested > 0 {
+            return "\(suggested) suggested"
+        }
+        return nil
+    }
+
+    private func projectLabel(_ project: String) -> String {
+        project.split(separator: "/").last.map(String.init) ?? project
+    }
+
+    private func compactPath(_ path: String) -> String {
+        path.split(separator: "/").suffix(2).joined(separator: "/")
     }
 
     private func formatNumber(_ n: Int) -> String {
         if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
         if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
         return "\(n)"
+    }
+}
+
+private struct WorkbenchPanel<Content: View>: View {
+    let icon: String
+    let title: String
+    var badge: String? = nil
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(icon: icon, title: title, badge: badge)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct TodaySessionRow: View {
+    let session: Session
+    let detail: String
+    let countBadge: String?
+    let onOpen: () -> Void
+    let onResume: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            SourcePill(source: session.source)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(session.displayTitle)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .foregroundStyle(Theme.primaryText)
+                HStack(spacing: 6) {
+                    Text(detail)
+                    Text(relativeTime(session.startTime))
+                    if let countBadge {
+                        Text(countBadge)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Theme.surfaceHighlight)
+                            .clipShape(Capsule())
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(Theme.tertiaryText)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(action: onOpen) {
+                Image(systemName: "text.page")
+            }
+            .buttonStyle(.borderless)
+            .help("Open transcript")
+            Button(action: onResume) {
+                Image(systemName: "play.fill")
+            }
+            .buttonStyle(.borderless)
+            .help("Resume session")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func relativeTime(_ iso: String) -> String {
+        guard let date = todayISOFormatter.date(from: iso) else {
+            return ""
+        }
+        let seconds = Int(-date.timeIntervalSinceNow)
+        if seconds < 60 { return "now" }
+        if seconds < 3600 { return "\(seconds / 60)m ago" }
+        if seconds < 86400 { return "\(seconds / 3600)h ago" }
+        return "\(seconds / 86400)d ago"
+    }
+}
+
+private struct ChangedRepoRow: View {
+    let group: DatabaseManager.ProjectGroup
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 10) {
+                Image(systemName: "folder")
+                    .foregroundStyle(Theme.tertiaryText)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(projectLabel(group.project))
+                        .font(.callout)
+                        .lineLimit(1)
+                        .foregroundStyle(Theme.primaryText)
+                    Text("\(group.sessionCount) recent transcripts · \(String(group.lastActive.prefix(10)))")
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText.opacity(0.5))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Theme.surface)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func projectLabel(_ project: String) -> String {
+        project.split(separator: "/").last.map(String.init) ?? project
+    }
+}
+
+private func loadTodayFollowUps(from db: DatabaseManager, limit: Int) throws -> [Session] {
+    let queries = ["follow-up", "followup", "deferred", "todo", "review", "remaining", "延后", "跟进"]
+    var seen = Set<String>()
+    var matches: [Session] = []
+    for query in queries {
+        let results = try db.searchWithSnippets(query: query, limit: limit)
+        for result in results where seen.insert(result.session.id).inserted {
+            matches.append(result.session)
+            if matches.count >= limit {
+                return matches
+            }
+        }
+    }
+    return matches
+}
+
+private struct ServiceStateRow: View {
+    let icon: String
+    let title: String
+    let value: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+                .frame(width: 18)
+            Text(title)
+                .font(.callout)
+                .foregroundStyle(Theme.primaryText)
+            Spacer()
+            Text(value)
+                .font(.caption)
+                .lineLimit(1)
+                .foregroundStyle(Theme.secondaryText)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct ServiceStatusPill: View {
+    let isRunning: Bool
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(isRunning ? Theme.green : Theme.orange)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .font(.caption)
+                .lineLimit(1)
+                .foregroundStyle(Theme.secondaryText)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

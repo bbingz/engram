@@ -7,6 +7,43 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Today Workbench UI first pass (2026-06-01, Codex)
+
+Implemented the approved Today Workbench + Advanced noise-reduction direction
+in the macOS app instead of only recording the spec.
+
+- **Default screen is Today**: the existing `home` route now presents as
+  `Today` in the sidebar and remains the app launch target.
+- **Today Workbench shipped**: `HomeView` now focuses on Continue, Follow-ups,
+  Changed Repos, and Service State. Continue and Follow-up rows expose
+  open-transcript and resume actions; resume reuses the hardened
+  `ResumeDialog` / `TerminalLauncher` path.
+- **Follow-up/deferred home added**: Today derives follow-up candidates from
+  indexed markers such as `follow-up`, `followup`, `deferred`, `todo`,
+  `review`, `remaining`, `延后`, and `跟进`, deduplicated by session id.
+- **Search advanced filters quieted**: `SearchPageView` keeps the query and
+  mode selector visible, while project/source/time filters now live behind one
+  `Advanced filters` disclosure.
+- **README reality aligned**: macOS App docs now describe Today Workbench and
+  collapsed Advanced filters, and transcript pagination docs now state the raw
+  adapter-offset behavior.
+
+Verified with:
+- `git diff --check`
+- `xcodebuild build -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug -derivedDataPath macos/build/DerivedData
+  -only-testing:EngramTests/ViewMainThreadReadTests
+  -only-testing:EngramTests/AppSearchServiceCutoverScanTests
+  CODE_SIGNING_ALLOWED=NO`
+
+UI smoke note: selected `EngramUITests` did not establish an XCTest connection
+and failed before app assertions with `EngramUITests-Runner ... Early
+unexpected exit`; the failing result bundle is
+`macos/build/DerivedData/Logs/Test/Test-Engram-2026.06.01_10-43-57-+0800.xcresult`.
+
 ### Copilot hardening triage + Today Workbench spec (2026-06-01, Codex)
 
 Recorded the Copilot multi-expert review and closed the two Critical security

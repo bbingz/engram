@@ -1,7 +1,7 @@
 # Today Workbench + Advanced Noise Reduction
 
 Date: 2026-06-01
-Status: approved direction, ready for implementation planning
+Status: first UI pass implemented in macOS app
 
 ## Goal
 
@@ -103,6 +103,24 @@ duplicated visible pages.
 - Project migration mutators cannot direct-write when the Swift service is down.
 - The remaining Copilot Important items are represented as follow-up tasks, not
   lost in chat.
+
+## Implementation Notes
+
+First UI pass landed on 2026-06-01:
+
+- `Screen.home` now presents as `Today` in the sidebar and remains the default
+  launch screen.
+- `HomeView` now renders Continue, Follow-ups, Changed Repos, and Service State
+  sections. Continue rows expose open-transcript and resume actions; resume uses
+  the existing hardened `ResumeDialog` / `TerminalLauncher` path.
+- Follow-ups are derived from indexed transcript search markers including
+  `follow-up`, `followup`, `deferred`, `todo`, `review`, `remaining`, `延后`,
+  and `跟进`, deduplicated by session id.
+- `SearchPageView` keeps the search box and mode selector first, with
+  project/source/time filters collapsed under one `Advanced filters`
+  disclosure.
+- Home UI tests now assert the Today Workbench sections instead of the previous
+  chart-heavy dashboard.
 
 ## Non-Goals For First Pass
 
