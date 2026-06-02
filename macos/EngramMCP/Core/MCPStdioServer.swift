@@ -6,7 +6,13 @@ final class MCPStdioServer {
         "2024-11-05",
         "2025-03-26",
         "2025-06-18",
+        "2025-11-25",
     ]
+    // Latest protocol version this build speaks. Date-stamped MCP versions
+    // sort chronologically as strings, so `max()` is the newest. Used to
+    // negotiate down when a client requests a version we don't recognize.
+    private static let latestSupportedProtocolVersion =
+        supportedProtocolVersions.max() ?? "2025-11-25"
     private static let instructions = """
     Engram is a cross-tool AI session aggregator. Key tools:
     - search: Full-text keyword search across all AI coding sessions (17 sources)
@@ -47,19 +53,23 @@ final class MCPStdioServer {
     private func handle(_ request: JSONRPCRequest) async {
         switch request.method {
         case "initialize":
-            guard let protocolVersion = request.params?["protocolVersion"]?.stringValue else {
+            guard let requestedVersion = request.params?["protocolVersion"]?.stringValue else {
                 emitError(id: request.id, code: -32602, message: "Missing protocolVersion")
                 return
             }
-            guard Self.supportedProtocolVersions.contains(protocolVersion) else {
-                emitError(id: request.id, code: -32602, message: "Unsupported protocolVersion: \(protocolVersion)")
-                return
-            }
+            // Per the MCP spec, the server echoes the requested version when it
+            // supports it, otherwise responds with a version it does support
+            // (the latest). Hard-erroring on an unknown version broke every
+            // connection whenever a client adopted a newer protocol version
+            // than this build knew about (e.g. Claude Code's 2025-11-25).
+            let negotiatedVersion = Self.supportedProtocolVersions.contains(requestedVersion)
+                ? requestedVersion
+                : Self.latestSupportedProtocolVersion
             emit(
                 jsonrpc: "2.0",
                 id: request.id,
                 result: .object([
-                    ("protocolVersion", .string(protocolVersion)),
+                    ("protocolVersion", .string(negotiatedVersion)),
                     ("capabilities", .object([
                         ("tools", .object([])),
                     ])),

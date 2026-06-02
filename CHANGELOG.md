@@ -7,6 +7,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### EngramMCP protocol-version negotiation fix (2026-06-02, Claude)
+
+- Root cause of the "engram MCP failed to connect" report: Claude Code 2.1.160
+  sends `protocolVersion: "2025-11-25"` in `initialize`, but
+  `MCPStdioServer.supportedProtocolVersions` only listed
+  `2024-11-05 / 2025-03-26 / 2025-06-18` and hard-rejected anything else with
+  `-32602 Unsupported protocolVersion`, so every connect failed. (Not a Codex
+  regression — Claude Code bumped its MCP protocol version.)
+- Fix (`macos/EngramMCP/Core/MCPStdioServer.swift`): added `2025-11-25` to the
+  supported set AND, per the MCP spec, replaced the hard error with graceful
+  negotiation — an unknown/newer requested version now responds with the
+  latest version the server speaks instead of failing. Prevents this class of
+  outage on future client protocol bumps.
+- Tests (`macos/EngramMCPTests/EngramMCPExecutableTests.swift`): replaced
+  `testInitializeRejectsUnsupportedProtocolVersion` with
+  `testInitializeAcceptsCurrentClaudeCodeProtocolVersion` (2025-11-25 echoed)
+  and `testInitializeNegotiatesUnknownProtocolVersionToLatest` (future version
+  negotiated down). Full `EngramMCPTests` suite green (55/55).
+- Deploy: rebuilt Release with Developer ID signing + build `735`
+  (commit-count), `rm -rf` + `cp -R` to `/Applications/Engram.app`. Verified
+  `codesign --verify --deep --strict`, Developer ID authority on app + helper,
+  and `claude mcp list` now reports engram `✓ Connected`. Source files are
+  modified but NOT committed (left for review/commit).
+
 ### CI gate repair (2026-06-01, Codex)
 
 - Fixed the `dead-code` job by removing stale exported TypeScript symbols left

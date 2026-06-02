@@ -135,16 +135,33 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(capture.ordered["result"]?["serverInfo"]?["name"]?.stringValue, "engram")
     }
 
-    func testInitializeRejectsUnsupportedProtocolVersion() throws {
+    func testInitializeAcceptsCurrentClaudeCodeProtocolVersion() throws {
+        // Regression: Claude Code 2.1.x sends 2025-11-25. The server must echo
+        // it back, not reject it with -32602 ("Failed to connect").
         let capture = try rpc(
             """
-            {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1900-01-01","capabilities":{},"clientInfo":{"name":"XCTest","version":"1.0"}}}
+            {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"XCTest","version":"1.0"}}}
             """
         )
 
-        XCTAssertEqual(capture.response.error?.code, -32602)
-        XCTAssertEqual(capture.response.error?.message, "Unsupported protocolVersion: 1900-01-01")
-        XCTAssertNil(capture.response.result)
+        XCTAssertEqual(capture.response.error?.code, nil)
+        XCTAssertEqual(capture.ordered["result"]?["protocolVersion"]?.stringValue, "2025-11-25")
+        XCTAssertEqual(capture.ordered["result"]?["serverInfo"]?["name"]?.stringValue, "engram")
+    }
+
+    func testInitializeNegotiatesUnknownProtocolVersionToLatest() throws {
+        // Per the MCP spec, an unknown (e.g. newer-than-this-build) version is
+        // negotiated down to the latest version the server speaks instead of
+        // erroring — so future client protocol bumps degrade gracefully.
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2999-01-01","capabilities":{},"clientInfo":{"name":"XCTest","version":"1.0"}}}
+            """
+        )
+
+        XCTAssertEqual(capture.response.error?.code, nil)
+        XCTAssertEqual(capture.ordered["result"]?["protocolVersion"]?.stringValue, "2025-11-25")
+        XCTAssertNotNil(capture.response.result)
     }
 
     func testStatsMatchesGolden() throws {
