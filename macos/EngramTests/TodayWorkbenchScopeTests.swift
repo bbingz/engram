@@ -209,6 +209,18 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         XCTAssertEqual(SessionDetailView.initialTranscriptLimit(messageCount: 50_000), 500)
     }
 
+    func testNextNavPositionClampsStaleIndex() {
+        // A stale position (50) carried into a 10-match set must not index past the
+        // end — the `direction < 0` branch used to trap (matching[49] on 10 items).
+        XCTAssertEqual(SessionDetailView.nextNavPosition(current: 50, direction: -1, count: 10), 8)
+        XCTAssertEqual(SessionDetailView.nextNavPosition(current: 50, direction: 1, count: 10), 0)
+        // Normal wrap-around from the initial -1.
+        XCTAssertEqual(SessionDetailView.nextNavPosition(current: -1, direction: 1, count: 10), 0)
+        XCTAssertEqual(SessionDetailView.nextNavPosition(current: -1, direction: -1, count: 10), 9)
+        // No matches → no navigation.
+        XCTAssertNil(SessionDetailView.nextNavPosition(current: 0, direction: 1, count: 0))
+    }
+
     func testHasMoreAfterLoadReflectsFilledPage() {
         // A full (limit == nil) load is always complete.
         XCTAssertFalse(SessionDetailView.hasMoreAfterLoad(returnedCount: 4, requestedLimit: nil))

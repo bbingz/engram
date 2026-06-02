@@ -7,6 +7,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Transcript paging — ultrareview round 2 fixes (2026-06-03, Claude)
+
+Second cloud ultrareview of PR #34 (5 findings):
+
+- **Chip Prev crash (real)**: switching from a long session to a shorter one left
+  `navPositions` (and other transcript-derived state) stale; clicking a chip's Prev
+  then indexed past the new match set and trapped. The `.task(id: session.id)` reset
+  now also clears `navPositions`/`displayIndexed`/`matchIndices`/`currentMatchIndex`/
+  `searchText`/`scrollTarget`, and the index math moved to a pure, clamped
+  `nextNavPosition(current:direction:count:)` (unit-tested) so a stale position can
+  never trap.
+- **Dead-end empty state**: a huge session whose first page is entirely tool messages
+  loads zero displayable rows but has more — the "No Messages"/"Filtered Out" states
+  now show the Load more / Load all footer, so the rest is still reachable.
+- **Rebuild clobber race**: `rebuildIndexed` snapshotted filter/search state then
+  wrote back after the off-main build, clobbering a chip toggle or search edit made
+  during the build. It now publishes only `messages`-derived state (indexed + counts)
+  and recomputes display + matches from LIVE state; the match scan is a single
+  off-main path keyed on `displayVersion + searchText`, so it never runs on main and
+  never overwrites a concurrent edit.
+- **Copy while loading**: Copy no longer silently no-ops when a load is in flight —
+  it surfaces a transient "still loading" status.
+- **EOF reparse (nit)**: `parseWindowed` now trusts an empty adapter result (paging
+  past EOF) instead of falling through to a full-file legacy reparse; legacy is only
+  the fallback on adapter error.
+
+Full EngramTests 290 green (0 failures, 1 pre-existing skip).
+
 ### Transcript paging — ultrareview fixes (2026-06-03, Claude)
 
 Addressed the cloud ultrareview of PR #34 (7 findings):

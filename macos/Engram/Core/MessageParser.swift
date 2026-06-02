@@ -88,17 +88,22 @@ struct MessageParser {
         limit: Int?
     ) -> (messages: [ChatMessage], producedCount: Int) {
         if let sourceName = SourceName(rawValue: source),
-           let adapter = uiAdapterRegistry().adapter(for: sourceName),
-           let result = blockingAdapterMessages(
-               adapter: adapter,
-               locator: filePath,
-               source: source,
-               options: StreamMessagesOptions(offset: offset, limit: limit)
-           ),
-           !result.messages.isEmpty || result.producedCount > 0 {
-            return result
+           let adapter = uiAdapterRegistry().adapter(for: sourceName) {
+            // Trust the adapter on success, INCLUDING a legitimately empty window
+            // (paging past EOF, or a window that is entirely tool messages). Only a
+            // nil result — adapter error / no stream — falls back to the legacy
+            // parser, which has no offset/limit support and would re-read the whole
+            // file just to discard it.
+            if let result = blockingAdapterMessages(
+                adapter: adapter,
+                locator: filePath,
+                source: source,
+                options: StreamMessagesOptions(offset: offset, limit: limit)
+            ) {
+                return result
+            }
         }
-        // No adapter, or the adapter produced nothing: legacy parsers emit
+        // No adapter for the source, or the adapter errored: legacy parsers emit
         // displayable messages directly, so produced == displayable here.
         let windowed = applyWindow(parseLegacy(filePath: filePath, source: source), offset: offset, limit: limit)
         return (windowed, windowed.count)
