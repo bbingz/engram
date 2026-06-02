@@ -127,10 +127,13 @@ final class IflowAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
-        if let failure { throw failure }
-        let messages = objects.compactMap(Self.message(from:))
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        let messages = try JSONLAdapterSupport.windowedMessages(
+            locator: locator,
+            options: options,
+            limits: limits,
+            transform: Self.message(from:)
+        )
+        return JSONLAdapterSupport.stream(messages)
     }
 
     func isAccessible(locator: String) async -> Bool {

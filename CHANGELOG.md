@@ -7,6 +7,50 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Web UI pager: O(N²) → O(N) via shared lazy-streaming window (2026-06-02, Claude)
+
+Closes the first of the two deferred perf items from the review cleanup round.
+
+The Web UI transcript pager re-parsed the whole transcript on every page: each
+line-based adapter's `streamMessages` read + parsed ALL JSONL lines via
+`readObjects` before applying the offset/limit window, so paging cost
+O(pages · file) ≈ O(N²). Only `CodexAdapter` had a bespoke early-terminating
+`readWindow`.
+
+Centralized that fast path into `JSONLAdapterSupport.windowedMessages(...,
+transform:)`: when `limit` is set it streams line by line, skips `offset`
+PRODUCED messages (post-transform, nils excluded — matching `applyWindow`),
+collects `limit`, then STOPS reading — so a paged read costs O(offset + limit)
+parsed lines, not O(file). When `limit` is nil it falls back to `readObjects` +
+`applyWindow`, byte-identical to the old whole-transcript behavior.
+
+The indexer (`SwiftIndexer`/`IndexJobRunner`), transcript export, and MCP
+transcript reader all pass `limit: nil`, so they keep the exact prior behavior —
+indexing and adapter parity are unchanged, no re-index required.
+
+In scope (now route through the shared helper): claude-code (+ minimax/lobsterai
+via `ClaudeCodeDerivedSourceAdapter` delegation), qwen, iflow, qoder, commandcode,
+copilot, antigravity (CLI-transcript branch only), and codex (its bespoke
+`readWindow` collapsed into the shared helper, removing the duplicate).
+
+Intentionally NOT changed (documented, not silently skipped): kimi (multi-file
+read with cross-line turn-index/timestamp state — not a pure per-line map),
+vscode (one whole-session object, not a per-line stream), gemini & cline
+(whole-file JSON — no per-line boundary to early-terminate), cursor & opencode
+(SQLite — a future SQL LIMIT/OFFSET push-down, not line streaming). These still
+parse per page but are bounded by their format, not by re-reading a growing
+JSONL tail.
+
+Tests: shared-helper unit tests for produced-message windowing/parity and
+physical early-termination (an oversized line past the window trips
+`.lineTooLarge` on a full read, but a windowed read that ends before it
+succeeds — proving the reader stops at the window boundary); a claude-code
+end-to-end test that pages past a message cap a full read would trip. Existing
+Codex window tests guard the collapse. Green: EngramTests (AdapterParity 24,
+MessageParser 20), EngramCoreTests 341, EngramServiceCore 108, EngramMCPTests 58.
+
+Branch `perf/jsonl-lazy-streaming` (ultrareview pending).
+
 ### Review cleanup round — adjudication + residual fixes (2026-06-02, Claude)
 
 Re-verified every finding in `CODE-REVIEW-2026-06-02.md` against CURRENT code

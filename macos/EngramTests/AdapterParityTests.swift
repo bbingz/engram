@@ -607,6 +607,107 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(reader.failures, [.lineTooLarge])
     }
 
+    // MARK: - Windowed lazy streaming (perf/jsonl-lazy-streaming)
+
+    private func writeLines(_ lines: [String], named name: String) throws -> (root: URL, path: String) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("windowed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let locator = root.appendingPathComponent(name)
+        try lines.joined(separator: "\n").write(to: locator, atomically: true, encoding: .utf8)
+        return (root, locator.path)
+    }
+
+    /// offset/limit count PRODUCED messages (post-transform, nils skipped), exactly
+    /// like `applyWindow` — not physical lines. A transform that drops odd lines
+    /// must still window over the kept ones.
+    func testWindowedMessagesCountsProducedMessagesNotPhysicalLines() throws {
+        let lines = (0..<24).map { "{\"i\":\($0),\"keep\":\($0 % 2 == 0)}" }
+        let (root, path) = try writeLines(lines, named: "produced.jsonl")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let transform: ([String: Any]) -> NormalizedMessage? = { object in
+            guard (object["keep"] as? Bool) == true, let i = object["i"] as? Int else { return nil }
+            return NormalizedMessage(role: .user, content: "m\(i)")
+        }
+        // Kept lines are i = 0,2,4,...; window [produced 3, produced 5) => i=6, i=8.
+        let window = try JSONLAdapterSupport.windowedMessages(
+            locator: path,
+            options: StreamMessagesOptions(offset: 3, limit: 2),
+            limits: .default,
+            transform: transform
+        )
+        XCTAssertEqual(window.map(\.content), ["m6", "m8"])
+
+        // Parity: the windowed slice equals applyWindow over a full read.
+        let full = try JSONLAdapterSupport.windowedMessages(
+            locator: path, options: StreamMessagesOptions(), limits: .default, transform: transform
+        )
+        XCTAssertEqual(full.map(\.content), (0..<24).filter { $0 % 2 == 0 }.map { "m\($0)" })
+    }
+
+    /// The windowed read must STOP at the window boundary, not scan the whole
+    /// file: an oversized line past the window trips `.lineTooLarge` on a full
+    /// read, but a windowed read that ends before it must succeed.
+    func testWindowedMessagesStopsReadingAtWindowEnd() throws {
+        var lines = (0..<6).map { "{\"i\":\($0)}" }
+        lines.append("{\"i\":6,\"x\":\"\(String(repeating: "z", count: 200))\"}")
+        let (root, path) = try writeLines(lines, named: "earlystop.jsonl")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let transform: ([String: Any]) -> NormalizedMessage? = { object in
+            (object["i"] as? Int).map { NormalizedMessage(role: .user, content: "m\($0)") }
+        }
+        let limits = ParserLimits(maxLineBytes: 64)
+
+        let window = try JSONLAdapterSupport.windowedMessages(
+            locator: path,
+            options: StreamMessagesOptions(offset: 0, limit: 3),
+            limits: limits,
+            transform: transform
+        )
+        XCTAssertEqual(window.map(\.content), ["m0", "m1", "m2"])
+
+        XCTAssertThrowsError(
+            try JSONLAdapterSupport.windowedMessages(
+                locator: path, options: StreamMessagesOptions(), limits: limits, transform: transform
+            )
+        ) { error in
+            XCTAssertEqual(error as? ParserFailure, .lineTooLarge)
+        }
+    }
+
+    /// End-to-end through a real (non-Codex) adapter: a windowed page returns its
+    /// slice even when a full read would trip the message cap — proving the
+    /// shared early-termination path is wired into the line-based adapters.
+    func testClaudeCodeStreamMessagesWindowsBeforeMessageCap() async throws {
+        let lines = (0..<12).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"type\":\"\(role)\",\"message\":{\"content\":\"m\(index)\"}}"
+        }
+        let (root, path) = try writeLines(lines, named: "session.jsonl")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let adapter = ClaudeCodeAdapter(limits: ParserLimits(maxMessages: 10))
+        var windowed: [String] = []
+        for try await message in try await adapter.streamMessages(
+            locator: path, options: StreamMessagesOptions(offset: 9, limit: 2)
+        ) {
+            windowed.append(message.content)
+        }
+        XCTAssertEqual(windowed, ["m9", "m10"])
+
+        // A full read of the same file overflows the cap, so the windowed success
+        // above is meaningful (it stopped before reaching the overflow).
+        do {
+            let stream = try await adapter.streamMessages(locator: path, options: StreamMessagesOptions())
+            for try await _ in stream {}
+            XCTFail("full read should trip the message cap")
+        } catch {
+            XCTAssertEqual(error as? ParserFailure, .messageLimitExceeded)
+        }
+    }
+
     func testAdapterParityHarnessComparesStage2Phase3Phase4AndPhase5Sources() async throws {
         let testFixtureRoot = FileManager.default.temporaryDirectory
             .resolvingSymlinksInPath()

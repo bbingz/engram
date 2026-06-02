@@ -128,6 +128,59 @@ enum JSONLAdapterSupport {
         return Array(suffix.prefix(max(limit, 0)))
     }
 
+    /// Window a per-line JSONL transcript with offset/limit, mapping each line
+    /// through `transform`.
+    ///
+    /// When `options.limit` is set, this reads line by line and STOPS as soon as
+    /// it has skipped `offset` produced messages and collected `limit` of them —
+    /// so a paged read costs O(offset + limit) parsed lines, not O(file). This is
+    /// what makes the Web UI pager O(N) per page instead of O(N) re-parses per
+    /// page (O(N²) overall). When `limit` is nil (whole-transcript request) it
+    /// falls back to `readObjects` (preserving the message-cap and during-parse
+    /// file-identity failure semantics) and windows in memory.
+    ///
+    /// `offset`/`limit` count PRODUCED messages (post-`transform`, nils skipped),
+    /// matching `applyWindow` exactly. `transform` must be a pure per-line mapping
+    /// with no cross-line state; adapters that carry state across lines (Kimi) or
+    /// parse the whole document at once (VS Code / Gemini / Cline / SQLite) must
+    /// not use this helper.
+    static func windowedMessages(
+        locator: String,
+        options: StreamMessagesOptions,
+        limits: ParserLimits,
+        transform: (JSONObject) -> NormalizedMessage?
+    ) throws -> [NormalizedMessage] {
+        guard let limit = options.limit else {
+            let (objects, failure) = try readObjects(locator: locator, limits: limits)
+            if let failure { throw failure }
+            return applyWindow(objects.compactMap(transform), options: options)
+        }
+
+        let cappedLimit = max(limit, 0)
+        guard cappedLimit > 0 else { return [] }
+        let offset = max(options.offset ?? 0, 0)
+
+        return try autoreleasepool {
+            let (url, _) = try prepareFile(locator: locator, limits: limits)
+            let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
+            var skipped = 0
+            var messages: [NormalizedMessage] = []
+
+            for line in try reader.readLines() {
+                guard let object = parseObject(line), let message = transform(object) else { continue }
+                if skipped < offset {
+                    skipped += 1
+                    continue
+                }
+                messages.append(message)
+                if messages.count >= cappedLimit { break }
+            }
+
+            if let failure = reader.failures.first { throw failure }
+            return messages
+        }
+    }
+
     static func usage(from rawUsage: JSONObject?) -> TokenUsage? {
         guard let rawUsage else { return nil }
         return TokenUsage(
@@ -272,14 +325,13 @@ final class CodexAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        if options.limit != nil {
-            return try JSONLAdapterSupport.stream(Self.readWindow(locator: locator, options: options, limits: limits))
-        }
-
-        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
-        if let failure { throw failure }
-        let messages = objects.compactMap(Self.message(from:))
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        let messages = try JSONLAdapterSupport.windowedMessages(
+            locator: locator,
+            options: options,
+            limits: limits,
+            transform: Self.message(from:)
+        )
+        return JSONLAdapterSupport.stream(messages)
     }
 
     func isAccessible(locator: String) async -> Bool {
@@ -292,43 +344,6 @@ final class CodexAdapter: SessionAdapter, Sendable {
             root,
             root.deletingLastPathComponent().appendingPathComponent("archived_sessions", isDirectory: true)
         ]
-    }
-
-    private static func readWindow(
-        locator: String,
-        options: StreamMessagesOptions,
-        limits: ParserLimits
-    ) throws -> [NormalizedMessage] {
-        let limit = max(options.limit ?? 0, 0)
-        guard limit > 0 else { return [] }
-
-        let offset = max(options.offset ?? 0, 0)
-        let (url, _) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
-        let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
-        var skipped = 0
-        var messages: [NormalizedMessage] = []
-
-        for line in try reader.readLines() {
-            guard let object = JSONLAdapterSupport.parseObject(line),
-                  let message = Self.message(from: object)
-            else {
-                continue
-            }
-            if skipped < offset {
-                skipped += 1
-                continue
-            }
-            messages.append(message)
-            if messages.count >= limit {
-                break
-            }
-        }
-
-        if let failure = reader.failures.first {
-            throw failure
-        }
-
-        return messages
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
