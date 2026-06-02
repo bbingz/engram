@@ -279,6 +279,57 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(paged.map(\.1), whole.map(\.1))
     }
 
+    /// `parseWindowed` reports a PRODUCED count that includes filtered (tool)
+    /// messages, so the detail-view pager advances its offset in produced-message
+    /// space. Paging by the displayable count instead (the pre-fix behaviour)
+    /// drifts at the seam and can falsely conclude "no more" when tool messages
+    /// thin the page. with-tools.jsonl: [user, assistant(tool_use), tool_result,
+    /// assistant(text), user] — the tool_result is produced but filtered out.
+    func testParseWindowedReportsProducedCountIncludingFilteredToolMessages() throws {
+        // Codex emits .tool messages for function_call / function_call_output; the
+        // UI parser filters them out, so PRODUCED > displayable. The pager must
+        // advance its offset in produced space (this test's contract) — using the
+        // displayable count would drift at the seam and could falsely truncate.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pagewindow-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("rollout-pagewindow.jsonl").path
+        let lines = [
+            #"{"timestamp":"2026-05-20T00:00:00.000Z","type":"session_meta","payload":{"id":"pagewindow","timestamp":"2026-05-20T00:00:00.000Z","cwd":"/repo"}}"#,
+            #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"u0"}]}}"#,
+            #"{"type":"response_item","payload":{"type":"function_call","name":"bash","arguments":"ls"}}"#,
+            #"{"type":"response_item","payload":{"type":"function_call_output","output":"file1"}}"#,
+            #"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a0"}]}}"#,
+            #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"u1"}]}}"#,
+            #"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]}}"#
+        ]
+        try lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let full = MessageParser.parse(filePath: path, source: "codex")
+        XCTAssertEqual(full.map(\.content), ["u0", "a0", "u1", "a1"])
+
+        // First 3 PRODUCED messages: user, function_call, function_call_output —
+        // only the user survives filtering, so produced (3) > displayable (1).
+        let page1 = MessageParser.parseWindowed(filePath: path, source: "codex", offset: 0, limit: 3)
+        XCTAssertEqual(page1.producedCount, 3)
+        XCTAssertLessThan(page1.messages.count, page1.producedCount)
+        XCTAssertEqual(page1.messages.map(\.content), ["u0"])
+
+        // Page through in produced-space windows of 2, advancing by producedCount.
+        // The union must reconstruct the full transcript with no seam gap/dup —
+        // the property that breaks if the pager advances by the displayable count.
+        var collected: [ChatMessage] = []
+        var producedOffset = 0
+        while true {
+            let page = MessageParser.parseWindowed(filePath: path, source: "codex", offset: producedOffset, limit: 2)
+            collected += page.messages
+            producedOffset += page.producedCount
+            if page.producedCount < 2 { break }
+        }
+        XCTAssertEqual(collected.map(\.content), full.map(\.content))
+    }
+
     /// 13. Unknown source returns empty array
     func testUnknownSourceReturnsEmpty() throws {
         let path = try fixturePath("valid.jsonl")

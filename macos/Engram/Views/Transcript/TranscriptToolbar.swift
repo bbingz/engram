@@ -15,6 +15,10 @@ struct TranscriptToolbar: View {
     let typeCounts: [MessageType: Int]
     let typeVisibility: [MessageType: Bool]
     let navPositions: [MessageType: Int]
+    // When the transcript is only partially loaded, chip counts and chip Prev/Next
+    // reflect just the loaded prefix; the chips render "N+" so they don't read as
+    // authoritative session totals.
+    var partiallyLoaded: Bool = false
 
     let onToggleFavorite: () -> Void
     let onCopyAll: () -> Void
@@ -186,6 +190,7 @@ struct TranscriptToolbar: View {
                             type: type,
                             currentIndex: navPositions[type] ?? -1,
                             totalCount: typeCounts[type] ?? 0,
+                            partiallyLoaded: partiallyLoaded,
                             isVisible: typeVisibility[type] ?? true,
                             onToggle: { onToggleType(type) },
                             onPrev: { onNavPrev(type) },

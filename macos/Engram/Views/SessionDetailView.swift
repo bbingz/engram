@@ -58,10 +58,13 @@ struct SessionDetailView: View {
     @State private var displayIndexed: [IndexedMessage] = []
     @State private var matchIndices: [Int] = []
 
-    // Transcript paging state. `loadLimit == nil` once the whole transcript is
-    // loaded; `hasMoreToLoad` gates the "Load more / Load all" footer.
+    // Transcript paging state. `hasMoreToLoad` gates the "Load more / Load all"
+    // footer. `loadedProducedCount` is the next adapter offset in PRODUCED-message
+    // space (counts pre-filter messages, incl. tool rows the UI drops) so appended
+    // pages don't drift at the seam.
     @State private var hasMoreToLoad = false
     @State private var isLoadingMore = false
+    @State private var loadedProducedCount = 0
     @State private var transcriptLoadTask: Task<Void, Never>? = nil
 
     private static let defaultTypeVisibility: [MessageType: Bool] = Dictionary(
@@ -158,6 +161,7 @@ struct SessionDetailView: View {
                 typeCounts: typeCounts,
                 typeVisibility: typeVisibility,
                 navPositions: navPositions,
+                partiallyLoaded: hasMoreToLoad,
                 onToggleFavorite: {
                     Task {
                         let next = !isFavorite
@@ -209,22 +213,30 @@ struct SessionDetailView: View {
                     onNext: { navigateFind(direction: 1) }
                 )
                 .accessibilityIdentifier("detail_findBar")
-                if hasMoreToLoad && !searchText.isEmpty {
-                    HStack(spacing: 8) {
-                        Image(systemName: "info.circle").font(.caption2)
-                        Text("Search covers loaded messages only.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Button("Load all") { loadMoreMessages(all: true) }
-                            .font(.caption2)
-                            .buttonStyle(.plain)
-                            .foregroundStyle(Theme.accent)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-                    .accessibilityIdentifier("detail_findPartialHint")
+                Divider()
+            }
+
+            // Partial-load search disclosure. Search state (searchText, match
+            // highlights, ⌘G navigation) outlives the find bar — ⌘F and the toolbar
+            // Find button toggle the bar without clearing the query — so this hint
+            // lives OUTSIDE `if showFind`: whenever a search is active on a partially
+            // loaded transcript, matches can't silently confine to the loaded prefix
+            // without the user being told.
+            if hasMoreToLoad && !searchText.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle").font(.caption2)
+                    Text("Search covers loaded messages only.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Load all") { loadMoreMessages(all: true) }
+                        .font(.caption2)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.accent)
+                    Spacer()
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .accessibilityIdentifier("detail_findPartialHint")
                 Divider()
             }
 
@@ -387,6 +399,7 @@ struct SessionDetailView: View {
             typeVisibility = Self.defaultTypeVisibility
             hasMoreToLoad = false
             isLoadingMore = false
+            loadedProducedCount = 0
             transcriptLoadTask?.cancel()
             transcriptLoadTask = nil
             childrenSessions = []
@@ -402,6 +415,9 @@ struct SessionDetailView: View {
                 await MainActor.run { isFavorite = fav }
             }
             await loadInitialTranscript()
+            // The detached parse can outlive a session switch; don't let the
+            // trailing assignments stomp the next session's reset state.
+            if Task.isCancelled { return }
             isLoadingMessages = false
             loadParentInfo()
         }
@@ -416,7 +432,10 @@ struct SessionDetailView: View {
         .sheet(isPresented: $showResume) {
             ResumeDialog(session: session)
         }
-        .onDisappear { parentInfoTask?.cancel(); parentInfoTask = nil }
+        .onDisappear {
+            parentInfoTask?.cancel(); parentInfoTask = nil
+            transcriptLoadTask?.cancel(); transcriptLoadTask = nil
+        }
     }
 
     // MARK: - Parent/Child Helpers
@@ -658,6 +677,25 @@ struct SessionDetailView: View {
     }
 
     func copyAllTranscript() {
+        // "Copy" / "Copy Entire Conversation" / ⌘⌥C promise the whole transcript.
+        // If only a prefix is loaded, load the rest first so the clipboard never
+        // gets a silent partial copy.
+        guard hasMoreToLoad else {
+            copyLoadedTranscript()
+            return
+        }
+        guard !isLoadingMore else { return }
+        transcriptLoadTask?.cancel()
+        transcriptLoadTask = Task {
+            isLoadingMore = true
+            defer { isLoadingMore = false }
+            await appendMessages(all: true)
+            if Task.isCancelled { return }
+            copyLoadedTranscript()
+        }
+    }
+
+    private func copyLoadedTranscript() {
         let text = TranscriptText.conversationText(displayIndexed)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -677,25 +715,29 @@ struct SessionDetailView: View {
         return path
     }
 
-    /// Off-main parse of one message window. Touches no view state.
-    private func parseWindow(offset: Int, limit: Int?) async -> [ChatMessage] {
+    /// Off-main parse of one window. Returns the displayable messages plus the
+    /// PRODUCED count (pre-filter) so the caller can advance its offset without
+    /// seam drift. Touches no view state.
+    private func parseWindow(offset: Int, limit: Int?) async -> (messages: [ChatMessage], producedCount: Int) {
         let path = resolvedTranscriptPath()
         let source = session.source
         return await Task.detached(priority: .userInitiated) {
-            MessageParser.parse(filePath: path, source: source, offset: offset, limit: limit)
+            MessageParser.parseWindowed(filePath: path, source: source, offset: offset, limit: limit)
         }.value
     }
 
-    /// Re-derive indexed messages, type counts, and the filtered display set from
-    /// the currently-loaded `messages`. Classification runs off the main actor.
-    /// Rebuilding over the full loaded prefix keeps `typeIndex`/counts correct;
-    /// because loaded `ChatMessage`s keep their identity, an appended page diffs
-    /// cleanly in the list so the scroll position is preserved.
+    /// Re-derive indexed messages, type counts, the filtered display set, AND the
+    /// search match indices from the currently-loaded `messages` — all off the main
+    /// actor (the match scan is O(N · content) and must not run on main). Rebuilding
+    /// over the full loaded prefix keeps `typeIndex`/counts correct; because loaded
+    /// `ChatMessage`s keep their identity, an appended page diffs cleanly so the
+    /// scroll position is preserved.
     private func rebuildIndexed() async {
         let snapshot = messages
         let visibility = typeVisibility
         let showSystem = showSystemPrompts
         let showAgent = showAgentComm
+        let query = searchText.lowercased()
         let built = await Task.detached(priority: .userInitiated) {
             let result = IndexedMessage.build(from: snapshot)
             let display = result.messages.filter {
@@ -706,41 +748,53 @@ struct SessionDetailView: View {
                     showAgentComm: showAgent
                 )
             }
-            return (result.messages, result.counts, display)
+            let matches: [Int] = query.isEmpty ? [] : display.enumerated().compactMap { i, msg in
+                msg.message.content.lowercased().contains(query) ? i : nil
+            }
+            return (result.messages, result.counts, display, matches)
         }.value
+        // The detached build can outlive a session switch; don't clobber the reset.
+        if Task.isCancelled { return }
         indexedMessages = built.0
         typeCounts = built.1
         displayIndexed = built.2
-        updateMatchIndices()
+        matchIndices = built.3
     }
 
     /// First load for a session: the whole transcript for normal sessions, or a
     /// first page for large ones (`hasMoreToLoad` then drives the footer).
     private func loadInitialTranscript() async {
         let limit = Self.initialTranscriptLimit(messageCount: session.messageCount)
-        let parsed = await parseWindow(offset: 0, limit: limit)
+        let (parsed, produced) = await parseWindow(offset: 0, limit: limit)
         if Task.isCancelled { return }
         messages = parsed
-        hasMoreToLoad = Self.hasMoreAfterLoad(returnedCount: parsed.count, requestedLimit: limit)
+        loadedProducedCount = produced
+        hasMoreToLoad = Self.hasMoreAfterLoad(returnedCount: produced, requestedLimit: limit)
         await rebuildIndexed()
     }
 
     /// Append the next page — or, when `all`, the entire remainder — to the loaded
-    /// transcript. Parses from the current loaded count so earlier pages aren't
-    /// re-materialized, then rebuilds the indexed view over the full prefix.
+    /// transcript. Parses from `loadedProducedCount` (PRODUCED-message space) so
+    /// earlier pages aren't re-materialized and the seam doesn't drift, then
+    /// rebuilds the indexed view over the full prefix.
+    private func appendMessages(all: Bool) async {
+        let offset = loadedProducedCount
+        let pageLimit: Int? = all ? nil : transcriptPageSize
+        let (parsed, produced) = await parseWindow(offset: offset, limit: pageLimit)
+        if Task.isCancelled { return }
+        messages += parsed
+        loadedProducedCount += produced
+        hasMoreToLoad = all ? false : Self.hasMoreAfterLoad(returnedCount: produced, requestedLimit: pageLimit)
+        await rebuildIndexed()
+    }
+
     private func loadMoreMessages(all: Bool) {
         guard !isLoadingMore else { return }
-        let offset = messages.count
-        let pageLimit: Int? = all ? nil : transcriptPageSize
         transcriptLoadTask?.cancel()
         transcriptLoadTask = Task {
             isLoadingMore = true
             defer { isLoadingMore = false }
-            let parsed = await parseWindow(offset: offset, limit: pageLimit)
-            if Task.isCancelled { return }
-            messages += parsed
-            hasMoreToLoad = Self.hasMoreAfterLoad(returnedCount: parsed.count, requestedLimit: pageLimit)
-            await rebuildIndexed()
+            await appendMessages(all: all)
         }
     }
 

@@ -7,6 +7,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Transcript paging — ultrareview fixes (2026-06-03, Claude)
+
+Addressed the cloud ultrareview of PR #34 (7 findings):
+
+- **Page-seam offset bug (the real one)**: the pager advanced `offset` by the
+  filtered (user/assistant) count, but adapter offset/limit count PRODUCED
+  messages (incl. tool rows the UI drops) — so a transcript with tool messages
+  could drift/dup at the seam and, worse, a first page thinned by tool rows set
+  `hasMore=false` → silent truncation. Added `MessageParser.parseWindowed(...)`
+  returning a PRODUCED count; the pager now advances in produced space. Locked by
+  a Codex `function_call` test (produced > displayable; paged union == full).
+- **Cross-session races**: added `Task.isCancelled` guards in `rebuildIndexed`
+  (after the detached classify) and after `loadInitialTranscript()` in `.task`,
+  so a slow load can't stomp the next session's state.
+- **Main-thread match rescan**: the post-load match-index scan now runs inside
+  the detached rebuild (was synchronous on main after Load all).
+- **Copy honesty**: Copy / Copy Entire Conversation / ⌘⌥C now load the full
+  transcript before copying when only a prefix is loaded (no silent partial copy).
+- **Chip counts**: type-chip counts render `N+` while partially loaded so they
+  don't read as authoritative session totals.
+- **Search hint**: hoisted out of `if showFind` — it shows whenever a search is
+  active on a partial transcript, even after the find bar is closed (search state
+  outlives the bar via ⌘F / toolbar Find).
+- **Cancel on disappear**: `transcriptLoadTask` is now cancelled in `.onDisappear`.
+- Accepted nit (documented): when the produced count is an exact multiple of the
+  page size the footer survives one extra "Load more" that fetches an empty
+  window. The `>=` test is deliberate — `>` would silently truncate a transcript
+  whose size equals the page size, and consulting `session.messageCount` (a
+  differently-counted total) risks truncation, so produced-fullness is the safe
+  signal.
+
+Full EngramTests 289 green (0 failures, 1 pre-existing skip).
+
 ### SessionDetailView transcript paging (2026-06-02, Claude)
 
 Closes the second deferred perf item from the review cleanup round.
