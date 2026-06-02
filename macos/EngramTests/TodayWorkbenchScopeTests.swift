@@ -214,4 +214,26 @@ final class TodayWorkbenchScopeTests: XCTestCase {
             "collapsing a disclosure group must not delete saved generation settings"
         )
     }
+
+    // Behavioral round-trip over the extracted pure transform (replaces the
+    // source-scan-only coverage): the values the save path writes must restore
+    // intact, and unrelated keys must survive — even in the collapse-then-edit
+    // case (persistence is unconditional, so disclosure state is irrelevant).
+    func testGenerationSettingsRoundTripPreservesCustomValues() {
+        var settings: [String: Any] = ["aiModel": "gpt-x", "summaryLanguage": "zh"]
+        let custom = AIGenerationSettings(
+            maxTokens: 1234, temperature: 0.91, sampleFirst: 5, sampleLast: 7, truncateChars: 999
+        )
+        custom.write(into: &settings)
+        XCTAssertEqual(AIGenerationSettings.read(from: settings), custom)
+        // Unrelated keys are untouched by the generation-block transform.
+        XCTAssertEqual(settings["aiModel"] as? String, "gpt-x")
+        XCTAssertEqual(settings["summaryLanguage"] as? String, "zh")
+    }
+
+    func testGenerationSettingsReadFallsBackToDefaultsForMissingKeys() {
+        XCTAssertEqual(AIGenerationSettings.read(from: [:]), AIGenerationSettings())
+        // A mistyped value also falls back to the default rather than crashing.
+        XCTAssertEqual(AIGenerationSettings.read(from: ["summaryMaxTokens": "oops"]).maxTokens, 200)
+    }
 }

@@ -7,6 +7,42 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Review cleanup round — adjudication + residual fixes (2026-06-02, Claude)
+
+Re-verified every finding in `CODE-REVIEW-2026-06-02.md` against CURRENT code
+(12 adjudicators, skeptical/default-unresolved). Result: 61 fixed, 5
+by-design (documented, no behavior change), 2 partial, 1 not_fixed. Closed the
+residual:
+
+- **AISettings test-gap (was not_fixed)**: extracted the generation-settings
+  dictionary transform into a pure, testable `AIGenerationSettings`
+  (`write(into:)`/`read(from:)`); routed `saveAISettings`/`loadAISettings`
+  through it; added behavioral round-trip tests (custom-value survival incl.
+  the collapse-then-edit case; default fallback). The data-loss bug itself was
+  already fixed; this closes the missing behavioral coverage.
+- **SessionDetailView search (was partial)**: the per-keystroke
+  `updateMatchIndices` full-content scan now runs debounced (200ms) and off the
+  main actor via `.task(id: searchText)`, so typing in the find bar no longer
+  hitches on a large transcript. (The open-time classify/filter was already
+  moved off-main in the prior round.)
+
+Remaining, intentionally deferred (documented, NOT silently skipped):
+- **Web UI transcript pager re-parses the whole file per page (O(N²) paging)**
+  — `EngramWebUIServer`/adapter read path. The memory half is bounded (the
+  prior round passes a real `limit` and breaks early); the remaining CPU cost
+  is the adapter `readObjects` eagerly reading+parsing all lines before
+  windowing. A full fix needs offset/limit-aware lazy streaming across ~15
+  adapters (shared `JSONLAdapterSupport`) — high blast radius, perf-only, on a
+  dev-facing surface. Deferred to a dedicated, separately-reviewed refactor.
+- **SessionDetailView loads the whole transcript into memory (no parse limit)**
+  — now fully off-main and one-time per open, so this is a memory-only concern;
+  a real fix requires transcript paging UI (a feature), not a silent cap that
+  would truncate content. Deferred.
+
+Net: all correctness / data-integrity / lifecycle / test-gap findings are
+resolved or by-design; the only open items are two deep perf optimizations with
+the safe minimum already in place.
+
 ### Full Swift-product review + fixes (2026-06-02, Claude)
 
 Comprehensive multi-agent review of the shipped Swift product (16 subsystems,

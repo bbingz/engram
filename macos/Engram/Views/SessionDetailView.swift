@@ -100,6 +100,25 @@ struct SessionDetailView: View {
         }
     }
 
+    /// Search-driven variant: debounced, and the per-message content scan runs
+    /// off the main actor so typing in the find bar can't hitch the UI on a
+    /// large transcript. Driven by `.task(id: searchText)`, which cancels the
+    /// prior run on each keystroke.
+    private func updateMatchIndicesDebounced() async {
+        let query = searchText.lowercased()
+        guard !query.isEmpty else { matchIndices = []; return }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        if Task.isCancelled { return }
+        let snapshot = displayIndexed
+        let indices: [Int] = await Task.detached(priority: .userInitiated) {
+            snapshot.enumerated().compactMap { i, msg in
+                msg.message.content.lowercased().contains(query) ? i : nil
+            }
+        }.value
+        if Task.isCancelled { return }
+        matchIndices = indices
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -371,7 +390,7 @@ struct SessionDetailView: View {
         .onChange(of: typeVisibility) { _, _ in updateDisplayIndexed() }
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
         .onChange(of: showAgentComm) { _, _ in updateDisplayIndexed() }
-        .onChange(of: searchText) { _, _ in updateMatchIndices() }
+        .task(id: searchText) { await updateMatchIndicesDebounced() }
         .sheet(isPresented: $showReplay) {
             SessionReplayView(sessionId: session.id)
                 .frame(minWidth: 600, minHeight: 450)

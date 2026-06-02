@@ -380,11 +380,13 @@ struct AISettingsSection: View {
             // section is expanded in the UI — collapsing a group silently deleted
             // the user's saved values. The state vars always hold valid values, so
             // writing them is safe and idempotent.
-            settings["summaryMaxTokens"] = summaryMaxTokens
-            settings["summaryTemperature"] = summaryTemperature
-            settings["summarySampleFirst"] = summarySampleFirst
-            settings["summarySampleLast"] = summarySampleLast
-            settings["summaryTruncateChars"] = summaryTruncateChars
+            AIGenerationSettings(
+                maxTokens: summaryMaxTokens,
+                temperature: summaryTemperature,
+                sampleFirst: summarySampleFirst,
+                sampleLast: summarySampleLast,
+                truncateChars: summaryTruncateChars
+            ).write(into: &settings)
 
             settings["autoSummary"] = autoSummary
             settings["autoSummaryCooldown"] = autoSummaryCooldown
@@ -440,12 +442,13 @@ struct AISettingsSection: View {
         // Persistence is now unconditional, so these keys always exist. Auto-expand
         // a disclosure group only when a persisted value differs from its default,
         // preserving the "expand when customized" UX without coupling save to it.
-        if let v = settings["summaryMaxTokens"] as? Int { summaryMaxTokens = v }
-        if let v = settings["summaryTemperature"] as? Double { summaryTemperature = v }
+        let gen = AIGenerationSettings.read(from: settings)
+        summaryMaxTokens = gen.maxTokens
+        summaryTemperature = gen.temperature
         showCustomGeneration = summaryMaxTokens != 200 || summaryTemperature != 0.3
-        if let v = settings["summarySampleFirst"] as? Int { summarySampleFirst = v }
-        if let v = settings["summarySampleLast"] as? Int { summarySampleLast = v }
-        if let v = settings["summaryTruncateChars"] as? Int { summaryTruncateChars = v }
+        summarySampleFirst = gen.sampleFirst
+        summarySampleLast = gen.sampleLast
+        summaryTruncateChars = gen.truncateChars
         showAdvancedGeneration = summarySampleFirst != 20 || summarySampleLast != 30 || summaryTruncateChars != 500
 
         if let v = settings["autoSummary"] as? Bool { autoSummary = v }
