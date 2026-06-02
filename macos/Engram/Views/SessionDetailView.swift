@@ -5,6 +5,13 @@ import os.log
 private let logger = Logger(subsystem: "com.engram.app", category: "SessionDetail")
 private let agentSessionPreviewLimit = 20
 private let agentSessionListMaxHeight: CGFloat = 220
+// Transcript paging: small/normal sessions load fully (unchanged). Only sessions
+// past this message count load incrementally — a first page, then "Load more /
+// Load all" — so a huge transcript isn't fully materialized on open. Counts and
+// search reflect the loaded prefix and the UI says so; nothing is silently
+// truncated (the full transcript is always one click away).
+private let transcriptPageThreshold = 800
+private let transcriptPageSize = 500
 
 struct SessionDetailView: View {
     let session: Session
@@ -51,6 +58,12 @@ struct SessionDetailView: View {
     @State private var displayIndexed: [IndexedMessage] = []
     @State private var matchIndices: [Int] = []
 
+    // Transcript paging state. `loadLimit == nil` once the whole transcript is
+    // loaded; `hasMoreToLoad` gates the "Load more / Load all" footer.
+    @State private var hasMoreToLoad = false
+    @State private var isLoadingMore = false
+    @State private var transcriptLoadTask: Task<Void, Never>? = nil
+
     private static let defaultTypeVisibility: [MessageType: Bool] = Dictionary(
         uniqueKeysWithValues: MessageType.allCases.map { type in
             (type, type == .user || type == .assistant)
@@ -90,6 +103,21 @@ struct SessionDetailView: View {
         case .none:
             return typeVisibility[idx.messageType] ?? true
         }
+    }
+
+    /// Initial transcript window: `nil` (load the whole transcript, the prior
+    /// behavior) for sessions at or below the paging threshold; a first-page
+    /// limit for larger ones. Pure so the gating is unit-testable.
+    static func initialTranscriptLimit(messageCount: Int) -> Int? {
+        messageCount > transcriptPageThreshold ? transcriptPageSize : nil
+    }
+
+    /// After a windowed load returns `returnedCount` messages for a `requestedLimit`,
+    /// there may be more iff the page came back full. A nil limit means "load all",
+    /// so never more. Pure so the pager state is unit-testable.
+    static func hasMoreAfterLoad(returnedCount: Int, requestedLimit: Int?) -> Bool {
+        guard let requestedLimit else { return false }
+        return returnedCount >= requestedLimit
     }
 
     private func updateMatchIndices() {
@@ -181,6 +209,22 @@ struct SessionDetailView: View {
                     onNext: { navigateFind(direction: 1) }
                 )
                 .accessibilityIdentifier("detail_findBar")
+                if hasMoreToLoad && !searchText.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "info.circle").font(.caption2)
+                        Text("Search covers loaded messages only.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Button("Load all") { loadMoreMessages(all: true) }
+                            .font(.caption2)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Theme.accent)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .accessibilityIdentifier("detail_findPartialHint")
+                }
                 Divider()
             }
 
@@ -297,6 +341,9 @@ struct SessionDetailView: View {
                                     Divider().opacity(0.3)
                                 }
                             }
+                            if hasMoreToLoad {
+                                transcriptLoadMoreFooter
+                            }
                         }
                     }
                     .accessibilityIdentifier("detail_transcript")
@@ -338,6 +385,10 @@ struct SessionDetailView: View {
             indexedMessages = []
             typeCounts = [:]
             typeVisibility = Self.defaultTypeVisibility
+            hasMoreToLoad = false
+            isLoadingMore = false
+            transcriptLoadTask?.cancel()
+            transcriptLoadTask = nil
             childrenSessions = []
             childrenSessionCount = 0
             suggestedChildrenSessions = []
@@ -350,40 +401,7 @@ struct SessionDetailView: View {
                 let fav = (try? dbRef.isFavorite(sessionId: sessionId)) ?? false
                 await MainActor.run { isFavorite = fav }
             }
-            var effectivePath = session.effectiveFilePath
-            let source = session.source
-            // Resolve relative paths against the DB's parent directory (test fixtures)
-            if !effectivePath.isEmpty && !effectivePath.hasPrefix("/") {
-                let dbDir = (db.path as NSString).deletingLastPathComponent
-                let resolved = (dbDir as NSString).appendingPathComponent(effectivePath)
-                if FileManager.default.fileExists(atPath: resolved) {
-                    effectivePath = resolved
-                }
-            }
-            // Parse + classify + initial filter all run off the main thread; the
-            // finished arrays hop back together so a large transcript never
-            // classifies/filters on the main actor.
-            let visibility = typeVisibility
-            let showSystem = showSystemPrompts
-            let showAgent = showAgentComm
-            let built = await Task.detached(priority: .userInitiated) {
-                let parsed = MessageParser.parse(filePath: effectivePath, source: source)
-                let result = IndexedMessage.build(from: parsed)
-                let display = result.messages.filter {
-                    Self.isMessageVisible(
-                        $0,
-                        typeVisibility: visibility,
-                        showSystemPrompts: showSystem,
-                        showAgentComm: showAgent
-                    )
-                }
-                return (parsed, result.messages, result.counts, display)
-            }.value
-            messages = built.0
-            indexedMessages = built.1
-            typeCounts = built.2
-            displayIndexed = built.3
-            updateMatchIndices()
+            await loadInitialTranscript()
             isLoadingMessages = false
             loadParentInfo()
         }
@@ -643,6 +661,125 @@ struct SessionDetailView: View {
         let text = TranscriptText.conversationText(displayIndexed)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    // MARK: - Transcript loading / paging
+
+    /// Resolve the on-disk transcript path, mapping a relative fixture path against
+    /// the DB directory (matches the prior inline resolution).
+    private func resolvedTranscriptPath() -> String {
+        var path = session.effectiveFilePath
+        if !path.isEmpty && !path.hasPrefix("/") {
+            let dbDir = (db.path as NSString).deletingLastPathComponent
+            let resolved = (dbDir as NSString).appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: resolved) { path = resolved }
+        }
+        return path
+    }
+
+    /// Off-main parse of one message window. Touches no view state.
+    private func parseWindow(offset: Int, limit: Int?) async -> [ChatMessage] {
+        let path = resolvedTranscriptPath()
+        let source = session.source
+        return await Task.detached(priority: .userInitiated) {
+            MessageParser.parse(filePath: path, source: source, offset: offset, limit: limit)
+        }.value
+    }
+
+    /// Re-derive indexed messages, type counts, and the filtered display set from
+    /// the currently-loaded `messages`. Classification runs off the main actor.
+    /// Rebuilding over the full loaded prefix keeps `typeIndex`/counts correct;
+    /// because loaded `ChatMessage`s keep their identity, an appended page diffs
+    /// cleanly in the list so the scroll position is preserved.
+    private func rebuildIndexed() async {
+        let snapshot = messages
+        let visibility = typeVisibility
+        let showSystem = showSystemPrompts
+        let showAgent = showAgentComm
+        let built = await Task.detached(priority: .userInitiated) {
+            let result = IndexedMessage.build(from: snapshot)
+            let display = result.messages.filter {
+                Self.isMessageVisible(
+                    $0,
+                    typeVisibility: visibility,
+                    showSystemPrompts: showSystem,
+                    showAgentComm: showAgent
+                )
+            }
+            return (result.messages, result.counts, display)
+        }.value
+        indexedMessages = built.0
+        typeCounts = built.1
+        displayIndexed = built.2
+        updateMatchIndices()
+    }
+
+    /// First load for a session: the whole transcript for normal sessions, or a
+    /// first page for large ones (`hasMoreToLoad` then drives the footer).
+    private func loadInitialTranscript() async {
+        let limit = Self.initialTranscriptLimit(messageCount: session.messageCount)
+        let parsed = await parseWindow(offset: 0, limit: limit)
+        if Task.isCancelled { return }
+        messages = parsed
+        hasMoreToLoad = Self.hasMoreAfterLoad(returnedCount: parsed.count, requestedLimit: limit)
+        await rebuildIndexed()
+    }
+
+    /// Append the next page — or, when `all`, the entire remainder — to the loaded
+    /// transcript. Parses from the current loaded count so earlier pages aren't
+    /// re-materialized, then rebuilds the indexed view over the full prefix.
+    private func loadMoreMessages(all: Bool) {
+        guard !isLoadingMore else { return }
+        let offset = messages.count
+        let pageLimit: Int? = all ? nil : transcriptPageSize
+        transcriptLoadTask?.cancel()
+        transcriptLoadTask = Task {
+            isLoadingMore = true
+            defer { isLoadingMore = false }
+            let parsed = await parseWindow(offset: offset, limit: pageLimit)
+            if Task.isCancelled { return }
+            messages += parsed
+            hasMoreToLoad = Self.hasMoreAfterLoad(returnedCount: parsed.count, requestedLimit: pageLimit)
+            await rebuildIndexed()
+        }
+    }
+
+    @ViewBuilder
+    private var transcriptLoadMoreFooter: some View {
+        VStack(spacing: 8) {
+            Divider().opacity(0.3)
+            if isLoadingMore {
+                ProgressView().controlSize(.small)
+            } else {
+                HStack(spacing: 10) {
+                    Text(transcriptPartialLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(loadMoreButtonLabel) { loadMoreMessages(all: false) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Load all") { loadMoreMessages(all: true) }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .accessibilityIdentifier("detail_loadMoreFooter")
+    }
+
+    private var transcriptPartialLabel: String {
+        String.localizedStringWithFormat(
+            String(localized: "Showing first %lld messages"), messages.count
+        )
+    }
+
+    private var loadMoreButtonLabel: String {
+        String.localizedStringWithFormat(
+            String(localized: "Load %lld more"), transcriptPageSize
+        )
     }
 }
 

@@ -259,6 +259,26 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(messages[0].content, "Codex response here")
     }
 
+    /// Transcript paging (SessionDetailView) loads a first page then APPENDS the
+    /// remainder from `offset = loadedCount`. That must reconstruct the full
+    /// transcript exactly — no gap, dup, or silent truncation at the page seam.
+    func testPagedParseConcatenationEqualsFullTranscript() throws {
+        let path = try fixturePath("claude-code.jsonl")
+        let full = MessageParser.parse(filePath: path, source: "claude-code")
+        XCTAssertGreaterThan(full.count, 2, "fixture must have enough messages to page")
+
+        let firstPage = MessageParser.parse(filePath: path, source: "claude-code", offset: 0, limit: 2)
+        XCTAssertEqual(firstPage.count, 2)
+        // "Load all" continues from the loaded count to the end (limit nil).
+        let remainder = MessageParser.parse(filePath: path, source: "claude-code", offset: firstPage.count, limit: nil)
+        XCTAssertEqual(remainder.count, full.count - firstPage.count)
+
+        let paged = (firstPage + remainder).map { ($0.role, $0.content) }
+        let whole = full.map { ($0.role, $0.content) }
+        XCTAssertEqual(paged.map(\.0), whole.map(\.0))
+        XCTAssertEqual(paged.map(\.1), whole.map(\.1))
+    }
+
     /// 13. Unknown source returns empty array
     func testUnknownSourceReturnsEmpty() throws {
         let path = try fixturePath("valid.jsonl")

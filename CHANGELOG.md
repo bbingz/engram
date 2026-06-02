@@ -7,6 +7,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### SessionDetailView transcript paging (2026-06-02, Claude)
+
+Closes the second deferred perf item from the review cleanup round.
+
+`SessionDetailView` parsed + classified the WHOLE transcript into memory on open.
+Rendering was already lazy (`LazyVStack`), so the residual cost was peak memory
+and first-paint parse time for very large sessions.
+
+Now threshold-gated: sessions at/under `transcriptPageThreshold` (800 messages)
+load fully exactly as before (zero behavior change for the common case). Larger
+sessions load a first page (`transcriptPageSize` = 500) and show a footer with
+**Load more** / **Load all**. Paging is APPEND-based — each step parses from the
+current loaded count (`MessageParser.parse(offset:limit:)`, which now
+early-terminates per the prior change) and appends, so earlier pages aren't
+re-materialized and loaded `ChatMessage` identities stay stable (the list diffs
+cleanly; scroll position is preserved). The indexed view is rebuilt over the full
+loaded prefix off the main actor, so `typeIndex`/type counts stay correct.
+
+Honesty (no silent truncation): the footer reads "Showing first N messages" and
+the full transcript is always one click away; when a search runs on a partially
+loaded transcript the find bar shows "Search covers loaded messages only" with a
+one-tap **Load all**.
+
+Pure gating (`initialTranscriptLimit`, `hasMoreAfterLoad`) is unit-tested; a
+`MessageParser` test proves a paged load (first page + remainder from
+`offset = loadedCount`) reconstructs the full transcript exactly — no gap, dup,
+or truncation at the seam. The off-main classification source guard was updated
+to the new rebuild path. Green: full EngramTests 288 (0 failures, 1 pre-existing
+skip).
+
+Branch `perf/transcript-paging` (ultrareview pending).
+
 ### Web UI pager: O(N²) → O(N) via shared lazy-streaming window (2026-06-02, Claude)
 
 Closes the first of the two deferred perf items from the review cleanup round.
