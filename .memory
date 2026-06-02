@@ -1,5 +1,35 @@
 # Engram Local Memory
 
+## 2026-06-02 — Web UI pager O(N²)→O(N) lazy streaming (Claude)
+
+First of the two deferred perf items from the review cleanup is DONE and merged:
+PR #33 squash-merged to `main` as `685838e2`. Ultrareview (cloud, on the PR) = 0
+findings.
+
+What changed: added shared `JSONLAdapterSupport.windowedMessages(..., transform:)`.
+When `limit` is set it streams line-by-line, skips `offset` PRODUCED messages
+(post-transform, nils excluded — same unit as `applyWindow`), collects `limit`,
+then STOPS reading → a paged read is O(offset+limit) parsed lines, not O(file).
+When `limit` is nil it falls back to `readObjects`+`applyWindow`, byte-identical
+to the old behavior — so indexer/export/MCP (all `limit: nil`) are unchanged, no
+re-index. Routed through it: claude-code (+minimax/lobsterai via delegation),
+qwen, iflow, qoder, commandcode, copilot, antigravity (CLI branch), codex (its
+bespoke `readWindow` collapsed in and deleted).
+
+NOT changed (by format, documented in CHANGELOG): kimi (multi-file + cross-line
+turn/timestamp state), vscode (whole-session object), gemini/cline (whole-file
+JSON), cursor/opencode (SQLite — future SQL LIMIT/OFFSET push-down). They parse
+per page but don't re-read a growing JSONL tail.
+
+Tests green: AdapterParity 24, MessageParser 20, EngramCoreTests 341,
+EngramServiceCore 108, EngramMCPTests 58. Early-termination is proven physically
+(oversized line past the window trips `.lineTooLarge` on a full read but a
+windowed read ending before it succeeds), not just by message-count contrast.
+
+STILL DEFERRED: item #2 — `SessionDetailView` whole-transcript load. Now it can
+reuse this `limit` early-termination via `MessageParser.parse(offset:limit:)`;
+the real fix is a transcript paging UI (a feature), not a silent truncating cap.
+
 ## 2026-06-02 — MCP fix + full Swift-product review/fix/cleanup (Claude)
 
 Three things this session, all shipped: MCP repair, a comprehensive review, and
@@ -28,10 +58,8 @@ Review + fixes:
 
 KNOWN DEFERRED (safe minimum in place, full fix = larger separate refactor):
 - Web UI transcript pager re-parses the whole file per page → O(N²) paging.
-  Memory is bounded (real `limit` + early break); the CPU cost is the adapter
-  `readObjects` eagerly reading all lines before windowing. Full fix = offset/
-  limit-aware lazy streaming across ~15 adapters in shared `JSONLAdapterSupport`.
-  Dev-facing surface, perf-only.
+  RESOLVED 2026-06-02 (PR #33 / `685838e2`) — see top entry. Lazy line-streaming
+  window now in shared `JSONLAdapterSupport.windowedMessages`.
 - `SessionDetailView` loads the whole transcript into memory (no parse limit).
   Now fully off-main + one-time per open (memory-only); full fix = transcript
   paging UI, not a silent truncating cap.
