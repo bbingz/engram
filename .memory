@@ -1,5 +1,49 @@
 # Engram Local Memory
 
+## 2026-06-02 — MCP fix + full Swift-product review/fix/cleanup (Claude)
+
+Three things this session, all shipped: MCP repair, a comprehensive review, and
+a fix+cleanup pass. Commits `b3510d22`, `77b1efab`, `fde4af83` pushed to `main`;
+Developer ID release build `0.1.0 (738)` installed to `/Applications/Engram.app`
+and relaunched (single app+service instance; `claude mcp list` → engram
+Connected).
+
+MCP root cause + fix:
+- "engram MCP failed to connect" was NOT a Codex regression — Claude Code
+  2.1.160 sends `protocolVersion: "2025-11-25"` in `initialize`, and
+  `MCPStdioServer.supportedProtocolVersions` only allowed up to `2025-06-18`,
+  so it hard-rejected with `-32602`.
+- LESSON (applies to any MCP server, e.g. coding-memory too): per the MCP spec,
+  on an unknown/newer requested protocol version the server must NEGOTIATE DOWN
+  to its latest supported version, never error. EngramMCP now adds `2025-11-25`
+  AND negotiates unknown versions to `latestSupportedProtocolVersion`.
+
+Review + fixes:
+- Full multi-agent review of the shipped Swift product (16 subsystems, security
+  excluded) → `CODE-REVIEW-2026-06-02.md` (62 adversarially-verified findings).
+- Fixed 53 in a parallel pass + closed residuals in a cleanup pass; 787 tests
+  green (EngramCoreTests/EngramServiceCore/EngramMCPTests/EngramTests).
+- Re-adjudicated every finding against current code (61 fixed, 5 by-design, then
+  the last test-gap + search-debounce closed).
+
+KNOWN DEFERRED (safe minimum in place, full fix = larger separate refactor):
+- Web UI transcript pager re-parses the whole file per page → O(N²) paging.
+  Memory is bounded (real `limit` + early break); the CPU cost is the adapter
+  `readObjects` eagerly reading all lines before windowing. Full fix = offset/
+  limit-aware lazy streaming across ~15 adapters in shared `JSONLAdapterSupport`.
+  Dev-facing surface, perf-only.
+- `SessionDetailView` loads the whole transcript into memory (no parse limit).
+  Now fully off-main + one-time per open (memory-only); full fix = transcript
+  paging UI, not a silent truncating cap.
+
+Deploy recipe used (faster than the full `build-release.sh` archive, still
+notarizable identity): incremental `xcodebuild -scheme Engram -configuration
+Release CURRENT_PROJECT_VERSION=<git rev-list --count HEAD> CODE_SIGN_STYLE=Manual
+CODE_SIGN_IDENTITY="Developer ID Application: zhibing zhao (J25GS8J4XM)"
+DEVELOPMENT_TEAM=J25GS8J4XM OTHER_CODE_SIGN_FLAGS="--timestamp" build`, then
+`rm -rf /Applications/Engram.app && cp -R <DerivedData>/Release/Engram.app
+/Applications/`, then `osascript quit` + `open`. Build number = git commit count.
+
 ## 2026-06-01 — Advanced noise controls quieted (Codex)
 
 Continued the approved Today Workbench + Advanced noise-reduction goal after
