@@ -122,7 +122,12 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                 if type == "assistant" {
                     assistantCount += 1
                 } else if Self.isToolResult(message?["content"]) {
-                    toolCount += 1
+                    // Count a tool_result user record only when it surfaces
+                    // non-empty content, matching message(from:) which drops
+                    // empty tool results from the streamed transcript.
+                    if !Self.extractContent(message?["content"]).isEmpty {
+                        toolCount += 1
+                    }
                 } else {
                     let text = Self.extractContent(message?["content"])
                     if Self.isSystemInjection(text) {
@@ -321,9 +326,18 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         let message = JSONLAdapterSupport.object(object["message"])
         let rawContent = message?["content"]
         let toolCalls = toolCalls(from: rawContent)
+        let content = extractContent(rawContent)
+        // A user record that only carries a tool_result is a tool message, not
+        // a user turn. Drop it when it surfaces no content so the streamed
+        // transcript matches parseSessionInfo's counts.
+        let isToolResultRecord = type == "user" && isToolResult(rawContent)
+        if isToolResultRecord, content.isEmpty {
+            return nil
+        }
+        let role: NormalizedMessageRole = isToolResultRecord ? .tool : (type == "user" ? .user : .assistant)
         return NormalizedMessage(
-            role: type == "user" ? .user : .assistant,
-            content: extractContent(rawContent),
+            role: role,
+            content: content,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: toolCalls.isEmpty ? nil : toolCalls,
             usage: JSONLAdapterSupport.usage(from: JSONLAdapterSupport.object(message?["usage"]))

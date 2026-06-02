@@ -228,6 +228,34 @@ final class EngramServiceLauncherTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
     }
+
+    @MainActor
+    func testStopIfOwnedDoesNotBlockMainRunLoopWhileChildStillRunning() async throws {
+        // Regression: stopIfOwned() used to poll the child's exit with
+        // Thread.sleep on the main actor, blocking the run loop for up to the
+        // full 2s timeout. The bounded wait now suspends instead of blocking,
+        // so the call must return promptly even while the child is alive.
+        let executable = try makeSleeperExecutable()
+        let launcher = EngramServiceLauncher()
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: "/tmp/engram-stop.sock",
+            databasePath: "/tmp/engram-stop.sqlite",
+            foreground: false
+        )
+
+        try launcher.start(configuration: config)
+        XCTAssertTrue(launcher.isRunning)
+
+        let start = Date()
+        launcher.stopIfOwned()
+        let elapsed = Date().timeIntervalSince(start)
+
+        // Must be near-instant, well under the 2s exit-wait budget.
+        XCTAssertLessThan(elapsed, 0.5)
+        // The launcher releases its reference immediately on shutdown.
+        XCTAssertFalse(launcher.isRunning)
+    }
 }
 
 @MainActor

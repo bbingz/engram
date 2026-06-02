@@ -74,15 +74,23 @@ struct ColorBarMessageView: View {
     private func highlightedText(_ text: String) -> AttributedString {
         var attr = AttributedString(text)
         guard !searchText.isEmpty else { return attr }
-        let lower = text.lowercased()
-        let query = searchText.lowercased()
-        var searchStart = lower.startIndex
-        while let range = lower.range(of: query, range: searchStart..<lower.endIndex) {
+        // Search and map ranges against the SAME string (`text`) using a
+        // case-insensitive search. Searching a lowercased copy and mapping the
+        // indices back to the original misaligns on length-changing Unicode
+        // (e.g. "ß".lowercased() stays one char but other casings change length).
+        var searchStart = text.startIndex
+        while let range = text.range(
+            of: searchText,
+            options: .caseInsensitive,
+            range: searchStart..<text.endIndex
+        ) {
             if let attrRange = Range(NSRange(range, in: text), in: attr) {
                 attr[attrRange].backgroundColor = .yellow
                 attr[attrRange].foregroundColor = .black
             }
-            searchStart = range.upperBound
+            // Guard against zero-width matches (empty searchText already excluded).
+            searchStart = range.upperBound > range.lowerBound ? range.upperBound : text.index(after: range.lowerBound)
+            if searchStart >= text.endIndex { break }
         }
         return attr
     }

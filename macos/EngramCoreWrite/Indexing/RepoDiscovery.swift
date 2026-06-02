@@ -4,6 +4,7 @@
 // Replaces the removed Node `src/core/git-probe.ts`. The old probe parsed
 // `git log --format=%H|%s|%aI`, which corrupts on commit messages containing
 // `|`; this implementation uses a NUL (`%x00`) field separator and never `|`.
+import Darwin
 import Foundation
 import GRDB
 
@@ -238,23 +239,30 @@ public enum RepoDiscovery {
         ioQueue.async(group: ioGroup) { _ = err.fileHandleForReading.readDataToEndOfFile() }
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
-        let started = DispatchTime.now().uptimeNanoseconds
         do {
             try process.run()
         } catch {
             return nil
         }
         guard finished.wait(timeout: .now() + timeoutSeconds) == .success else {
-            process.terminate()
-            _ = finished.wait(timeout: .now() + 1)
-            ioGroup.wait() // terminate() closes the pipes -> reads hit EOF
+            process.terminate() // SIGTERM
+            if finished.wait(timeout: .now() + 1) != .success {
+                // git ignored SIGTERM (e.g. blocked on a credential prompt).
+                kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 1)
+            }
+            // Killing the child does NOT guarantee the drain reaches EOF: a
+            // grandchild (credential helper, pager, an orphaned `sleep`) can
+            // keep the inherited pipe write end open. We never read the captured
+            // output on the timeout path, so bound the drain and abandon it
+            // rather than block the caller (the indexing loop) until that
+            // grandchild exits.
+            _ = ioGroup.wait(timeout: .now() + 1)
             return nil
         }
-        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - started
-        guard Double(elapsedNanoseconds) / 1_000_000_000 <= timeoutSeconds else {
-            ioGroup.wait()
-            return nil
-        }
+        // No post-success elapsed recheck: the process exited within the
+        // termination-handler timeout, so a slow-but-successful run keeps its
+        // output instead of being discarded by a race against the wall clock.
         ioGroup.wait() // process exited -> both reads have reached EOF
         guard process.terminationStatus == 0 else { return nil }
         return String(data: outData, encoding: .utf8)

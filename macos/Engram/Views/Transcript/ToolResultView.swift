@@ -5,10 +5,6 @@ struct ToolResultView: View {
     let parsed: ParsedToolResult
     @AppStorage("contentFontSize") var fontSize: Double = 14
 
-    private var lineCount: Int {
-        parsed.output.components(separatedBy: "\n").count
-    }
-
     @State private var isExpanded: Bool = false
 
     private var tintColor: Color {

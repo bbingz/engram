@@ -791,12 +791,16 @@ final class MCPDatabase {
 
     private func totalCostBetween(start: String, end: String) throws -> Double {
         try queue.read { db in
+            // Filter the cost window by session activity (start_time), not by
+            // index time (computed_at), so "Cost today" reflects sessions that
+            // ran today — consistent with getCosts/totalCostSince.
             let row = try Row.fetchOne(
                 db,
                 sql: """
-                SELECT SUM(cost_usd) AS cost
-                FROM session_costs
-                WHERE computed_at >= ? AND computed_at < ?
+                SELECT SUM(c.cost_usd) AS cost
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.start_time >= ? AND s.start_time < ?
                 """,
                 arguments: [start, end]
             )

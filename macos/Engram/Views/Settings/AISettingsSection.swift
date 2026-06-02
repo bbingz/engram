@@ -374,22 +374,17 @@ struct AISettingsSection: View {
             if !summaryPrompt.isEmpty { settings["summaryPrompt"] = summaryPrompt } else { settings.removeValue(forKey: "summaryPrompt") }
 
             settings["summaryPreset"] = summaryPreset
-            if showCustomGeneration {
-                settings["summaryMaxTokens"] = summaryMaxTokens
-                settings["summaryTemperature"] = summaryTemperature
-            } else {
-                settings.removeValue(forKey: "summaryMaxTokens")
-                settings.removeValue(forKey: "summaryTemperature")
-            }
-            if showAdvancedGeneration {
-                settings["summarySampleFirst"] = summarySampleFirst
-                settings["summarySampleLast"] = summarySampleLast
-                settings["summaryTruncateChars"] = summaryTruncateChars
-            } else {
-                settings.removeValue(forKey: "summarySampleFirst")
-                settings.removeValue(forKey: "summarySampleLast")
-                settings.removeValue(forKey: "summaryTruncateChars")
-            }
+            // Persist current generation values unconditionally. These used to be
+            // gated on the DisclosureGroup expansion flags (showCustomGeneration /
+            // showAdvancedGeneration), but those flags only track whether the
+            // section is expanded in the UI — collapsing a group silently deleted
+            // the user's saved values. The state vars always hold valid values, so
+            // writing them is safe and idempotent.
+            settings["summaryMaxTokens"] = summaryMaxTokens
+            settings["summaryTemperature"] = summaryTemperature
+            settings["summarySampleFirst"] = summarySampleFirst
+            settings["summarySampleLast"] = summarySampleLast
+            settings["summaryTruncateChars"] = summaryTruncateChars
 
             settings["autoSummary"] = autoSummary
             settings["autoSummaryCooldown"] = autoSummaryCooldown
@@ -442,11 +437,16 @@ struct AISettingsSection: View {
         if let v = settings["summaryPrompt"] as? String { summaryPrompt = v }
 
         if let v = settings["summaryPreset"] as? String { summaryPreset = v }
-        if let v = settings["summaryMaxTokens"] as? Int { summaryMaxTokens = v; showCustomGeneration = true }
-        if let v = settings["summaryTemperature"] as? Double { summaryTemperature = v; showCustomGeneration = true }
-        if let v = settings["summarySampleFirst"] as? Int { summarySampleFirst = v; showAdvancedGeneration = true }
-        if let v = settings["summarySampleLast"] as? Int { summarySampleLast = v; showAdvancedGeneration = true }
-        if let v = settings["summaryTruncateChars"] as? Int { summaryTruncateChars = v; showAdvancedGeneration = true }
+        // Persistence is now unconditional, so these keys always exist. Auto-expand
+        // a disclosure group only when a persisted value differs from its default,
+        // preserving the "expand when customized" UX without coupling save to it.
+        if let v = settings["summaryMaxTokens"] as? Int { summaryMaxTokens = v }
+        if let v = settings["summaryTemperature"] as? Double { summaryTemperature = v }
+        showCustomGeneration = summaryMaxTokens != 200 || summaryTemperature != 0.3
+        if let v = settings["summarySampleFirst"] as? Int { summarySampleFirst = v }
+        if let v = settings["summarySampleLast"] as? Int { summarySampleLast = v }
+        if let v = settings["summaryTruncateChars"] as? Int { summaryTruncateChars = v }
+        showAdvancedGeneration = summarySampleFirst != 20 || summarySampleLast != 30 || summaryTruncateChars != 500
 
         if let v = settings["autoSummary"] as? Bool { autoSummary = v }
         if let v = settings["autoSummaryCooldown"] as? Int { autoSummaryCooldown = v }

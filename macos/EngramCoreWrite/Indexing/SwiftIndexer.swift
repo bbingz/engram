@@ -239,6 +239,7 @@ public final class SwiftIndexer {
             origin: authoritativeNode,
             tier: tier,
             agentRole: info.agentRole,
+            parentSessionId: info.parentSessionId,
             toolCallCounts: stats.toolCallCounts
         )
     }
@@ -272,6 +273,15 @@ public final class SwiftIndexer {
         let combined = userMessages.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !combined.isEmpty else { return false }
         if Self.healthProbePrompts.contains(combined.lowercased()) {
+            return true
+        }
+        // Mirror the documented Polycli probe patterns recognized in
+        // StartupBackfills.isPolycliProviderSummary so provider health/launch
+        // pings are skipped at index time, not just during the backfill pass.
+        if combined.range(of: #"^Reply with POLYCLI_HEALTH_OK only\.?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if combined.range(of: #"^You are acting as [a-z0-9_-]+ inside polycli\."#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
         if Self.isProviderReviewPrompt(combined) {

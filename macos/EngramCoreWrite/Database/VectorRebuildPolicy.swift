@@ -1,6 +1,15 @@
 import Foundation
 import GRDB
 
+/// Rebuild policy for the sqlite-vec vector tables: drops the vector state when
+/// the stored embedding dimension or model no longer matches the active one.
+///
+/// Intentionally NOT wired into `EngramMigrationRunner.migrate` yet. sqlite-vec
+/// is inert in the shipped product (`SQLiteVecSupport` reports "not implemented
+/// yet"), so there is no active embedding model/dimension to gate on. This type
+/// is kept (covered by `VectorRebuildPolicyTests`) so the rebuild contract is
+/// ready to wire when sqlite-vec lands; do not add a speculative model/dimension
+/// caller before then.
 public enum VectorRebuildPolicy {
     public static func apply(
         _ db: GRDB.Database,

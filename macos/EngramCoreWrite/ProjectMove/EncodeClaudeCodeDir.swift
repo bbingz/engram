@@ -3,8 +3,9 @@
 //
 // Claude Code stores session JSONLs under
 // `~/.claude/projects/<encoded-cwd>/`, where the encoded form is the
-// absolute cwd with every `/` replaced by `-`. The encoding is lossy
-// (consecutive slashes collapse with existing dashes) but one-way — we
+// absolute cwd with every `/` AND `.` replaced by `-` (e.g.
+// `/Users/bing/.config/x` → `-Users-bing--config-x`). The encoding is lossy
+// (consecutive slashes/dots collapse with existing dashes) but one-way — we
 // only ever encode, never decode.
 import Foundation
 
@@ -14,6 +15,8 @@ public enum ClaudeCodeProjectDir {
     /// the input (e.g. stripping trailing slashes) — the encoding is a
     /// naive replace, matching mvp.py:encode_cc().
     public static func encode(_ absolutePath: String) -> String {
-        absolutePath.replacingOccurrences(of: "/", with: "-")
+        absolutePath
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
     }
 }

@@ -67,6 +67,11 @@ final class SessionSourcesTests: XCTestCase {
 
         let gemini = roots.first { $0.id == .geminiCli }?.encodeProjectDir
         XCTAssertEqual(gemini?("/Users/a/b/proj"), "proj")
+        // Gemini slugifies the basename: lowercase, '_' → '-', strip wrapping
+        // dashes. Verified against real ~/.gemini/projects.json values.
+        XCTAssertEqual(gemini?("/Users/bing/-Code-"), "code")
+        XCTAssertEqual(gemini?("/Users/bing/-Code-/WebSite_Gemini"), "website-gemini")
+        XCTAssertEqual(gemini?("/Users/bing/-Code-/java_charge"), "java-charge")
 
         let iflow = roots.first { $0.id == .iflow }?.encodeProjectDir
         XCTAssertEqual(iflow?("/Users/a/b/proj"), "-Users-a-b-proj")
@@ -90,6 +95,33 @@ final class SessionSourcesTests: XCTestCase {
             SessionSources.encodeIflow("/Users/bing/-Code-/WebSite_GLM"),
             "-Users-bing-Code-WebSite_GLM"
         )
+    }
+
+    // MARK: - encodeGemini
+
+    func testEncodeGeminiSlugifiesBasename() {
+        // lowercase + strip wrapping dashes
+        XCTAssertEqual(SessionSources.encodeGemini("/Users/bing/-Code-"), "code")
+        // lowercase only
+        XCTAssertEqual(
+            SessionSources.encodeGemini("/Users/bing/-NetWork-/Screen-disconnet-erro"),
+            "screen-disconnet-erro"
+        )
+        // '_' → '-' plus lowercase
+        XCTAssertEqual(
+            SessionSources.encodeGemini("/Users/bing/-Code-/WebSite_Gemini"),
+            "website-gemini"
+        )
+        XCTAssertEqual(
+            SessionSources.encodeGemini("/Users/bing/-Code-/mac_Book_Pro_Debug"),
+            "mac-book-pro-debug"
+        )
+    }
+
+    func testEncodeGeminiStripsWrappingDashesAfterUnderscoreSwap() {
+        // Underscore-to-dash happens before wrapping-dash strip, so a
+        // leading/trailing underscore must not survive as an edge dash.
+        XCTAssertEqual(SessionSources.encodeGemini("/a/_foo_"), "foo")
     }
 
     // MARK: - walkSessionFiles

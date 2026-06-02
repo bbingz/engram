@@ -27,9 +27,13 @@ struct GitRepo: FetchableRecord, Decodable, Identifiable {
         case probedAt = "probed_at"
     }
 
+    // Reuse one formatter instead of allocating a fresh ISO8601DateFormatter
+    // per isActive call (the property is hit per-row in list rendering).
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     var isActive: Bool {
         guard let ts = lastCommitAt else { return false }
-        guard let date = ISO8601DateFormatter().date(from: ts) else { return false }
+        guard let date = Self.iso8601Formatter.date(from: ts) else { return false }
         return date.timeIntervalSinceNow > -86400 // 24h
     }
 

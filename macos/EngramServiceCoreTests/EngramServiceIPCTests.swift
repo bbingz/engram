@@ -288,6 +288,121 @@ final class EngramServiceIPCTests: XCTestCase {
         requestTask.cancel()
     }
 
+    func testStartGateRaceCleansUpClientFdAndPermitOnStop() throws {
+        // lifecycle: if stop() flips the listener between accept() and
+        // registration, the !shouldContinue branch must close(client) AND
+        // signal the connection limiter directly — otherwise the parked client
+        // task never runs its defer and the fd + connection-limiter permit leak
+        // (32 leaks wedge ALL future connections). The start gate must also be
+        // cancellation-aware so the parked task can be unwound.
+        let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
+        XCTAssertTrue(
+            source.contains("if !shouldContinue {"),
+            "accept loop must branch on registration success"
+        )
+        // The cleanup (close + signal) must live in the !shouldContinue branch.
+        guard let branchRange = source.range(of: "if !shouldContinue {") else {
+            return XCTFail("missing !shouldContinue branch")
+        }
+        let branchTail = String(source[branchRange.lowerBound...].prefix(600))
+        XCTAssertTrue(
+            branchTail.contains("close(client)"),
+            "!shouldContinue branch must close the orphaned client fd"
+        )
+        XCTAssertTrue(
+            branchTail.contains("await connectionLimiter.signal()"),
+            "!shouldContinue branch must release the connection-limiter permit"
+        )
+        XCTAssertTrue(
+            source.contains("withTaskCancellationHandler"),
+            "ClientTaskStartGate.wait() must be cancellation-aware so a parked task can be unwound"
+        )
+    }
+
+    func testServerRecyclesPermitsAcrossManySequentialConnections() async throws {
+        // lifecycle/behavioral: each completed request must return its
+        // connection-limiter permit. Run well past the 32-permit cap
+        // sequentially; if any permit leaked, accept() would wedge once 32 were
+        // consumed and this would hang past the timeout.
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        for _ in 0..<64 {
+            let client = EngramServiceClient(
+                transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+            )
+            _ = try await client.status()
+        }
+        XCTAssertEqual(server.activeClientTaskCountForTesting(), 0)
+    }
+
+    func testTransportTracksWholeFrameWallClockDeadline() throws {
+        // perf: SO_RCVTIMEO/SO_SNDTIMEO only bound a single syscall, so a peer
+        // trickling one byte before each window can stretch a frame across
+        // maximumFrameLength iterations. The transport must additionally track a
+        // wall-clock deadline for the whole frame.
+        let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+        XCTAssertTrue(
+            source.contains("maximumFrameDurationSeconds"),
+            "transport must define a whole-frame wall-clock budget"
+        )
+        XCTAssertTrue(
+            source.contains("checkFrameDeadline"),
+            "readExact/writeAll must check the per-frame deadline before each blocking syscall"
+        )
+        XCTAssertTrue(
+            source.contains("deadline: Date?"),
+            "the per-frame deadline must be threaded into readExact/writeAll"
+        )
+    }
+
+    func testServiceReadsHopOffCooperativePool() throws {
+        // concurrency: synchronous pool.read for big FTS/LIKE scans must not run
+        // on a Swift cooperative-executor thread, or a single scan can starve
+        // every other concurrent service request. The blocking read must hop to
+        // a dedicated GCD queue.
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
+        XCTAssertTrue(
+            source.contains("blockingReadQueue"),
+            "read provider must offload blocking GRDB reads onto a dedicated queue"
+        )
+        XCTAssertTrue(
+            source.contains("blockingReadQueue.async"),
+            "blocking reads must run on the dedicated queue, not the cooperative pool"
+        )
+        XCTAssertFalse(
+            source.contains("try databaseReader.read(block)\n    }"),
+            "the read helper must not call the synchronous reader directly from the cooperative pool"
+        )
+    }
+
+    func testSearchServesConcurrentRequestsWithoutDeadlock() async throws {
+        // concurrency/behavioral: the offloaded read must still return correct
+        // results when many search requests run concurrently.
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        try await withThrowingTaskGroup(of: [String].self) { group in
+            for _ in 0..<16 {
+                group.addTask {
+                    try await provider.search(
+                        EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10)
+                    ).items.map(\.id)
+                }
+            }
+            for try await ids in group {
+                XCTAssertEqual(ids, ["s1"])
+            }
+        }
+    }
+
     func testConcurrentWriteIntentsSerializeThroughOneServiceGate() async throws {
         let paths = try makeServiceIPCPaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -739,6 +854,109 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(exported.contains("world"), exported)
         XCTAssertFalse(exported.contains("hidden legacy system"), exported)
         XCTAssertFalse(exported.contains("hidden agent comm"), exported)
+    }
+
+    func testExportSessionUsesFullIdSoPrefixCollisionsDoNotOverwrite() async throws {
+        // data-integrity: the filename used to take only the first 8 chars of
+        // the session id. Two sessions sharing that prefix (and date) collided
+        // and silently overwrote each other. Using the full id keeps them
+        // distinct.
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcriptA = paths.runtime.appendingPathComponent("collideA.jsonl")
+        let transcriptB = paths.runtime.appendingPathComponent("collideB.jsonl")
+        try "{\"role\":\"user\",\"content\":\"alpha body\"}\n".write(to: transcriptA, atomically: true, encoding: .utf8)
+        try "{\"role\":\"user\",\"content\":\"beta body\"}\n".write(to: transcriptB, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes, indexed_at
+                ) VALUES
+                  ('prefix12-AAAA', 'antigravity-legacy', '2026-04-23T01:00:00Z', '/tmp/engram', 'engram', 'm', 1, 1, 0, ?, 10, '2026-04-23T01:00:00Z'),
+                  ('prefix12-BBBB', 'antigravity-legacy', '2026-04-23T01:00:00Z', '/tmp/engram', 'engram', 'm', 1, 1, 0, ?, 10, '2026-04-23T01:00:00Z');
+                """,
+                arguments: [transcriptA.path, transcriptB.path]
+            )
+        }
+
+        let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let responseA = try await client.exportSession(
+            EngramServiceExportSessionRequest(id: "prefix12-AAAA", format: "markdown", outputHome: exportHome.path, actor: "test")
+        )
+        let responseB = try await client.exportSession(
+            EngramServiceExportSessionRequest(id: "prefix12-BBBB", format: "markdown", outputHome: exportHome.path, actor: "test")
+        )
+
+        XCTAssertNotEqual(responseA.outputPath, responseB.outputPath, "prefix-colliding ids must export to distinct files")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: responseA.outputPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: responseB.outputPath))
+        // The right session landed in the right file — each export carries its
+        // own full id in the header. (Content-body rendering is exercised by the
+        // transcript-reader tests; this test's concern is filename collisions.)
+        let bodyA = try String(contentsOfFile: responseA.outputPath, encoding: .utf8)
+        let bodyB = try String(contentsOfFile: responseB.outputPath, encoding: .utf8)
+        XCTAssertTrue(bodyA.contains("prefix12-AAAA"), bodyA)
+        XCTAssertTrue(bodyB.contains("prefix12-BBBB"), bodyB)
+    }
+
+    func testExportSessionFilenameFallsBackWhenStartTimeIsEmpty() async throws {
+        // data-integrity: an empty start_time used to leave a dangling
+        // "source-id-.ext" filename. A stable "undated" token is used instead.
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("undated.jsonl")
+        try "{\"role\":\"user\",\"content\":\"undated body\"}\n".write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes, indexed_at
+                ) VALUES
+                  ('no-start-time', 'antigravity-legacy', '', '/tmp/engram', 'engram', 'm', 1, 1, 0, ?, 10, '2026-04-23T01:00:00Z');
+                """,
+                arguments: [transcript.path]
+            )
+        }
+
+        let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let response = try await client.exportSession(
+            EngramServiceExportSessionRequest(id: "no-start-time", format: "markdown", outputHome: exportHome.path, actor: "test")
+        )
+
+        XCTAssertEqual(
+            response.outputPath,
+            exportHome.appendingPathComponent("codex-exports/antigravity-legacy-no-start-time-undated.md").path
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: response.outputPath))
     }
 
     func testExportSessionDoesNotAdvanceDatabaseGeneration() async throws {
@@ -1243,6 +1461,52 @@ final class EngramServiceIPCTests: XCTestCase {
             FileManager.default.fileExists(atPath: targetOutsideHome.path),
             "Rejected linkSessions target must not be created"
         )
+    }
+
+    func testLinkSessionsDoesNotRunThroughTheWriteGate() async throws {
+        // concurrency: linkSessions only reads via an independent read-only
+        // queue and creates filesystem symlinks; it never writes the database.
+        // It must NOT run through the single write gate (which would hold the
+        // gate for up to 10k symlink ops, blocking real writes). A command that
+        // ran through performWriteCommand advances the database generation; a
+        // command that bypasses the gate reports no generation.
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let allowedDir = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
+        let allowedFile = allowedDir.appendingPathComponent("allowed.jsonl")
+        try "{}\n".write(to: allowedFile, atomically: true, encoding: .utf8)
+
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [allowedFile.path])
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let targetDir = home.appendingPathComponent("engram", isDirectory: true)
+        let request = EngramServiceRequestEnvelope(
+            command: "linkSessions",
+            payload: try JSONEncoder().encode(
+                EngramServiceLinkSessionsRequest(targetDir: targetDir.path, actor: "test")
+            )
+        )
+        let response = try await UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+            .send(request, timeout: 2)
+        guard case .success(_, _, let generation) = response else {
+            return XCTFail("Expected successful linkSessions response, got \(response)")
+        }
+        XCTAssertNil(generation, "linkSessions does not write the DB and must not advance the database generation")
     }
 
     func testAppSessionMetadataMutationsAreOwnedByServiceWriterGate() async throws {

@@ -26,6 +26,23 @@ final class EncodeClaudeCodeDirTests: XCTestCase {
         )
     }
 
+    func testReplacesDotsWithDash() {
+        // Real Claude Code encodes BOTH '/' and '.' to '-'. A leading dot in a
+        // hidden dir segment produces a doubled dash from the preceding '/'.
+        // Verified against ~/.claude/projects/-Users-bing--config-superpowers-…
+        XCTAssertEqual(
+            ClaudeCodeProjectDir.encode("/Users/bing/.config/superpowers"),
+            "-Users-bing--config-superpowers"
+        )
+    }
+
+    func testReplacesInteriorDotsWithDash() {
+        XCTAssertEqual(
+            ClaudeCodeProjectDir.encode("/Users/bing/node-v18.2.0"),
+            "-Users-bing-node-v18-2-0"
+        )
+    }
+
     func testHandlesSpaces() {
         XCTAssertEqual(
             ClaudeCodeProjectDir.encode("/Users/bing/my proj"),

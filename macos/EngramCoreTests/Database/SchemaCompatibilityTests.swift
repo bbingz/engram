@@ -1,5 +1,6 @@
 import EngramCoreRead
 import EngramCoreWrite
+import GRDB
 import XCTest
 
 final class SchemaCompatibilityTests: XCTestCase {
@@ -29,37 +30,22 @@ final class SchemaCompatibilityTests: XCTestCase {
         XCTAssertEqual(SchemaManifest.ftsVersion, "3")
     }
 
-    func testNodeReferenceSchemaEmissionCoversManifestBaseTables() throws {
-        let output = tempDir.appendingPathComponent("node-schema.json")
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .path
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "\(repoRoot)/node_modules/.bin/tsx")
-        process.arguments = [
-            "scripts/db/emit-current-schema.ts",
-            "--out",
-            output.path,
-        ]
-        process.currentDirectoryURL = URL(fileURLWithPath: repoRoot)
+    func testMigratedSchemaCoversManifestBaseTables() throws {
+        // Pure-Swift schema gate: migrate a fresh DB and assert the manifest's
+        // declared base tables/metadata are present, and that no lazy vector
+        // table leaks into the base schema. Replaces the removed Node schema
+        // gate (CLAUDE.md, 2026-05-08) so the product/runtime path is the
+        // single source of truth.
+        let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("schema.sqlite").path)
+        try writer.migrate()
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        process.waitUntilExit()
+        let snapshot = try writer.read { db in
+            try SchemaIntrospection.snapshot(db)
+        }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let text = String(data: data, encoding: .utf8) ?? ""
-        XCTAssertEqual(process.terminationStatus, 0, text)
-
-        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: output)) as? [String: Any]
-        let tables = json?["tables"] as? [String: Any] ?? [:]
-        let missing = SchemaManifest.baseTables.subtracting(Set(tables.keys))
+        let missing = SchemaManifest.baseTables.subtracting(snapshot.tableNames)
         XCTAssertTrue(missing.isEmpty, "missing base tables: \(missing.sorted())")
-        XCTAssertNil(tables["vec_sessions"])
+        XCTAssertTrue(SchemaManifest.requiredMetadataKeys.isSubset(of: snapshot.metadataKeys))
+        XCTAssertFalse(snapshot.tableNames.contains("vec_sessions"))
     }
 }

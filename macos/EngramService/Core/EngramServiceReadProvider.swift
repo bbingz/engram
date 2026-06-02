@@ -397,6 +397,18 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
 }
 
 struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
+    // GRDB reads here run synchronous pool.read for FTS/LIKE scans that can
+    // touch the whole index. Calling them directly from an async method blocks
+    // a Swift cooperative-executor thread for the duration of the scan, which
+    // can starve every other concurrent service request. Hop these blocking
+    // reads onto a dedicated GCD queue (mirroring the IPC server's
+    // readFrameOffCooperativePool) so the cooperative pool stays free.
+    private static let blockingReadQueue = DispatchQueue(
+        label: "com.engram.service.read.blocking",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
     private let databaseReader: any ServiceDatabaseReading
     private let fileSystemProvider: FileSystemEngramServiceReadProvider
     private let commandLocator: @Sendable (String) -> String?
@@ -439,7 +451,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
 
         let limit = max(1, min(request.limit, 100))
-        return try read { db in
+        return try await read { db in
             if CJKText.containsCJK(query) {
                 // Escape LIKE wildcards so a literal "%"/"_" in the query is
                 // matched verbatim instead of acting as a wildcard.
@@ -524,7 +536,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func sources() async throws -> [EngramServiceSourceInfo] {
-        try read { db in
+        try await read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) AS session_count, MAX(indexed_at) AS latest_indexed
                 FROM sessions
@@ -559,7 +571,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
-        try read { db in
+        try await read { db in
             let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL") ?? 0
             guard try tableExists("session_embeddings", db: db) else {
                 return EngramServiceEmbeddingStatusResponse(
@@ -588,8 +600,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func resumeCommand(_ request: EngramServiceResumeCommandRequest) async throws -> EngramServiceResumeCommandResponse {
-        let session = try read { db in
-            try Row.fetchOne(
+        // Extract Sendable scalars inside the read block — a GRDB Row is not
+        // Sendable and cannot cross the blocking-read queue hop.
+        let session = try await read { db -> (id: String, source: String, cwd: String)? in
+            guard let row = try Row.fetchOne(
                 db,
                 sql: """
                     SELECT id, source, cwd
@@ -597,7 +611,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     WHERE id = ?
                 """,
                 arguments: [request.sessionId]
-            )
+            ) else {
+                return nil
+            }
+            return (id: row["id"], source: row["source"], cwd: (row["cwd"] as String?) ?? "")
         }
 
         guard let session else {
@@ -607,9 +624,9 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             )
         }
 
-        let sessionId: String = session["id"]
-        let source: String = session["source"]
-        let cwd: String = (session["cwd"] as String?) ?? ""
+        let sessionId: String = session.id
+        let source: String = session.source
+        let cwd: String = session.cwd
         switch source {
         case "claude-code":
             return resumeCLICommand(
@@ -654,7 +671,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse {
         let limit = max(1, min(request.limit, 200))
-        return try read { db in
+        return try await read { db in
             let baseSQL = """
                 SELECT id, old_path, new_path, old_basename, new_basename,
                        state, started_at, finished_at, archived, audit_note, actor
@@ -693,7 +710,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func projectCwds(_ request: EngramServiceProjectCwdsRequest) async throws -> EngramServiceProjectCwdsResponse {
-        try read { db in
+        try await read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
@@ -713,8 +730,17 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
     }
 
-    private func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
-        try databaseReader.read(block)
+    private func read<T: Sendable>(_ block: @escaping @Sendable (GRDB.Database) throws -> T) async throws -> T {
+        let databaseReader = self.databaseReader
+        return try await withCheckedThrowingContinuation { continuation in
+            Self.blockingReadQueue.async {
+                do {
+                    continuation.resume(returning: try databaseReader.read(block))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {

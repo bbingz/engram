@@ -83,15 +83,16 @@ public final class SessionSnapshotWriter {
         if incoming.syncVersion == current.syncVersion,
            incoming.snapshotHash == current.snapshotHash,
            incoming.sizeBytes == current.sizeBytes {
+            let (preservedRole, preservedTier) = preservedClassification(current: current, incoming: incoming)
             let currentTier = current.tier ?? .normal
-            let incomingTier = incoming.tier ?? .normal
-            guard currentTier != incomingTier || current.agentRole != incoming.agentRole else {
+            let incomingTier = preservedTier ?? .normal
+            guard currentTier != incomingTier || current.agentRole != preservedRole else {
                 return (.noop, current, SessionChangeSet(flags: []))
             }
 
             var merged = current
-            merged.tier = incoming.tier
-            merged.agentRole = incoming.agentRole
+            merged.tier = preservedTier
+            merged.agentRole = preservedRole
             merged.indexedAt = incoming.indexedAt
 
             var flags: Set<ChangeFlag> = [.localStateChanged]
@@ -116,11 +117,17 @@ public final class SessionSnapshotWriter {
         merged.summary = incoming.summary ?? current.summary
         merged.summaryMessageCount = incoming.summaryMessageCount ?? current.summaryMessageCount
         merged.origin = incoming.origin ?? current.origin
+        // Re-index must not revert a Layer-2 dispatched/skip classification (see
+        // upsert's ON CONFLICT CASE). Keep merge.snapshot consistent with the
+        // row the DB will persist so change flags / index jobs agree with it.
+        let (preservedRole, preservedTier) = preservedClassification(current: current, incoming: incoming)
+        merged.agentRole = preservedRole
+        merged.tier = preservedTier
 
         var flags: Set<ChangeFlag> = [.syncPayloadChanged]
         let currentTier = current.tier ?? .normal
-        let incomingTier = incoming.tier ?? .normal
-        if currentTier != incomingTier || current.agentRole != incoming.agentRole {
+        let incomingTier = preservedTier ?? .normal
+        if currentTier != incomingTier || current.agentRole != preservedRole {
             flags.insert(.localStateChanged)
         }
         if currentTier == .skip, incomingTier != .skip {
@@ -136,6 +143,19 @@ public final class SessionSnapshotWriter {
             flags.insert(.embeddingTextChanged)
         }
         return (.merge, merged, SessionChangeSet(flags: flags))
+    }
+
+    /// Mirrors the ON CONFLICT CASE in `upsert`: preserve a stored agent_role
+    /// when the incoming snapshot has none, and keep a 'skip' tier that a
+    /// non-null agent_role pins so a content re-index cannot revert a Layer-2
+    /// dispatched/skip classification.
+    private func preservedClassification(
+        current: AuthoritativeSessionSnapshot,
+        incoming: AuthoritativeSessionSnapshot
+    ) -> (role: String?, tier: SessionTier?) {
+        let role = incoming.agentRole ?? current.agentRole
+        let tier = (current.tier == .skip && current.agentRole != nil) ? current.tier : incoming.tier
+        return (role, tier)
     }
 
     private func currentSnapshot(id: String) throws -> AuthoritativeSessionSnapshot? {
@@ -178,13 +198,15 @@ public final class SessionSnapshotWriter {
               message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
               summary, summary_message_count, file_path, size_bytes, indexed_at, origin,
               authoritative_node, source_locator, sync_version, snapshot_hash,
-              tier, agent_role, quality_score, generated_title
+              tier, agent_role, quality_score, generated_title,
+              parent_session_id, link_source
             ) VALUES (
               ?, ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?,
-              ?, ?, ?, ?
+              ?, ?, ?, ?,
+              ?, CASE WHEN ? IS NOT NULL THEN 'path' ELSE NULL END
             )
             ON CONFLICT(id) DO UPDATE SET
               source = excluded.source,
@@ -213,10 +235,28 @@ public final class SessionSnapshotWriter {
               END,
               sync_version = excluded.sync_version,
               snapshot_hash = excluded.snapshot_hash,
-              tier = excluded.tier,
-              agent_role = excluded.agent_role,
+              -- Re-index must not revert a Layer-2 dispatched/skip classification:
+              -- preserve a stored agent_role when the incoming snapshot has none,
+              -- and never downgrade a 'skip' tier that a non-null agent_role pins.
+              tier = CASE
+                WHEN sessions.tier = 'skip' AND sessions.agent_role IS NOT NULL THEN sessions.tier
+                ELSE excluded.tier
+              END,
+              agent_role = COALESCE(excluded.agent_role, sessions.agent_role),
               quality_score = excluded.quality_score,
-              generated_title = COALESCE(NULLIF(TRIM(sessions.generated_title), ''), excluded.generated_title)
+              generated_title = COALESCE(NULLIF(TRIM(sessions.generated_title), ''), excluded.generated_title),
+              -- Persist a sidecar-derived parent (Layer 1c) but never clobber a
+              -- user-confirmed ('manual') link.
+              parent_session_id = CASE
+                WHEN sessions.link_source = 'manual' THEN sessions.parent_session_id
+                WHEN excluded.parent_session_id IS NOT NULL THEN excluded.parent_session_id
+                ELSE sessions.parent_session_id
+              END,
+              link_source = CASE
+                WHEN sessions.link_source = 'manual' THEN sessions.link_source
+                WHEN excluded.parent_session_id IS NOT NULL THEN 'path'
+                ELSE sessions.link_source
+              END
             """,
             arguments: [
                 snapshot.id,
@@ -244,7 +284,9 @@ public final class SessionSnapshotWriter {
                 (snapshot.tier ?? .normal).rawValue,
                 snapshot.agentRole,
                 computeQualityScore(snapshot),
-                generatedTitle(for: snapshot)
+                generatedTitle(for: snapshot),
+                snapshot.parentSessionId,
+                snapshot.parentSessionId
             ]
         )
     }

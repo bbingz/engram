@@ -186,12 +186,18 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
         }
 
         var scanned = 0
-        var newlyFlagged = 0
-        var confirmed = 0
-        var recovered = 0
         var skipped = 0
         let now = Date()
         let graceInterval = TimeInterval(gracePeriodDays) * 24 * 60 * 60
+
+        // Phase 1 (ungated): probe each session's source file without holding the
+        // write gate. The per-session `isAccessible` probe is I/O and was
+        // previously interleaved with per-row `writer.write` calls, keeping the
+        // write gate contended across the whole N-session scan. Collect the
+        // intended state transitions here, then apply them in short gated batches.
+        var recover: [String] = []
+        var flagSuspect: [String] = []
+        var confirmOrphan: [String] = []
 
         for row in rows {
             try Task.checkCancellation()
@@ -209,58 +215,90 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
 
             if accessible {
                 if row.orphanStatus != nil {
-                    try writer.write { db in
-                        try db.execute(
-                            sql: """
-                            UPDATE sessions
-                            SET orphan_status = NULL, orphan_since = NULL, orphan_reason = NULL
-                            WHERE id = ?
-                            """,
-                            arguments: [row.id]
-                        )
-                    }
-                    recovered += 1
+                    recover.append(row.id)
                 }
                 continue
             }
 
             if row.orphanStatus == nil {
-                try writer.write { db in
-                    try db.execute(
-                        sql: """
-                        UPDATE sessions
-                        SET orphan_status = 'suspect',
-                            orphan_since = datetime('now'),
-                            orphan_reason = COALESCE(orphan_reason, 'path_unreachable')
-                        WHERE id = ?
-                        """,
-                        arguments: [row.id]
-                    )
-                }
-                newlyFlagged += 1
+                flagSuspect.append(row.id)
                 continue
             }
 
             if row.orphanStatus == "suspect", let since = row.orphanSince,
                let sinceDate = Self.parseSQLiteDate(since),
                now.timeIntervalSince(sinceDate) >= graceInterval {
-                try writer.write { db in
-                    try db.execute(
-                        sql: "UPDATE sessions SET orphan_status = 'confirmed' WHERE id = ?",
-                        arguments: [row.id]
-                    )
-                }
-                confirmed += 1
+                confirmOrphan.append(row.id)
             }
         }
 
+        // Phase 2 (gated): apply the transitions in short batched writes so the
+        // write gate is only held briefly per batch, never across the I/O probe.
+        try await applyOrphanTransitions(
+            recover: recover,
+            flagSuspect: flagSuspect,
+            confirmOrphan: confirmOrphan
+        )
+
         return StartupOrphanScanResult(
             scanned: scanned,
-            newlyFlagged: newlyFlagged,
-            confirmed: confirmed,
-            recovered: recovered,
+            newlyFlagged: flagSuspect.count,
+            confirmed: confirmOrphan.count,
+            recovered: recover.count,
             skipped: skipped
         )
+    }
+
+    /// Batch-applies orphan-state transitions in short gated writes. Each call to
+    /// `writer.write` is one gated command, so chunking keeps the held window
+    /// small. `Task.checkCancellation` runs between batches.
+    private func applyOrphanTransitions(
+        recover: [String],
+        flagSuspect: [String],
+        confirmOrphan: [String],
+        batchSize: Int = 200
+    ) async throws {
+        for batch in recover.chunked(into: batchSize) {
+            try Task.checkCancellation()
+            try writer.write { db in
+                try db.execute(
+                    sql: """
+                    UPDATE sessions
+                    SET orphan_status = NULL, orphan_since = NULL, orphan_reason = NULL
+                    WHERE id IN (\(Self.placeholders(batch.count)))
+                    """,
+                    arguments: StatementArguments(batch)
+                )
+            }
+        }
+        for batch in flagSuspect.chunked(into: batchSize) {
+            try Task.checkCancellation()
+            try writer.write { db in
+                try db.execute(
+                    sql: """
+                    UPDATE sessions
+                    SET orphan_status = 'suspect',
+                        orphan_since = datetime('now'),
+                        orphan_reason = COALESCE(orphan_reason, 'path_unreachable')
+                    WHERE id IN (\(Self.placeholders(batch.count)))
+                    """,
+                    arguments: StatementArguments(batch)
+                )
+            }
+        }
+        for batch in confirmOrphan.chunked(into: batchSize) {
+            try Task.checkCancellation()
+            try writer.write { db in
+                try db.execute(
+                    sql: "UPDATE sessions SET orphan_status = 'confirmed' WHERE id IN (\(Self.placeholders(batch.count)))",
+                    arguments: StatementArguments(batch)
+                )
+            }
+        }
+    }
+
+    private static func placeholders(_ count: Int) -> String {
+        Array(repeating: "?", count: count).joined(separator: ", ")
     }
 
     /// Parses SQLite `datetime('now')` output ("YYYY-MM-DD HH:MM:SS", UTC).
@@ -274,5 +312,15 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
         }
         let iso = ISO8601DateFormatter()
         return iso.date(from: value)
+    }
+}
+
+private extension Array {
+    /// Splits the array into consecutive slices of at most `size` elements.
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0 else { return [self] }
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0 ..< Swift.min($0 + size, count)])
+        }
     }
 }

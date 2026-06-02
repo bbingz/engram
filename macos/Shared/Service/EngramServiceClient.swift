@@ -214,6 +214,9 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
 
         switch response {
         case .success(_, let result, _):
+            // `databaseGeneration` (3rd element) is intentionally ignored here:
+            // it exists for the MCP read-consistency path (EngramMCP), not the
+            // app, which polls status separately and has no generation gate.
             return try JSONDecoder().decode(Response.self, from: result)
         case .failure(_, let error):
             throw error.asError()

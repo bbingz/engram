@@ -937,19 +937,24 @@ final class DatabaseManager {
     /// for sessions whose cwd starts with repoPath.
     nonisolated func sparklineData(for repoPath: String) throws -> [Int] {
         try readInBackground { db in
+            // Bucket by LOCAL calendar day so it agrees with the Swift side, which
+            // compares against the local start-of-day. Without 'localtime' the SQL
+            // bucketed by UTC day and the day string was reparsed in local time,
+            // causing an off-by-one bucket for sessions near midnight.
             let rows = try Row.fetchAll(db, sql: """
-                SELECT date(start_time) as day, COUNT(*) as n
+                SELECT date(start_time, 'localtime') as day, COUNT(*) as n
                 FROM sessions
                 WHERE hidden_at IS NULL
                   AND (tier IS NULL OR tier != 'skip')
                   AND cwd LIKE ?
-                  AND start_time >= date('now', '-6 days')
+                  AND date(start_time, 'localtime') >= date('now', 'localtime', '-6 days')
                 GROUP BY day
             """, arguments: ["\(repoPath)%"])
             var counts = [Int](repeating: 0, count: 7)
             let today = Calendar.current.startOfDay(for: Date())
             let fmt = DateFormatter()
             fmt.dateFormat = "yyyy-MM-dd"
+            fmt.timeZone = .current
             for row in rows {
                 guard let dayStr = row["day"] as String?,
                       let date = fmt.date(from: dayStr) else { continue }
@@ -967,6 +972,8 @@ final class DatabaseManager {
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE hidden_at IS NULL AND project IS NOT NULL
+                  AND parent_session_id IS NULL
+                  AND suggested_parent_id IS NULL
                   AND (tier IS NULL OR tier != 'skip')
                 ORDER BY start_time DESC
                 LIMIT ?
@@ -1237,63 +1244,6 @@ final class DatabaseManager {
     }
 
     // MARK: - Observability: Health
-
-    // MARK: - Observability: Log Observation
-
-    /// Start a ValueObservation on the logs table. Returns a cancellable that must
-    /// be retained by the caller. The onChange closure fires on the main actor whenever
-    /// the logs table changes (insert / update / delete).
-    nonisolated func observeLogs(
-        level: String,
-        module: String,
-        limit: Int,
-        onError: @escaping @Sendable (Error) -> Void,
-        onChange: @escaping @Sendable (LogQueryResult) -> Void
-    ) throws -> AnyDatabaseCancellable {
-        let pool = try currentPool()
-
-        let observation = ValueObservation.tracking { db -> LogQueryResult in
-            // Fetch available modules
-            let modules = try String.fetchAll(db, sql: """
-                SELECT DISTINCT module FROM logs ORDER BY module
-            """)
-
-            // Build filtered query
-            var parts = ["SELECT * FROM logs WHERE 1=1"]
-            var args: [DatabaseValueConvertible] = []
-            if level != "All" {
-                parts.append("AND level = ?")
-                args.append(level)
-            }
-            if module != "All" {
-                parts.append("AND module = ?")
-                args.append(module)
-            }
-            parts.append("ORDER BY ts DESC LIMIT ?")
-            args.append(limit)
-
-            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "),
-                                        arguments: StatementArguments(args))
-            let entries = rows.map { row in
-                LogEntry(
-                    id: row["id"],
-                    ts: row["ts"],
-                    level: row["level"],
-                    module: row["module"],
-                    message: row["message"],
-                    traceId: row["trace_id"],
-                    source: row["source"],
-                    errorName: row["error_name"],
-                    errorMessage: row["error_message"]
-                )
-            }
-            return LogQueryResult(entries: entries, modules: modules)
-        }
-
-        return observation
-            .removeDuplicates()
-            .start(in: pool, scheduling: .immediate, onError: onError, onChange: onChange)
-    }
 
     nonisolated func observabilityTableCounts() throws -> [(table: String, count: Int)] {
         try readInBackground { db in

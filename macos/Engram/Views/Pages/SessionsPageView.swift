@@ -106,6 +106,7 @@ struct SessionsPageView: View {
                     since: since,
                     includeHidden: includeHidden,
                     subAgent: false,
+                    topLevelOnly: true,
                     sort: .updatedDesc,
                     limit: 200
                 )
@@ -113,7 +114,8 @@ struct SessionsPageView: View {
                     sources: sources,
                     since: since,
                     includeHidden: includeHidden,
-                    subAgent: false
+                    subAgent: false,
+                    topLevelOnly: true
                 )
                 let sourceOptions = try db.sessionListStats(
                     since: since,

@@ -120,6 +120,10 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
     let total: Int?
     let todayParents: Int?
     let message: String?
+    /// Failure detail for `index_error` events. The service emits the failure
+    /// under the `error` key (see `ServiceIndexErrorEvent`), not `message`, so
+    /// without this the detail is dropped.
+    let errorDetail: String?
     let sessionId: String?
     let summary: String?
     let port: Int?
@@ -134,6 +138,7 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         case total
         case todayParents
         case message
+        case error
         case sessionId
         case summary
         case port
@@ -150,6 +155,7 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         total: Int? = nil,
         todayParents: Int? = nil,
         message: String? = nil,
+        errorDetail: String? = nil,
         sessionId: String? = nil,
         summary: String? = nil,
         port: Int? = nil,
@@ -163,6 +169,7 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         self.total = total
         self.todayParents = todayParents
         self.message = message
+        self.errorDetail = errorDetail
         self.sessionId = sessionId
         self.summary = summary
         self.port = port
@@ -179,6 +186,7 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         total = try container.decodeIfPresent(Int.self, forKey: .total)
         todayParents = try container.decodeIfPresent(Int.self, forKey: .todayParents)
         message = try container.decodeIfPresent(String.self, forKey: .message)
+        errorDetail = try container.decodeIfPresent(String.self, forKey: .error)
         sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
         summary = try container.decodeIfPresent(String.self, forKey: .summary)
         port = try container.decodeIfPresent(Int.self, forKey: .port)
@@ -196,6 +204,7 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         try container.encodeIfPresent(total, forKey: .total)
         try container.encodeIfPresent(todayParents, forKey: .todayParents)
         try container.encodeIfPresent(message, forKey: .message)
+        try container.encodeIfPresent(errorDetail, forKey: .error)
         try container.encodeIfPresent(sessionId, forKey: .sessionId)
         try container.encodeIfPresent(summary, forKey: .summary)
         try container.encodeIfPresent(port, forKey: .port)
@@ -239,6 +248,8 @@ struct EngramServiceRequestEnvelope: Codable, Equatable, Sendable {
 }
 
 enum EngramServiceResponseEnvelope: Codable, Equatable, Sendable {
+    /// `databaseGeneration` is consumed by the MCP read-consistency path
+    /// (EngramMCP); the app `EngramServiceClient` ignores it.
     case success(requestId: String, result: Data, databaseGeneration: Int? = nil)
     case failure(requestId: String, error: EngramServiceErrorEnvelope)
 

@@ -815,7 +815,14 @@ enum MCPToolRegistry {
             )
             return .toolSuccess(structured)
         case "live_sessions":
-            return .toolSuccess(MCPLiveSessionScanner.scan(home: ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()))
+            // Live session monitoring is not available in MCP mode (no live
+            // monitor process). Return an explicit unavailable result matching
+            // the registered description instead of scanning the filesystem.
+            return .toolSuccess(.object([
+                ("sessions", .array([])),
+                ("count", .int(0)),
+                ("note", .string("Live session monitor not available (MCP server mode)")),
+            ]))
         case "get_memory":
             let database = try MCPDatabase(path: config.dbPath)
             let structured = try database.getMemory(query: try requiredString("query", in: arguments))
@@ -1169,6 +1176,12 @@ enum MCPToolRegistry {
             }
         }
 
+        if let required = schema["required"]?.arrayValue {
+            for case .string(let key) in required where arguments[key] == nil {
+                throw MCPToolError.invalidArguments("\(key) is required")
+            }
+        }
+
         for (key, value) in arguments {
             guard let propertySchema = properties[key]?.objectValue else { continue }
             try validateArgument(value, toolName: definition.name, key: key, schema: propertySchema)
@@ -1183,6 +1196,22 @@ enum MCPToolRegistry {
     ) throws {
         if let type = schema["type"]?.stringValue {
             try validateArgumentType(value, key: key, type: type)
+        }
+
+        // Validate each element of an array against its declared items.enum so
+        // bogus values (e.g. roles:["banana"]) are rejected instead of silently
+        // passing the array-type check.
+        if schema["type"]?.stringValue == "array",
+           let items = schema["items"]?.objectValue,
+           let allowedItems = items["enum"]?.arrayValue,
+           let elements = value.arrayValue {
+            for element in elements where !allowedItems.contains(element) {
+                let formatted = allowedItems.compactMap(\.stringValue).joined(separator: ", ")
+                if formatted.isEmpty {
+                    throw MCPToolError.invalidArguments("\(key) has an unsupported value")
+                }
+                throw MCPToolError.invalidArguments("\(key) items must be one of: \(formatted)")
+            }
         }
 
         // Keep legacy search clients working: unsupported modes are downgraded

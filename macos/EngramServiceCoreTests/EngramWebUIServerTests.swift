@@ -239,4 +239,117 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertFalse(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "0"]))
         XCTAssertFalse(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "false"]))
     }
+
+    // MARK: - Transcript pager (raw-index consistency + capped window)
+
+    /// A mixed stream: index 0 user (shown), 1 tool (filtered), 2 assistant
+    /// (shown), 3 empty user (filtered), 4 user (shown), 5 user (shown).
+    private func mixedStream() -> [NormalizedMessage] {
+        [
+            NormalizedMessage(role: .user, content: "m0"),       // 0 shown
+            NormalizedMessage(role: .tool, content: "tool out"), // 1 filtered (tool)
+            NormalizedMessage(role: .assistant, content: "m2"),  // 2 shown
+            NormalizedMessage(role: .user, content: "   "),      // 3 filtered (blank)
+            NormalizedMessage(role: .user, content: "m4"),       // 4 shown
+            NormalizedMessage(role: .user, content: "m5")        // 5 shown
+        ]
+    }
+
+    /// Mirror the formula the view uses so the rendered pager values are
+    /// asserted as the page handler actually computes them.
+    private func renderedPrevious(offset: Int, limit: Int) -> Int { max(0, offset - limit) }
+    private func renderedShowing(offset: Int, nextOffset: Int) -> String {
+        "Showing messages \(offset + 1)-\(nextOffset)"
+    }
+
+    func testPagerFirstPageCapsRawWindowAndReportsHasMore() {
+        // Page stride is `limit` RAW messages. limit = 3 → raw window covers
+        // indices 0,1,2 (the +1 probe at index 3 only signals hasMore).
+        let full = mixedStream()
+        let offset = 0, limit = 3
+        // readMessages hands windowDisplayable at most limit+1 raw messages.
+        let raw = Array(full[offset...].prefix(limit + 1))
+        let page = EngramWebUIServer.windowDisplayable(raw, source: "codex", offset: offset, limit: limit)
+
+        // Of raw indices 0..2: 0 (user) + 2 (assistant) are shown; 1 (tool) filtered.
+        XCTAssertEqual(page.messages.map(\.content), ["m0", "m2"])
+        XCTAssertTrue(page.hasMore, "a 4th raw message exists past the window")
+        // nextOffset is a RAW index = offset + window size (3), not displayed count.
+        XCTAssertEqual(page.nextOffset, 3)
+        XCTAssertEqual(renderedPrevious(offset: offset, limit: limit), 0)
+        XCTAssertEqual(renderedShowing(offset: offset, nextOffset: page.nextOffset),
+                       "Showing messages 1-3")
+    }
+
+    func testPagerSecondPageIsExactRawInverseOfFirst() {
+        // Next from page 1 lands at raw offset 3. From there limit = 3 covers
+        // raw indices 3,4,5; there is no 7th raw message so hasMore is false.
+        let full = mixedStream()
+        let offset = 3, limit = 3
+        let raw = Array(full[offset...].prefix(limit + 1)) // 3,4,5 (only 3 left)
+        let page = EngramWebUIServer.windowDisplayable(raw, source: "codex", offset: offset, limit: limit)
+
+        // raw 3 (blank user) filtered; 4 + 5 shown.
+        XCTAssertEqual(page.messages.map(\.content), ["m4", "m5"])
+        XCTAssertFalse(page.hasMore, "stream ends at raw index 5")
+        XCTAssertEqual(page.nextOffset, 6) // offset(3) + window(3)
+        // Previous from page 2 is offset - limit = 0 — the EXACT start of page 1.
+        XCTAssertEqual(renderedPrevious(offset: offset, limit: limit), 0)
+        XCTAssertEqual(renderedShowing(offset: offset, nextOffset: page.nextOffset),
+                       "Showing messages 4-6")
+    }
+
+    func testPagerWindowFullOfFilteredMessagesStillAdvances() {
+        // A page whose raw window is entirely filtered renders nothing but must
+        // still report hasMore + a forward nextOffset so navigation continues.
+        let raw = [
+            NormalizedMessage(role: .tool, content: "a"),
+            NormalizedMessage(role: .tool, content: "b"),
+            NormalizedMessage(role: .system, content: "c"),
+            NormalizedMessage(role: .user, content: "probe") // +1 probe
+        ]
+        let page = EngramWebUIServer.windowDisplayable(raw, source: "codex", offset: 10, limit: 3)
+
+        XCTAssertTrue(page.messages.isEmpty)
+        XCTAssertTrue(page.hasMore)
+        XCTAssertEqual(page.nextOffset, 13) // offset(10) + window(3)
+    }
+
+    func testPagerExactlyLimitRawMessagesHasNoMore() {
+        // raw.count == limit (no probe element) → no further page.
+        let raw = [
+            NormalizedMessage(role: .user, content: "x"),
+            NormalizedMessage(role: .assistant, content: "y"),
+            NormalizedMessage(role: .user, content: "z")
+        ]
+        let page = EngramWebUIServer.windowDisplayable(raw, source: "codex", offset: 0, limit: 3)
+
+        XCTAssertEqual(page.messages.map(\.content), ["x", "y", "z"])
+        XCTAssertFalse(page.hasMore)
+        XCTAssertEqual(page.nextOffset, 3)
+    }
+
+    func testPagerRedactsSurvivingMessages() {
+        let raw = [NormalizedMessage(role: .user, content: "api_key: ABCDEF0123456789")]
+        let page = EngramWebUIServer.windowDisplayable(raw, source: "codex", offset: 0, limit: 3)
+
+        XCTAssertEqual(page.messages.count, 1)
+        XCTAssertFalse(page.messages[0].content.contains("ABCDEF0123456789"))
+        XCTAssertTrue(page.messages[0].content.contains("[REDACTED]"))
+    }
+
+    func testMissingSessionSignalsNotFoundStatus() throws {
+        // sessionPage is private + needs a Request, so assert the wiring at the
+        // source level: a missing session must return .notFound, mirroring the
+        // percent-decode-failure branch — not the default .ok.
+        let source = try serviceCoreSource("EngramWebUIServer.swift")
+        XCTAssertTrue(
+            source.contains("return (layout(title: \"Not Found\", body: \"<p>Session not found.</p>\"), .notFound)"),
+            "Missing session must signal HTTP 404, not a 200 that renders not-found HTML"
+        )
+        XCTAssertFalse(
+            source.contains("options: StreamMessagesOptions(offset: offset, limit: nil)"),
+            "readMessages must cap the raw window, not materialize the whole post-offset suffix"
+        )
+    }
 }

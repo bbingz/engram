@@ -23,6 +23,14 @@ final class ServiceEventRoutingTests: XCTestCase {
             return XCTFail("index_error must produce a degraded status, got \(store.status)")
         }
         XCTAssertTrue(message.contains("Last index scan failed"))
+        // The detail lives under the `error` key; it must not be dropped.
+        XCTAssertTrue(message.contains("missing sessions table"))
+    }
+
+    func testIndexErrorDetailDecodesFromErrorKey() throws {
+        let event = try decode(#"{"event":"index_error","error":"missing sessions table"}"#)
+        XCTAssertEqual(event.errorDetail, "missing sessions table")
+        XCTAssertNil(event.message)
     }
 
     func testIndexErrorWithoutMessageStillDegrades() throws {

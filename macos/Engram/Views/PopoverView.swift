@@ -201,7 +201,9 @@ struct PopoverView: View {
 
     private func loadData() async {
         let db = self.db
-        let result: (Int, Int, [Session], Int64) = await Task.detached {
+        // All DB work (including sourceStats + the stats-derived health summary)
+        // runs in the detached block so nothing blocks the main thread on return.
+        let result: (Int, Int, [Session], Int64, Int, Int, String) = await Task.detached {
             let counts = (try? db.readInBackground { d in
                 try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT source) FROM sessions WHERE hidden_at IS NULL")
             }) ?? 0
@@ -229,37 +231,39 @@ struct PopoverView: View {
                 """)
             }) ?? []
             let size = Int64((try? FileManager.default.attributesOfItem(atPath: db.path)[.size] as? Int) ?? 0)
-            return (counts, projectCount, sessions, size)
+
+            // Health summary (off main thread)
+            let stats = (try? db.sourceStats()) ?? []
+            let now = Date()
+            let oneDaySec: TimeInterval = 86400
+            let fmt = ISO8601DateFormatter()
+            fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let active = stats.filter { s in
+                guard !s.latestIndexed.isEmpty, let d = fmt.date(from: s.latestIndexed) else { return false }
+                return now.timeIntervalSince(d) < oneDaySec
+            }.count
+            let latest = stats.compactMap { s -> Date? in
+                s.latestIndexed.isEmpty ? nil : fmt.date(from: s.latestIndexed)
+            }.max()
+            let agoLabel: String
+            if let latest {
+                let interval = now.timeIntervalSince(latest)
+                if interval < 60 { agoLabel = "now" }
+                else if interval < 3600 { agoLabel = "\(Int(interval / 60))m" }
+                else if interval < 86400 { agoLabel = "\(Int(interval / 3600))h" }
+                else { agoLabel = "\(Int(interval / 86400))d" }
+            } else {
+                agoLabel = "—"
+            }
+            return (counts, projectCount, sessions, size, active, stats.count, agoLabel)
         }.value
         sourceCount = result.0
         projectCount = result.1
         dbSize = result.3
         recentSessions = Array(result.2.prefix(15))
-
-        // Health summary
-        let stats = (try? db.sourceStats()) ?? []
-        let now = Date()
-        let oneDaySec: TimeInterval = 86400
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let active = stats.filter { s in
-            guard !s.latestIndexed.isEmpty, let d = fmt.date(from: s.latestIndexed) else { return false }
-            return now.timeIntervalSince(d) < oneDaySec
-        }.count
-        let latest = stats.compactMap { s -> Date? in
-            s.latestIndexed.isEmpty ? nil : fmt.date(from: s.latestIndexed)
-        }.max()
-        activeSourceCount = active
-        totalSourceCount = stats.count
-        if let latest {
-            let interval = now.timeIntervalSince(latest)
-            if interval < 60 { lastIndexedAgo = "now" }
-            else if interval < 3600 { lastIndexedAgo = "\(Int(interval / 60))m" }
-            else if interval < 86400 { lastIndexedAgo = "\(Int(interval / 3600))h" }
-            else { lastIndexedAgo = "\(Int(interval / 86400))d" }
-        } else {
-            lastIndexedAgo = "—"
-        }
+        activeSourceCount = result.4
+        totalSourceCount = result.5
+        lastIndexedAgo = result.6
     }
 
     // MARK: - Helpers

@@ -68,7 +68,8 @@ final class EngramWebUIServer: @unchecked Sendable {
             guard let id = context.parameters.get("id")?.removingPercentEncoding else {
                 return try htmlResponse(layout(title: "Not Found", body: "<p>Session not found.</p>"), status: .notFound)
             }
-            return try await htmlResponse(sessionPage(id: id, request: request))
+            let page = try await sessionPage(id: id, request: request)
+            return try htmlResponse(page.html, status: page.status)
         }
         // /health is intentionally unauthenticated so the launcher's loopback
         // readiness probe can confirm the server is up. It exposes no data.
@@ -249,11 +250,18 @@ final class EngramWebUIServer: @unchecked Sendable {
         )
     }
 
-    private func sessionPage(id: String, request: Request) async throws -> String {
+    private func sessionPage(id: String, request: Request) async throws -> (html: String, status: HTTPResponse.Status) {
         guard let session = try readSession(id: id) else {
-            return layout(title: "Not Found", body: "<p>Session not found.</p>")
+            // Mirror the percent-decode-failure branch: a missing session is a
+            // 404, not a 200 that happens to render not-found HTML.
+            return (layout(title: "Not Found", body: "<p>Session not found.</p>"), .notFound)
         }
 
+        // `offset`/`limit` are both raw message indices into the unfiltered
+        // stream so Previous, Next, and the range label stay in ONE unit. A
+        // page covers raw indices [offset, offset + limit); the displayable
+        // subset is what actually renders. Previous = offset - limit and
+        // Next = offset + (raw consumed) are exact inverses of this stride.
         let offset = max(0, Int(String(request.uri.queryParameters["offset"] ?? "0")) ?? 0)
         let limit = min(200, max(1, Int(String(request.uri.queryParameters["limit"] ?? "50")) ?? 50))
         let messageHTML: String
@@ -274,7 +282,7 @@ final class EngramWebUIServer: @unchecked Sendable {
             pager = """
             <nav class="pager">
               \(previousLink)
-              <span>Showing \(offset + 1)-\(offset + page.messages.count)</span>
+              <span>Showing messages \(offset + 1)-\(page.nextOffset)</span>
               \(nextLink)
             </nav>
             """
@@ -283,7 +291,7 @@ final class EngramWebUIServer: @unchecked Sendable {
             pager = ""
         }
 
-        return layout(
+        return (layout(
             title: session.displayTitle,
             body: """
             <a class="back" href="/">← Sessions</a>
@@ -302,7 +310,7 @@ final class EngramWebUIServer: @unchecked Sendable {
             </main>
             \(pager)
             """
-        )
+        ), .ok)
     }
 
     private func readSessions(limit: Int) throws -> [WebSession] {
@@ -348,29 +356,46 @@ final class EngramWebUIServer: @unchecked Sendable {
             return ([], false, offset)
         }
 
+        // Page stride is `limit` RAW messages: cap the materialized suffix at
+        // `limit` (+1 probe) instead of passing `limit: nil`, which forced the
+        // adapter to materialize the entire post-offset suffix every page.
         let stream = try await adapter.streamMessages(
             locator: locator,
-            options: StreamMessagesOptions(offset: offset, limit: nil)
+            options: StreamMessagesOptions(offset: offset, limit: limit + 1)
         )
-        var messages: [NormalizedMessage] = []
-        var consumed = offset
-        var nextOffset = offset
-        var hasMore = false
+        var raw: [NormalizedMessage] = []
         for try await message in stream {
-            consumed += 1
-            guard Self.shouldDisplayTranscriptMessage(message, source: session.source) else { continue }
-            if messages.count >= limit {
-                hasMore = true
-                break
-            }
-            // SEC-C1: redact secrets before they ever reach the rendered page,
-            // matching the export path's behavior.
-            var redacted = message
-            redacted.content = Self.redactSensitiveContent(message.content)
-            messages.append(redacted)
-            nextOffset = consumed
+            raw.append(message)
+            if raw.count > limit { break }
         }
-        return (messages, hasMore, nextOffset)
+        return Self.windowDisplayable(raw, source: session.source, offset: offset, limit: limit)
+    }
+
+    /// Pure windowing/filtering over an already-offset raw message slice.
+    /// `raw` is at most `limit + 1` messages (the +1 is a look-ahead probe for
+    /// `hasMore`). Returns the displayable subset within the raw window plus a
+    /// `nextOffset` in the same RAW message-index unit as `offset`, so the
+    /// pager's Previous (`offset - limit`) and Next (`nextOffset`) stay
+    /// consistent. Static so it is unit-testable without disk/adapters.
+    static func windowDisplayable(
+        _ raw: [NormalizedMessage],
+        source: String,
+        offset: Int,
+        limit: Int
+    ) -> (messages: [NormalizedMessage], hasMore: Bool, nextOffset: Int) {
+        let hasMore = raw.count > limit
+        let window = hasMore ? Array(raw.prefix(limit)) : raw
+        // Filter on the ORIGINAL content (classification is content-sensitive),
+        // then redact the survivors before they reach the rendered page.
+        let messages = window
+            .filter { Self.shouldDisplayTranscriptMessage($0, source: source) }
+            .map { message -> NormalizedMessage in
+                var redacted = message
+                // SEC-C1: redact secrets, matching the export path's behavior.
+                redacted.content = Self.redactSensitiveContent(message.content)
+                return redacted
+            }
+        return (messages, hasMore, offset + window.count)
     }
 
     static func redactSensitiveContent(_ content: String) -> String {

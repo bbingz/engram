@@ -11,8 +11,16 @@ enum MCPTranscriptTools {
             throw MCPToolError.invalidArguments("Session not found: \(id)")
         }
 
+        // Treat empty/whitespace-only roles as no filter (equivalent to nil);
+        // an empty array would otherwise make `.contains` always false and
+        // silently return zero messages.
+        let roleFilter = roles?
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let activeRoleFilter = (roleFilter?.isEmpty == false) ? roleFilter : nil
+
         let allMessages = await MCPTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
-            .filter { roles == nil || roles!.contains($0.role) }
+            .filter { activeRoleFilter == nil || activeRoleFilter!.contains($0.role) }
         let pageSize = 50
         let currentPage = max(page, 1)
         let offset = (currentPage - 1) * pageSize

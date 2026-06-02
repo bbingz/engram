@@ -353,6 +353,16 @@ enum EngramMigrations {
     }
 
     private static func migrateAuxTablesToV2(_ db: GRDB.Database) throws {
+        // Skip the per-table rebuilds once the stored version already matches the
+        // current aux schema. The per-table guards are idempotent, but they run
+        // PRAGMA table_info on ~10 tables every startup; gating on the version
+        // metadata avoids that work after the first successful migration.
+        let storedVersion = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = 'swift_aux_schema_version'"
+        )
+        guard storedVersion != auxSchemaVersion else { return }
+
         try migrateSessionToolsToV2(db)
         try migrateSessionFilesToV2(db)
         try migrateLogsToV2(db)

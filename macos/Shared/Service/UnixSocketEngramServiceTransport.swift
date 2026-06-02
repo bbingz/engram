@@ -4,6 +4,14 @@ import Foundation
 final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked Sendable {
     static let maximumFrameLength = 256 * 1024
 
+    /// Whole-frame wall-clock budget. The per-syscall SO_RCVTIMEO/SO_SNDTIMEO
+    /// only bounds a single read()/write(); a peer that trickles one byte just
+    /// before each timeout window keeps every syscall "making progress" and can
+    /// stretch a single frame across `maximumFrameLength` iterations. Track a
+    /// deadline for the whole frame so a slow-loris peer is cut off regardless
+    /// of per-syscall progress.
+    static let maximumFrameDurationSeconds: TimeInterval = 30
+
     private let socketPath: String
     private let connectTimeout: TimeInterval
 
@@ -222,20 +230,25 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
                 message: "Service frame length \(data.count) exceeds maximum \(maximumFrameLength)"
             )
         }
+        let deadline = Date().addingTimeInterval(maximumFrameDurationSeconds)
         var length = UInt32(data.count).bigEndian
-        try withUnsafeBytes(of: &length) { try writeAll($0, to: fd) }
-        try data.withUnsafeBytes { try writeAll($0, to: fd) }
+        try withUnsafeBytes(of: &length) { try writeAll($0, to: fd, deadline: deadline) }
+        try data.withUnsafeBytes { try writeAll($0, to: fd, deadline: deadline) }
     }
 
     static func readFrame(from fd: Int32) throws -> Data {
-        let lengthData = try readExact(count: 4, from: fd)
+        // One deadline for the entire frame (length prefix + body), so a peer
+        // that trickles bytes can't keep the per-syscall timeout perpetually
+        // satisfied while stalling the whole frame.
+        let deadline = Date().addingTimeInterval(maximumFrameDurationSeconds)
+        let lengthData = try readExact(count: 4, from: fd, deadline: deadline)
         let length = lengthData.reduce(UInt32(0)) { partial, byte in
             (partial << 8) | UInt32(byte)
         }
         guard length > 0, length <= maximumFrameLength else {
             throw EngramServiceError.invalidRequest(message: "Invalid service frame length \(length)")
         }
-        return try readExact(count: Int(length), from: fd)
+        return try readExact(count: Int(length), from: fd, deadline: deadline)
     }
 
     static func connectSocket(path: String) throws -> Int32 {
@@ -346,9 +359,10 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
         try FileManager.default.removeItem(atPath: path)
     }
 
-    private static func writeAll(_ buffer: UnsafeRawBufferPointer, to fd: Int32) throws {
+    private static func writeAll(_ buffer: UnsafeRawBufferPointer, to fd: Int32, deadline: Date?) throws {
         var offset = 0
         while offset < buffer.count {
+            try checkFrameDeadline(deadline, operation: "write")
             let written = Darwin.write(fd, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
             if written < 0, isTimeoutErrno(errno) {
                 throw EngramServiceError.serviceUnavailable(message: "Service socket write timed out")
@@ -360,11 +374,12 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
         }
     }
 
-    private static func readExact(count: Int, from fd: Int32) throws -> Data {
+    private static func readExact(count: Int, from fd: Int32, deadline: Date?) throws -> Data {
         var data = Data(count: count)
         try data.withUnsafeMutableBytes { buffer in
             var offset = 0
             while offset < count {
+                try checkFrameDeadline(deadline, operation: "read")
                 let readCount = Darwin.read(fd, buffer.baseAddress!.advanced(by: offset), count - offset)
                 if readCount < 0, isTimeoutErrno(errno) {
                     throw EngramServiceError.serviceUnavailable(message: "Service socket read timed out")
@@ -376,6 +391,16 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
             }
         }
         return data
+    }
+
+    /// Throw once the whole-frame wall-clock deadline has passed. Checked before
+    /// each blocking syscall so a peer that keeps each individual read()/write()
+    /// "progressing" still gets cut off when the frame as a whole stalls.
+    private static func checkFrameDeadline(_ deadline: Date?, operation: String) throws {
+        guard let deadline, Date() >= deadline else { return }
+        throw EngramServiceError.serviceUnavailable(
+            message: "Service socket \(operation) exceeded the per-frame deadline"
+        )
     }
 
     private static func isTimeoutErrno(_ value: Int32) -> Bool {

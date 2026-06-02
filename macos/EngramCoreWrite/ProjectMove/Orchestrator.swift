@@ -330,7 +330,7 @@ public enum ProjectMoveOrchestrator {
 
                     let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingBasename(
                         filePath: projectsFile,
-                        targetBasename: basename(dst),
+                        targetBasename: SessionSources.encodeGemini(dst),
                         srcCwd: src
                     )
                     if !conflicts.isEmpty {

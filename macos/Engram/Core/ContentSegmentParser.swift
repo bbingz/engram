@@ -11,16 +11,19 @@ enum ContentSegment: Identifiable {
     case table(headers: [String], rows: [[String]])
     case horizontalRule
 
+    /// Derive id from the FULL content (kind tag + full joined text), not a hash
+    /// or count+first. hashValue and count/first prefixes both collide
+    /// deterministically, which makes SwiftUI ForEach drop or duplicate rows.
     var id: String {
         switch self {
-        case .text(let s):           return "t:\(s.hashValue)"
-        case .codeBlock(_, let c):   return "c:\(c.hashValue)"
-        case .heading(let l, let t): return "h\(l):\(t.hashValue)"
-        case .bulletList(let items): return "bl:\(items.count):\(items.first?.hashValue ?? 0)"
-        case .numberedList(let items): return "nl:\(items.count):\(items.first?.hashValue ?? 0)"
-        case .taskList(let items):   return "tl:\(items.count):\(items.first?.text.hashValue ?? 0)"
-        case .table(let h, _):      return "tb:\(h.joined().hashValue)"
-        case .horizontalRule:        return "hr"
+        case .text(let s):             return "t:\(s)"
+        case .codeBlock(let lang, let c): return "c:\(lang)\n\(c)"
+        case .heading(let l, let t):   return "h\(l):\(t)"
+        case .bulletList(let items):   return "bl:\(items.joined(separator: "\n"))"
+        case .numberedList(let items): return "nl:\(items.joined(separator: "\n"))"
+        case .taskList(let items):     return "tl:" + items.map { "\($0.done ? 1 : 0):\($0.text)" }.joined(separator: "\n")
+        case .table(let h, let rows):  return "tb:" + h.joined(separator: "|") + "\n" + rows.map { $0.joined(separator: "|") }.joined(separator: "\n")
+        case .horizontalRule:          return "hr"
         }
     }
 }

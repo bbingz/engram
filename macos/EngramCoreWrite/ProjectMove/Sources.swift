@@ -83,7 +83,7 @@ public enum SessionSources {
             SourceRoot(
                 id: .geminiCli,
                 path: (home as NSString).appendingPathComponent(".gemini/tmp"),
-                encodeProjectDir: { cwd in (cwd as NSString).lastPathComponent }
+                encodeProjectDir: { cwd in encodeGemini(cwd) }
             ),
             SourceRoot(
                 id: .iflow,
@@ -138,6 +138,20 @@ public enum SessionSources {
                 return String(s)
             }
             .joined(separator: "-")
+    }
+
+    /// Encode a project cwd into the Gemini CLI project slug used both as the
+    /// `~/.gemini/tmp/<slug>/` directory name and as the `projects.json` value.
+    /// Gemini slugifies the cwd basename: lowercase, `_` → `-`, then strip the
+    /// wrapping dashes. e.g. `/Users/bing/-Code-` → `code`,
+    /// `/Users/bing/-Code-/WebSite_Gemini` → `website-gemini`. Lossy by design.
+    public static func encodeGemini(_ absolutePath: String) -> String {
+        var s = (absolutePath as NSString).lastPathComponent
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")[...]
+        while s.first == "-" { s = s.dropFirst() }
+        while s.last == "-" { s = s.dropLast() }
+        return String(s)
     }
 
     /// Recursively walk `root` invoking `onFile` for each session file

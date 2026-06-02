@@ -121,21 +121,33 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
                 bindings: [locatorParts.sessionId]
             )
 
-            var userCount = 0
-            var assistantCount = 0
-            for message in messages {
-                guard let data = (message["data"] ?? nil),
-                      let object = Phase4AdapterSupport.jsonObject(from: data),
-                      let role = JSONLAdapterSupport.string(object["role"])
+            // Count only messages that contribute a non-empty text part, mirroring
+            // the streamMessages predicate so counts match the streamed transcript.
+            let countRows = try database.query(
+                """
+                SELECT m.id AS mid, m.data AS mdata, p.data AS pdata
+                FROM message m
+                JOIN part p ON p.message_id = m.id
+                WHERE m.session_id = ?
+                """,
+                bindings: [locatorParts.sessionId]
+            )
+            var userMessageIds = Set<String>()
+            var assistantMessageIds = Set<String>()
+            for row in countRows {
+                guard let messageId = row["mid"] ?? nil,
+                      let role = Self.contentfulRole(from: row)
                 else {
                     continue
                 }
                 if role == "user" {
-                    userCount += 1
+                    userMessageIds.insert(messageId)
                 } else if role == "assistant" {
-                    assistantCount += 1
+                    assistantMessageIds.insert(messageId)
                 }
             }
+            let userCount = userMessageIds.count
+            let assistantCount = assistantMessageIds.count
 
             let sessionCreated = Phase4AdapterSupport.double(session["time_created"] ?? nil) ?? 0
             let firstMessageTime = Phase4AdapterSupport.double(messages.first?["time_created"] ?? nil)
@@ -262,6 +274,28 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
     ) throws -> Int64 {
         let raw = try database.query(sql, bindings: [sessionId]).first?["bytes"] ?? nil
         return Int64(raw ?? "") ?? 0
+    }
+
+    // Returns the role of a message+part row only when it yields a non-empty
+    // text part, matching message(from:) so parseSessionInfo counts agree with
+    // the streamed transcript.
+    private static func contentfulRole(from row: [String: String?]) -> String? {
+        guard let rawMessage = row["mdata"] ?? nil,
+              let rawPart = row["pdata"] ?? nil,
+              let messageData = Phase4AdapterSupport.jsonObject(from: rawMessage),
+              let partData = Phase4AdapterSupport.jsonObject(from: rawPart),
+              let role = JSONLAdapterSupport.string(messageData["role"]),
+              role == "user" || role == "assistant",
+              JSONLAdapterSupport.string(partData["type"]) == "text"
+        else {
+            return nil
+        }
+        let content = JSONLAdapterSupport.string(partData["text"]) ??
+            JSONLAdapterSupport.string(partData["value"]) ?? ""
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return role
     }
 
     private static func message(from row: [String: String?]) -> NormalizedMessage? {

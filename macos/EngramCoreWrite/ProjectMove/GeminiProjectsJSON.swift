@@ -66,7 +66,7 @@ public enum GeminiProjectsJSON {
         let oldEntry = shape.map[oldCwd].map { GeminiProjectsEntry(cwd: oldCwd, name: $0) }
         let newEntry = GeminiProjectsEntry(
             cwd: newCwd,
-            name: (newCwd as NSString).lastPathComponent
+            name: SessionSources.encodeGemini(newCwd)
         )
         return GeminiProjectsJsonUpdatePlan(
             filePath: filePath,

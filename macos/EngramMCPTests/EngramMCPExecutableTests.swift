@@ -434,6 +434,90 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testGetSessionEmptyRolesReturnsAllMessages() throws {
+        // Regression: roles:[] previously made the role filter `[].contains`
+        // always false, silently returning zero messages. An empty (or
+        // whitespace-only) roles array must behave like no filter.
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-empty-roles-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: fixturePath("mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl"),
+            messageCount: 3,
+            userMessageCount: 2,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1,"roles":[]}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        guard case .array(let messages)? = capture.ordered["result"]?["structuredContent"]?["messages"] else {
+            XCTFail("Expected get_session messages array")
+            return
+        }
+        XCTAssertEqual(messages.count, 3, "empty roles must not filter out every message")
+        let roles = messages.compactMap { $0["role"]?.stringValue }
+        XCTAssertEqual(roles, ["user", "assistant", "user"])
+    }
+
+    func testGetSessionRejectsUnknownRoleEnumValue() throws {
+        // roles is declared as an array with items.enum [user, assistant];
+        // a bogus element (e.g. "banana") must be rejected, not silently
+        // accepted by the array-type check.
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","roles":["banana"]}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        guard case .array(let content)? = result["content"] else {
+            XCTFail("Expected error content")
+            return
+        }
+        let message = content.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(message.contains("roles"), message)
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("one of"), message)
+    }
+
+    func testToolCallRejectsMissingRequiredArgument() throws {
+        // The top-level `required` array must be enforced before dispatch:
+        // get_memory requires `query`, so an empty argument object must surface
+        // a consistent invalidArguments error.
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        guard case .array(let content)? = result["content"] else {
+            XCTFail("Expected error content")
+            return
+        }
+        let message = content.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(message.contains("query is required"), message)
+    }
+
     func testGetSessionFiltersToolMessagesLikeSwiftDisplay() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("engram-mcp-commandcode-\(UUID().uuidString)", isDirectory: true)
@@ -846,10 +930,21 @@ final class EngramMCPExecutableTests: XCTestCase {
         // the test runs reliably on a dev box where the user's real
         // service might be live.
         let bogusSocket = "/tmp/engram-mcp-tests-no-such-\(UUID().uuidString).sock"
+        // Pass minimal valid required arguments per tool. Required-argument
+        // validation now runs before dispatch, so empty args would surface
+        // invalidArguments instead of reaching the serviceUnavailable branch.
+        // The bogus socket still guarantees we fail closed before any side
+        // effect, exercising the serviceUnavailable path under test.
+        let validArguments = [
+            "project_move": #"{"src":"/tmp/no-such-src","dst":"/tmp/no-such-dst","dry_run":true}"#,
+            "project_archive": #"{"src":"/tmp/no-such-src","dry_run":true}"#,
+            "project_undo": #"{"migration_id":"no-such-migration"}"#,
+            "project_move_batch": #"{"yaml":"{}","dry_run":true}"#,
+        ]
         for (index, tool) in ["project_move", "project_archive", "project_undo", "project_move_batch"].enumerated() {
             let capture = try rpc(
                 """
-                {"jsonrpc":"2.0","id":\(20 + index),"method":"tools/call","params":{"name":"\(tool)","arguments":{}}}
+                {"jsonrpc":"2.0","id":\(20 + index),"method":"tools/call","params":{"name":"\(tool)","arguments":\(validArguments[tool]!)}}
                 """,
                 environment: [
                     "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),

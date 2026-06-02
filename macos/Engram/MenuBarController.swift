@@ -16,6 +16,13 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let serviceClient: EngramServiceClient
     private var clickTimer: Timer?
     private var badgeTimer: Timer?
+    // Rate-limit the live-session FS scan: the 10s timer AND every
+    // Observation change (totalSessions / todayParentSessions) both call
+    // updateBadge(), so without coalescing a burst of changes fans out into
+    // repeated recursive live-session scans. Skip the scan if we ran one
+    // recently and just refresh the cheap today-count label instead.
+    private var lastBadgeScan: Date = .distantPast
+    private static let badgeScanMinInterval: TimeInterval = 5
     private var dockIconObserver: NSObjectProtocol?
     private var lastShowDockIcon: Bool?
     private let windowSize: NSSize
@@ -360,6 +367,14 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     private func updateBadge() {
         let today = serviceStatusStore.todayParentSessions
+        // Coalesce: if we scanned live sessions recently, just refresh the cheap
+        // today-count label and skip the recursive FS scan. The 10s timer still
+        // forces a periodic scan once the interval elapses.
+        guard Date().timeIntervalSince(lastBadgeScan) >= Self.badgeScanMinInterval else {
+            refreshTodayBadge(today)
+            return
+        }
+        lastBadgeScan = Date()
         Task {
             do {
                 let response = try await serviceClient.liveSessions()
@@ -372,6 +387,18 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             } catch {
                 self.statusItem.button?.title = today > 0 ? " \(today)" : ""
             }
+        }
+    }
+
+    /// Refresh only the today-count portion of the badge without a live-session
+    /// FS scan. Preserves an existing "● N" live suffix if one is shown.
+    private func refreshTodayBadge(_ today: Int) {
+        let current = statusItem.button?.title ?? ""
+        if let liveRange = current.range(of: " \u{25CF} ") {
+            let liveSuffix = current[liveRange.lowerBound...]
+            statusItem.button?.title = today > 0 ? " \(today)\(liveSuffix)" : String(liveSuffix)
+        } else {
+            statusItem.button?.title = today > 0 ? " \(today)" : ""
         }
     }
 

@@ -628,6 +628,22 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testDeduplicateFilePathsRemovesOrphanedFtsRows() throws {
+        try writer.write { db in
+            try insertSession(db, id: "old", source: "codex", filePath: "/tmp/dup.jsonl")
+            try insertSession(db, id: "new", source: "codex", filePath: "/tmp/dup.jsonl")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('old', 'stale'), ('new', 'kept')")
+
+            let removed = try StartupBackfills.deduplicateFilePaths(db)
+
+            XCTAssertEqual(removed, 1)
+            // The duplicate session row is gone AND its dangling FTS row was reconciled,
+            // so search can no longer surface a session that no longer exists.
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'old'"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'new'"), 1)
+        }
+    }
+
     func testCleanupStaleMigrationsFailsOnlyOldNonTerminalRows() throws {
         try writer.write { db in
             try db.execute(
@@ -646,6 +662,41 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'stale'"), "failed")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'fresh'"), "fs_done")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'done'"), "committed")
+        }
+    }
+
+    func testOrphanScanAppliesTransitionsWithoutHoldingWriteGateAcrossProbe() async throws {
+        // Recovered: previously flagged but the file is accessible again.
+        // Newly flagged: unflagged + inaccessible.
+        // Confirmed: long-suspect (past grace) + still inaccessible.
+        // Skipped: sync locator (never probed).
+        try writer.write { db in
+            try insertSession(db, id: "recover", source: "codex", filePath: "/files/recover.jsonl")
+            try db.execute(sql: "UPDATE sessions SET orphan_status = 'suspect', orphan_since = datetime('now') WHERE id = 'recover'")
+            try insertSession(db, id: "flag", source: "codex", filePath: "/files/flag.jsonl")
+            try insertSession(db, id: "confirm", source: "codex", filePath: "/files/confirm.jsonl")
+            try db.execute(sql: "UPDATE sessions SET orphan_status = 'suspect', orphan_since = datetime('now', '-40 days') WHERE id = 'confirm'")
+            try insertSession(db, id: "synced", source: "codex", filePath: "", sourceLocator: "sync://peer/x")
+        }
+
+        let adapter = FakeAccessibilityAdapter(
+            accessibleLocators: ["/files/recover.jsonl"]
+        )
+        let scanner = WriterStartupOrphanScanning(writer: writer)
+
+        let result = try await scanner.detectOrphans(adapters: [adapter])
+
+        XCTAssertEqual(result.recovered, 1)
+        XCTAssertEqual(result.newlyFlagged, 1)
+        XCTAssertEqual(result.confirmed, 1)
+        XCTAssertEqual(result.skipped, 1)
+        XCTAssertEqual(result.scanned, 4)
+
+        try writer.read { db in
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'recover'"))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'flag'"), "suspect")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'confirm'"), "confirmed")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'synced'"))
         }
     }
 
@@ -767,6 +818,35 @@ private enum TestError: Error, CustomStringConvertible {
     case expected
 
     var description: String { "expected" }
+}
+
+/// Minimal adapter whose `isAccessible` answers from a fixed allowlist; the scan
+/// only ever calls `isAccessible`, so the other members are unreachable stubs.
+private final class FakeAccessibilityAdapter: SessionAdapter {
+    let source: SourceName = .codex
+    private let accessibleLocators: Set<String>
+
+    init(accessibleLocators: Set<String>) {
+        self.accessibleLocators = accessibleLocators
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [] }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.fileMissing)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        accessibleLocators.contains(locator)
+    }
 }
 
 private final class RecordingStartupLogger: StartupBackfillLogging {

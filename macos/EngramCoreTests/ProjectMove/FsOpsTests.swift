@@ -191,6 +191,58 @@ final class FsOpsTests: XCTestCase {
         )
     }
 
+    func testSourceDeleteFailureAfterTempRenameStillSucceeds() throws {
+        // After the temp dir is renamed into `dst`, the move has logically
+        // succeeded. If deleting the original `src` then fails, run() must NOT
+        // throw — throwing would trigger rollback while BOTH src and dst exist,
+        // wedging the migration. `dst` must be populated; `src` may remain as
+        // best-effort residual.
+        let src = tmpRoot.appendingPathComponent("src")
+        let dst = tmpRoot.appendingPathComponent("dst")
+        try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+        try "hello".write(
+            to: src.appendingPathComponent("file.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        var renameCalls = 0
+        let hooks = FsOpsHooks(
+            rename: { srcPath, dstPath in
+                renameCalls += 1
+                if renameCalls == 1 {
+                    throw FsOpsError.posix(code: EXDEV, message: "EXDEV simulated")
+                }
+                if Darwin.rename(srcPath, dstPath) != 0 {
+                    let code = errno
+                    throw FsOpsError.posix(code: code, message: String(cString: strerror(code)))
+                }
+            },
+            copyDirectory: FsOpsHooks.production.copyDirectory,
+            removeItem: { path in
+                // Simulate a source-delete failure (e.g. EPERM) ONLY for `src`;
+                // temp cleanup paths still delete normally.
+                if path == src.path {
+                    throw FsOpsError.posix(code: EPERM, message: "EPERM simulated")
+                }
+                try FsOpsHooks.production.removeItem(path)
+            },
+            fileExists: FsOpsHooks.production.fileExists,
+            isSymlink: FsOpsHooks.production.isSymlink
+        )
+
+        let result = try SafeMoveDir.run(src: src.path, dst: dst.path, hooks: hooks)
+
+        XCTAssertEqual(result.strategy, .copyThenDelete)
+        XCTAssertEqual(
+            try String(contentsOf: dst.appendingPathComponent("file.txt"), encoding: .utf8),
+            "hello",
+            "dst must be fully populated after a successful temp-rename"
+        )
+        // `src` survived the failed delete — acceptable residual, not an error.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src.path))
+    }
+
     func testPartialCopyFailureCleansTempLeavesDstUntouched() throws {
         let src = tmpRoot.appendingPathComponent("src")
         let dst = tmpRoot.appendingPathComponent("dst")

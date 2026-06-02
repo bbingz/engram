@@ -62,6 +62,17 @@ final class GeminiProjectsJSONTests: XCTestCase {
         XCTAssertEqual(plan.newEntry, GeminiProjectsEntry(cwd: "/a/proj-v2", name: "proj-v2"))
     }
 
+    func testPlanSlugifiesNewEntryName() throws {
+        // newEntry.name must match the Gemini slug (lowercase, '_' → '-',
+        // strip wrapping dashes) so projects.json stays consistent with the
+        // renamed ~/.gemini/tmp/<slug>/ dir and the collision probe.
+        try writeJson(["projects": ["/a/old": "old"]])
+        let plan = try GeminiProjectsJSON.plan(
+            filePath: file.path, oldCwd: "/a/old", newCwd: "/Users/bing/-Code-/WebSite_Gemini"
+        )
+        XCTAssertEqual(plan.newEntry.name, "website-gemini")
+    }
+
     func testPlanThrowsOnInvalidJson() throws {
         try "{invalid".write(to: file, atomically: true, encoding: .utf8)
         XCTAssertThrowsError(

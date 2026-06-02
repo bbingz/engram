@@ -84,6 +84,35 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertEqual(metadata, "1")
     }
 
+    func testAuxMigrationSkippedWhenStoredVersionMatches() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("aux-skip.sqlite"))
+        try writer.migrate()
+
+        // First migrate records swift_aux_schema_version. Replace session_tools
+        // with a legacy `count` shape that would normally trigger a v2 rebuild,
+        // then re-run migrate. Because the stored aux version already matches,
+        // migrateAuxTablesToV2 short-circuits and leaves the legacy table alone.
+        try writer.write { db in
+            try db.execute(sql: """
+                DROP TABLE session_tools;
+                CREATE TABLE session_tools (
+                  session_id TEXT NOT NULL,
+                  tool_name TEXT NOT NULL,
+                  count INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (session_id, tool_name)
+                );
+            """)
+        }
+
+        try writer.migrate()
+
+        try writer.read { db in
+            // Legacy `count` column survives because the aux migration was skipped.
+            XCTAssertNotNil(try Int.fetchOne(db, sql: "SELECT 1 FROM pragma_table_info('session_tools') WHERE name = 'count'"))
+            XCTAssertNil(try Int.fetchOne(db, sql: "SELECT 1 FROM pragma_table_info('session_tools') WHERE name = 'call_count'"))
+        }
+    }
+
     func testWriterCreatesDatabaseWithUserOnlyPermissions() throws {
         let path = databasePath("secure.sqlite")
         let writer = try EngramDatabaseWriter(path: path)

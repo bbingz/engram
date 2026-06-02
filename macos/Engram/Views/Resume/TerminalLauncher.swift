@@ -35,7 +35,9 @@ struct TerminalLauncher {
 
     static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) {
         let shellCmd = shellCommandLine(command: command, args: args, cwd: cwd)
-        let appleScriptCmd = escapeForAppleScript(shellCmd)
+        // Reuse the single AppleScript-escaping helper instead of duplicating
+        // the escapeForAppleScript(shellCommandLine(...)) chain inline.
+        let appleScriptCmd = appleScriptCommandLine(command: command, args: args, cwd: cwd)
         let script: String
         switch terminal {
         case .terminal:

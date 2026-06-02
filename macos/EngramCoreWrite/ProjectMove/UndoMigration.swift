@@ -97,14 +97,29 @@ public enum UndoMigration {
             )
         }
 
-        if let firstAffected = original.affectedSessionIds.first {
-            if let snapshot = try sessions.session(id: firstAffected),
-               let cwd = snapshot.cwd,
-               cwd != original.newPath {
-                let preview = String(firstAffected.prefix(8))
+        // Staleness check: the migration is still the relevant one as long as
+        // at least one affected session resolves under `newPath`. Match
+        // applyMigrationDb's prefix semantics (equal OR startsWith `newPath/`)
+        // rather than exact equality, and scan ALL affected sessions — a single
+        // drifted session is not proof the migration was superseded, since the
+        // move covers a whole subtree. Only refuse when none resolve under
+        // `newPath` but at least one has a known (drifted) cwd to report.
+        if !original.affectedSessionIds.isEmpty {
+            var resolvesUnderNewPath = false
+            var drifted: (id: String, cwd: String)?
+            for id in original.affectedSessionIds {
+                guard let cwd = try sessions.session(id: id)?.cwd else { continue }
+                if cwd == original.newPath || cwd.hasPrefix(original.newPath + "/") {
+                    resolvesUnderNewPath = true
+                    break
+                }
+                if drifted == nil { drifted = (id, cwd) }
+            }
+            if !resolvesUnderNewPath, let drifted {
+                let preview = String(drifted.id.prefix(8))
                 throw UndoStaleError(
                     migrationId: migrationId,
-                    reason: "session \(preview) cwd is now \(cwd), not \(original.newPath)"
+                    reason: "session \(preview) cwd is now \(drifted.cwd), not \(original.newPath)"
                 )
             }
         }

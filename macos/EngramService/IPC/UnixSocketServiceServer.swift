@@ -97,7 +97,13 @@ final class UnixSocketServiceServer: Sendable {
                 let clientId = UUID()
                 let startGate = ClientTaskStartGate()
                 let clientTask = Task.detached {
-                    await startGate.wait()
+                    // The gate returns false when the task was cancelled before
+                    // release(). That happens only in the !shouldContinue branch
+                    // below, where the accept loop has already closed the fd and
+                    // signalled the connection limiter. Return WITHOUT arming the
+                    // cleanup defer so the fd is not double-closed and the permit
+                    // is not double-signalled.
+                    guard await startGate.wait() else { return }
                     defer {
                         close(client)
                         state.withLock { state in
@@ -134,7 +140,12 @@ final class UnixSocketServiceServer: Sendable {
                     return true
                 }
                 if !shouldContinue {
+                    // stop() flipped the listener between accept() and
+                    // registration; the parked clientTask's defer never runs, so
+                    // release its fd + permit here or 32 leaks wedge all clients.
                     clientTask.cancel()
+                    close(client)
+                    await connectionLimiter.signal()
                 } else {
                     await startGate.release()
                 }
@@ -278,12 +289,26 @@ private struct UnixSocketServerStateSnapshot: Sendable {
 
 private actor ClientTaskStartGate {
     private var released = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
 
-    func wait() async {
-        if released { return }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+    /// Returns true when release() ran (the task may proceed), false when the
+    /// waiting task was cancelled before release. A plain continuation has no
+    /// cancellation handler, so without this a task cancelled between accept()
+    /// and registration would park here forever — its `defer` (close + permit
+    /// signal) would never run and the connection-limiter permit would leak.
+    func wait() async -> Bool {
+        if released { return true }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                    return
+                }
+                waiters.append((id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
         }
     }
 
@@ -293,8 +318,13 @@ private actor ClientTaskStartGate {
         let pending = waiters
         waiters.removeAll()
         for waiter in pending {
-            waiter.resume()
+            waiter.continuation.resume(returning: true)
         }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(returning: false)
     }
 }
 

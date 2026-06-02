@@ -248,7 +248,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     static func applyServiceEvent(_ event: EngramServiceEvent, to store: EngramServiceStatusStore) {
         if event.event == "index_error" {
-            let detail = event.message ?? "indexing failed"
+            // The service emits the failure under the `error` key, not `message`.
+            let detail = event.errorDetail ?? event.message ?? "indexing failed"
             store.apply(.degraded(message: "Last index scan failed: \(detail)"))
             return
         }

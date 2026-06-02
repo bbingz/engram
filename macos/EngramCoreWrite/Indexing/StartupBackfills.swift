@@ -432,7 +432,7 @@ public enum StartupBackfills {
     }
 
     public static func deduplicateFilePaths(_ db: Database) throws -> Int {
-        try db.executeAndCountChanges(
+        let removed = try db.executeAndCountChanges(
             sql: """
             DELETE FROM sessions
             WHERE rowid NOT IN (SELECT MAX(rowid) FROM sessions GROUP BY file_path)
@@ -440,6 +440,15 @@ public enum StartupBackfills {
               AND file_path != ''
             """
         )
+        // The DELETE above leaves orphaned sessions_fts rows behind (FTS is an
+        // external-content-style table keyed by session_id, with no cascade), so
+        // reconcile them in the same transaction.
+        if removed > 0 {
+            try db.execute(
+                sql: "DELETE FROM sessions_fts WHERE session_id NOT IN (SELECT id FROM sessions)"
+            )
+        }
+        return removed
     }
 
     public static func optimizeFts(_ db: Database) throws {

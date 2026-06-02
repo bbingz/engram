@@ -489,6 +489,44 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(snapshots.first?.tier, .skip)
     }
 
+    func testPolycliHealthOkProbeSessionsAreSkipped() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [
+                SyntheticSessionAdapter(
+                    count: 1,
+                    userContent: "Reply with POLYCLI_HEALTH_OK only.",
+                    assistantContent: "POLYCLI_HEALTH_OK"
+                )
+            ]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.count, 1)
+        // Documented Polycli health-ping probe — must be skipped at index time,
+        // not just by the StartupBackfills classification pass.
+        XCTAssertEqual(snapshots.first?.tier, .skip)
+    }
+
+    func testPolycliActingAsProviderProbeSessionsAreSkipped() async throws {
+        let indexer = SwiftIndexer(
+            sink: NoopIndexingWriteSink(),
+            adapters: [
+                SyntheticSessionAdapter(
+                    count: 1,
+                    userContent: "You are acting as qwen inside polycli. Do the task below.",
+                    assistantContent: "Understood."
+                )
+            ]
+        )
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots.first?.tier, .skip)
+    }
+
     func testCodexSessionWithAgentInstructionsAndRealUserTaskIsNotSkipped() async throws {
         let indexer = SwiftIndexer(
             sink: NoopIndexingWriteSink(),

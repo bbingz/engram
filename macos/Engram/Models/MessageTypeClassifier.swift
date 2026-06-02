@@ -96,12 +96,12 @@ struct MessageTypeClassifier {
             return .system
         }
         if message.systemCategory == .agentComm {
-            // Agent comm can be further refined: tool results vs tool calls
-            let content = message.content
-            if containsPattern(content, toolResultPatterns) {
-                return .toolResult
-            }
-            return .toolCall
+            // Agent comm (command-name / command-message / skill invocations /
+            // local-command-*) is plumbing, not a model-issued tool call. Mapping
+            // it to .toolCall/.toolResult inflated the tool chip counts. Classify
+            // as .system so it renders in the collapsible system bubble and is
+            // excluded from chipTypes counting.
+            return .system
         }
         if message.role == "user" {
             return .user
@@ -159,8 +159,18 @@ struct MessageTypeClassifier {
     }
 
     private static func containsErrorPattern(_ text: String) -> Bool {
-        let prefix = text.prefix(1000)
-        return errorPatterns.contains { prefix.contains($0) }
+        // Anchor error markers to line starts so prose like "...there was an
+        // error: ..." mid-sentence does not get misclassified as an error
+        // message. A line that *starts* with an error token (after trimming
+        // leading whitespace) is the real signal.
+        let prefix = String(text.prefix(1000))
+        for line in prefix.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.drop { $0 == " " || $0 == "\t" }
+            if errorPatterns.contains(where: { trimmed.hasPrefix($0) }) {
+                return true
+            }
+        }
+        return false
     }
 
     private static func containsExplicitToolError(_ text: String) -> Bool {
@@ -170,7 +180,14 @@ struct MessageTypeClassifier {
 
     private static func hasSignificantCodeBlock(_ text: String) -> Bool {
         guard text.contains("```") else { return false }
-        let codeLen = text.components(separatedBy: "```")
+        let parts = text.components(separatedBy: "```")
+        // N fence markers split into N+1 parts. A balanced set of fenced blocks
+        // has an EVEN number of markers (open/close pairs) → an ODD number of
+        // parts. An unbalanced/odd marker count leaves a dangling "open" region
+        // that would be wrongly counted as code, inflating the ratio.
+        let markerCount = parts.count - 1
+        guard markerCount > 0, markerCount % 2 == 0 else { return false }
+        let codeLen = parts
             .enumerated()
             .filter { $0.offset % 2 == 1 }
             .map(\.element.count)

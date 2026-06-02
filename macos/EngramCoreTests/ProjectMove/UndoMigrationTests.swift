@@ -185,6 +185,92 @@ final class UndoMigrationTests: XCTestCase {
         XCTAssertEqual(request.src, "/renamed")
     }
 
+    func testNoStaleErrorWhenAffectedSessionResolvesUnderNewPathPrefix() throws {
+        // applyMigrationDb covers a whole subtree: a session whose cwd is
+        // `newPath + "/sub"` still belongs to the migration. Exact equality
+        // would wrongly flag it stale.
+        let log = StubMigrationLog(records: [
+            "m": MigrationLogRecord(
+                id: "m",
+                state: "committed",
+                oldPath: "/orig",
+                newPath: "/renamed",
+                startedAt: "T0",
+                affectedSessionIds: ["session-id-1234"]
+            ),
+        ])
+        let sessions = StubSessionReader(
+            sessions: ["session-id-1234": SessionSnapshot(id: "session-id-1234", cwd: "/renamed/sub")]
+        )
+        let request = try UndoMigration.prepareReverseRequest(
+            migrationId: "m",
+            log: log,
+            sessions: sessions,
+            fileExists: { _ in true }
+        )
+        XCTAssertEqual(request.src, "/renamed")
+    }
+
+    func testNoStaleErrorWhenAtLeastOneAffectedSessionResolves() throws {
+        // The first affected session drifted but a later one still resolves
+        // under newPath — the migration is still the relevant one, so undo
+        // must be allowed (no longer keyed on the FIRST session only).
+        let log = StubMigrationLog(records: [
+            "m": MigrationLogRecord(
+                id: "m",
+                state: "committed",
+                oldPath: "/orig",
+                newPath: "/renamed",
+                startedAt: "T0",
+                affectedSessionIds: ["drifted-0001", "intact-0002"]
+            ),
+        ])
+        let sessions = StubSessionReader(sessions: [
+            "drifted-0001": SessionSnapshot(id: "drifted-0001", cwd: "/somewhere/else"),
+            "intact-0002": SessionSnapshot(id: "intact-0002", cwd: "/renamed"),
+        ])
+        let request = try UndoMigration.prepareReverseRequest(
+            migrationId: "m",
+            log: log,
+            sessions: sessions,
+            fileExists: { _ in true }
+        )
+        XCTAssertEqual(request.dst, "/orig")
+    }
+
+    func testStaleErrorWhenAllAffectedSessionsDrifted() {
+        let log = StubMigrationLog(records: [
+            "m": MigrationLogRecord(
+                id: "m",
+                state: "committed",
+                oldPath: "/orig",
+                newPath: "/renamed",
+                startedAt: "T0",
+                affectedSessionIds: ["drift-aaaa", "drift-bbbb"]
+            ),
+        ])
+        let sessions = StubSessionReader(sessions: [
+            "drift-aaaa": SessionSnapshot(id: "drift-aaaa", cwd: "/elsewhere/a"),
+            "drift-bbbb": SessionSnapshot(id: "drift-bbbb", cwd: "/elsewhere/b"),
+        ])
+        XCTAssertThrowsError(
+            try UndoMigration.prepareReverseRequest(
+                migrationId: "m",
+                log: log,
+                sessions: sessions,
+                fileExists: { _ in true }
+            )
+        ) { err in
+            guard let stale = err as? UndoStaleError else {
+                return XCTFail("expected UndoStaleError, got \(err)")
+            }
+            XCTAssertTrue(
+                stale.reason.contains("/elsewhere/a") || stale.reason.contains("/elsewhere/b"),
+                "stale error must surface a drifted cwd: \(stale.reason)"
+            )
+        }
+    }
+
     func testEmptyAffectedSessionsSkipsCheck() throws {
         let log = StubMigrationLog(records: [
             "m": MigrationLogRecord(

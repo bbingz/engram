@@ -34,6 +34,12 @@ struct ExpandableSessionCard: View {
     @State private var children: [Session] = []
     @State private var suggestedChildren: [Session] = []
     @State private var isLoadingChildren = false
+    // In-flight guard for "show more" so rapid taps cannot append duplicates.
+    @State private var isLoadingMore = false
+    // Generation token: bumped whenever the child set is invalidated (count
+    // change). A load result only applies if its captured generation still
+    // matches, so a stale in-flight load cannot clobber a fresh reset.
+    @State private var loadGeneration = 0
     @Environment(DatabaseManager.self) var db
 
     private var totalChildCount: Int { confirmedChildCount + suggestedChildCount }
@@ -159,8 +165,11 @@ struct ExpandableSessionCard: View {
         .onChange(of: [confirmedChildCount, suggestedChildCount]) {
             // Invalidate on EITHER count changing, not just their sum — a
             // confirmed/suggested swap that preserves the total must still reload.
+            // Bump the generation so any in-flight load/loadMore is discarded.
+            loadGeneration += 1
             children = []
             suggestedChildren = []
+            isLoadingMore = false
             if isExpanded {
                 loadChildren()
             }
@@ -205,6 +214,7 @@ struct ExpandableSessionCard: View {
 
     private func loadChildren() {
         isLoadingChildren = true
+        let generation = loadGeneration
         Task.detached { [db, session, includeHiddenChildren] in
             let confirmed = (try? db.childSessions(
                 parentId: session.id,
@@ -216,6 +226,8 @@ struct ExpandableSessionCard: View {
                 includeHidden: includeHiddenChildren
             )) ?? []
             await MainActor.run {
+                // Drop stale results from a generation that was invalidated.
+                guard generation == loadGeneration else { return }
                 children = confirmed
                 suggestedChildren = suggested
                 isLoadingChildren = false
@@ -224,6 +236,10 @@ struct ExpandableSessionCard: View {
     }
 
     private func loadMoreChildren() {
+        // Coalesce rapid taps: ignore while a "show more" load is in flight.
+        guard !isLoadingMore else { return }
+        isLoadingMore = true
+        let generation = loadGeneration
         let currentCount = children.count
         Task.detached { [db, session, includeHiddenChildren] in
             let more = (try? db.childSessions(
@@ -233,7 +249,12 @@ struct ExpandableSessionCard: View {
                 offset: currentCount
             )) ?? []
             await MainActor.run {
-                children.append(contentsOf: more)
+                defer { isLoadingMore = false }
+                // Drop stale results from a generation that was invalidated.
+                guard generation == loadGeneration else { return }
+                // De-dup on append in case offsets overlap or a reload raced.
+                let existing = Set(children.map(\.id))
+                children.append(contentsOf: more.filter { !existing.contains($0.id) })
             }
         }
     }

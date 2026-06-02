@@ -46,6 +46,7 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             }
             let requestObjects = requests.compactMap { JSONLAdapterSupport.object($0) }
             let userTexts = requestObjects.map(Self.extractUserText).filter { !$0.isEmpty }
+            let assistantTexts = requestObjects.map(Self.extractAssistantText).filter { !$0.isEmpty }
             let lastTimestamp = Phase4AdapterSupport.double(requestObjects.last?["timestamp"])
             let sessionId = JSONLAdapterSupport.string(session["sessionId"]) ??
                 URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent
@@ -62,9 +63,9 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
                     cwd: cwd,
                     project: nil,
                     model: nil,
-                    messageCount: requestObjects.count * 2,
-                    userMessageCount: requestObjects.count,
-                    assistantMessageCount: requestObjects.count,
+                    messageCount: userTexts.count + assistantTexts.count,
+                    userMessageCount: userTexts.count,
+                    assistantMessageCount: assistantTexts.count,
                     toolMessageCount: 0,
                     systemMessageCount: 0,
                     summary: userTexts.first.map { String($0.prefix(200)) },

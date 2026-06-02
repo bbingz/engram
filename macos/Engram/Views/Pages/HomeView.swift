@@ -1,11 +1,19 @@
 // macos/Engram/Views/Pages/HomeView.swift
 import SwiftUI
 
+/// How many rows the Continue / Follow-ups panels actually render. The badge
+/// must report the same number so it never advertises rows that aren't shown.
+/// Not `private` so the panel-badge contract is unit-testable via @testable.
+let todayPanelRowLimit = 5
+
 private let todayISOFormatter: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return f
 }()
+
+/// Fallback ISO-8601 parser for whole-second timestamps (no fractional digits).
+private let todayISOFormatterPlain = ISO8601DateFormatter()
 
 struct HomeView: View {
     @Environment(DatabaseManager.self) var db
@@ -103,7 +111,7 @@ struct HomeView: View {
         WorkbenchPanel(
             icon: "play.circle",
             title: "Continue",
-            badge: recentSessions.isEmpty ? nil : "\(recentSessions.count)"
+            badge: recentSessions.isEmpty ? nil : "\(min(recentSessions.count, todayPanelRowLimit))"
         ) {
             if recentSessions.isEmpty && !isLoading {
                 EmptyState(
@@ -114,7 +122,7 @@ struct HomeView: View {
                 .frame(height: 120)
             } else {
                 VStack(spacing: 8) {
-                    ForEach(Array(recentSessions.prefix(5).enumerated()), id: \.element.id) { index, session in
+                    ForEach(Array(recentSessions.prefix(todayPanelRowLimit).enumerated()), id: \.element.id) { index, session in
                         TodaySessionRow(
                             session: session,
                             detail: session.project.map(projectLabel) ?? compactPath(session.cwd),
@@ -136,7 +144,7 @@ struct HomeView: View {
         WorkbenchPanel(
             icon: "checklist",
             title: "Follow-ups",
-            badge: followUpSessions.isEmpty ? nil : "\(followUpSessions.count)"
+            badge: followUpSessions.isEmpty ? nil : "\(min(followUpSessions.count, todayPanelRowLimit))"
         ) {
             if followUpSessions.isEmpty && !isLoading {
                 EmptyState(
@@ -147,7 +155,7 @@ struct HomeView: View {
                 .frame(height: 120)
             } else {
                 VStack(spacing: 8) {
-                    ForEach(Array(followUpSessions.prefix(5).enumerated()), id: \.element.id) { index, session in
+                    ForEach(Array(followUpSessions.prefix(todayPanelRowLimit).enumerated()), id: \.element.id) { index, session in
                         TodaySessionRow(
                             session: session,
                             detail: String(localized: "Needs review") + " · \(session.displayUpdatedDate)",
@@ -431,10 +439,21 @@ private struct TodaySessionRow: View {
     }
 
     private func relativeTime(_ iso: String) -> String {
-        guard let date = todayISOFormatter.date(from: iso) else {
+        TodayRelativeTime.format(iso)
+    }
+}
+
+/// Renders an ISO-8601 start_time as a coarse "Xm ago" label. Parses both
+/// fractional-second and whole-second timestamps — adapters that emit
+/// `2026-06-01T10:00:00Z` (no fractional digits) used to render blank under a
+/// fractional-only formatter.
+enum TodayRelativeTime {
+    static func format(_ iso: String, now: Date = Date()) -> String {
+        guard let date = todayISOFormatter.date(from: iso)
+            ?? todayISOFormatterPlain.date(from: iso) else {
             return ""
         }
-        let seconds = Int(-date.timeIntervalSinceNow)
+        let seconds = Int(now.timeIntervalSince(date))
         if seconds < 60 { return "now" }
         if seconds < 3600 { return "\(seconds / 60)m ago" }
         if seconds < 86400 { return "\(seconds / 3600)h ago" }
@@ -494,13 +513,22 @@ private struct ChangedRepoRow: View {
     }
 }
 
-private func loadTodayFollowUps(from db: DatabaseManager, limit: Int, excluding handledIds: Set<String>) throws -> [Session] {
-    let queries = ["follow-up", "followup", "deferred", "todo", "review", "remaining", "延后", "跟进"]
+private func loadTodayFollowUps(
+    from db: DatabaseManager,
+    limit: Int,
+    excluding handledIds: Set<String>,
+    now: Date = Date()
+) throws -> [Session] {
     var seen = Set<String>()
     var matches: [Session] = []
-    for query in queries {
+    for query in TodayFollowUps.queries {
+        // searchWithSnippets is unscoped (history-wide, no date filter), so
+        // post-filter every hit to a recent, top-level, unhandled session before
+        // surfacing it as today's follow-up.
         let results = try db.searchWithSnippets(query: query, limit: limit)
-        for result in results where !handledIds.contains(result.session.id) && seen.insert(result.session.id).inserted {
+        for result in results
+        where TodayFollowUps.isEligible(result.session, handledIds: handledIds, now: now)
+            && seen.insert(result.session.id).inserted {
             matches.append(result.session)
             if matches.count >= limit {
                 return matches
@@ -508,6 +536,31 @@ private func loadTodayFollowUps(from db: DatabaseManager, limit: Int, excluding 
         }
     }
     return matches
+}
+
+/// Scoping rules for the Today "Follow-ups" panel. `searchWithSnippets` is
+/// history-wide and owned by another module, so the view narrows its keyword
+/// set and post-filters hits to a recent, top-level, unhandled window here.
+enum TodayFollowUps {
+    /// Recent window for follow-ups, in seconds (72h).
+    static let recencyWindow: TimeInterval = 72 * 3600
+
+    /// Follow-up-specific markers only — broad terms like "review"/"todo" would
+    /// match almost any transcript and surfaced unrelated sessions.
+    static let queries = ["follow-up", "followup", "deferred", "remaining", "延后", "跟进"]
+
+    static func isEligible(_ session: Session, handledIds: Set<String>, now: Date) -> Bool {
+        if handledIds.contains(session.id) { return false }
+        // Top-level only: never surface confirmed or suggested children.
+        if session.parentSessionId != nil || session.suggestedParentId != nil { return false }
+        guard let started = todayISOFormatter.date(from: session.startTime)
+            ?? todayISOFormatterPlain.date(from: session.startTime) else {
+            return false
+        }
+        // Recent window only (no lower bound, so minor clock skew on a
+        // just-started session can't drop it).
+        return now.timeIntervalSince(started) <= recencyWindow
+    }
 }
 
 private struct ServiceStateRow: View {

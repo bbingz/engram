@@ -663,4 +663,134 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertTrue(projects.contains("my-app"))
         XCTAssertFalse(projects.contains("other"))
     }
+
+    // MARK: - topLevelOnly filter
+
+    // SessionsPageView lists top-level sessions only. Confirmed children
+    // (parent_session_id) and suggested children (suggested_parent_id) are
+    // shown nested under their parent, so they must not also appear as their
+    // own top-level rows.
+    @MainActor
+    func testListSessionsTopLevelOnlyExcludesConfirmedAndSuggestedChildren() throws {
+        try insertTestSession(at: dbPath, id: "parent")
+        try insertTestSession(at: dbPath, id: "confirmed-child")
+        try insertTestSession(at: dbPath, id: "suggested-child")
+        try setParentLinks(at: dbPath, sessionId: "confirmed-child", parentSessionId: "parent")
+        try setParentLinks(at: dbPath, sessionId: "suggested-child", suggestedParentId: "parent")
+
+        // Default (topLevelOnly: false) returns every visible session.
+        XCTAssertEqual(try db.listSessions(subAgent: false).count, 3)
+
+        let topLevel = try db.listSessions(subAgent: false, topLevelOnly: true)
+        XCTAssertEqual(topLevel.map(\.id), ["parent"])
+    }
+
+    @MainActor
+    func testSessionListStatsTopLevelOnlyExcludesChildren() throws {
+        try insertTestSession(at: dbPath, id: "parent", messageCount: 5)
+        try insertTestSession(at: dbPath, id: "confirmed-child", messageCount: 7)
+        try insertTestSession(at: dbPath, id: "suggested-child", messageCount: 9)
+        try setParentLinks(at: dbPath, sessionId: "confirmed-child", parentSessionId: "parent")
+        try setParentLinks(at: dbPath, sessionId: "suggested-child", suggestedParentId: "parent")
+
+        let stats = try db.sessionListStats(subAgent: false, topLevelOnly: true)
+        XCTAssertEqual(stats.totalSessions, 1)
+        XCTAssertEqual(stats.totalMessages, 5)
+    }
+
+    // listSessionsByProject backs ProjectsView's per-project counts; those
+    // counts must not include nested children.
+    @MainActor
+    func testListSessionsByProjectExcludesChildren() throws {
+        try insertTestSession(at: dbPath, id: "parent", project: "engram")
+        try insertTestSession(at: dbPath, id: "confirmed-child", project: "engram")
+        try insertTestSession(at: dbPath, id: "suggested-child", project: "engram")
+        try setParentLinks(at: dbPath, sessionId: "confirmed-child", parentSessionId: "parent")
+        try setParentLinks(at: dbPath, sessionId: "suggested-child", suggestedParentId: "parent")
+
+        let groups = try db.listSessionsByProject()
+        let engram = try XCTUnwrap(groups.first { $0.project == "engram" })
+        XCTAssertEqual(engram.sessionCount, 1)
+        XCTAssertEqual(engram.sessions.map(\.id), ["parent"])
+    }
+
+    // MARK: - sparklineData date bucketing
+
+    // sparklineData buckets by local calendar day on both the SQL and Swift
+    // sides. A session whose UTC start_time falls on a different UTC day than
+    // its local day (e.g. late-evening local time) must still land in the
+    // local "today" bucket (index 6), not an adjacent one.
+    @MainActor
+    func testSparklineDataBucketsByLocalDay() throws {
+        let repoPath = "/Users/test/repo"
+        let calendar = Calendar.current
+        let now = Date()
+        // Pick a wall-clock time today at 23:30 local; in UTC this can roll to
+        // the next or previous calendar day depending on the zone offset.
+        let localLate = calendar.date(
+            bySettingHour: 23, minute: 30, second: 0, of: calendar.startOfDay(for: now)
+        ) ?? now
+        let utc = ISO8601DateFormatter()
+        utc.timeZone = TimeZone(identifier: "UTC")
+        let startTimeUTC = utc.string(from: localLate)
+
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "today-late",
+            cwd: repoPath,
+            startTime: startTimeUTC
+        )
+
+        let counts = try db.sparklineData(for: repoPath)
+        XCTAssertEqual(counts.count, 7)
+        // The local-late session belongs to today's bucket (last index).
+        XCTAssertEqual(counts[6], 1, "expected today's local bucket to hold the session; got \(counts)")
+        XCTAssertEqual(counts.reduce(0, +), 1, "session must appear in exactly one bucket; got \(counts)")
+    }
+
+    @MainActor
+    func testSparklineDataMatchesCwdPrefixOnly() throws {
+        let utc = ISO8601DateFormatter()
+        utc.timeZone = TimeZone(identifier: "UTC")
+        let today = utc.string(from: Date())
+        try insertSessionWithCwd(at: dbPath, id: "in-repo", cwd: "/Users/test/repo/sub", startTime: today)
+        try insertSessionWithCwd(at: dbPath, id: "other-repo", cwd: "/Users/test/elsewhere", startTime: today)
+
+        let counts = try db.sparklineData(for: "/Users/test/repo")
+        XCTAssertEqual(counts.reduce(0, +), 1)
+    }
+
+    // MARK: - Local raw-SQL helpers for parent links / cwd
+
+    private func setParentLinks(
+        at path: String,
+        sessionId: String,
+        parentSessionId: String? = nil,
+        suggestedParentId: String? = nil
+    ) throws {
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET parent_session_id = ?, suggested_parent_id = ? WHERE id = ?",
+                arguments: [parentSessionId, suggestedParentId, sessionId]
+            )
+        }
+    }
+
+    private func insertSessionWithCwd(
+        at path: String,
+        id: String,
+        cwd: String,
+        startTime: String
+    ) throws {
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT OR REPLACE INTO sessions (
+                    id, source, start_time, end_time, cwd, project,
+                    message_count, file_path, size_bytes, indexed_at, tier
+                ) VALUES (?, 'claude-code', ?, NULL, ?, 'engram', 1, '/tmp/test.jsonl', 0, datetime('now'), 'normal')
+            """, arguments: [id, startTime, cwd])
+        }
+    }
 }

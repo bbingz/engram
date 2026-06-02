@@ -202,7 +202,12 @@ public enum SafeMoveDir {
             throw error
         }
 
-        try hooks.removeItem(src)
+        // `dst` is now fully populated — the move has logically succeeded.
+        // A failure to delete the original `src` must NOT throw: throwing here
+        // would trigger compensation/rollback while BOTH `src` and `dst` exist,
+        // which then fails its own "destination exists" preflight and wedges
+        // the migration. Treat a residual `src` as best-effort cleanup instead.
+        _ = try? hooks.removeItem(src)
         return MoveResult(strategy: .copyThenDelete, bytesCopied: bytesCopied)
     }
 

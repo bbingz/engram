@@ -7,6 +7,49 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Full Swift-product review + fixes (2026-06-02, Claude)
+
+Comprehensive multi-agent review of the shipped Swift product (16 subsystems,
+security excluded) followed by a parallel fix pass. Findings and rationale are
+in `CODE-REVIEW-2026-06-02.md`. 62 findings were confirmed via adversarial
+verification; 53 were fixed this pass (4 high + the impactful mediums + safe
+lows). 787 tests across EngramCoreTests/EngramServiceCore/EngramMCPTests/
+EngramTests pass.
+
+High-impact fixes:
+- **Re-index classification clobber** (`SessionSnapshotWriter`): the upsert now
+  `COALESCE`s `agent_role` and refuses to downgrade a `skip` tier when
+  `agent_role` is set, so re-indexing no longer resurfaces dispatched/skip agent
+  children as independent top-level sessions.
+- **Project-move encoders** (`EncodeClaudeCodeDir`, `Sources`/`GeminiProjectsJSON`,
+  `Orchestrator` collision probe): Claude Code/qoder now map `.`→`-` as well as
+  `/`→`-`; Gemini uses the real slug (lowercase, `_`→`-`, trimmed dashes) for the
+  tmp dir, `projects.json`, and the collision probe. Moves no longer silently
+  orphan session dirs for dotted/mixed-case/underscore cwds.
+- **IPC start-gate leak** (`UnixSocketServiceServer`): the start gate is
+  cancellation-aware and the `!shouldContinue` branch releases the fd + limiter
+  permit directly, so a stop()/connect race no longer leaks permits (32 leaks
+  wedged all connections).
+- **Web UI pager** (`EngramWebUIServer`): consistent offset units (Previous nav +
+  "Showing X-Y"), real `limit` (no more O(N²) full-file re-parse), 404 on missing.
+
+Other fixes by area: Gemini sidecar parent link now persisted; dedup cleans
+orphan FTS rows; `linkSessions`/orphan-scan no longer hold the write gate across
+filesystem I/O; service reads hop off the cooperative pool; bounded `runGit`
+drain (SIGKILL + timed drain survives a grandchild holding the pipe); MCP
+`live_sessions` matches its unavailable contract, arg validation enforces
+`items.enum`/`required`, `get_context` cost uses `start_time`; top-level filters
+on Sessions/Projects/Today; main-thread DB/CPU moved off (`PopoverView`,
+`SessionDetailView`, launcher quit/restart); AISettings no longer drops custom
+generation settings on collapse; `ContentSegment.id` no longer collides; adapter
+message counts match streamed output; transcript export uses the full id;
+classifier fixes; dead-code removals; Node-shelling schema test → pure Swift.
+
+Intentionally not changed (documented, no behavior change): `VectorRebuildPolicy`
+left unwired until sqlite-vec lands; `databaseGeneration` documented MCP-only.
+Not committed-as-deployed: rebuild + reinstall to `/Applications` is a separate
+step. `EngramUITests` (screenshot baselines) not run.
+
 ### EngramMCP protocol-version negotiation fix (2026-06-02, Claude)
 
 - Root cause of the "engram MCP failed to connect" report: Claude Code 2.1.160

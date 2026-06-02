@@ -112,9 +112,11 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
                 return .failure(.malformedJSON)
             }
 
-            let userMessages = messages.compactMap { JSONLAdapterSupport.object($0) }
+            let messageObjects = messages.compactMap { JSONLAdapterSupport.object($0) }
+                .filter { !Self.extractText($0["content"]).isEmpty }
+            let userMessages = messageObjects
                 .filter { JSONLAdapterSupport.string($0["type"]) == "user" }
-            let assistantMessages = messages.compactMap { JSONLAdapterSupport.object($0) }
+            let assistantMessages = messageObjects
                 .filter {
                     let type = JSONLAdapterSupport.string($0["type"])
                     return type == "gemini" || type == "model"

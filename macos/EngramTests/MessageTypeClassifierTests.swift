@@ -29,15 +29,22 @@ final class MessageTypeClassifierTests: XCTestCase {
         XCTAssertEqual(MessageTypeClassifier.classify(m), .system)
     }
 
-    func testAgentCommClassifiedAsToolCall() {
-        // agentComm without tool result patterns defaults to toolCall
+    func testAgentCommClassifiedAsSystem() {
+        // agentComm is plumbing (command-name / skill invocation / local-command-*),
+        // not a model-issued tool call — must NOT inflate tool chip counts.
         let m = msg(role: "assistant", content: "Running subagent task", systemCategory: .agentComm)
-        XCTAssertEqual(MessageTypeClassifier.classify(m), .toolCall)
+        XCTAssertEqual(MessageTypeClassifier.classify(m), .system)
     }
 
-    func testAgentCommWithToolResultPattern() {
+    func testAgentCommWithToolResultPatternStillSystem() {
+        // Even when the body looks like a tool result, agentComm stays .system.
         let m = msg(role: "assistant", content: "tool_result: success", systemCategory: .agentComm)
-        XCTAssertEqual(MessageTypeClassifier.classify(m), .toolResult)
+        XCTAssertEqual(MessageTypeClassifier.classify(m), .system)
+    }
+
+    func testAgentCommNotInChipTypes() {
+        // Regression guard for the inflated-tool-chip-count bug: .system is not a chip.
+        XCTAssertFalse(MessageType.chipTypes.contains(.system))
     }
 
     // MARK: - Tool call detection
@@ -73,6 +80,23 @@ final class MessageTypeClassifierTests: XCTestCase {
         XCTAssertEqual(MessageTypeClassifier.classify(m), .error)
     }
 
+    func testLineAnchoredErrorMarkerDetected() {
+        // Error marker at the start of a (non-first) line still counts.
+        let m = msg(role: "assistant", content: "Building the project...\nERROR cannot resolve symbol")
+        XCTAssertEqual(MessageTypeClassifier.classify(m), .error)
+    }
+
+    func testProseErrorNotMisclassified() {
+        // "error:" buried mid-sentence is prose, not an error message.
+        let m = msg(role: "assistant", content: "I checked the logs and there was no error: everything looks fine here.")
+        XCTAssertEqual(MessageTypeClassifier.classify(m), .assistant)
+    }
+
+    func testProseFailedNotMisclassified() {
+        let m = msg(role: "assistant", content: "The previous attempt FAILED only because of a typo, which I have now fixed.")
+        XCTAssertEqual(MessageTypeClassifier.classify(m), .assistant)
+    }
+
     // MARK: - Code block detection
 
     func testSignificantCodeBlockClassifiedAsCode() {
@@ -87,6 +111,13 @@ final class MessageTypeClassifierTests: XCTestCase {
         let content = "Here is a long explanation of the problem that is much longer than the code block itself. " +
             "We need to consider many factors when solving this issue. ```x``` The fix is straightforward."
         let m = msg(role: "assistant", content: content)
+        XCTAssertEqual(MessageTypeClassifier.classify(m), .assistant)
+    }
+
+    func testUnbalancedFenceNotClassifiedAsCode() {
+        // A single (unterminated) fence has an odd marker count — the dangling
+        // region must NOT be counted as a code block.
+        let m = msg(role: "assistant", content: "Quick note ```\nlong dangling text that follows the single fence and never closes")
         XCTAssertEqual(MessageTypeClassifier.classify(m), .assistant)
     }
 

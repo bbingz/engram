@@ -275,14 +275,19 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     databaseGeneration: result.databaseGeneration
                 )
             case "linkSessions":
+                // linkSessions only reads through an independent read-only
+                // DatabaseQueue and then creates filesystem symlinks; it never
+                // writes the database. Running it through the single write gate
+                // held that gate for up to 10k filesystem symlink operations,
+                // blocking every real DB write behind pure FS work. Run it
+                // outside the gate. The per-path symlink logic is idempotent
+                // (createDirectory withIntermediateDirectories + remove-then-
+                // recreate per file), so concurrent calls are self-correcting.
                 let payload = try decodePayload(EngramServiceLinkSessionsRequest.self, from: request)
-                let result = try await writerGate.performWriteCommand(name: request.command) { _ in
-                    try Self.linkSessions(payload, databasePath: writerGate.databasePath)
-                }
+                let value = try Self.linkSessions(payload, databasePath: writerGate.databasePath)
                 return .success(
                     requestId: request.requestId,
-                    result: try Self.encode(result.value),
-                    databaseGeneration: result.databaseGeneration
+                    result: try Self.encode(value)
                 )
             case "exportSession":
                 let payload = try decodePayload(EngramServiceExportSessionRequest.self, from: request)

@@ -59,12 +59,37 @@ struct SessionDetailView: View {
 
     private func updateDisplayIndexed() {
         displayIndexed = indexedMessages.filter { idx in
-            guard typeVisibility[idx.messageType] ?? true else { return false }
-            if !showSystemPrompts && idx.message.systemCategory == .systemPrompt { return false }
-            if !showAgentComm && idx.message.systemCategory == .agentComm { return false }
-            return true
+            Self.isMessageVisible(
+                idx,
+                typeVisibility: typeVisibility,
+                showSystemPrompts: showSystemPrompts,
+                showAgentComm: showAgentComm
+            )
         }
         updateMatchIndices()
+    }
+
+    /// Decides whether an indexed message survives the current filters.
+    ///
+    /// System-prompt / agent-comm messages are gated ONLY by their dedicated
+    /// toggles, NOT by `typeVisibility`. The classifier maps them to
+    /// `.system` / `.toolCall` / `.toolResult`, and `.system` has no chip and
+    /// defaults to hidden — so running the `typeVisibility` gate first made the
+    /// "Show System Prompts" toggle a no-op. Gate on `systemCategory` first.
+    static func isMessageVisible(
+        _ idx: IndexedMessage,
+        typeVisibility: [MessageType: Bool],
+        showSystemPrompts: Bool,
+        showAgentComm: Bool
+    ) -> Bool {
+        switch idx.message.systemCategory {
+        case .systemPrompt:
+            return showSystemPrompts
+        case .agentComm:
+            return showAgentComm
+        case .none:
+            return typeVisibility[idx.messageType] ?? true
+        }
     }
 
     private func updateMatchIndices() {
@@ -289,7 +314,6 @@ struct SessionDetailView: View {
         // Single per-session load path (keyed by session.id) — favorite + messages +
         // parent info all run here so ordering is deterministic and re-runs on switch.
         .task(id: session.id) {
-            isFavorite = (try? db.isFavorite(sessionId: session.id)) ?? false
             isLoadingMessages = true
             messages = []
             indexedMessages = []
@@ -300,6 +324,13 @@ struct SessionDetailView: View {
             suggestedChildrenSessions = []
             suggestedChildrenSessionCount = 0
             showAgentSessions = false
+            // Read favorite state off the main actor; assign back when it lands.
+            let dbRef = db
+            let sessionId = session.id
+            Task.detached {
+                let fav = (try? dbRef.isFavorite(sessionId: sessionId)) ?? false
+                await MainActor.run { isFavorite = fav }
+            }
             var effectivePath = session.effectiveFilePath
             let source = session.source
             // Resolve relative paths against the DB's parent directory (test fixtures)
@@ -310,13 +341,30 @@ struct SessionDetailView: View {
                     effectivePath = resolved
                 }
             }
-            messages = await Task.detached(priority: .userInitiated) {
-                MessageParser.parse(filePath: effectivePath, source: source)
+            // Parse + classify + initial filter all run off the main thread; the
+            // finished arrays hop back together so a large transcript never
+            // classifies/filters on the main actor.
+            let visibility = typeVisibility
+            let showSystem = showSystemPrompts
+            let showAgent = showAgentComm
+            let built = await Task.detached(priority: .userInitiated) {
+                let parsed = MessageParser.parse(filePath: effectivePath, source: source)
+                let result = IndexedMessage.build(from: parsed)
+                let display = result.messages.filter {
+                    Self.isMessageVisible(
+                        $0,
+                        typeVisibility: visibility,
+                        showSystemPrompts: showSystem,
+                        showAgentComm: showAgent
+                    )
+                }
+                return (parsed, result.messages, result.counts, display)
             }.value
-            let result = IndexedMessage.build(from: messages)
-            indexedMessages = result.messages
-            typeCounts = result.counts
-            updateDisplayIndexed()
+            messages = built.0
+            indexedMessages = built.1
+            typeCounts = built.2
+            displayIndexed = built.3
+            updateMatchIndices()
             isLoadingMessages = false
             loadParentInfo()
         }

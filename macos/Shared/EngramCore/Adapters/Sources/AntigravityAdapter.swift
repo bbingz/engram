@@ -417,22 +417,37 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         guard let content = try? String(contentsOfFile: locator, encoding: .utf8) else {
             return ""
         }
-        let prefix = String(content.prefix(50_000))
-        guard let regex = try? NSRegularExpression(pattern: #"/Users/[^/\s"'`]+/-Code-/([^/\s"'`]+)"#) else {
+        return Self.inferCWDFromAbsolutePaths(in: String(content.prefix(50_000)))
+    }
+
+    // Derive a working directory from the absolute file paths the transcript
+    // references, using a generic most-frequent-directory heuristic. This makes
+    // no assumption about the user's name or a personal directory layout — the
+    // source session may belong to a different user or directory shape.
+    static func inferCWDFromAbsolutePaths(in text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"(/(?:[^/\s"'`]+/)+)[^/\s"'`]+"#) else {
             return ""
         }
-        let matches = regex.matches(in: prefix, range: NSRange(prefix.startIndex..., in: prefix))
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         var counts: [String: Int] = [:]
         for match in matches {
-            guard let range = Range(match.range, in: prefix) else { continue }
-            counts[String(prefix[range]), default: 0] += 1
+            // Capture group 1 is the directory portion (everything up to and
+            // including the final slash). Drop the trailing slash so the cwd is
+            // returned without it.
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: text)
+            else {
+                continue
+            }
+            var directory = String(text[range])
+            if directory.count > 1, directory.hasSuffix("/") {
+                directory.removeLast()
+            }
+            counts[directory, default: 0] += 1
         }
         guard let top = counts.sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first else {
             return ""
         }
-        // Return the path exactly as it appears in the transcript. Do NOT
-        // reconstruct it under the current user's home / a hardcoded layout —
-        // the source session may belong to a different user or directory shape.
         return top.key
     }
 

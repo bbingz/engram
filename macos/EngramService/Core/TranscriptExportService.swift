@@ -22,10 +22,16 @@ enum TranscriptExportService {
         let home = try outputHome(from: request.outputHome)
         let outputDir = try outputDirectory(in: home)
 
-        let safeId = String(session.id.prefix(8))
+        // Use the full session id, not an 8-char prefix: two distinct sessions
+        // that share a prefix (and date) would otherwise collide and silently
+        // overwrite each other's export. Sanitize to filesystem-safe characters
+        // and fall back to a stable token when the start date is missing so the
+        // filename never degrades to a dangling "source-id-.ext".
+        let safeId = sanitizeFileNameComponent(session.id)
         let date = serviceLocalDate(session.startTime)
+        let safeDate = date.isEmpty ? "undated" : date
         let ext = request.format == "json" ? "json" : "md"
-        let outputURL = outputDir.appendingPathComponent("\(session.source)-\(safeId)-\(date).\(ext)")
+        let outputURL = outputDir.appendingPathComponent("\(session.source)-\(safeId)-\(safeDate).\(ext)")
         try rejectSymlinkAncestors(
             from: outputURL.standardizedFileURL,
             through: URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL
@@ -39,6 +45,17 @@ enum TranscriptExportService {
             format: request.format,
             messageCount: messages.count
         )
+    }
+
+    /// Map a session id to a safe single-path-component filename fragment. Some
+    /// session ids embed path separators or query characters (e.g. cursor's
+    /// "dbPath?composer=..." or opencode's "dbPath::sessionId"); replacing every
+    /// non [A-Za-z0-9._-] byte keeps the export inside `outputDir` and avoids
+    /// accidental traversal, while preserving uniqueness of the full id.
+    private static func sanitizeFileNameComponent(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        let sanitized = String(value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+        return sanitized.isEmpty ? "session" : sanitized
     }
 
     private static func outputHome(from requestedHome: String?) throws -> String {

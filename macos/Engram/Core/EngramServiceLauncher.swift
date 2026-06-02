@@ -135,9 +135,13 @@ final class EngramServiceLauncher {
                     let message = error.localizedDescription
                     if restartAttempts < maxRestarts {
                         restartAttempts += 1
+                        guard let self else { return }
+                        // Await the bounded shutdown so the old helper releases
+                        // its single-writer lock + socket before the new process
+                        // spawns. The wait suspends (Task.sleep) instead of
+                        // blocking, so the main run loop stays responsive.
+                        await self.stopProcessOnly()
                         await MainActor.run {
-                            guard let self else { return }
-                            self.stopProcessOnly()
                             do {
                                 try self.start(configuration: configuration)
                                 onStatus(.starting)
@@ -162,32 +166,46 @@ final class EngramServiceLauncher {
     func stopIfOwned() {
         healthTask?.cancel()
         healthTask = nil
-        stopProcessOnly()
+        // Send SIGTERM synchronously, but never block the main run loop waiting
+        // for exit. On quit we don't need the lock-release ordering a restart
+        // needs, so the bounded wait runs as a fire-and-forget task whose
+        // suspension points keep the run loop free.
+        guard let terminating = terminateProcess() else { return }
+        Task { await Self.waitForExit(terminating, timeout: 2.0) }
     }
 
-    private func stopProcessOnly() {
+    private func stopProcessOnly() async {
+        guard let terminating = terminateProcess() else { return }
+        // Bounded wait so the old helper has actually released the
+        // single-writer lock + socket before a restart spawns a new one;
+        // otherwise the new process loses the lock race and exits. SIGTERM
+        // on our own short-lived helper is honored quickly; cap the wait so
+        // a wedged process can't block the caller indefinitely.
+        await Self.waitForExit(terminating, timeout: 2.0)
+    }
+
+    /// Tears down the pipes, sends SIGTERM, and returns the still-running
+    /// process so the (bounded) exit wait can happen at a later suspension
+    /// point. The launcher releases its reference immediately so `isRunning`
+    /// reflects the shutdown without waiting.
+    private func terminateProcess() -> Process? {
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
         stdoutPipe = nil
         stderrPipe = nil
-        if let process, process.isRunning {
-            process.terminate()
-            // Bounded wait so the old helper has actually released the
-            // single-writer lock + socket before a restart spawns a new one;
-            // otherwise the new process loses the lock race and exits. SIGTERM
-            // on our own short-lived helper is honored quickly; cap the wait so
-            // a wedged process can't block the main actor indefinitely.
-            Self.waitForExit(process, timeout: 2.0)
-        }
+        let terminating = process
         process = nil
+        guard let terminating, terminating.isRunning else { return nil }
+        terminating.terminate()
+        return terminating
     }
 
-    private static func waitForExit(_ process: Process, timeout: TimeInterval) {
+    private static func waitForExit(_ process: Process, timeout: TimeInterval) async {
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline {
-            // Poll rather than blocking waitUntilExit(): a hung helper would
-            // otherwise wedge the @MainActor caller forever.
-            Thread.sleep(forTimeInterval: 0.02)
+            // Suspend rather than block the caller: `Task.sleep` frees the run
+            // loop between polls so a hung helper can never wedge the main actor.
+            try? await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 
