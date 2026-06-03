@@ -172,6 +172,35 @@ describe('AiAuditWriter', () => {
     );
   });
 
+  it('emits sanitized bodies instead of raw request and response payloads', () => {
+    const w = new AiAuditWriter(db, {
+      ...DEFAULT_AI_AUDIT_CONFIG,
+      logBodies: true,
+    });
+    const handler = vi.fn();
+    w.on('entry', handler);
+
+    w.record({
+      caller: 'summary',
+      operation: 'generate',
+      durationMs: 100,
+      requestBody: {
+        prompt: 'token=abcdefabcdefabcdefabcdefabcdefabcdef',
+        auth: 'Bearer abcdefghijk12345',
+      },
+      responseBody: {
+        text: 'sk-abcdefghijklmnopqrstuvwxyz',
+      },
+    });
+
+    const emitted = JSON.stringify(handler.mock.calls[0][0]);
+    expect(emitted).not.toContain('abcdefabcdefabcdefabcdefabcdefabcdef');
+    expect(emitted).not.toContain('Bearer abcdefghijk12345');
+    expect(emitted).not.toContain('sk-abcdefghijklmnopqrstuvwxyz');
+    expect(emitted).toContain('Bearer ***');
+    expect(emitted).toContain('sk-***');
+  });
+
   it('skips recording when disabled', () => {
     const w = new AiAuditWriter(db, {
       ...DEFAULT_AI_AUDIT_CONFIG,

@@ -45,6 +45,33 @@ describe('applyPatterns', () => {
     );
   });
 
+  it('redacts bare Gemini/Google API keys', () => {
+    expect(applyPatterns('AIzaSyB1234567890abcdefg1234567890abcdef')).toBe(
+      'AIza***',
+    );
+  });
+
+  it('redacts GitHub personal access tokens', () => {
+    expect(
+      applyPatterns('token ghp_abcdefghijklmnopqrstuvwxyz1234567890'),
+    ).toBe('token ghp_***');
+  });
+
+  it('redacts AWS access key ids', () => {
+    expect(applyPatterns('aws=AKIA1234567890ABCDEF')).toBe('aws=AKIA***');
+  });
+
+  it('redacts PEM private key blocks', () => {
+    const pem = [
+      '-----BEGIN PRIVATE KEY-----',
+      'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC',
+      '-----END PRIVATE KEY-----',
+    ].join('\n');
+    expect(applyPatterns(`key:\n${pem}`)).toBe(
+      'key:\n-----PRIVATE KEY***-----',
+    );
+  });
+
   it('redacts apiKey and api_key query params', () => {
     expect(
       applyPatterns('https://example.com/api?apiKey=secret123&other=ok'),

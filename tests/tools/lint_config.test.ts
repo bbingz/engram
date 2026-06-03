@@ -215,5 +215,33 @@ describe('lint_config', () => {
 
       rmSync(emptyDir, { recursive: true, force: true });
     });
+
+    it('rejects non-absolute cwd', async () => {
+      const result = await handleLintConfig({ cwd: 'relative-project' });
+
+      expect(result.score).toBe(0);
+      expect(result.issues).toEqual([
+        {
+          file: 'relative-project',
+          line: 0,
+          severity: 'error',
+          message: 'cwd must be an absolute path',
+        },
+      ]);
+    });
+
+    it('rejects protected system cwd', async () => {
+      const result = await handleLintConfig({ cwd: '/System/Library' });
+
+      expect(result.score).toBe(0);
+      expect(result.issues).toEqual([
+        {
+          file: '/System/Library',
+          line: 0,
+          severity: 'error',
+          message: 'cwd must not be inside a protected system directory',
+        },
+      ]);
+    });
   });
 });

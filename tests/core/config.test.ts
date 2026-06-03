@@ -356,6 +356,28 @@ describe('settings file permissions', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('warns to stderr when settings JSON cannot be parsed', () => {
+    const home = mkdtempSync(join(tmpdir(), 'engram-config-'));
+    vi.stubEnv('HOME', home);
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    try {
+      const dir = join(home, '.engram');
+      const file = join(dir, 'settings.json');
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      writeFileSync(file, '{not json', { mode: 0o600 });
+
+      expect(readFileSettings()).toEqual({});
+      expect(stderrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[engram] WARNING: failed to read settings'),
+      );
+    } finally {
+      stderrSpy.mockRestore();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── joinApiUrl ───────────────────────────────────────────────────────

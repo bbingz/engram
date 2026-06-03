@@ -191,6 +191,37 @@ describe('TitleGenerator audit', () => {
     expect(call.durationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it('does not require AbortSignal.timeout support', async () => {
+    const originalTimeout = AbortSignal.timeout;
+    Object.defineProperty(AbortSignal, 'timeout', {
+      configurable: true,
+      value: undefined,
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      json: () => Promise.resolve({ response: 'Portable Timeout' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const gen = new TitleGenerator({
+        provider: 'ollama',
+        baseUrl: 'http://localhost:11434',
+        model: 'qwen2.5:3b',
+        autoGenerate: true,
+      });
+      const title = await gen.generate(messages);
+
+      expect(title).toBe('Portable Timeout');
+      expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      Object.defineProperty(AbortSignal, 'timeout', {
+        configurable: true,
+        value: originalTimeout,
+      });
+    }
+  });
+
   it('does not crash when no audit is provided', async () => {
     vi.stubGlobal(
       'fetch',

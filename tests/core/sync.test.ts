@@ -258,6 +258,32 @@ describe('SyncEngine', () => {
     );
   });
 
+  it('falls back when remote syncVersion is NaN', async () => {
+    const remote = {
+      ...validSnapshot('nan-sync-version', '2026-03-18T12:00:00Z', {
+        messageCount: 7,
+      }),
+      syncVersion: Number.NaN,
+    };
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonOk({
+          sessionCount: 1,
+          nodeName: 'peer-a',
+          timestamp: new Date().toISOString(),
+        }),
+      )
+      .mockResolvedValueOnce(jsonOk({ sessions: [remote] }));
+
+    const engine = new SyncEngine(db, mockFetch as unknown as typeof fetch);
+    await engine.pullFromPeer({ name: 'peer-a', url: 'http://peer-a:3457' });
+
+    expect(db.getAuthoritativeSnapshot('nan-sync-version')?.syncVersion).toBe(
+      7,
+    );
+  });
+
   it('does not advance cursor when a row merge fails mid-page', async () => {
     const mockFetch = vi
       .fn()

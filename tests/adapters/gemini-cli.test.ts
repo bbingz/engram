@@ -46,6 +46,28 @@ describe('GeminiCliAdapter', () => {
     const cwd = await adapter.resolveProject('my-project');
     expect(cwd).toBe('/Users/test/my-project');
   });
+
+  it('skips oversized session JSON files before reading them', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'engram-gemini-large-'));
+    try {
+      const largeSession = join(tmp, 'session-large.json');
+      writeFileSync(
+        largeSession,
+        JSON.stringify({
+          sessionId: 'large',
+          projectHash: 'h',
+          startTime: '2026-01-25T14:00:00.000Z',
+          messages: [],
+          padding: 'x'.repeat(11 * 1024 * 1024),
+        }),
+      );
+      const adapter = new GeminiCliAdapter(tmp, join(tmp, 'projects.json'));
+
+      await expect(adapter.parseSessionInfo(largeSession)).resolves.toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('GeminiCliAdapter sidecar originator (R5-31)', () => {

@@ -186,6 +186,16 @@ describe('link_sessions', () => {
     expect(result.errors).toEqual(['targetDir must be an absolute path']);
   });
 
+  it('rejects system directories before creating links', async () => {
+    const result = await handleLinkSessions(db, { targetDir: '/System/myapp' });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toEqual([
+      'targetDir must not be inside a protected system directory',
+    ]);
+  });
+
   it('replaces symlink when same filename points to different target', async () => {
     // Two sessions with same source + filename but different file paths (via aliases)
     const altDir = join(sourceDir, 'codex-alt');

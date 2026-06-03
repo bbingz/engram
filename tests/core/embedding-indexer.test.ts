@@ -144,6 +144,26 @@ describe('EmbeddingIndexer', () => {
     expect(mockStore.upsert).toHaveBeenCalledOnce();
   });
 
+  it('bounds the in-memory indexed-session cache loaded from the database', async () => {
+    db.getRawDb().exec(
+      'CREATE TABLE session_embeddings(session_id TEXT PRIMARY KEY, model TEXT)',
+    );
+    const insert = db
+      .getRawDb()
+      .prepare(
+        'INSERT INTO session_embeddings(session_id, model) VALUES (?, ?)',
+      );
+    for (let i = 0; i < 10_050; i++) {
+      insert.run(`s-${i}`, 'mock');
+    }
+
+    await indexer.indexAll();
+
+    expect((indexer as unknown as { indexed: Set<string> }).indexed.size).toBe(
+      10_000,
+    );
+  });
+
   it('persists embeddings through the real sqlite vector store and skips them after restart', async () => {
     const dbPath = join(tmpDir, 'integration.sqlite');
     db.close();
