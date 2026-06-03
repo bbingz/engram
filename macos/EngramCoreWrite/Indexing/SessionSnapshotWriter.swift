@@ -22,6 +22,7 @@ public final class SessionSnapshotWriter {
             if !snapshot.toolCallCounts.isEmpty {
                 try replaceSessionToolsIfDifferent(snapshot)
             }
+            try clearRecoveredOrphanStatus(sessionId: snapshot.id)
             return SessionWriteResult(action: .noop, changeSet: merge.changeSet)
         }
 
@@ -35,6 +36,7 @@ public final class SessionSnapshotWriter {
         // snapshot while the rest of the batch still commits.
         try db.inSavepoint {
             try upsert(merge.snapshot)
+            try clearRecoveredOrphanStatus(sessionId: snapshot.id)
             try upsertZeroCostRow(merge.snapshot)
             try replaceSessionTools(merge.snapshot)
 
@@ -112,8 +114,10 @@ public final class SessionSnapshotWriter {
         }
         var merged = incoming
         merged.endTime = incoming.endTime ?? current.endTime
+        merged.cwd = incoming.cwd.isEmpty ? current.cwd : incoming.cwd
         merged.project = incoming.project ?? current.project
         merged.model = incoming.model ?? current.model
+        preserveCountsIfIncomingEmpty(current: current, merged: &merged)
         merged.summary = incoming.summary ?? current.summary
         merged.summaryMessageCount = incoming.summaryMessageCount ?? current.summaryMessageCount
         merged.origin = incoming.origin ?? current.origin
@@ -145,6 +149,20 @@ public final class SessionSnapshotWriter {
         return (.merge, merged, SessionChangeSet(flags: flags))
     }
 
+    private func clearRecoveredOrphanStatus(sessionId: String) throws {
+        try db.execute(
+            sql: """
+            UPDATE sessions
+            SET orphan_status = NULL,
+                orphan_since = NULL,
+                orphan_reason = NULL
+            WHERE id = ?
+              AND orphan_status IS NOT NULL
+            """,
+            arguments: [sessionId]
+        )
+    }
+
     /// Mirrors the ON CONFLICT CASE in `upsert`: preserve a stored agent_role
     /// when the incoming snapshot has none, and keep a 'skip' tier that a
     /// non-null agent_role pins so a content re-index cannot revert a Layer-2
@@ -156,6 +174,18 @@ public final class SessionSnapshotWriter {
         let role = incoming.agentRole ?? current.agentRole
         let tier = (current.tier == .skip && current.agentRole != nil) ? current.tier : incoming.tier
         return (role, tier)
+    }
+
+    private func preserveCountsIfIncomingEmpty(
+        current: AuthoritativeSessionSnapshot,
+        merged: inout AuthoritativeSessionSnapshot
+    ) {
+        guard merged.messageCount == 0, current.messageCount > 0 else { return }
+        merged.messageCount = current.messageCount
+        merged.userMessageCount = current.userMessageCount
+        merged.assistantMessageCount = current.assistantMessageCount
+        merged.toolMessageCount = current.toolMessageCount
+        merged.systemMessageCount = current.systemMessageCount
     }
 
     private func currentSnapshot(id: String) throws -> AuthoritativeSessionSnapshot? {
@@ -212,14 +242,32 @@ public final class SessionSnapshotWriter {
               source = excluded.source,
               start_time = excluded.start_time,
               end_time = excluded.end_time,
-              cwd = excluded.cwd,
+              cwd = CASE
+                WHEN excluded.cwd IS NULL OR excluded.cwd = '' THEN sessions.cwd
+                ELSE excluded.cwd
+              END,
               project = COALESCE(excluded.project, sessions.project),
               model = COALESCE(excluded.model, sessions.model),
-              message_count = excluded.message_count,
-              user_message_count = excluded.user_message_count,
-              assistant_message_count = excluded.assistant_message_count,
-              tool_message_count = excluded.tool_message_count,
-              system_message_count = excluded.system_message_count,
+              message_count = CASE
+                WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.message_count
+                ELSE excluded.message_count
+              END,
+              user_message_count = CASE
+                WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.user_message_count
+                ELSE excluded.user_message_count
+              END,
+              assistant_message_count = CASE
+                WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.assistant_message_count
+                ELSE excluded.assistant_message_count
+              END,
+              tool_message_count = CASE
+                WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.tool_message_count
+                ELSE excluded.tool_message_count
+              END,
+              system_message_count = CASE
+                WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.system_message_count
+                ELSE excluded.system_message_count
+              END,
               summary = COALESCE(excluded.summary, sessions.summary),
               summary_message_count = COALESCE(excluded.summary_message_count, sessions.summary_message_count),
               size_bytes = excluded.size_bytes,

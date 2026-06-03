@@ -29,6 +29,12 @@ final class SessionSnapshotClassificationTests: XCTestCase {
         id: String,
         source: SourceName = .codex,
         hash: String = "h",
+        cwd: String = "/work/engram",
+        messageCount: Int = 4,
+        userMessageCount: Int = 2,
+        assistantMessageCount: Int = 2,
+        toolMessageCount: Int = 0,
+        systemMessageCount: Int = 0,
         tier: SessionTier? = .normal,
         agentRole: String? = nil,
         parentSessionId: String? = nil
@@ -37,8 +43,8 @@ final class SessionSnapshotClassificationTests: XCTestCase {
             id: id, source: source, authoritativeNode: "node", syncVersion: 1,
             snapshotHash: "\(hash)-\(id)", indexedAt: "2026-05-23T10:00:00Z",
             sourceLocator: "/tmp/\(id).jsonl", startTime: "2026-05-23T10:00:00.000Z",
-            cwd: "/work/engram", messageCount: 4, userMessageCount: 2,
-            assistantMessageCount: 2, toolMessageCount: 0, systemMessageCount: 0,
+            cwd: cwd, messageCount: messageCount, userMessageCount: userMessageCount,
+            assistantMessageCount: assistantMessageCount, toolMessageCount: toolMessageCount, systemMessageCount: systemMessageCount,
             tier: tier, agentRole: agentRole, parentSessionId: parentSessionId
         )
     }
@@ -89,6 +95,50 @@ final class SessionSnapshotClassificationTests: XCTestCase {
             XCTAssertEqual(result.action, .merge)
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'child'"), "dispatched")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'child'"), "skip")
+        }
+    }
+
+    func testReindexPreservesCwdAndMessageCountsWhenIncomingParseIsEmpty() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "partial",
+                    hash: "h1",
+                    cwd: "/work/engram",
+                    messageCount: 5,
+                    userMessageCount: 2,
+                    assistantMessageCount: 2,
+                    toolMessageCount: 1,
+                    systemMessageCount: 0
+                )
+            )
+
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "partial",
+                    hash: "h2",
+                    cwd: "",
+                    messageCount: 0,
+                    userMessageCount: 0,
+                    assistantMessageCount: 0,
+                    toolMessageCount: 0,
+                    systemMessageCount: 0
+                )
+            )
+
+            let row = try Row.fetchOne(db, sql: """
+                SELECT cwd, message_count, user_message_count, assistant_message_count,
+                       tool_message_count, system_message_count
+                  FROM sessions
+                 WHERE id = 'partial'
+                """)
+            XCTAssertEqual(row?["cwd"], "/work/engram")
+            XCTAssertEqual(row?["message_count"], 5)
+            XCTAssertEqual(row?["user_message_count"], 2)
+            XCTAssertEqual(row?["assistant_message_count"], 2)
+            XCTAssertEqual(row?["tool_message_count"], 1)
+            XCTAssertEqual(row?["system_message_count"], 0)
         }
     }
 

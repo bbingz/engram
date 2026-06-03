@@ -1,6 +1,7 @@
 // macos/EngramCoreTests/ProjectMove/SessionSourcesTests.swift
 // Mirrors tests/core/project-move/sources.test.ts (Node parity baseline).
 import Foundation
+import Darwin
 import XCTest
 @testable import EngramCoreWrite
 
@@ -94,6 +95,32 @@ final class SessionSourcesTests: XCTestCase {
         XCTAssertEqual(
             SessionSources.encodeIflow("/Users/bing/-Code-/WebSite_GLM"),
             "-Users-bing-Code-WebSite_GLM"
+        )
+    }
+
+    func testEncodeIflowCollidesForLeadingTrailingDashes() {
+        XCTAssertEqual(
+            SessionSources.encodeIflow("/a/-foo-/p"),
+            SessionSources.encodeIflow("/a/foo/p")
+        )
+    }
+
+    func testCollectOtherIflowCwdsSharingEncodedDir() throws {
+        let target = SessionSources.encodeIflow("/a/foo/p")
+        let projectDir = tmpRoot.appendingPathComponent(target, isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        try """
+        {"sessionId":"src","cwd":"/a/-foo-/p","type":"summary"}
+        {"sessionId":"other","cwd":"/a/foo/p","type":"summary"}
+        """.write(to: projectDir.appendingPathComponent("session-1.jsonl"), atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            SessionSources.collectOtherIflowCwdsSharingEncodedDir(
+                root: tmpRoot.path,
+                targetEncodedDir: target,
+                srcCwd: "/a/-foo-/p"
+            ),
+            ["/a/foo/p"]
         )
     }
 
@@ -260,6 +287,26 @@ final class SessionSourcesTests: XCTestCase {
         let symlinkIssue = issues.first { $0.reason == .skippedSymlink }
         XCTAssertNotNil(symlinkIssue)
         XCTAssertEqual(symlinkIssue?.path, link.path)
+    }
+
+    func testWalkReportsNonRegularFiles() throws {
+        let fifo = tmpRoot.appendingPathComponent("pipe.jsonl")
+        guard mkfifo(fifo.path, 0o600) == 0 else {
+            throw XCTSkip("mkfifo failed: \(String(cString: strerror(errno)))")
+        }
+
+        var issues: [WalkIssue] = []
+        var seen: [String] = []
+        SessionSources.walkSessionFiles(
+            root: tmpRoot.path,
+            onIssue: { issues.append($0) }
+        ) {
+            seen.append($0)
+        }
+
+        XCTAssertTrue(seen.isEmpty)
+        let issue = issues.first { $0.path == fifo.path }
+        XCTAssertEqual(issue?.reason, .skippedNonRegular)
     }
 
     // MARK: - findReferencingFiles

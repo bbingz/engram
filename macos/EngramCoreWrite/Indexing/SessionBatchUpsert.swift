@@ -12,29 +12,34 @@ public final class SessionBatchUpsert: IndexingWriteSink {
         _ snapshots: [AuthoritativeSessionSnapshot],
         reason: IndexingWriteReason
     ) throws -> SessionBatchUpsertResult {
-        let writer = SessionSnapshotWriter(db: db)
-        var results: [SessionBatchItemResult] = []
-        for snapshot in snapshots {
-            do {
-                let writeResult = try writer.writeAuthoritativeSnapshot(snapshot)
-                results.append(
-                    SessionBatchItemResult(
-                        sessionId: snapshot.id,
-                        action: writeResult.action,
-                        enqueuedJobs: writer.jobKinds(for: writeResult, snapshot: snapshot)
+        var batchResult: SessionBatchUpsertResult?
+        try db.inSavepoint {
+            let writer = SessionSnapshotWriter(db: db)
+            var results: [SessionBatchItemResult] = []
+            for snapshot in snapshots {
+                do {
+                    let writeResult = try writer.writeAuthoritativeSnapshot(snapshot)
+                    results.append(
+                        SessionBatchItemResult(
+                            sessionId: snapshot.id,
+                            action: writeResult.action,
+                            enqueuedJobs: writer.jobKinds(for: writeResult, snapshot: snapshot)
+                        )
                     )
-                )
-            } catch {
-                results.append(
-                    SessionBatchItemResult(
-                        sessionId: snapshot.id,
-                        action: .failure,
-                        enqueuedJobs: [],
-                        error: "\(error)"
+                } catch {
+                    results.append(
+                        SessionBatchItemResult(
+                            sessionId: snapshot.id,
+                            action: .failure,
+                            enqueuedJobs: [],
+                            error: "\(error)"
+                        )
                     )
-                )
+                }
             }
+            batchResult = SessionBatchUpsertResult(reason: reason, results: results)
+            return .commit
         }
-        return SessionBatchUpsertResult(reason: reason, results: results)
+        return batchResult ?? SessionBatchUpsertResult(reason: reason, results: [])
     }
 }

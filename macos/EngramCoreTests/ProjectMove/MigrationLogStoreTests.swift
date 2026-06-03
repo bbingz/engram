@@ -78,6 +78,26 @@ final class MigrationLogStoreTests: XCTestCase {
         }
     }
 
+    func testStartMigrationCapsAuditNote() throws {
+        let oversized = String(repeating: "x", count: MigrationLogStore.maxAuditNoteLength + 500)
+        try writer.write { db in
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "m1",
+                    oldPath: "/x/old",
+                    newPath: "/x/new",
+                    oldBasename: "old",
+                    newBasename: "new",
+                    auditNote: oversized
+                )
+            )
+
+            let note = try String.fetchOne(db, sql: "SELECT audit_note FROM migration_log WHERE id = 'm1'")
+            XCTAssertEqual(note?.count, MigrationLogStore.maxAuditNoteLength)
+        }
+    }
+
     // MARK: - markFsDone
 
     func testMarkFsDoneTransitionsAndStoresDetail() throws {

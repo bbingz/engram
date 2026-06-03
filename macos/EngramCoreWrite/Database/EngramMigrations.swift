@@ -51,6 +51,7 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
             CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
             CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
+            CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
             CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
             CREATE INDEX IF NOT EXISTS idx_sessions_agent_role ON sessions(agent_role);
             CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier);
@@ -147,6 +148,7 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_migration_log_started_at ON migration_log(started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_migration_log_paths ON migration_log(old_path, new_path);
             CREATE INDEX IF NOT EXISTS idx_migration_log_state ON migration_log(state);
+            CREATE INDEX IF NOT EXISTS idx_migration_log_state_started ON migration_log(state, started_at);
 
             CREATE TABLE IF NOT EXISTS usage_snapshots (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,7 +246,7 @@ enum EngramMigrations {
             CREATE TABLE IF NOT EXISTS metrics (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               name TEXT NOT NULL,
-              type TEXT NOT NULL,
+              type TEXT NOT NULL CHECK (type IN ('counter', 'gauge', 'histogram')),
               value REAL NOT NULL,
               tags TEXT,
               ts TEXT NOT NULL
@@ -325,7 +327,8 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_insights_wing ON insights(wing);
             CREATE VIRTUAL TABLE IF NOT EXISTS insights_fts USING fts5(
               insight_id UNINDEXED,
-              content
+              content,
+              tokenize='trigram case_sensitive 0'
             );
 
             CREATE TABLE IF NOT EXISTS memory_insights (
@@ -353,6 +356,7 @@ enum EngramMigrations {
     }
 
     private static func migrateAuxTablesToV2(_ db: GRDB.Database) throws {
+        try ensureMigrationLogIndexes(db)
         // Skip the per-table rebuilds once the stored version already matches the
         // current aux schema. The per-table guards are idempotent, but they run
         // PRAGMA table_info on ~10 tables every startup; gating on the version
@@ -379,6 +383,13 @@ enum EngramMigrations {
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
             arguments: [auxSchemaVersion]
+        )
+    }
+
+    private static func ensureMigrationLogIndexes(_ db: GRDB.Database) throws {
+        guard try tableExists(db, "migration_log") else { return }
+        try db.execute(
+            sql: "CREATE INDEX IF NOT EXISTS idx_migration_log_state_started ON migration_log(state, started_at)"
         )
     }
 
@@ -420,6 +431,7 @@ enum EngramMigrations {
         for (name, definition) in columns where !existing.contains(name) {
             try db.execute(sql: "ALTER TABLE sessions ADD COLUMN \(name) \(definition)")
         }
+        try db.execute(sql: "UPDATE sessions SET indexed_at = datetime('now') WHERE indexed_at = ''")
     }
 
     private static func migrateSessionToolsToV2(_ db: GRDB.Database) throws {

@@ -174,6 +174,7 @@ final class AdapterMessageCountTests: XCTestCase {
         let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
         let streamed = try await drain(adapter, locator: file.path)
 
+        XCTAssertEqual(info.project, "proj")
         XCTAssertEqual(info.userMessageCount, 1)
         XCTAssertEqual(info.assistantMessageCount, 1)
         XCTAssertEqual(info.toolMessageCount, 1, "only the content-bearing tool_result is counted")
@@ -203,6 +204,46 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.messageCount, streamed.count, "count must match streamed message count")
     }
 
+    func testOpenCodeAccessibilityReusesSharedDatabaseConnection() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildOpenCodeFixture(dbPath: dbPath)
+
+        let adapter = OpenCodeAdapter(dbPath: dbPath)
+        let first = await adapter.isAccessible(locator: "\(dbPath)::ses_1")
+        XCTAssertTrue(first)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dbPath)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dbPath) }
+
+        let second = await adapter.isAccessible(locator: "\(dbPath)::ses_2")
+        XCTAssertTrue(
+            second,
+            "orphan scanning must not reopen the same OpenCode sqlite database for every session"
+        )
+    }
+
+    func testCursorAccessibilityReusesSharedDatabaseConnection() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let first = await adapter.isAccessible(locator: "\(dbPath)?composer=cmp_1")
+        XCTAssertTrue(first)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dbPath)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dbPath) }
+
+        let second = await adapter.isAccessible(locator: "\(dbPath)?composer=cmp_2")
+        XCTAssertTrue(
+            second,
+            "orphan scanning must not reopen the same Cursor sqlite database for every composer"
+        )
+    }
+
     /// Minimal OpenCode schema with: 1 user msg (text part), 1 assistant msg
     /// (text part), and 1 assistant msg whose only part is a non-text tool part
     /// (must be excluded from counts and the stream).
@@ -227,13 +268,37 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
 
         try exec("INSERT INTO session VALUES ('ses_1', '/Users/test/proj', 'Title', 1700000000000, 1700000010000, NULL)")
+        try exec("INSERT INTO session VALUES ('ses_2', '/Users/test/proj', 'Second', 1700000000000, 1700000010000, NULL)")
         try exec("INSERT INTO message VALUES ('m1', 'ses_1', 1700000001000, '{\"role\":\"user\"}')")
         try exec("INSERT INTO message VALUES ('m2', 'ses_1', 1700000002000, '{\"role\":\"assistant\"}')")
         try exec("INSERT INTO message VALUES ('m3', 'ses_1', 1700000003000, '{\"role\":\"assistant\"}')")
+        try exec("INSERT INTO message VALUES ('m4', 'ses_2', 1700000004000, '{\"role\":\"user\"}')")
         try exec("INSERT INTO part VALUES ('p1', 'm1', 1700000001000, '{\"type\":\"text\",\"text\":\"question\"}')")
         try exec("INSERT INTO part VALUES ('p2', 'm2', 1700000002000, '{\"type\":\"text\",\"text\":\"answer\"}')")
         // m3 has only a tool part (no text) → must be dropped.
         try exec("INSERT INTO part VALUES ('p3', 'm3', 1700000003000, '{\"type\":\"tool\",\"tool\":\"read\"}')")
+        try exec("INSERT INTO part VALUES ('p4', 'm4', 1700000004000, '{\"type\":\"text\",\"text\":\"second\"}')")
+    }
+
+    private static func buildCursorFixture(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        try exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+        try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_1', '{\"composerId\":\"cmp_1\"}')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_2', '{\"composerId\":\"cmp_2\"}')")
     }
 
     // MARK: - Antigravity generic cwd inference

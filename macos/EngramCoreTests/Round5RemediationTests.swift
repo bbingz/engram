@@ -84,6 +84,32 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertEqual(info.cwd, "/Users/test/plain")
     }
 
+    func testClineDiscoveryDoesNotTraverseSymlinkedTaskDirectories() async throws {
+        let tasksRoot = try makeTempDir("cline-symlink-root")
+        let outside = try makeTempDir("cline-symlink-outside")
+        defer {
+            try? FileManager.default.removeItem(at: tasksRoot)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let messages: [[String: Any]] = [
+            ["ts": 1_000, "say": "task", "text": "outside task"]
+        ]
+        try writeJSON(messages, to: outside.appendingPathComponent("ui_messages.json"))
+        do {
+            try FileManager.default.createSymbolicLink(
+                at: tasksRoot.appendingPathComponent("linked-task"),
+                withDestinationURL: outside
+            )
+        } catch {
+            throw XCTSkip("symlink permission denied: \(error.localizedDescription)")
+        }
+
+        let adapter = ClineAdapter(tasksRoot: tasksRoot.path)
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertTrue(locators.isEmpty, "discovery must not traverse symlinked task directories: \(locators)")
+    }
+
     // Part B — Windsurf must surface cwd from the Cascade conversation summary
     // when the cache metadata carries it.
     func testWindsurfSurfacesCwdFromCacheMetadata() async throws {
@@ -150,6 +176,34 @@ final class Round5RemediationTests: XCTestCase {
         // 1 user + 0 assistant + 1 tool (function_call only).
         XCTAssertEqual(info.toolMessageCount, 1)
         XCTAssertEqual(info.messageCount, 2)
+    }
+
+    func testCodexDiscoveryDoesNotTraverseSymlinkedDirectories() async throws {
+        let root = try makeTempDir("codex-symlink-root")
+        let outside = try makeTempDir("codex-symlink-outside")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        try writeJSONL(
+            [
+                ["type": "session_meta", "timestamp": "2026-01-15T10:00:00Z", "payload": ["id": "outside", "cwd": "/secret"]]
+            ],
+            to: outside.appendingPathComponent("rollout-outside.jsonl")
+        )
+        do {
+            try FileManager.default.createSymbolicLink(
+                at: root.appendingPathComponent("linked"),
+                withDestinationURL: outside
+            )
+        } catch {
+            throw XCTSkip("symlink permission denied: \(error.localizedDescription)")
+        }
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertTrue(locators.isEmpty, "discovery must not traverse symlinked source directories: \(locators)")
     }
 
     // Part A R5-17 — concurrent observe()/drainReady() must not corrupt the

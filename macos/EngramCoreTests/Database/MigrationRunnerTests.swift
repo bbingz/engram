@@ -32,6 +32,23 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertTrue(SchemaManifest.baseTables.isSubset(of: snapshot.tableNames))
         XCTAssertTrue(SchemaManifest.requiredMetadataKeys.isSubset(of: snapshot.metadataKeys))
 
+        let sessionIndexes = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'index'")
+        }
+        XCTAssertTrue(sessionIndexes.contains("idx_sessions_project"))
+        XCTAssertTrue(sessionIndexes.contains("idx_metrics_ts"))
+        XCTAssertTrue(sessionIndexes.contains("idx_migration_log_state_started"))
+
+        let metricsSql = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'metrics'")
+        }
+        XCTAssertTrue(metricsSql?.contains("CHECK (type IN ('counter', 'gauge', 'histogram'))") ?? false)
+
+        let insightsFtsSql = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'insights_fts'")
+        }
+        XCTAssertTrue(insightsFtsSql?.contains("tokenize='trigram case_sensitive 0'") ?? false)
+
         let memoryInsightColumns = try writer.read { db in
             try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('memory_insights') ORDER BY cid")
         }
@@ -166,6 +183,10 @@ final class MigrationRunnerTests: XCTestCase {
                 .first { ($0["name"] as String) == "indexed_at" }
         }
         XCTAssertNotNil(indexedAtColumn)
+        let indexedAt = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT indexed_at FROM sessions WHERE id = 'legacy-1'")
+        }
+        XCTAssertNotEqual(indexedAt, "")
     }
 
     func testMigratesLegacyAuxiliaryTablesToCurrentWritableSchema() throws {

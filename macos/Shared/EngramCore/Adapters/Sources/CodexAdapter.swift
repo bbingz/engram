@@ -1,27 +1,31 @@
+import Darwin
 import Foundation
 
 enum JSONLAdapterSupport {
     typealias JSONObject = [String: Any]
 
     static func fileExists(_ path: String) -> Bool {
-        FileManager.default.fileExists(atPath: path)
+        lstatMode(path) != nil
     }
 
     static func isDirectory(_ url: URL) -> Bool {
-        var isDirectory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        lstatMode(url.path) == S_IFDIR
     }
 
     static func directChildren(of url: URL, includingHidden: Bool = false) -> [URL] {
+        guard isDirectory(url) else { return [] }
         let options: FileManager.DirectoryEnumerationOptions = includingHidden ? [] : [.skipsHiddenFiles]
         return (try? FileManager.default.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: options
-        ))?.sorted { $0.path < $1.path } ?? []
+        ))?
+            .filter { !isSymlink($0) }
+            .sorted { $0.path < $1.path } ?? []
     }
 
     static func recursiveFiles(under root: URL, matching predicate: (URL) -> Bool) -> [String] {
+        guard isDirectory(root) else { return [] }
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey],
@@ -31,7 +35,7 @@ enum JSONLAdapterSupport {
         }
 
         var files: [String] = []
-        for case let url as URL in enumerator where predicate(url) {
+        for case let url as URL in enumerator where isRegularFile(url) && predicate(url) {
             files.append(url.path)
         }
         return files.sorted()
@@ -39,7 +43,7 @@ enum JSONLAdapterSupport {
 
     static func prepareFile(locator: String, limits: ParserLimits) throws -> (URL, FileIdentity) {
         let url = URL(fileURLWithPath: locator)
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard isRegularFile(url) else {
             throw ParserFailure.fileMissing
         }
         let identity = try limits.fileIdentity(for: url)
@@ -105,8 +109,25 @@ enum JSONLAdapterSupport {
     }
 
     static func fileSize(locator: String) -> Int64 {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: locator)
-        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        var info = stat()
+        guard lstat(locator, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            return 0
+        }
+        return Int64(info.st_size)
+    }
+
+    private static func isSymlink(_ url: URL) -> Bool {
+        lstatMode(url.path) == S_IFLNK
+    }
+
+    private static func isRegularFile(_ url: URL) -> Bool {
+        lstatMode(url.path) == S_IFREG
+    }
+
+    private static func lstatMode(_ path: String) -> mode_t? {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        return info.st_mode & S_IFMT
     }
 
     static func stream(_ messages: [NormalizedMessage]) -> AsyncThrowingStream<NormalizedMessage, Error> {

@@ -295,6 +295,29 @@ final class JsonlPatchTests: XCTestCase {
         )
     }
 
+    func testPatchFileRejectsSymlinkSource() throws {
+        let target = tmpRoot.appendingPathComponent("target.jsonl")
+        try "\"cwd\":\"/old\"".write(to: target, atomically: true, encoding: .utf8)
+        let link = tmpRoot.appendingPathComponent("link.jsonl")
+        do {
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        } catch {
+            throw XCTSkip("symlink permission denied: \(error.localizedDescription)")
+        }
+
+        XCTAssertThrowsError(
+            try JsonlPatch.patchFile(at: link.path, oldPath: "/old", newPath: "/new")
+        ) { error in
+            guard case JsonlPatchError.ioError(let path, _, let message) = error else {
+                return XCTFail("expected ioError, got \(error)")
+            }
+            XCTAssertEqual(path, link.path)
+            XCTAssertTrue(message.lowercased().contains("symlink"), "unexpected message: \(message)")
+        }
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "\"cwd\":\"/old\"")
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
+    }
+
     func testConcurrentModificationErrorContractFields() {
         // The CAS race path inside `patchFile` is hard to drive
         // deterministically through the synchronous Foundation file APIs

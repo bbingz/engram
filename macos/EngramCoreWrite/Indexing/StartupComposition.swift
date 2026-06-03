@@ -19,7 +19,7 @@ public final class OSLogStartupBackfillLogging: StartupBackfillLogging {
     public init() {}
 
     public func warn(_ message: String, error: Error) {
-        log.warning("\(message, privacy: .public): \(String(describing: error), privacy: .public)")
+        log.warning("\(message, privacy: .private): \(String(describing: error), privacy: .private)")
     }
 }
 
@@ -28,6 +28,7 @@ public final class OSLogStartupBackfillLogging: StartupBackfillLogging {
 public final class WriterStartupIndexing: StartupIndexing {
     private let writer: EngramDatabaseWriter
     private let adapters: [any SessionAdapter]
+    public let usesInlineCountAndCostBackfills = true
 
     public init(writer: EngramDatabaseWriter, adapters: [any SessionAdapter]) {
         self.writer = writer
