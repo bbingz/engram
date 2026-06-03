@@ -63,6 +63,107 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(ids.contains("s1"), "already-titled session must be excluded")
     }
 
+    func testGenerateTitlesForContextsHonorsCancellationBeforeWork() async throws {
+        let contexts = [
+            EngramServiceCommandHandler.AIContext(
+                id: "s1",
+                source: "codex",
+                project: "engram",
+                cwd: "/tmp/engram",
+                messageCount: 1,
+                startTime: "2026-04-23T00:00:00Z",
+                nativeTitle: "Native title",
+                nativeSummary: "Summary",
+                transcript: "hello"
+            )
+        ]
+
+        let task = Task {
+            try await EngramServiceCommandHandler.generateTitlesForContexts(
+                contexts: contexts,
+                titleConfig: nil
+            )
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("cancelled title regeneration must not continue to produce updates")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    func testGenerateTitlesForContextsReportsProgressAfterEachTitle() async throws {
+        let contexts = (1...3).map { index in
+            EngramServiceCommandHandler.AIContext(
+                id: "s\(index)",
+                source: "codex",
+                project: "engram",
+                cwd: "/tmp/engram",
+                messageCount: 1,
+                startTime: "2026-04-23T00:00:0\(index)Z",
+                nativeTitle: "Native \(index)",
+                nativeSummary: "Summary \(index)",
+                transcript: "hello \(index)"
+            )
+        }
+        var progress: [(Int, Int)] = []
+
+        let generated = try await EngramServiceCommandHandler.generateTitlesForContexts(
+            contexts: contexts,
+            titleConfig: nil,
+            progress: { completed, total in
+                progress.append((completed, total))
+            }
+        )
+
+        XCTAssertEqual(generated.map(\.id), ["s1", "s2", "s3"])
+        XCTAssertEqual(generated.map(\.title), ["Native 1", "Native 2", "Native 3"])
+        XCTAssertEqual(progress.map { "\($0.0)/\($0.1)" }, ["1/3", "2/3", "3/3"])
+    }
+
+    func testGenerateTitlesForContextsCapsAIConcurrency() async throws {
+        let contexts = (1...12).map { index in
+            EngramServiceCommandHandler.AIContext(
+                id: "s\(index)",
+                source: "codex",
+                project: "engram",
+                cwd: "/tmp/engram",
+                messageCount: 1,
+                startTime: "2026-04-23T00:00:0\(index % 10)Z",
+                nativeTitle: "Native \(index)",
+                nativeSummary: "Summary \(index)",
+                transcript: "hello \(index)"
+            )
+        }
+        let config = EngramServiceCommandHandler.ServiceAISettings.ChatConfig(
+            provider: "test",
+            baseURL: "http://127.0.0.1",
+            apiKey: "test",
+            model: "title-test",
+            maxTokens: 16,
+            temperature: 0
+        )
+        let probe = TitleConcurrencyProbe()
+
+        let generated = try await EngramServiceCommandHandler.generateTitlesForContexts(
+            contexts: contexts,
+            titleConfig: config,
+            maxConcurrency: 4,
+            titleProvider: { context, _ in
+                await probe.enter()
+                try await Task.sleep(nanoseconds: 20_000_000)
+                await probe.leave()
+                return "Generated \(context.id)"
+            }
+        )
+
+        XCTAssertEqual(generated.count, contexts.count)
+        let peak = await probe.maximum()
+        XCTAssertLessThanOrEqual(peak, 4)
+    }
+
     func testRenderSummaryPromptHonorsLanguageMaxSentencesAndStyle() throws {
         let prompt = EngramServiceCommandHandler.ServiceAIClient.renderSummaryPrompt(
             language: "English",
@@ -151,6 +252,40 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("ServiceLogger.notice("))
     }
 
+    func testLLMErrorEnvelopeDoesNotEchoUpstreamBody() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
+
+        XCTAssertTrue(source.contains("AI request failed with status \\(status)"))
+        XCTAssertFalse(
+            source.contains("body.prefix"),
+            "LLM upstream response body must not be echoed into the IPC error envelope or logs"
+        )
+    }
+
+    func testConfirmSuggestionUpdatesLinkCheckedAt() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func confirmSuggestion"))
+        let end = try XCTUnwrap(source.range(of: "private static func setParentSession"))
+        let confirmSource = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(
+            confirmSource.contains("link_checked_at = datetime('now')"),
+            "confirmSuggestion must mirror setParentSession and mark the manual link as checked"
+        )
+    }
+
+    func testProjectMigrationCommandsEmitServiceLogs() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift")
+
+        for command in ["projectMove", "projectArchive", "projectUndo", "projectMoveBatch"] {
+            XCTAssertTrue(source.contains("\"\(command) requested"), "\(command) must log entry")
+            XCTAssertTrue(source.contains("\"\(command) finished"), "\(command) must log success")
+            XCTAssertTrue(source.contains("\"\(command) failed"), "\(command) must log failure")
+        }
+        XCTAssertTrue(source.contains("ServiceLogger.notice("))
+        XCTAssertTrue(source.contains("ServiceLogger.error("))
+    }
+
     func testRunnerStartupScanUsesRecentActiveAdapters() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
 
@@ -195,6 +330,19 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanOrphans")"#))
     }
 
+    func testRunnerObservabilityRetentionLogsZeroRowCompletion() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func runObservabilityRetention"))
+        let end = try XCTUnwrap(source.range(of: "private static func runIndexingLoop"))
+        let retentionSource = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertFalse(
+            retentionSource.contains("if total > 0"),
+            "observability retention must log completion even when no rows are pruned"
+        )
+        XCTAssertTrue(retentionSource.contains("observability retention complete: pruned=\\(total)"))
+    }
+
     func testRunnerPeriodicScanRunsParentBackfills() throws {
         // idx-1: the periodic indexRecent scan must run parent-link / dispatch
         // detection so agent children created mid-run are grouped under their
@@ -203,6 +351,19 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(
             source.contains("runPeriodicParentBackfills"),
             "the periodic indexing loop must run parent backfills after indexing new sessions"
+        )
+    }
+
+    func testProjectMigrationPipelineErrorTestUsesScopedHome() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "\n    func testProjectMigrationCommandsSurfacePipelineErrors"))
+        let end = try XCTUnwrap(source.range(of: "\n    func testUnsupportedTriggerSyncDoesNotAdvanceDatabaseGeneration"))
+        let testSource = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(testSource.contains("ServiceCoreTestHomeScope(home:"))
+        XCTAssertFalse(
+            testSource.contains("FileManager.default.homeDirectoryForCurrentUser"),
+            "project migration pipeline error test must not create paths under the real HOME"
         )
     }
 
@@ -221,6 +382,17 @@ final class EngramServiceIPCTests: XCTestCase {
             source.contains("private var acceptTask"),
             "Accept task must be kept in synchronized lifecycle state"
         )
+    }
+
+    func testUnixSocketClientTransportUsesCheckedSendable() throws {
+        let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+
+        XCTAssertTrue(source.contains("final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable"))
+        XCTAssertFalse(
+            source.contains("UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked Sendable"),
+            "client transport only stores Sendable let values and must not use unchecked Sendable"
+        )
+        XCTAssertTrue(source.contains("private final class FdBox: @unchecked Sendable"))
     }
 
     func testServerRejectsClientWhenSocketTimeoutCannotBeArmed() throws {
@@ -362,6 +534,13 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testTransportRetriesInterruptedReadWriteSyscalls() throws {
+        let source = try serviceCoreSource("Shared/Service/UnixSocketEngramServiceTransport.swift")
+
+        XCTAssertTrue(source.contains("errno == EINTR"))
+        XCTAssertTrue(source.contains("continue"))
+    }
+
     func testServiceReadsHopOffCooperativePool() throws {
         // concurrency: synchronous pool.read for big FTS/LIKE scans must not run
         // on a Swift cooperative-executor thread, or a single scan can starve
@@ -379,6 +558,20 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(
             source.contains("try databaseReader.read(block)\n    }"),
             "the read helper must not call the synchronous reader directly from the cooperative pool"
+        )
+    }
+
+    func testServiceLogCategoriesHaveProductionCallsites() throws {
+        let ipcSource = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
+        let readerSource = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
+
+        XCTAssertTrue(
+            ipcSource.contains("category: .ipc"),
+            "the IPC service log category must have a real production callsite"
+        )
+        XCTAssertTrue(
+            readerSource.contains("category: .reader"),
+            "the reader service log category must have a real production callsite"
         )
     }
 
@@ -1193,6 +1386,51 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue((try FileManager.default.contentsOfDirectory(atPath: outside.path)).isEmpty)
     }
 
+    func testExportSessionRejectsLeafOutputSymlink() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
+        try """
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"leaf symlink"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [transcript.path])
+        }
+
+        let serviceHome = paths.runtime.appendingPathComponent("service-home", isDirectory: true)
+        let outputDir = serviceHome.appendingPathComponent("codex-exports", isDirectory: true)
+        let outside = paths.runtime.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let outsideTarget = outside.appendingPathComponent("stolen.json")
+        try FileManager.default.createSymbolicLink(
+            at: outputDir.appendingPathComponent("codex-s1-2026-04-23.json"),
+            withDestinationURL: outsideTarget
+        )
+        let homeScope = ServiceCoreTestHomeScope(home: serviceHome)
+        defer { homeScope.restore() }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        do {
+            _ = try await client.exportSession(
+                EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: serviceHome.path, actor: "test")
+            )
+            XCTFail("Expected invalidRequest for symlinked export target")
+        } catch let error as EngramServiceError {
+            XCTAssertEqual(error, .invalidRequest(message: "output_home must not traverse symlinks"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outsideTarget.path))
+    }
+
     func testExportSessionRejectsInvalidFormat() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -1419,6 +1657,50 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(response.errors[0].contains("refusing to link path outside known session roots"))
         let linkPath = targetDir.appendingPathComponent("conversation_log/codex/allowed.jsonl").path
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: linkPath), allowedFile.path)
+    }
+
+    func testLinkSessionsDoesNotReplaceExistingDifferentSymlink() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let allowedDir = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: allowedDir, withIntermediateDirectories: true)
+        let allowedFile = allowedDir.appendingPathComponent("allowed.jsonl")
+        let existingTarget = allowedDir.appendingPathComponent("existing.jsonl")
+        try "{}\n".write(to: allowedFile, atomically: true, encoding: .utf8)
+        try "{}\n".write(to: existingTarget, atomically: true, encoding: .utf8)
+
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'", arguments: [allowedFile.path])
+            try db.execute(sql: "UPDATE sessions SET hidden_at = '2026-04-23T03:00:00Z' WHERE id = 's2'")
+        }
+
+        let targetDir = home.appendingPathComponent("engram", isDirectory: true)
+        let linkDir = targetDir.appendingPathComponent("conversation_log/codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: linkDir, withIntermediateDirectories: true)
+        let linkPath = linkDir.appendingPathComponent("allowed.jsonl").path
+        try FileManager.default.createSymbolicLink(atPath: linkPath, withDestinationPath: existingTarget.path)
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let response = try await client.linkSessions(
+            EngramServiceLinkSessionsRequest(targetDir: targetDir.path, actor: "test")
+        )
+
+        XCTAssertEqual(response.created, 0)
+        XCTAssertTrue(response.errors.contains { $0.contains("refusing to replace existing symlink") })
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: linkPath), existingTarget.path)
     }
 
     func testLinkSessionsRejectsTargetDirectoryOutsideHome() async throws {
@@ -1728,8 +2010,9 @@ final class EngramServiceIPCTests: XCTestCase {
         let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
 
         let hygiene = try await client.hygiene(force: false)
-        XCTAssertEqual(hygiene.score, 100)
-        XCTAssertTrue(hygiene.issues.isEmpty)
+        XCTAssertEqual(hygiene.score, 0)
+        XCTAssertEqual(hygiene.issues.first?.kind, "hygiene")
+        XCTAssertEqual(hygiene.issues.first?.severity, "info")
         XCTAssertFalse(hygiene.checkedAt.isEmpty)
 
         let handoff = try await client.handoff(
@@ -1765,6 +2048,11 @@ final class EngramServiceIPCTests: XCTestCase {
         // commands now reach the pipeline and surface its real errors.
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(writerGate: gate)
         let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
@@ -1774,8 +2062,6 @@ final class EngramServiceIPCTests: XCTestCase {
         defer { server.stop() }
 
         let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
-
-        let home = FileManager.default.homeDirectoryForCurrentUser
 
         // 1a. SEC-C2: out-of-home src is refused at the boundary BEFORE the
         //     pipeline, even with force=true. /tmp is outside HOME.
@@ -2082,6 +2368,24 @@ private func seedSearchFixture(at path: String) throws {
               'committed', '2026-04-23T03:00:00Z', '2026-04-23T03:05:00Z', 0, 'fixture', 'app'
             );
         """)
+    }
+}
+
+private actor TitleConcurrencyProbe {
+    private var current = 0
+    private var peak = 0
+
+    func enter() {
+        current += 1
+        peak = max(peak, current)
+    }
+
+    func leave() {
+        current -= 1
+    }
+
+    func maximum() -> Int {
+        peak
     }
 }
 

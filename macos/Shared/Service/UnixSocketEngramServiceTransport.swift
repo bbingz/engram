@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked Sendable {
+final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
     static let maximumFrameLength = 256 * 1024
 
     /// Whole-frame wall-clock budget. The per-syscall SO_RCVTIMEO/SO_SNDTIMEO
@@ -364,6 +364,9 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
         while offset < buffer.count {
             try checkFrameDeadline(deadline, operation: "write")
             let written = Darwin.write(fd, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+            if written < 0, errno == EINTR {
+                continue
+            }
             if written < 0, isTimeoutErrno(errno) {
                 throw EngramServiceError.serviceUnavailable(message: "Service socket write timed out")
             }
@@ -381,6 +384,9 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, @unchecked
             while offset < count {
                 try checkFrameDeadline(deadline, operation: "read")
                 let readCount = Darwin.read(fd, buffer.baseAddress!.advanced(by: offset), count - offset)
+                if readCount < 0, errno == EINTR {
+                    continue
+                }
                 if readCount < 0, isTimeoutErrno(errno) {
                     throw EngramServiceError.serviceUnavailable(message: "Service socket read timed out")
                 }

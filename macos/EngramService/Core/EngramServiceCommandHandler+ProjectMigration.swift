@@ -6,113 +6,165 @@ extension EngramServiceCommandHandler {
         _ request: EngramServiceProjectMoveRequest,
         writer: EngramDatabaseWriter
     ) async throws -> EngramServiceProjectMoveResult {
-        // SEC-C2: confine before any filesystem work. force never relaxes this.
-        try validateProjectMovePaths(src: request.src, dst: request.dst)
-        let result = try await ProjectMoveOrchestrator.run(
-            writer: writer,
-            options: RunProjectMoveOptions(
-                src: request.src,
-                dst: request.dst,
-                dryRun: request.dryRun,
-                force: request.force,
-                archived: false,
-                auditNote: request.auditNote,
-                actor: parseActor(request.actor) ?? .mcp,
-                rolledBackOf: nil
-            )
+        ServiceLogger.notice(
+            "projectMove requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) dst=\(request.dst)",
+            category: .writer
         )
-        return mapPipelineResult(result, suggestion: nil)
+        do {
+            // SEC-C2: confine before any filesystem work. force never relaxes this.
+            try validateProjectMovePaths(src: request.src, dst: request.dst)
+            let result = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: RunProjectMoveOptions(
+                    src: request.src,
+                    dst: request.dst,
+                    dryRun: request.dryRun,
+                    force: request.force,
+                    archived: false,
+                    auditNote: request.auditNote,
+                    actor: parseActor(request.actor) ?? .mcp,
+                    rolledBackOf: nil
+                )
+            )
+            ServiceLogger.notice(
+                "projectMove finished migrationId=\(result.migrationId) state=\(result.state.rawValue) filesPatched=\(result.totalFilesPatched) occurrences=\(result.totalOccurrences)",
+                category: .writer
+            )
+            return mapPipelineResult(result, suggestion: nil)
+        } catch {
+            ServiceLogger.error("projectMove failed src=\(request.src) dst=\(request.dst)", category: .writer, error: error)
+            throw error
+        }
     }
 
     static func projectArchive(
         _ request: EngramServiceProjectArchiveRequest,
         writer: EngramDatabaseWriter
     ) async throws -> EngramServiceProjectMoveResult {
-        // SEC-C2: confine the caller-supplied source before resolving an
-        // archive target. force never relaxes this.
-        try validateProjectPathConfined(request.src, label: "source")
-        let suggestion = try Archive.suggestTarget(
-            src: request.src,
-            options: ArchiveOptions(
-                archiveRoot: nil,
-                skipProbe: request.dryRun,
-                forceCategory: request.archiveTo
-            )
+        ServiceLogger.notice(
+            "projectArchive requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) archiveTo=\(request.archiveTo ?? "")",
+            category: .writer
         )
-        // SEC-C2: confine the resolved archive destination as well, in case a
-        // future archive-root override could escape the home directory.
-        try validateProjectPathConfined(suggestion.dst, label: "archive destination")
-        // rename(2) refuses to create intermediate parents.
-        if !request.dryRun {
-            try FileManager.default.createDirectory(
-                atPath: (suggestion.dst as NSString).deletingLastPathComponent,
-                withIntermediateDirectories: true
-            )
-        }
-        let pipelineResult = try await ProjectMoveOrchestrator.run(
-            writer: writer,
-            options: RunProjectMoveOptions(
+        do {
+            // SEC-C2: confine the caller-supplied source before resolving an
+            // archive target. force never relaxes this.
+            try validateProjectPathConfined(request.src, label: "source")
+            let suggestion = try Archive.suggestTarget(
                 src: request.src,
-                dst: suggestion.dst,
-                dryRun: request.dryRun,
-                force: request.force,
-                archived: true,
-                auditNote: request.auditNote,
-                actor: parseActor(request.actor) ?? .mcp,
-                rolledBackOf: nil
+                options: ArchiveOptions(
+                    archiveRoot: nil,
+                    skipProbe: request.dryRun,
+                    forceCategory: request.archiveTo
+                )
             )
-        )
-        return mapPipelineResult(pipelineResult, suggestion: suggestion)
+            // SEC-C2: confine the resolved archive destination as well, in case a
+            // future archive-root override could escape the home directory.
+            try validateProjectPathConfined(suggestion.dst, label: "archive destination")
+            // rename(2) refuses to create intermediate parents.
+            if !request.dryRun {
+                try FileManager.default.createDirectory(
+                    atPath: (suggestion.dst as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+            }
+            let pipelineResult = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: RunProjectMoveOptions(
+                    src: request.src,
+                    dst: suggestion.dst,
+                    dryRun: request.dryRun,
+                    force: request.force,
+                    archived: true,
+                    auditNote: request.auditNote,
+                    actor: parseActor(request.actor) ?? .mcp,
+                    rolledBackOf: nil
+                )
+            )
+            ServiceLogger.notice(
+                "projectArchive finished migrationId=\(pipelineResult.migrationId) state=\(pipelineResult.state.rawValue) dst=\(suggestion.dst)",
+                category: .writer
+            )
+            return mapPipelineResult(pipelineResult, suggestion: suggestion)
+        } catch {
+            ServiceLogger.error("projectArchive failed src=\(request.src)", category: .writer, error: error)
+            throw error
+        }
     }
 
     static func projectUndo(
         _ request: EngramServiceProjectUndoRequest,
         writer: EngramDatabaseWriter
     ) async throws -> EngramServiceProjectMoveResult {
-        // Pre-flight: validate state + compute the swapped src/dst.
-        let logReader = GRDBMigrationLogReader(writer: writer)
-        let sessionsReader = GRDBSessionByIdReader(writer: writer)
-        let reverse = try UndoMigration.prepareReverseRequest(
-            migrationId: request.migrationId,
-            log: logReader,
-            sessions: sessionsReader
+        ServiceLogger.notice(
+            "projectUndo requested actor=\(request.actor ?? "mcp") force=\(request.force) migrationId=\(request.migrationId)",
+            category: .writer
         )
-        let pipelineResult = try await ProjectMoveOrchestrator.run(
-            writer: writer,
-            options: RunProjectMoveOptions(
-                src: reverse.src,
-                dst: reverse.dst,
-                dryRun: false,
-                force: request.force,
-                archived: false,
-                auditNote: "undo of \(request.migrationId)",
-                actor: parseActor(request.actor) ?? .mcp,
-                rolledBackOf: reverse.originalMigrationId
+        do {
+            // Pre-flight: validate state + compute the swapped src/dst.
+            let logReader = GRDBMigrationLogReader(writer: writer)
+            let sessionsReader = GRDBSessionByIdReader(writer: writer)
+            let reverse = try UndoMigration.prepareReverseRequest(
+                migrationId: request.migrationId,
+                log: logReader,
+                sessions: sessionsReader
             )
-        )
-        return mapPipelineResult(pipelineResult, suggestion: nil)
+            let pipelineResult = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: RunProjectMoveOptions(
+                    src: reverse.src,
+                    dst: reverse.dst,
+                    dryRun: false,
+                    force: request.force,
+                    archived: false,
+                    auditNote: "undo of \(request.migrationId)",
+                    actor: parseActor(request.actor) ?? .mcp,
+                    rolledBackOf: reverse.originalMigrationId
+                )
+            )
+            ServiceLogger.notice(
+                "projectUndo finished migrationId=\(pipelineResult.migrationId) rolledBackOf=\(reverse.originalMigrationId) state=\(pipelineResult.state.rawValue)",
+                category: .writer
+            )
+            return mapPipelineResult(pipelineResult, suggestion: nil)
+        } catch {
+            ServiceLogger.error("projectUndo failed migrationId=\(request.migrationId)", category: .writer, error: error)
+            throw error
+        }
     }
 
     static func projectMoveBatch(
         _ request: EngramServiceProjectMoveBatchRequest,
         writer: EngramDatabaseWriter
     ) async throws -> EngramServiceJSONValue {
-        // Despite the field name `yaml` (kept for IPC backwards-compat),
-        // the Swift batch driver accepts JSON only.
-        let document = try Batch.parseJSON(Data(request.yaml.utf8))
-        // SEC-C2: confine every operation before the batch driver runs.
-        for operation in document.operations {
-            try validateProjectPathConfined(operation.src, label: "source")
-            if let dst = operation.dst, !dst.isEmpty {
-                try validateProjectPathConfined(dst, label: "destination")
-            }
-        }
-        let result = await Batch.run(
-            document,
-            writer: writer,
-            overrides: BatchOverrides(force: request.force)
+        ServiceLogger.notice(
+            "projectMoveBatch requested bytes=\(request.yaml.utf8.count) force=\(request.force)",
+            category: .writer
         )
-        return encodeBatchResult(result)
+        do {
+            // Despite the field name `yaml` (kept for IPC backwards-compat),
+            // the Swift batch driver accepts JSON only.
+            let document = try Batch.parseJSON(Data(request.yaml.utf8))
+            // SEC-C2: confine every operation before the batch driver runs.
+            for operation in document.operations {
+                try validateProjectPathConfined(operation.src, label: "source")
+                if let dst = operation.dst, !dst.isEmpty {
+                    try validateProjectPathConfined(dst, label: "destination")
+                }
+            }
+            let result = await Batch.run(
+                document,
+                writer: writer,
+                overrides: BatchOverrides(force: request.force)
+            )
+            ServiceLogger.notice(
+                "projectMoveBatch finished completed=\(result.completed.count) failed=\(result.failed.count) skipped=\(result.skipped.count)",
+                category: .writer
+            )
+            return encodeBatchResult(result)
+        } catch {
+            ServiceLogger.error("projectMoveBatch failed", category: .writer, error: error)
+            throw error
+        }
     }
 
     private static func parseActor(_ value: String?) -> MigrationLogActor? {

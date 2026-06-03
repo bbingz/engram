@@ -179,6 +179,11 @@ enum TranscriptExportService {
             #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_\-+=/.]{10,}["']?"#,
             #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#,
             #"\b(sk-[A-Za-z0-9_\-]{10,}|ghp_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"#,
+            #"\b(github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|ghr_[A-Za-z0-9_]{20,})\b"#,
+            #"\b(AKIA|ASIA)[0-9A-Z]{16}\b"#,
+            #"\bnpm_[A-Za-z0-9]{10,}\b"#,
+            #"\bxoxe-[A-Za-z0-9-]{10,}\b"#,
+            #"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"#,
         ]
         return patterns.reduce(content) { current, pattern in
             guard let regex = try? NSRegularExpression(pattern: pattern) else { return current }

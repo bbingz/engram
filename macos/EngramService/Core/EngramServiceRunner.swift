@@ -117,6 +117,8 @@ public enum EngramServiceRunner {
         } : nil
         if !webUIEnabled {
             ServiceLogger.info("web ui disabled (webUIEnabled=false); not starting", category: .runner)
+        } else {
+            ServiceLogger.info("web ui enabled (webUIEnabled=true); starting local server", category: .runner)
         }
 
         ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
@@ -261,12 +263,10 @@ public enum EngramServiceRunner {
                 total += deleted.value
                 if deleted.value == 0 { break }
             }
-            if total > 0 {
-                ServiceLogger.notice(
-                    "observability retention pruned \(total) rows",
-                    category: .runner
-                )
-            }
+            ServiceLogger.notice(
+                "observability retention complete: pruned=\(total)",
+                category: .runner
+            )
         } catch is CancellationError {
             return
         } catch {

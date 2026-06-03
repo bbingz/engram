@@ -440,6 +440,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     UPDATE sessions
                     SET parent_session_id = ?,
                         link_source = 'manual',
+                        link_checked_at = datetime('now'),
                         suggested_parent_id = NULL
                     WHERE id = ?
                 """,
@@ -659,10 +660,19 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private static func hygiene(
         _ request: EngramServiceHygieneRequest
     ) throws -> EngramServiceHygieneResponse {
-        let issues: [EngramServiceHygieneIssue] = []
+        let issues = [
+            EngramServiceHygieneIssue(
+                kind: "hygiene",
+                severity: "info",
+                message: "Swift service hygiene checks are not implemented",
+                detail: "The service returned this explicit placeholder instead of a misleading clean score.",
+                repo: nil,
+                action: request.force ? "force-refresh requested" : nil
+            )
+        ]
         return EngramServiceHygieneResponse(
             issues: issues,
-            score: issues.isEmpty ? 100 : 80,
+            score: 0,
             checkedAt: currentTimestamp()
         )
     }
@@ -928,30 +938,19 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             "regenerateAllTitles started total=\(contexts.count) mode=\(titleConfig == nil ? "native" : "ai")",
             category: .ai
         )
-        var generated: [(id: String, title: String)] = []
-        generated.reserveCapacity(contexts.count)
-        for context in contexts {
-            let title: String
-            if let config = titleConfig {
-                // Resilient: a single AI failure (rate limit, timeout) must not
-                // discard every other title. Skip the failed session; it stays
-                // untitled and is retried on the next run.
-                do {
-                    title = try await ServiceAIClient.title(context: context, config: config)
-                } catch {
-                    ServiceLogger.error(
-                        "regenerateAllTitles skipped session=\(context.id)",
-                        category: .ai,
-                        error: error
+        let generatedTitles = try await generateTitlesForContexts(
+            contexts: contexts,
+            titleConfig: titleConfig,
+            progress: { completed, total in
+                if completed == total || completed % 10 == 0 {
+                    ServiceLogger.notice(
+                        "regenerateAllTitles progress completed=\(completed) total=\(total)",
+                        category: .ai
                     )
-                    continue
                 }
-            } else {
-                title = context.nativeTitle
             }
-            generated.append((id: context.id, title: title))
-        }
-        let generatedTitles = generated
+        )
+        try Task.checkCancellation()
         return try await writerGate.performWriteCommand(name: "regenerateAllTitles") { writer in
             try writer.write { db in
                 for item in generatedTitles {
@@ -964,6 +963,89 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             ServiceLogger.notice("regenerateAllTitles completed total=\(generatedTitles.count)", category: .ai)
             return EngramServiceRegenerateTitlesResponse(status: "completed", total: generatedTitles.count, message: nil)
         }
+    }
+
+    static func generateTitlesForContexts(
+        contexts: [AIContext],
+        titleConfig: ServiceAISettings.ChatConfig?,
+        maxConcurrency: Int = 4,
+        titleProvider: @escaping @Sendable (AIContext, ServiceAISettings.ChatConfig) async throws -> String = { context, config in
+            try await ServiceAIClient.title(context: context, config: config)
+        },
+        progress: ((Int, Int) -> Void)? = nil
+    ) async throws -> [(id: String, title: String)] {
+        var generated: [(id: String, title: String)] = []
+        generated.reserveCapacity(contexts.count)
+        let total = contexts.count
+        guard let config = titleConfig else {
+            for context in contexts {
+                try Task.checkCancellation()
+                generated.append((id: context.id, title: context.nativeTitle))
+                progress?(generated.count, total)
+            }
+            return generated
+        }
+
+        let effectiveConcurrency = max(1, min(maxConcurrency, contexts.count))
+        var nextIndex = 0
+        var completed = 0
+
+        try await withThrowingTaskGroup(of: (id: String, title: String)?.self) { group in
+            let initialCount = min(effectiveConcurrency, contexts.count)
+            for _ in 0..<initialCount {
+                let context = contexts[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    try Task.checkCancellation()
+                    do {
+                        let title = try await titleProvider(context, config)
+                        try Task.checkCancellation()
+                        return (id: context.id, title: title)
+                    } catch let error as CancellationError {
+                        throw error
+                    } catch {
+                        ServiceLogger.error(
+                            "regenerateAllTitles skipped session=\(context.id)",
+                            category: .ai,
+                            error: error
+                        )
+                        return nil
+                    }
+                }
+            }
+
+            while let item = try await group.next() {
+                completed += 1
+                if let item {
+                    generated.append(item)
+                }
+                progress?(completed, total)
+                try Task.checkCancellation()
+                if nextIndex < contexts.count {
+                    let context = contexts[nextIndex]
+                    nextIndex += 1
+                    group.addTask {
+                        try Task.checkCancellation()
+                        do {
+                            let title = try await titleProvider(context, config)
+                            try Task.checkCancellation()
+                            return (id: context.id, title: title)
+                        } catch let error as CancellationError {
+                            throw error
+                        } catch {
+                            ServiceLogger.error(
+                                "regenerateAllTitles skipped session=\(context.id)",
+                                category: .ai,
+                                error: error
+                            )
+                            return nil
+                        }
+                    }
+                }
+            }
+        }
+
+        return generated
     }
 
     private static func linkSessions(
@@ -1032,7 +1114,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                         skipped += 1
                         continue
                     }
-                    try fileManager.removeItem(atPath: linkPath)
+                    errors.append("\(linkPath): refusing to replace existing symlink")
+                    continue
+                }
+                if fileManager.fileExists(atPath: linkPath) {
+                    errors.append("\(linkPath): refusing to overwrite existing non-symlink")
+                    continue
                 }
 
                 if !createdDirs.contains(linkDir) {
@@ -1066,6 +1153,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     /// relaxes this path confinement.
     static func validateProjectPathConfined(_ rawPath: String, label: String) throws {
         let home = homeDirectoryPath()
+        let resolvedHome = URL(fileURLWithPath: home, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
         let expanded = ProjectPath.expandHome(rawPath)
         guard expanded.hasPrefix("/") else {
             throw EngramServiceError.invalidRequest(
@@ -1078,7 +1169,17 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 message: "\(label) path resolves outside the home directory and is refused"
             )
         }
-        if containsSensitivePathComponent(standardized, home: home) {
+        let resolved = URL(fileURLWithPath: standardized)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        guard resolved == resolvedHome || resolved.hasPrefix(resolvedHome + "/") else {
+            throw EngramServiceError.invalidRequest(
+                message: "\(label) path resolves outside the home directory and is refused"
+            )
+        }
+        if containsSensitivePathComponent(standardized, home: home)
+            || containsSensitivePathComponent(resolved, home: resolvedHome) {
             throw EngramServiceError.invalidRequest(
                 message: "\(label) path targets a protected location and is refused"
             )
@@ -1656,14 +1757,13 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             let durationMs = Int(Date().timeIntervalSince(started) * 1000)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(status) else {
-                let body = String(data: data, encoding: .utf8) ?? ""
                 ServiceLogger.error(
                     "LLM request failed purpose=\(purpose) session=\(sessionID) status=\(status) provider=\(config.provider) model=\(config.model) url=\(redactedHost(config.baseURL)) durationMs=\(durationMs)",
                     category: .ai
                 )
                 throw EngramServiceError.commandFailed(
                     name: "AIRequestFailed",
-                    message: "AI request failed (\(status)): \(String(body.prefix(300)))",
+                    message: "AI request failed with status \(status)",
                     retryPolicy: status == 429 || status >= 500 ? "safe" : "never",
                     details: [
                         "status": .number(Double(status)),

@@ -443,7 +443,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         if semanticRequested {
             ServiceLogger.info(
                 "search mode '\(requestedMode)' requested but unsupported in service path; falling back to keyword",
-                category: .runner
+                category: .reader
             )
         }
         guard query.count >= 2 else {
