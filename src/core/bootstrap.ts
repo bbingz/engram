@@ -258,8 +258,12 @@ export function createDaemonDeps(opts?: { dbPath?: string }): DaemonCoreDeps {
 
 // --- Shutdown Handler Factory ---
 
+type ShutdownTimer = NodeJS.Timeout | null;
+type ShutdownTimerRef = ShutdownTimer | (() => ShutdownTimer);
+type AutoSummaryResource = { cleanup: () => void } | null | undefined;
+
 export interface ShutdownResources {
-  timers: (NodeJS.Timeout | null)[];
+  timers: ShutdownTimerRef[];
   watcher?: { close: () => void } | null;
   webServer?: { close: () => void } | null;
   db: { close: () => void };
@@ -267,7 +271,7 @@ export interface ShutdownResources {
   liveMonitor?: { stop: () => void } | null;
   backgroundMonitor?: { stop: () => void } | null;
   usageCollector?: { stop: () => void } | null;
-  autoSummary?: { cleanup: () => void } | null;
+  autoSummary?: AutoSummaryResource | (() => AutoSummaryResource);
 }
 
 export function createShutdownHandler(
@@ -281,7 +285,8 @@ export function createShutdownHandler(
     log?.info('Shutting down...');
 
     // Clear all timers
-    for (const timer of resources.timers) {
+    for (const timerRef of resources.timers) {
+      const timer = typeof timerRef === 'function' ? timerRef() : timerRef;
       if (timer != null) {
         clearInterval(timer);
         clearTimeout(timer);
@@ -293,7 +298,11 @@ export function createShutdownHandler(
     resources.liveMonitor?.stop();
     resources.backgroundMonitor?.stop();
     resources.usageCollector?.stop();
-    resources.autoSummary?.cleanup();
+    const autoSummary =
+      typeof resources.autoSummary === 'function'
+        ? resources.autoSummary()
+        : resources.autoSummary;
+    autoSummary?.cleanup();
 
     // Close watcher
     resources.watcher?.close();

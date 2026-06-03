@@ -24,6 +24,7 @@ export class Indexer {
   private log?: Logger;
   private tracer?: Tracer;
   private metrics?: MetricsCollector;
+  private indexingFiles = new Set<string>();
 
   constructor(
     private db: Database,
@@ -515,6 +516,11 @@ export class Indexer {
     messageCount?: number;
     tier?: SessionTier;
   }> {
+    const lockKey = `${adapter.name}\0${filePath}`;
+    if (this.indexingFiles.has(lockKey)) {
+      return { indexed: false };
+    }
+    this.indexingFiles.add(lockKey);
     const span = this.tracer?.startSpan('indexer.indexFile', 'indexer', {
       attributes: { filePath, source: adapter.name },
     });
@@ -617,6 +623,8 @@ export class Indexer {
       span?.setError(err);
       this.log?.error('indexFile failed', { filePath }, err);
       return { indexed: false };
+    } finally {
+      this.indexingFiles.delete(lockKey);
     }
   }
 }

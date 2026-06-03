@@ -505,7 +505,7 @@ const shutdown = createShutdownHandler(
       gitProbeTimer,
       logRotationTimer,
       metricsRollupTimer,
-      rollupInterval,
+      () => rollupInterval,
       uptimeTimer,
       alertCheckTimer,
       walCheckpointTimer,
@@ -517,7 +517,7 @@ const shutdown = createShutdownHandler(
     liveMonitor,
     backgroundMonitor,
     usageCollector,
-    autoSummary,
+    autoSummary: () => autoSummary,
   },
   log,
 );

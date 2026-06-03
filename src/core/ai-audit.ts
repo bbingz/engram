@@ -141,7 +141,16 @@ export class AiAuditWriter extends EventEmitter {
       });
 
       const id = Number(result?.lastInsertRowid ?? -1);
-      this.emit('entry', { id, ...entry, traceId, requestSource });
+      this.emit('entry', {
+        id,
+        ...entry,
+        traceId,
+        requestSource,
+        url: url ?? undefined,
+        requestBody,
+        responseBody,
+        error: entry.error ? applyPatterns(entry.error) : undefined,
+      });
       return id;
     } catch (err) {
       console.error('[ai-audit] record failed', err);

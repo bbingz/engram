@@ -1,7 +1,14 @@
 // src/tools/link_sessions.ts
 
-import { lstat, mkdir, readlink, symlink, unlink } from 'node:fs/promises';
-import { basename, isAbsolute, join } from 'node:path';
+import {
+  lstat,
+  mkdir,
+  readlink,
+  realpath,
+  symlink,
+  unlink,
+} from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 
@@ -33,6 +40,33 @@ interface LinkResult {
 }
 
 const QUERY_LIMIT = 10000;
+const PROTECTED_TARGET_ROOTS = [
+  '/bin',
+  '/etc',
+  '/private/etc',
+  '/sbin',
+  '/System',
+  '/usr',
+];
+
+async function resolveTargetDir(targetDir: string): Promise<string> {
+  const resolved = resolve(targetDir);
+  try {
+    return await realpath(resolved);
+  } catch {
+    try {
+      return join(await realpath(dirname(resolved)), basename(resolved));
+    } catch {
+      return resolved;
+    }
+  }
+}
+
+function isProtectedTarget(targetDir: string): boolean {
+  return PROTECTED_TARGET_ROOTS.some(
+    (root) => targetDir === root || targetDir.startsWith(`${root}/`),
+  );
+}
 
 export async function handleLinkSessions(
   db: Database,
@@ -47,6 +81,16 @@ export async function handleLinkSessions(
       created: 0,
       skipped: 0,
       errors: ['targetDir must be an absolute path'],
+      targetDir,
+      projectNames: [],
+    };
+  }
+  const resolvedTargetDir = await resolveTargetDir(targetDir);
+  if (isProtectedTarget(resolvedTargetDir)) {
+    return {
+      created: 0,
+      skipped: 0,
+      errors: ['targetDir must not be inside a protected system directory'],
       targetDir,
       projectNames: [],
     };

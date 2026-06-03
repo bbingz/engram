@@ -61,6 +61,9 @@ export function runMigrations(
       db.exec(
         "ALTER TABLE sessions ADD COLUMN indexed_at TEXT NOT NULL DEFAULT ''",
       );
+    db.exec(
+      "UPDATE sessions SET indexed_at = datetime('now') WHERE indexed_at = ''",
+    );
     if (!colNames.has('authoritative_node'))
       db.exec('ALTER TABLE sessions ADD COLUMN authoritative_node TEXT');
     if (!colNames.has('source_locator'))
@@ -142,6 +145,7 @@ export function runMigrations(
     CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
     CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
     CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
+    CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
     CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
     CREATE INDEX IF NOT EXISTS idx_sessions_agent_role ON sessions(agent_role);
     CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier);
@@ -149,10 +153,14 @@ export function runMigrations(
     CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_orphan_status ON sessions(orphan_status);
 
-    CREATE TRIGGER IF NOT EXISTS trg_sessions_parent_cascade
+    DROP TRIGGER IF EXISTS trg_sessions_parent_cascade;
+    CREATE TRIGGER trg_sessions_parent_cascade
     AFTER DELETE ON sessions
     BEGIN
-      UPDATE sessions SET parent_session_id = NULL, link_source = NULL, tier = NULL
+      UPDATE sessions SET
+        parent_session_id = NULL,
+        link_source = NULL,
+        tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
         WHERE parent_session_id = OLD.id;
       UPDATE sessions SET suggested_parent_id = NULL
         WHERE suggested_parent_id = OLD.id;
@@ -426,6 +434,7 @@ export function runMigrations(
     );
     CREATE INDEX IF NOT EXISTS idx_metrics_name_ts ON metrics(name, ts);
     CREATE INDEX IF NOT EXISTS idx_metrics_name_type ON metrics(name, type);
+    CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
 
     CREATE TABLE IF NOT EXISTS metrics_hourly (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

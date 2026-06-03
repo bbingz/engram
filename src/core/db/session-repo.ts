@@ -43,6 +43,16 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function tableOrViewExists(db: BetterSqlite3.Database, name: string): boolean {
+  return (
+    db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+      )
+      .get(name) !== undefined
+  );
+}
+
 function rowToSession(row: Record<string, unknown>): SessionInfo {
   return {
     id: row.id as string,
@@ -370,8 +380,32 @@ export function listSessionsAfterCursor(
 }
 
 export function deleteSession(db: BetterSqlite3.Database, id: string): void {
-  db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
-  db.prepare('DELETE FROM sessions_fts WHERE session_id = ?').run(id);
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM sessions_fts WHERE session_id = ?').run(id);
+
+    if (
+      tableOrViewExists(db, 'vec_chunks') &&
+      tableOrViewExists(db, 'session_chunks')
+    ) {
+      db.prepare(
+        'DELETE FROM vec_chunks WHERE chunk_id IN (SELECT chunk_id FROM session_chunks WHERE session_id = ?)',
+      ).run(id);
+    }
+    if (tableOrViewExists(db, 'session_chunks')) {
+      db.prepare('DELETE FROM session_chunks WHERE session_id = ?').run(id);
+    }
+    if (tableOrViewExists(db, 'vec_sessions')) {
+      db.prepare('DELETE FROM vec_sessions WHERE session_id = ?').run(id);
+    }
+    if (tableOrViewExists(db, 'session_embeddings')) {
+      db.prepare('DELETE FROM session_embeddings WHERE session_id = ?').run(id);
+    }
+    db.prepare(
+      "DELETE FROM session_index_jobs WHERE session_id = ? AND status IN ('pending', 'failed_retryable')",
+    ).run(id);
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+  });
+  tx();
 }
 
 export function isIndexed(
@@ -419,8 +453,8 @@ export function countTodayParentSessions(
     'hidden_at IS NULL',
     'parent_session_id IS NULL',
     'suggested_parent_id IS NULL',
-    'datetime(start_time) >= datetime(@dayStart)',
-    'datetime(start_time) < datetime(@dayEnd)',
+    'start_time >= @dayStart',
+    'start_time < @dayEnd',
   ];
   conditions.push(...buildTierFilter(noiseFilter));
   conditions.push(...buildOrphanFilter());

@@ -54,6 +54,8 @@ export function searchSessions(
   filters: SearchFilters | undefined,
   resolveAliases: (projects: string[]) => string[],
 ): FtsSearchResult[] {
+  if (!query.trim()) return [];
+
   // SQLite trigram tokenizer operates on byte-level trigrams which breaks CJK
   // characters (3 bytes each in UTF-8). Fall back to LIKE for CJK queries.
   if (containsCJK(query)) {

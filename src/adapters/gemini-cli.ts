@@ -30,6 +30,8 @@ interface GeminiMessage {
   toolCalls?: unknown[];
 }
 
+const MAX_SESSION_JSON_BYTES = 10 * 1024 * 1024;
+
 // Sidecars may write the originator in either Codex's "Claude Code" form or
 // the plugin's "claude-code" slug. Normalize (lowercase, strip spaces/dashes)
 // so the dispatched-role classification works regardless of which form the
@@ -99,6 +101,7 @@ export class GeminiCliAdapter implements SessionAdapter {
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
     try {
       const fileStat = await stat(filePath);
+      if (fileStat.size > MAX_SESSION_JSON_BYTES) return null;
       const raw = await readFile(filePath, 'utf8');
       const session = JSON.parse(raw) as GeminiSession;
 
@@ -166,6 +169,9 @@ export class GeminiCliAdapter implements SessionAdapter {
   ): AsyncGenerator<Message> {
     const offset = opts.offset ?? 0;
     const limit = opts.limit ?? Infinity;
+
+    const fileStat = await stat(filePath);
+    if (fileStat.size > MAX_SESSION_JSON_BYTES) return;
 
     const raw = await readFile(filePath, 'utf8');
     const session = JSON.parse(raw) as GeminiSession;

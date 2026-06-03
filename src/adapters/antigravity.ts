@@ -1,6 +1,6 @@
 // src/adapters/antigravity.ts
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -294,7 +294,7 @@ export class AntigravityAdapter implements SessionAdapter {
       // If no cwd from gRPC, try to infer from file paths mentioned in messages
       let cwd = meta.cwd || '';
       if (!cwd) {
-        const content = (await readFile(filePath, 'utf8')).slice(0, 50000); // scan first 50KB
+        const content = await readFileHead(filePath, 50000);
         const pathMatches =
           content.match(/\/Users\/[^/]+\/-Code-\/([^/\s"'`)]+)/g) || [];
         if (pathMatches.length > 0) {
@@ -545,7 +545,7 @@ export class AntigravityAdapter implements SessionAdapter {
 
   private async inferCwd(filePath: string): Promise<string> {
     try {
-      const content = (await readFile(filePath, 'utf8')).slice(0, 50000);
+      const content = await readFileHead(filePath, 50000);
       const pathMatches =
         content.match(/\/Users\/[^/]+\/-Code-\/([^/\s"'`)]+)/g) || [];
       if (pathMatches.length === 0) return '';
@@ -562,6 +562,20 @@ export class AntigravityAdapter implements SessionAdapter {
       return '';
     }
   }
+}
+
+async function readFileHead(
+  filePath: string,
+  maxBytes: number,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of createReadStream(filePath, {
+    start: 0,
+    end: Math.max(0, maxBytes - 1),
+  })) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 // Parse the Markdown output of ConvertTrajectoryToMarkdown into {role, content} pairs.

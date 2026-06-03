@@ -76,19 +76,23 @@ export class Database {
   ): BetterSqlite3.Statement {
     if (!this.metrics) return stmt;
     const metrics = this.metrics;
+    const wrappers = new Map<PropertyKey, unknown>();
     return new Proxy(stmt, {
       get(target, prop) {
         if (prop === 'run' || prop === 'get' || prop === 'all') {
-          // biome-ignore lint/suspicious/noExplicitAny: Proxy handler forwarding arbitrary statement arguments
-          return (...args: any[]) => {
-            const start = performance.now();
-            // biome-ignore lint/suspicious/noExplicitAny: dynamic property access on Proxy target
-            const result = (target as any)[prop].apply(target, args);
-            metrics.histogram('db.query_ms', performance.now() - start, {
-              method: prop as string,
+          if (!wrappers.has(prop)) {
+            // biome-ignore lint/suspicious/noExplicitAny: Proxy handler forwarding arbitrary statement arguments
+            wrappers.set(prop, (...args: any[]) => {
+              const start = performance.now();
+              // biome-ignore lint/suspicious/noExplicitAny: dynamic property access on Proxy target
+              const result = (target as any)[prop].apply(target, args);
+              metrics.histogram('db.query_ms', performance.now() - start, {
+                method: prop as string,
+              });
+              return result;
             });
-            return result;
-          };
+          }
+          return wrappers.get(prop);
         }
         // biome-ignore lint/suspicious/noExplicitAny: dynamic property access on Proxy target
         const val = (target as any)[prop];

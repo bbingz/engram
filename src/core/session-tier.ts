@@ -44,8 +44,9 @@ function durationMinutes(
   if (!startTime || !endTime) return 0;
   const start = new Date(startTime).getTime();
   const end = new Date(endTime).getTime();
-  if (Number.isNaN(start) || Number.isNaN(end)) return 0;
-  return (end - start) / 60_000;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+  const duration = (end - start) / 60_000;
+  return Number.isFinite(duration) ? duration : 0;
 }
 
 export function computeTier(input: TierInput): SessionTier {
