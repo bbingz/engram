@@ -36,6 +36,18 @@ jobs:
       - run: npm run build
       - run: npm run knip
 
+  security-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+      - run: npm ci
+      - run: npm audit --audit-level=moderate
+
   typescript:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -103,6 +115,7 @@ jobs:
               -project Engram.xcodeproj \
               -scheme "$scheme" \
               -destination 'platform=macOS' \
+              -enableCodeCoverage YES \
               CODE_SIGNING_ALLOWED=NO \
               "$@" \
               2>&1 | tee "$log"

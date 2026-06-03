@@ -48,7 +48,7 @@
     "@biomejs/biome": "^2.4.10",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.13.5",
-    "@vitest/coverage-v8": "^3.2.4",
+    "@vitest/coverage-v8": "^4.1.8",
     "husky": "^9.1.7",
     "knip": "^6.3.1",
     "lint-staged": "^16.4.0",
@@ -57,7 +57,7 @@
     "ssim.js": "^3.5.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
-    "vitest": "^3.0.7"
+    "vitest": "^4.1.8"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": [
