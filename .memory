@@ -1,5 +1,331 @@
 # Engram Local Memory
 
+## 2026-06-03 — Multi-model review adjudication and fixes (Codex)
+
+Codex adjudicated the Kimi/Gemini/MiniMax/Mimo review bundle against the
+current `perf/transcript-paging` worktree and fixed the confirmed high-impact
+items with focused regression coverage. The three existing review commits before
+this pass only changed `CODE-REVIEW-ISSUES.md`; the Kimi report was pasted in
+chat and was not a commit.
+
+Implemented:
+- TS correctness: OpenAI truncated embeddings are L2-normalized, parent cascade
+  preserves subagent `tier='skip'`, `deleteSession` is transactional and removes
+  vector/chunk/job rows, session project and metrics timestamp indexes were
+  added, empty `indexed_at` values are backfilled, and today's parent count no
+  longer wraps `start_time` in `datetime(...)`.
+- TS stability/security: daemon shutdown uses live resource getters, MCP exit
+  closes the DB, watcher indexing has a per-file in-flight lock, database
+  statement wrappers avoid per-access function allocation, AI audit event bodies
+  are sanitized before emission, Gemini JSON imports are capped, Antigravity cwd
+  inference reads only the file head, sanitizer patterns cover common API keys,
+  config parse failures warn, title timeout avoids `AbortSignal.timeout`, and
+  `link_sessions` rejects protected system targets before writing. Project-move
+  core now rejects non-absolute/protected system paths before any filesystem
+  step; `lint_config` rejects unsafe cwd roots; FTS empty queries return
+  directly instead of relying on SQLite parser fallback.
+- Tooling: Vitest was upgraded to 4.1.8, `npm audit --audit-level=moderate` was
+  added to CI, daemon was removed from coverage excludes, `export` now writes
+  under `~/.engram/exports`, `hide_session` reports not-found, early MCP
+  errors include `structuredContent`, Biome `noExplicitAny` is an error for
+  production TS, Swift CI tests now run with code coverage enabled, Dependabot
+  covers npm/GitHub Actions, and the CLI dispatcher now awaits dynamic imports
+  with a top-level error handler instead of leaving unhandled rejections.
+- Swift/macOS parity: migrations now add project/metrics indexes, metrics CHECK,
+  trigram `insights_fts`, and `indexed_at` backfill; suggested-parent backfill
+  avoids N+1 parent lookups; ClaudeCode adapter infers project from cwd;
+  MCP search joins session rows in one query; handoff now respects `sessionId`
+  and includes cost/duration/model/task prompt context; MCP schema validation
+  enforces numeric minimum/maximum; OrderedJSON serializes non-finite doubles as
+  null instead of crashing; get_session now streams JSONL/adapter transcripts and
+  retains only the requested page; generic os_log wrappers and CoreWrite direct
+  os.Logger callsites use private interpolation; SearchView cancels async search
+  and embedding-status tasks before stale callbacks can publish results; hygiene
+  returns an explicit degraded result instead of a false perfect score.
+- Swift service follow-ups: Unix socket client reads/writes retry `EINTR`;
+  `confirmSuggestion` now refreshes `link_checked_at`; snapshot upserts preserve
+  existing `cwd` and message counts when a parse yields empty replacement data;
+  migration audit notes are capped before DB insert; LLM non-2xx errors no
+  longer echo upstream response bodies; transcript export/web redaction covers
+  common PAT/AWS/npm/Slack/PEM token families; native project migration commands
+  now log requested/finished/failed paths through `ServiceLogger`.
+- Additional Swift review follow-ups: `SessionBatchUpsert` now wraps a batch in
+  a savepoint so bare test callers and production callers share batch-scoped
+  atomicity; startup emits explicit `backfill_inline` events for Swift's inline
+  count/cost path; `MigrationLock` has a default 1h TTL and treats Darwin zombie
+  holders as stale; iFlow lossy project-dir collisions are detected by scanning
+  iFlow cwd records even when old/new encoded dirs are equal; Web UI transcript
+  parser failures now return non-200 statuses; export leaf symlinks are covered
+  by regression tests.
+- Project-move/source filesystem hardening: `JsonlPatch.patchFile` now refuses
+  symlink source files before read/rename and fsyncs the temporary replacement
+  file before the atomic rename; `walkSessionFiles` reports FIFO/socket/device
+  entries as `skipped_non_regular` instead of silently dropping them;
+  `migration_log` has a `(state, started_at)` index on fresh and existing DBs;
+  shared JSONL adapter discovery uses lstat-based directory/regular-file checks
+  so direct-child adapters such as Cline do not traverse symlinked task dirs.
+  TS `ClaudeCodeAdapter` now also derives `project` from `cwd`, keeping the
+  adapter-parity fixture generator aligned with Swift's product behavior.
+- UI/settings/security follow-ups: `LogStreamView` now stores and cancels its
+  reload task for timer/filter changes; `AISettingsSection` and
+  `DataSourceRow` suppress save/writeback while loading persisted values; Web UI
+  Host validation now rejects malformed multi-colon loopback hosts instead of
+  treating them as bare loopback.
+- Title-regeneration follow-up: `regenerateAllTitles` now routes title
+  generation through a testable helper that checks task cancellation before each
+  title and again before DB writes, preserves the existing resilient per-session
+  AI failure skip behavior, caps concurrent AI title calls at 4 by default, and
+  emits coarse progress logs every 10 processed title contexts and at
+  completion.
+- Swift app concurrency follow-up: `DatabaseManager` is no longer globally
+  `@MainActor`; it is an `@Observable` `@unchecked Sendable` read facade with
+  the existing lock-protected pool, so views can capture it into
+  `Task.detached` without relying on a source-comment-only `nonisolated`
+  contract.
+- Swift IPC sendability follow-up: `UnixSocketEngramServiceTransport` now uses
+  checked `Sendable` conformance; the only remaining unchecked sendable helper
+  in that file is the mutable `FdBox` wrapper that actually needs it.
+- Swift app service-event follow-up: `AppDelegate.startServiceStatusObservation`
+  now starts the status/event pump with `Task.detached`, keeping the event
+  stream off the MainActor and hopping back only for `EngramServiceStatusStore`
+  updates.
+- Swift navigation race follow-up: `MainWindowView.navigateToSession` now tracks
+  the latest palette-requested session id and ignores stale detached DB lookup
+  completions, so a slower lookup cannot overwrite a newer session navigation
+  or a direct `.openSession` notification.
+- Swift session-list race follow-up: `SessionListView.loadSessions` now uses a
+  monotonic load generation guard so the initial appear load, filter debounce
+  reload, and action-triggered reloads cannot overwrite newer session/filter
+  state when their detached DB reads complete out of order.
+- MCP FTS transient-rebuild follow-up: keyword reads against `sessions_fts` and
+  `insights_fts` now retry once after a short delay when SQLite reports the
+  canonical FTS table is transiently absent during rebuild swap.
+- Swift watcher/orphan follow-up: `SessionSnapshotWriter` now clears
+  `orphan_status`, `orphan_since`, and `orphan_reason` after any successful
+  authoritative snapshot handling, including same-content noop re-indexes. This
+  closes the unlink+add/rename case where a session could remain hidden by MCP
+  `orphan_status IS NULL` filters after the file reappeared unchanged.
+- Swift startup dedup follow-up: `StartupBackfills.deduplicateFilePaths` now
+  reparents confirmed and suggested children from duplicate session ids to the
+  kept session id before deleting duplicate `file_path` rows, preserving parent
+  links instead of letting the delete trigger clear them.
+- Swift observability retention follow-up: startup retention now always logs a
+  completion line with the pruned row count, including `0`, so the maintenance
+  path is observable even when there is nothing to delete.
+- Swift service test isolation follow-up: project-migration IPC pipeline error
+  coverage now runs under `ServiceCoreTestHomeScope` with a temp HOME instead
+  of constructing absent-source paths under the user's real home directory.
+- Swift UI formatter follow-up: `TimelinePageView.formatDateLabel` now reuses
+  static input/output `DateFormatter` instances instead of allocating a new
+  formatter for every timeline group render.
+- Swift Web UI observability follow-up: service startup now logs both
+  `webUIEnabled=false` and `webUIEnabled=true` branches before the ready event,
+  so enabled-by-settings startup has a breadcrumb before the health probe.
+- Swift service log-category follow-up: `.writer` and `.ai` already had
+  production callsites; `.ipc` now logs listener readiness and `.reader` now
+  logs semantic/hybrid search degradation, so all declared service log
+  categories are exercised by production code.
+- Swift link-sessions symlink follow-up: native `linkSessions` no longer
+  removes or replaces an existing link path. Matching symlinks are skipped,
+  different symlinks and non-symlinks are reported as errors, and missing paths
+  are the only paths created.
+- Swift database file-security follow-up: `SQLiteFileSecurity` now chmods and
+  then asserts DB/WAL/SHM siblings are owned by the current uid and mode 0600,
+  keeping plaintext `migration_log` paths protected by an explicit startup
+  invariant instead of a best-effort chmod alone.
+- Swift project-path symlink confinement follow-up:
+  `validateProjectPathConfined` now validates both the standardized caller path
+  under `$HOME` and the symlink-resolved path under the symlink-resolved home,
+  rejecting project move/archive/link targets that are textually inside home but
+  resolve outside it. Sensitive-path checks also run against both path forms.
+- Swift project-move errno follow-up: `OrchestratorError` now conforms to the
+  `ProjectMoveError` envelope contract, and per-source dir rename failures
+  preserve POSIX `errno=<code>` plus the strerror message in
+  `DirRenameFailedError` details instead of surfacing only Foundation's
+  localized text.
+- Swift SQLite adapter accessibility follow-up: Cursor and OpenCode
+  `isAccessible` now reuse a per-adapter actor-isolated
+  `Phase4SQLiteDatabase` by db path, so startup orphan scans do not reopen the
+  same shared SQLite database once per session/composer.
+
+Verification:
+- TS gates green: `npm run lint`, `npm run typecheck:test`, `npm run build`,
+  `npm audit --audit-level=moderate`, `npm test` (124 files, 1471 tests), and
+  `npm run test:coverage` (124 files, 1471 tests; true coverage floor enforced
+  after daemon inclusion).
+- Swift MCP green: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramMCPTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`
+  (63 tests).
+- Swift targeted green: Engram scheme targeted
+  `MigrationRunnerTests`, `AdapterMessageCountTests/testClaudeCodeToolResultCountMatchesStream`,
+  `StartupBackfillTests`, `AppSearchServiceCutoverScanTests` (23 tests),
+  `OSLogReaderTests`, plus `SessionSnapshotClassificationTests` and
+  `MigrationLogStoreTests` (21 tests). EngramServiceCore targeted
+  native-service behavior, IPC `EINTR`, LLM error body suppression,
+  `confirmSuggestion` link-check timestamp, project migration logging, and
+  transcript redaction tests.
+- Added targeted green tests: `IndexerParityTests/testSessionBatchUpsertReportsPerSessionResults`,
+  `StartupBackfillTests/testInlineCountAndCostBackfillsEmitProgressEvents`,
+  `MigrationLockTests` (10 tests), iFlow collision source/orchestrator tests,
+  Web UI transcript parser status tests, and
+  `EngramServiceIPCTests/testExportSessionRejectsLeafOutputSymlink`.
+- Added targeted green tests for this follow-up:
+  `JsonlPatchTests`, `SessionSourcesTests`, `Round5RemediationTests`, and
+  `MigrationRunnerTests` (67 tests); `AdapterParityTests` (2 tests) after
+  syncing the Claude Code project-inference golden; `npx vitest run
+  tests/adapters/claude-code.test.ts` (18 tests); `npm run
+  check:adapter-parity-fixtures`; `npm run typecheck:test`; `git diff --check`
+  clean.
+- Added targeted green tests on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramTests/ViewMainThreadReadTests` (9 tests) and
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/EngramWebUIServerTests` (24 tests).
+- Added targeted green title-regeneration tests on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testGenerateTitlesForContextsHonorsCancellationBeforeWork
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testGenerateTitlesForContextsReportsProgressAfterEachTitle`
+  (2 tests), then
+  `-only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testGenerateTitlesForContextsCapsAIConcurrency`
+  (1 test), and finally the combined command including those three tests plus
+  `-only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testFormerBridgeCommandsUseNativeServiceBehavior`
+  (4 tests).
+- Added targeted green DatabaseManager concurrency tests on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramTests/DatabaseManagerTests
+  -only-testing:EngramTests/ViewMainThreadReadTests/testDatabaseManagerIsNotGlobalMainActorIsolated`
+  (55 tests).
+- Added targeted green Unix socket transport sendability tests on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testUnixSocketClientTransportUsesCheckedSendable
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testTransportRetriesInterruptedReadWriteSyscalls`
+  (2 tests).
+- Added targeted green App service-event routing tests on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramTests/ServiceEventRoutingTests` (6 tests).
+- Added RED/GREEN MainWindow navigation race guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramTests/ViewMainThreadReadTests/testMainWindowNavigationIgnoresSupersededLookups`
+  first failed without `pendingNavigationId`/guard and then passed; full
+  `ViewMainThreadReadTests` passed after the fix (11 tests).
+- Added RED/GREEN SessionList load race guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramTests/ViewMainThreadReadTests/testSessionListIgnoresSupersededLoads`
+  first failed without `loadGeneration`/guard and then passed; full
+  `ViewMainThreadReadTests` passed after the fix (12 tests).
+- Added targeted green MCP FTS retry guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramMCPTests/EngramMCPExecutableTests/testMCPDatabaseRetriesTransientMissingFTSTables`
+  (1 test).
+- Added RED/GREEN orphan recovery guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramCoreTests/IndexerParityTests/testReindexClearsRecoveredOrphanStatus`
+  first failed with retained `suspect`/`cleaned_by_source`, then passed after
+  the writer fix (1 test).
+- Added RED/GREEN symlink escape guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/ServiceSecurityHardeningTests/testProjectPathConfinementRejectsSymlinkEscapingHome`
+  first failed because a symlink under temp HOME pointing to an outside temp dir
+  did not throw; after the confinement fix the combined command with
+  `testSensitivePathBlocksLibraryKeychains` passed (2 tests).
+- Added RED/GREEN project-move errno guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramCoreTests/OrchestratorTests/testDirRenameFailureMessageIncludesPosixErrno`
+  first failed with message `Permission denied`; after the orchestrator fix it
+  passed with a `DirRenameFailedError` message containing `errno=`.
+- Added RED/GREEN SQLite accessibility-cache guards on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramCoreTests/AdapterMessageCountTests/testOpenCodeAccessibilityReusesSharedDatabaseConnection
+  -only-testing:EngramCoreTests/AdapterMessageCountTests/testCursorAccessibilityReusesSharedDatabaseConnection`
+  first failed after chmoding the shared DB file because both adapters reopened
+  it per locator; after the actor cache fix both tests passed (2 tests).
+- Added RED/GREEN startup dedup parent-link guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramCoreTests/StartupBackfillTests/testDeduplicateFilePathsReparentsChildrenBeforeDeletingDuplicateParent`
+  first failed with cleared `parent_session_id`/`suggested_parent_id`, then
+  passed after the reparent-before-delete fix (1 test). Full
+  `StartupBackfillTests` passed after the fix (21 tests).
+- Added RED/GREEN observability-retention logging guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testRunnerObservabilityRetentionLogsZeroRowCompletion`
+  first failed on the `if total > 0` silent-zero path, then passed after the
+  runner logged `observability retention complete: pruned=\(total)` (1 test).
+  The adjacent runner source-guard subset passed after the fix (6 tests).
+- Added RED/GREEN service-test HOME isolation guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testProjectMigrationPipelineErrorTestUsesScopedHome`
+  first failed because the pipeline error test still lacked scoped HOME, then
+  passed with
+  `EngramServiceIPCTests/testProjectMigrationCommandsSurfacePipelineErrors`
+  after the temp-HOME fix (2 tests).
+- Added RED/GREEN Timeline formatter reuse guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramTests/ViewMainThreadReadTests/testTimelinePageReusesDateFormatters`
+  first failed on per-call `DateFormatter()` allocation, then passed after the
+  static formatter fix (1 test). Full `ViewMainThreadReadTests` passed after
+  the fix (13 tests).
+- Added RED/GREEN Web UI startup branch logging guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/EngramWebUIServerTests/testRunnerLogsWebUIEnabledAndDisabledBranches`
+  first failed because the enabled branch lacked a startup log, then passed
+  after adding `web ui enabled (webUIEnabled=true); starting local server`.
+  The adjacent `testWebUIEnvOverride` also passed in the GREEN run (2 tests).
+- Added RED/GREEN service log-category callsite guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testServiceLogCategoriesHaveProductionCallsites`
+  first failed because `.ipc` and `.reader` had no production log callsites,
+  then passed after adding the IPC listener and reader fallback logs (1 test).
+  The combined GREEN run with
+  `testSearchSemanticModeDegradesToKeywordWithWarning` passed (2 tests).
+- Added RED/GREEN linkSessions symlink replacement guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testLinkSessionsDoesNotReplaceExistingDifferentSymlink`
+  first failed because the existing symlink was removed and replaced, then
+  passed after linkSessions refused replacement. The existing
+  `testLinkSessionsRejectsPathsOutsideKnownSessionRoots` also passed in the
+  GREEN run (2 tests).
+- Added RED/GREEN database file-security guard on 2026-06-04:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramCoreTests/SQLiteConnectionPolicyTests/testFileSecurityAssertsOwnerAndModeForDatabaseSiblings`
+  first failed because `SQLiteFileSecurity` lacked owner/mode assertions, then
+  passed after adding `lstat`, `st_uid`, `geteuid()`, and 0600 checks. Full
+  `SQLiteConnectionPolicyTests` passed after the fix (5 tests).
+- `git diff --check` clean.
+
+Residual risks / intentionally not completed in this pass:
+- Swift `gemini-cli` transcript files are still whole-file JSON objects, so the
+  new MCP `get_session` streaming fix covers JSONL/adapter streams but not that
+  format's inherent full parse.
+- Full secret flow refactor for service launcher environment variables is still
+  open; fixing it needs a Keychain/service IPC design change beyond this review
+  pass.
+- Swift `get_context` still lacks full TS environment parity; CLI coverage,
+  external-token security services such as Snyk, and broad P3 cleanups remain
+  backlog items.
+- Full all-schemes Swift test matrix and coverage report were not run; only the
+  affected MCP suite and targeted Swift app/service suites were verified.
+
 ## 2026-06-02 — Web UI pager O(N²)→O(N) lazy streaming (Claude)
 
 First of the two deferred perf items from the review cleanup is DONE and merged:
