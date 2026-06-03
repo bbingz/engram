@@ -7,6 +7,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### CI runner cost control (2026-06-03, Codex)
+
+- Registered `bing@10.0.0.230` (`logserver`) as repo-level GitHub Actions
+  runner `engram-ubuntu-10-0-0-230`, labels `self-hosted`, `Linux`, `X64`,
+  `engram`, `ubuntu`, `logserver`, running as enabled systemd service
+  `actions.runner.bbingz-engram.engram-ubuntu-10-0-0-230.service`.
+- Moved automatic Ubuntu CI jobs (`lint`, `dead-code`, `typescript`/coverage)
+  from `ubuntu-latest` to `runs-on: [self-hosted, Linux, X64]`.
+- Added workflow concurrency so superseded runs on the same PR/ref are canceled.
+- Kept macOS Swift/UI jobs on `macos-15` but gated them behind manual
+  `workflow_dispatch` (`macos_suite: smoke|full`) because the Ubuntu
+  self-hosted runner cannot execute Xcode/macOS UI tests.
+
 ### Web UI pager: O(N²) → O(N) via shared lazy-streaming window (2026-06-02, Claude)
 
 Closes the first of the two deferred perf items from the review cleanup round.
