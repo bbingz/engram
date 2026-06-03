@@ -412,7 +412,7 @@ enum MCPToolRegistry {
                                 .string("assistant"),
                             ]),
                         ]),
-                        "description": .string("只返回指定角色的消息，默认返回全部"),
+                        "description": .string("只返回指定角色的消息，默认只返回 user/assistant 可见消息"),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
@@ -1198,6 +1198,15 @@ enum MCPToolRegistry {
             try validateArgumentType(value, key: key, type: type)
         }
 
+        if let numericValue = value.doubleValue {
+            if let minimum = schema["minimum"]?.doubleValue, numericValue < minimum {
+                throw MCPToolError.invalidArguments("\(key) must be >= \(formatSchemaNumber(minimum))")
+            }
+            if let maximum = schema["maximum"]?.doubleValue, numericValue > maximum {
+                throw MCPToolError.invalidArguments("\(key) must be <= \(formatSchemaNumber(maximum))")
+            }
+        }
+
         // Validate each element of an array against its declared items.enum so
         // bogus values (e.g. roles:["banana"]) are rejected instead of silently
         // passing the array-type check.
@@ -1261,6 +1270,16 @@ enum MCPToolRegistry {
         default:
             return
         }
+    }
+
+    private static func formatSchemaNumber(_ value: Double) -> String {
+        if value.isFinite,
+           value.rounded(.towardZero) == value,
+           value >= Double(Int.min),
+           value <= Double(Int.max) {
+            return String(Int(value))
+        }
+        return String(value)
     }
 }
 

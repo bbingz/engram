@@ -26,7 +26,13 @@ indirect enum OrderedJSONValue {
         case .int(let value):
             return String(value)
         case .double(let value):
-            return value.rounded(.towardZero) == value ? String(Int(value)) : String(value)
+            guard value.isFinite else { return "null" }
+            if value.rounded(.towardZero) == value,
+               value >= Double(Int.min),
+               value <= Double(Int.max) {
+                return String(Int(value))
+            }
+            return String(value)
         case .string(let value):
             return quotedJSONString(value)
         case .array(let values):

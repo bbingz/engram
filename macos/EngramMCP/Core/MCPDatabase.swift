@@ -568,20 +568,20 @@ final class MCPDatabase {
         )
 
         var seen = Set<String>()
-        var ranked: [(sessionID: String, snippet: String, score: Double)] = []
+        var ranked: [(row: Row, snippet: String, score: Double)] = []
         var rank = 1
         for match in matches {
-            guard seen.insert(match.sessionID).inserted else { continue }
-            ranked.append((match.sessionID, match.snippet, 1.0 / Double(60 + rank)))
+            let sessionID = stringValue(match.row["id"]) ?? ""
+            guard seen.insert(sessionID).inserted else { continue }
+            ranked.append((match.row, match.snippet, 1.0 / Double(60 + rank)))
             rank += 1
             if ranked.count >= cappedLimit { break }
         }
 
-        let resultRows = try ranked.compactMap { match -> OrderedJSONValue? in
-            guard let row = try fetchSessionRow(id: match.sessionID) else { return nil }
+        let resultRows = ranked.map { match -> OrderedJSONValue in
             return .object([
-                ("session", fullSessionObject(from: row)),
-                ("snippet", .string(match.snippet.isEmpty ? (stringValue(row["summary"]) ?? "") : match.snippet)),
+                ("session", fullSessionObject(from: match.row)),
+                ("snippet", .string(match.snippet.isEmpty ? (stringValue(match.row["summary"]) ?? "") : match.snippet)),
                 ("matchType", .string("keyword")),
                 ("score", .double(match.score)),
             ])
@@ -789,6 +789,18 @@ final class MCPDatabase {
         return makeSessionRecord(from: row)
     }
 
+    func sessionCost(id: String) throws -> Double? {
+        try queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT cost_usd FROM session_costs WHERE session_id = ?",
+                arguments: [id]
+            )
+            guard let row else { return nil }
+            return doubleValue(row["cost_usd"])
+        }
+    }
+
     private func totalCostBetween(start: String, end: String) throws -> Double {
         try queue.read { db in
             // Filter the cost window by session activity (start_time), not by
@@ -844,7 +856,7 @@ final class MCPDatabase {
         }
 
         func runQuery(_ candidate: String) throws -> [Row] {
-            try queue.read { db in
+            try readRetryingTransientMissingFTS { db in
                 try Row.fetchAll(
                     db,
                     sql: """
@@ -944,9 +956,9 @@ final class MCPDatabase {
         project: String?,
         since: String?,
         limit: Int
-    ) throws -> [(sessionID: String, snippet: String)] {
+    ) throws -> [(row: Row, snippet: String)] {
         let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
-        return try queue.read { db in
+        return try readRetryingTransientMissingFTS { db in
             var conditions = [
                 "sessions_fts MATCH ?",
                 "s.hidden_at IS NULL",
@@ -977,11 +989,13 @@ final class MCPDatabase {
 
             let sql = """
             SELECT
-              f.session_id AS session_id,
+              s.*,
+              ls.local_readable_path,
               snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32) AS snippet,
               f.rank
             FROM sessions_fts f
             JOIN sessions s ON s.id = f.session_id
+            LEFT JOIN session_local_state ls ON ls.session_id = s.id
             WHERE \(conditions.joined(separator: " AND "))
             ORDER BY f.rank
             LIMIT ?
@@ -989,13 +1003,31 @@ final class MCPDatabase {
 
             do {
                 let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-                return rows.map { (stringValue($0["session_id"]) ?? "", stringValue($0["snippet"]) ?? "") }
+                return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
             } catch {
                 values[0] = "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
                 let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-                return rows.map { (stringValue($0["session_id"]) ?? "", stringValue($0["snippet"]) ?? "") }
+                return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
             }
         }
+    }
+
+    private func readRetryingTransientMissingFTS<T>(
+        _ block: (Database) throws -> T
+    ) throws -> T {
+        do {
+            return try queue.read(block)
+        } catch {
+            guard isTransientMissingFTSTable(error) else { throw error }
+            Thread.sleep(forTimeInterval: 0.02)
+            return try queue.read(block)
+        }
+    }
+
+    private func isTransientMissingFTSTable(_ error: Error) -> Bool {
+        let message = String(describing: error)
+        return message.contains("no such table: sessions_fts")
+            || message.contains("no such table: insights_fts")
     }
 
     private func resolveProjectAliases(_ projects: [String]) throws -> [String] {

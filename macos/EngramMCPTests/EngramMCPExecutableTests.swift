@@ -94,6 +94,15 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(search["description"]?.stringValue?.localizedCaseInsensitiveContains("semantic") ?? true)
     }
 
+    func testMCPDatabaseRetriesTransientMissingFTSTables() throws {
+        let source = try String(contentsOfFile: sourcePath("EngramMCP/Core/MCPDatabase.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("readRetryingTransientMissingFTS"))
+        XCTAssertTrue(source.contains("no such table: sessions_fts"))
+        XCTAssertTrue(source.contains("no such table: insights_fts"))
+        XCTAssertTrue(source.contains("Thread.sleep(forTimeInterval: 0.02)"))
+    }
+
     func testInitializeMatchesGolden() throws {
         let capture = try rpc(
             """
@@ -192,6 +201,44 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/get_costs.project.json"
         )
+    }
+
+    func testGetCostsSerializesNonFiniteCostAsNull() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        let queue = try DatabaseQueue(path: dbURL.path)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE session_costs SET cost_usd = ? WHERE session_id = ?",
+                arguments: [Double.infinity, "mcp-fixture-01"]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_costs","arguments":{"group_by":"source","since":"2026-01-01T00:00:00.000Z"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+            ]
+        )
+
+        XCTAssertEqual(capture.response.error?.code, nil)
+        let breakdown = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["breakdown"]?.arrayValue)
+        var foundNullCost = false
+        for group in breakdown {
+            if case .null? = group["costUsd"] {
+                foundNullCost = true
+                break
+            }
+        }
+        let renderedResult = try prettyJSONString(from: XCTUnwrap(capture.ordered["result"]))
+        XCTAssertTrue(foundNullCost, renderedResult)
     }
 
     func testToolAnalyticsMatchesGolden() throws {
@@ -471,6 +518,49 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(roles, ["user", "assistant", "user"])
     }
 
+    func testGetSessionPaginatesLargeCodexTranscript() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("large-codex-session.jsonl")
+        let lines = (1...55).map { index in
+            let role = index % 2 == 0 ? "assistant" : "user"
+            return #"{"timestamp":"2026-04-23T01:00:00Z","type":"response_item","payload":{"type":"message","role":"\#(role)","content":[{"type":"input_text","text":"visible message \#(index)"}]}}"#
+        }
+        try lines.joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-large-transcript-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: transcript.path,
+            messageCount: 55,
+            userMessageCount: 28,
+            assistantMessageCount: 27,
+            toolMessageCount: 0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":2}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["currentPage"]?.intValue, 2)
+        XCTAssertEqual(structured["totalPages"]?.intValue, 2)
+        let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+        XCTAssertEqual(messages.count, 5)
+        let contents = messages.compactMap { $0["content"]?.stringValue }
+        XCTAssertEqual(contents, (51...55).map { "visible message \($0)" })
+    }
+
     func testGetSessionRejectsUnknownRoleEnumValue() throws {
         // roles is declared as an array with items.enum [user, assistant];
         // a bogus element (e.g. "banana") must be rejected, not silently
@@ -665,6 +755,43 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/handoff.empty.json"
         )
+    }
+
+    func testHandoffSessionIdFocusesSingleSession() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff","arguments":{"cwd":"/Users/test/work/engram","sessionId":"mcp-fixture-02","format":"markdown"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["sessionCount"]?.intValue, 1)
+        let brief = try XCTUnwrap(structured["brief"]?.stringValue)
+        XCTAssertTrue(brief.contains("engram codex session 2"), brief)
+        XCTAssertFalse(brief.contains("engram windsurf session 6"), brief)
+    }
+
+    func testHandoffIncludesCostDurationModelAndSuggestedPrompt() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff","arguments":{"cwd":"/Users/test/work/engram","format":"markdown"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["sessionCount"]?.intValue, 6)
+        let brief = try XCTUnwrap(structured["brief"]?.stringValue)
+        XCTAssertTrue(brief.contains("**Last active**:"), brief)
+        XCTAssertTrue(brief.contains("via windsurf (sonnet)"), brief)
+        XCTAssertTrue(brief.contains("19 msgs, 35m, $0.07"), brief)
+        XCTAssertTrue(brief.contains("**Last task**:"), brief)
+        XCTAssertTrue(brief.contains("**Suggested prompt**:"), brief)
     }
 
     func testProjectRecoverMatchesGolden() throws {
@@ -1010,6 +1137,14 @@ final class EngramMCPExecutableTests: XCTestCase {
             .path
     }
 
+    private func sourcePath(_ relativePath: String) -> String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(relativePath)
+            .path
+    }
+
     private func prettyJSONString(from value: OrderedTestJSONValue) throws -> String {
         value.prettyJSONString() + "\n"
     }
@@ -1093,6 +1228,13 @@ final class EngramMCPExecutableTests: XCTestCase {
             toPath: destination.path
         )
         return destination.path
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-mcp-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     private func rewriteTranscriptFixtureSession(
@@ -1692,6 +1834,11 @@ private indirect enum OrderedTestJSONValue {
 
     var boolValue: Bool? {
         guard case .bool(let value) = self else { return nil }
+        return value
+    }
+
+    var intValue: Int? {
+        guard case .int(let value) = self else { return nil }
         return value
     }
 
