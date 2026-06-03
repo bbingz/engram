@@ -1,5 +1,32 @@
 # Engram Local Memory
 
+## 2026-06-03 — Engram CI moved default lanes off GitHub-hosted minutes (Codex)
+
+Root cause: before this change Engram had no repo-level self-hosted runners
+(`gh api repos/bbingz/engram/actions/runners` returned `total_count: 0`), while
+`.github/workflows/test.yml` ran GitHub-hosted Ubuntu jobs plus GitHub-hosted
+`macos-15` jobs automatically on `push main` and PRs. The macOS jobs were the
+recent CI minute hotspot; changing them to a Linux self-hosted runner would not
+work because Swift/Xcode/macOS UI tests need macOS.
+
+Fix:
+- Registered `bing@10.0.0.230` (`logserver`) as repo-level runner
+  `engram-ubuntu-10-0-0-230`, runner version `2.334.0`, labels
+  `self-hosted`, `Linux`, `X64`, `engram`, `ubuntu`, `logserver`.
+- Installed it as the enabled systemd service
+  `actions.runner.bbingz-engram.engram-ubuntu-10-0-0-230.service`.
+- Moved automatic Ubuntu lint, dead-code, TypeScript, and coverage jobs to
+  `runs-on: [self-hosted, Linux, X64]`.
+- Gated the GitHub-hosted macOS Swift/unit, fixture, smoke UI, and full UI jobs
+  behind manual `workflow_dispatch` with `macos_suite` (`smoke` or `full`).
+- Added workflow concurrency to cancel superseded runs on the same PR/ref.
+
+Validation: `gh api repos/bbingz/engram/actions/runners` showed the runner
+online and idle; remote `svc.sh status` showed the service active/listening;
+`actionlint .github/workflows/test.yml` passed; `git diff --check` passed; and
+branch protection required status checks are not enabled for `main`, so no
+required macOS check was broken by making the expensive lane manual.
+
 ## 2026-06-02 — Web UI pager O(N²)→O(N) lazy streaming (Claude)
 
 First of the two deferred perf items from the review cleanup is DONE and merged:
