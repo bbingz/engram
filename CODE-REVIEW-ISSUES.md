@@ -1,283 +1,350 @@
-# Engram Code Review Issues
-
-This document records the verified issues found during the 5-round multi-agent code review.
+# Engram Code Review: Consolidated Findings
 
-## Round 1: Data Layer (DB, Vector Store, Embeddings)
-
-### `ts_node_expert` Findings
+> 5-round review covering branch `perf/transcript-paging`, TypeScript core, and Swift product.
+> Generated 2026-06-03.
 
-1. **Memory Leak & Event Loop Block (Node.js Best Practice)**
-   - **File**: `src/core/embeddings.ts`
-   - **Issue**: In `embedWithOllama`, a 60-second `setTimeout` is triggered to reset the `ollamaDown` flag on fetch failure. Missing `.unref()` prevents the process from exiting gracefully, and concurrent failures spawn redundant timeouts.
-   - **Fix**: Add a guard and use `.unref()` on the timer.
+## Executive Summary
 
-2. **Unbounded Set Memory Leak**
-   - **File**: `src/core/embedding-indexer.ts`
-   - **Issue**: `EmbeddingIndexer` tracks processed sessions using an in-memory `Set<string>` (`this.indexed`) that only grows, leading to a memory leak in long-running instances.
-   - **Fix**: Provide a `remove(sessionId)` method or replace the Set with an optimized SQL query for unindexed IDs.
-
-3. **Async Pagination Race Condition (Skipped Records)**
-   - **File**: `src/core/embedding-indexer.ts`
-   - **Issue**: `indexAll()` uses offset-based pagination. Yielding to the event loop allows concurrent DB changes, altering the sort order and causing skipped or duplicate sessions.
-   - **Fix**: Use cursor-based pagination (e.g., `WHERE updated_at > ?`) or exclusively query unindexed records.
-
-4. **Transaction Thrashing Anti-Pattern (Performance)**
-   - **File**: `src/core/vector-store.ts`
-   - **Issue**: `upsertInsight` dynamically creates and executes a new transaction wrapper on every call instead of reusing a compiled one.
-   - **Fix**: Declare `upsertInsightTxn` statically in `prepareStatements()`.
-
-5. **Type Safety with Dynamic Imports**
-   - **File**: `src/core/embeddings.ts`
-   - **Issue**: `transformersPipeline` is explicitly typed as `any`, disabling downstream type checking.
-   - **Fix**: Define a minimal explicit type or default to `unknown` and cast safely.
-
-6. **Unsafe DB Return Assumptions (Type Safety)**
-   - **File**: `src/core/vector-store.ts`
-   - **Issue**: The code hard-casts DB responses (e.g., `as { ... }[]`), hiding runtime errors if the SQL schema shifts.
-   - **Fix**: Parse raw rows through a lightweight schema validator (like Zod) or explicitly verify keys.
-
-### `architecture_expert` Findings
-
-1. **Storage Leak & "Ghost" Search Results (Lifecycle Misalignment)**
-   - **Locations**: `src/core/db/session-repo.ts` (`deleteSession`) and `src/core/vector-store.ts`
-   - **Issue**: Deleting a session does not cascade to `session_chunks`, `vec_sessions`, or `vec_chunks`. Orphaned vectors remain and surface in searches.
-   - **Fix**: Implement manual deletion routines or database triggers to clean up virtual vector tables and chunks when sessions are deleted.
-
-2. **Schema Migration Race Conditions**
-   - **Location**: `src/core/db/migration.ts` (`runMigrations`)
-   - **Issue**: Schema migrations lack `BEGIN IMMEDIATE` transactions, making them vulnerable to TOCTOU races in multi-process environments (causing crashes due to `duplicate column name`).
-   - **Fix**: Wrap migration and check-and-modify logic in a proper database transaction with locking.
-
-3. **Data Duplication & Divergence Risk for Insights**
-   - **Locations**: `src/core/db/migration.ts` vs. `src/core/vector-store.ts`
-   - **Issue**: Insight text is redundantly stored in `insights` and `memory_insights`. Relying on a fragile background sync could leave tables permanently out of sync on crashes.
-   - **Fix**: Avoid duplicated storage; have `vector-store.ts` join directly against the `insights` table for metadata.
-
-4. **Leaky Abstractions & Conflicting Schema Ownership**
-   - **Locations**: `src/core/db/database.ts` and `src/core/vector-store.ts`
-   - **Issue**: `SqliteVecStore` accesses the raw DB and performs uncoordinated migrations, colliding with `migration.ts` over the `metadata` table constraints (`value TEXT` vs `value TEXT NOT NULL`).
-   - **Fix**: Centralize all schema migrations in `migration.ts` and stop exposing `getRawDb()`.
-
-5. **Unsafe Synchronous VACUUM**
-   - **Location**: `src/core/db/maintenance.ts` (`vacuumIfNeeded`)
-   - **Issue**: Executing `VACUUM` synchronously blocks all queries, potentially causing widespread `SQLITE_BUSY` timeouts across processes.
-   - **Fix**: Perform VACUUM out-of-band or via an auto-vacuum pragma instead of a synchronous block.
-
-### `sqlite_expert` Findings
-
-1. **Severe N+1 & Missing Transactions in `vector-store.ts`**
-   - **Issue**: Vector deletion methods (e.g., `deleteChunksBySession`) execute multiple state-modifying statements outside of a transaction. The N+1 synchronous SQLite auto-commits cause massive bottlenecks and risk data divergence.
-   - **Fix**: Wrap operations in `this.db.transaction()` and replace loop-based chunk deletions with batch `DELETE` queries (`DELETE FROM vec_chunks WHERE chunk_id IN ...`).
-
-2. **O(N²) Correlated Subquery Bottleneck in `fts-repo.ts`**
-   - **Issue**: The CJK fallback search (`searchSessionsLike`) uses a highly inefficient correlated subquery for grouping results (`SELECT MIN(f2.rowid)...`). This evaluates the `LIKE` full-text scan for every matched row, leading to quadratic time complexity.
-   - **Fix**: Replace the correlated subquery with a window function (`ROW_NUMBER() OVER(PARTITION BY ...)`) in a derived table.
-
-3. **Pagination Deadlock in `backfillParentLinks` (`maintenance.ts`)**
-   - **Issue**: Fetches candidate subagents via `LIMIT 500`. If `validateParentLink` fails, it continues without updating session state, causing failed records to repeatedly match the query and eventually deadlocking the backfill loop.
-   - **Fix**: Use `OFFSET` pagination or mark failed records with a flag (e.g., `link_checked_at`) to remove them from the candidate set.
-
-4. **Inefficient Schema Polling in Hot Path (`database.ts`)**
-   - **Issue**: `deleteIndexArtifacts` polls `sqlite_master` on every deletion to safely delete embeddings, adding metadata query overhead and potential schema locks.
-   - **Fix**: Remove schema polling and wrap the deletion statement in a `try/catch` block to handle missing tables natively.
-
-## Round 2: Indexing & Sync Pipeline (Background Tasks)
-
-### `sqlite_expert` Findings
-
-1. **Missing Transaction in `backfillCosts` (Risk of Permanent Data Loss)**
-   - **Location**: `src/core/indexer.ts` -> `backfillCosts()` and `writeExtractedData()`
-   - **Issue**: `writeExtractedData()` executes multiple DB insertions without a transaction wrapper when called from `backfillCosts()`. A crash mid-execution marks the session as having costs but skips backfilling tools and files permanently.
-   - **Fix**: Wrap the database write operations inside `writeExtractedData` or `backfillCosts` in a `this.db.getRawDb().transaction()` block.
-
-2. **N+1 Query Problems in Backfill Tasks**
-   - **Location**: `src/core/indexer.ts` -> `backfillCounts()` and `backfillCosts()`
-   - **Issue**: Queries loop over IDs to call `getSession(id)`, causing significant context-switching overhead between JS and SQLite bindings for thousands of records.
-   - **Fix**: Modify queries to return full required fields directly or batch the `getSession` fetching using an `IN (...)` clause.
-
-3. **Inefficient Uncached Prepared Statements**
-   - **Location**: `src/core/indexer.ts` -> `generateTitleIfNeeded()`
-   - **Issue**: New SQLite statements are prepared on every invocation. Since `better-sqlite3` does not cache them natively, this CPU-intensive operation tanks indexing throughput.
-   - **Fix**: Move these queries into the `Database` wrapper and cache the prepared statements at startup.
-
-4. **Redundant Map Allocation in `writeExtractedData`**
-   - **Location**: `src/core/indexer.ts` -> `writeExtractedData()`
-   - **Issue**: A loop pointlessly reconstructs a map using the exact same pre-formatted keys (`${path}\0${val.action}`).
-   - **Fix**: Remove the mapping loop and pass the original `fileCounts` map directly.
-
-### `ts_node_expert` Findings
-
-1. **Unhandled Promise Rejections in Event Emitters**
-   - **Location**: `src/core/watcher.ts`
-   - **Issue**: `handleChange` is an async function attached to an event listener. If an awaited promise rejects, the unhandled rejection crashes Node (>= 15).
-   - **Fix**: Wrap the entire body of `handleChange` in a `try/catch`.
-
-2. **Uncaught Exception in Synchronous Listener**
-   - **Location**: `src/core/watcher.ts`
-   - **Issue**: `opts.shouldSkip?.(filePath)` is called outside the `try/catch` in the `unlink` listener. Exceptions here will crash the app.
-   - **Fix**: Move the evaluation inside the `try/catch` block.
-
-3. **False Negatives on Indexing Success**
-   - **Location**: `src/core/indexer.ts`
-   - **Issue**: `generateTitleIfNeeded` runs after session data is written to the database. If it fails (e.g., API error), it aborts the caller, tricking the system into marking the overall indexing step as failed (preventing UI updates).
-   - **Fix**: Wrap title generation inside a `try/catch` so failures gracefully degrade.
+| Severity | Count |
+|----------|-------|
+| Critical | 0     |
+| High     | 4     |
+| Medium   | 13    |
+| Low      | 19    |
+| Info     | 1     |
+| **Total** | **37** |
 
-4. **Infinite Loop Vulnerability in Chunker**
-   - **Location**: `src/core/chunker.ts`
-   - **Issue**: If `overlap` >= `maxChars`, the `step` becomes `0` or negative. The `for` loop will spin infinitely, causing a complete thread lock and OOM.
-   - **Fix**: Clamp `overlap` safely (`Math.min(overlap, windowSize - 1)`) and ensure `step` is at least `1`.
+Test gap findings: 8 (separate section).
 
-5. **Event Loop Starvation**
-   - **Location**: `src/core/indexer.ts`
-   - **Issue**: `backfillCounts()` processes thousands of sessions synchronously inside a loop without yielding, which locks the event loop.
-   - **Fix**: Add a short timeout (`await new Promise(r => setImmediate(r))`) in the fallback loop.
-
-6. **TypeScript Best Practices & Edge Cases**
-   - **Location**: `src/core/indexer.ts`
-   - **Issues**:
-     - `Indexer.FILE_TOOLS` uses loose `Record<string, string>`. Should be `Record<string, 'read' | 'edit' | 'write'>`.
-     - `fileCounts` uses brittle composite string keys (`${fp}\0${action}`) instead of typed nested Maps.
-     - `stat(filePath)` indiscriminately swallows errors (like `ENOENT`) which hides real filesystem sync issues.
+---
 
-### `architecture_expert` Findings
+## 1. Branch-Specific Findings (`perf/transcript-paging`)
 
-1. **Architectural Flaw: Full-Text Search (FTS) Message Loss**
-   - **Location**: `src/core/indexer.ts` and `src/core/index-job-runner.ts`
-   - **Issue**: `Indexer` parses messages but delegates FTS population to `IndexJobRunner`, which explicitly overwrites FTS content with only metadata. Chat messages become completely unsearchable.
-   - **Fix**: Have `indexer.ts` explicitly call `this.db.indexSessionContent(...)` during its synchronous DB transaction to preserve the full conversational content in the FTS table.
+### High
 
-2. **Race Condition: Concurrent File Parsing in Watcher**
-   - **Location**: `src/core/watcher.ts` and `src/core/indexer.ts`
-   - **Issue**: `handleChange` does not debounce concurrent invocations. If a file is rapidly updated (LLM streaming), older slower parses can overwrite the DB state with stale snapshot data during the synchronous write phase.
-   - **Fix**: Implement a per-file mutex or sequential queue to ensure `indexFile` executes strictly sequentially for any given `filePath`.
+#### H1. `currentMatchIndex` not clamped on search refinement
 
-3. **Retry Mechanic Flaw: Permanent Data Loss on Transient Read Errors**
-   - **Location**: `src/core/indexer.ts` (`backfillCosts` method)
-   - **Issue**: If `streamMessages` throws a transient error (e.g., file lock), the `catch` block intentionally writes `0` for all costs. This marks the session as processed and permanently excludes it from future backfills.
-   - **Fix**: Do not write zero-costs on stream failures; allow the error to bubble or leave the row unwritten so it can be retried later.
-
-4. **Retry Mechanic Flaw: Silent Chunk Skips in Embeddings**
-   - **Location**: `src/core/index-job-runner.ts` (`indexChunks` method)
-   - **Issue**: If `this.client.embed(chunk.text)` returns `undefined` (due to transient API rate limits), the chunk is silently omitted without failing the job, permanently excluding it from vector search.
-   - **Fix**: Throw an explicit error if `emb` is undefined to fail the entire job, triggering the built-in retry mechanic.
-
-## Round 3: Adapters (Log Parsers)
+- **File:** `macos/Engram/Views/SessionDetailView.swift:667-674`
+- **Status:** VERIFIED
+- **Description:** `navigateFind()` indexes into `matchIndices` using `currentMatchIndex` without bounds checking. When the user refines a search and `matchIndices` shrinks, a stale `currentMatchIndex` causes an index-out-of-bounds crash on Cmd+Shift+G.
+- **Suggested fix:** Clamp `currentMatchIndex` in `updateMatchIndicesDebounced()` after recomputing indices, or add a `guard currentMatchIndex < matchIndices.count` at the top of `navigateFind()`.
 
-### `ts_node_expert` Findings
-
-1. **Memory Leaks / Sync IO in Hot Paths**
-   - **`antigravity.ts`**: Uses `await readFile(filePath)` and then slices the string to read the first 50KB. For huge transcript JSONL files, this buffers the entire file into memory synchronously. **Fix**: Use a filehandle (`fs/promises.open`) to read exactly 50KB into a buffer.
-   - **`cursor.ts`**: Uses `.all()` on `better-sqlite3` queries to fetch rows from `cursorDiskKV` (which holds massive JSON payloads). This buffers all results simultaneously. **Fix**: Use `.iterate()` instead for lazy evaluation.
-
-2. **Unhandled Promise Rejections & Stream Errors**
-   - **`claude-code.ts`**: `readdir` loop lacks inner `try/catch`. If one project directory fails to read (e.g., permissions), the outer loop aborts, skipping all remaining valid projects. **Fix**: Wrap `readdir` in an inner try/catch.
-   - **All Adapters**: File streams passed to `readline` do not have `.on('error')` listeners. Node can crash on unhandled stream errors if the underlying file errors mid-read. **Fix**: Attach `.on('error', () => {})` to streams.
-
-3. **TS Strict Typing (Unsafe `any` & `JSON.parse` casts)**
-   - **`antigravity.ts`, `windsurf.ts`, `cursor.ts`, `claude-code.ts`**: These adapters explicitly cast `JSON.parse(row.value)` as specific object types. If a value is primitive (like `null` or a string), destructuring or property access throws `TypeError`.
-   - **Fix**: Parse as `unknown` and validate the object type (`typeof data === 'object' && data !== null`) before accessing keys.
-
-### `architecture_expert` Findings
-
-1. **State Management: Database Connection Leaks across Async Boundaries**
-   - **Location**: `src/adapters/cursor.ts` and `src/adapters/opencode.ts`
-   - **Issue**: `streamMessages()` holds an open SQLite connection while yielding through an `async *` generator. If consumers suspend or read slowly, the synchronous DB connection remains locked across multiple event loop ticks, potentially causing read-lock starvation.
-   - **Fix**: Since the query uses `.all()`, the dataset is already buffered in memory. Close the DB connection *before* entering the `for` loop to yield.
-
-2. **Error Boundaries: Non-atomic Cache Writes Cause Permanent Corruption**
-   - **Location**: `src/adapters/antigravity.ts` and `src/adapters/windsurf.ts`
-   - **Issue**: The adapters write directly to local JSONL cache files. If interrupted mid-write, the file corrupts. Since cache validity relies only on `mtime`, the system will attempt to parse the corrupted file forever, permanently erasing the session from view.
-   - **Fix**: Write to a temporary file and use `fs.rename` for atomic file creation. Implement more robust cache validation.
-
-3. **Separation of Concerns: Read/Write Entanglement and Sync Side-Effects**
-   - **Location**: `src/adapters/*` (e.g., `antigravity.ts`, `windsurf.ts`)
-   - **Issue**: `listSessionFiles()`, which implies a read-only list operation, secretly performs expensive I/O and initiates network calls via `.sync()`. Furthermore, presentation layer concerns (markdown formatting, tool filtering) are hardcoded into adapters.
-   - **Fix**: Extract synchronization into a dedicated manager and decouple formatting logic so adapters remain strictly data extractors.
-
-## Round 4: API & Tools Layer (`src/web.ts`, `src/web/`, `src/tools/`)
-
-### `architecture_expert` Findings
-
-1. **Separation of Concerns & Modularity**
-   - **Inline Business Logic**: High-level business logic (file crawling, LLM orchestration) is hardcoded directly inside Hono route handlers (e.g., `/api/titles/regenerate-all`, `/api/summary`).
-   - **Leaked MCP Definitions**: MCP tool schemas and logic (`manage_project_alias`, `hide_session`) are hardcoded into the setup sequence in `src/index.ts` instead of being modularized in `src/tools/`.
-   - **Fix**: Move route business logic into controller modules, and unify all MCP tool registrations into `src/tools/`.
-
-2. **Error Boundaries & API Resilience**
-   - **Missing Global Error Boundary**: The Hono app lacks an `app.onError` middleware. Uncaught exceptions fall through to Hono's default handler, returning plain-text errors that violate the JSON API contract expected by clients.
-   - **Fix**: Implement a global `app.onError` middleware to catch and format exceptions into standardized JSON envelopes.
-
-3. **State Management & Concurrency**
-   - **Unmanaged Background Tasks**: `/api/titles/regenerate-all` spawns an untracked background IIFE promise. Concurrent hits to this endpoint will spin up duplicate LLM polling loops. Rejections inside the IIFE crash the process.
-   - **Fix**: Offload title regeneration to the existing `BackgroundMonitor` or job runner, and implement a mutex to prevent redundant execution.
-
-### `ts_node_expert` Findings
-
-1. **Error Handling: Unhandled Hono API Errors**
-   - **Issue**: Missing global `app.onError` in `src/web.ts` means unhandled request errors (like JSON parsing) default to plain-text 500s instead of standard JSON envelopes.
-   - **Fix**: Add a global `app.onError` to catch and format exceptions safely as JSON.
-
-2. **Type Safety & Insecure Payload Parsing**
-   - **Issue**: API routes use blind `c.req.json<Type>()` casting. Passing invalid payload structures (e.g., objects where strings are expected) bypasses truthiness checks but crashes `better-sqlite3` later.
-   - **Fix**: Use Zod or basic runtime type guards (`typeof body.parentId === 'string'`) to validate shapes before trusting payload data.
-
-3. **Error Handling & Memory Leaks in Streams**
-   - **Location**: `src/tools/export.ts`
-   - **Issue**: `handleExport` writes to a stream awaiting `once(stream, 'finish')` without handling `'error'` events. Disk errors will crash Node.js or cause indefinite hangs and memory leaks.
-   - **Fix**: Use modern Node stream abstractions like `pipeline` or `finished` from `node:stream/promises`.
-
-4. **Performance: N+1 DB Queries & Loop Preparation**
-   - **Location**: `src/web.ts`
-   - **Issue**: `liveSessionsPayload` compiles a `.prepare()` query dynamically inside a `.map()` loop, adding unnecessary overhead per iteration.
-   - **Fix**: Hoist the `.prepare()` statement or batch query using an `IN (...)` clause.
-
-5. **Silent Error Swallowing**
-   - **Location**: `src/tools/lint_config.ts`
-   - **Issue**: `readPackageJsonScripts` catches `JSON.parse` syntax errors and returns `null` silently, hiding invalid user config.
-   - **Fix**: Log a warning or push an explicit `LintIssue` about the invalid JSON.
-
-## Round 5: CLI, Daemon & Integration
-
-### `architecture_expert` Findings
-
-1. **Signal Orchestration & Graceful Shutdown (Data Loss Risk)**
-   - **Locations**: `src/daemon.ts` and `src/core/lifecycle.ts`
-   - **Issue**: Process exits (`process.exit(0)`) are called synchronously during SIGINT/TERM without awaiting the shutdown of the Hono web server or ongoing asynchronous tasks. This instantly aborts mid-flight write operations and database queries, bypassing application rollback logic and risking severe data corruption.
-   - **Fix**: Implement an asynchronous shutdown sequence. Await `webServer.close()` and provide a grace period for active background tasks to finish or cleanly abort before closing the database connection and exiting.
-
-2. **Architectural Boundary: The "Fail-Closed" Fallback is Dead Code**
-   - **Locations**: `src/index.ts` and `src/core/daemon-client.ts`
-   - **Issue**: Project mutation tools (`project_move`, etc.) have local fallback execution blocks (`handleProjectMove`) in `src/index.ts` intended to run if the Daemon is unreachable. However, the configuration `failClosedProjectMutationTools` hardcodes these tools to `strict = true`, making the fallback check unconditionally fail.
-   - **Fix**: Delete the unreachable direct execution logic to clarify the architectural intent that these operations are strictly "fail-closed".
-
-3. **Systemic Single-Writer Constraint Violations (Split Brain)**
-   - **Locations**: `src/index.ts` (`hide_session`, `delete_insight`)
-   - **Issue**: Despite the Phase B "single-writer" architecture requiring all writes to be routed through the Daemon, several tools execute direct local writes against the DB from within the MCP server process. This blatantly bypasses the `mcpStrictSingleWriter` setting, leading to concurrent SQLite writes and `SQLITE_BUSY` errors.
-   - **Fix**: Remove direct writes from the MCP process for these tools and implement proper Daemon HTTP endpoints for them.
-
-### `ts_node_expert` Findings
-
-1. **Abrupt Daemon Shutdown & Process Exits**
-   - **Location**: `src/daemon.ts`
-   - **Issue**: `wrappedShutdown` calls `process.exit(0)` synchronously, abandoning asynchronous teardowns for `webServer.close()` and file watchers. This leads to dropped HTTP requests and incomplete WAL flushes.
-   - **Fix**: Return an async function from `createShutdownHandler` that `await`s the server/watcher closures before exiting.
-
-2. **Unsafe Child Process Execution**
-   - **Location**: `src/cli/resume.ts`
-   - **Issue**: `spawnSync` is used to launch interactive AI CLIs, blocking the Node event loop and mishandling OS signals like SIGINT, leading to orphaned processes.
-   - **Fix**: Use async `spawn` with `stdio: 'inherit'` and handle OS signals properly.
-
-3. **Unhandled Promise Rejections in CLI Dispatcher**
-   - **Location**: `src/cli/index.ts`
-   - **Issue**: Dynamic imports for CLI subcommands lack `.catch()`. If an import fails or throws synchronously, it crashes the process with a raw stack trace.
-   - **Fix**: Append `.catch(...)` to all dynamic import chains to gracefully handle and log errors.
-
-4. **Synchronous Crash on Malformed IPC Emission**
-   - **Location**: `src/daemon.ts` (`emit`)
-   - **Issue**: `JSON.stringify(obj)` is called synchronously for IPC. Circular references inside error objects will throw a `TypeError`, instantly crashing the Daemon.
-   - **Fix**: Wrap IPC serialization in a `try/catch` block and fallback to an error event payload.
-
-5. **Testing Infrastructure Gaps**
-   - **Location**: `tests/core/monitor.test.ts`, `tests/core/live-sessions.test.ts`
-   - **Issue**: Missing `afterAll` hooks to close DB connections cause SQLite handle leaks and flaky "database is locked" errors. Background `setInterval` timers are leaked if tests fail mid-execution.
-   - **Fix**: Use `afterAll(() => db.close())` and properly tear down `.stop()` timers in `afterEach`.
+#### H2. `defer { isLoadingMore = false }` races with successor tasks
+
+- **File:** `macos/Engram/Views/SessionDetailView.swift:719-720, 820-821`
+- **Status:** PARTIALLY verified (narrow window)
+- **Description:** Both `loadMoreMessages()` and `copyAllTranscript()` use `defer { isLoadingMore = false }`. If a predecessor task is cancelled and a successor starts, the predecessor's deferred reset can clobber the successor's loading state, leaving the UI in an inconsistent state.
+- **Suggested fix:** Use a generation counter (monotonic task ID). Only clear `isLoadingMore` if the generation still matches at defer time.
+
+### Medium
+
+#### M1. `Task.detached` blocks don't observe parent cancellation
+
+- **File:** `macos/Engram/Views/SessionDetailView.swift` (`rebuildIndexed`, `parseWindow`, `updateMatchIndicesDebounced`)
+- **Description:** Several `Task.detached` closures perform substantial work (rebuilding indexed messages, parsing windows, scanning match indices) without checking `Task.isCancelled`. After a session switch, these orphaned tasks continue consuming CPU until completion.
+- **Suggested fix:** Add `try Task.checkCancellation()` at loop iteration points inside each detached closure.
+
+#### M2. Fire-and-forget `Task` in `showTranscriptStatus`
+
+- **File:** `macos/Engram/Views/SessionDetailView.swift`
+- **Description:** A `Task` is spawned for a timer but not tracked. If the view is dismissed before the timer fires, it writes to `@State` after the view's lifecycle ends.
+- **Suggested fix:** Store the task in a `@State` property and cancel it in `onDisappear`.
+
+#### M3. `copyAllTranscript` copies filtered subset
+
+- **File:** `macos/Engram/Views/SessionDetailView.swift:704`
+- **Description:** The function copies `displayIndexed` (the filtered/visible subset) rather than the raw transcript. The name implies "all." This is by design for the paging architecture but is misleading.
+- **Suggested fix:** Rename to `copyVisibleTranscript()` or add a doc comment clarifying the behavior.
+
+### Low
+
+#### L1. `loadMoreButtonLabel` always shows "500"
+
+- **File:** `macos/Engram/Views/SessionDetailView.swift:861-865`
+- **Description:** The label uses `transcriptPageSize` (a constant 500) rather than the actual remaining message count. When fewer than 500 messages remain, the label is inaccurate.
+- **Suggested fix:** Compute `min(transcriptPageSize, totalCount - displayedCount)` for the label.
+
+#### L2. `displayVersion` not reset on session switch
+
+- **File:** `macos/Engram/Views/SessionDetailView.swift:72, 90`
+- **Description:** `displayVersion` is an ever-incrementing counter (`&+= 1`). It is never reset when the session changes. While not a bug (the token still changes), it is a defensive-reset gap.
+- **Suggested fix:** Reset `displayVersion = 0` in the session-change handler.
+
+#### L3. `showFind` not reset on session switch
+
+- **File:** `macos/Engram/Views/SessionDetailView.swift:49`
+- **Description:** If the find bar is open when the user switches sessions, it stays open with stale search text targeting the new session.
+- **Suggested fix:** Reset `showFind = false` and `searchText = ""` on session change.
+
+---
+
+## 2. Cross-Cutting Findings: TypeScript Core
+
+### High
+
+#### H3. `chunker.ts` infinite loop when `overlap >= maxChars`
+
+- **File:** `src/core/chunker.ts:61-68`
+- **Status:** VERIFIED
+- **Description:** `slidingWindow()` computes `step = windowSize - overlap`. When `overlap >= maxChars`, `step <= 0` and the `for` loop never advances, spinning indefinitely and causing OOM.
+- **Suggested fix:** Validate inputs: `if (overlap >= maxChars) throw new Error(...)` or clamp `step = Math.max(1, windowSize - overlap)`.
+
+### Medium
+
+#### M4. `indexer.ts` `backfillCosts` missing transaction
+
+- **File:** `src/core/indexer.ts:434-483`
+- **Status:** VERIFIED
+- **Description:** `backfillCosts()` calls `writeExtractedData()` for each session without wrapping the batch in a transaction. A crash mid-batch permanently loses tool/file/cost data for unprocessed sessions (no re-enqueue path). The catch block writes zero costs, marking the session as processed and excluding it from future backfills.
+- **Suggested fix:** Wrap the batch loop in `db.transaction(...)`. Do not write zero-costs on stream failures; allow the error to bubble or leave the row unwritten for retry.
+
+#### M5. `embeddings.ts` `setTimeout` missing `.unref()`
+
+- **File:** `src/core/embeddings.ts:155, 172`
+- **Status:** VERIFIED
+- **Description:** Timer handles created by `setTimeout` for retry backoff are not `.unref()`'d. They prevent clean process exit when the Node event loop would otherwise be idle. Concurrent failures also spawn redundant timeouts.
+- **Suggested fix:** Chain `.unref()` on each timer. Add a guard to prevent redundant timeouts.
+
+#### M6. `web.ts` bearer token vulnerable to timing attack
+
+- **File:** `src/web.ts:472-491`
+- **Status:** VERIFIED (mitigated by localhost-only default)
+- **Description:** Token comparison uses `!==` instead of `crypto.timingSafeEqual()`. An attacker could theoretically measure response timing to brute-force the token character by character.
+- **Suggested fix:** Use `crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected))` with equal-length buffers.
+
+#### M7. `daemon.ts` port conflict crashes on `EADDRINUSE`
+
+- **File:** `src/daemon.ts`
+- **Status:** VERIFIED
+- **Description:** If the configured port is already in use, the `listen()` call throws `EADDRINUSE` with no catch, crashing the daemon with no user-visible diagnostic.
+- **Suggested fix:** Catch `EADDRINUSE`, log a clear message with the port number, and exit gracefully.
+
+#### M8. `daemon.ts` disk-full crashes on unprotected writes
+
+- **File:** `src/daemon.ts`
+- **Status:** VERIFIED
+- **Description:** SQLite writes in the file watcher callback are not wrapped in error handlers. `SQLITE_FULL` or `SQLITE_IOERR` crashes the daemon.
+- **Suggested fix:** Wrap watcher write paths in try/catch; emit an `error` event and degrade gracefully.
+
+#### M9. `fts-repo.ts` CJK regex missing Hangul range
+
+- **File:** `src/core/db/fts-repo.ts:6`
+- **Status:** VERIFIED
+- **Description:** `CJK_REGEX` covers CJK Unified Ideographs and some radicals but omits Hangul (`가-힯`). Korean search queries hit the trigram tokenizer instead of the LIKE fallback, producing empty or wrong results.
+- **Suggested fix:** Extend the regex: `/[⺀-鿿豈-﫿︰-﹏가-힯]/`.
+
+#### M10. `fts-repo.ts` FTS retry changes query semantics
+
+- **File:** `src/core/db/fts-repo.ts:114-118`
+- **Status:** VERIFIED
+- **Description:** On FTS syntax error, the retry path wraps the entire query in double quotes, turning a keyword search into a phrase search. Results differ silently.
+- **Suggested fix:** Escape individual terms or use `NEAR()` instead of quoting the whole query. Document the semantic shift if intentional.
+
+#### M11. `fts-repo.ts` `isFtsSyntaxError` matches non-FTS errors
+
+- **File:** `src/core/db/fts-repo.ts:124-132`
+- **Status:** VERIFIED
+- **Description:** The error classifier matches on message substring patterns that can also hit schema corruption, I/O, or locked-database errors. Those should propagate, not be silently retried as phrase searches.
+- **Suggested fix:** Narrow the match to FTS5-specific error codes only (e.g., check `err.code === 'SQLITE_ERROR'` AND message contains `fts5`).
+
+### Low
+
+#### L4. `vector-store.ts` `deleteInsight` missing transaction
+
+- **File:** `src/core/vector-store.ts:460-462`
+- **Description:** `deleteInsight` runs two separate `DELETE` statements (text + vec). A crash between them leaves an orphaned vec row.
+- **Suggested fix:** Wrap in the existing `this.db.transaction(...)`.
+
+#### L5. `vector-store.ts` dynamic transaction in `upsertInsight`
+
+- **File:** `src/core/vector-store.ts:414-433`
+- **Description:** `upsertInsight` creates a new transaction wrapper on each call rather than using the pre-prepared `this.upsertTxn`. Inconsistent with the rest of the class.
+- **Suggested fix:** Use `this.upsertTxn(...)` consistently.
+
+#### L6. `indexer.ts` uncached prepared statements
+
+- **File:** `src/core/indexer.ts`
+- **Description:** Several hot-path queries (e.g., `generateTitleIfNeeded`) create new `db.prepare()` calls per invocation instead of caching them. Minor performance overhead on large re-indexes.
+- **Suggested fix:** Cache prepared statements in the constructor (pattern already used in `vector-store.ts`).
+
+#### L7. `embedding-indexer.ts` unbounded Set
+
+- **File:** `src/core/embedding-indexer.ts`
+- **Description:** `EmbeddingIndexer` tracks processed sessions using an in-memory `Set<string>` that only grows. Bounded by DB size in practice, but no explicit cap. In long-running instances this is a slow memory leak.
+- **Suggested fix:** Provide a `remove(sessionId)` method or replace with an SQL query for unindexed IDs.
+
+#### L8. `watcher.ts` `shouldSkip` call outside try/catch
+
+- **File:** `src/core/watcher.ts:114, 141`
+- **Description:** `shouldSkip()` is invoked before the try block in the `unlink` listener. If the callback throws, the watcher crashes instead of logging and continuing.
+- **Suggested fix:** Move the `shouldSkip` call inside the existing try/catch.
+
+#### L9. `session-repo.ts` `deleteSession` not atomic
+
+- **File:** `src/core/db/session-repo.ts:372`
+- **Description:** `deleteSession` runs multiple DELETE statements (session, FTS, related tables) without a transaction wrapper. A crash between statements leaves orphaned FTS rows and vector entries.
+- **Suggested fix:** Wrap in `db.transaction(...)`. Add cascade cleanup for `session_chunks`, `vec_sessions`, `vec_chunks`.
+
+#### L10. `fts-repo.ts` correlated subquery in CJK fallback
+
+- **File:** `src/core/db/fts-repo.ts:143`
+- **Description:** The LIKE-based CJK fallback uses a correlated subquery (`SELECT MIN(f2.rowid)`) for grouping. Evaluates the LIKE full-text scan for every matched row.
+- **Suggested fix:** Replace with a window function (`ROW_NUMBER() OVER(PARTITION BY ...)`).
+
+#### L11. Adapters inner `readdir` not caught
+
+- **File:** `src/adapters/commandcode.ts:36-42`, `src/adapters/claude-code.ts`, `src/adapters/qoder.ts`
+- **Description:** Inner `readdir` calls for project subdirectories are not individually caught. One unreadable directory skips all remaining directories in the outer loop.
+- **Suggested fix:** Wrap the inner `readdir` in its own try/catch.
+
+#### L12. Adapters non-atomic cache writes
+
+- **File:** `src/adapters/antigravity.ts`, `src/adapters/windsurf.ts`
+- **Description:** Cache files are written with `writeFile` (not write-to-temp + rename). A crash mid-write corrupts the cache. Since cache validity relies on `mtime`, the corrupted file is parsed forever.
+- **Suggested fix:** Write to a temp file, then `rename()` atomically.
+
+#### L13. `web.ts` `/api/titles/regenerate-all` no duplicate guard
+
+- **File:** `src/web.ts`
+- **Description:** No idempotency check. Repeated calls spin up duplicate LLM polling loops, consuming AI quota unnecessarily. Rejections inside the spawned IIFE can crash the process.
+- **Suggested fix:** Add an in-flight flag or mutex; return 409 if already running.
+
+### Info
+
+#### I1. `web.ts` unauthenticated GET endpoints
+
+- **File:** `src/web.ts:472`
+- **Description:** GET endpoints are intentionally unauthenticated (localhost-only by design). This is documented and acceptable for the current deployment model.
+
+---
+
+## 3. Cross-Cutting Findings: Swift Product
+
+### High
+
+#### H4. TS cascade trigger clears subagent tier unconditionally
+
+- **File:** `src/core/db/migration.ts:152-159` vs `macos/EngramCoreWrite/Database/EngramMigrations.swift:61-78`
+- **Status:** VERIFIED
+- **Description:** The TypeScript trigger (`trg_sessions_parent_cascade`) sets `tier = NULL` on all orphaned children. The Swift trigger correctly preserves `tier = 'skip'` for `agent_role = 'subagent'`. This divergence means TS-migrated databases lose the subagent tier invariant. The TS trigger also does not clear `suggested_parent_id` children's tier, which the Swift trigger does.
+- **Suggested fix:** Update the TS trigger to match Swift's conditional logic:
+  ```sql
+  UPDATE sessions SET parent_session_id = NULL, link_source = NULL,
+    tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
+    WHERE parent_session_id = OLD.id;
+  UPDATE sessions SET suggested_parent_id = NULL,
+    tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
+    WHERE suggested_parent_id = OLD.id;
+  ```
+
+### Medium
+
+#### M12. `EngramServiceRunner` `checkpointTask` not fully awaited
+
+- **File:** `macos/EngramService/Core/EngramServiceRunner.swift:170-191`
+- **Status:** VERIFIED
+- **Description:** The periodic `checkpointTask` is cancelled at shutdown, but the final TRUNCATE checkpoint runs immediately after. If the periodic checkpoint was mid-flight when cancelled, WAL frames may not be flushed before the TRUNCATE, leaving stale WAL content for the next startup.
+- **Suggested fix:** `await checkpointTask.value` after cancellation (with a timeout) before running the final TRUNCATE.
+
+#### M13. Swift `clearParentSession` doesn't reset tier
+
+- **File:** `macos/EngramCoreWrite/`
+- **Status:** VERIFIED
+- **Description:** When `clearParentSession()` unlinks a child, it does not reset the child's tier to `NULL` for re-evaluation. The TS equivalent does. This means manually unlinked children retain their old tier instead of being re-evaluated.
+- **Suggested fix:** Add `tier = NULL` (or the subagent-aware CASE) to the `clearParentSession` UPDATE.
+
+#### M14. Swift `replaceTable()` DROP + RENAME not atomic
+
+- **File:** `macos/EngramCoreWrite/Database/EngramMigrations.swift:432-448` (and 13 other call sites)
+- **Status:** VERIFIED
+- **Description:** `replaceTable()` executes `DROP TABLE old` then `ALTER TABLE replacement RENAME TO old` as separate statements. A crash between the DROP and RENAME loses the table entirely. All migration V2 upgrades use this pattern.
+- **Suggested fix:** Wrap both statements in a single `db.transaction { }`.
+
+### Low
+
+#### L14. Swift `mutateEngramSettings` not atomic
+
+- **File:** `macos/Engram/Views/Settings/`
+- **Description:** Settings mutations read-modify-write without a lock. Safe today (single-threaded UI) but fragile if a service callback ever modifies settings concurrently.
+- **Suggested fix:** Low priority; document the single-threaded assumption.
+
+#### L15. `MCPTranscriptTools` force unwrap
+
+- **File:** `macos/EngramMCP/Core/MCPTranscriptTools.swift:23`
+- **Description:** `activeRoleFilter!.contains($0.role)` force-unwraps an optional. Safe because the preceding `filter` condition guards it, but the intent is unclear.
+- **Suggested fix:** Use `activeRoleFilter?.contains($0.role) ?? true` for clarity.
+
+#### L16. MCP duplicates CJK helper
+
+- **File:** `macos/EngramMCP/`
+- **Description:** The MCP target has its own copy of the CJK detection regex/logic instead of importing from a shared module. Risks drift (e.g., the Hangul gap in M9 may or may not exist here).
+- **Suggested fix:** Extract to `EngramCoreRead` or `EngramCore` shared module.
+
+#### L17. `link_checked_at` not cleared on re-index
+
+- **File:** `macos/EngramCoreWrite/`
+- **Description:** When a session is re-indexed, `link_checked_at` retains its old value. Stale suggested-parent links are not re-evaluated because the heuristic backfill skips sessions where `link_checked_at IS NOT NULL`.
+- **Suggested fix:** Clear `link_checked_at` in the session upsert path.
+
+#### L18. No self-link guard in snapshot upsert
+
+- **File:** `macos/EngramCoreWrite/`
+- **Description:** The snapshot/restore path does not guard against `parent_session_id = id`. The runtime path has this check; the snapshot path does not.
+- **Suggested fix:** Add a CHECK constraint or application-level guard in the snapshot upsert.
+
+---
+
+## 4. Test Coverage Gaps
+
+| ID | Gap | Priority |
+|----|-----|----------|
+| T1 | `chunker.ts` sliding window: no test for `overlap >= maxChars` infinite loop case | High |
+| T2 | `vacuumIfNeeded` true branch: never tested with actual VACUUM execution | Medium |
+| T3 | No concurrent write safety tests (neither TS nor Swift) | Medium |
+| T4 | `web.ts` bearer auth only tested on 1 endpoint; most write endpoints untested | Medium |
+| T5 | `backfillCosts` transaction atomicity: no crash-recovery test | Medium |
+| T6 | `parseWindowed` all-tool window: 0 displayable messages untested | Low |
+| T7 | `parseWindowed` past EOF: untested boundary | Low |
+| T8 | `parseWindowed` empty file: untested boundary | Low |
+
+---
+
+## 5. Positive Findings
+
+- **Paging architecture is sound.** The threshold-gated lazy streaming approach correctly avoids O(N^2) re-parsing. The `displayVersion` token-based invalidation is clean.
+- **Swift cascade trigger is correct.** The `CASE WHEN agent_role = 'subagent'` guard properly preserves the subagent tier invariant. The TS side just needs to catch up.
+- **CJK LIKE fallback exists.** The `containsCJK` check and LIKE fallback path show awareness of the trigram tokenizer's CJK limitations. The Hangul gap is a minor oversight.
+- **Bearer auth is scoped correctly.** Only write (`/api/*`) endpoints require auth; read endpoints are intentionally open on localhost. The architecture is reasonable.
+- **Prepared statement caching in `vector-store.ts`.** The constructor pre-prepares all hot-path statements, following best practices. The rest of the codebase should follow this pattern.
+- **WAL checkpoint lifecycle.** The dual-checkpoint approach (periodic PASSIVE + startup TRUNCATE + shutdown TRUNCATE) is well-designed for the service lifecycle.
+- **Test infrastructure is real.** Tests use actual fixtures and file I/O, not mocks. This catches integration issues that unit tests miss.
+
+---
+
+## Appendix: Finding Cross-Reference
+
+| Finding | Severity | Area | Verified |
+|---------|----------|------|----------|
+| H1 | High | Swift/PR | Yes |
+| H2 | High | Swift/PR | Partial |
+| H3 | High | TS Core | Yes |
+| H4 | High | Cross-runtime | Yes |
+| M1 | Medium | Swift/PR | -- |
+| M2 | Medium | Swift/PR | -- |
+| M3 | Medium | Swift/PR | -- |
+| M4 | Medium | TS Core | Yes |
+| M5 | Medium | TS Core | Yes |
+| M6 | Medium | TS Core | Yes |
+| M7 | Medium | TS Core | Yes |
+| M8 | Medium | TS Core | Yes |
+| M9 | Medium | TS Core | Yes |
+| M10 | Medium | TS Core | Yes |
+| M11 | Medium | TS Core | Yes |
+| M12 | Medium | Swift | Yes |
+| M13 | Medium | Swift | Yes |
+| M14 | Medium | Swift | Yes |
+| L1-L3 | Low | Swift/PR | -- |
+| L4-L13 | Low | TS Core | -- |
+| L14-L18 | Low | Swift | -- |
+| I1 | Info | TS Core | Yes |
+| T1-T8 | Test gaps | -- | -- |
