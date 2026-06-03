@@ -67,6 +67,7 @@ struct SearchView: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var selectedMode: SearchMode = .keyword
     @State private var embeddingStatus: EmbeddingStatus?
+    @State private var embeddingStatusTask: Task<Void, Never>?
 
     private var availableModes: [SearchMode] {
         SearchMode.availableModes(embeddingAvailable: embeddingStatus?.available ?? false)
@@ -90,10 +91,12 @@ struct SearchView: View {
                 }
                 if !query.isEmpty {
                     Button {
+                        searchTask?.cancel()
                         query = ""
                         results = []
                         searchModes = []
                         warning = nil
+                        isSearching = false
                     } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                     }
@@ -195,15 +198,22 @@ struct SearchView: View {
                 searchTask = Task {
                     try? await Task.sleep(for: .milliseconds(300))
                     guard !Task.isCancelled else { return }
-                    performSearch()
+                    await MainActor.run {
+                        performSearch()
+                    }
                 }
             } else if new.isEmpty {
                 results = []
                 searchModes = []
                 warning = nil
+                isSearching = false
             }
         }
         .onAppear { loadEmbeddingStatus() }
+        .onDisappear {
+            searchTask?.cancel()
+            embeddingStatusTask?.cancel()
+        }
     }
 
     // MARK: - Embedding status bar
@@ -242,9 +252,11 @@ struct SearchView: View {
     // MARK: - Service
 
     func loadEmbeddingStatus() {
-        Task {
+        embeddingStatusTask?.cancel()
+        embeddingStatusTask = Task {
             do {
                 let resp = try await serviceClient.embeddingStatus()
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     embeddingStatus = EmbeddingStatus(
                         available: resp.available,
@@ -258,6 +270,7 @@ struct SearchView: View {
                     }
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     embeddingStatus = EmbeddingStatus(available: false, model: nil, embeddedCount: 0, totalSessions: 0, progress: 0)
                 }
@@ -267,24 +280,27 @@ struct SearchView: View {
 
     func performSearch() {
         guard query.count >= 2 else { return }
-        isSearching = true
 
         let q = query
         let mode = selectedMode.rawValue
-        Task {
-            defer { isSearching = false }
+        searchTask?.cancel()
+        isSearching = true
 
+        searchTask = Task {
             do {
                 let response = try await serviceClient.search(
                     EngramServiceSearchRequest(query: q, mode: mode, limit: 20)
                 )
 
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     searchModes = response.searchModes ?? []
                     warning = response.warning
                     results = response.items.map(\.searchResult)
+                    isSearching = false
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 // Fallback to local FTS — run query off main thread. Shares the
                 // DatabaseManager search path so offline results get the same
                 // <mark> highlighted snippets (and LIKE escaping / dedup) as the
@@ -293,12 +309,14 @@ struct SearchView: View {
                 let hits = (try? await Task.detached {
                     try db.searchWithSnippets(query: q, limit: 20)
                 }.value) ?? []
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     searchModes = ["keyword (offline)"]
                     warning = nil
                     results = hits.map { r in
                         SearchResult(id: r.session.id, session: r.session, snippet: r.snippet, matchType: "keyword", score: 0)
                     }
+                    isSearching = false
                 }
             }
         }

@@ -21,20 +21,20 @@ struct EngramLogger {
     }
 
     static func info(_ message: String, module: LogModule) {
-        logger(for: module).info("\(message, privacy: .public)")
+        logger(for: module).info("\(message, privacy: .private)")
     }
 
     static func warn(_ message: String, module: LogModule) {
-        logger(for: module).warning("\(message, privacy: .public)")
+        logger(for: module).warning("\(message, privacy: .private)")
     }
 
     static func error(_ message: String, module: LogModule, error: Error? = nil) {
         let msg = error.map { "\(message): \($0.localizedDescription)" } ?? message
-        logger(for: module).error("\(msg, privacy: .public)")
+        logger(for: module).error("\(msg, privacy: .private)")
     }
 
     static func debug(_ message: String, module: LogModule) {
-        logger(for: module).debug("\(message, privacy: .public)")
+        logger(for: module).debug("\(message, privacy: .private)")
     }
 
 }

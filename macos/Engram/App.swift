@@ -211,7 +211,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startServiceStatusObservation() {
         serviceStatusTask?.cancel()
-        serviceStatusTask = Task { [serviceClient, serviceStatusStore] in
+        serviceStatusTask = Task.detached { [serviceClient, serviceStatusStore] in
             do {
                 let status = try await serviceClient.status()
                 await MainActor.run {

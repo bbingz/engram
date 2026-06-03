@@ -10,6 +10,7 @@ struct LogStreamView: View {
     @State private var availableModules: [String] = []
     @State private var isLoading = true
     @State private var logsUnavailable = false
+    @State private var reloadTask: Task<Void, Never>? = nil
 
     private let levels = ["All", "debug", "info", "warn", "error"]
     private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
@@ -79,10 +80,16 @@ struct LogStreamView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("observability_logStream")
-        .task { await reload() }
-        .onReceive(timer) { _ in Task { await reload() } }
-        .onChange(of: selectedLevel) { _, _ in Task { await reload() } }
-        .onChange(of: selectedModule) { _, _ in Task { await reload() } }
+        .task { scheduleReload() }
+        .onReceive(timer) { _ in scheduleReload() }
+        .onChange(of: selectedLevel) { _, _ in scheduleReload() }
+        .onChange(of: selectedModule) { _, _ in scheduleReload() }
+        .onDisappear { reloadTask?.cancel(); reloadTask = nil }
+    }
+
+    private func scheduleReload() {
+        reloadTask?.cancel()
+        reloadTask = Task { await reload() }
     }
 
     private func reload() async {
@@ -95,6 +102,7 @@ struct LogStreamView: View {
             let result = try await Task.detached {
                 try OSLogReader.recentLogs(level: level, module: module, hours: 24, limit: 200)
             }.value
+            guard !Task.isCancelled else { return }
             // Most recent first for the list.
             logs = result.entries.reversed()
             if availableModules.isEmpty {
@@ -102,12 +110,15 @@ struct LogStreamView: View {
             }
             logsUnavailable = false
         } catch is OSLogReaderError {
+            guard !Task.isCancelled else { return }
             logsUnavailable = true
             logs = []
         } catch {
+            guard !Task.isCancelled else { return }
             EngramLogger.error("LogStreamView load failed", module: .ui, error: error)
             logs = []
         }
+        guard !Task.isCancelled else { return }
         isLoading = false
     }
 }

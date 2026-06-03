@@ -45,6 +45,18 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testMainWindowNavigationIgnoresSupersededLookups() throws {
+        let s = try source("macos/Engram/Views/MainWindowView.swift")
+        XCTAssertTrue(
+            s.contains("@State private var pendingNavigationId: String?"),
+            "palette navigation must track the latest requested session id"
+        )
+        XCTAssertTrue(
+            s.contains("guard pendingNavigationId == id else { return }"),
+            "a slower session lookup must not overwrite a newer palette navigation"
+        )
+    }
+
     func testSearchPageGuardsAgainstStaleResponses() throws {
         let s = try source("macos/Engram/Views/Pages/SearchPageView.swift")
         XCTAssertTrue(
@@ -70,5 +82,63 @@ final class ViewMainThreadReadTests: XCTestCase {
         let sessions = try source("macos/Engram/Views/Pages/SessionsPageView.swift")
         XCTAssertTrue(sessions.contains(".task(id:"), "SessionsPageView must use a cancelling .task(id:) (ui-7)")
         XCTAssertFalse(sessions.contains(".onChange(of: timeFilter) { _, _ in Task { await loadData() } }"))
+    }
+
+    func testTimelinePageReusesDateFormatters() throws {
+        let s = try source("macos/Engram/Views/Pages/TimelinePageView.swift")
+        let start = try XCTUnwrap(s.range(of: "private func formatDateLabel"))
+        let end = try XCTUnwrap(s.range(of: "private func sessionCountLabel"))
+        let functionSource = String(s[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(s.contains("private static let inputDateFormatter"))
+        XCTAssertTrue(s.contains("private static let outputDateFormatter"))
+        XCTAssertFalse(
+            functionSource.contains("DateFormatter()"),
+            "formatDateLabel runs for every timeline group and must not allocate DateFormatter per call"
+        )
+    }
+
+    func testSessionListIgnoresSupersededLoads() throws {
+        let s = try source("macos/Engram/Views/SessionListView.swift")
+        XCTAssertTrue(
+            s.contains("@State private var loadGeneration = 0"),
+            "SessionListView must track the latest load generation"
+        )
+        XCTAssertTrue(
+            s.contains("guard loadGeneration == generation else { return }"),
+            "a slower initial load must not overwrite a newer filtered load"
+        )
+    }
+
+    func testLogStreamReloadsCancelSupersededWork() throws {
+        let s = try source("macos/Engram/Views/Observability/LogStreamView.swift")
+        XCTAssertTrue(s.contains("@State private var reloadTask: Task<Void, Never>?"))
+        XCTAssertTrue(s.contains("reloadTask?.cancel()"))
+        XCTAssertTrue(s.contains(".onDisappear { reloadTask?.cancel(); reloadTask = nil }"))
+        XCTAssertFalse(s.contains(".onReceive(timer) { _ in Task { await reload() } }"))
+        XCTAssertFalse(s.contains(".onChange(of: selectedLevel) { _, _ in Task { await reload() } }"))
+        XCTAssertFalse(s.contains(".onChange(of: selectedModule) { _, _ in Task { await reload() } }"))
+    }
+
+    func testSettingsLoadsDoNotImmediatelyWriteBackUnchangedValues() throws {
+        let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+        XCTAssertTrue(ai.contains("@State private var isLoadingSettings = false"))
+        XCTAssertTrue(ai.contains("guard !isLoadingSettings else { return }"))
+        XCTAssertTrue(ai.contains("defer { isLoadingSettings = false }"))
+
+        let sources = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
+        XCTAssertTrue(sources.contains("@State private var isLoading = false"))
+        XCTAssertTrue(sources.contains("guard !isLoading else { return }"))
+        XCTAssertTrue(sources.contains("defer { isLoading = false }"))
+    }
+
+    func testDatabaseManagerIsNotGlobalMainActorIsolated() throws {
+        let s = try source("macos/Engram/Core/Database.swift")
+        XCTAssertFalse(
+            s.contains("@MainActor\n@Observable\nfinal class DatabaseManager"),
+            "DatabaseManager must not rely on a global MainActor annotation while views capture it into Task.detached"
+        )
+        XCTAssertTrue(s.contains("final class DatabaseManager: @unchecked Sendable"))
+        XCTAssertFalse(s.contains("nonisolated(unsafe)"))
     }
 }

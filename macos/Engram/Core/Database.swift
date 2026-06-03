@@ -48,18 +48,17 @@ struct SessionListStats {
     let sources: [String]
 }
 
-@MainActor
 @Observable
-final class DatabaseManager {
+final class DatabaseManager: @unchecked Sendable {
     @ObservationIgnored private let dbPath: String
-    @ObservationIgnored nonisolated(unsafe) private var pool: DatabasePool?
+    @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private let poolLock = NSLock()
 
-    /// File path to the SQLite database (nonisolated for background FileManager access)
-    nonisolated var path: String { dbPath }
+    /// File path to the SQLite database (for background FileManager access)
+    var path: String { dbPath }
 
     // Thread-safe read accessor — GRDB DatabasePool.read is internally thread-safe.
-    nonisolated func readInBackground<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+    func readInBackground<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
         let pool = try currentPool()
         return try pool.read(block)
     }
@@ -76,9 +75,9 @@ final class DatabaseManager {
         pool = try Self.openReadOnlyPool(at: dbPath)
     }
 
-    nonisolated private func currentPool() throws -> DatabasePool {
-        // Always read `pool` under the lock: it is `nonisolated(unsafe)`, so a
-        // lock-free fast-path read would race with the write below.
+    private func currentPool() throws -> DatabasePool {
+        // Always read `pool` under the lock; a lock-free fast-path read would
+        // race with the write below.
         poolLock.lock()
         defer { poolLock.unlock() }
         if let pool {
@@ -89,7 +88,7 @@ final class DatabaseManager {
         return opened
     }
 
-    nonisolated private static func openReadOnlyPool(at path: String) throws -> DatabasePool {
+    private static func openReadOnlyPool(at path: String) throws -> DatabasePool {
         var configuration = Configuration()
         configuration.readonly = true
         // Match SQLiteConnectionPolicy.cacheSizeKiB (16 MiB page cache) so the GUI
@@ -104,7 +103,7 @@ final class DatabaseManager {
     }
 
     // MARK: - list_sessions
-    nonisolated private static func appendSessionFilters(
+    private static func appendSessionFilters(
         to parts: inout [String],
         args: inout [DatabaseValueConvertible],
         sources: Set<String>,
@@ -143,7 +142,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func listSessions(
+    func listSessions(
         sources: Set<String> = [],   // empty = all
         projects: Set<String> = [],  // empty = all
         since: String? = nil,
@@ -174,7 +173,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func sessionListStats(
+    func sessionListStats(
         sources: Set<String> = [],
         projects: Set<String> = [],
         since: String? = nil,
@@ -221,7 +220,7 @@ final class DatabaseManager {
     }
 
     // MARK: - list projects
-    nonisolated func listProjects() throws -> [String] {
+    func listProjects() throws -> [String] {
         try readInBackground { db in
             try String.fetchAll(db, sql: """
                 SELECT DISTINCT project FROM sessions
@@ -231,7 +230,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func countsBySource() throws -> [String: Int] {
+    func countsBySource() throws -> [String: Int] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) as n FROM sessions WHERE hidden_at IS NULL GROUP BY source
@@ -246,7 +245,7 @@ final class DatabaseManager {
         let latestIndexed: String
     }
 
-    nonisolated func sourceStats() throws -> [SourceStat] {
+    func sourceStats() throws -> [SourceStat] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) as count, MAX(indexed_at) as latest_indexed
@@ -263,7 +262,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func countsByProject() throws -> [String: Int] {
+    func countsByProject() throws -> [String: Int] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT project, COUNT(*) as n FROM sessions
@@ -273,7 +272,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func listSessionsForProject(_ project: String?, subAgent: Bool? = nil, limit: Int = 100) throws -> [Session] {
+    func listSessionsForProject(_ project: String?, subAgent: Bool? = nil, limit: Int = 100) throws -> [Session] {
         try readInBackground { db in
             var parts: [String]
             var args: [DatabaseValueConvertible]
@@ -295,13 +294,13 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func getSession(id: String) throws -> Session? {
+    func getSession(id: String) throws -> Session? {
         try readInBackground { db in
             try Session.fetchOne(db, sql: "SELECT * FROM sessions WHERE id = ?", arguments: [id])
         }
     }
 
-    nonisolated func countSessions(
+    func countSessions(
         sources: Set<String> = [],
         projects: Set<String> = [],
         subAgent: Bool? = nil
@@ -330,7 +329,7 @@ final class DatabaseManager {
 
     // MARK: - search (FTS5 trigram)
 
-    nonisolated private static func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
+    private static func tableExists(_ table: String, db: GRDB.Database) throws -> Bool {
         let count = try Int.fetchOne(
             db,
             sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -339,7 +338,7 @@ final class DatabaseManager {
         return count > 0
     }
 
-    nonisolated private static func appendSearchFilters(
+    private static func appendSearchFilters(
         to parts: inout [String],
         args: inout [DatabaseValueConvertible],
         sources: Set<String>,
@@ -362,7 +361,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func search(
+    func search(
         query: String,
         limit: Int = 10,
         sources: Set<String> = [],
@@ -437,7 +436,7 @@ final class DatabaseManager {
     /// `<mark>`-highlighted snippet. Used by the GUI offline-fallback path so a
     /// service outage still shows the same windowed highlights as the live
     /// (service) path, instead of an empty snippet.
-    nonisolated func searchWithSnippets(
+    func searchWithSnippets(
         query: String,
         limit: Int = 10,
         sources: Set<String> = [],
@@ -498,7 +497,7 @@ final class DatabaseManager {
     }
 
     // MARK: - project_timeline
-    nonisolated func projectTimeline(project: String? = nil) throws -> [TimelineEntry] {
+    func projectTimeline(project: String? = nil) throws -> [TimelineEntry] {
         try readInBackground { db in
             var sql = """
                 SELECT project, COUNT(*) as session_count, MAX(start_time) as last_updated
@@ -522,7 +521,7 @@ final class DatabaseManager {
         let bySource: [String: Int]
     }
 
-    nonisolated func stats() throws -> StatsResult {
+    func stats() throws -> StatsResult {
         try readInBackground { db in
             let total    = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL") ?? 0
             let messages = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(message_count), 0) FROM sessions WHERE hidden_at IS NULL") ?? 0
@@ -533,19 +532,19 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func dbSizeBytes() -> Int64 {
+    func dbSizeBytes() -> Int64 {
         (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size] as? Int64) ?? 0
     }
 
     /// UI-M4: real journal mode via PRAGMA instead of a hardcoded "WAL Mode: OK".
-    nonisolated func journalMode() throws -> String {
+    func journalMode() throws -> String {
         try readInBackground { db in
             (try String.fetchOne(db, sql: "PRAGMA journal_mode")) ?? "unknown"
         }
     }
 
     // MARK: - get_context
-    nonisolated func getContext(cwd: String, limit: Int = 5) throws -> [Session] {
+    func getContext(cwd: String, limit: Int = 5) throws -> [Session] {
         try readInBackground { db in
             let project = URL(fileURLWithPath: cwd).lastPathComponent
             var results = try Session.fetchAll(db,
@@ -561,7 +560,7 @@ final class DatabaseManager {
     }
 
     // MARK: - Favorites (service-owned extension table)
-    nonisolated func listFavorites() throws -> [Session] {
+    func listFavorites() throws -> [Session] {
         try readInBackground { db in
             guard try Self.tableExists("favorites", db: db) else { return [] }
             return try Session.fetchAll(db, sql: """
@@ -573,7 +572,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func isFavorite(sessionId: String) throws -> Bool {
+    func isFavorite(sessionId: String) throws -> Bool {
         try readInBackground { db in
             guard try Self.tableExists("favorites", db: db) else { return false }
             return try Favorite.fetchOne(db,
@@ -584,7 +583,7 @@ final class DatabaseManager {
 
     // MARK: - Hidden sessions (trash)
 
-    nonisolated func listHiddenSessions(limit: Int = 200, offset: Int = 0) throws -> [Session] {
+    func listHiddenSessions(limit: Int = 200, offset: Int = 0) throws -> [Session] {
         try readInBackground { db in
             try Session.fetchAll(db,
                 sql: "SELECT * FROM sessions WHERE hidden_at IS NOT NULL ORDER BY hidden_at DESC LIMIT ? OFFSET ?",
@@ -592,7 +591,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func countHiddenSessions() throws -> Int {
+    func countHiddenSessions() throws -> Int {
         try readInBackground { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NOT NULL") ?? 0
         }
@@ -601,7 +600,7 @@ final class DatabaseManager {
     // MARK: - Timeline (chronological list)
 
     /// Pure chronological list of sessions for Timeline view
-    nonisolated func listSessionsChronologically(
+    func listSessionsChronologically(
         sources: Set<String> = [],
         projects: Set<String> = [],
         subAgent: Bool? = nil,
@@ -635,7 +634,7 @@ final class DatabaseManager {
     // MARK: - Grouped Sessions view
 
     /// Get all group keys with counts for grouped view (by project or source)
-    nonisolated func listGroups(
+    func listGroups(
         by mode: GroupingMode,
         sources: Set<String> = [],
         projects: Set<String> = [],
@@ -689,7 +688,7 @@ final class DatabaseManager {
     }
 
     /// Get sessions within a specific group
-    nonisolated func listSessionsInGroup(
+    func listSessionsInGroup(
         by mode: GroupingMode,
         key: String,
         sources: Set<String> = [],
@@ -744,7 +743,7 @@ final class DatabaseManager {
         let projects: Int
     }
 
-    nonisolated func countSessionsSince(_ since: String) throws -> Int {
+    func countSessionsSince(_ since: String) throws -> Int {
         try readInBackground { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) as n FROM sessions
@@ -756,7 +755,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func kpiStats() throws -> KPIStats {
+    func kpiStats() throws -> KPIStats {
         try readInBackground { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT
@@ -777,7 +776,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func dailyActivity(days: Int = 30) throws -> [(date: String, count: Int)] {
+    func dailyActivity(days: Int = 30) throws -> [(date: String, count: Int)] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT DATE(start_time) as day, COUNT(*) as count
@@ -790,7 +789,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func dailySourceActivity(days: Int = 30) throws -> [(date: String, segments: [(source: String, count: Int)])] {
+    func dailySourceActivity(days: Int = 30) throws -> [(date: String, segments: [(source: String, count: Int)])] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT DATE(start_time) as day, source, COUNT(*) as count
@@ -823,7 +822,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func hourlyActivity() throws -> [Int] {
+    func hourlyActivity() throws -> [Int] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT CAST(strftime('%H', start_time, 'localtime') AS INTEGER) as hour,
@@ -842,7 +841,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func sourceDistribution() throws -> [(source: String, count: Int)] {
+    func sourceDistribution() throws -> [(source: String, count: Int)] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) as count
@@ -853,7 +852,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func tierDistribution() throws -> (premium: Int, normal: Int, lite: Int, skip: Int) {
+    func tierDistribution() throws -> (premium: Int, normal: Int, lite: Int, skip: Int) {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT COALESCE(tier, 'normal') as t, COUNT(*) as count
@@ -876,7 +875,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func recentSessions(limit: Int = 8) throws -> [Session] {
+    func recentSessions(limit: Int = 8) throws -> [Session] {
         try readInBackground { db in
             try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
@@ -889,7 +888,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func sessionTimeline(days: Int = 30, sort: SessionSort = .updatedDesc) throws -> [(date: String, sessions: [Session])] {
+    func sessionTimeline(days: Int = 30, sort: SessionSort = .updatedDesc) throws -> [(date: String, sessions: [Session])] {
         try readInBackground { db in
             let timestampSQL = sort.timelineTimestampSQL
             let sessions = try Session.fetchAll(db, sql: """
@@ -927,7 +926,7 @@ final class DatabaseManager {
 
     // MARK: - Git Repos
 
-    nonisolated func listGitRepos() throws -> [GitRepo] {
+    func listGitRepos() throws -> [GitRepo] {
         try readInBackground { db in
             try GitRepo.fetchAll(db, sql: "SELECT * FROM git_repos ORDER BY last_commit_at DESC")
         }
@@ -935,7 +934,7 @@ final class DatabaseManager {
 
     /// Returns session counts for the last 7 days (index 0 = 6 days ago, index 6 = today)
     /// for sessions whose cwd starts with repoPath.
-    nonisolated func sparklineData(for repoPath: String) throws -> [Int] {
+    func sparklineData(for repoPath: String) throws -> [Int] {
         try readInBackground { db in
             // Bucket by LOCAL calendar day so it agrees with the Swift side, which
             // compares against the local start-of-day. Without 'localtime' the SQL
@@ -967,7 +966,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
+    func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
         try readInBackground { db in
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
@@ -994,7 +993,7 @@ final class DatabaseManager {
 
     // MARK: - Parent/Child Session Queries
 
-    nonisolated func childSessions(
+    func childSessions(
         parentId: String,
         includeHidden: Bool = false,
         limit: Int = 20,
@@ -1011,7 +1010,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func suggestedChildSessions(parentId: String, includeHidden: Bool = false) throws -> [Session] {
+    func suggestedChildSessions(parentId: String, includeHidden: Bool = false) throws -> [Session] {
         try readInBackground { db in
             let hiddenClause = includeHidden ? "" : "AND hidden_at IS NULL"
             return try Session.fetchAll(db, sql: """
@@ -1024,7 +1023,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func childCount(parentIds: [String], includeHidden: Bool = false) throws -> [String: Int] {
+    func childCount(parentIds: [String], includeHidden: Bool = false) throws -> [String: Int] {
         guard !parentIds.isEmpty else { return [:] }
         return try readInBackground { db in
             let placeholders = parentIds.map { _ in "?" }.joined(separator: ",")
@@ -1045,7 +1044,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func suggestedChildCount(parentIds: [String], includeHidden: Bool = false) throws -> [String: Int] {
+    func suggestedChildCount(parentIds: [String], includeHidden: Bool = false) throws -> [String: Int] {
         guard !parentIds.isEmpty else { return [:] }
         return try readInBackground { db in
             let placeholders = parentIds.map { _ in "?" }.joined(separator: ",")
@@ -1069,7 +1068,7 @@ final class DatabaseManager {
 
     // MARK: - Observability: Logs
 
-    nonisolated func fetchLogs(level: String, module: String, limit: Int) throws -> LogQueryResult {
+    func fetchLogs(level: String, module: String, limit: Int) throws -> LogQueryResult {
         try readInBackground { db in
             // Fetch available modules
             let modules = try String.fetchAll(db, sql: """
@@ -1111,7 +1110,7 @@ final class DatabaseManager {
 
     // MARK: - Observability: Errors
 
-    nonisolated func countErrors24h() throws -> Int {
+    func countErrors24h() throws -> Int {
         try readInBackground { db in
             try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM logs
@@ -1121,7 +1120,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func errorsByModule24h() throws -> [(module: String, count: Int)] {
+    func errorsByModule24h() throws -> [(module: String, count: Int)] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT module, COUNT(*) as count FROM logs
@@ -1134,7 +1133,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func recentErrors(limit: Int) throws -> [LogEntry] {
+    func recentErrors(limit: Int) throws -> [LogEntry] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT * FROM logs
@@ -1159,7 +1158,7 @@ final class DatabaseManager {
 
     // MARK: - Observability: Traces
 
-    nonisolated func fetchTraces(nameFilter: String, limit: Int) throws -> [TraceEntry] {
+    func fetchTraces(nameFilter: String, limit: Int) throws -> [TraceEntry] {
         try readInBackground { db in
             var parts = ["SELECT * FROM traces WHERE 1=1"]
             var args: [DatabaseValueConvertible] = []
@@ -1191,7 +1190,7 @@ final class DatabaseManager {
         }
     }
 
-    nonisolated func slowTraces(minDurationMs: Int, limit: Int) throws -> [TraceEntry] {
+    func slowTraces(minDurationMs: Int, limit: Int) throws -> [TraceEntry] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT * FROM traces
@@ -1220,7 +1219,7 @@ final class DatabaseManager {
 
     // MARK: - Observability: Metrics
 
-    nonisolated func recentHourlyMetrics(limit: Int) throws -> [HourlyMetric] {
+    func recentHourlyMetrics(limit: Int) throws -> [HourlyMetric] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT * FROM metrics_hourly
@@ -1245,7 +1244,7 @@ final class DatabaseManager {
 
     // MARK: - Observability: Health
 
-    nonisolated func observabilityTableCounts() throws -> [(table: String, count: Int)] {
+    func observabilityTableCounts() throws -> [(table: String, count: Int)] {
         try readInBackground { db in
             let tables = ["sessions", "logs", "traces", "metrics", "metrics_hourly", "sessions_fts"]
             var results: [(table: String, count: Int)] = []
