@@ -261,7 +261,8 @@ export function runMigrations(
   if (ftsVersion !== FTS_VERSION) {
     db.exec('BEGIN IMMEDIATE');
     try {
-      db.exec('DELETE FROM sessions_fts');
+      // Keep the live FTS table serving existing search results while the
+      // indexer gradually refreshes rows whose size_bytes was reset below.
       db.exec('UPDATE sessions SET size_bytes = 0');
       try {
         db.exec('DELETE FROM session_embeddings');

@@ -197,6 +197,55 @@ describe('Database migration', () => {
     db.close();
   });
 
+  it('preserves live FTS content while marking sessions for FTS reindex', () => {
+    const dbPath = makeTmpDb();
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT,
+        cwd TEXT NOT NULL DEFAULT '',
+        project TEXT,
+        model TEXT,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        user_message_count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT,
+        file_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 123,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE VIRTUAL TABLE sessions_fts USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO metadata(key, value) VALUES ('fts_version', '2');
+      INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes)
+      VALUES ('legacy-fts', 'codex', '2026-01-01T00:00:00Z', '/repo', '/tmp/session.jsonl', 123);
+      INSERT INTO sessions_fts(session_id, content)
+      VALUES ('legacy-fts', 'existing searchable text');
+    `);
+    rawDb.close();
+
+    const db = new Database(dbPath);
+    const ftsRows = db.getFtsContent('legacy-fts');
+    const row = db.raw
+      .prepare('SELECT size_bytes FROM sessions WHERE id = ?')
+      .get('legacy-fts') as { size_bytes: number };
+
+    expect(ftsRows).toEqual(['existing searchable text']);
+    expect(row.size_bytes).toBe(0);
+    expect(db.getMetadata('fts_version')).toBe('3');
+
+    db.close();
+  });
+
   // 6. Parent columns added to existing DB via ALTER TABLE migration
   it('adds parent columns to existing database via ALTER TABLE', () => {
     const dbPath = makeTmpDb();
