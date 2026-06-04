@@ -384,6 +384,54 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillSuggestedParentsKeepsBatchParentsWithinCandidateLookback() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "stale-parent",
+                source: "claude-code",
+                startTime: "2026-04-23T10:00:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "early-agent",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                summary: "Your task is to review the adapter implementation"
+            )
+            try insertSession(
+                db,
+                id: "late-agent",
+                source: "gemini-cli",
+                startTime: "2026-04-26T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                summary: "Your task is to review the adapter implementation"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.checked, 2)
+            XCTAssertEqual(result.suggested, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'early-agent'"),
+                "stale-parent"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'late-agent'"),
+                "A globally fetched parent outside the candidate's 24h lookback must not be scored."
+            )
+            XCTAssertNotNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'late-agent'")
+            )
+        }
+    }
+
     func testRunInitialScanEmitsNodeCompatibleStartupEventsInOrder() async throws {
         let indexer = RecordingStartupIndexer(indexed: 7, countBackfilled: 2, costBackfilled: 3)
         let database = RecordingStartupDatabase()

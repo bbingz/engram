@@ -5,18 +5,19 @@ enum JSONLAdapterSupport {
     typealias JSONObject = [String: Any]
 
     static func fileExists(_ path: String) -> Bool {
-        lstatMode(path) != nil
+        statMode(path) != nil
     }
 
     static func isDirectory(_ url: URL) -> Bool {
-        lstatMode(url.path) == S_IFDIR
+        statMode(url.path) == S_IFDIR
     }
 
     static func directChildren(of url: URL, includingHidden: Bool = false) -> [URL] {
         guard isDirectory(url) else { return [] }
+        let root = url.resolvingSymlinksInPath()
         let options: FileManager.DirectoryEnumerationOptions = includingHidden ? [] : [.skipsHiddenFiles]
         return (try? FileManager.default.contentsOfDirectory(
-            at: url,
+            at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: options
         ))?
@@ -26,8 +27,9 @@ enum JSONLAdapterSupport {
 
     static func recursiveFiles(under root: URL, matching predicate: (URL) -> Bool) -> [String] {
         guard isDirectory(root) else { return [] }
+        let resolvedRoot = root.resolvingSymlinksInPath()
         guard let enumerator = FileManager.default.enumerator(
-            at: root,
+            at: resolvedRoot,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
@@ -127,6 +129,12 @@ enum JSONLAdapterSupport {
     private static func lstatMode(_ path: String) -> mode_t? {
         var info = stat()
         guard lstat(path, &info) == 0 else { return nil }
+        return info.st_mode & S_IFMT
+    }
+
+    private static func statMode(_ path: String) -> mode_t? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
         return info.st_mode & S_IFMT
     }
 

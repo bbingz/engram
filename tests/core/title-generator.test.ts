@@ -59,6 +59,7 @@ describe('TitleGenerator audit', () => {
   }
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -220,6 +221,38 @@ describe('TitleGenerator audit', () => {
         value: originalTimeout,
       });
     }
+  });
+
+  it('keeps the timeout active while reading the response body', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_, init: RequestInit) => {
+        signal = init.signal as AbortSignal;
+        return Promise.resolve({
+          status: 200,
+          json: () =>
+            new Promise((resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(signal?.reason));
+              setTimeout(() => resolve({ response: 'Too Slow' }), 16000);
+            }),
+        });
+      }),
+    );
+
+    const gen = new TitleGenerator({
+      provider: 'ollama',
+      baseUrl: 'http://localhost:11434',
+      model: 'qwen2.5:3b',
+      autoGenerate: true,
+    });
+    const title = gen.generate(messages);
+
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(signal?.aborted).toBe(true);
+    await expect(title).resolves.toBeNull();
   });
 
   it('does not crash when no audit is provided', async () => {

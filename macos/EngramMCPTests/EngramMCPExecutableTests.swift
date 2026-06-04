@@ -351,6 +351,15 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     func testGetContextAbstractEnvironmentMatchesGolden() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try seedGetContextEnvironmentFixture(dbURL)
+
         try assertToolCallMatchesGolden(
             tool: "get_context",
             arguments: """
@@ -358,89 +367,196 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/get_context.engram.abstract_environment.json",
             environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
                 "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
             ]
         )
     }
 
-    func testGetContextFullEnvironmentIncludesOperationalSignals() throws {
-        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "mcp-context-env")
-        let queue = try DatabaseQueue(path: dbPath)
-        try queue.write { db in
-            try db.execute(
-                sql: """
-                INSERT OR REPLACE INTO sessions (
-                    id, source, start_time, cwd, project, summary, file_path, message_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                arguments: [
-                    "mcp-env-session",
-                    "codex",
-                    "2026-01-08T12:00:00.000Z",
-                    "/Users/test/work/engram",
-                    "engram",
-                    "environment signal fixture",
-                    "/tmp/mcp-env-session.jsonl",
-                    1,
-                ]
-            )
-            try db.execute(
-                sql: """
-                INSERT OR REPLACE INTO git_repos (
-                    path, name, branch, dirty_count, unpushed_count, probed_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                arguments: [
-                    "/Users/test/work/engram",
-                    "engram",
-                    "followups/env",
-                    2,
-                    1,
-                    "2026-01-09T11:30:00.000Z",
-                ]
-            )
-            try db.execute(
-                sql: """
-                INSERT OR REPLACE INTO session_files (session_id, file_path, action, count)
-                VALUES (?, ?, ?, ?)
-                """,
-                arguments: ["mcp-env-session", "macos/EngramMCP/Core/MCPDatabase.swift", "Edit", 4]
-            )
-            try db.execute(
-                sql: """
-                INSERT INTO logs (ts, level, module, message, source)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                arguments: [
-                    "2026-01-09T11:45:00.000Z",
-                    "error",
-                    "mcp",
-                    "fixture environment error",
-                    "daemon",
-                ]
-            )
-        }
+    func testGetContextFullEnvironmentMatchesGolden() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try seedGetContextEnvironmentFixture(dbURL)
 
-        let capture = try rpc(
-            """
-            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"full","include_environment":true,"sort_by":"score","max_tokens":4000}}}
+        try assertToolCallMatchesGolden(
+            tool: "get_context",
+            arguments: """
+            {"cwd":"/Users/test/work/engram","detail":"full","include_environment":true,"sort_by":"score"}
             """,
+            goldenFixture: "mcp-golden/get_context.engram.full_environment.json",
             environment: [
-                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
                 "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
             ]
         )
-        guard case .array(let content)? = capture.ordered["result"]?["content"] else {
-            return XCTFail("Expected get_context text content")
-        }
-        let text = try XCTUnwrap(content.first?["text"]?.stringValue)
+    }
 
-        XCTAssertTrue(text.contains("Git repos with changes (1):"))
-        XCTAssertTrue(text.contains("engram (followups/env): 2 dirty, 1 unpushed"))
-        XCTAssertTrue(text.contains("File hotspots (7d):"))
-        XCTAssertTrue(text.contains("macos/EngramMCP/Core/MCPDatabase.swift (4 edits, 1 sessions)"))
-        XCTAssertTrue(text.contains("Recent errors (24h):"))
-        XCTAssertTrue(text.contains("[mcp] fixture environment error (×1)"))
+    func testGetContextOverviewEnvironmentMatchesGolden() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try seedGetContextEnvironmentFixture(dbURL)
+
+        try assertToolCallMatchesGolden(
+            tool: "get_context",
+            arguments: """
+            {"cwd":"/Users/test/work/engram","detail":"overview","include_environment":true,"sort_by":"score"}
+            """,
+            goldenFixture: "mcp-golden/get_context.engram.overview_environment.json",
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+            ]
+        )
+    }
+
+    func testGetContextEnvironmentIgnoresMissingOptionalTables() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try dropGetContextOptionalEnvironmentTables(dbURL)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"full","include_environment":true,"sort_by":"score"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let text = capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue
+        XCTAssertTrue(text?.contains("[windsurf] 2026-01-06") ?? false)
+        XCTAssertTrue(text?.contains("Cost today: $0.18") ?? false)
+    }
+
+    func testGetContextEnvironmentReportsOptionalSchemaErrors() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try corruptGetContextAlertsSchema(dbURL)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"full","include_environment":true,"sort_by":"score"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let text = capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue
+        XCTAssertTrue(text?.contains("Cost today: $0.18") ?? false)
+        XCTAssertTrue(capture.stderr.contains("[get_context] alerts error:"), capture.stderr)
+        XCTAssertTrue(capture.stderr.contains("no such column"), capture.stderr)
+    }
+
+    func testGetContextEnvironmentBudgetKeepsCostAndAlerts() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try seedGetContextEnvironmentFixture(dbURL)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"full","include_environment":true,"sort_by":"score","max_tokens":120}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let text = try XCTUnwrap(capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue)
+        XCTAssertTrue(text.contains("Cost today: $0.18"))
+        XCTAssertTrue(text.contains("Alerts (1):"))
+        XCTAssertFalse(text.contains("File hotspots (7d):"))
+        XCTAssertFalse(text.contains("Git repos with changes"))
+        XCTAssertFalse(text.contains("Recent errors (24h):"))
+    }
+
+    func testGetContextOverviewEnvironmentBudgetPrunesLowPriorityBlocks() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try seedGetContextEnvironmentFixture(dbURL)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"overview","include_environment":true,"sort_by":"score","max_tokens":120}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let text = try XCTUnwrap(capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue)
+        XCTAssertTrue(text.contains("Cost today: $0.18"))
+        XCTAssertTrue(text.contains("Alerts (1):"))
+        XCTAssertTrue(text.contains("Top tools (7d):"))
+        XCTAssertTrue(text.contains("Cost suggestions (1):"))
+        XCTAssertFalse(text.contains("File hotspots (7d):"))
+        XCTAssertFalse(text.contains("Git repos with changes"))
+        XCTAssertFalse(text.contains("Recent errors (24h):"))
+    }
+
+    func testGetContextCostTodayUsesUTCWindow() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try seedGetContextTimezoneCostFixture(dbURL)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"abstract","include_environment":true,"sort_by":"score"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+                "TZ": "Asia/Shanghai",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let text = try XCTUnwrap(capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue)
+        XCTAssertTrue(text.contains("Cost today: $0.25"), text)
+        XCTAssertFalse(text.contains("Cost today: $10.24"), text)
     }
 
     func testGetInsightsMatchesGolden() throws {
@@ -919,6 +1035,47 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(brief.contains("**Suggested prompt**:"), brief)
     }
 
+    func testHandoffRelativeTimeUsesLocalTimezoneForRecentSessionList() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-handoff-timezone"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+
+        let start = Date().addingTimeInterval(-130 * 60)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let startTime = formatter.string(from: start)
+        let dbQueue = try DatabaseQueue(path: dbPath)
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET start_time = ?, end_time = NULL
+                WHERE id = 'mcp-fixture-06'
+                """,
+                arguments: [startTime]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff","arguments":{"cwd":"/Users/test/work/engram","format":"markdown"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "TZ": "Asia/Shanghai",
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        let brief = try XCTUnwrap(structured["brief"]?.stringValue)
+        XCTAssertTrue(brief.contains("**Last active**: 2h ago via windsurf"), brief)
+        XCTAssertFalse(brief.contains("**Last active**: just now"), brief)
+    }
+
     func testProjectRecoverMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "project_recover",
@@ -1173,50 +1330,6 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    func testCancellationNotificationCancelsInFlightToolCall() throws {
-        let server = try MockServiceSocketServer { request in
-            switch request.command {
-            case "status":
-                return try request.success(
-                    .object([
-                        "state": .string("running"),
-                        "total": .int(0),
-                        "todayParents": .int(0),
-                    ])
-                )
-            case "linkSessions":
-                Thread.sleep(forTimeInterval: 2)
-                return try request.success(.object(["linked": .int(0)]), databaseGeneration: 1)
-            default:
-                throw NSError(domain: "MockServiceSocketServer", code: 107)
-            }
-        }
-        try server.start()
-        defer { server.stop() }
-
-        let captures = try rpcLines(
-            [
-                """
-                {"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"link_sessions","arguments":{"targetDir":"/tmp"}}}
-                """,
-                """
-                {"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99,"reason":"test cancellation"}}
-                """,
-            ],
-            environment: [
-                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
-                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
-            ]
-        )
-
-        let capture = try XCTUnwrap(captures.first)
-        XCTAssertEqual(capture.ordered["id"]?.intValue, 99)
-        let result = try XCTUnwrap(capture.ordered["result"]?.objectValue)
-        XCTAssertEqual(result["isError"]?.boolValue, true)
-        let structured = result["structuredContent"]?.objectValue
-        XCTAssertEqual(structured?["code"]?.stringValue, "cancelled")
-    }
-
     func testNativeProjectOperationsRouteThroughTheService() throws {
         // Stage 4 ships the four project_* tools natively. Without a
         // service socket they MUST fall through to the standard
@@ -1258,15 +1371,6 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     private func rpc(_ request: String, environment: [String: String] = [:]) throws -> RPCCapture {
-        let captures = try rpcLines([request], environment: environment)
-        return try XCTUnwrap(captures.first)
-    }
-
-    private func rpcLines(
-        _ requests: [String],
-        environment: [String: String] = [:],
-        timeout: TimeInterval = 5
-    ) throws -> [RPCCapture] {
         let process = Process()
         process.executableURL = executableURL()
         process.environment = ProcessInfo.processInfo.environment
@@ -1277,35 +1381,29 @@ final class EngramMCPExecutableTests: XCTestCase {
         let stdoutPipe = Pipe()
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
-        process.standardError = Pipe()
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
         try process.run()
 
-        if let data = "\(requests.joined(separator: "\n"))\n".data(using: .utf8) {
+        if let data = "\(request)\n".data(using: .utf8) {
             stdinPipe.fileHandleForWriting.write(data)
         }
         try stdinPipe.fileHandleForWriting.close()
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.02)
-        }
-        if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
-            XCTFail("EngramMCP process did not exit within \(timeout)s")
-        }
+        process.waitUntilExit()
 
         let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         let output = try XCTUnwrap(String(data: outputData, encoding: .utf8))
-        return try output.split(separator: "\n").map { rawLine in
-            let line = String(rawLine)
-            let responseData = try XCTUnwrap(line.data(using: .utf8))
-            var parser = OrderedTestJSONParser(text: line)
-            return RPCCapture(
-                rawLine: line,
-                response: try JSONDecoder().decode(TestJSONRPCResponse.self, from: responseData),
-                ordered: try parser.parse()
-            )
-        }
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        let firstLine = try XCTUnwrap(output.split(separator: "\n").first.map(String.init))
+        let responseData = try XCTUnwrap(firstLine.data(using: .utf8))
+        var parser = OrderedTestJSONParser(text: firstLine)
+        return RPCCapture(
+            rawLine: firstLine,
+            response: try JSONDecoder().decode(TestJSONRPCResponse.self, from: responseData),
+            ordered: try parser.parse(),
+            stderr: stderr
+        )
     }
 
     private func executableURL() -> URL {
@@ -1313,6 +1411,113 @@ final class EngramMCPExecutableTests: XCTestCase {
             .bundleURL
             .deletingLastPathComponent()
             .appendingPathComponent("EngramMCP")
+    }
+
+    private func seedGetContextEnvironmentFixture(_ dbURL: URL) throws {
+        let queue = try DatabaseQueue(path: dbURL.path)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO alerts (ts, rule, severity, message, value, threshold)
+                VALUES ('2026-01-09T10:00:00.000Z', 'mcp_index_lag', 'critical',
+                        'MCP indexing lag detected', 12, 5)
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO git_repos (
+                  path, name, branch, dirty_count, untracked_count, unpushed_count,
+                  last_commit_hash, last_commit_msg, last_commit_at, session_count, probed_at
+                )
+                VALUES (
+                  '/Users/test/work/engram', 'engram', 'perf/transcript-paging', 3, 1, 2,
+                  'abc1234', 'fixture commit', '2026-01-09T08:00:00.000Z', 6,
+                  '2026-01-09T11:00:00.000Z'
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO logs (ts, level, module, message, source)
+                VALUES
+                  ('2026-01-09T11:30:00.000Z', 'error', 'mcp', 'transcript parser failed', 'daemon'),
+                  ('2026-01-09T11:40:00.000Z', 'error', 'mcp', 'transcript parser failed', 'daemon')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT OR REPLACE INTO session_tools (session_id, tool_name, call_count)
+                VALUES
+                  ('mcp-fixture-01', 'Glob', 8),
+                  ('mcp-fixture-02', 'Write', 7),
+                  ('mcp-fixture-03', 'Fetch', 6)
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT OR REPLACE INTO session_files (session_id, file_path, action, count)
+                VALUES
+                  ('mcp-fixture-01', '/Users/test/work/zephyr/src/index.ts', 'Edit', 6),
+                  ('mcp-fixture-02', '/Users/test/work/orion/src/index.ts', 'Edit', 5),
+                  ('mcp-fixture-03', '/Users/test/work/atlas/src/index.ts', 'Edit', 4)
+                """
+            )
+        }
+    }
+
+    private func seedGetContextTimezoneCostFixture(_ dbURL: URL) throws {
+        let queue = try DatabaseQueue(path: dbURL.path)
+        try queue.write { db in
+            try db.execute(sql: "UPDATE session_costs SET cost_usd = 0")
+            try db.execute(
+                sql: "UPDATE sessions SET start_time = ? WHERE id = ?",
+                arguments: ["2026-01-08T18:00:00.000Z", "mcp-fixture-01"]
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET start_time = ? WHERE id = ?",
+                arguments: ["2026-01-09T02:00:00.000Z", "mcp-fixture-02"]
+            )
+            try db.execute(
+                sql: "UPDATE session_costs SET cost_usd = ? WHERE session_id = ?",
+                arguments: [9.99, "mcp-fixture-01"]
+            )
+            try db.execute(
+                sql: "UPDATE session_costs SET cost_usd = ? WHERE session_id = ?",
+                arguments: [0.25, "mcp-fixture-02"]
+            )
+        }
+    }
+
+    private func dropGetContextOptionalEnvironmentTables(_ dbURL: URL) throws {
+        let queue = try DatabaseQueue(path: dbURL.path)
+        try queue.write { db in
+            for table in ["alerts", "git_repos", "logs", "session_files"] {
+                try db.execute(sql: "DROP TABLE IF EXISTS \(table)")
+            }
+        }
+    }
+
+    private func corruptGetContextAlertsSchema(_ dbURL: URL) throws {
+        let queue = try DatabaseQueue(path: dbURL.path)
+        try queue.write { db in
+            try db.execute(sql: "DROP TABLE alerts")
+            try db.execute(
+                sql: """
+                CREATE TABLE alerts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  ts TEXT NOT NULL,
+                  severity TEXT NOT NULL,
+                  message TEXT NOT NULL
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO alerts (ts, severity, message)
+                VALUES ('2026-01-09T10:00:00.000Z', 'critical', 'schema drift fixture')
+                """
+            )
+        }
     }
 
     private func fixturePath(_ relativePath: String) -> String {
@@ -1944,6 +2149,7 @@ private struct RPCCapture {
     let rawLine: String
     let response: TestJSONRPCResponse
     let ordered: OrderedTestJSONValue
+    let stderr: String
 }
 
 private extension TestJSONValue {

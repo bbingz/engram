@@ -19,6 +19,14 @@ export interface DiagnoseResult {
   recentErrors: Array<{ ts: string; module: string; message: string }>;
 }
 
+export const HEALTH_TABLE_NAMES = [
+  'logs',
+  'traces',
+  'metrics',
+  'metrics_hourly',
+  'sessions',
+] as const;
+
 export function queryHealth(db: BetterSqlite3.Database): HealthResult {
   const pageCount =
     (db.pragma('page_count') as Array<{ page_count: number }>)[0]?.page_count ??
@@ -27,15 +35,8 @@ export function queryHealth(db: BetterSqlite3.Database): HealthResult {
     (db.pragma('page_size') as Array<{ page_size: number }>)[0]?.page_size ?? 0;
   const dbSizeBytes = pageCount * pageSize;
 
-  const tableNames = [
-    'logs',
-    'traces',
-    'metrics',
-    'metrics_hourly',
-    'sessions',
-  ];
   const tables: Record<string, number> = {};
-  for (const name of tableNames) {
+  for (const name of HEALTH_TABLE_NAMES) {
     try {
       const row = db.prepare(`SELECT COUNT(*) as cnt FROM ${name}`).get() as
         | { cnt: number }

@@ -118,6 +118,7 @@ export class AiAuditWriter extends EventEmitter {
       }
 
       const url = entry.url ? applyPatterns(entry.url) : null;
+      const error = entry.error ? applyPatterns(entry.error) : null;
 
       const result = this.stmt?.run({
         traceId,
@@ -135,7 +136,7 @@ export class AiAuditWriter extends EventEmitter {
         totalTokens: entry.totalTokens ?? null,
         requestBody,
         responseBody,
-        error: entry.error || null,
+        error,
         sessionId: entry.sessionId || null,
         meta: entry.meta ? JSON.stringify(entry.meta) : null,
       });
@@ -149,7 +150,7 @@ export class AiAuditWriter extends EventEmitter {
         url: url ?? undefined,
         requestBody,
         responseBody,
-        error: entry.error ? applyPatterns(entry.error) : undefined,
+        error: error ?? undefined,
       });
       return id;
     } catch (err) {

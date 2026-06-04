@@ -162,7 +162,9 @@ export function runMigrations(
         link_source = NULL,
         tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
         WHERE parent_session_id = OLD.id;
-      UPDATE sessions SET suggested_parent_id = NULL
+      UPDATE sessions SET
+        suggested_parent_id = NULL,
+        tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
         WHERE suggested_parent_id = OLD.id;
     END;
 
