@@ -9,8 +9,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Follow-up remediation closeout (2026-06-05, Codex)
 
-Closed the planned post-review follow-up sweep on top of
-`perf/transcript-paging` and prepared it for PR/CI.
+Closed the planned post-review follow-up sweep on the rebased
+`codex/followup-remediation` branch and opened draft PR #49.
 
 - **Runtime baseline**: Node development/CI tooling is pinned to Node 24+
   (`.nvmrc`, package engines, GitHub Actions setup-node), with `@types/node`
@@ -31,9 +31,11 @@ Closed the planned post-review follow-up sweep on top of
   `actionlint` passed locally. Swift unit suites passed with coverage:
   `EngramCoreTests` (364 tests), `EngramMCPTests` (73 tests),
   `EngramServiceCore` (127 tests), and `EngramTests` (301 tests, 1 skipped).
-  `EngramUITests` UI smoke was attempted but the XCTest UI runner was killed
-  before bootstrap, before any UI test body ran; this is recorded as a local UI
-  runner/environment failure pending CI or a GUI-permitted rerun.
+  `npm run test:coverage` passed 127 Vitest files / 1491 tests.
+  `EngramUITests` UI smoke was attempted but the local XCTest UI runner either
+  died before bootstrap or hung during runner startup before any UI test body
+  ran; this is recorded as a local UI runner/environment failure pending CI or a
+  GUI-permitted rerun.
 
 ### Database raw handle API cleanup (2026-06-04, Codex)
 

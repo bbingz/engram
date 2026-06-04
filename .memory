@@ -28,23 +28,27 @@ Verification evidence from this closeout:
   Node 24+ for CI/dev compatibility.
 - `npm run lint`, `npm run build`, `npm run typecheck:test`, `npm run knip`,
   `npm run check:fixtures`, `npm run test:coverage`, and `actionlint` passed.
-  Coverage run passed 126 Vitest files / 1485 tests.
+  Coverage run passed 127 Vitest files / 1491 tests.
 - Swift unit suites with coverage passed:
   - `EngramCoreTests`: 364 tests, 0 failures.
   - `EngramMCPTests`: 73 tests, 0 failures.
   - `EngramServiceCore`: 127 tests, 0 failures after the sendability fix.
   - `EngramTests`: 301 tests, 1 skipped, 0 failures.
-- `EngramUITests` UI smoke was attempted twice. The full scheme and a minimal
-  `SigningVerificationTest/testSigningConfiguration` run both built
-  successfully but failed before any UI assertion body ran:
-  `XCTHTestRunnerErrorDomain`, "Test crashed with signal kill before
-  establishing connection." No fresh DiagnosticReports were emitted. Treat this
-  as a local XCTest UI runner/environment blocker until reproduced in a
-  GUI-permitted environment or CI.
+- `EngramUITests` UI smoke was attempted again on the rebased branch with the
+  minimal `SigningVerificationTest/testSigningConfiguration` selector. The app
+  and runner built/codesigned, then the local XCTest UI runner hung during
+  startup before any test-body output; Codex terminated the local xcodebuild and
+  runner processes and recorded the command as `BUILD INTERRUPTED`. Earlier
+  full/minimal UI smoke attempts on the pre-rebase branch failed before any UI
+  assertion body ran with `XCTHTestRunnerErrorDomain`, "Test crashed with signal
+  kill before establishing connection." Treat this as a local XCTest UI
+  runner/environment blocker until reproduced in a GUI-permitted environment or
+  CI.
 
 Current resume point:
-- Push `codex/followup-remediation`, open a PR to `main`, and let CI be the
-  final CodeQL/Swift/UI arbiter.
+- Draft PR #49 is open from `codex/followup-remediation` to `main`:
+  https://github.com/bbingz/engram/pull/49. Monitor GitHub Actions/CodeQL and
+  address any real CI failures on this branch.
 
 ## 2026-06-04 — Database raw handle API cleanup (Codex)
 

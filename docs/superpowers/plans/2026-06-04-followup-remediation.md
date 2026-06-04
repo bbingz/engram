@@ -182,9 +182,12 @@ Append concise English closeout to `CHANGELOG.md` and `.memory`, with exact chec
 
 Current closeout note: `CHANGELOG.md` and `.memory` record the follow-up remediation scope, verification commands, failed UI smoke evidence, and resume point for PR/CI.
 
-- [ ] **Step 3: Push and open PR**
+- [x] **Step 3: Push and open PR**
 
-Push `followups/full-remediation`, open a PR, and monitor CI to green.
+Pushed `codex/followup-remediation` and opened draft PR #49:
+https://github.com/bbingz/engram/pull/49. CI/CodeQL monitoring remains the
+external verifier; local verification passed except for the local XCTest UI
+runner startup blocker documented in `.memory` and `CHANGELOG.md`.
 
 ### Task 8: Session Detail Find Navigation Stale Index Crash
 
