@@ -7,6 +7,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Follow-up remediation branch closeout (2026-06-04, Codex)
+
+Continued the review-remediation branch with focused safety, parity, and
+coverage fixes after the main 2026-06-03 adjudication pass.
+
+- **Swift MCP/Service transcript safety**: added shared oversized transcript
+  guarding for Gemini JSON reads, returning structured MCP/service failures
+  before full-file loading.
+- **Swift secret handling**: stopped passing Keychain-derived API keys through
+  the service process environment; the service now resolves `@keychain`
+  settings directly and ignores legacy `ENGRAM_KEYCHAIN_*` environment
+  fallbacks.
+- **Swift MCP context parity**: enriched `get_context` full-detail environment
+  output with SQLite-backed git repo, file hotspot, and recent-error signals.
+- **CLI and web/tool fixes**: added import-safe resume helpers and CLI coverage,
+  made the dispatcher explicitly call `resume.main`, covered project flag
+  parsing, corrected `list_sessions.total` to report total matching rows, and
+  stopped search route failures from echoing internal exception strings.
+- **Test isolation**: isolated the former bridge-command ServiceCore test from
+  the developer machine's real AI settings so it consistently exercises native
+  fallback behavior.
+- **Verification**: `npm run build`, `npm run typecheck:test`, `npm run lint`,
+  `npm audit --audit-level=moderate`, and full `npm test` passed; Swift
+  `EngramMCPTests`, `EngramServiceCore`, and `EngramTests` passed locally after
+  the ServiceCore HOME-isolation fix.
+
 ### Multi-model review adjudication and fixes (2026-06-03, Codex)
 
 Adjudicated the Kimi/Gemini/MiniMax/Mimo review bundle against the current

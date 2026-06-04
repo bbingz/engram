@@ -1,5 +1,52 @@
 # Engram Local Memory
 
+## 2026-06-04 — Follow-up remediation branch closeout (Codex)
+
+Branch/worktree: `followups/full-remediation` at
+`.worktrees/followups-full-remediation`.
+
+Implemented after the 2026-06-03 review remediation set:
+- Swift MCP/Service transcript safety: introduced a shared
+  `TranscriptSizeGuard` and wired it through MCP transcript reads and Service
+  exports so oversized Gemini JSON transcripts fail before full-file loading,
+  with structured MCP/service errors and regression tests.
+- Swift secret flow: `EngramServiceLauncher` no longer injects Keychain-derived
+  API keys through child-process environment variables. The service resolves
+  `@keychain` settings directly through Keychain, ignores legacy
+  `ENGRAM_KEYCHAIN_*` environment fallbacks, and launcher tests assert the
+  service environment is scrubbed.
+- Swift MCP `get_context`: full-detail context now includes SQLite-backed
+  operational signals for dirty/unpushed git repos, 7-day file hotspots, and
+  recent 24h errors. Live sessions and background alerts remain unavailable to
+  the standalone Swift MCP process because those are daemon in-memory signals.
+- CLI/test coverage: `resume.ts` now has an import-safe direct-execution guard
+  plus exported pure helpers; the CLI dispatcher explicitly invokes
+  `resume.main`; `project` flag parsing and resume filtering/command display
+  have Vitest coverage.
+- Tool/web correctness: `list_sessions.total` now reports total matching rows
+  instead of current page length, with `since/until` propagated through
+  `countSessions`; search route failure warnings no longer echo internal
+  exception text.
+- Test isolation: `testFormerBridgeCommandsUseNativeServiceBehavior` now uses
+  `ServiceCoreTestHomeScope` so local user AI settings cannot force real LLM
+  calls during ServiceCore tests.
+
+Verification:
+- `npm run build` passed.
+- `npm run typecheck:test` passed.
+- `npm run lint` passed.
+- `npm audit --audit-level=moderate` passed with 0 vulnerabilities.
+- `npm test` passed: 127 files, 1478 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` passed: 66 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` initially exposed the unisolated HOME/AI-settings test issue, then passed after the isolation fix: 127 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` passed: 299 tests, 1 skipped.
+
+Residual risk:
+- Some P3 review ideas remain intentionally unexpanded because they are larger
+  UI/refactor tasks rather than low-risk closeout fixes, such as removing the
+  `raw`/`getRawDb()` duplicate surface, unifying TS duration helpers, adding
+  Swift MCP request cancellation, and making TS FTS rebuild fully nonblocking.
+
 ## 2026-06-03 — Multi-model review adjudication and fixes (Codex)
 
 Codex adjudicated the Kimi/Gemini/MiniMax/Mimo review bundle against the
