@@ -773,6 +773,54 @@ final class MCPDatabase {
                 let lines = topTools.map { "  \($0.name): \($0.callCount) calls" }.joined(separator: "\n")
                 sections.append("Top tools (7d):\n\(lines)")
             }
+
+            var gitReposSection: String?
+            let gitRepos = try changedGitRepos(limit: toolLimit)
+            if !gitRepos.isEmpty {
+                let lines = gitRepos.map { repo -> String in
+                    let branch: String = repo.branch.map { " (\($0))" } ?? ""
+                    let line: String = "  \(repo.name)\(branch): \(repo.dirtyCount) dirty, \(repo.unpushedCount) unpushed"
+                    return line
+                }.joined(separator: "\n")
+                gitReposSection = "Git repos with changes (\(gitRepos.count)):\n\(lines)"
+                sections.append(gitReposSection!)
+            }
+
+            var fileHotspotsSection: String?
+            let hotspots = try fileHotspotsSince(iso8601Timestamp(startOfSevenDayWindow), limit: toolLimit)
+            if !hotspots.isEmpty {
+                let lines = hotspots.map { hotspot -> String in
+                    let line: String = "  \(hotspot.filePath) (\(hotspot.total) edits, \(hotspot.sessions) sessions)"
+                    return line
+                }.joined(separator: "\n")
+                fileHotspotsSection = "File hotspots (7d):\n\(lines)"
+                sections.append(fileHotspotsSection!)
+            }
+
+            var recentErrorsSection: String?
+            let recentErrors = try recentErrorsSince(iso8601Timestamp(
+                calendar.date(byAdding: .hour, value: -24, to: now) ?? now
+            ), limit: 5)
+            if !recentErrors.isEmpty {
+                let lines = recentErrors.map { error -> String in
+                    let line: String = "  [\(error.module)] \(error.message) (×\(error.count))"
+                    return line
+                }.joined(separator: "\n")
+                recentErrorsSection = "Recent errors (24h):\n\(lines)"
+                sections.append(recentErrorsSection!)
+            }
+
+            let maxEnvChars = Double(maxTokens * 4) * 0.3
+            func joinedEnvironmentLength() -> Int { sections.joined(separator: "\n").count }
+            if joinedEnvironmentLength() > Int(maxEnvChars), let fileHotspotsSection {
+                sections.removeAll { $0 == fileHotspotsSection }
+            }
+            if joinedEnvironmentLength() > Int(maxEnvChars), let gitReposSection {
+                sections.removeAll { $0 == gitReposSection }
+            }
+            if joinedEnvironmentLength() > Int(maxEnvChars), let recentErrorsSection {
+                sections.removeAll { $0 == recentErrorsSection }
+            }
         }
 
         let maxEnvChars = Double(maxTokens * 4) * 0.3
@@ -838,6 +886,87 @@ final class MCPDatabase {
             return rows.compactMap { row in
                 guard let name = stringValue(row["name"]), !name.isEmpty else { return nil }
                 return (name, intValue(row["call_count"]))
+            }
+        }
+    }
+
+    private func changedGitRepos(limit: Int) throws -> [(name: String, branch: String?, dirtyCount: Int, unpushedCount: Int)] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT name, branch, dirty_count, unpushed_count
+                FROM git_repos
+                WHERE dirty_count > 0 OR unpushed_count > 0
+                ORDER BY dirty_count DESC, unpushed_count DESC, name ASC
+                LIMIT ?
+                """,
+                arguments: [limit]
+            )
+            return rows.compactMap { row in
+                guard let name = stringValue(row["name"]), !name.isEmpty else { return nil }
+                return (
+                    name,
+                    stringValue(row["branch"]),
+                    intValue(row["dirty_count"]),
+                    intValue(row["unpushed_count"])
+                )
+            }
+        }
+    }
+
+    private func fileHotspotsSince(_ since: String, limit: Int) throws -> [(filePath: String, total: Int, sessions: Int)] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT sf.file_path AS file_path,
+                       SUM(sf.count) AS total,
+                       COUNT(DISTINCT sf.session_id) AS sessions
+                FROM session_files sf
+                JOIN sessions s ON s.id = sf.session_id
+                WHERE sf.action = 'Edit' AND s.start_time >= ?
+                GROUP BY sf.file_path
+                ORDER BY total DESC, file_path ASC
+                LIMIT ?
+                """,
+                arguments: [since, limit]
+            )
+            return rows.compactMap { row in
+                guard let filePath = stringValue(row["file_path"]), !filePath.isEmpty else { return nil }
+                return (
+                    filePath,
+                    intValue(row["total"]),
+                    intValue(row["sessions"])
+                )
+            }
+        }
+    }
+
+    private func recentErrorsSince(_ since: String, limit: Int) throws -> [(module: String, message: String, count: Int)] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT module, message, COUNT(*) AS count, MAX(ts) AS last_seen
+                FROM logs
+                WHERE level = 'error' AND ts >= ?
+                GROUP BY module, message
+                ORDER BY count DESC, last_seen DESC
+                LIMIT ?
+                """,
+                arguments: [since, limit]
+            )
+            return rows.compactMap { row in
+                guard let module = stringValue(row["module"]), !module.isEmpty,
+                      let message = stringValue(row["message"]), !message.isEmpty else {
+                    return nil
+                }
+                return (
+                    module,
+                    message,
+                    intValue(row["count"])
+                )
             }
         }
     }

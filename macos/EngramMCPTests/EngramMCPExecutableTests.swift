@@ -363,6 +363,86 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testGetContextFullEnvironmentIncludesOperationalSignals() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "mcp-context-env")
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT OR REPLACE INTO sessions (
+                    id, source, start_time, cwd, project, summary, file_path, message_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "mcp-env-session",
+                    "codex",
+                    "2026-01-08T12:00:00.000Z",
+                    "/Users/test/work/engram",
+                    "engram",
+                    "environment signal fixture",
+                    "/tmp/mcp-env-session.jsonl",
+                    1,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT OR REPLACE INTO git_repos (
+                    path, name, branch, dirty_count, unpushed_count, probed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "/Users/test/work/engram",
+                    "engram",
+                    "followups/env",
+                    2,
+                    1,
+                    "2026-01-09T11:30:00.000Z",
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT OR REPLACE INTO session_files (session_id, file_path, action, count)
+                VALUES (?, ?, ?, ?)
+                """,
+                arguments: ["mcp-env-session", "macos/EngramMCP/Core/MCPDatabase.swift", "Edit", 4]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO logs (ts, level, module, message, source)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "2026-01-09T11:45:00.000Z",
+                    "error",
+                    "mcp",
+                    "fixture environment error",
+                    "daemon",
+                ]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"full","include_environment":true,"sort_by":"score","max_tokens":4000}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+            ]
+        )
+        guard case .array(let content)? = capture.ordered["result"]?["content"] else {
+            return XCTFail("Expected get_context text content")
+        }
+        let text = try XCTUnwrap(content.first?["text"]?.stringValue)
+
+        XCTAssertTrue(text.contains("Git repos with changes (1):"))
+        XCTAssertTrue(text.contains("engram (followups/env): 2 dirty, 1 unpushed"))
+        XCTAssertTrue(text.contains("File hotspots (7d):"))
+        XCTAssertTrue(text.contains("macos/EngramMCP/Core/MCPDatabase.swift (4 edits, 1 sessions)"))
+        XCTAssertTrue(text.contains("Recent errors (24h):"))
+        XCTAssertTrue(text.contains("[mcp] fixture environment error (×1)"))
+    }
+
     func testGetInsightsMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "get_insights",
