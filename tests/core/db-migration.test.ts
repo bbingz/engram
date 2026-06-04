@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
+import { FTS_VERSION } from '../../src/core/db/fts-rebuild-policy.js';
 import { Database, SCHEMA_VERSION } from '../../src/core/db.js';
 
 describe('Database migration', () => {
@@ -198,7 +199,7 @@ describe('Database migration', () => {
         .pluck()
         .all('legacy-fts'),
     ).toEqual(['existing searchable text']);
-    expect(db.getMetadata('fts_rebuild_version')).toBe('3');
+    expect(db.getMetadata('fts_rebuild_version')).toBe(FTS_VERSION);
     expect(db.getMetadata('fts_version')).toBe('2');
     expect(
       db.raw
@@ -248,7 +249,7 @@ describe('Database migration', () => {
     rawDb.close();
 
     const db = new Database(dbPath);
-    expect(db.getMetadata('fts_version')).toBe('3');
+    expect(db.getMetadata('fts_version')).toBe(FTS_VERSION);
     expect(db.getMetadata('fts_rebuild_version')).toBeNull();
     expect(
       db.raw
@@ -401,7 +402,7 @@ describe('Database migration', () => {
 
     expect(ftsRows).toEqual(['existing searchable text']);
     expect(row.size_bytes).toBe(0);
-    expect(db.getMetadata('fts_version')).toBe('3');
+    expect(db.getMetadata('fts_version')).toBe(FTS_VERSION);
 
     db.close();
   });
