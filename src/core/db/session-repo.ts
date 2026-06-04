@@ -425,7 +425,14 @@ export function countSessions(
   db: BetterSqlite3.Database,
   opts: Pick<
     ListSessionsOptions,
-    'source' | 'sources' | 'project' | 'projects' | 'agents' | 'includeOrphans'
+    | 'source'
+    | 'sources'
+    | 'project'
+    | 'projects'
+    | 'since'
+    | 'until'
+    | 'agents'
+    | 'includeOrphans'
   >,
   noiseFilter: NoiseFilter,
   resolveAliases: (projects: string[]) => string[],

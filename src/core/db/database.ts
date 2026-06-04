@@ -160,7 +160,13 @@ export class Database {
   countSessions(
     opts: Pick<
       ListSessionsOptions,
-      'source' | 'sources' | 'project' | 'projects' | 'agents'
+      | 'source'
+      | 'sources'
+      | 'project'
+      | 'projects'
+      | 'since'
+      | 'until'
+      | 'agents'
     > = {},
   ): number {
     return sessions.countSessions(this.db, opts, this.noiseFilter, (p) =>

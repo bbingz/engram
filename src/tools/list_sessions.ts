@@ -54,6 +54,12 @@ export async function handleListSessions(
   };
 
   const sessions = db.listSessions(opts);
+  const total = db.countSessions({
+    source: opts.source,
+    project: opts.project,
+    since: opts.since,
+    until: opts.until,
+  });
 
   return {
     sessions: sessions.map((s) => ({
@@ -68,6 +74,6 @@ export async function handleListSessions(
       userMessageCount: s.userMessageCount,
       summary: s.summary,
     })),
-    total: sessions.length,
+    total,
   };
 }
