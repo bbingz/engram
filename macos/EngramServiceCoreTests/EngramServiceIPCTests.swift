@@ -197,12 +197,41 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let settings = EngramServiceCommandHandler.ServiceAISettings.read(
             settingsPath: settingsURL,
-            environment: ["ENGRAM_KEYCHAIN_aiApiKey": "secret"]
+            keychainReader: { account in account == "aiApiKey" ? "secret" : nil }
         )
 
         XCTAssertEqual(settings.summaryConfig?.summaryLanguage, "English")
         XCTAssertEqual(settings.summaryConfig?.summaryMaxSentences, 5)
         XCTAssertEqual(settings.summaryConfig?.summaryStyle, "bullet points")
+    }
+
+    func testServiceAISettingsResolvesKeychainMarkerWithoutEnvironmentSecretFallback() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-keychain-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try """
+        {
+          "aiProtocol": "openai",
+          "aiApiKey": "@keychain",
+          "aiModel": "gpt-4o-mini"
+        }
+        """.data(using: .utf8)!.write(to: settingsURL)
+
+        let resolved = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            environment: ["ENGRAM_KEYCHAIN_aiApiKey": "env-secret"],
+            keychainReader: { account in account == "aiApiKey" ? "direct-secret" : nil }
+        )
+        let unresolved = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            environment: ["ENGRAM_KEYCHAIN_aiApiKey": "env-secret"],
+            keychainReader: { _ in nil }
+        )
+
+        XCTAssertEqual(resolved.summaryConfig?.apiKey, "direct-secret")
+        XCTAssertNil(unresolved.summaryConfig)
     }
 
     func testAIChatURLDoesNotDoubleV1Path() throws {
@@ -212,7 +241,7 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(url.absoluteString, "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions")
     }
 
-    func testServiceAISettingsReadsLegacySwiftTitleBaseURLAndKeychainEnv() throws {
+    func testServiceAISettingsReadsLegacySwiftTitleBaseURLAndKeychainResolver() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-ai-settings-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -229,7 +258,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let settings = EngramServiceCommandHandler.ServiceAISettings.read(
             settingsPath: settingsURL,
-            environment: ["ENGRAM_KEYCHAIN_titleApiKey": "secret"]
+            keychainReader: { account in account == "titleApiKey" ? "secret" : nil }
         )
 
         XCTAssertEqual(settings.titleConfig?.baseURL, "https://token-plan-sgp.xiaomimimo.com")

@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import EngramCoreRead
 import EngramCoreWrite
+import Security
 
 final class EngramServiceCommandHandler: @unchecked Sendable {
     private let writerGate: ServiceWriterGate
@@ -1522,6 +1523,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     struct ServiceAISettings: Sendable {
+        typealias KeychainReader = @Sendable (String) -> String?
+
         struct ChatConfig: Sendable {
             let provider: String
             let baseURL: String
@@ -1542,26 +1545,30 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         static func read(
             settingsPath: URL = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".engram/settings.json"),
-            environment: [String: String] = ProcessInfo.processInfo.environment
+            environment: [String: String] = ProcessInfo.processInfo.environment,
+            keychainReader: KeychainReader = ServiceKeychainReader.get
         ) -> ServiceAISettings {
             guard let data = try? Data(contentsOf: settingsPath),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else {
                 return ServiceAISettings(summaryConfig: nil, titleConfig: nil)
             }
+            // Keep the parameter for compatibility, but never use process
+            // environment variables as a secret fallback.
+            _ = environment
             return ServiceAISettings(
-                summaryConfig: summaryConfig(from: object, environment: environment),
-                titleConfig: titleConfig(from: object, environment: environment)
+                summaryConfig: summaryConfig(from: object, keychainReader: keychainReader),
+                titleConfig: titleConfig(from: object, keychainReader: keychainReader)
             )
         }
 
         private static func summaryConfig(
             from object: [String: Any],
-            environment: [String: String]
+            keychainReader: KeychainReader
         ) -> ChatConfig? {
             let provider = string(object["aiProtocol"]) ?? "openai"
             guard provider == "openai" else { return nil }
-            guard let apiKey = apiKey(from: object["aiApiKey"], envName: "ENGRAM_KEYCHAIN_aiApiKey", environment: environment) else {
+            guard let apiKey = apiKey(from: object["aiApiKey"], account: "aiApiKey", keychainReader: keychainReader) else {
                 return nil
             }
             let baseURL = string(object["aiBaseURL"]) ?? "https://api.openai.com"
@@ -1581,11 +1588,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
         private static func titleConfig(
             from object: [String: Any],
-            environment: [String: String]
+            keychainReader: KeychainReader
         ) -> ChatConfig? {
             let provider = string(object["titleProvider"]) ?? "ollama"
             guard provider != "ollama" else { return nil }
-            guard let apiKey = apiKey(from: object["titleApiKey"], envName: "ENGRAM_KEYCHAIN_titleApiKey", environment: environment) else {
+            guard let apiKey = apiKey(from: object["titleApiKey"], account: "titleApiKey", keychainReader: keychainReader) else {
                 return nil
             }
             let baseURL = string(object["titleBaseUrl"]) ?? string(object["titleBaseURL"]) ?? "https://api.openai.com"
@@ -1599,10 +1606,32 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             )
         }
 
-        private static func apiKey(from value: Any?, envName: String, environment: [String: String]) -> String? {
+        private static func apiKey(
+            from value: Any?,
+            account: String,
+            keychainReader: KeychainReader
+        ) -> String? {
             if let key = string(value), !key.isEmpty, key != "@keychain" { return key }
-            if let key = environment[envName], !key.isEmpty { return key }
+            if let key = keychainReader(account), !key.isEmpty { return key }
             return nil
+        }
+
+        private enum ServiceKeychainReader {
+            private static let service = "com.engram.app"
+
+            static func get(_ account: String) -> String? {
+                let query: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: service,
+                    kSecAttrAccount as String: account,
+                    kSecReturnData as String: true,
+                    kSecMatchLimit as String: kSecMatchLimitOne,
+                ]
+                var result: AnyObject?
+                let status = SecItemCopyMatching(query as CFDictionary, &result)
+                guard status == errSecSuccess, let data = result as? Data else { return nil }
+                return String(data: data, encoding: .utf8)
+            }
         }
 
         private static func normalizeOpenAICompatibleModel(_ model: String, baseURL: String) -> String {

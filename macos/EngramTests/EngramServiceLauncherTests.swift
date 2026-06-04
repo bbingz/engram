@@ -68,6 +68,31 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertFalse(arguments.contains { $0.contains("node") || $0.contains("daemon.js") })
     }
 
+    func testLaunchEnvironmentDoesNotExposeKeychainSecrets() {
+        let environment = EngramServiceLauncher.environment(
+            baseEnvironment: [
+                "PATH": "/usr/bin",
+                "ENGRAM_KEYCHAIN_aiApiKey": "inherited-summary-secret",
+                "ENGRAM_KEYCHAIN_titleApiKey": "inherited-title-secret"
+            ],
+            keychainReader: { account in
+                switch account {
+                case "aiApiKey": return "summary-secret"
+                case "titleApiKey": return "title-secret"
+                default: return nil
+                }
+            }
+        )
+
+        XCTAssertEqual(environment["PATH"], "/usr/bin")
+        XCTAssertNil(environment["ENGRAM_KEYCHAIN_aiApiKey"])
+        XCTAssertNil(environment["ENGRAM_KEYCHAIN_titleApiKey"])
+        XCTAssertFalse(environment.values.contains("inherited-summary-secret"))
+        XCTAssertFalse(environment.values.contains("inherited-title-secret"))
+        XCTAssertFalse(environment.values.contains("summary-secret"))
+        XCTAssertFalse(environment.values.contains("title-secret"))
+    }
+
     func testServiceOutputLineBufferWaitsForCompleteJSONLines() throws {
         let buffer = ServiceOutputLineBuffer()
 
