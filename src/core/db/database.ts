@@ -11,7 +11,10 @@ import type {
   SyncCursor,
 } from '../session-snapshot.js';
 import * as aliases from './alias-repo.js';
-import { deleteFtsContentForRebuild } from './fts-rebuild-policy.js';
+import {
+  deleteFtsContentForRebuild,
+  finalizeFtsRebuildIfReady,
+} from './fts-rebuild-policy.js';
 import * as fts from './fts-repo.js';
 import * as jobs from './index-job-repo.js';
 import type { InsightRow } from './insight-repo.js';
@@ -252,6 +255,12 @@ export class Database {
         .run(sessionId);
     });
     tx();
+  }
+  finalizeFtsRebuildIfReady(): boolean {
+    return finalizeFtsRebuildIfReady(this.db, {
+      getMetadata: (key) => this.getMetadata(key),
+      setMetadata: (key, value) => this.setMetadata(key, value),
+    });
   }
 
   // --- Metrics repo ---

@@ -53,6 +53,7 @@ export class IndexJobRunner {
         snapshot.snapshotHash !== job.targetSnapshotHash)
     ) {
       this.db.markIndexJobCompleted(job.id);
+      this.db.finalizeFtsRebuildIfReady();
       return;
     }
 
@@ -61,6 +62,7 @@ export class IndexJobRunner {
     const existing = this.db.getFtsContent(job.sessionId);
     if (existing.length > 0 && !job.targetSnapshotHash) {
       this.db.markIndexJobCompleted(job.id);
+      this.db.finalizeFtsRebuildIfReady();
       return;
     }
 
@@ -74,6 +76,7 @@ export class IndexJobRunner {
       this.db.replaceFtsContent(job.sessionId, searchableText);
     }
     this.db.markIndexJobCompleted(job.id);
+    this.db.finalizeFtsRebuildIfReady();
   }
 
   private async runEmbeddingJob(job: PersistedIndexJob): Promise<void> {
