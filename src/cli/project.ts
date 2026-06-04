@@ -43,7 +43,7 @@ function die(msg: string, code = 1): never {
   process.exit(code);
 }
 
-interface ParsedFlags {
+export interface ParsedFlags {
   positional: string[];
   yes: boolean;
   force: boolean;
@@ -56,7 +56,7 @@ interface ParsedFlags {
   since?: string;
 }
 
-function parseFlags(args: string[]): ParsedFlags {
+export function parseFlags(args: string[]): ParsedFlags {
   const out: ParsedFlags = {
     positional: [],
     yes: false,

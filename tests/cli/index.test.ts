@@ -33,13 +33,19 @@ describe('dispatchCli', () => {
 
   it('loads resume module without loading the MCP server', async () => {
     const imported: string[] = [];
+    const calls: unknown[][] = [];
 
     await dispatchCli(['--resume', 'abc123'], async (specifier) => {
       imported.push(specifier);
-      return {};
+      return {
+        main: (...args: unknown[]) => {
+          calls.push(args);
+        },
+      };
     });
 
     expect(imported).toEqual(['./resume.js']);
+    expect(calls).toEqual([[['--resume', 'abc123']]]);
   });
 
   it('loads MCP server by default', async () => {

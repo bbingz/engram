@@ -30,7 +30,8 @@ export async function dispatchCli(
     await module.main?.(args.slice(1));
   } else if (args.includes('--resume') || args.includes('-r')) {
     // Dynamic import to avoid loading MCP server code
-    await importer('./resume.js');
+    const module = await importer('./resume.js');
+    await module.main?.(args);
   } else {
     // Default: run MCP server
     await importer('../index.js');

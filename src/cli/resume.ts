@@ -1,8 +1,9 @@
 // src/cli/resume.ts
 
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { pathToFileURL } from 'node:url';
 
 interface SessionInfo {
   id: string;
@@ -44,13 +45,40 @@ function relativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-async function main() {
+export function selectProjectSessions(
+  apiSessions: unknown[],
+  cwd: string,
+): SessionInfo[] {
+  const project = basename(cwd);
+
+  return apiSessions
+    .filter(
+      (s): s is Record<string, unknown> => typeof s === 'object' && s !== null,
+    )
+    .filter((s) => s.cwd === cwd || s.project === project)
+    .slice(0, 10)
+    .map((s) => {
+      const id = String(s.id ?? '');
+      const displayTitle =
+        s.custom_name || s.generated_title || s.summary || id.slice(-8);
+      return {
+        id,
+        source: String(s.source ?? ''),
+        displayTitle: String(displayTitle),
+        messageCount: typeof s.message_count === 'number' ? s.message_count : 0,
+        startTime: typeof s.start_time === 'string' ? s.start_time : '',
+      };
+    });
+}
+
+export function formatResumeCommand(command: string, args: string[]): string {
+  return [command, ...args].join(' ');
+}
+
+export async function main() {
   const cwd = process.cwd();
   const port = getPort();
   const baseUrl = `http://127.0.0.1:${port}`;
-
-  // Get project name from cwd
-  const project = cwd.split('/').pop() || '';
 
   console.log(`Scanning sessions for ${cwd}...`);
 
@@ -62,19 +90,7 @@ async function main() {
     // biome-ignore lint/suspicious/noExplicitAny: API response shape is loosely typed
     const json = (await res.json()) as any;
     // Filter sessions matching current directory
-    sessions = (json.sessions || [])
-      // biome-ignore lint/suspicious/noExplicitAny: API session objects have dynamic shape
-      .filter((s: any) => s.cwd === cwd || s.project === project)
-      .slice(0, 10)
-      // biome-ignore lint/suspicious/noExplicitAny: API session objects have dynamic shape
-      .map((s: any) => ({
-        id: s.id,
-        source: s.source,
-        displayTitle:
-          s.custom_name || s.generated_title || s.summary || s.id.slice(-8),
-        messageCount: s.message_count || 0,
-        startTime: s.start_time || '',
-      }));
+    sessions = selectProjectSessions(json.sessions || [], cwd);
   } catch (_err) {
     console.error('Error: Could not connect to Engram daemon. Is it running?');
     process.exit(1);
@@ -130,7 +146,7 @@ async function main() {
     }
 
     if (result.command && result.args) {
-      const fullCmd = [result.command, ...result.args].join(' ');
+      const fullCmd = formatResumeCommand(result.command, result.args);
       console.log(`\nLaunching: ${fullCmd}`);
       console.log(`Working directory: ${result.cwd || cwd}\n`);
 
@@ -147,7 +163,10 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}
