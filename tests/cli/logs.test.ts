@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { queryLogs } from '../../src/cli/logs.js';
+import type { LogFilters, LogRow } from '../../src/cli/logs.js';
+import { formatLogs, queryLogs } from '../../src/cli/logs.js';
 import { parseDuration } from '../../src/cli/utils.js';
 import { Database } from '../../src/core/db.js';
 
@@ -37,6 +38,22 @@ describe('queryLogs', () => {
   it('respects limit', () => {
     const result = queryLogs(db.raw, { limit: 2 });
     expect(result).toHaveLength(2);
+  });
+
+  it('formats text, json, and empty results', () => {
+    const filters: LogFilters = { level: 'error' };
+    const rows = queryLogs(db.raw, filters);
+    const withError: LogRow = {
+      ...rows[0],
+      error_name: 'Error',
+      error_message: 'timeout',
+      trace_id: 'trace-1',
+    };
+
+    expect(formatLogs([])).toBe('No logs found.');
+    expect(formatLogs([withError])).toContain('Error: Error: timeout');
+    expect(formatLogs([withError])).toContain('trace=trace-1');
+    expect(JSON.parse(formatLogs([withError], true))).toHaveLength(1);
   });
 });
 

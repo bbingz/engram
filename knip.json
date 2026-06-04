@@ -4,6 +4,8 @@
     "src/index.ts",
     "src/daemon.ts",
     "src/cli/index.ts",
+    "src/cli/project.ts",
+    "src/cli/resume.ts",
     "scripts/**/*.ts",
     "tests/**/*.test.ts"
   ],
@@ -12,6 +14,9 @@
     "tests/fixtures/mcp-runtime/lint-project/src/existing.ts": ["files"],
     "src/core/daemon-client.ts": ["types"],
     "src/core/db/maintenance.ts": ["types"],
+    "src/cli/health.ts": ["exports"],
+    "src/cli/logs.ts": ["exports"],
+    "src/cli/traces.ts": ["exports"],
     "src/core/db/migration-log-repo.ts": ["exports"],
     "src/core/project-move/*.ts": ["types"],
     "src/core/project-move/jsonl-patch.ts": ["exports", "types"],

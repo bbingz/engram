@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { queryTraces } from '../../src/cli/traces.js';
+import type { TraceFilters, TraceRow } from '../../src/cli/traces.js';
+import { formatTraces, queryTraces } from '../../src/cli/traces.js';
 import { Database } from '../../src/core/db.js';
 
 describe('queryTraces', () => {
@@ -64,5 +65,19 @@ describe('queryTraces', () => {
     const result = queryTraces(db.raw, { traceId: 't1' });
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('indexAll');
+  });
+
+  it('formats text, json, empty, and in-progress traces', () => {
+    const filters: TraceFilters = { name: 'viking%' };
+    const rows = queryTraces(db.raw, filters);
+    const inProgress: TraceRow = {
+      ...rows[0],
+      duration_ms: null,
+      status: 'running',
+    };
+
+    expect(formatTraces([])).toBe('No traces found.');
+    expect(formatTraces([inProgress])).toContain('in-progress [RUNNING]');
+    expect(JSON.parse(formatTraces([inProgress], true))).toHaveLength(1);
   });
 });
