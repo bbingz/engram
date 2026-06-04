@@ -121,7 +121,7 @@ const watchDirs: WatchDir[] = getWatchEntries().map(([path, source]) => ({
   source,
 }));
 
-const usageCollector = new UsageCollector(db.getRawDb(), (event, data) =>
+const usageCollector = new UsageCollector(db.raw, (event, data) =>
   emit({
     event,
     ...(typeof data === 'object' && data !== null ? data : { data }),
@@ -421,10 +421,7 @@ const syncTimer =
     : null;
 
 // Git repo probe loop — runs once immediately, then every 5 minutes (10 on battery)
-const gitProbeTimer = startGitProbeLoop(
-  db.getRawDb(),
-  300_000 * POWER_MULTIPLIER,
-);
+const gitProbeTimer = startGitProbeLoop(db.raw, 300_000 * POWER_MULTIPLIER);
 
 // Observability: log rotation + metrics rollup
 const logRotationTimer = setInterval(() => {

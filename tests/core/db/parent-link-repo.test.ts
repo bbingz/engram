@@ -64,12 +64,12 @@ describe('parent-link-repo', () => {
   describe('validateParentLink', () => {
     it('rejects self-link', () => {
       db.upsertSession(makeSession({ id: 'a' }));
-      expect(validateParentLink(db.getRawDb(), 'a', 'a')).toBe('self-link');
+      expect(validateParentLink(db.raw, 'a', 'a')).toBe('self-link');
     });
 
     it('rejects non-existent parent', () => {
       db.upsertSession(makeSession({ id: 'a' }));
-      expect(validateParentLink(db.getRawDb(), 'a', 'no-such')).toBe(
+      expect(validateParentLink(db.raw, 'a', 'no-such')).toBe(
         'parent-not-found',
       );
     });
@@ -98,10 +98,10 @@ describe('parent-link-repo', () => {
       );
 
       // Set parent → grandparent first
-      setParentSession(db.getRawDb(), 'parent', 'grandparent', 'manual');
+      setParentSession(db.raw, 'parent', 'grandparent', 'manual');
 
       // Now child → parent should fail (depth exceeded)
-      expect(validateParentLink(db.getRawDb(), 'child', 'parent')).toBe(
+      expect(validateParentLink(db.raw, 'child', 'parent')).toBe(
         'depth-exceeded',
       );
     });
@@ -121,7 +121,7 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      expect(validateParentLink(db.getRawDb(), 'child', 'parent')).toBe('ok');
+      expect(validateParentLink(db.raw, 'child', 'parent')).toBe('ok');
     });
   });
 
@@ -143,9 +143,9 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
+      setParentSession(db.raw, 'child', 'parent', 'path');
 
-      const raw = db.getRawDb();
+      const raw = db.raw;
       const row = raw
         .prepare(
           'SELECT parent_session_id, link_source FROM sessions WHERE id = ?',
@@ -172,12 +172,12 @@ describe('parent-link-repo', () => {
       );
 
       // First set a suggestion
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+      setSuggestedParent(db.raw, 'child', 'parent');
 
       // Then confirm via setParentSession
-      setParentSession(db.getRawDb(), 'child', 'parent', 'manual');
+      setParentSession(db.raw, 'child', 'parent', 'manual');
 
-      const raw = db.getRawDb();
+      const raw = db.raw;
       const row = raw
         .prepare('SELECT suggested_parent_id FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
@@ -200,14 +200,13 @@ describe('parent-link-repo', () => {
           tier: 'skip',
         }),
       );
-      db.getRawDb()
+      db.raw
         .prepare("UPDATE sessions SET tier = 'skip' WHERE id = 'child'")
         .run();
 
-      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
+      setParentSession(db.raw, 'child', 'parent', 'path');
 
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare('SELECT tier FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
       expect(row.tier).toBe('skip');
@@ -232,10 +231,10 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
-      clearParentSession(db.getRawDb(), 'child');
+      setParentSession(db.raw, 'child', 'parent', 'path');
+      clearParentSession(db.raw, 'child');
 
-      const raw = db.getRawDb();
+      const raw = db.raw;
       const row = raw
         .prepare(
           'SELECT parent_session_id, link_source, tier FROM sessions WHERE id = ?',
@@ -280,23 +279,23 @@ describe('parent-link-repo', () => {
         }),
       );
 
-      setParentSession(db.getRawDb(), 'c1', 'parent', 'path');
-      setParentSession(db.getRawDb(), 'c2', 'parent', 'path');
-      setParentSession(db.getRawDb(), 'c3', 'parent', 'path');
+      setParentSession(db.raw, 'c1', 'parent', 'path');
+      setParentSession(db.raw, 'c2', 'parent', 'path');
+      setParentSession(db.raw, 'c3', 'parent', 'path');
 
       // All children
-      const all = childSessions(db.getRawDb(), 'parent', 10, 0);
+      const all = childSessions(db.raw, 'parent', 10, 0);
       expect(all).toHaveLength(3);
       expect(all[0].id).toBe('c2'); // earliest
       expect(all[2].id).toBe('c3'); // latest
 
       // Paginated
-      const page1 = childSessions(db.getRawDb(), 'parent', 2, 0);
+      const page1 = childSessions(db.raw, 'parent', 2, 0);
       expect(page1).toHaveLength(2);
       expect(page1[0].id).toBe('c2');
       expect(page1[1].id).toBe('c1');
 
-      const page2 = childSessions(db.getRawDb(), 'parent', 2, 2);
+      const page2 = childSessions(db.raw, 'parent', 2, 2);
       expect(page2).toHaveLength(1);
       expect(page2[0].id).toBe('c3');
     });
@@ -316,9 +315,9 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
+      setParentSession(db.raw, 'child', 'parent', 'path');
 
-      const children = childSessions(db.getRawDb(), 'parent', 10, 0);
+      const children = childSessions(db.raw, 'parent', 10, 0);
       expect(children).toHaveLength(1);
       expect(children[0].parentSessionId).toBe('parent');
     });
@@ -364,11 +363,11 @@ describe('parent-link-repo', () => {
         }),
       );
 
-      setParentSession(db.getRawDb(), 'c1', 'p1', 'path');
-      setParentSession(db.getRawDb(), 'c2', 'p1', 'path');
-      setParentSession(db.getRawDb(), 'c3', 'p2', 'path');
+      setParentSession(db.raw, 'c1', 'p1', 'path');
+      setParentSession(db.raw, 'c2', 'p1', 'path');
+      setParentSession(db.raw, 'c3', 'p2', 'path');
 
-      const counts = childCount(db.getRawDb(), ['p1', 'p2']);
+      const counts = childCount(db.raw, ['p1', 'p2']);
       expect(counts.get('p1')).toBe(2);
       expect(counts.get('p2')).toBe(1);
     });
@@ -381,12 +380,12 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T08:00:00Z',
         }),
       );
-      const counts = childCount(db.getRawDb(), ['lonely']);
+      const counts = childCount(db.raw, ['lonely']);
       expect(counts.get('lonely')).toBe(0);
     });
 
     it('handles empty input', () => {
-      const counts = childCount(db.getRawDb(), []);
+      const counts = childCount(db.raw, []);
       expect(counts.size).toBe(0);
     });
   });
@@ -409,9 +408,9 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+      setSuggestedParent(db.raw, 'child', 'parent');
 
-      const raw = db.getRawDb();
+      const raw = db.raw;
       const row = raw
         .prepare(
           'SELECT suggested_parent_id, link_checked_at FROM sessions WHERE id = ?',
@@ -440,20 +439,20 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+      setSuggestedParent(db.raw, 'child', 'parent');
 
       // Wrong expected — no-op
-      const cleared1 = clearSuggestedParent(db.getRawDb(), 'child', 'wrong-id');
+      const cleared1 = clearSuggestedParent(db.raw, 'child', 'wrong-id');
       expect(cleared1).toBe(false);
 
-      const raw = db.getRawDb();
+      const raw = db.raw;
       const row1 = raw
         .prepare('SELECT suggested_parent_id FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
       expect(row1.suggested_parent_id).toBe('parent');
 
       // Correct expected — clears
-      const cleared2 = clearSuggestedParent(db.getRawDb(), 'child', 'parent');
+      const cleared2 = clearSuggestedParent(db.raw, 'child', 'parent');
       expect(cleared2).toBe(true);
 
       const row2 = raw
@@ -489,10 +488,10 @@ describe('parent-link-repo', () => {
         }),
       );
 
-      setSuggestedParent(db.getRawDb(), 'c1', 'parent');
-      setSuggestedParent(db.getRawDb(), 'c2', 'parent');
+      setSuggestedParent(db.raw, 'c1', 'parent');
+      setSuggestedParent(db.raw, 'c2', 'parent');
 
-      const results = suggestedChildSessions(db.getRawDb(), 'parent');
+      const results = suggestedChildSessions(db.raw, 'parent');
       expect(results).toHaveLength(2);
       // Sorted by start_time ASC
       expect(results[0].id).toBe('c2');
@@ -534,10 +533,10 @@ describe('parent-link-repo', () => {
         }),
       );
 
-      setSuggestedParent(db.getRawDb(), 'c1', 'p1');
-      setSuggestedParent(db.getRawDb(), 'c2', 'p1');
+      setSuggestedParent(db.raw, 'c1', 'p1');
+      setSuggestedParent(db.raw, 'c2', 'p1');
 
-      const counts = suggestedChildCount(db.getRawDb(), ['p1', 'p2']);
+      const counts = suggestedChildCount(db.raw, ['p1', 'p2']);
       expect(counts.get('p1')).toBe(2);
       expect(counts.get('p2')).toBe(0);
     });
@@ -561,12 +560,12 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+      setSuggestedParent(db.raw, 'child', 'parent');
 
-      const result = confirmSuggestion(db.getRawDb(), 'child');
+      const result = confirmSuggestion(db.raw, 'child');
       expect(result.ok).toBe(true);
 
-      const raw = db.getRawDb();
+      const raw = db.raw;
       const row = raw
         .prepare(
           'SELECT parent_session_id, suggested_parent_id, link_source FROM sessions WHERE id = ?',
@@ -585,7 +584,7 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      const result = confirmSuggestion(db.getRawDb(), 'child');
+      const result = confirmSuggestion(db.raw, 'child');
       expect(result.ok).toBe(false);
       expect(result.error).toContain('no suggestion');
     });
@@ -605,12 +604,12 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+      setSuggestedParent(db.raw, 'child', 'parent');
 
       // Delete parent — orphan trigger clears suggested_parent_id
       db.deleteSession('parent');
 
-      const result = confirmSuggestion(db.getRawDb(), 'child');
+      const result = confirmSuggestion(db.raw, 'child');
       expect(result.ok).toBe(false);
       // Trigger already cleared the suggestion, so error is 'no suggestion'
       expect(result.error).toContain('no suggestion');
@@ -631,16 +630,15 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      db.getRawDb()
+      db.raw
         .prepare("UPDATE sessions SET tier = 'skip' WHERE id = 'child'")
         .run();
 
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
-      const result = confirmSuggestion(db.getRawDb(), 'child');
+      setSuggestedParent(db.raw, 'child', 'parent');
+      const result = confirmSuggestion(db.raw, 'child');
       expect(result.ok).toBe(true);
 
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare('SELECT tier FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
       expect(row.tier).toBe('skip');
@@ -665,11 +663,10 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
+      setParentSession(db.raw, 'child', 'parent', 'path');
 
       // Verify link exists
-      const before = db
-        .getRawDb()
+      const before = db.raw
         .prepare('SELECT parent_session_id FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
       expect(before.parent_session_id).toBe('parent');
@@ -678,8 +675,7 @@ describe('parent-link-repo', () => {
       db.deleteSession('parent');
 
       // Trigger should have cleared it
-      const after = db
-        .getRawDb()
+      const after = db.raw
         .prepare(
           'SELECT parent_session_id, link_source, tier FROM sessions WHERE id = ?',
         )
@@ -704,17 +700,16 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      db.getRawDb()
+      db.raw
         .prepare(
           "UPDATE sessions SET agent_role = 'subagent', tier = 'skip' WHERE id = 'child'",
         )
         .run();
-      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
+      setParentSession(db.raw, 'child', 'parent', 'path');
 
       db.deleteSession('parent');
 
-      const after = db
-        .getRawDb()
+      const after = db.raw
         .prepare(
           'SELECT parent_session_id, link_source, tier FROM sessions WHERE id = ?',
         )
@@ -739,12 +734,11 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+      setSuggestedParent(db.raw, 'child', 'parent');
 
       db.deleteSession('parent');
 
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare('SELECT suggested_parent_id FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
       expect(row.suggested_parent_id).toBeNull();
@@ -765,17 +759,16 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      db.getRawDb()
+      db.raw
         .prepare(
           "UPDATE sessions SET agent_role = 'subagent', tier = 'skip' WHERE id = 'child'",
         )
         .run();
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+      setSuggestedParent(db.raw, 'child', 'parent');
 
       db.deleteSession('parent');
 
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare('SELECT suggested_parent_id, tier FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
       expect(row.suggested_parent_id).toBeNull();
@@ -1231,7 +1224,7 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
+      setParentSession(db.raw, 'child', 'parent', 'path');
 
       const session = db.getSession('child');
       expect(session).not.toBeNull();
@@ -1253,7 +1246,7 @@ describe('parent-link-repo', () => {
           startTime: '2026-01-01T10:00:00Z',
         }),
       );
-      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+      setSuggestedParent(db.raw, 'child', 'parent');
 
       const session = db.getSession('child');
       expect(session).not.toBeNull();

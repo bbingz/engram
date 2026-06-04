@@ -7,6 +7,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Database raw handle API cleanup (2026-06-04, Codex)
+
+Opened a follow-up branch after PR #34 was merged to remove the duplicated
+TypeScript raw SQLite access surface.
+
+- **Database API**: removed `Database.getRawDb()` and made `Database.raw` the
+  sole TypeScript facade for callers that need the underlying `better-sqlite3`
+  handle.
+- **Call-site migration**: updated daemon, bootstrap, web routes, core helpers,
+  fixture/schema scripts, and tests from `.getRawDb()` to `.raw`.
+- **Regression coverage**: added a `Database` contract test that verifies the raw
+  SQLite handle works through `raw` and that `getRawDb` is no longer present.
+
 ### Additional non-blocking follow-up remediation (2026-06-04, Codex)
 
 Continued PR #34 after the first closeout to finish the remaining necessary
@@ -30,9 +43,8 @@ non-blocking items without broad refactors.
   targeted Vitest coverage passed 60 tests; `npm run typecheck:test`,
   `npm run lint`, full `npm test` passed 1481 tests; Swift
   `EngramMCPTests` passed 67 tests.
-- **Intentionally deferred**: removing the `database.ts` `raw`/`getRawDb()`
-  compatibility surface and designing a full online FTS table-swap rebuild
-  remain separate larger refactors, not necessary closeout fixes.
+- **Intentionally deferred**: designing a full online FTS table-swap rebuild
+  remains a separate larger refactor, not a necessary closeout fix.
 
 ### Follow-up remediation branch closeout (2026-06-04, Codex)
 

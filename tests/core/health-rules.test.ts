@@ -514,7 +514,7 @@ describe('runAllHealthChecks', () => {
 
   it('aggregates issues from multiple repos', async () => {
     // Seed two repos in git_repos
-    const raw = db.getRawDb();
+    const raw = db.raw;
     raw
       .prepare(`
       INSERT INTO git_repos (path, name, branch, dirty_count, probed_at)

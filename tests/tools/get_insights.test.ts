@@ -19,7 +19,7 @@ describe('handleGetInsights', () => {
     ).toISOString();
 
     // Insert session + cost data to trigger at least one suggestion
-    db.getRawDb()
+    db.raw
       .prepare(`
       INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count,
         user_message_count, assistant_message_count, tool_message_count, system_message_count,

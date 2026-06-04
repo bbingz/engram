@@ -93,7 +93,7 @@ describe('runProjectMove — orchestrator integration', () => {
 
   it('happy path: physical move + CC rename + JSONL patch + DB commit + alias', async () => {
     // Seed DB with a session pointing at the old path
-    db.getRawDb()
+    db.raw
       .prepare(
         `INSERT INTO sessions (id, source, start_time, cwd, project, model,
          message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,

@@ -12,7 +12,7 @@ export class SessionSnapshotWriter {
   writeAuthoritativeSnapshot(
     snapshot: AuthoritativeSessionSnapshot,
   ): SessionWriteResult {
-    const tx = this.db.getRawDb().transaction(() => {
+    const tx = this.db.raw.transaction(() => {
       const current = this.db.getAuthoritativeSnapshot(snapshot.id);
       const mergeResult = mergeSessionSnapshot(current, snapshot);
 

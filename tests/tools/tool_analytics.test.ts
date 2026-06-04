@@ -7,10 +7,10 @@ describe('tool_analytics', () => {
   beforeAll(() => {
     db = new Database(':memory:');
     // Insert test sessions
-    db.getRawDb().exec(
+    db.raw.exec(
       `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier, summary) VALUES ('s1', 'claude-code', '2026-03-20T10:00:00Z', '/test', 'my-project', 'claude-sonnet-4-6', 10, 3, 5, 1, 1, '/test/s1.jsonl', 1000, 'normal', 'Session one summary')`,
     );
-    db.getRawDb().exec(
+    db.raw.exec(
       `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier, summary) VALUES ('s2', 'claude-code', '2026-03-20T11:00:00Z', '/test2', 'other-project', 'claude-sonnet-4-6', 5, 2, 2, 0, 1, '/test/s2.jsonl', 500, 'normal', 'Session two summary')`,
     );
     // Insert tool data

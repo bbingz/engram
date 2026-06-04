@@ -8,11 +8,11 @@ describe('handoff', () => {
   beforeAll(() => {
     db = new Database(':memory:');
     // Insert test sessions for "my-project"
-    db.getRawDb().exec(`
+    db.raw.exec(`
       INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier, summary)
       VALUES ('s1', 'claude-code', '2026-03-20T10:00:00Z', '/home/user/my-project', 'my-project', 'claude-sonnet-4-6', 20, 8, 10, 1, 1, '/test/s1.jsonl', 5000, 'normal', 'Fixed authentication bug in login flow')
     `);
-    db.getRawDb().exec(`
+    db.raw.exec(`
       INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier, summary)
       VALUES ('s2', 'claude-code', '2026-03-20T08:00:00Z', '/home/user/my-project', 'my-project', 'claude-sonnet-4-6', 15, 5, 8, 1, 1, '/test/s2.jsonl', 3000, 'normal', 'Refactored database connection pooling')
     `);

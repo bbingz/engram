@@ -6,13 +6,13 @@ import { createApp } from '../../src/web.js';
 
 describe('AI Audit API', () => {
   let db: Database;
-  let rawDb: ReturnType<Database['getRawDb']>;
+  let rawDb: Database['raw'];
   let writer: AiAuditWriter;
   let auditQuery: AiAuditQuery;
 
   beforeEach(() => {
     db = new Database(':memory:');
-    rawDb = db.getRawDb();
+    rawDb = db.raw;
     writer = new AiAuditWriter(rawDb, DEFAULT_AI_AUDIT_CONFIG);
     auditQuery = new AiAuditQuery(rawDb);
   });

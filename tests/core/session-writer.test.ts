@@ -210,8 +210,7 @@ describe('SessionSnapshotWriter', () => {
       const writer = new SessionSnapshotWriter(db);
       writer.writeAuthoritativeSnapshot(baseSnapshot('s1', 1, 'h1'));
 
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare('SELECT file_path FROM sessions WHERE id = ?')
         .get('s1') as { file_path: string | null };
       expect(row.file_path).toBe('/tmp/foo.jsonl');
@@ -222,15 +221,14 @@ describe('SessionSnapshotWriter', () => {
       writer.writeAuthoritativeSnapshot(baseSnapshot('s2', 1, 'h1'));
 
       // simulate legacy-bug state: file_path got stored empty
-      db.getRawDb()
+      db.raw
         .prepare('UPDATE sessions SET file_path = ? WHERE id = ?')
         .run('', 's2');
 
       // next upsert with a bumped version triggers the UPDATE branch
       writer.writeAuthoritativeSnapshot(baseSnapshot('s2', 2, 'h2'));
 
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare('SELECT file_path FROM sessions WHERE id = ?')
         .get('s2') as { file_path: string | null };
       expect(row.file_path).toBe('/tmp/foo.jsonl');
@@ -241,14 +239,13 @@ describe('SessionSnapshotWriter', () => {
       writer.writeAuthoritativeSnapshot(baseSnapshot('s3', 1, 'h1'));
 
       // set an explicit local path (what backfillFilePaths or real Swift reader would pick)
-      db.getRawDb()
+      db.raw
         .prepare('UPDATE sessions SET file_path = ? WHERE id = ?')
         .run('/real/local/path.jsonl', 's3');
 
       writer.writeAuthoritativeSnapshot(baseSnapshot('s3', 2, 'h2'));
 
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare('SELECT file_path FROM sessions WHERE id = ?')
         .get('s3') as { file_path: string | null };
       expect(row.file_path).toBe('/real/local/path.jsonl');
@@ -260,8 +257,7 @@ describe('SessionSnapshotWriter', () => {
       snap.sourceLocator = 'sync://peer/abc';
       writer.writeAuthoritativeSnapshot(snap);
 
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare('SELECT file_path, source_locator FROM sessions WHERE id = ?')
         .get('s4') as { file_path: string | null; source_locator: string };
       expect(row.source_locator).toBe('sync://peer/abc');
@@ -292,7 +288,7 @@ describe('SessionSnapshotWriter', () => {
     };
 
     writer.writeAuthoritativeSnapshot(snapshot);
-    db.getRawDb()
+    db.raw
       .prepare(
         "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = ?",
       )
@@ -336,12 +332,12 @@ describe('SessionSnapshotWriter', () => {
 
     writer.writeAuthoritativeSnapshot(snapshot);
     db.replaceFtsContent('sess-downgrade', ['old searchable content']);
-    db.getRawDb()
+    db.raw
       .prepare(
         'CREATE TABLE IF NOT EXISTS session_embeddings(session_id TEXT PRIMARY KEY)',
       )
       .run();
-    db.getRawDb()
+    db.raw
       .prepare('INSERT INTO session_embeddings(session_id) VALUES (?)')
       .run('sess-downgrade');
 
@@ -353,8 +349,7 @@ describe('SessionSnapshotWriter', () => {
 
     expect(db.getFtsContent('sess-downgrade')).toEqual([]);
     expect(
-      db
-        .getRawDb()
+      db.raw
         .prepare(
           'SELECT COUNT(*) AS count FROM session_embeddings WHERE session_id = ?',
         )

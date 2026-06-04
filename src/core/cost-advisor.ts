@@ -96,7 +96,7 @@ function ruleOpusOveruse(
   }
 
   // Count short Opus sessions (< 20 messages)
-  const rawDb = db.getRawDb();
+  const rawDb = db.raw;
   const shortSessions = rawDb
     .prepare(`
     SELECT COUNT(*) as cnt FROM session_costs c
@@ -139,7 +139,7 @@ function ruleOpusOveruse(
 
 /** Rule 2: Low cache rate — cache_read/(input+cache_read) <30%, Anthropic only */
 function ruleLowCacheRate(db: Database, since: string): CostSuggestion | null {
-  const rawDb = db.getRawDb();
+  const rawDb = db.raw;
   const row = rawDb
     .prepare(`
     SELECT
@@ -299,7 +299,7 @@ function ruleExpensiveSessions(
   db: Database,
   since: string,
 ): CostSuggestion | null {
-  const rawDb = db.getRawDb();
+  const rawDb = db.raw;
   const rows = rawDb
     .prepare(`
     SELECT c.session_id, c.cost_usd, c.model,
@@ -350,7 +350,7 @@ function ruleWeekOverWeekSpike(db: Database): CostSuggestion | null {
   const lastWeekSince = sinceNDaysAgo(14, now);
   const lastWeekUntil = thisWeekSince;
 
-  const rawDb = db.getRawDb();
+  const rawDb = db.raw;
 
   const thisWeekRow = rawDb
     .prepare(`
@@ -395,7 +395,7 @@ function ruleOutputImbalance(
   db: Database,
   since: string,
 ): CostSuggestion | null {
-  const rawDb = db.getRawDb();
+  const rawDb = db.raw;
 
   // Get sessions where output >> input, excluding heavy file-editing sessions
   const rows = rawDb
@@ -473,7 +473,7 @@ export function getCostSuggestions(
   const since = options?.since ?? sinceIso(periodDays);
 
   // Get total cost for the period
-  const rawDb = db.getRawDb();
+  const rawDb = db.raw;
   const totalRow = rawDb
     .prepare(`
     SELECT SUM(c.cost_usd) as cost

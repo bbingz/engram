@@ -105,7 +105,7 @@ export function registerProjectMigrationRoutes(
         400,
       );
     }
-    const raw = deps.db.getRawDb();
+    const raw = deps.db.raw;
     const rows = raw
       .prepare(
         `SELECT DISTINCT cwd FROM sessions

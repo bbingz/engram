@@ -130,8 +130,7 @@ export class BackgroundMonitor {
   ): Promise<void> {
     const budget = this.config.dailyCostBudget ?? 20;
     try {
-      const row = this.db
-        .getRawDb()
+      const row = this.db.raw
         .prepare(`
         SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
         FROM session_costs c
@@ -179,8 +178,7 @@ export class BackgroundMonitor {
 
     try {
       if (dailyBudget) {
-        const row = this.db
-          .getRawDb()
+        const row = this.db.raw
           .prepare(`
           SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
           FROM session_costs c
@@ -220,8 +218,7 @@ export class BackgroundMonitor {
       }
 
       if (monthlyBudget) {
-        const row = this.db
-          .getRawDb()
+        const row = this.db.raw
           .prepare(`
           SELECT COALESCE(SUM(c.cost_usd), 0) as totalCost
           FROM session_costs c
@@ -266,8 +263,7 @@ export class BackgroundMonitor {
 
   private async checkUnpushedCommits(): Promise<void> {
     try {
-      const rows = this.db
-        .getRawDb()
+      const rows = this.db.raw
         .prepare(`
         SELECT name, path, unpushed_count FROM git_repos
         WHERE unpushed_count > 10

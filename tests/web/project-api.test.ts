@@ -52,7 +52,7 @@ describe('Web API — /api/project/*', () => {
     writeFileSync(join(ccOldDir, 'session.jsonl'), `{"cwd":"${src}"}\n`);
 
     // Seed one session so /api/project/cwds has data
-    db.getRawDb()
+    db.raw
       .prepare(
         `INSERT INTO sessions (id, source, start_time, cwd, project, model,
          message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
@@ -97,7 +97,7 @@ describe('Web API — /api/project/*', () => {
     // Seed migration_log rows directly (faster than running a real move,
     // and avoids the /api/project/move endpoint trying to touch the user's
     // real home dir — there's no HTTP param to override home).
-    const raw = db.getRawDb();
+    const raw = db.raw;
     raw
       .prepare(
         `INSERT INTO migration_log (id, old_path, new_path, old_basename,
@@ -460,7 +460,7 @@ describe('Web API — /api/project/*', () => {
   it('migration_log detail includes skipped_dirs and gemini_projects_json_updated', async () => {
     // Contract regression: the Swift UI doesn't read these yet, but the
     // telemetry surface should stay stable for debugging.
-    const raw = db.getRawDb();
+    const raw = db.raw;
     raw
       .prepare(
         `INSERT INTO migration_log (id, old_path, new_path, old_basename,
