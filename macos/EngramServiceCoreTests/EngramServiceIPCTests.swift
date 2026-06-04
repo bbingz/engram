@@ -2070,6 +2070,11 @@ final class EngramServiceIPCTests: XCTestCase {
     func testFormerBridgeCommandsUseNativeServiceBehavior() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
