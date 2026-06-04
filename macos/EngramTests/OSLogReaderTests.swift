@@ -6,8 +6,9 @@ import XCTest
 /// `traces`/`metrics` tables. These tests assert the reader is well-formed:
 /// it filters to Engram's subsystems and surfaces error-level entries it emits.
 final class OSLogReaderTests: XCTestCase {
-    func testRecentLogsCapturesEmittedEngramErrorWithoutRequiringPublicMessageText() throws {
-        EngramLogger.error("OSLOGREADERTEST-\(UUID().uuidString)", module: .ui)
+    func testRecentLogsCapturesEmittedEngramErrorMessageText() throws {
+        let token = "OSLOGREADERTEST-\(UUID().uuidString)"
+        EngramLogger.error(token, module: .ui)
 
         // OSLogStore writes are asynchronous; poll briefly.
         var foundEngramError = false
@@ -22,16 +23,18 @@ final class OSLogReaderTests: XCTestCase {
                                   "OSLogReader must only return com.engram.* entries")
                 }
                 foundEngramError = result.entries.contains {
-                    $0.source == "com.engram.app" && ["warn", "error"].contains($0.level.lowercased())
+                    $0.source == "com.engram.app" &&
+                    ["warn", "error"].contains($0.level.lowercased()) &&
+                    $0.message.contains(token)
                 }
             } catch is OSLogReaderError {
                 // OSLogStore not accessible in this environment — the views handle
                 // this by marking the panel "not available"; nothing to assert.
-                throw XCTSkip("OSLogStore.local() not accessible in this environment")
+                throw XCTSkip("Current-process OSLogStore not accessible in this environment")
             }
             if !foundEngramError { Thread.sleep(forTimeInterval: 0.1) }
         }
-        XCTAssertTrue(foundEngramError, "Emitted Engram error should appear in OSLogReader.recentLogs")
+        XCTAssertTrue(foundEngramError, "Emitted Engram error message should appear in OSLogReader.recentLogs")
     }
 
     func testErrorCountIsNonNegative() throws {
@@ -39,7 +42,7 @@ final class OSLogReaderTests: XCTestCase {
             let count = try OSLogReader.countErrors(hours: 1)
             XCTAssertGreaterThanOrEqual(count, 0)
         } catch is OSLogReaderError {
-            throw XCTSkip("OSLogStore.local() not accessible in this environment")
+            throw XCTSkip("Current-process OSLogStore not accessible in this environment")
         }
     }
 }

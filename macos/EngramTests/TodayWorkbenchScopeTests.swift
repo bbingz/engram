@@ -221,6 +221,16 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         XCTAssertNil(SessionDetailView.nextNavPosition(current: 0, direction: 1, count: 0))
     }
 
+    func testNextFindMatchIndexClampsStaleIndex() {
+        // Find navigation keeps its own position; shrinking the match set must
+        // clamp a stale position before the previous-match branch indexes it.
+        XCTAssertEqual(SessionDetailView.nextFindMatchIndex(current: 50, direction: -1, count: 10), 8)
+        XCTAssertEqual(SessionDetailView.nextFindMatchIndex(current: 50, direction: 1, count: 10), 0)
+        XCTAssertEqual(SessionDetailView.nextFindMatchIndex(current: -1, direction: 1, count: 10), 0)
+        XCTAssertEqual(SessionDetailView.nextFindMatchIndex(current: -1, direction: -1, count: 10), 9)
+        XCTAssertNil(SessionDetailView.nextFindMatchIndex(current: 0, direction: 1, count: 0))
+    }
+
     func testHasMoreAfterLoadReflectsFilledPage() {
         // A full (limit == nil) load is always complete.
         XCTAssertFalse(SessionDetailView.hasMoreAfterLoad(returnedCount: 4, requestedLimit: nil))

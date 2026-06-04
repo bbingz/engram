@@ -6,15 +6,15 @@
 // panels therefore showed a perpetual "all clear" even during a real incident.
 //
 // This reader repoints those panels at the unified system log via
-// `OSLogStore.local()`, filtered to Engram's two subsystems. It surfaces what the
-// runtime actually emits today. If the store cannot be opened (entitlement /
-// permission), callers receive `OSLogReaderError.unavailable` so the UI can mark
-// the panel "not available" instead of rendering a false all-clear.
+// `OSLogStore(scope: .currentProcessIdentifier)`, filtered to Engram's two
+// subsystems. It surfaces what the runtime actually emits today. If the store
+// cannot be opened, callers receive `OSLogReaderError.unavailable` so the UI can
+// mark the panel "not available" instead of rendering a false all-clear.
 import Foundation
 import OSLog
 
 enum OSLogReaderError: Error {
-    /// `OSLogStore.local()` is not accessible under the current entitlements.
+    /// `OSLogStore(scope: .currentProcessIdentifier)` is not accessible.
     case unavailable(String)
 }
 

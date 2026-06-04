@@ -162,6 +162,40 @@ describe('Database migration', () => {
     db.close();
   });
 
+  it('resets tier for subagent children when a suggested parent is deleted', () => {
+    const dbPath = makeTmpDb();
+    const db = new Database(dbPath);
+
+    db.raw
+      .prepare(
+        `INSERT INTO sessions
+          (id, source, start_time, cwd, file_path, size_bytes)
+         VALUES
+          ('parent', 'codex', '2026-01-01T00:00:00Z', '/repo', '/tmp/parent.jsonl', 10),
+          ('child', 'codex', '2026-01-01T00:01:00Z', '/repo', '/tmp/child.jsonl', 10)`,
+      )
+      .run();
+    db.raw
+      .prepare(
+        `UPDATE sessions
+         SET suggested_parent_id = 'parent',
+             agent_role = 'subagent',
+             tier = 'normal'
+         WHERE id = 'child'`,
+      )
+      .run();
+
+    db.raw.prepare("DELETE FROM sessions WHERE id = 'parent'").run();
+
+    const row = db.raw
+      .prepare('SELECT suggested_parent_id, tier FROM sessions WHERE id = ?')
+      .get('child') as { suggested_parent_id: string | null; tier: string };
+    expect(row.suggested_parent_id).toBeNull();
+    expect(row.tier).toBe('skip');
+
+    db.close();
+  });
+
   // 5. Composite indexes for parent queries
   it('creates composite indexes for parent queries', () => {
     const dbPath = makeTmpDb();

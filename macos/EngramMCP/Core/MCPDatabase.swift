@@ -752,80 +752,87 @@ final class MCPDatabase {
         }
 
         let now = contextNow()
-        let calendar = Calendar(identifier: .gregorian)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
         let startOfToday = calendar.startOfDay(for: now)
         let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday) ?? now
         let startOfSevenDayWindow = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        let startOfOneDayWindow = calendar.date(byAdding: .day, value: -1, to: now) ?? now
 
         var sections: [String] = []
-        let todayCost = try totalCostBetween(
-            start: iso8601Timestamp(startOfToday),
-            end: iso8601Timestamp(startOfTomorrow)
-        )
+        if normalizedDetail != "abstract" {
+            sections.append("Live sessions: unavailable in Swift MCP stdio runtime")
+        }
+        let todayCost = optionalEnvironmentValue(label: "costToday") {
+            try totalCostBetween(
+                start: iso8601Timestamp(startOfToday),
+                end: iso8601Timestamp(startOfTomorrow)
+            )
+        } ?? 0
         if todayCost > 0 {
             sections.append(String(format: "Cost today: $%.2f", locale: Locale(identifier: "en_US_POSIX"), todayCost))
         }
 
+        let alertLimit = normalizedDetail == "overview" ? 5 : 10
+        let alerts = optionalEnvironmentValue(label: "alerts") { try activeAlerts(limit: alertLimit) } ?? []
+        if !alerts.isEmpty {
+            let lines = alerts.map { "  [\($0.severity)] \($0.message)" }.joined(separator: "\n")
+            sections.append("Alerts (\(alerts.count)):\n\(lines)")
+        }
+
         if normalizedDetail != "abstract" {
-            let toolLimit = normalizedDetail == "overview" ? 5 : 10
-            let topTools = try topToolsSince(iso8601Timestamp(startOfSevenDayWindow), limit: toolLimit)
+            let itemLimit = normalizedDetail == "overview" ? 5 : 10
+            let sevenDaysAgo = iso8601Timestamp(startOfSevenDayWindow)
+            let topTools = optionalEnvironmentValue(label: "recentTools") { try topToolsSince(sevenDaysAgo, limit: itemLimit) } ?? []
             if !topTools.isEmpty {
                 let lines = topTools.map { "  \($0.name): \($0.callCount) calls" }.joined(separator: "\n")
                 sections.append("Top tools (7d):\n\(lines)")
             }
 
-            var gitReposSection: String?
-            let gitRepos = try changedGitRepos(limit: toolLimit)
-            if !gitRepos.isEmpty {
-                let lines = gitRepos.map { repo -> String in
-                    let branch: String = repo.branch.map { " (\($0))" } ?? ""
-                    let line: String = "  \(repo.name)\(branch): \(repo.dirtyCount) dirty, \(repo.unpushedCount) unpushed"
-                    return line
+            let changedRepos = optionalEnvironmentValue(label: "gitRepos") { try gitReposWithChanges(limit: itemLimit) } ?? []
+            if !changedRepos.isEmpty {
+                let lines = changedRepos.map { repo -> String in
+                    let branch = repo.branch.map { " (\($0))" } ?? ""
+                    return "  \(repo.name)\(branch): \(repo.dirtyCount) dirty, \(repo.unpushedCount) unpushed"
                 }.joined(separator: "\n")
-                gitReposSection = "Git repos with changes (\(gitRepos.count)):\n\(lines)"
-                sections.append(gitReposSection!)
+                sections.append("Git repos with changes (\(changedRepos.count)):\n\(lines)")
             }
 
-            var fileHotspotsSection: String?
-            let hotspots = try fileHotspotsSince(iso8601Timestamp(startOfSevenDayWindow), limit: toolLimit)
+            let hotspots = optionalEnvironmentValue(label: "fileHotspots") { try fileHotspotsSince(sevenDaysAgo, limit: itemLimit) } ?? []
             if !hotspots.isEmpty {
-                let lines = hotspots.map { hotspot -> String in
-                    let line: String = "  \(hotspot.filePath) (\(hotspot.total) edits, \(hotspot.sessions) sessions)"
-                    return line
-                }.joined(separator: "\n")
-                fileHotspotsSection = "File hotspots (7d):\n\(lines)"
-                sections.append(fileHotspotsSection!)
+                let lines = hotspots.map { "  \($0.filePath) (\($0.totalEdits) edits, \($0.sessionCount) sessions)" }
+                    .joined(separator: "\n")
+                sections.append("File hotspots (7d):\n\(lines)")
             }
 
-            var recentErrorsSection: String?
-            let recentErrors = try recentErrorsSince(iso8601Timestamp(
-                calendar.date(byAdding: .hour, value: -24, to: now) ?? now
-            ), limit: 5)
+            let recentErrors = optionalEnvironmentValue(label: "recentErrors") {
+                try recentErrorsSince(iso8601Timestamp(startOfOneDayWindow), limit: 5)
+            } ?? []
             if !recentErrors.isEmpty {
-                let lines = recentErrors.map { error -> String in
-                    let line: String = "  [\(error.module)] \(error.message) (×\(error.count))"
-                    return line
-                }.joined(separator: "\n")
-                recentErrorsSection = "Recent errors (24h):\n\(lines)"
-                sections.append(recentErrorsSection!)
+                let lines = recentErrors.map { "  [\($0.module)] \($0.message) (×\($0.count))" }
+                    .joined(separator: "\n")
+                sections.append("Recent errors (24h):\n\(lines)")
             }
 
-            let maxEnvChars = Double(maxTokens * 4) * 0.3
-            func joinedEnvironmentLength() -> Int { sections.joined(separator: "\n").count }
-            if joinedEnvironmentLength() > Int(maxEnvChars), let fileHotspotsSection {
-                sections.removeAll { $0 == fileHotspotsSection }
-            }
-            if joinedEnvironmentLength() > Int(maxEnvChars), let gitReposSection {
-                sections.removeAll { $0 == gitReposSection }
-            }
-            if joinedEnvironmentLength() > Int(maxEnvChars), let recentErrorsSection {
-                sections.removeAll { $0 == recentErrorsSection }
+            let suggestions = optionalEnvironmentValue(label: "costSuggestions") {
+                try costSuggestionsSince(sevenDaysAgo, totalSpent: totalCostSince(sevenDaysAgo), limit: 5)
+            } ?? []
+            if !suggestions.isEmpty {
+                let lines = suggestions.map { "  [\($0.severity)] \($0.title)" }.joined(separator: "\n")
+                sections.append("Cost suggestions (\(suggestions.count)):\n\(lines)")
             }
         }
 
         let maxEnvChars = Double(maxTokens * 4) * 0.3
-        if normalizedDetail == "full", sections.joined(separator: "\n").count > Int(maxEnvChars) {
-            sections.removeAll { $0.hasPrefix("Top tools (7d):") }
+        let shouldPruneEnvironment = normalizedDetail != "abstract"
+        if shouldPruneEnvironment, sections.joined(separator: "\n").count > Int(maxEnvChars) {
+            sections.removeAll { $0.hasPrefix("File hotspots (7d):") }
+        }
+        if shouldPruneEnvironment, sections.joined(separator: "\n").count > Int(maxEnvChars) {
+            sections.removeAll { $0.hasPrefix("Git repos with changes") }
+        }
+        if shouldPruneEnvironment, sections.joined(separator: "\n").count > Int(maxEnvChars) {
+            sections.removeAll { $0.hasPrefix("Recent errors (24h):") }
         }
 
         guard !sections.isEmpty else { return "" }
@@ -849,6 +856,17 @@ final class MCPDatabase {
         }
     }
 
+    private func optionalEnvironmentValue<T>(label: String, _ block: () throws -> T) -> T? {
+        do {
+            return try block()
+        } catch {
+            if !isNoSuchTableError(error) {
+                writeEnvironmentError(label: label, error: error)
+            }
+            return nil
+        }
+    }
+
     private func totalCostBetween(start: String, end: String) throws -> Double {
         try queue.read { db in
             // Filter the cost window by session activity (start_time), not by
@@ -865,6 +883,31 @@ final class MCPDatabase {
                 arguments: [start, end]
             )
             return doubleValue(row?["cost"])
+        }
+    }
+
+    private func activeAlerts(limit: Int) throws -> [(severity: String, message: String)] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT severity, message
+                FROM alerts
+                WHERE dismissed_at IS NULL AND resolved_at IS NULL
+                ORDER BY CASE severity WHEN 'critical' THEN 0 ELSE 1 END, ts DESC, id DESC
+                LIMIT ?
+                """,
+                arguments: [limit]
+            )
+            return rows.compactMap { row in
+                guard let severity = stringValue(row["severity"]),
+                      let message = stringValue(row["message"]),
+                      !message.isEmpty
+                else {
+                    return nil
+                }
+                return (severity, message)
+            }
         }
     }
 
@@ -890,7 +933,65 @@ final class MCPDatabase {
         }
     }
 
-    private func changedGitRepos(limit: Int) throws -> [(name: String, branch: String?, dirtyCount: Int, unpushedCount: Int)] {
+    private func costSuggestionsSince(
+        _ since: String,
+        totalSpent: Double,
+        limit: Int
+    ) throws -> [(severity: String, title: String)] {
+        guard totalSpent > 0 else { return [] }
+        var suggestions: [(severity: String, title: String)] = []
+
+        if let cacheSuggestion = try lowCacheRateSuggestionSince(since) {
+            suggestions.append(cacheSuggestion)
+        }
+
+        let projectedMonthly = (totalSpent / 7.0) * 30.0
+        if projectedMonthly > 50 {
+            suggestions.append(("medium", "Monthly pace projects to " + String(format: "$%.2f", projectedMonthly)))
+        }
+
+        let topModels = try topCostGroupsSince(since, groupBy: "model", limit: 1)
+        if let top = topModels.first, (top.cost / totalSpent) >= 0.5 {
+            suggestions.append(("medium", "Model concentration: \(top.key) accounts for \(percent(top.cost / totalSpent * 100)) of spend"))
+        }
+
+        let topSources = try topCostGroupsSince(since, groupBy: "source", limit: 1)
+        if let top = topSources.first, (top.cost / totalSpent) >= 0.5 {
+            suggestions.append(("medium", "Provider concentration: \(top.key) accounts for \(percent(top.cost / totalSpent * 100)) of spend"))
+        }
+
+        return Array(suggestions.prefix(limit))
+    }
+
+    private func lowCacheRateSuggestionSince(_ since: String) throws -> (severity: String, title: String)? {
+        try queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT SUM(c.cache_read_tokens) AS cache_read_tokens,
+                       SUM(c.input_tokens) AS input_tokens
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE c.model LIKE 'claude-%' AND s.start_time >= ?
+                """,
+                arguments: [since]
+            )
+            let inputTokens = intValue(row?["input_tokens"])
+            guard inputTokens > 0 else { return nil }
+
+            let cacheReadTokens = intValue(row?["cache_read_tokens"])
+            let totalInput = inputTokens + cacheReadTokens
+            guard totalInput > 0 else { return nil }
+
+            let cacheRate = Double(cacheReadTokens) / Double(totalInput)
+            guard cacheRate < 0.3 else { return nil }
+            return ("medium", "Low prompt cache utilization")
+        }
+    }
+
+    private func gitReposWithChanges(
+        limit: Int
+    ) throws -> [(name: String, branch: String?, dirtyCount: Int, unpushedCount: Int)] {
         try queue.read { db in
             let rows = try Row.fetchAll(
                 db,
@@ -898,7 +999,7 @@ final class MCPDatabase {
                 SELECT name, branch, dirty_count, unpushed_count
                 FROM git_repos
                 WHERE dirty_count > 0 OR unpushed_count > 0
-                ORDER BY dirty_count DESC, unpushed_count DESC, name ASC
+                ORDER BY dirty_count + unpushed_count DESC, name ASC
                 LIMIT ?
                 """,
                 arguments: [limit]
@@ -915,35 +1016,37 @@ final class MCPDatabase {
         }
     }
 
-    private func fileHotspotsSince(_ since: String, limit: Int) throws -> [(filePath: String, total: Int, sessions: Int)] {
+    private func fileHotspotsSince(
+        _ since: String,
+        limit: Int
+    ) throws -> [(filePath: String, totalEdits: Int, sessionCount: Int)] {
         try queue.read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
                 SELECT sf.file_path AS file_path,
-                       SUM(sf.count) AS total,
-                       COUNT(DISTINCT sf.session_id) AS sessions
+                       SUM(sf.count) AS total_edits,
+                       COUNT(DISTINCT sf.session_id) AS session_count
                 FROM session_files sf
-                JOIN sessions s ON s.id = sf.session_id
-                WHERE sf.action = 'Edit' AND s.start_time >= ?
+                WHERE sf.action = 'Edit'
+                  AND sf.session_id IN (SELECT id FROM sessions WHERE start_time >= ?)
                 GROUP BY sf.file_path
-                ORDER BY total DESC, file_path ASC
+                ORDER BY total_edits DESC, session_count DESC, file_path ASC
                 LIMIT ?
                 """,
                 arguments: [since, limit]
             )
             return rows.compactMap { row in
                 guard let filePath = stringValue(row["file_path"]), !filePath.isEmpty else { return nil }
-                return (
-                    filePath,
-                    intValue(row["total"]),
-                    intValue(row["sessions"])
-                )
+                return (filePath, intValue(row["total_edits"]), intValue(row["session_count"]))
             }
         }
     }
 
-    private func recentErrorsSince(_ since: String, limit: Int) throws -> [(module: String, message: String, count: Int)] {
+    private func recentErrorsSince(
+        _ since: String,
+        limit: Int
+    ) throws -> [(module: String, message: String, count: Int)] {
         try queue.read { db in
             let rows = try Row.fetchAll(
                 db,
@@ -952,21 +1055,19 @@ final class MCPDatabase {
                 FROM logs
                 WHERE level = 'error' AND ts >= ?
                 GROUP BY module, message
-                ORDER BY count DESC, last_seen DESC
+                ORDER BY count DESC, last_seen DESC, module ASC, message ASC
                 LIMIT ?
                 """,
                 arguments: [since, limit]
             )
             return rows.compactMap { row in
-                guard let module = stringValue(row["module"]), !module.isEmpty,
-                      let message = stringValue(row["message"]), !message.isEmpty else {
+                guard let module = stringValue(row["module"]),
+                      let message = stringValue(row["message"]),
+                      !message.isEmpty
+                else {
                     return nil
                 }
-                return (
-                    module,
-                    message,
-                    intValue(row["count"])
-                )
+                return (module, message, intValue(row["count"]))
             }
         }
     }
@@ -1418,6 +1519,21 @@ private func iso8601Timestamp(_ date: Date) -> String {
     formatter.timeZone = TimeZone(secondsFromGMT: 0)
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.string(from: date)
+}
+
+private func percent(_ value: Double) -> String {
+    String(format: "%.0f%%", value)
+}
+
+private func isNoSuchTableError(_ error: Error) -> Bool {
+    String(describing: error).contains("no such table")
+}
+
+private func writeEnvironmentError(label: String, error: Error) {
+    let message = "[get_context] \(label) error: \(error)\n"
+    if let data = message.data(using: .utf8) {
+        FileHandle.standardError.write(data)
+    }
 }
 
 func toLocalDateTime(_ value: String?) -> String {

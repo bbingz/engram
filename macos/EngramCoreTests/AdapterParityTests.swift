@@ -3,6 +3,98 @@ import XCTest
 @testable import EngramCoreRead
 
 final class AdapterParityTests: XCTestCase {
+    func testClaudeCodeAcceptsSymlinkedProjectsRoot() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-claude-root-symlink-\(UUID().uuidString)", isDirectory: true)
+        let realRoot = tempRoot.appendingPathComponent("real", isDirectory: true)
+        let linkedRoot = tempRoot.appendingPathComponent("linked", isDirectory: true)
+        let projectRoot = realRoot.appendingPathComponent("-repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        let transcript = projectRoot.appendingPathComponent("session.jsonl")
+        try "{}\n".write(to: transcript, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: linkedRoot.path, withDestinationPath: realRoot.path)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: linkedRoot.path)
+        let detected = await adapter.detect()
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+
+        XCTAssertTrue(
+            detected,
+            "A user may move ~/.claude/projects off disk and replace the root with a symlinked directory."
+        )
+        XCTAssertEqual(locators, [standardizedPath(transcript.path)])
+    }
+
+    func testCodexAcceptsSymlinkedSessionsRoot() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-codex-root-symlink-\(UUID().uuidString)", isDirectory: true)
+        let realRoot = tempRoot.appendingPathComponent("real-sessions", isDirectory: true)
+        let linkedRoot = tempRoot.appendingPathComponent("sessions", isDirectory: true)
+        let transcriptDir = realRoot.appendingPathComponent("2026/06/04", isDirectory: true)
+        try FileManager.default.createDirectory(at: transcriptDir, withIntermediateDirectories: true)
+        let transcript = transcriptDir.appendingPathComponent("rollout-symlinked-root.jsonl")
+        try [
+            [
+                "type": "session_meta",
+                "timestamp": "2026-06-04T01:00:00Z",
+                "payload": ["id": "codex-root-link", "cwd": "/repo"],
+            ]
+        ].map(jsonLine).joined(separator: "\n").appending("\n")
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: linkedRoot.path, withDestinationPath: realRoot.path)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let adapter = CodexAdapter(sessionsRoot: linkedRoot.path)
+        let detected = await adapter.detect()
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+
+        XCTAssertTrue(
+            detected,
+            "A user may move ~/.codex/sessions off disk and replace the root with a symlinked directory."
+        )
+        XCTAssertEqual(locators, [standardizedPath(transcript.path)])
+    }
+
+    func testCodexAccessibilityRejectsDanglingSymlinkLocator() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-codex-dangling-symlink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        let dangling = tempRoot.appendingPathComponent("missing.jsonl")
+        try FileManager.default.createSymbolicLink(
+            atPath: dangling.path,
+            withDestinationPath: tempRoot.appendingPathComponent("target-does-not-exist.jsonl").path
+        )
+
+        let adapter = CodexAdapter(sessionsRoot: tempRoot.path)
+        let accessible = await adapter.isAccessible(locator: dangling.path)
+
+        XCTAssertFalse(
+            accessible,
+            "A dangling symlink cannot be read and must be treated as inaccessible for orphan recovery."
+        )
+    }
+
+    func testCodexAccessibilityAcceptsValidFileSymlinkLocator() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-codex-file-symlink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        let target = tempRoot.appendingPathComponent("target.jsonl")
+        try "{}\n".write(to: target, atomically: true, encoding: .utf8)
+        let linked = tempRoot.appendingPathComponent("linked.jsonl")
+        try FileManager.default.createSymbolicLink(atPath: linked.path, withDestinationPath: target.path)
+
+        let adapter = CodexAdapter(sessionsRoot: tempRoot.path)
+        let accessible = await adapter.isAccessible(locator: linked.path)
+
+        XCTAssertTrue(
+            accessible,
+            "A valid symlinked transcript file should remain accessible for orphan recovery."
+        )
+    }
+
     func testDerivedClaudeSourceDetectsModelAfterLargeOpeningLine() async throws {
         let projectsRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-derived-source-\(UUID().uuidString)", isDirectory: true)

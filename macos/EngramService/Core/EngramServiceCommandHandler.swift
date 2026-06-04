@@ -1546,7 +1546,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             settingsPath: URL = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".engram/settings.json"),
             environment: [String: String] = ProcessInfo.processInfo.environment,
-            keychainReader: KeychainReader = ServiceKeychainReader.get
+            keychainReader: KeychainReader = { account in ServiceKeychainReader.get(account) }
         ) -> ServiceAISettings {
             guard let data = try? Data(contentsOf: settingsPath),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

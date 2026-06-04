@@ -201,6 +201,26 @@ describe('AiAuditWriter', () => {
     expect(emitted).toContain('sk-***');
   });
 
+  it('stores and emits sanitized errors', () => {
+    const handler = vi.fn();
+    writer.on('entry', handler);
+
+    const id = writer.record({
+      caller: 'summary',
+      operation: 'generate',
+      durationMs: 100,
+      error: 'request failed with API key sk-abcdefghijklmnopqrstuvwxyz',
+    });
+
+    const row = db
+      .prepare('SELECT error FROM ai_audit_log WHERE id = ?')
+      .get(id) as { error: string };
+    expect(row.error).toBe('request failed with API key sk-***');
+    expect(handler.mock.calls[0][0].error).toBe(
+      'request failed with API key sk-***',
+    );
+  });
+
   it('skips recording when disabled', () => {
     const w = new AiAuditWriter(db, {
       ...DEFAULT_AI_AUDIT_CONFIG,

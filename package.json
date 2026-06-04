@@ -4,7 +4,7 @@
   "description": "MCP Server: 读取多个 AI 编程助手的会话日志，实现跨工具历史上下文共享",
   "type": "module",
   "engines": {
-    "node": ">=22 <27"
+    "node": ">=24 <27"
   },
   "scripts": {
     "build": "tsc",
@@ -47,7 +47,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.13.5",
+    "@types/node": "^24.0.0",
     "@vitest/coverage-v8": "^4.1.8",
     "husky": "^9.1.7",
     "knip": "^6.3.1",

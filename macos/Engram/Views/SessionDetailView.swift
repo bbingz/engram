@@ -664,13 +664,17 @@ struct SessionDetailView: View {
         return clamped <= 0 ? count - 1 : clamped - 1
     }
 
+    static func nextFindMatchIndex(current: Int, direction: Int, count: Int) -> Int? {
+        nextNavPosition(current: current, direction: direction, count: count)
+    }
+
     func navigateFind(direction: Int) {
-        guard !matchIndices.isEmpty else { return }
-        if direction > 0 {
-            currentMatchIndex = (currentMatchIndex + 1) % matchIndices.count
-        } else {
-            currentMatchIndex = currentMatchIndex <= 0 ? matchIndices.count - 1 : currentMatchIndex - 1
-        }
+        guard let next = Self.nextFindMatchIndex(
+            current: currentMatchIndex,
+            direction: direction,
+            count: matchIndices.count
+        ) else { return }
+        currentMatchIndex = next
         let msgIndex = matchIndices[currentMatchIndex]
         let displayed = displayIndexed
         if msgIndex < displayed.count {

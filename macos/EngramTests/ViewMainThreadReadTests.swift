@@ -65,6 +65,15 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testSearchPageCancelsWorkOnDisappear() throws {
+        let s = try source("macos/Engram/Views/Pages/SearchPageView.swift")
+        XCTAssertTrue(s.contains("@State private var searchTask: Task<Void, Never>?"))
+        XCTAssertTrue(
+            s.contains(".onDisappear { searchTask?.cancel(); searchTask = nil }"),
+            "SearchPageView must cancel delayed or in-flight search work when the page leaves the hierarchy"
+        )
+    }
+
     func testExpandableSessionCardInvalidatesOnEitherCount() throws {
         let s = try source("macos/Engram/Components/ExpandableSessionCard.swift")
         XCTAssertTrue(

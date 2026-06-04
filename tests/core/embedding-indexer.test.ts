@@ -162,6 +162,42 @@ describe('EmbeddingIndexer', () => {
     );
   });
 
+  it('does not re-embed DB-backed sessions after the in-memory cache evicts them', async () => {
+    db.raw.exec(
+      'CREATE TABLE session_embeddings(session_id TEXT PRIMARY KEY, model TEXT)',
+    );
+
+    for (let i = 0; i < 10_001; i++) {
+      const id = `s-${i}`;
+      db.upsertSession({
+        id,
+        source: 'codex',
+        startTime: '2026-01-01T10:00:00Z',
+        cwd: '/p',
+        messageCount: 2,
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        toolMessageCount: 0,
+        systemMessageCount: 0,
+        filePath: `/f-${i}`,
+        sizeBytes: 100,
+      });
+      db.indexSessionContent(id, [
+        { role: 'user', content: `Embedding content ${i}` },
+      ]);
+      db.raw
+        .prepare(
+          'INSERT INTO session_embeddings(session_id, model) VALUES (?, ?)',
+        )
+        .run(id, 'mock');
+    }
+
+    const count = await indexer.indexAll();
+
+    expect(count).toBe(0);
+    expect(mockClient.embed).not.toHaveBeenCalled();
+  });
+
   it('persists embeddings through the real sqlite vector store and skips them after restart', async () => {
     const dbPath = join(tmpDir, 'integration.sqlite');
     db.close();

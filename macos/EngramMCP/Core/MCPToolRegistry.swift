@@ -1469,7 +1469,11 @@ extension OrderedJSONValue {
         ])
     }
 
-    static func toolError(message: String, code: String? = nil) -> OrderedJSONValue {
+    static func toolError(
+        message: String,
+        structured: OrderedJSONValue? = nil,
+        code: String? = nil
+    ) -> OrderedJSONValue {
         var entries: [(String, OrderedJSONValue)] = [
             ("content", .array([
                 .object([
@@ -1479,14 +1483,13 @@ extension OrderedJSONValue {
             ])),
             ("isError", .bool(true)),
         ]
-        if let code {
-            entries.insert(
-                ("structuredContent", .object([
-                    ("code", .string(code)),
-                    ("message", .string(message)),
-                ])),
-                at: 1
-            )
+        if let structured {
+            entries.append(("structuredContent", structured))
+        } else if let code {
+            entries.append(("structuredContent", .object([
+                ("code", .string(code)),
+                ("message", .string(message)),
+            ])))
         }
         return .object(entries)
     }

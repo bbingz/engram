@@ -947,7 +947,10 @@ public enum StartupBackfills {
             }
 
             let startTime: String = candidate["start_time"]
-            let scored = parentRows.map { parent -> ScoredParent in
+            let candidateParentRows = parentRows.filter {
+                isParentWithinCandidateLookback(parentStartTime: $0["start_time"], candidateStartTime: startTime)
+            }
+            let scored = candidateParentRows.map { parent -> ScoredParent in
                 ScoredParent(
                     parentId: parent["id"],
                     score: ParentDetection.scoreCandidate(
@@ -1029,6 +1032,21 @@ public enum StartupBackfills {
             """,
             arguments: [parentId, linkSource, sessionId]
         )
+    }
+
+    private static func isParentWithinCandidateLookback(
+        parentStartTime: String?,
+        candidateStartTime: String
+    ) -> Bool {
+        guard let parentStartTime,
+              let parentStart = parseDate(parentStartTime),
+              let candidateStart = parseDate(candidateStartTime)
+        else {
+            return false
+        }
+        let lookback: TimeInterval = 24 * 60 * 60
+        return parentStart <= candidateStart
+            && parentStart >= candidateStart.addingTimeInterval(-lookback)
     }
 
     private static func setSuggestedParent(

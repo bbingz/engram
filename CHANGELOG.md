@@ -7,6 +7,55 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #49 CI follow-up (2026-06-05, Codex)
+
+Continued draft PR #49 after GitHub Actions exposed CI-only gaps on
+`codex/followup-remediation`.
+
+- **Fixture freshness**: refreshed `test-fixtures/test-index.sqlite` after the
+  new schema/fixture generation path made `fixture-check` detect drift.
+- **CodeQL command-line sink**: constrained `engram resume --launch` so the CLI
+  maps session sources to literal launch commands instead of executing the
+  daemon-provided command string.
+- **CodeQL workflow runtime**: opted the CodeQL workflow into Node 24 JavaScript
+  action execution and increased Swift CodeQL timeout from 30 to 60 minutes
+  after the instrumented Swift build was still compiling when GitHub cancelled
+  it at 30 minutes.
+- **Verification**: `npm run check:fixtures`,
+  `npm run check:adapter-parity-fixtures`, fixture regeneration diff check,
+  `npx vitest run tests/cli/resume.test.ts`, `npm run typecheck:test`,
+  `npm run lint`, and `actionlint .github/workflows/codeql.yml` passed locally.
+
+### Follow-up remediation closeout (2026-06-05, Codex)
+
+Closed the planned post-review follow-up sweep on the rebased
+`codex/followup-remediation` branch and opened draft PR #49.
+
+- **Runtime baseline**: Node development/CI tooling is pinned to Node 24+
+  (`.nvmrc`, package engines, GitHub Actions setup-node), with `@types/node`
+  refreshed to the Node 24 line.
+- **CI security**: added CodeQL code scanning for JavaScript/TypeScript and
+  Swift, with Node 24 build setup and an explicit Swift manual build path.
+- **Follow-up fixes**: added Swift Gemini transcript size guards for MCP and
+  service export, removed raw Keychain secret forwarding from the app-to-service
+  environment, moved service `@keychain` resolution behind a direct Keychain
+  reader, expanded Swift MCP `get_context` environment parity, added focused
+  CLI coverage for project/resume helpers, centralized CLI health table names,
+  and cancelled Search page work on disappearance.
+- **Review adjudication**: verified and documented the follow-up review claims
+  around OSLog privacy, AI audit error sanitization, MCP handoff relative time,
+  suggested-parent lookback batching, and symlinked adapter source roots.
+- **Verification**: `npm run lint`, `npm run build`, `npm run typecheck:test`,
+  `npm run knip`, `npm run check:fixtures`, `npm run test:coverage`, and
+  `actionlint` passed locally. Swift unit suites passed with coverage:
+  `EngramCoreTests` (364 tests), `EngramMCPTests` (73 tests),
+  `EngramServiceCore` (127 tests), and `EngramTests` (301 tests, 1 skipped).
+  `npm run test:coverage` passed 127 Vitest files / 1491 tests.
+  `EngramUITests` UI smoke was attempted but the local XCTest UI runner either
+  died before bootstrap or hung during runner startup before any UI test body
+  ran; this is recorded as a local UI runner/environment failure pending CI or a
+  GUI-permitted rerun.
+
 ### Database raw handle API cleanup (2026-06-04, Codex)
 
 Opened a follow-up branch after PR #34 was merged to remove the duplicated

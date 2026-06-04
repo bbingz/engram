@@ -116,6 +116,7 @@ struct SearchPageView: View {
         .onChange(of: selectedProjectFilter) { _, _ in triggerSearchIfReady() }
         .onChange(of: selectedSourceFilter) { _, _ in triggerSearchIfReady() }
         .onChange(of: selectedTimeFilter) { _, _ in triggerSearchIfReady() }
+        .onDisappear { searchTask?.cancel(); searchTask = nil }
     }
 
     private var searchContent: some View {

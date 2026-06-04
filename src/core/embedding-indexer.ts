@@ -1,3 +1,4 @@
+import type BetterSqlite3 from 'better-sqlite3';
 import type { Database } from './db.js';
 import type { EmbeddingClient } from './embeddings.js';
 import type { VectorStore } from './vector-store.js';
@@ -5,6 +6,7 @@ import type { VectorStore } from './vector-store.js';
 export class EmbeddingIndexer {
   private static readonly MAX_INDEXED_CACHE = 10_000;
   private indexed = new Set<string>();
+  private embeddingExistsStmt: BetterSqlite3.Statement | null | undefined;
 
   constructor(
     private db: Database,
@@ -35,6 +37,10 @@ export class EmbeddingIndexer {
 
       for (const session of sessions) {
         if (this.indexed.has(session.id)) continue;
+        if (this.hasStoredEmbedding(session.id)) {
+          this.markIndexed(session.id);
+          continue;
+        }
 
         const text = this.getSessionText(session.id);
         if (!text) {
@@ -76,6 +82,20 @@ export class EmbeddingIndexer {
       const oldest = this.indexed.values().next().value;
       if (oldest === undefined) break;
       this.indexed.delete(oldest);
+    }
+  }
+
+  private hasStoredEmbedding(sessionId: string): boolean {
+    if (this.embeddingExistsStmt === null) return false;
+
+    try {
+      this.embeddingExistsStmt ??= this.db.raw.prepare(
+        'SELECT 1 AS found FROM session_embeddings WHERE session_id = ? LIMIT 1',
+      );
+      return Boolean(this.embeddingExistsStmt.get(sessionId));
+    } catch {
+      this.embeddingExistsStmt = null;
+      return false;
     }
   }
 

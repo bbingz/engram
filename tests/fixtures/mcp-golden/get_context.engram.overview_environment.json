@@ -1,0 +1,8 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "[windsurf] 2026-01-06 — engram windsurf session 6: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[iflow] 2026-01-05 — engram iflow session 5: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[cursor] 2026-01-04 — engram cursor session 4: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[gemini-cli] 2026-01-03 — engram gemini-cli session 3: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[codex] 2026-01-02 — engram codex session 2: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n[claude-code] 2026-01-01 — engram claude-code session 1: Swift MCP shim parity, WAL checkpoint behavior, and daemon forwarding\n\n— 6 sessions, ~180 tokens\n\n## Environment\nLive sessions: unavailable in Swift MCP stdio runtime\nCost today: $0.18\nAlerts (1):\n  [critical] MCP indexing lag detected\nTop tools (7d):\n  Read: 55 calls\n  Edit: 28 calls\n  Bash: 19 calls\n  search: 9 calls\n  Write: 7 calls\nGit repos with changes (1):\n  engram (perf/transcript-paging): 3 dirty, 2 unpushed\nFile hotspots (7d):\n  /Users/test/work/delta-kit/src/index.ts (12 edits, 6 sessions)\n  /Users/test/work/engram/src/index.ts (10 edits, 5 sessions)\n  /Users/test/work/apollo/src/index.ts (7 edits, 4 sessions)\n  /Users/test/work/nova/src/index.ts (7 edits, 4 sessions)\n  /Users/test/work/orion/src/index.ts (5 edits, 1 sessions)\nRecent errors (24h):\n  [mcp] transcript parser failed (×2)\nCost suggestions (1):\n  [medium] Low prompt cache utilization"
+    }
+  ]
+}

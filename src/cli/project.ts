@@ -10,8 +10,18 @@ import { expandHome } from '../core/project-move/paths.js';
 
 /** CLI equivalent of resolving a user-provided path: expand `~`, then
  *  path.resolve (handles relative paths against cwd). */
+export function normalizeProjectPath(
+  p: string,
+  home = homedir(),
+  cwd = process.cwd(),
+): string {
+  const expanded =
+    p === '~' ? home : p.startsWith('~/') ? resolve(home, p.slice(2)) : p;
+  return resolve(cwd, expanded);
+}
+
 function normalizePath(p: string): string {
-  return resolve(expandHome(p));
+  return normalizeProjectPath(expandHome(p));
 }
 
 import {
@@ -33,6 +43,20 @@ const COLOR = {
   dim: '\x1b[2m',
   reset: '\x1b[0m',
 };
+
+export interface MoveDryRunPlan {
+  totalFilesPatched: number;
+  totalOccurrences: number;
+  perSource: Array<{
+    id: string;
+    filesPatched: number;
+    occurrences: number;
+    issues: Array<{ reason: string; path: string }>;
+  }>;
+  renamedDirs: Array<{ sourceId: string }>;
+  skippedDirs: Array<{ sourceId: string; reason: string }>;
+  git: { dirty: boolean; untrackedOnly: boolean };
+}
 
 function log(...args: unknown[]): void {
   console.log(...args);
@@ -56,7 +80,7 @@ export interface ParsedFlags {
   since?: string;
 }
 
-export function parseFlags(args: string[]): ParsedFlags {
+export function parseProjectFlags(args: string[]): ParsedFlags {
   const out: ParsedFlags = {
     positional: [],
     yes: false,
@@ -83,6 +107,75 @@ export function parseFlags(args: string[]): ParsedFlags {
   return out;
 }
 
+const parseFlags = parseProjectFlags;
+
+export function archiveSuggestionOptions(
+  flags: Pick<ParsedFlags, 'archiveTo'>,
+): { forceCategory?: ArchiveCategory } | Record<string, never> {
+  return flags.archiveTo ? { forceCategory: flags.archiveTo } : {};
+}
+
+export function formatMoveDryRunPlan(
+  src: string,
+  dst: string,
+  plan: MoveDryRunPlan,
+): string[] {
+  const lines: string[] = [];
+  lines.push(`${COLOR.dim}--- plan ---${COLOR.reset}`);
+  lines.push(`[1] mv  ${src} → ${dst}`);
+  lines.push(
+    `[2] patch ${plan.totalFilesPatched} file(s) across ${plan.perSource.filter((p) => p.filesPatched > 0).length} source(s) · ${plan.totalOccurrences} occurrence(s)`,
+  );
+  // Round 4 Gemini Important: show per-source breakdown so users can
+  // see which sources participate (dir rename + content patch) vs
+  // content-only vs skipped.
+  for (const p of plan.perSource) {
+    if (p.filesPatched === 0) continue;
+    const willRename = plan.renamedDirs.some((d) => d.sourceId === p.id);
+    const role = willRename ? 'rename+patch' : 'content patch';
+    lines.push(
+      `    ${COLOR.dim}- ${p.id}: ${role}, ${p.filesPatched} file(s) · ${p.occurrences} occurrence(s)${COLOR.reset}`,
+    );
+  }
+  // Round 4 Critical: skippedDirs were silent — surface so users
+  // know which sources will NOT be renamed (iFlow lossy collapse,
+  // no project dir, etc.) instead of assuming all 7 participated.
+  if (plan.skippedDirs.length > 0) {
+    lines.push(`${COLOR.dim}--- skipped (no dir rename) ---${COLOR.reset}`);
+    for (const s of plan.skippedDirs) {
+      const reasonLabel =
+        s.reason === 'noop'
+          ? 'encoded name unchanged (content-only)'
+          : 'no dir on disk for this project';
+      lines.push(
+        `    ${COLOR.dim}- ${s.sourceId}: ${reasonLabel}${COLOR.reset}`,
+      );
+    }
+  }
+  // Dry-run issues (too_large / stat_failed) — hidden failures the
+  // user should see BEFORE committing.
+  const allIssues = plan.perSource.flatMap((p) => p.issues);
+  if (allIssues.length > 0) {
+    lines.push(
+      `${COLOR.yellow}!${COLOR.reset} ${allIssues.length} file(s) could not be scanned:`,
+    );
+    for (const i of allIssues.slice(0, 5)) {
+      lines.push(`    ${COLOR.dim}[${i.reason}] ${i.path}${COLOR.reset}`);
+    }
+    if (allIssues.length > 5) {
+      lines.push(
+        `    ${COLOR.dim}... and ${allIssues.length - 5} more${COLOR.reset}`,
+      );
+    }
+  }
+  if (plan.git.dirty) {
+    lines.push(
+      `${COLOR.yellow}!${COLOR.reset} git: ${src} has uncommitted changes (${plan.git.untrackedOnly ? 'untracked only' : 'tracked changes'})`,
+    );
+  }
+  return lines;
+}
+
 async function cmdMove(args: string[]): Promise<void> {
   const flags = parseFlags(args);
   if (flags.positional.length !== 2) {
@@ -98,56 +191,7 @@ async function cmdMove(args: string[]): Promise<void> {
     // keeps the interactive flow simple. Alt: skip dry-run when --yes.)
     if (!flags.yes && !flags.dryRun) {
       const plan = await runProjectMove(db, { src, dst, dryRun: true });
-      log(`${COLOR.dim}--- plan ---${COLOR.reset}`);
-      log(`[1] mv  ${src} → ${dst}`);
-      log(
-        `[2] patch ${plan.totalFilesPatched} file(s) across ${plan.perSource.filter((p) => p.filesPatched > 0).length} source(s) · ${plan.totalOccurrences} occurrence(s)`,
-      );
-      // Round 4 Gemini Important: show per-source breakdown so users can
-      // see which sources participate (dir rename + content patch) vs
-      // content-only vs skipped.
-      for (const p of plan.perSource) {
-        if (p.filesPatched === 0) continue;
-        const willRename = plan.renamedDirs.some((d) => d.sourceId === p.id);
-        const role = willRename ? 'rename+patch' : 'content patch';
-        log(
-          `    ${COLOR.dim}- ${p.id}: ${role}, ${p.filesPatched} file(s) · ${p.occurrences} occurrence(s)${COLOR.reset}`,
-        );
-      }
-      // Round 4 Critical: skippedDirs were silent — surface so users
-      // know which sources will NOT be renamed (iFlow lossy collapse,
-      // no project dir, etc.) instead of assuming all 7 participated.
-      if (plan.skippedDirs.length > 0) {
-        log(`${COLOR.dim}--- skipped (no dir rename) ---${COLOR.reset}`);
-        for (const s of plan.skippedDirs) {
-          const reasonLabel =
-            s.reason === 'noop'
-              ? 'encoded name unchanged (content-only)'
-              : 'no dir on disk for this project';
-          log(`    ${COLOR.dim}- ${s.sourceId}: ${reasonLabel}${COLOR.reset}`);
-        }
-      }
-      // Dry-run issues (too_large / stat_failed) — hidden failures the
-      // user should see BEFORE committing.
-      const allIssues = plan.perSource.flatMap((p) => p.issues);
-      if (allIssues.length > 0) {
-        log(
-          `${COLOR.yellow}!${COLOR.reset} ${allIssues.length} file(s) could not be scanned:`,
-        );
-        for (const i of allIssues.slice(0, 5)) {
-          log(`    ${COLOR.dim}[${i.reason}] ${i.path}${COLOR.reset}`);
-        }
-        if (allIssues.length > 5) {
-          log(
-            `    ${COLOR.dim}... and ${allIssues.length - 5} more${COLOR.reset}`,
-          );
-        }
-      }
-      if (plan.git.dirty) {
-        log(
-          `${COLOR.yellow}!${COLOR.reset} git: ${src} has uncommitted changes (${plan.git.untrackedOnly ? 'untracked only' : 'tracked changes'})`,
-        );
-      }
+      for (const line of formatMoveDryRunPlan(src, dst, plan)) log(line);
       const ans = await prompt('\nProceed? [y/N] ');
       if (ans.trim().toLowerCase() !== 'y') {
         log('aborted');
@@ -246,9 +290,10 @@ async function cmdArchive(args: string[]): Promise<void> {
   try {
     // Pass --to through as forceCategory so ambiguous projects (rule 4) don't
     // crash when the user already said which bucket (B2 fix).
-    const suggestion = await suggestArchiveTarget(src, {
-      forceCategory: flags.archiveTo,
-    });
+    const suggestion = await suggestArchiveTarget(
+      src,
+      archiveSuggestionOptions(flags),
+    );
     const dst = suggestion.dst;
     log(`${COLOR.dim}suggested:${COLOR.reset} ${dst}`);
     log(`${COLOR.dim}reason:${COLOR.reset} ${suggestion.reason}`);
@@ -442,53 +487,53 @@ export async function main(args: string[]): Promise<void> {
   try {
     await dispatch(args[0], args.slice(1));
   } catch (err) {
-    const e = err as Error;
-    const name = e?.name ?? 'Error';
-    // Round 4: use shared retry-policy classifier so CLI error hints stay
-    // consistent with MCP and HTTP. Previously CLI had its own switch
-    // that drifted from the other two layers.
-    const { classifyRetryPolicy } = await import(
-      '../core/project-move/retry-policy.js'
-    );
-    const policy = classifyRetryPolicy(name);
-    const retryHint =
-      policy === 'safe'
-        ? ' (retry is safe)'
-        : policy === 'conditional'
-          ? ' (retry once after resolving the condition above)'
-          : policy === 'wait'
-            ? ' (wait a few seconds, then retry)'
-            : ''; // 'never' — no retry hint, message already explains
-    switch (name) {
-      case 'LockBusyError':
-        console.error(
-          `${COLOR.red}✗${COLOR.reset} another project-move is in progress — ${e.message}${retryHint}`,
-        );
-        break;
-      case 'ConcurrentModificationError':
-        console.error(
-          `${COLOR.red}✗${COLOR.reset} a session file changed while patching; re-run \`engram project move\` to retry${retryHint}.\n   detail: ${e.message}`,
-        );
-        break;
-      case 'InvalidUtf8Error':
-        console.error(
-          `${COLOR.red}✗${COLOR.reset} a session file is not valid UTF-8 — refusing to touch. Manually inspect and fix, then retry.\n   detail: ${e.message}`,
-        );
-        break;
-      case 'DirCollisionError':
-      case 'SharedEncodingCollisionError':
-      case 'UndoNotAllowedError':
-      case 'UndoStaleError':
-        console.error(`${COLOR.red}✗${COLOR.reset} ${e.message}`);
-        break;
-      default: {
-        // Generic: show message without stack trace
-        console.error(
-          `${COLOR.red}✗${COLOR.reset} ${e.message ?? String(e)}${retryHint}`,
-        );
-        if (process.env.ENGRAM_DEBUG) console.error(e.stack);
-      }
-    }
+    console.error(await formatProjectCliError(err, process.env));
     process.exit(1);
   }
+}
+
+export async function formatProjectCliError(
+  err: unknown,
+  env: { ENGRAM_DEBUG?: string } = process.env,
+): Promise<string> {
+  const e = err instanceof Error ? err : new Error(String(err));
+  const name = e.name || 'Error';
+  // Round 4: use shared retry-policy classifier so CLI error hints stay
+  // consistent with MCP and HTTP. Previously CLI had its own switch
+  // that drifted from the other two layers.
+  const { classifyRetryPolicy } = await import(
+    '../core/project-move/retry-policy.js'
+  );
+  const policy = classifyRetryPolicy(name);
+  const retryHint =
+    policy === 'safe'
+      ? ' (retry is safe)'
+      : policy === 'conditional'
+        ? ' (retry once after resolving the condition above)'
+        : policy === 'wait'
+          ? ' (wait a few seconds, then retry)'
+          : ''; // 'never' — no retry hint, message already explains
+  let message: string;
+  switch (name) {
+    case 'LockBusyError':
+      message = `another project-move is in progress — ${e.message}${retryHint}`;
+      break;
+    case 'ConcurrentModificationError':
+      message = `a session file changed while patching; re-run \`engram project move\` to retry${retryHint}.\n   detail: ${e.message}`;
+      break;
+    case 'InvalidUtf8Error':
+      message = `a session file is not valid UTF-8 — refusing to touch. Manually inspect and fix, then retry.\n   detail: ${e.message}`;
+      break;
+    case 'DirCollisionError':
+    case 'SharedEncodingCollisionError':
+    case 'UndoNotAllowedError':
+    case 'UndoStaleError':
+      message = e.message;
+      break;
+    default:
+      message = `${e.message ?? String(e)}${retryHint}`;
+  }
+  if (env.ENGRAM_DEBUG && e.stack)
+    return `${COLOR.red}✗${COLOR.reset} ${message}\n${e.stack}`;
+  return `${COLOR.red}✗${COLOR.reset} ${message}`;
 }

@@ -59,7 +59,7 @@ export class TitleGenerator {
 
     const start = Date.now();
     const timeout = createTimeoutSignal(15000);
-    let res: Response;
+    let res: Response | null = null;
     try {
       res = await fetch(url, {
         method: 'POST',
@@ -67,57 +67,59 @@ export class TitleGenerator {
         body: JSON.stringify(body),
         signal: timeout.signal,
       });
-    } catch (err) {
+
+      // biome-ignore lint/suspicious/noExplicitAny: LLM API response shape varies by provider (Ollama vs OpenAI)
+      const json = (await res.json()) as Record<string, any>;
+
+      const raw = isOllama
+        ? (json.response as string)
+        : (json.choices?.[0]?.message?.content as string);
+
+      const result = parseTitleResponse(raw || '');
+
+      // Extract token counts — field names differ by provider
+      const promptTokens: number | undefined = isOllama
+        ? (json.prompt_eval_count ?? undefined)
+        : (json.usage?.prompt_tokens ?? undefined);
+      const completionTokens: number | undefined = isOllama
+        ? (json.eval_count ?? undefined)
+        : (json.usage?.completion_tokens ?? undefined);
+
       this.audit?.record({
         caller: 'title',
         operation: 'generate',
         method: 'POST',
         url,
+        statusCode: res.status,
         model: this.config.model,
         provider: this.config.provider,
+        promptTokens,
+        completionTokens,
+        totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0) || undefined,
         durationMs: Date.now() - start,
         requestBody: { prompt },
-        error: err instanceof Error ? err.message : String(err),
+        responseBody: { text: result },
       });
+
+      return result;
+    } catch (err) {
+      if (res === null) {
+        this.audit?.record({
+          caller: 'title',
+          operation: 'generate',
+          method: 'POST',
+          url,
+          model: this.config.model,
+          provider: this.config.provider,
+          durationMs: Date.now() - start,
+          requestBody: { prompt },
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       throw err;
     } finally {
       timeout.cleanup();
     }
-
-    // biome-ignore lint/suspicious/noExplicitAny: LLM API response shape varies by provider (Ollama vs OpenAI)
-    const json = (await res.json()) as Record<string, any>;
-
-    const raw = isOllama
-      ? (json.response as string)
-      : (json.choices?.[0]?.message?.content as string);
-
-    const result = parseTitleResponse(raw || '');
-
-    // Extract token counts — field names differ by provider
-    const promptTokens: number | undefined = isOllama
-      ? (json.prompt_eval_count ?? undefined)
-      : (json.usage?.prompt_tokens ?? undefined);
-    const completionTokens: number | undefined = isOllama
-      ? (json.eval_count ?? undefined)
-      : (json.usage?.completion_tokens ?? undefined);
-
-    this.audit?.record({
-      caller: 'title',
-      operation: 'generate',
-      method: 'POST',
-      url,
-      statusCode: res.status,
-      model: this.config.model,
-      provider: this.config.provider,
-      promptTokens,
-      completionTokens,
-      totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0) || undefined,
-      durationMs: Date.now() - start,
-      requestBody: { prompt },
-      responseBody: { text: result },
-    });
-
-    return result;
   }
 }
 

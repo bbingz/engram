@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DiagnoseResult, HealthResult } from '../../src/cli/health.js';
-import { diagnose, queryHealth } from '../../src/cli/health.js';
+import {
+  diagnose,
+  HEALTH_TABLE_NAMES,
+  queryHealth,
+} from '../../src/cli/health.js';
 import { Database } from '../../src/core/db.js';
 
 describe('queryHealth', () => {
@@ -14,9 +18,7 @@ describe('queryHealth', () => {
 
   it('returns table row counts', () => {
     const result = queryHealth(db.raw);
-    expect(result.tables).toHaveProperty('logs');
-    expect(result.tables).toHaveProperty('traces');
-    expect(result.tables).toHaveProperty('metrics');
+    expect(Object.keys(result.tables)).toEqual([...HEALTH_TABLE_NAMES]);
     expect(result.tables.logs).toBe(0);
   });
 
