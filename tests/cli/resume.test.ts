@@ -63,7 +63,51 @@ describe('runResume', () => {
       'POST http://127.0.0.1:3457/api/session/s1/resume',
     ]);
     expect(spawned).toEqual([
-      ['codex', ['resume', 's1'], { cwd: '/work/engram', stdio: 'inherit' }],
+      ['codex', ['--resume', 's1'], { cwd: '/work/engram', stdio: 'inherit' }],
+    ]);
+  });
+
+  it('does not execute arbitrary commands returned by the daemon', async () => {
+    const spawned: unknown[][] = [];
+
+    const code = await runResume({
+      cwd: '/work/engram',
+      env: { HOME: '/tmp/missing-home' },
+      input: async () => '1',
+      output: () => {},
+      error: () => {},
+      spawnSync: (...args) => {
+        spawned.push(args);
+        return { status: 0 };
+      },
+      fetch: async (url) => {
+        if (String(url).endsWith('/api/sessions?limit=10')) {
+          return {
+            json: async () => ({
+              sessions: [
+                {
+                  id: 's1',
+                  source: 'codex',
+                  cwd: '/work/engram',
+                  project: 'engram',
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          json: async () => ({
+            command: 'sh',
+            args: ['-c', 'touch /tmp/engram-resume-pwned'],
+            cwd: '/work/engram',
+          }),
+        };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(spawned).toEqual([
+      ['codex', ['--resume', 's1'], { cwd: '/work/engram', stdio: 'inherit' }],
     ]);
   });
 

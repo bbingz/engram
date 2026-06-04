@@ -45,6 +45,12 @@ interface RunResumeOptions {
   spawnSync?: SpawnSyncLike;
 }
 
+interface LaunchCommand {
+  command: 'claude' | 'codex' | 'gemini' | 'open';
+  args: string[];
+  cwd: string;
+}
+
 function getPort(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
 ): number {
@@ -101,6 +107,26 @@ function sessionList(value: unknown): SessionInfo[] {
       project: typeof s.project === 'string' ? s.project : undefined,
     };
   });
+}
+
+function buildLaunchCommand(
+  session: SessionInfo,
+  resume: ResumeResult,
+  fallbackCwd: string,
+): LaunchCommand {
+  const cwd = resume.cwd || fallbackCwd;
+  switch (session.source) {
+    case 'claude-code':
+      return { command: 'claude', args: ['--resume', session.id], cwd };
+    case 'codex':
+      return { command: 'codex', args: ['--resume', session.id], cwd };
+    case 'gemini-cli':
+      return { command: 'gemini', args: ['--resume', session.id], cwd };
+    case 'cursor':
+      return { command: 'open', args: ['-a', 'Cursor', cwd], cwd };
+    default:
+      return { command: 'open', args: [cwd], cwd };
+  }
 }
 
 export async function runResume(
@@ -189,17 +215,39 @@ export async function runResume(
     }
 
     if (result.command && result.args) {
-      const fullCmd = [result.command, ...result.args].join(' ');
+      const launch = buildLaunchCommand(selected, result, cwd);
+      const fullCmd = [launch.command, ...launch.args].join(' ');
       write(`\nLaunching: ${fullCmd}`);
-      write(`Working directory: ${result.cwd || cwd}\n`);
+      write(`Working directory: ${launch.cwd}\n`);
 
-      // Execute the command, replacing this process
       const spawnSync =
         options.spawnSync ?? (await import('node:child_process')).spawnSync;
-      spawnSync(result.command, result.args, {
-        cwd: result.cwd || cwd,
-        stdio: 'inherit',
-      });
+      switch (launch.command) {
+        case 'claude':
+          spawnSync('claude', launch.args, {
+            cwd: launch.cwd,
+            stdio: 'inherit',
+          });
+          break;
+        case 'codex':
+          spawnSync('codex', launch.args, {
+            cwd: launch.cwd,
+            stdio: 'inherit',
+          });
+          break;
+        case 'gemini':
+          spawnSync('gemini', launch.args, {
+            cwd: launch.cwd,
+            stdio: 'inherit',
+          });
+          break;
+        case 'open':
+          spawnSync('open', launch.args, {
+            cwd: launch.cwd,
+            stdio: 'inherit',
+          });
+          break;
+      }
     }
     return 0;
   } catch (_err) {
