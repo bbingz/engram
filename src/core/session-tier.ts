@@ -1,5 +1,7 @@
 export type SessionTier = 'skip' | 'lite' | 'normal' | 'premium';
 
+import { durationMinutes } from './time.js';
+
 export interface TierInput {
   messageCount: number;
   agentRole: string | null;
@@ -36,18 +38,6 @@ const PROBE_FIRST_LINES = new Set([
   'say hello',
   'reply: t4',
 ]);
-
-function durationMinutes(
-  startTime: string | null,
-  endTime: string | null,
-): number {
-  if (!startTime || !endTime) return 0;
-  const start = new Date(startTime).getTime();
-  const end = new Date(endTime).getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
-  const duration = (end - start) / 60_000;
-  return Number.isFinite(duration) ? duration : 0;
-}
 
 export function computeTier(input: TierInput): SessionTier {
   // 1. skip
