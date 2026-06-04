@@ -11,6 +11,7 @@ import {
 } from '../parent-detection.js';
 import { computeQualityScore } from '../session-scoring.js';
 import { addProjectAlias } from './alias-repo.js';
+import { deleteSubagentFtsForRebuild } from './fts-rebuild-policy.js';
 import { finishMigration } from './migration-log-repo.js';
 import {
   setParentSession,
@@ -302,9 +303,7 @@ export function downgradeSubagentTiers(db: BetterSqlite3.Database): number {
     .run().changes;
 
   // Clean up FTS entries for subagent sessions — they shouldn't be in search results
-  db.prepare(
-    `DELETE FROM sessions_fts WHERE session_id IN (SELECT id FROM sessions WHERE agent_role = 'subagent')`,
-  ).run();
+  deleteSubagentFtsForRebuild(db);
 
   return downgraded;
 }

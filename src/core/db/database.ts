@@ -11,6 +11,7 @@ import type {
   SyncCursor,
 } from '../session-snapshot.js';
 import * as aliases from './alias-repo.js';
+import { deleteFtsContentForRebuild } from './fts-rebuild-policy.js';
 import * as fts from './fts-repo.js';
 import * as jobs from './index-job-repo.js';
 import type { InsightRow } from './insight-repo.js';
@@ -232,9 +233,7 @@ export class Database {
   }
   deleteIndexArtifacts(sessionId: string): void {
     const tx = this.db.transaction(() => {
-      this.db
-        .prepare('DELETE FROM sessions_fts WHERE session_id = ?')
-        .run(sessionId);
+      deleteFtsContentForRebuild(this.db, sessionId);
       const hasEmbeddings =
         this.db
           .prepare(

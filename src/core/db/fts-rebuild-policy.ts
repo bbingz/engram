@@ -88,6 +88,80 @@ export function finalizeFtsRebuildIfReady(
   return true;
 }
 
+export function replaceFtsContentForRebuild(
+  db: BetterSqlite3.Database,
+  sessionId: string,
+  contents: string[],
+): void {
+  const tx = db.transaction(() => {
+    replaceFtsContentInTable(db, ACTIVE_TABLE, sessionId, contents);
+    if (rebuildIsPending(db) && tableExists(db, REBUILD_TABLE)) {
+      replaceFtsContentInTable(db, REBUILD_TABLE, sessionId, contents);
+    }
+  });
+  tx();
+}
+
+export function deleteFtsContentForRebuild(
+  db: BetterSqlite3.Database,
+  sessionId: string,
+): void {
+  const tx = db.transaction(() => {
+    deleteFtsContentInTable(db, ACTIVE_TABLE, sessionId);
+    if (rebuildIsPending(db) && tableExists(db, REBUILD_TABLE)) {
+      deleteFtsContentInTable(db, REBUILD_TABLE, sessionId);
+    }
+  });
+  tx();
+}
+
+export function deleteSubagentFtsForRebuild(db: BetterSqlite3.Database): void {
+  const tx = db.transaction(() => {
+    db.exec(
+      "DELETE FROM sessions_fts WHERE session_id IN (SELECT id FROM sessions WHERE agent_role = 'subagent')",
+    );
+    if (rebuildIsPending(db) && tableExists(db, REBUILD_TABLE)) {
+      db.exec(
+        "DELETE FROM sessions_fts_rebuild WHERE session_id IN (SELECT id FROM sessions WHERE agent_role = 'subagent')",
+      );
+    }
+  });
+  tx();
+}
+
+function replaceFtsContentInTable(
+  db: BetterSqlite3.Database,
+  table: typeof ACTIVE_TABLE | typeof REBUILD_TABLE,
+  sessionId: string,
+  contents: string[],
+): void {
+  deleteFtsContentInTable(db, table, sessionId);
+  const insert = db.prepare(
+    `INSERT INTO ${table}(session_id, content) VALUES (?, ?)`,
+  );
+  for (const content of contents) {
+    if (content.trim()) insert.run(sessionId, content);
+  }
+}
+
+function deleteFtsContentInTable(
+  db: BetterSqlite3.Database,
+  table: typeof ACTIVE_TABLE | typeof REBUILD_TABLE,
+  sessionId: string,
+): void {
+  db.prepare(`DELETE FROM ${table} WHERE session_id = ?`).run(sessionId);
+}
+
+function rebuildIsPending(db: BetterSqlite3.Database): boolean {
+  if (!tableExists(db, 'metadata')) return false;
+  return (
+    db
+      .prepare('SELECT value FROM metadata WHERE key = ?')
+      .pluck()
+      .get(REBUILD_VERSION_KEY) === FTS_VERSION
+  );
+}
+
 function reopenCompletedFtsJobs(db: BetterSqlite3.Database): void {
   if (!tableExists(db, 'session_index_jobs')) return;
   db.exec(`

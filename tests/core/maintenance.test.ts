@@ -6,6 +6,7 @@ import {
   backfillScores,
   checkpointWal,
   detectOrphans,
+  downgradeSubagentTiers,
   markOrphanByPath,
   reconcileInsights,
   runPostMigrationBackfill,
@@ -194,6 +195,68 @@ describe('reconcileInsights', () => {
 
     expect(result.resetEmbedding).toBe(1);
     expect(result.orphanedVector).toBe(1);
+  });
+});
+
+describe('downgradeSubagentTiers', () => {
+  let db: Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'engram-maintenance-test-'));
+    db = new Database(join(tmpDir, 'test.sqlite'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it('removes subagent FTS rows from active and rebuild tables', () => {
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO sessions (
+        id,
+        source,
+        start_time,
+        cwd,
+        file_path,
+        agent_role,
+        tier
+      ) VALUES (
+        'subagent-fts',
+        'codex',
+        '2026-03-18T11:00:00Z',
+        '/repo',
+        '/tmp/subagent.jsonl',
+        'subagent',
+        'lite'
+      );
+      INSERT INTO sessions_fts(session_id, content)
+      VALUES ('subagent-fts', 'active subagent text');
+      INSERT INTO sessions_fts_rebuild(session_id, content)
+      VALUES ('subagent-fts', 'rebuild subagent text');
+    `);
+    db.setMetadata('fts_rebuild_version', '3');
+
+    expect(downgradeSubagentTiers(db.raw)).toBe(1);
+
+    expect(
+      db.raw
+        .prepare('SELECT content FROM sessions_fts WHERE session_id = ?')
+        .all('subagent-fts'),
+    ).toEqual([]);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT content FROM sessions_fts_rebuild WHERE session_id = ?',
+        )
+        .all('subagent-fts'),
+    ).toEqual([]);
   });
 });
 
