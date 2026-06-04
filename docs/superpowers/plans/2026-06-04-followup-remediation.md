@@ -189,6 +189,13 @@ https://github.com/bbingz/engram/pull/49. CI/CodeQL monitoring remains the
 external verifier; local verification passed except for the local XCTest UI
 runner startup blocker documented in `.memory` and `CHANGELOG.md`.
 
+Post-push CI follow-up: PR #49 first exposed fixture DB drift, then a CodeQL
+TypeScript command-line sink in `src/cli/resume.ts`, then a Swift CodeQL timeout
+while the instrumented Swift build was still compiling. Codex refreshed the
+fixture DB, constrained resume launch commands to source-derived literal
+executables, opted the CodeQL workflow into Node 24 JavaScript action execution,
+and raised Swift CodeQL timeout to 60 minutes.
+
 ### Task 8: Session Detail Find Navigation Stale Index Crash
 
 **Files:**

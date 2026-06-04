@@ -1,5 +1,35 @@
 # Engram Local Memory
 
+## 2026-06-05 — PR #49 CI follow-up (Codex)
+
+Codex continued PR #49 after GitHub Actions exposed three branch-only CI issues.
+
+Implemented/confirmed:
+- `fixture-check` failed because `npm run generate:fixtures` modified
+  `test-fixtures/test-index.sqlite`; Codex regenerated and committed the fixture
+  database.
+- CodeQL TypeScript reported an "Uncontrolled command line" alert in
+  `src/cli/resume.ts`. The CLI now maps launch requests from `session.source`
+  to literal executables/arguments and ignores the daemon-provided executable at
+  the spawn sink.
+- CodeQL Swift timed out after 30m49s while still compiling Swift code under
+  CodeQL instrumentation. `.github/workflows/codeql.yml` now sets
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` and gives Swift CodeQL a 60-minute
+  timeout.
+
+Verification evidence:
+- `npm run check:fixtures`, `npm run check:adapter-parity-fixtures`, and
+  `npm run generate:fixtures && git diff --exit-code
+  test-fixtures/test-index.sqlite` passed after refreshing the fixture DB.
+- `npx vitest run tests/cli/resume.test.ts`, `npm run typecheck:test`,
+  `npm run lint`, and `actionlint .github/workflows/codeql.yml` passed after the
+  resume/CodeQL workflow fixes.
+
+Resume point:
+- Push the CodeQL workflow timeout/env fix, then monitor PR #49 checks again.
+- Untracked `.claude/wf-codex-review*.js` scripts remain local Claude workflow
+  artifacts and should stay uncommitted.
+
 ## 2026-06-05 — Follow-up remediation closeout and PR prep (Codex)
 
 Codex continued the post-review follow-up remediation on a new

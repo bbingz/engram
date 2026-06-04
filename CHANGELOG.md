@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #49 CI follow-up (2026-06-05, Codex)
+
+Continued draft PR #49 after GitHub Actions exposed CI-only gaps on
+`codex/followup-remediation`.
+
+- **Fixture freshness**: refreshed `test-fixtures/test-index.sqlite` after the
+  new schema/fixture generation path made `fixture-check` detect drift.
+- **CodeQL command-line sink**: constrained `engram resume --launch` so the CLI
+  maps session sources to literal launch commands instead of executing the
+  daemon-provided command string.
+- **CodeQL workflow runtime**: opted the CodeQL workflow into Node 24 JavaScript
+  action execution and increased Swift CodeQL timeout from 30 to 60 minutes
+  after the instrumented Swift build was still compiling when GitHub cancelled
+  it at 30 minutes.
+- **Verification**: `npm run check:fixtures`,
+  `npm run check:adapter-parity-fixtures`, fixture regeneration diff check,
+  `npx vitest run tests/cli/resume.test.ts`, `npm run typecheck:test`,
+  `npm run lint`, and `actionlint .github/workflows/codeql.yml` passed locally.
+
 ### Follow-up remediation closeout (2026-06-05, Codex)
 
 Closed the planned post-review follow-up sweep on the rebased

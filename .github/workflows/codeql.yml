@@ -12,6 +12,9 @@ permissions:
   contents: read
   security-events: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   typescript:
     name: CodeQL TypeScript
@@ -32,7 +35,7 @@ jobs:
   swift:
     name: CodeQL Swift
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
