@@ -1,0 +1,71 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '34 3 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  typescript:
+    name: CodeQL TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+
+  swift:
+    name: CodeQL Swift
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install xcodegen
+        run: brew install xcodegen || true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: swift
+          build-mode: manual
+
+      - name: Generate project resources
+        run: |
+          npm ci
+          npm run build
+          npm run generate:fixtures
+          cd macos
+          xcodegen generate
+
+      - name: Build Swift product
+        run: |
+          cd macos
+          xcodebuild build \
+            -project Engram.xcodeproj \
+            -scheme Engram \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
