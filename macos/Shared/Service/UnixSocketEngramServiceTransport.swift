@@ -70,11 +70,20 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
                 throw EngramServiceError.invalidRequest(message: "Malformed service response: \(error.localizedDescription)")
             }
         }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            fdBox.shutdownIfOpen()
-            task.cancel()
+        do {
+            let response = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                fdBox.shutdownIfOpen()
+                task.cancel()
+            }
+            try Task.checkCancellation()
+            return response
+        } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw error
         }
     }
 

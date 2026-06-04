@@ -2,6 +2,8 @@ import Foundation
 
 final class MCPStdioServer {
     private let config = MCPConfig.load()
+    private let inFlight = MCPInFlightRequests()
+    private let outputLock = NSLock()
     private static let supportedProtocolVersions: Set<String> = [
         "2024-11-05",
         "2025-03-26",
@@ -43,10 +45,49 @@ final class MCPStdioServer {
                     emitError(id: nil, code: -32700, message: "Parse error")
                     continue
                 }
+                if request.method == "notifications/cancelled" {
+                    await handleCancellation(request)
+                    continue
+                }
+                if request.method == "tools/call", request.id != nil {
+                    await handleToolCallAsync(request)
+                    continue
+                }
                 await handle(request)
             }
         } catch {
             // stdin closed or unreadable; exit the loop quietly.
+        }
+        await inFlight.waitForAll()
+    }
+
+    private func handleCancellation(_ request: JSONRPCRequest) async {
+        guard let key = Self.cancellationKey(from: request.params?["requestId"]) else {
+            return
+        }
+        await inFlight.cancel(key)
+    }
+
+    private func handleToolCallAsync(_ request: JSONRPCRequest) async {
+        guard let id = request.id,
+              let key = Self.cancellationKey(from: id) else {
+            await handleToolCall(request)
+            return
+        }
+        guard let params = request.params?.objectValue,
+              let name = params["name"]?.stringValue else {
+            emitError(id: request.id, code: -32602, message: "Invalid params")
+            return
+        }
+        let arguments = params["arguments"]?.objectValue ?? [:]
+        await inFlight.start(for: key) { [weak self] in
+            guard let self else { return }
+            let response = await handleToolCall(name: name, arguments: arguments)
+            emit(
+                jsonrpc: "2.0",
+                id: id,
+                result: response
+            )
         }
     }
 
@@ -117,10 +158,18 @@ final class MCPStdioServer {
         arguments: [String: JSONValue]
     ) async -> OrderedJSONValue {
         do {
-            return try await MCPToolRegistry.handle(
+            try Task.checkCancellation()
+            let response = try await MCPToolRegistry.handle(
                 tool: name,
                 arguments: arguments,
                 config: config
+            )
+            try Task.checkCancellation()
+            return response
+        } catch is CancellationError {
+            return .toolError(
+                message: "Request cancelled by client.",
+                code: "cancelled"
             )
         } catch let error as MCPToolError {
             return .toolError(
@@ -132,12 +181,35 @@ final class MCPStdioServer {
         }
     }
 
+    private static func cancellationKey(from id: JSONRPCId) -> String? {
+        switch id {
+        case .string(let value):
+            return "s:\(value)"
+        case .number(let value):
+            return "n:\(value)"
+        }
+    }
+
+    private static func cancellationKey(from value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        switch value {
+        case .string(let raw):
+            return "s:\(raw)"
+        case .int(let raw):
+            return "n:\(raw)"
+        default:
+            return nil
+        }
+    }
+
     private func emit(jsonrpc: String, id: JSONRPCId?, result: OrderedJSONValue) {
         var entries: [(String, OrderedJSONValue)] = [("jsonrpc", .string(jsonrpc))]
         if let id {
             entries.append(("id", id.orderedJSONValue))
         }
         entries.append(("result", result))
+        outputLock.lock()
+        defer { outputLock.unlock() }
         print(OrderedJSONValue.object(entries).compactJSONString())
         fflush(stdout)
     }
@@ -154,7 +226,36 @@ final class MCPStdioServer {
                 ("message", .string(message)),
             ])
         ))
+        outputLock.lock()
+        defer { outputLock.unlock() }
         print(OrderedJSONValue.object(entries).compactJSONString())
         fflush(stdout)
+    }
+}
+
+private actor MCPInFlightRequests {
+    private var tasks: [String: Task<Void, Never>] = [:]
+
+    func start(for key: String, operation: @escaping @Sendable () async -> Void) {
+        let task = Task { [weak self] in
+            await operation()
+            await self?.remove(key)
+        }
+        tasks[key] = task
+    }
+
+    func cancel(_ key: String) {
+        tasks[key]?.cancel()
+    }
+
+    func remove(_ key: String) {
+        tasks.removeValue(forKey: key)
+    }
+
+    func waitForAll() async {
+        let current = Array(tasks.values)
+        for task in current {
+            await task.value
+        }
     }
 }

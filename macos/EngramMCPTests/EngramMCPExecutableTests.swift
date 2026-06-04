@@ -1173,6 +1173,50 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testCancellationNotificationCancelsInFlightToolCall() throws {
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "linkSessions":
+                Thread.sleep(forTimeInterval: 2)
+                return try request.success(.object(["linked": .int(0)]), databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 107)
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let captures = try rpcLines(
+            [
+                """
+                {"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"link_sessions","arguments":{"targetDir":"/tmp"}}}
+                """,
+                """
+                {"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99,"reason":"test cancellation"}}
+                """,
+            ],
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+
+        let capture = try XCTUnwrap(captures.first)
+        XCTAssertEqual(capture.ordered["id"]?.intValue, 99)
+        let result = try XCTUnwrap(capture.ordered["result"]?.objectValue)
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        let structured = result["structuredContent"]?.objectValue
+        XCTAssertEqual(structured?["code"]?.stringValue, "cancelled")
+    }
+
     func testNativeProjectOperationsRouteThroughTheService() throws {
         // Stage 4 ships the four project_* tools natively. Without a
         // service socket they MUST fall through to the standard
@@ -1214,6 +1258,15 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     private func rpc(_ request: String, environment: [String: String] = [:]) throws -> RPCCapture {
+        let captures = try rpcLines([request], environment: environment)
+        return try XCTUnwrap(captures.first)
+    }
+
+    private func rpcLines(
+        _ requests: [String],
+        environment: [String: String] = [:],
+        timeout: TimeInterval = 5
+    ) throws -> [RPCCapture] {
         let process = Process()
         process.executableURL = executableURL()
         process.environment = ProcessInfo.processInfo.environment
@@ -1227,22 +1280,32 @@ final class EngramMCPExecutableTests: XCTestCase {
         process.standardError = Pipe()
         try process.run()
 
-        if let data = "\(request)\n".data(using: .utf8) {
+        if let data = "\(requests.joined(separator: "\n"))\n".data(using: .utf8) {
             stdinPipe.fileHandleForWriting.write(data)
         }
         try stdinPipe.fileHandleForWriting.close()
-        process.waitUntilExit()
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+            XCTFail("EngramMCP process did not exit within \(timeout)s")
+        }
 
         let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let output = try XCTUnwrap(String(data: outputData, encoding: .utf8))
-        let firstLine = try XCTUnwrap(output.split(separator: "\n").first.map(String.init))
-        let responseData = try XCTUnwrap(firstLine.data(using: .utf8))
-        var parser = OrderedTestJSONParser(text: firstLine)
-        return RPCCapture(
-            rawLine: firstLine,
-            response: try JSONDecoder().decode(TestJSONRPCResponse.self, from: responseData),
-            ordered: try parser.parse()
-        )
+        return try output.split(separator: "\n").map { rawLine in
+            let line = String(rawLine)
+            let responseData = try XCTUnwrap(line.data(using: .utf8))
+            var parser = OrderedTestJSONParser(text: line)
+            return RPCCapture(
+                rawLine: line,
+                response: try JSONDecoder().decode(TestJSONRPCResponse.self, from: responseData),
+                ordered: try parser.parse()
+            )
+        }
     }
 
     private func executableURL() -> URL {

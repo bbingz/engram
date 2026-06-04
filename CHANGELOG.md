@@ -7,6 +7,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Additional non-blocking follow-up remediation (2026-06-04, Codex)
+
+Continued PR #34 after the first closeout to finish the remaining necessary
+non-blocking items without broad refactors.
+
+- **CI runtime hygiene**: opted GitHub Actions workflows into Node 24 JavaScript
+  action execution via `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`, and fixed
+  existing actionlint screenshot-copy shell quoting warnings.
+- **TS follow-ups**: shared duration-minute parsing through `src/core/time.ts`
+  for scoring/tiering invalid timestamp handling; FTS version refresh now keeps
+  existing `sessions_fts` rows live while `size_bytes = 0` schedules reindexing,
+  avoiding a temporary empty-search window during version upgrades.
+- **Swift MCP cancellation**: stdio `tools/call` requests now run as tracked
+  in-flight tasks; `notifications/cancelled` cancels matching numeric/string
+  request ids; stdout writes are serialized; EOF drains in-flight responses; and
+  cancelled tool calls return structured MCP errors with
+  `structuredContent.code = "cancelled"`. Unix socket service cancellation now
+  normalizes post-cancel I/O failures into `CancellationError` instead of
+  `serviceUnavailable`.
+- **Verification**: actionlint passed for `test.yml` and `release.yml`;
+  targeted Vitest coverage passed 60 tests; `npm run typecheck:test`,
+  `npm run lint`, full `npm test` passed 1481 tests; Swift
+  `EngramMCPTests` passed 67 tests.
+- **Intentionally deferred**: removing the `database.ts` `raw`/`getRawDb()`
+  compatibility surface and designing a full online FTS table-swap rebuild
+  remain separate larger refactors, not necessary closeout fixes.
+
 ### Follow-up remediation branch closeout (2026-06-04, Codex)
 
 Continued the review-remediation branch with focused safety, parity, and

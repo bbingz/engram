@@ -1,5 +1,51 @@
 # Engram Local Memory
 
+## 2026-06-04 — Additional non-blocking follow-up remediation (Codex)
+
+Branch/worktree: `followups/full-remediation` at
+`.worktrees/followups-full-remediation`; continuing PR #34.
+
+Implemented after the first closeout because the remaining items were
+non-blocking but still useful:
+- CI runtime hygiene: GitHub Actions workflows now set
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` so third-party JavaScript actions
+  opt into the Node 24 runtime before GitHub's Node 20 deprecation cutoff.
+  Existing actionlint ShellCheck warnings in screenshot-copy shell snippets were
+  fixed by quoting the screenshots directory variable.
+- TS duration helper cleanup: `durationMinutes` is shared through
+  `src/core/time.ts`, and both session scoring and tiering use the same
+  finite-number guard for invalid timestamps.
+- TS FTS version refresh safety: FTS version refresh no longer deletes
+  `sessions_fts` up front. Existing keyword search rows remain live while
+  `size_bytes = 0` drives the indexer refresh, avoiding a temporary empty-search
+  window during version upgrades.
+- Swift MCP cancellation: stdio `tools/call` requests with ids now run as
+  in-flight tasks, `notifications/cancelled` cancels matching string or numeric
+  request ids, stdout writes are serialized, EOF waits for in-flight responses,
+  and cancellation returns structured MCP tool errors with
+  `structuredContent.code = "cancelled"`.
+- Swift socket cancellation: `UnixSocketEngramServiceTransport` still uses
+  fd shutdown to break blocking read/write, but now normalizes post-cancel I/O
+  failures into `CancellationError` so stdio cancellation does not degrade into
+  `serviceUnavailable`.
+
+Verification:
+- `actionlint .github/workflows/test.yml .github/workflows/release.yml` passed.
+- `npx vitest run tests/core/session-scoring.test.ts tests/core/session-tier.test.ts tests/core/db-migration.test.ts` passed: 3 files, 60 tests.
+- `npm run typecheck:test` passed.
+- `npm run lint` passed.
+- `npm test` passed: 127 files, 1481 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` passed: 67 tests.
+
+Residual risk:
+- The `database.ts` `raw`/`getRawDb()` duplicate surface remains intentionally
+  unchanged because both are compatibility surfaces used by web, daemon,
+  bootstrap, health, handoff, and migration code; removing one is broad churn
+  with little safety value.
+- A full online FTS table swap/rebuild state machine remains out of scope. The
+  necessary low-risk fix was to preserve live FTS rows during version refresh;
+  a larger rebuild redesign should be handled as a dedicated migration project.
+
 ## 2026-06-04 — Follow-up remediation branch closeout (Codex)
 
 Branch/worktree: `followups/full-remediation` at
@@ -44,8 +90,8 @@ Verification:
 Residual risk:
 - Some P3 review ideas remain intentionally unexpanded because they are larger
   UI/refactor tasks rather than low-risk closeout fixes, such as removing the
-  `raw`/`getRawDb()` duplicate surface, unifying TS duration helpers, adding
-  Swift MCP request cancellation, and making TS FTS rebuild fully nonblocking.
+  `raw`/`getRawDb()` duplicate surface and redesigning TS FTS rebuild as a full
+  online table-swap migration.
 
 ## 2026-06-03 — Multi-model review adjudication and fixes (Codex)
 
