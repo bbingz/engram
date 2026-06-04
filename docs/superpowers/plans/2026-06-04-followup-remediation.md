@@ -170,13 +170,17 @@ Committed in `fix: close post-review followup findings`.
 - Modify: `CHANGELOG.md`
 - Modify: `.memory`
 
-- [ ] **Step 1: Run full verification**
+- [x] **Step 1: Run full verification**
 
 Run `npm run lint`, `npm run build`, `npm run typecheck:test`, `npm run knip`, `npm run test:coverage`, fixture checks, Swift all-schemes unit tests with coverage, and UI smoke where feasible.
 
-- [ ] **Step 2: Update durable records**
+Current verification note: TypeScript lint/build/test/coverage/fixture/actionlint gates passed on Node 26 with the repo pinned to Node 24+. Swift unit suites passed with coverage: `EngramCoreTests` 364 tests, `EngramMCPTests` 73 tests, `EngramServiceCore` 127 tests, and `EngramTests` 301 tests with 1 skip. UI smoke was attempted with `EngramUITests`; build succeeded but the XCTest UI runner was killed before bootstrap (`XCTHTestRunnerErrorDomain`, signal kill before establishing connection), so no UI assertion body ran.
+
+- [x] **Step 2: Update durable records**
 
 Append concise English closeout to `CHANGELOG.md` and `.memory`, with exact checks run and residual risks.
+
+Current closeout note: `CHANGELOG.md` and `.memory` record the follow-up remediation scope, verification commands, failed UI smoke evidence, and resume point for PR/CI.
 
 - [ ] **Step 3: Push and open PR**
 

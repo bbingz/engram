@@ -7,6 +7,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Follow-up remediation closeout (2026-06-05, Codex)
+
+Closed the planned post-review follow-up sweep on top of
+`perf/transcript-paging` and prepared it for PR/CI.
+
+- **Runtime baseline**: Node development/CI tooling is pinned to Node 24+
+  (`.nvmrc`, package engines, GitHub Actions setup-node), with `@types/node`
+  refreshed to the Node 24 line.
+- **CI security**: added CodeQL code scanning for JavaScript/TypeScript and
+  Swift, with Node 24 build setup and an explicit Swift manual build path.
+- **Follow-up fixes**: added Swift Gemini transcript size guards for MCP and
+  service export, removed raw Keychain secret forwarding from the app-to-service
+  environment, moved service `@keychain` resolution behind a direct Keychain
+  reader, expanded Swift MCP `get_context` environment parity, added focused
+  CLI coverage for project/resume helpers, centralized CLI health table names,
+  and cancelled Search page work on disappearance.
+- **Review adjudication**: verified and documented the follow-up review claims
+  around OSLog privacy, AI audit error sanitization, MCP handoff relative time,
+  suggested-parent lookback batching, and symlinked adapter source roots.
+- **Verification**: `npm run lint`, `npm run build`, `npm run typecheck:test`,
+  `npm run knip`, `npm run check:fixtures`, `npm run test:coverage`, and
+  `actionlint` passed locally. Swift unit suites passed with coverage:
+  `EngramCoreTests` (364 tests), `EngramMCPTests` (73 tests),
+  `EngramServiceCore` (127 tests), and `EngramTests` (301 tests, 1 skipped).
+  `EngramUITests` UI smoke was attempted but the XCTest UI runner was killed
+  before bootstrap, before any UI test body ran; this is recorded as a local UI
+  runner/environment failure pending CI or a GUI-permitted rerun.
+
 ### Database raw handle API cleanup (2026-06-04, Codex)
 
 Opened a follow-up branch after PR #34 was merged to remove the duplicated
