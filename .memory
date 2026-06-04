@@ -26,7 +26,8 @@ Verification evidence:
   resume/CodeQL workflow fixes.
 
 Resume point:
-- Push the CodeQL workflow timeout/env fix, then monitor PR #49 checks again.
+- PR #49 checks passed and the branch was squash-merged to `main` as
+  `3c2303ab` at `2026-06-04T22:23:11Z`.
 - Untracked `.claude/wf-codex-review*.js` scripts remain local Claude workflow
   artifacts and should stay uncommitted.
 
@@ -76,9 +77,9 @@ Verification evidence from this closeout:
   CI.
 
 Current resume point:
-- Draft PR #49 is open from `codex/followup-remediation` to `main`:
-  https://github.com/bbingz/engram/pull/49. Monitor GitHub Actions/CodeQL and
-  address any real CI failures on this branch.
+- PR #49 from `codex/followup-remediation` to `main` was marked ready and
+  squash-merged as `3c2303ab`:
+  https://github.com/bbingz/engram/pull/49.
 
 ## 2026-06-04 — Database raw handle API cleanup (Codex)
 

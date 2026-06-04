@@ -25,11 +25,14 @@ Continued draft PR #49 after GitHub Actions exposed CI-only gaps on
   `npm run check:adapter-parity-fixtures`, fixture regeneration diff check,
   `npx vitest run tests/cli/resume.test.ts`, `npm run typecheck:test`,
   `npm run lint`, and `actionlint .github/workflows/codeql.yml` passed locally.
+- **Merge closeout**: PR #49 was marked ready, all checks passed, and the branch
+  was squash-merged to `main` as `3c2303ab`.
 
 ### Follow-up remediation closeout (2026-06-05, Codex)
 
 Closed the planned post-review follow-up sweep on the rebased
-`codex/followup-remediation` branch and opened draft PR #49.
+`codex/followup-remediation` branch. PR #49 was opened, verified, and
+squash-merged to `main`.
 
 - **Runtime baseline**: Node development/CI tooling is pinned to Node 24+
   (`.nvmrc`, package engines, GitHub Actions setup-node), with `@types/node`
