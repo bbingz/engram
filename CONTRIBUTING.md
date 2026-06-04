@@ -1,7 +1,7 @@
 # Contributing to Engram
 
 ## Prerequisites
-- Node.js >= 20
+- Node.js >= 24
 - macOS 14+ (for Swift app)
 - Xcode 16+ with xcodegen (`brew install xcodegen`)
 
