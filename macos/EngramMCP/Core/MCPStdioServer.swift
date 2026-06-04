@@ -122,6 +122,11 @@ final class MCPStdioServer {
                 arguments: arguments,
                 config: config
             )
+        } catch let error as MCPToolError {
+            return .toolError(
+                message: error.localizedDescription,
+                code: error.structuredCode
+            )
         } catch {
             return .toolError(message: error.localizedDescription)
         }

@@ -12,13 +12,18 @@ enum MCPTranscriptTools {
         }
 
         let pageSize = 50
-        let messagePage = await MCPTranscriptReader.readMessagePage(
-            filePath: session.filePath,
-            source: session.source,
-            page: page,
-            pageSize: pageSize,
-            roles: roles
-        )
+        let messagePage: MCPTranscriptPage
+        do {
+            messagePage = try await MCPTranscriptReader.readMessagePage(
+                filePath: session.filePath,
+                source: session.source,
+                page: page,
+                pageSize: pageSize,
+                roles: roles
+            )
+        } catch let error as TranscriptSizeGuardError {
+            throw MCPToolError.transcriptTooLarge(error.localizedDescription)
+        }
 
         return .object([
             ("session", session.orderedJSONValue),

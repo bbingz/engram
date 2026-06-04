@@ -55,7 +55,7 @@ enum MCPTranscriptReader {
         page: Int,
         pageSize: Int,
         roles: [String]?
-    ) async -> MCPTranscriptPage {
+    ) async throws -> MCPTranscriptPage {
         let currentPage = max(page, 1)
         let effectivePageSize = max(pageSize, 1)
         let roleFilter = normalizeRoles(roles)
@@ -63,6 +63,13 @@ enum MCPTranscriptReader {
             currentPage: currentPage,
             pageSize: effectivePageSize
         )
+
+        if source == "gemini-cli" {
+            try TranscriptSizeGuard.validateFullJSONTranscript(
+                filePath: filePath,
+                source: source
+            )
+        }
 
         if let adapterPage = await readPageWithAdapterRegistry(
             filePath: filePath,
@@ -102,7 +109,14 @@ enum MCPTranscriptReader {
         return builder.build()
     }
 
-    static func readMessages(filePath: String, source: String) async -> [MCPTranscriptMessage] {
+    static func readMessages(filePath: String, source: String) async throws -> [MCPTranscriptMessage] {
+        if source == "gemini-cli" {
+            try TranscriptSizeGuard.validateFullJSONTranscript(
+                filePath: filePath,
+                source: source
+            )
+        }
+
         if let adapterMessages = await readWithAdapterRegistry(filePath: filePath, source: source) {
             return adapterMessages
         }

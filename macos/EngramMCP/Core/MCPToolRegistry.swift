@@ -1435,11 +1435,23 @@ private struct ProjectMoveBatchBody: Encodable {
 
 enum MCPToolError: LocalizedError {
     case invalidArguments(String)
+    case transcriptTooLarge(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidArguments(let message):
             return message
+        case .transcriptTooLarge(let message):
+            return message
+        }
+    }
+
+    var structuredCode: String? {
+        switch self {
+        case .invalidArguments:
+            return nil
+        case .transcriptTooLarge:
+            return "transcriptTooLarge"
         }
     }
 }
@@ -1457,8 +1469,8 @@ extension OrderedJSONValue {
         ])
     }
 
-    static func toolError(message: String) -> OrderedJSONValue {
-        .object([
+    static func toolError(message: String, code: String? = nil) -> OrderedJSONValue {
+        var entries: [(String, OrderedJSONValue)] = [
             ("content", .array([
                 .object([
                     ("type", .string("text")),
@@ -1466,7 +1478,17 @@ extension OrderedJSONValue {
                 ]),
             ])),
             ("isError", .bool(true)),
-        ])
+        ]
+        if let code {
+            entries.insert(
+                ("structuredContent", .object([
+                    ("code", .string(code)),
+                    ("message", .string(message)),
+                ])),
+                at: 1
+            )
+        }
+        return .object(entries)
     }
 
     static func serviceUnavailable(

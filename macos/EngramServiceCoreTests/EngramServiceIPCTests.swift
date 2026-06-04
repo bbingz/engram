@@ -1049,6 +1049,51 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(exported.contains("hidden agent comm"), exported)
     }
 
+    func testExportSessionRejectsOversizedGeminiJSONTranscript() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("oversized-gemini-session.json")
+        let largeBody = String(repeating: "x", count: 512)
+        try """
+        {"messages":[{"type":"user","content":"\(largeBody)"}]}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET source = 'gemini-cli', file_path = ?, message_count = 1, user_message_count = 1, assistant_message_count = 0, tool_message_count = 0 WHERE id = 's1'",
+                arguments: [transcript.path]
+            )
+        }
+
+        let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
+        setenv("ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES", "128", 1)
+        defer { unsetenv("ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES") }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        do {
+            _ = try await client.exportSession(
+                EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: exportHome.path, actor: "test")
+            )
+            XCTFail("Oversized gemini-cli JSON transcripts must be rejected before export")
+        } catch let error as EngramServiceError {
+            guard case .invalidRequest(let message) = error else {
+                return XCTFail("Expected invalidRequest, got \(error)")
+            }
+            XCTAssertTrue(message.contains("gemini-cli transcript is too large"), message)
+            XCTAssertFalse(message.contains(largeBody), "error must not echo transcript contents")
+        }
+    }
+
     func testExportSessionUsesFullIdSoPrefixCollisionsDoNotOverwrite() async throws {
         // data-integrity: the filename used to take only the first 8 chars of
         // the session id. Two sessions sharing that prefix (and date) collided

@@ -561,6 +561,51 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(contents, (51...55).map { "visible message \($0)" })
     }
 
+    func testGetSessionRejectsOversizedGeminiJSONTranscript() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("oversized-gemini-session.json")
+        let largeBody = String(repeating: "x", count: 512)
+        try """
+        {"messages":[{"type":"user","content":"\(largeBody)"}]}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-oversized-gemini-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "gemini-cli",
+            filePath: transcript.path,
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES": "128",
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        XCTAssertEqual(result["structuredContent"]?["code"]?.stringValue, "transcriptTooLarge")
+        guard case .array(let content)? = result["content"],
+              let text = content.first?["text"]?.stringValue else {
+            return XCTFail("Expected text error content")
+        }
+        XCTAssertTrue(text.contains("gemini-cli transcript is too large"), text)
+        XCTAssertFalse(text.contains(largeBody), "error must not echo transcript contents")
+    }
+
     func testGetSessionRejectsUnknownRoleEnumValue() throws {
         // roles is declared as an array with items.enum [user, assistant];
         // a bogus element (e.g. "banana") must be rejected, not silently

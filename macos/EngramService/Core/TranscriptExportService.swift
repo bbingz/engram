@@ -18,7 +18,15 @@ enum TranscriptExportService {
             throw EngramServiceError.invalidRequest(message: "Session not found: \(request.id)")
         }
 
-        let messages = await ServiceTranscriptReader.readMessages(filePath: session.filePath, source: session.source)
+        let messages: [ServiceTranscriptMessage]
+        do {
+            messages = try await ServiceTranscriptReader.readMessages(
+                filePath: session.filePath,
+                source: session.source
+            )
+        } catch let error as TranscriptSizeGuardError {
+            throw EngramServiceError.invalidRequest(message: error.localizedDescription)
+        }
         let home = try outputHome(from: request.outputHome)
         let outputDir = try outputDirectory(in: home)
 
@@ -304,7 +312,14 @@ private struct ServiceTranscriptMessage: Sendable {
 }
 
 private enum ServiceTranscriptReader {
-    static func readMessages(filePath: String, source: String) async -> [ServiceTranscriptMessage] {
+    static func readMessages(filePath: String, source: String) async throws -> [ServiceTranscriptMessage] {
+        if source == "gemini-cli" {
+            try TranscriptSizeGuard.validateFullJSONTranscript(
+                filePath: filePath,
+                source: source
+            )
+        }
+
         if let adapterMessages = await readWithAdapterRegistry(filePath: filePath, source: source) {
             return adapterMessages
         }
