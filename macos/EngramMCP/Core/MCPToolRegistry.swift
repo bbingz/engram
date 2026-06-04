@@ -882,20 +882,13 @@ enum MCPToolRegistry {
             return .toolSuccess(structured)
         case "get_session":
             let database = try MCPDatabase(path: config.dbPath)
-            do {
-                let structured = try await MCPTranscriptTools.getSession(
-                    database: database,
-                    id: try requiredString("id", in: arguments),
-                    page: arguments["page"]?.intValue ?? 1,
-                    roles: arguments["roles"]?.arrayValue?.compactMap(\.stringValue)
-                )
-                return .toolSuccess(structured)
-            } catch let error as MCPTranscriptReadError {
-                return .toolError(message: error.message, structured: .object([
-                    ("code", .string(error.code)),
-                    ("message", .string(error.message)),
-                ]))
-            }
+            let structured = try await MCPTranscriptTools.getSession(
+                database: database,
+                id: try requiredString("id", in: arguments),
+                page: arguments["page"]?.intValue ?? 1,
+                roles: arguments["roles"]?.arrayValue?.compactMap(\.stringValue)
+            )
+            return .toolSuccess(structured)
         case "export":
             let serviceClient = makeServiceClient(config: config)
             defer {
@@ -1442,11 +1435,23 @@ private struct ProjectMoveBatchBody: Encodable {
 
 enum MCPToolError: LocalizedError {
     case invalidArguments(String)
+    case transcriptTooLarge(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidArguments(let message):
             return message
+        case .transcriptTooLarge(let message):
+            return message
+        }
+    }
+
+    var structuredCode: String? {
+        switch self {
+        case .invalidArguments:
+            return nil
+        case .transcriptTooLarge:
+            return "transcriptTooLarge"
         }
     }
 }
@@ -1464,7 +1469,11 @@ extension OrderedJSONValue {
         ])
     }
 
-    static func toolError(message: String, structured: OrderedJSONValue? = nil) -> OrderedJSONValue {
+    static func toolError(
+        message: String,
+        structured: OrderedJSONValue? = nil,
+        code: String? = nil
+    ) -> OrderedJSONValue {
         var entries: [(String, OrderedJSONValue)] = [
             ("content", .array([
                 .object([
@@ -1476,6 +1485,11 @@ extension OrderedJSONValue {
         ]
         if let structured {
             entries.append(("structuredContent", structured))
+        } else if let code {
+            entries.append(("structuredContent", .object([
+                ("code", .string(code)),
+                ("message", .string(message)),
+            ])))
         }
         return .object(entries)
     }

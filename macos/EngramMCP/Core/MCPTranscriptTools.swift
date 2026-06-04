@@ -299,7 +299,12 @@ private let iso8601WithoutMilliseconds: ISO8601DateFormatter = {
 private let localDateTime: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    if let configured = ProcessInfo.processInfo.environment["TZ"],
+       let timeZone = TimeZone(identifier: configured) {
+        formatter.timeZone = timeZone
+    } else {
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    }
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
     return formatter
 }()

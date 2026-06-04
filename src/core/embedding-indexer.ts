@@ -89,11 +89,9 @@ export class EmbeddingIndexer {
     if (this.embeddingExistsStmt === null) return false;
 
     try {
-      this.embeddingExistsStmt ??= this.db
-        .getRawDb()
-        .prepare(
-          'SELECT 1 AS found FROM session_embeddings WHERE session_id = ? LIMIT 1',
-        );
+      this.embeddingExistsStmt ??= this.db.raw.prepare(
+        'SELECT 1 AS found FROM session_embeddings WHERE session_id = ? LIMIT 1',
+      );
       return Boolean(this.embeddingExistsStmt.get(sessionId));
     } catch {
       this.embeddingExistsStmt = null;

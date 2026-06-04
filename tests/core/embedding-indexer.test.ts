@@ -163,7 +163,7 @@ describe('EmbeddingIndexer', () => {
   });
 
   it('does not re-embed DB-backed sessions after the in-memory cache evicts them', async () => {
-    db.getRawDb().exec(
+    db.raw.exec(
       'CREATE TABLE session_embeddings(session_id TEXT PRIMARY KEY, model TEXT)',
     );
 
@@ -185,7 +185,7 @@ describe('EmbeddingIndexer', () => {
       db.indexSessionContent(id, [
         { role: 'user', content: `Embedding content ${i}` },
       ]);
-      db.getRawDb()
+      db.raw
         .prepare(
           'INSERT INTO session_embeddings(session_id, model) VALUES (?, ?)',
         )
