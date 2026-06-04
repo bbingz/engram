@@ -24,7 +24,7 @@ describe('cost indexing integration', () => {
     if (!info) throw new Error('expected fixture session info');
 
     // Insert session
-    db.getRawDb()
+    db.raw
       .prepare(
         `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
@@ -124,10 +124,10 @@ describe('backfill termination', () => {
     const db = new Database(':memory:');
 
     // Insert two sessions: one claude-code (has usage), one codex (no usage data)
-    db.getRawDb().exec(
+    db.raw.exec(
       `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('cc1', 'claude-code', '2026-03-20T10:00:00Z', '/test', 'proj', 'claude-sonnet-4-6', 5, 2, 2, 0, 1, '/test/cc1.jsonl', 500, 'normal')`,
     );
-    db.getRawDb().exec(
+    db.raw.exec(
       `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('cx1', 'codex', '2026-03-20T11:00:00Z', '/test', 'proj', 'gpt-4', 3, 1, 1, 0, 1, '/test/cx1.jsonl', 300, 'normal')`,
     );
 
@@ -170,8 +170,7 @@ describe('backfill termination', () => {
     // No sessions left without costs (backfill terminated)
     expect(db.sessionsWithoutCosts().length).toBe(0);
     // The codex session should have a zero-cost row
-    const costs = db
-      .getRawDb()
+    const costs = db.raw
       .prepare('SELECT * FROM session_costs WHERE session_id = ?')
       .get('cx1') as any;
     expect(costs).toBeDefined();
@@ -185,17 +184,17 @@ describe('backfill termination', () => {
     const db = new Database(':memory:');
 
     // Session with no matching adapter (source = 'unknown-tool')
-    db.getRawDb().exec(
+    db.raw.exec(
       `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('no-adapter', 'unknown-tool', '2026-03-20T10:00:00Z', '/test', 'proj', 'some-model', 3, 1, 1, 0, 1, '/test/no-adapter.jsonl', 200, 'normal')`,
     );
 
     // Session with empty filePath (use 'lite' tier since sessionsWithoutCosts excludes 'skip')
-    db.getRawDb().exec(
+    db.raw.exec(
       `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('no-filepath', 'claude-code', '2026-03-20T11:00:00Z', '/test', 'proj', 'claude-sonnet-4-6', 1, 0, 0, 0, 1, '', 0, 'lite')`,
     );
 
     // Session whose adapter throws during streamMessages
-    db.getRawDb().exec(
+    db.raw.exec(
       `INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier) VALUES ('throws', 'claude-code', '2026-03-20T12:00:00Z', '/test', 'proj', 'claude-sonnet-4-6', 2, 1, 1, 0, 0, '/test/throws.jsonl', 100, 'normal')`,
     );
 
@@ -224,8 +223,7 @@ describe('backfill termination', () => {
     expect(db.sessionsWithoutCosts().length).toBe(0);
 
     // no-adapter: zero-cost row with its model preserved
-    const noAdapterCosts = db
-      .getRawDb()
+    const noAdapterCosts = db.raw
       .prepare('SELECT * FROM session_costs WHERE session_id = ?')
       .get('no-adapter') as any;
     expect(noAdapterCosts).toBeDefined();
@@ -234,8 +232,7 @@ describe('backfill termination', () => {
     expect(noAdapterCosts.cost_usd).toBe(0);
 
     // no-filepath: zero-cost row with empty model
-    const noFilepathCosts = db
-      .getRawDb()
+    const noFilepathCosts = db.raw
       .prepare('SELECT * FROM session_costs WHERE session_id = ?')
       .get('no-filepath') as any;
     expect(noFilepathCosts).toBeDefined();
@@ -243,8 +240,7 @@ describe('backfill termination', () => {
     expect(noFilepathCosts.cost_usd).toBe(0);
 
     // throws: zero-cost row written via catch path
-    const throwsCosts = db
-      .getRawDb()
+    const throwsCosts = db.raw
       .prepare('SELECT * FROM session_costs WHERE session_id = ?')
       .get('throws') as any;
     expect(throwsCosts).toBeDefined();

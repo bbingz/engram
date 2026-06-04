@@ -16,7 +16,7 @@ describe('session timeline', () => {
     adapter = new ClaudeCodeAdapter();
     const info = await adapter.parseSessionInfo(FIXTURE);
     if (info) {
-      db.getRawDb()
+      db.raw
         .prepare(`
         INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

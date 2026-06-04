@@ -18,7 +18,7 @@ if (existsSync(fixturePath)) {
 
 // Create DB via Database class (runs migrate(), sets up schema + metadata)
 const db = new Database(fixturePath);
-const raw = db.getRawDb();
+const raw = db.raw;
 
 // Switch to DELETE journal mode for single-file determinism
 raw.pragma('journal_mode = DELETE');

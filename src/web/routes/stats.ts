@@ -60,8 +60,7 @@ export function registerStatsRoutes(
       return c.json(validationError('InvalidParam', parsedLimit.error), 400);
     }
     const limit = parsedLimit.value ?? 20;
-    const rows = deps.db
-      .getRawDb()
+    const rows = deps.db.raw
       .prepare(`
       SELECT c.*, s.source, s.project, s.start_time, s.summary
       FROM session_costs c JOIN sessions s ON c.session_id = s.id
@@ -102,8 +101,7 @@ export function registerStatsRoutes(
   });
 
   app.get('/api/repos', (c) => {
-    const rows = deps.db
-      .getRawDb()
+    const rows = deps.db.raw
       .prepare('SELECT * FROM git_repos ORDER BY last_commit_at DESC')
       .all();
     return c.json({ repos: rows });

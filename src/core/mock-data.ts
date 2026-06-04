@@ -94,7 +94,7 @@ export async function populateMockData(db: Database): Promise<MockStats> {
   // Clear existing mock data first to ensure idempotency
   clearMockData(db);
 
-  const rawDb = db.getRawDb();
+  const rawDb = db.raw;
   const SESSION_COUNT = 50;
   let totalCost = 0;
   let totalToolEntries = 0;
@@ -209,7 +209,7 @@ export async function populateMockData(db: Database): Promise<MockStats> {
 }
 
 export function clearMockData(db: Database): number {
-  const rawDb = db.getRawDb();
+  const rawDb = db.raw;
   // Foreign key cascading handles session_costs and session_tools
   const result = rawDb
     .prepare("DELETE FROM sessions WHERE file_path LIKE '__mock__%'")

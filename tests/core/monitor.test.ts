@@ -15,11 +15,11 @@ describe('BackgroundMonitor', () => {
 
   it('creates alerts when daily cost exceeds budget', async () => {
     // Insert a session with high cost
-    db.getRawDb().exec(`
+    db.raw.exec(`
       INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier)
       VALUES ('cost-s1', 'claude-code', datetime('now'), '/test', 'test', 'claude-opus-4-6', 100, 30, 50, 10, 10, '/test/s1.jsonl', 5000, 'premium')
     `);
-    db.getRawDb().exec(`
+    db.raw.exec(`
       INSERT INTO session_costs (session_id, model, input_tokens, output_tokens, cost_usd, computed_at)
       VALUES ('cost-s1', 'claude-opus-4-6', 5000000, 500000, 25.50, datetime('now'))
     `);
@@ -42,11 +42,11 @@ describe('BackgroundMonitor', () => {
 
   it('does not alert when cost is within budget', async () => {
     const freshDb = new Database(':memory:');
-    freshDb.getRawDb().exec(`
+    freshDb.raw.exec(`
       INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier)
       VALUES ('low-s1', 'claude-code', datetime('now'), '/test', 'test', 'claude-sonnet-4-6', 10, 3, 5, 1, 1, '/test/low.jsonl', 500, 'normal')
     `);
-    freshDb.getRawDb().exec(`
+    freshDb.raw.exec(`
       INSERT INTO session_costs (session_id, model, input_tokens, output_tokens, cost_usd, computed_at)
       VALUES ('low-s1', 'claude-sonnet-4-6', 100000, 5000, 0.42, datetime('now'))
     `);
@@ -64,11 +64,11 @@ describe('BackgroundMonitor', () => {
 
   it('treats sessions after local midnight as part of today for cost alerts', async () => {
     const freshDb = new Database(':memory:');
-    freshDb.getRawDb().exec(`
+    freshDb.raw.exec(`
       INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier)
       VALUES ('local-midnight-cost', 'claude-code', '2026-04-13T16:30:00Z', '/test', 'test', 'claude-opus-4-6', 10, 3, 5, 1, 1, '/test/local-midnight.jsonl', 500, 'normal')
     `);
-    freshDb.getRawDb().exec(`
+    freshDb.raw.exec(`
       INSERT INTO session_costs (session_id, model, input_tokens, output_tokens, cost_usd, computed_at)
       VALUES ('local-midnight-cost', 'claude-opus-4-6', 100000, 5000, 25.50, '2026-04-14T01:00:00Z')
     `);

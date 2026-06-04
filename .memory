@@ -1,5 +1,33 @@
 # Engram Local Memory
 
+## 2026-06-04 — Database raw handle API cleanup (Codex)
+
+Branch/worktree: `refactor/db-raw-api-cleanup` at
+`.worktrees/db-raw-api-cleanup`; started from `origin/main` after PR #34 merged
+as `c1d32c0`.
+
+Implemented:
+- Removed `Database.getRawDb()` from the TypeScript `Database` facade.
+- Standardized daemon, bootstrap, web routes, core helpers, fixture/schema
+  scripts, and tests on the existing `Database.raw` getter for direct
+  `better-sqlite3` access.
+- Added a `Database` contract test proving `raw` works and `getRawDb` is no
+  longer exposed.
+
+Verification:
+- Red test first: `npx vitest run tests/core/db.test.ts -t "exposes the raw sqlite handle only through raw"` failed while `getRawDb` still existed.
+- After implementation, the same targeted test passed.
+- `npm run typecheck:test` passed.
+- Targeted DB-related Vitest passed: `tests/core/db.test.ts`,
+  `tests/web/ai-audit-api.test.ts`, `tests/core/embedding-indexer.test.ts`,
+  `tests/integration/cost-indexing.test.ts`, and
+  `tests/core/db/parent-link-repo.test.ts` (105 tests).
+- Full `npm test` passed: 127 files, 1482 tests.
+
+Residual risk:
+- This is a TypeScript API cleanup only. Swift/macOS code was not changed.
+- Full online FTS table-swap rebuild remains the next independent follow-up.
+
 ## 2026-06-04 — Additional non-blocking follow-up remediation (Codex)
 
 Branch/worktree: `followups/full-remediation` at
@@ -38,10 +66,6 @@ Verification:
 - `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` passed: 67 tests.
 
 Residual risk:
-- The `database.ts` `raw`/`getRawDb()` duplicate surface remains intentionally
-  unchanged because both are compatibility surfaces used by web, daemon,
-  bootstrap, health, handoff, and migration code; removing one is broad churn
-  with little safety value.
 - A full online FTS table swap/rebuild state machine remains out of scope. The
   necessary low-risk fix was to preserve live FTS rows during version refresh;
   a larger rebuild redesign should be handled as a dedicated migration project.

@@ -59,7 +59,7 @@ mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(transcriptDir, { recursive: true });
 
 const db = new Database(fixtureDbPath);
-const raw = db.getRawDb();
+const raw = db.raw;
 raw.pragma('journal_mode = DELETE');
 
 const insertSession = raw.prepare(`

@@ -80,8 +80,7 @@ export async function handleHandoff(
   // 3. Join cost data for each session
   for (const s of sessions) {
     try {
-      const costRow = db
-        .getRawDb()
+      const costRow = db.raw
         .prepare('SELECT cost_usd FROM session_costs WHERE session_id = ?')
         .get(s.id) as { cost_usd: number } | undefined;
       if (costRow) s.costUsd = costRow.cost_usd;

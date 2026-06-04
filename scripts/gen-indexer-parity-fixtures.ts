@@ -60,7 +60,7 @@ function deriveGeneratedTitle(row: {
 }
 
 function backfillGeneratedTitles(db: Database): void {
-  const raw = db.getRawDb();
+  const raw = db.raw;
   const rows = raw
     .prepare(
       'SELECT id, summary, project, cwd, start_time, generated_title FROM sessions',
@@ -135,8 +135,7 @@ function tableChecksum(
   orderBy: string,
 ): { count: number; sha256: string; rows: Record<string, unknown>[] } {
   const rows = normalizeRows(
-    db
-      .getRawDb()
+    db.raw
       .prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`)
       .all() as Record<string, unknown>[],
   );
@@ -144,8 +143,7 @@ function tableChecksum(
 }
 
 function selectedMetadata(db: Database): Record<string, string> {
-  const rows = db
-    .getRawDb()
+  const rows = db.raw
     .prepare(
       "SELECT key, value FROM metadata WHERE key IN ('schema_version', 'fts_version') ORDER BY key",
     )
@@ -215,8 +213,7 @@ export async function generateIndexerParityFixtures(
         },
       },
       parentLinkColumns: {
-        rows: db
-          .getRawDb()
+        rows: db.raw
           .prepare(
             'SELECT id, parent_session_id, suggested_parent_id, link_source FROM sessions ORDER BY id',
           )

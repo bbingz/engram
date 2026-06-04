@@ -91,8 +91,7 @@ function liveSessionsPayload(
   const sessions = filtered
     .map((s) => {
       const dbRow = s.filePath
-        ? (db
-            .getRawDb()
+        ? (db.raw
             .prepare(
               'SELECT generated_title, summary, project, model, tier, agent_role FROM sessions WHERE file_path = ? LIMIT 1',
             )
@@ -811,7 +810,7 @@ export function createApp(
     if (!title)
       return c.json({ error: 'Title generation returned empty result' }, 500);
 
-    db.getRawDb()
+    db.raw
       .prepare('UPDATE sessions SET generated_title = ? WHERE id = ?')
       .run(title, id);
     return c.json({ title });
@@ -825,8 +824,7 @@ export function createApp(
     const adapters = opts.adapters;
 
     // Get sessions needing titles
-    const sessions = db
-      .getRawDb()
+    const sessions = db.raw
       .prepare(`
       SELECT id, source, file_path, message_count, tier
       FROM sessions
@@ -879,7 +877,7 @@ export function createApp(
 
           const title = await titleGenerator.generate(messages);
           if (title) {
-            db.getRawDb()
+            db.raw
               .prepare('UPDATE sessions SET generated_title = ? WHERE id = ?')
               .run(title, session.id);
             generated++;

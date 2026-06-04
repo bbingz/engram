@@ -22,8 +22,7 @@ describe('mock-data', () => {
 
   it('mock sessions have __mock__ prefix in file_path', async () => {
     await populateMockData(db);
-    const rows = db
-      .getRawDb()
+    const rows = db.raw
       .prepare(
         "SELECT COUNT(*) as count FROM sessions WHERE file_path LIKE '__mock__%'",
       )
@@ -33,8 +32,7 @@ describe('mock-data', () => {
 
   it('mock sessions span multiple sources', async () => {
     await populateMockData(db);
-    const sources = db
-      .getRawDb()
+    const sources = db.raw
       .prepare(
         "SELECT DISTINCT source FROM sessions WHERE file_path LIKE '__mock__%'",
       )
@@ -44,8 +42,7 @@ describe('mock-data', () => {
 
   it('mock sessions have cost data in session_costs', async () => {
     await populateMockData(db);
-    const costs = db
-      .getRawDb()
+    const costs = db.raw
       .prepare(`
       SELECT COUNT(*) as count FROM session_costs c
       JOIN sessions s ON c.session_id = s.id
@@ -57,8 +54,7 @@ describe('mock-data', () => {
 
   it('mock sessions have tool data in session_tools', async () => {
     await populateMockData(db);
-    const tools = db
-      .getRawDb()
+    const tools = db.raw
       .prepare(`
       SELECT COUNT(DISTINCT t.session_id) as count FROM session_tools t
       JOIN sessions s ON t.session_id = s.id
@@ -73,8 +69,7 @@ describe('mock-data', () => {
     const cleared = clearMockData(db);
     expect(cleared).toBe(50);
 
-    const remaining = db
-      .getRawDb()
+    const remaining = db.raw
       .prepare(
         "SELECT COUNT(*) as count FROM sessions WHERE file_path LIKE '__mock__%'",
       )
@@ -86,8 +81,7 @@ describe('mock-data', () => {
     await populateMockData(db);
     clearMockData(db);
 
-    const costs = db
-      .getRawDb()
+    const costs = db.raw
       .prepare(`
       SELECT COUNT(*) as count FROM session_costs c
       WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = c.session_id)
@@ -98,7 +92,7 @@ describe('mock-data', () => {
 
   it('does not affect non-mock sessions', async () => {
     // Insert a real session first
-    db.getRawDb().exec(`
+    db.raw.exec(`
       INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier)
       VALUES ('real-1', 'claude-code', datetime('now'), '/real', 'real-project', 'claude-sonnet-4-6', 10, 3, 5, 1, 1, '/real/session.jsonl', 1000, 'normal')
     `);
@@ -113,8 +107,7 @@ describe('mock-data', () => {
 
   it('mock sessions use 5 fictional projects', async () => {
     await populateMockData(db);
-    const projects = db
-      .getRawDb()
+    const projects = db.raw
       .prepare(
         "SELECT DISTINCT project FROM sessions WHERE file_path LIKE '__mock__%'",
       )
@@ -124,8 +117,7 @@ describe('mock-data', () => {
 
   it('mock sessions have diverse tiers', async () => {
     await populateMockData(db);
-    const tiers = db
-      .getRawDb()
+    const tiers = db.raw
       .prepare(
         "SELECT DISTINCT tier FROM sessions WHERE file_path LIKE '__mock__%'",
       )

@@ -55,8 +55,7 @@ export class Indexer {
     if (messages.length < 2) return;
 
     // Skip if title already exists
-    const existing = this.db
-      .getRawDb()
+    const existing = this.db.raw
       .prepare('SELECT generated_title FROM sessions WHERE id = ?')
       .get(sessionId) as { generated_title: string | null } | undefined;
     if (existing?.generated_title) return;
@@ -66,8 +65,7 @@ export class Indexer {
       .map((m) => ({ role: m.role, content: m.content?.slice(0, 200) || '' }));
     const title = await titleGenerator.generate(msgs);
     if (title) {
-      this.db
-        .getRawDb()
+      this.db.raw
         .prepare('UPDATE sessions SET generated_title = ? WHERE id = ?')
         .run(title, sessionId);
     }
@@ -344,7 +342,7 @@ export class Indexer {
                 // no cost/tool/parent data and only backfillCosts can recover.
                 // Nested writeAuthoritativeSnapshot transaction degrades to a
                 // savepoint under better-sqlite3, so this composes safely.
-                this.db.getRawDb().transaction(() => {
+                this.db.raw.transaction(() => {
                   this.writer.writeAuthoritativeSnapshot(snapshot);
                   this.db.applyParentLink(info);
                   this.writeExtractedData(
@@ -591,7 +589,7 @@ export class Indexer {
       // data and only backfillCosts can recover. Nested
       // writeAuthoritativeSnapshot transaction degrades to a savepoint under
       // better-sqlite3, so this composes safely.
-      this.db.getRawDb().transaction(() => {
+      this.db.raw.transaction(() => {
         this.writer.writeAuthoritativeSnapshot(snapshot);
         this.db.applyParentLink(info);
         this.writeExtractedData(

@@ -237,7 +237,7 @@ export async function captureNodeBaseline(
     const coldAppLaunchToDaemonReadyMs = await measureMs(() => {
       db = new Database(temp.tempDbPath);
       db
-        .getRawDb()
+        .raw
         .prepare('SELECT count(*) AS count FROM sessions')
         .get();
     });
@@ -246,7 +246,7 @@ export async function captureNodeBaseline(
     const coldDbOpenMs = await measureMs(() => {
       const coldDb = new Database(temp.tempDbPath);
       coldDb
-        .getRawDb()
+        .raw
         .prepare('SELECT count(*) AS count FROM sqlite_master')
         .get();
       coldDb.close();
@@ -261,7 +261,7 @@ export async function captureNodeBaseline(
         indexingTimes.push(
           await measureMs(() => {
             measuredDb
-              .getRawDb()
+              .raw
               .prepare('SELECT count(*) AS count FROM session_index_jobs')
               .get();
           }),

@@ -94,7 +94,7 @@ function initVectorDeps(
 ): VectorDeps | null {
   try {
     const dimension = opts.embeddingDimension ?? 768;
-    const vectorStore = new SqliteVecStore(db.getRawDb(), dimension);
+    const vectorStore = new SqliteVecStore(db.raw, dimension);
     const embeddingClient = createEmbeddingClient({
       provider: opts.embeddingProvider,
       ollamaUrl: opts.ollamaUrl,
@@ -144,7 +144,7 @@ export function createMCPDeps(opts?: { dbPath?: string }): MCPDeps {
 
   const settings = readFileSettings();
   const auditConfig = { ...DEFAULT_AI_AUDIT_CONFIG, ...settings.aiAudit };
-  const audit = new AiAuditWriter(db.getRawDb(), auditConfig);
+  const audit = new AiAuditWriter(db.raw, auditConfig);
   const authoritativeNode = settings.syncNodeName || 'local';
 
   // Apply tier-based noise filter
@@ -221,7 +221,7 @@ export function createDaemonDeps(opts?: { dbPath?: string }): DaemonCoreDeps {
 
   // Audit query (read-side complement to AiAuditWriter)
   const auditConfig = { ...DEFAULT_AI_AUDIT_CONFIG, ...settings.aiAudit };
-  const auditQuery = new AiAuditQuery(db.getRawDb());
+  const auditQuery = new AiAuditQuery(db.raw);
   audit.cleanup(auditConfig.retentionDays);
 
   // Title generator

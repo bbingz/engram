@@ -50,7 +50,7 @@ function normalizeSql(sql: string | null): string | null {
   return sql.replace(/\s+/g, ' ').trim();
 }
 
-function tableColumns(db: ReturnType<Database['getRawDb']>, name: string) {
+function tableColumns(db: Database['raw'], name: string) {
   const columns = db
     .prepare(`PRAGMA table_info(${JSON.stringify(name)})`)
     .all() as ColumnInfo[];
@@ -76,7 +76,7 @@ function emitSchema(out: string): void {
   const dbPath = resolve(tempDir, 'schema.sqlite');
   const db = new Database(dbPath);
   try {
-    const raw = db.getRawDb();
+    const raw = db.raw;
     raw.exec(`
       CREATE TABLE IF NOT EXISTS memory_insights (
         id TEXT PRIMARY KEY,

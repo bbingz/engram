@@ -45,6 +45,11 @@ describe('Database', () => {
     sizeBytes: 50000,
   };
 
+  it('exposes the raw sqlite handle only through raw', () => {
+    expect(db.raw.prepare('SELECT 1 AS value').get()).toEqual({ value: 1 });
+    expect('getRawDb' in db).toBe(false);
+  });
+
   it('upserts and retrieves a session', () => {
     db.upsertSession(mockSession);
     const result = db.getSession('session-001');
@@ -145,26 +150,26 @@ describe('Database', () => {
 
   it('deletes all index artifacts for a session in the same operation', () => {
     db.upsertSession(mockSession);
-    db.getRawDb().exec(`
+    db.raw.exec(`
       CREATE TABLE session_embeddings(session_id TEXT PRIMARY KEY, model TEXT);
       CREATE TABLE vec_sessions(session_id TEXT PRIMARY KEY);
       CREATE TABLE session_chunks(chunk_id TEXT PRIMARY KEY, session_id TEXT, text TEXT);
       CREATE TABLE vec_chunks(chunk_id TEXT PRIMARY KEY);
     `);
-    db.getRawDb()
+    db.raw
       .prepare(
         'INSERT INTO session_embeddings(session_id, model) VALUES (?, ?)',
       )
       .run('session-001', 'test-model');
-    db.getRawDb()
+    db.raw
       .prepare('INSERT INTO vec_sessions(session_id) VALUES (?)')
       .run('session-001');
-    db.getRawDb()
+    db.raw
       .prepare(
         'INSERT INTO session_chunks(chunk_id, session_id, text) VALUES (?, ?, ?)',
       )
       .run('chunk-001', 'session-001', 'hello');
-    db.getRawDb()
+    db.raw
       .prepare('INSERT INTO vec_chunks(chunk_id) VALUES (?)')
       .run('chunk-001');
 
@@ -176,8 +181,7 @@ describe('Database', () => {
       ['session_chunks', "session_id = 'session-001'"],
       ['vec_chunks', "chunk_id = 'chunk-001'"],
     ] as const) {
-      const row = db
-        .getRawDb()
+      const row = db.raw
         .prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`)
         .get() as { count: number };
       expect(row.count).toBe(0);
@@ -218,8 +222,7 @@ describe('Database', () => {
   });
 
   it('creates session_local_state and session_index_jobs tables', () => {
-    const tables = db
-      .getRawDb()
+    const tables = db.raw
       .prepare("SELECT name FROM sqlite_master WHERE type='table'")
       .all() as { name: string }[];
     const names = new Set(tables.map((t) => t.name));
@@ -232,16 +235,15 @@ describe('Database', () => {
       histogram: vi.fn(),
     } as any);
 
-    const stmt = db.getRawDb().prepare('SELECT 1 AS value');
+    const stmt = db.raw.prepare('SELECT 1 AS value');
 
     expect(stmt.get).toBe(stmt.get);
   });
 
   it('adds authoritative snapshot columns to sessions', () => {
-    const columns = db
-      .getRawDb()
-      .prepare('PRAGMA table_info(sessions)')
-      .all() as { name: string }[];
+    const columns = db.raw.prepare('PRAGMA table_info(sessions)').all() as {
+      name: string;
+    }[];
     const names = new Set(columns.map((c) => c.name));
     expect(names.has('authoritative_node')).toBe(true);
     expect(names.has('source_locator')).toBe(true);
@@ -250,7 +252,7 @@ describe('Database', () => {
   });
 
   it('backfills local_readable_path from legacy file_path without losing machine-local readability', () => {
-    db.getRawDb().exec(`
+    db.raw.exec(`
       INSERT INTO sessions (
         id, source, start_time, cwd, message_count, user_message_count,
         assistant_message_count, tool_message_count, system_message_count,
@@ -291,7 +293,7 @@ describe('Database', () => {
     };
     db.upsertAuthoritativeSnapshot(snapshot);
     db.setLocalReadablePath('synced-empty-path', '');
-    db.getRawDb()
+    db.raw
       .prepare("UPDATE sessions SET file_path = '' WHERE id = ?")
       .run('synced-empty-path');
 
@@ -346,7 +348,7 @@ describe('Database', () => {
   });
 
   it('keeps local-day counting sargable on start_time', () => {
-    const raw = db.getRawDb() as typeof db.raw & {
+    const raw = db.raw as typeof db.raw & {
       prepare: typeof db.raw.prepare;
     };
     const originalPrepare = raw.prepare.bind(raw);
@@ -602,7 +604,7 @@ describe('Database', () => {
       // backfillTiers already ran in constructor, but these were inserted after
       db.backfillTiers();
 
-      const raw = db.getRawDb();
+      const raw = db.raw;
       expect(
         raw.prepare('SELECT tier FROM sessions WHERE id = ?').get('agent-1'),
       ).toHaveProperty('tier', 'skip');
@@ -622,7 +624,7 @@ describe('Database', () => {
   });
 
   it('SCHEMA_VERSION matches metadata table value', () => {
-    const raw = db.getRawDb();
+    const raw = db.raw;
     const row = raw
       .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
       .get() as { value: string };

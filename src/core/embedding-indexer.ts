@@ -16,8 +16,7 @@ export class EmbeddingIndexer {
     // Pre-populate from DB on first call to avoid re-embedding after restart
     if (this.indexed.size === 0) {
       try {
-        const existing = this.db
-          .getRawDb()
+        const existing = this.db.raw
           .prepare('SELECT session_id FROM session_embeddings')
           .all() as { session_id: string }[];
         for (const row of existing) this.markIndexed(row.session_id);

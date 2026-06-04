@@ -27,7 +27,7 @@ function insertSession(
     project = 'test-project',
     messageCount = 10,
   } = opts;
-  db.getRawDb()
+  db.raw
     .prepare(`
     INSERT INTO sessions (id, source, start_time, cwd, project, model, message_count, user_message_count,
       assistant_message_count, tool_message_count, system_message_count, file_path, size_bytes, tier)
@@ -325,7 +325,7 @@ describe('getCostSuggestions', () => {
       startTime: since,
     });
     insertCost(db, 's2', 'claude-sonnet-4-6', 10000, 50000, 0, 0, 1.0);
-    db.getRawDb()
+    db.raw
       .prepare(`
       INSERT INTO session_tools (session_id, tool_name, call_count) VALUES (?, 'Write', 15)
     `)

@@ -101,10 +101,6 @@ export class Database {
     }) as BetterSqlite3.Statement;
   }
 
-  getRawDb(): BetterSqlite3.Database {
-    return this.db;
-  }
-
   getMetadata(key: string): string | null {
     const row = this.db
       .prepare('SELECT value FROM metadata WHERE key = ?')

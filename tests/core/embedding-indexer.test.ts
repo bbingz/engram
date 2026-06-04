@@ -145,14 +145,12 @@ describe('EmbeddingIndexer', () => {
   });
 
   it('bounds the in-memory indexed-session cache loaded from the database', async () => {
-    db.getRawDb().exec(
+    db.raw.exec(
       'CREATE TABLE session_embeddings(session_id TEXT PRIMARY KEY, model TEXT)',
     );
-    const insert = db
-      .getRawDb()
-      .prepare(
-        'INSERT INTO session_embeddings(session_id, model) VALUES (?, ?)',
-      );
+    const insert = db.raw.prepare(
+      'INSERT INTO session_embeddings(session_id, model) VALUES (?, ?)',
+    );
     for (let i = 0; i < 10_050; i++) {
       insert.run(`s-${i}`, 'mock');
     }
@@ -168,7 +166,7 @@ describe('EmbeddingIndexer', () => {
     const dbPath = join(tmpDir, 'integration.sqlite');
     db.close();
     db = new Database(dbPath);
-    const store = new SqliteVecStore(db.getRawDb());
+    const store = new SqliteVecStore(db.raw);
     const embedCalls: string[] = [];
     const client: EmbeddingClient = {
       dimension: 768,
@@ -203,8 +201,7 @@ describe('EmbeddingIndexer', () => {
       'persisted-session',
     );
     expect(
-      db
-        .getRawDb()
+      db.raw
         .prepare('SELECT model FROM session_embeddings WHERE session_id = ?')
         .pluck()
         .get('persisted-session'),
@@ -212,7 +209,7 @@ describe('EmbeddingIndexer', () => {
 
     db.close();
     db = new Database(dbPath);
-    const restartedStore = new SqliteVecStore(db.getRawDb());
+    const restartedStore = new SqliteVecStore(db.raw);
     const restartedIndexer = new EmbeddingIndexer(db, restartedStore, client);
     vi.mocked(client.embed).mockClear();
 

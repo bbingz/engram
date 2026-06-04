@@ -533,7 +533,7 @@ export async function runAllHealthChecks(
     return cachedResult;
   }
 
-  const raw = db.getRawDb();
+  const raw = db.raw;
 
   // Determine repos to check
   let repoPaths: string[] = [];
