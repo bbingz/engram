@@ -1,6 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  resolve,
+} from 'node:path';
 import { runAllHealthChecks } from '../core/health-rules.js';
 import type { Logger } from '../core/logger.js';
 
@@ -26,6 +33,45 @@ interface LintIssue {
   severity: 'error' | 'warning' | 'info';
   message: string;
   suggestion?: string;
+}
+
+const PROTECTED_CWD_ROOTS = [
+  '/bin',
+  '/etc',
+  '/private/etc',
+  '/sbin',
+  '/System',
+  '/usr',
+];
+
+function isProtectedCwd(cwd: string): boolean {
+  return PROTECTED_CWD_ROOTS.some(
+    (root) => cwd === root || cwd.startsWith(`${root}/`),
+  );
+}
+
+function validateLintCwd(cwd: string): LintIssue | null {
+  if (!isAbsolute(cwd)) {
+    return {
+      file: cwd,
+      line: 0,
+      severity: 'error',
+      message: 'cwd must be an absolute path',
+    };
+  }
+
+  const resolved = resolve(cwd);
+  const real = existsSync(resolved) ? realpathSync(resolved) : resolved;
+  if (isProtectedCwd(real)) {
+    return {
+      file: cwd,
+      line: 0,
+      severity: 'error',
+      message: 'cwd must not be inside a protected system directory',
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -161,6 +207,9 @@ export async function handleLintConfig(
 ): Promise<{ issues: LintIssue[]; score: number }> {
   opts?.log?.info('lint_config invoked', { cwd: params.cwd });
   const { cwd } = params;
+  const cwdIssue = validateLintCwd(cwd);
+  if (cwdIssue) return { issues: [cwdIssue], score: 0 };
+
   const issues: LintIssue[] = [];
   const configFiles = findConfigFiles(cwd);
   const scripts = readPackageJsonScripts(cwd);

@@ -197,7 +197,9 @@ export function createEmbeddingClient(
           durationMs: Date.now() - start,
           meta: { dimension },
         });
-        return new Float32Array(res.data[0].embedding);
+        const arr = new Float32Array(res.data[0].embedding);
+        l2Normalize(arr);
+        return arr;
       }
     } catch (err) {
       audit?.record({

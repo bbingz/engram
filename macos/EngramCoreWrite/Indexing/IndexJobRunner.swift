@@ -108,7 +108,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         do {
             _ = try await runRecoverableJobs()
         } catch {
-            log.error("recoverable index job drain failed: \(String(describing: error), privacy: .public)")
+            log.error("recoverable index job drain failed: \(String(describing: error), privacy: .private)")
         }
     }
 
@@ -168,7 +168,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             // Transient failure (e.g. file changed during parse): leave the job
             // retryable so the next pass picks it up.
             log.error(
-                "fts job failed: session=\(job.sessionId, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                "fts job failed: session=\(job.sessionId, privacy: .private) error=\(String(describing: error), privacy: .private)"
             )
             try writer.write { db in
                 try Self.markRetryable(db, id: job.id, error: "\(error)")

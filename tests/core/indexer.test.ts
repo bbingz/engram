@@ -142,6 +142,51 @@ describe('Indexer', () => {
     expect(secondRun).toBe(0); // 第二次跳过
   });
 
+  it('deduplicates concurrent indexFile calls for the same adapter and path', async () => {
+    const filePath = makeSessionFile(
+      sessionsDir,
+      'concurrent-001',
+      '/Users/test',
+      'hello',
+      1,
+    );
+    let parseCount = 0;
+    const adapter: SessionAdapter = {
+      name: 'codex',
+      async detect() {
+        return true;
+      },
+      async *listSessionFiles() {
+        yield filePath;
+      },
+      async parseSessionInfo() {
+        parseCount++;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return makeBaseSessionInfo({
+          id: 'concurrent-001',
+          filePath,
+          sizeBytes: 0,
+        });
+      },
+      async *streamMessages(): AsyncGenerator<Message> {
+        yield { role: 'user', content: 'hello' };
+        yield { role: 'assistant', content: 'world' };
+      },
+      async isAccessible() {
+        return true;
+      },
+    };
+    const indexer = new Indexer(db, [adapter]);
+
+    const results = await Promise.all([
+      indexer.indexFile(adapter, filePath),
+      indexer.indexFile(adapter, filePath),
+    ]);
+
+    expect(parseCount).toBe(1);
+    expect(results.filter((result) => result.indexed)).toHaveLength(1);
+  });
+
   it('enqueues durable jobs for searchable content', async () => {
     // Need ≥2 messages so tier is not 'skip' (skip tier suppresses job dispatch)
     makeSessionFile(

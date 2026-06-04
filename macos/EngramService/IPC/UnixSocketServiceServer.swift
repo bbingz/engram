@@ -42,6 +42,7 @@ final class UnixSocketServiceServer: Sendable {
         let connectionLimiter = connectionLimiter
         let state = state
         let serviceEuid = geteuid()
+        ServiceLogger.notice("ipc listener ready path=\(socketPath)", category: .ipc)
 
         let acceptTask = Task.detached {
             while !Task.isCancelled {

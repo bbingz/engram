@@ -2,7 +2,7 @@
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
 import { truncateJSON } from './_truncate.js';
@@ -158,6 +158,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         startTime: safeStartTime,
         endTime: safeEndTime !== safeStartTime ? safeEndTime : undefined,
         cwd,
+        project: ClaudeCodeAdapter.projectNameFromCwd(cwd),
         model: detectedModel || undefined,
         messageCount: userCount + assistantCount + toolCount,
         userMessageCount: userCount,
@@ -187,6 +188,12 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     // Qwen/Kimi/Gemini models can be routed through Claude-compatible clients,
     // but the session file is still owned by Claude Code's on-disk format.
     return 'claude-code';
+  }
+
+  private static projectNameFromCwd(cwd: string): string | undefined {
+    const trimmed = cwd.trim();
+    if (!trimmed) return undefined;
+    return basename(trimmed) || undefined;
   }
 
   private static hasLobsterAIPathComponent(filePath: string): boolean {

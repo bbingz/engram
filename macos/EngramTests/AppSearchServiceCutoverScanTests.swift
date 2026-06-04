@@ -92,6 +92,20 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    func testSearchViewCancelsAsyncSearchAndEmbeddingTasks() throws {
+        let searchView = try source("macos/Engram/Views/SearchView.swift")
+
+        XCTAssertTrue(searchView.contains("@State private var searchTask: Task<Void, Never>?"))
+        XCTAssertTrue(searchView.contains("@State private var embeddingStatusTask: Task<Void, Never>?"))
+        XCTAssertTrue(searchView.contains("searchTask?.cancel()"))
+        XCTAssertTrue(searchView.contains("embeddingStatusTask?.cancel()"))
+        XCTAssertTrue(searchView.contains(".onDisappear"))
+        XCTAssertTrue(
+            searchView.contains("guard !Task.isCancelled else { return }"),
+            "SearchView async callbacks must not publish stale search or embedding results after cancellation"
+        )
+    }
+
     func testReadOnlyAppPagesDoNotCallDaemonHttpDirectly() throws {
         let expectations: [(path: String, forbidden: [String])] = [
             (

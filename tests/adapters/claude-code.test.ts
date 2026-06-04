@@ -40,6 +40,7 @@ describe('ClaudeCodeAdapter', () => {
     expect(info?.id).toBe('cc-session-001');
     expect(info?.source).toBe('claude-code');
     expect(info?.cwd).toBe('/Users/test/my-project');
+    expect(info?.project).toBe('my-project');
     expect(info?.userMessageCount).toBe(2);
     expect(info?.summary).toBe('请帮我添加用户注册功能');
   });

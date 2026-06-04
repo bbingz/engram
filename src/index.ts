@@ -323,10 +323,11 @@ toolRegistry.set('hide_session', (a) => {
   const hiddenAt = hidden
     ? new Date().toISOString().replace('T', ' ').slice(0, 19)
     : null;
-  const tx = db.raw.transaction((id: string) => {
-    db.raw
+  const tx = db.raw.transaction((id: string): number => {
+    const sessionUpdate = db.raw
       .prepare('UPDATE sessions SET hidden_at = ? WHERE id = ?')
       .run(hiddenAt, id);
+    if (Number(sessionUpdate.changes) === 0) return 0;
     db.raw
       .prepare(
         `
@@ -336,8 +337,22 @@ toolRegistry.set('hide_session', (a) => {
         `,
       )
       .run(id, hiddenAt);
+    return Number(sessionUpdate.changes);
   });
-  tx(sessionId);
+  const changed = tx(sessionId);
+  if (changed === 0) {
+    return {
+      _early: true,
+      content: [{ type: 'text', text: `Session not found: ${sessionId}` }],
+      isError: true,
+      structuredContent: {
+        error: 'not_found',
+        session_id: sessionId,
+        hidden,
+        dry_run: false,
+      },
+    };
+  }
   return { session_id: sessionId, hidden, dry_run: false };
 });
 
@@ -753,6 +768,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const { _early, ...response } = result as Record<string, unknown> & {
           _early: boolean;
         };
+        if (response.isError === true && response.structuredContent == null) {
+          const firstText =
+            Array.isArray(response.content) &&
+            response.content[0] != null &&
+            typeof response.content[0] === 'object' &&
+            'text' in response.content[0] &&
+            typeof response.content[0].text === 'string'
+              ? response.content[0].text
+              : 'Tool returned an error.';
+          response.structuredContent = { error: { message: firstText } };
+        }
         return response;
       }
 
@@ -861,5 +887,6 @@ await server.connect(transport);
   idleTimeoutMs: 0,
   onExit: () => {
     watcher?.close();
+    db.close();
   },
 }));

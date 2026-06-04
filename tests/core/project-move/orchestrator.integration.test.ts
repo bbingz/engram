@@ -253,6 +253,24 @@ describe('runProjectMove — orchestrator integration', () => {
     );
   });
 
+  it('throws on non-absolute project paths', async () => {
+    await expect(
+      runProjectMove(db, { src: 'relative-src', dst, home }),
+    ).rejects.toThrow(/absolute paths/);
+    await expect(
+      runProjectMove(db, { src, dst: 'relative-dst', home }),
+    ).rejects.toThrow(/absolute paths/);
+  });
+
+  it('throws on protected system project paths', async () => {
+    await expect(
+      runProjectMove(db, { src: '/System/Library', dst, home }),
+    ).rejects.toThrow(/protected system path/);
+    await expect(
+      runProjectMove(db, { src, dst: '/usr/local/project', home }),
+    ).rejects.toThrow(/protected system path/);
+  });
+
   it('throws when dst is inside src (self-subdir move)', async () => {
     await expect(
       runProjectMove(db, { src, dst: join(src, 'sub'), home }),

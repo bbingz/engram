@@ -710,6 +710,34 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testReindexClearsRecoveredOrphanStatus() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "recovered", snapshotHash: "h1"))
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET orphan_status = 'suspect',
+                    orphan_since = datetime('now'),
+                    orphan_reason = 'cleaned_by_source'
+                WHERE id = 'recovered'
+                """
+            )
+
+            let result = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "recovered", snapshotHash: "h1"))
+
+            XCTAssertEqual(result.action, .noop)
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT orphan_status, orphan_since, orphan_reason FROM sessions WHERE id = 'recovered'"
+            )
+            XCTAssertNotNil(row)
+            XCTAssertNil(row?["orphan_status"] as String?)
+            XCTAssertNil(row?["orphan_since"] as String?)
+            XCTAssertNil(row?["orphan_reason"] as String?)
+        }
+    }
+
     private func makeSnapshot(
         id: String,
         syncVersion: Int = 1,

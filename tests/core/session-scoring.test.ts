@@ -258,6 +258,19 @@ describe('computeQualityScore()', () => {
       expect(score).toBeLessThanOrEqual(100);
     });
 
+    it('treats invalid timestamps as zero duration', () => {
+      const score = computeQualityScore(
+        makeInput({
+          startTime: 'not-a-date',
+          endTime: '2024-01-01T10:30:00Z',
+        }),
+      );
+      const noTimes = computeQualityScore(
+        makeInput({ startTime: null, endTime: null }),
+      );
+      expect(score).toBe(noTimes);
+    });
+
     it('returns a round number', () => {
       const score = computeQualityScore(makeInput());
       expect(Number.isInteger(score)).toBe(true);

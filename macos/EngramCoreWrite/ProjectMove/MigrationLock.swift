@@ -9,7 +9,8 @@
 // Protocol:
 //   - Lock file: ~/.engram/.project-move.lock
 //   - Contents:  JSON { pid, startedAt, migrationId }
-//   - Stale detection: if owning pid is gone (kill -0 → ESRCH), break.
+//   - Stale detection: if owning pid is gone (kill -0 → ESRCH), is a zombie,
+//     or is older than the TTL, break.
 //
 // Atomicity: open(O_CREAT | O_EXCL) ensures only one process can claim
 // the path. Round 4 (Codex blocker #2a) closed a TOCTOU race where two
@@ -65,7 +66,8 @@ public enum MigrationLock {
     public static func acquire(
         migrationId: String,
         lockPath: String = defaultLockPath(),
-        now: Date = Date()
+        now: Date = Date(),
+        staleTTL: TimeInterval = 3_600
     ) throws {
         let directory = (lockPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(
@@ -88,7 +90,9 @@ public enum MigrationLock {
                 return
             case .alreadyExists:
                 let existing = readHolder(lockPath: lockPath)
-                if let existing, isProcessAlive(pid: existing.pid) {
+                if let existing,
+                   isProcessAlive(pid: existing.pid),
+                   !isExpired(existing, now: now, staleTTL: staleTTL) {
                     throw LockBusyError(holder: existing)
                 }
                 // Stale (or corrupt) lock — unlink and retry. Ignore ENOENT
@@ -171,16 +175,46 @@ public enum MigrationLock {
 
     /// `kill(pid, 0)` is a probe; returns 0 if the process exists and we
     /// can signal it, ESRCH if it's gone, EPERM if it exists but we lack
-    /// permission. EPERM still implies the process is alive.
+    /// permission. EPERM still implies the process is alive. On Darwin,
+    /// zombies also satisfy kill(0), so reject them with a proc-state probe.
     private static func isProcessAlive(pid: Int32) -> Bool {
         if pid == getpid() { return true }
-        if kill(pid, 0) == 0 { return true }
+        if kill(pid, 0) == 0 { return !isZombie(pid: pid) }
         return errno == EPERM
+    }
+
+    private static func isExpired(_ holder: LockHolder, now: Date, staleTTL: TimeInterval) -> Bool {
+        guard holder.pid != getpid(),
+              staleTTL > 0,
+              let startedAt = parseISO8601(holder.startedAt) else {
+            return false
+        }
+        return now.timeIntervalSince(startedAt) > staleTTL
+    }
+
+    private static func isZombie(pid: Int32) -> Bool {
+        var mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, Int32(pid)]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        let result = mib.withUnsafeMutableBufferPointer { ptr in
+            sysctl(ptr.baseAddress, u_int(ptr.count), &info, &size, nil, 0)
+        }
+        guard result == 0, size > 0 else { return false }
+        return Int32(info.kp_proc.p_stat) == SZOMB
     }
 
     private static func iso8601(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)
+    }
+
+    private static func parseISO8601(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) {
+            return date
+        }
+        return ISO8601DateFormatter().date(from: value)
     }
 }

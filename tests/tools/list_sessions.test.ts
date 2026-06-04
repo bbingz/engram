@@ -112,4 +112,10 @@ describe('list_sessions tool', () => {
     });
     expect(result.sessions).toHaveLength(2);
   });
+
+  it('reports total matching sessions, not just the current page size', async () => {
+    const result = await handleListSessions(db, { limit: 1 });
+    expect(result.sessions).toHaveLength(1);
+    expect(result.total).toBe(3);
+  });
 });

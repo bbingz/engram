@@ -568,20 +568,20 @@ final class MCPDatabase {
         )
 
         var seen = Set<String>()
-        var ranked: [(sessionID: String, snippet: String, score: Double)] = []
+        var ranked: [(row: Row, snippet: String, score: Double)] = []
         var rank = 1
         for match in matches {
-            guard seen.insert(match.sessionID).inserted else { continue }
-            ranked.append((match.sessionID, match.snippet, 1.0 / Double(60 + rank)))
+            let sessionID = stringValue(match.row["id"]) ?? ""
+            guard seen.insert(sessionID).inserted else { continue }
+            ranked.append((match.row, match.snippet, 1.0 / Double(60 + rank)))
             rank += 1
             if ranked.count >= cappedLimit { break }
         }
 
-        let resultRows = try ranked.compactMap { match -> OrderedJSONValue? in
-            guard let row = try fetchSessionRow(id: match.sessionID) else { return nil }
+        let resultRows = ranked.map { match -> OrderedJSONValue in
             return .object([
-                ("session", fullSessionObject(from: row)),
-                ("snippet", .string(match.snippet.isEmpty ? (stringValue(row["summary"]) ?? "") : match.snippet)),
+                ("session", fullSessionObject(from: match.row)),
+                ("snippet", .string(match.snippet.isEmpty ? (stringValue(match.row["summary"]) ?? "") : match.snippet)),
                 ("matchType", .string("keyword")),
                 ("score", .double(match.score)),
             ])
@@ -773,6 +773,54 @@ final class MCPDatabase {
                 let lines = topTools.map { "  \($0.name): \($0.callCount) calls" }.joined(separator: "\n")
                 sections.append("Top tools (7d):\n\(lines)")
             }
+
+            var gitReposSection: String?
+            let gitRepos = try changedGitRepos(limit: toolLimit)
+            if !gitRepos.isEmpty {
+                let lines = gitRepos.map { repo -> String in
+                    let branch: String = repo.branch.map { " (\($0))" } ?? ""
+                    let line: String = "  \(repo.name)\(branch): \(repo.dirtyCount) dirty, \(repo.unpushedCount) unpushed"
+                    return line
+                }.joined(separator: "\n")
+                gitReposSection = "Git repos with changes (\(gitRepos.count)):\n\(lines)"
+                sections.append(gitReposSection!)
+            }
+
+            var fileHotspotsSection: String?
+            let hotspots = try fileHotspotsSince(iso8601Timestamp(startOfSevenDayWindow), limit: toolLimit)
+            if !hotspots.isEmpty {
+                let lines = hotspots.map { hotspot -> String in
+                    let line: String = "  \(hotspot.filePath) (\(hotspot.total) edits, \(hotspot.sessions) sessions)"
+                    return line
+                }.joined(separator: "\n")
+                fileHotspotsSection = "File hotspots (7d):\n\(lines)"
+                sections.append(fileHotspotsSection!)
+            }
+
+            var recentErrorsSection: String?
+            let recentErrors = try recentErrorsSince(iso8601Timestamp(
+                calendar.date(byAdding: .hour, value: -24, to: now) ?? now
+            ), limit: 5)
+            if !recentErrors.isEmpty {
+                let lines = recentErrors.map { error -> String in
+                    let line: String = "  [\(error.module)] \(error.message) (×\(error.count))"
+                    return line
+                }.joined(separator: "\n")
+                recentErrorsSection = "Recent errors (24h):\n\(lines)"
+                sections.append(recentErrorsSection!)
+            }
+
+            let maxEnvChars = Double(maxTokens * 4) * 0.3
+            func joinedEnvironmentLength() -> Int { sections.joined(separator: "\n").count }
+            if joinedEnvironmentLength() > Int(maxEnvChars), let fileHotspotsSection {
+                sections.removeAll { $0 == fileHotspotsSection }
+            }
+            if joinedEnvironmentLength() > Int(maxEnvChars), let gitReposSection {
+                sections.removeAll { $0 == gitReposSection }
+            }
+            if joinedEnvironmentLength() > Int(maxEnvChars), let recentErrorsSection {
+                sections.removeAll { $0 == recentErrorsSection }
+            }
         }
 
         let maxEnvChars = Double(maxTokens * 4) * 0.3
@@ -787,6 +835,18 @@ final class MCPDatabase {
     func sessionRecord(id: String) throws -> MCPSessionRecord? {
         guard let row = try fetchSessionRow(id: id) else { return nil }
         return makeSessionRecord(from: row)
+    }
+
+    func sessionCost(id: String) throws -> Double? {
+        try queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT cost_usd FROM session_costs WHERE session_id = ?",
+                arguments: [id]
+            )
+            guard let row else { return nil }
+            return doubleValue(row["cost_usd"])
+        }
     }
 
     private func totalCostBetween(start: String, end: String) throws -> Double {
@@ -830,6 +890,87 @@ final class MCPDatabase {
         }
     }
 
+    private func changedGitRepos(limit: Int) throws -> [(name: String, branch: String?, dirtyCount: Int, unpushedCount: Int)] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT name, branch, dirty_count, unpushed_count
+                FROM git_repos
+                WHERE dirty_count > 0 OR unpushed_count > 0
+                ORDER BY dirty_count DESC, unpushed_count DESC, name ASC
+                LIMIT ?
+                """,
+                arguments: [limit]
+            )
+            return rows.compactMap { row in
+                guard let name = stringValue(row["name"]), !name.isEmpty else { return nil }
+                return (
+                    name,
+                    stringValue(row["branch"]),
+                    intValue(row["dirty_count"]),
+                    intValue(row["unpushed_count"])
+                )
+            }
+        }
+    }
+
+    private func fileHotspotsSince(_ since: String, limit: Int) throws -> [(filePath: String, total: Int, sessions: Int)] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT sf.file_path AS file_path,
+                       SUM(sf.count) AS total,
+                       COUNT(DISTINCT sf.session_id) AS sessions
+                FROM session_files sf
+                JOIN sessions s ON s.id = sf.session_id
+                WHERE sf.action = 'Edit' AND s.start_time >= ?
+                GROUP BY sf.file_path
+                ORDER BY total DESC, file_path ASC
+                LIMIT ?
+                """,
+                arguments: [since, limit]
+            )
+            return rows.compactMap { row in
+                guard let filePath = stringValue(row["file_path"]), !filePath.isEmpty else { return nil }
+                return (
+                    filePath,
+                    intValue(row["total"]),
+                    intValue(row["sessions"])
+                )
+            }
+        }
+    }
+
+    private func recentErrorsSince(_ since: String, limit: Int) throws -> [(module: String, message: String, count: Int)] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT module, message, COUNT(*) AS count, MAX(ts) AS last_seen
+                FROM logs
+                WHERE level = 'error' AND ts >= ?
+                GROUP BY module, message
+                ORDER BY count DESC, last_seen DESC
+                LIMIT ?
+                """,
+                arguments: [since, limit]
+            )
+            return rows.compactMap { row in
+                guard let module = stringValue(row["module"]), !module.isEmpty,
+                      let message = stringValue(row["message"]), !message.isEmpty else {
+                    return nil
+                }
+                return (
+                    module,
+                    message,
+                    intValue(row["count"])
+                )
+            }
+        }
+    }
+
     private func searchInsightsFTS(query: String, limit: Int) throws -> [Row] {
         if containsCJK(query) {
             // Escape LIKE wildcards so literal "%"/"_" match verbatim.
@@ -844,7 +985,7 @@ final class MCPDatabase {
         }
 
         func runQuery(_ candidate: String) throws -> [Row] {
-            try queue.read { db in
+            try readRetryingTransientMissingFTS { db in
                 try Row.fetchAll(
                     db,
                     sql: """
@@ -944,9 +1085,9 @@ final class MCPDatabase {
         project: String?,
         since: String?,
         limit: Int
-    ) throws -> [(sessionID: String, snippet: String)] {
+    ) throws -> [(row: Row, snippet: String)] {
         let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
-        return try queue.read { db in
+        return try readRetryingTransientMissingFTS { db in
             var conditions = [
                 "sessions_fts MATCH ?",
                 "s.hidden_at IS NULL",
@@ -977,11 +1118,13 @@ final class MCPDatabase {
 
             let sql = """
             SELECT
-              f.session_id AS session_id,
+              s.*,
+              ls.local_readable_path,
               snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32) AS snippet,
               f.rank
             FROM sessions_fts f
             JOIN sessions s ON s.id = f.session_id
+            LEFT JOIN session_local_state ls ON ls.session_id = s.id
             WHERE \(conditions.joined(separator: " AND "))
             ORDER BY f.rank
             LIMIT ?
@@ -989,13 +1132,31 @@ final class MCPDatabase {
 
             do {
                 let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-                return rows.map { (stringValue($0["session_id"]) ?? "", stringValue($0["snippet"]) ?? "") }
+                return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
             } catch {
                 values[0] = "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
                 let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-                return rows.map { (stringValue($0["session_id"]) ?? "", stringValue($0["snippet"]) ?? "") }
+                return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
             }
         }
+    }
+
+    private func readRetryingTransientMissingFTS<T>(
+        _ block: (Database) throws -> T
+    ) throws -> T {
+        do {
+            return try queue.read(block)
+        } catch {
+            guard isTransientMissingFTSTable(error) else { throw error }
+            Thread.sleep(forTimeInterval: 0.02)
+            return try queue.read(block)
+        }
+    }
+
+    private func isTransientMissingFTSTable(_ error: Error) -> Bool {
+        let message = String(describing: error)
+        return message.contains("no such table: sessions_fts")
+            || message.contains("no such table: insights_fts")
     }
 
     private func resolveProjectAliases(_ projects: [String]) throws -> [String] {

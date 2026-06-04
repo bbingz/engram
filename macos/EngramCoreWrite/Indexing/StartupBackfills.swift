@@ -57,9 +57,14 @@ public protocol StartupUsageCollecting: AnyObject {
 }
 
 public protocol StartupIndexing: AnyObject {
+    var usesInlineCountAndCostBackfills: Bool { get }
     func indexAll() async throws -> Int
     func backfillCounts() async throws -> Int
     func backfillCosts() async throws -> Int
+}
+
+public extension StartupIndexing {
+    var usesInlineCountAndCostBackfills: Bool { false }
 }
 
 public protocol StartupIndexJobRunning: AnyObject {
@@ -204,6 +209,8 @@ public enum StartupBackfills {
             let backfilled = try await indexer.backfillCounts()
             if backfilled > 0 {
                 emit(StartupBackfillEvent(event: "backfill_counts", payload: ["backfilled": .int(backfilled)]))
+            } else if indexer.usesInlineCountAndCostBackfills {
+                emit(StartupBackfillEvent(event: "backfill_inline", payload: ["type": .string("counts")]))
             }
         } catch {
             log.warn("backfill counts failed", error: error)
@@ -213,6 +220,8 @@ public enum StartupBackfills {
             let costBackfilled = try await indexer.backfillCosts()
             if costBackfilled > 0 {
                 emit(StartupBackfillEvent(event: "backfill", payload: ["type": .string("costs"), "count": .int(costBackfilled)]))
+            } else if indexer.usesInlineCountAndCostBackfills {
+                emit(StartupBackfillEvent(event: "backfill_inline", payload: ["type": .string("costs")]))
             }
         } catch {
             log.warn("backfill costs failed", error: error)
@@ -432,6 +441,42 @@ public enum StartupBackfills {
     }
 
     public static func deduplicateFilePaths(_ db: Database) throws -> Int {
+        let duplicateMappingSQL = """
+            WITH keepers AS (
+              SELECT file_path, MAX(rowid) AS keep_rowid
+              FROM sessions
+              WHERE file_path IS NOT NULL
+                AND file_path != ''
+              GROUP BY file_path
+            ),
+            duplicates AS (
+              SELECT duplicate.id AS old_id, keeper.id AS keep_id
+              FROM sessions duplicate
+              JOIN keepers ON keepers.file_path = duplicate.file_path
+              JOIN sessions keeper ON keeper.rowid = keepers.keep_rowid
+              WHERE duplicate.rowid != keepers.keep_rowid
+            )
+            """
+        try db.execute(
+            sql: """
+            \(duplicateMappingSQL)
+            UPDATE sessions
+            SET parent_session_id = (
+              SELECT keep_id FROM duplicates WHERE old_id = sessions.parent_session_id
+            )
+            WHERE parent_session_id IN (SELECT old_id FROM duplicates)
+            """
+        )
+        try db.execute(
+            sql: """
+            \(duplicateMappingSQL)
+            UPDATE sessions
+            SET suggested_parent_id = (
+              SELECT keep_id FROM duplicates WHERE old_id = sessions.suggested_parent_id
+            )
+            WHERE suggested_parent_id IN (SELECT old_id FROM duplicates)
+            """
+        )
         let removed = try db.executeAndCountChanges(
             sql: """
             DELETE FROM sessions
@@ -865,6 +910,28 @@ public enum StartupBackfills {
 
         var checked = 0
         var suggested = 0
+        let eligibleCandidates = candidates.filter { candidate in
+            let agentRole: String? = candidate["agent_role"]
+            if agentRole != nil { return true }
+            let summary: String? = candidate["summary"]
+            return summary.map(ParentDetection.isDispatchPattern) ?? false
+        }
+        let parentRows: [Row]
+        if let earliestStart = eligibleCandidates.compactMap({ $0["start_time"] as String? }).min(),
+           let latestStart = eligibleCandidates.compactMap({ $0["start_time"] as String? }).max() {
+            parentRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, start_time, end_time, project, cwd FROM sessions
+                WHERE source IN ('claude-code', 'claude')
+                  AND datetime(start_time) BETWEEN datetime(?, '-24 hours') AND datetime(?)
+                  AND parent_session_id IS NULL
+                """,
+                arguments: [earliestStart, latestStart]
+            )
+        } else {
+            parentRows = []
+        }
 
         for candidate in candidates {
             checked += 1
@@ -880,18 +947,7 @@ public enum StartupBackfills {
             }
 
             let startTime: String = candidate["start_time"]
-            let parents = try Row.fetchAll(
-                db,
-                sql: """
-                SELECT id, start_time, end_time, project, cwd FROM sessions
-                WHERE source IN ('claude-code', 'claude')
-                  AND datetime(start_time) BETWEEN datetime(?, '-24 hours') AND datetime(?)
-                  AND parent_session_id IS NULL
-                """,
-                arguments: [startTime, startTime]
-            )
-
-            let scored = parents.map { parent -> ScoredParent in
+            let scored = parentRows.map { parent -> ScoredParent in
                 ScoredParent(
                     parentId: parent["id"],
                     score: ParentDetection.scoreCandidate(

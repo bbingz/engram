@@ -510,6 +510,24 @@ final class StartupBackfillTests: XCTestCase {
         XCTAssertTrue(events.contains(StartupBackfillEvent(event: "error", payload: ["message": .string("backfillFilePaths: expected")])))
     }
 
+    func testInlineCountAndCostBackfillsEmitProgressEvents() async throws {
+        let indexer = RecordingStartupIndexer(indexed: 1)
+        indexer.usesInlineCountAndCostBackfills = true
+        let database = RecordingStartupDatabase()
+        var events: [StartupBackfillEvent] = []
+
+        try await StartupBackfills.runStartupMaintenanceAndParents(
+            indexed: 1,
+            emit: { events.append($0) },
+            log: RecordingStartupLogger(),
+            indexer: indexer,
+            database: database
+        )
+
+        XCTAssertTrue(events.contains(StartupBackfillEvent(event: "backfill_inline", payload: ["type": .string("counts")])))
+        XCTAssertTrue(events.contains(StartupBackfillEvent(event: "backfill_inline", payload: ["type": .string("costs")])))
+    }
+
     func testBackfillFilePathsUpdatesSessionsAndLocalStateIgnoringSyncLocators() throws {
         try writer.write { db in
             try insertSession(db, id: "local", source: "codex", filePath: "", sourceLocator: "/tmp/local.jsonl")
@@ -641,6 +659,35 @@ final class StartupBackfillTests: XCTestCase {
             // so search can no longer surface a session that no longer exists.
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'old'"), 0)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'new'"), 1)
+        }
+    }
+
+    func testDeduplicateFilePathsReparentsChildrenBeforeDeletingDuplicateParent() throws {
+        try writer.write { db in
+            try insertSession(db, id: "old-parent", source: "codex", filePath: "/tmp/parent.jsonl")
+            try insertSession(db, id: "new-parent", source: "codex", filePath: "/tmp/parent.jsonl")
+            try insertSession(db, id: "confirmed-child", source: "codex", filePath: "/tmp/confirmed-child.jsonl")
+            try insertSession(db, id: "suggested-child", source: "codex", filePath: "/tmp/suggested-child.jsonl")
+            try db.execute(
+                sql: """
+                UPDATE sessions SET parent_session_id = 'old-parent', link_source = 'path' WHERE id = 'confirmed-child';
+                UPDATE sessions SET suggested_parent_id = 'old-parent' WHERE id = 'suggested-child';
+                """
+            )
+
+            let removed = try StartupBackfills.deduplicateFilePaths(db)
+
+            XCTAssertEqual(removed, 1)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE id = 'old-parent'"))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'confirmed-child'"),
+                "new-parent"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'suggested-child'"),
+                "new-parent"
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'confirmed-child'"), "path")
         }
     }
 
@@ -866,6 +913,7 @@ private final class RecordingStartupUsageCollector: StartupUsageCollecting {
 }
 
 private final class RecordingStartupIndexer: StartupIndexing {
+    var usesInlineCountAndCostBackfills = false
     var indexed: Int
     var countBackfilled: Int
     var costBackfilled: Int

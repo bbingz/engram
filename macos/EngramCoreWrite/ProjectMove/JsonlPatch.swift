@@ -161,6 +161,7 @@ public enum JsonlPatch {
         oldPath: String,
         newPath: String
     ) throws -> Int {
+        try rejectSymlinkSource(filePath)
         let attrsBefore = try FileManager.default.attributesOfItem(atPath: filePath)
         let sizeBefore = (attrsBefore[.size] as? NSNumber)?.int64Value ?? 0
         if sizeBefore > maxInMemoryBytes {
@@ -193,7 +194,9 @@ public enum JsonlPatch {
             if let permissions = attrsBefore[.posixPermissions] as? NSNumber {
                 chmod(tmpPath, mode_t(permissions.intValue))
             }
+            try fsyncFile(at: tmpPath)
         } catch {
+            _ = try? FileManager.default.removeItem(atPath: tmpPath)
             throw JsonlPatchError.ioError(
                 path: tmpPath, errno: errno, message: error.localizedDescription
             )
@@ -247,6 +250,24 @@ public enum JsonlPatch {
             mtimeSec: Int(info.st_mtimespec.tv_sec),
             mtimeNsec: Int(info.st_mtimespec.tv_nsec)
         )
+    }
+
+    private static func rejectSymlinkSource(_ filePath: String) throws {
+        var info = stat()
+        if lstat(filePath, &info) != 0 {
+            throw JsonlPatchError.ioError(
+                path: filePath,
+                errno: errno,
+                message: String(cString: strerror(errno))
+            )
+        }
+        if (info.st_mode & S_IFMT) == S_IFLNK {
+            throw JsonlPatchError.ioError(
+                path: filePath,
+                errno: ELOOP,
+                message: "source is symlink"
+            )
+        }
     }
 
     private static func patchFileStreaming(
@@ -357,6 +378,25 @@ public enum JsonlPatch {
         guard fd >= 0 else { return }
         _ = Darwin.fsync(fd)
         Darwin.close(fd)
+    }
+
+    private static func fsyncFile(at path: String) throws {
+        let fd = Darwin.open(path, O_RDONLY)
+        if fd < 0 {
+            throw JsonlPatchError.ioError(
+                path: path,
+                errno: errno,
+                message: String(cString: strerror(errno))
+            )
+        }
+        defer { Darwin.close(fd) }
+        if Darwin.fsync(fd) != 0 {
+            throw JsonlPatchError.ioError(
+                path: path,
+                errno: errno,
+                message: String(cString: strerror(errno))
+            )
+        }
     }
 
     private static func replaceWithTerminator(

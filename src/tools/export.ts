@@ -13,7 +13,7 @@ import { toLocalDate, toLocalDateTime } from '../utils/time.js';
 export const exportTool = {
   name: 'export',
   description:
-    '将单个会话导出为 Markdown 或 JSON 文件，保存到 ~/codex-exports/ 目录。',
+    '将单个会话导出为 Markdown 或 JSON 文件，保存到 ~/.engram/exports/ 目录。',
   inputSchema: {
     type: 'object' as const,
     required: ['id'],
@@ -41,7 +41,7 @@ export async function handleExport(
 
   const format = params.format ?? 'markdown';
 
-  const outputDir = join(homedir(), 'codex-exports');
+  const outputDir = join(homedir(), '.engram', 'exports');
   await mkdir(outputDir, { recursive: true });
 
   const safeId = session.id.slice(0, 8);

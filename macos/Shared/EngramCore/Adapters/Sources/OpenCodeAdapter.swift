@@ -58,9 +58,36 @@ final class Phase4SQLiteDatabase {
     private static let transientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 }
 
+actor Phase4SQLiteAccessibilityCache {
+    private var databases: [String: Phase4SQLiteDatabase] = [:]
+
+    func contains(path: String, sql: String, bindings: [String]) -> Bool {
+        guard JSONLAdapterSupport.fileExists(path) else {
+            databases.removeValue(forKey: path)
+            return false
+        }
+
+        do {
+            let database: Phase4SQLiteDatabase
+            if let cached = databases[path] {
+                database = cached
+            } else {
+                let opened = try Phase4SQLiteDatabase(path: path)
+                databases[path] = opened
+                database = opened
+            }
+            return (try database.query(sql, bindings: bindings)).isEmpty == false
+        } catch {
+            databases.removeValue(forKey: path)
+            return false
+        }
+    }
+}
+
 final class OpenCodeAdapter: SessionAdapter, Sendable {
     let source: SourceName = .opencode
     private let dbPath: String
+    private let accessibilityCache = Phase4SQLiteAccessibilityCache()
 
     init(
         dbPath: String = FileManager.default.homeDirectoryForCurrentUser
@@ -224,17 +251,15 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
     }
 
     func isAccessible(locator: String) async -> Bool {
-        guard let locatorParts = Self.splitVirtualLocator(locator),
-              JSONLAdapterSupport.fileExists(locatorParts.dbPath),
-              let database = try? Phase4SQLiteDatabase(path: locatorParts.dbPath)
-        else {
+        guard let locatorParts = Self.splitVirtualLocator(locator) else {
             return false
         }
-        let rows = try? database.query(
+        return await accessibilityCache.contains(
+            path: locatorParts.dbPath,
+            sql:
             "SELECT 1 FROM session WHERE id = ? LIMIT 1",
             bindings: [locatorParts.sessionId]
         )
-        return rows?.isEmpty == false
     }
 
     private static func splitVirtualLocator(_ locator: String) -> (dbPath: String, sessionId: String)? {

@@ -58,13 +58,14 @@ export class TitleGenerator {
       headers.Authorization = `Bearer ${this.config.apiKey}`;
 
     const start = Date.now();
+    const timeout = createTimeoutSignal(15000);
     let res: Response;
     try {
       res = await fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15000),
+        signal: timeout.signal,
       });
     } catch (err) {
       this.audit?.record({
@@ -79,6 +80,8 @@ export class TitleGenerator {
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
+    } finally {
+      timeout.cleanup();
     }
 
     // biome-ignore lint/suspicious/noExplicitAny: LLM API response shape varies by provider (Ollama vs OpenAI)
@@ -116,6 +119,20 @@ export class TitleGenerator {
 
     return result;
   }
+}
+
+function createTimeoutSignal(ms: number): {
+  signal: AbortSignal;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`Timed out after ${ms}ms`));
+  }, ms);
+  return {
+    signal: controller.signal,
+    cleanup: () => clearTimeout(timer),
+  };
 }
 
 export function buildTitlePrompt(

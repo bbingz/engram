@@ -373,7 +373,17 @@ export function readFileSettings(): FileSettings {
       }
     }
     return migrated;
-  } catch {
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      'code' in err &&
+      (err as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
+      return {};
+    }
+    process.stderr.write(
+      `[engram] WARNING: failed to read settings: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     return {};
   }
 }

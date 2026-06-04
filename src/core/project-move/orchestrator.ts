@@ -26,7 +26,7 @@
 import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import { rename, stat } from 'node:fs/promises';
-import { join, resolve as pathResolve } from 'node:path';
+import { isAbsolute, join, resolve as pathResolve } from 'node:path';
 import type { Database } from '../db.js';
 import { safeMoveDir } from './fs-ops.js';
 import {
@@ -151,6 +151,21 @@ export interface PipelineResult {
   manifest: Array<{ path: string; occurrences: number }>;
 }
 
+const PROTECTED_PROJECT_ROOTS = [
+  '/bin',
+  '/etc',
+  '/private/etc',
+  '/sbin',
+  '/System',
+  '/usr',
+];
+
+function isProtectedProjectPath(path: string): boolean {
+  return PROTECTED_PROJECT_ROOTS.some(
+    (root) => path === root || path.startsWith(`${root}/`),
+  );
+}
+
 /**
  * Main entry point — orchestrates all 7 steps + compensation.
  *
@@ -171,12 +186,22 @@ export async function runProjectMove(
       `runProjectMove: src and dst must be non-empty absolute paths (got src="${rawSrc}", dst="${rawDst}")`,
     );
   }
+  if (!isAbsolute(rawSrc) || !isAbsolute(rawDst)) {
+    throw new Error(
+      `runProjectMove: src and dst must be non-empty absolute paths (got src="${rawSrc}", dst="${rawDst}")`,
+    );
+  }
   // Canonicalize BEFORE the string-level guards so `/x/a/../proj` vs
   // `/x/proj` and trailing-slash variants don't slip past (Codex follow-up
   // critical #1 — only the HTTP layer normalized previously; MCP / CLI /
   // batch callers could feed unresolved paths straight through).
   const src = pathResolve(rawSrc);
   const dst = pathResolve(rawDst);
+  if (isProtectedProjectPath(src) || isProtectedProjectPath(dst)) {
+    throw new Error(
+      `runProjectMove: refusing protected system path (src="${src}", dst="${dst}")`,
+    );
+  }
   if (src === dst) {
     throw new Error(`runProjectMove: src === dst (${src})`);
   }

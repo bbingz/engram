@@ -184,6 +184,24 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         assertToolError(result, contains: "group_by must be one of: source, project, day, week")
     }
 
+    func testToolArgumentsRejectValuesOutsideNumericBoundsBeforeExecution() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let result = try callTool(
+            name: "save_insight",
+            arguments: [
+                "content": "importance outside declared schema bounds",
+                "importance": 9,
+            ],
+            environment: [
+                "ENGRAM_MCP_SERVICE_SOCKET": temp.appendingPathComponent("missing-service.sock").path,
+            ]
+        )
+
+        assertToolError(result, contains: "importance must be <= 5")
+    }
+
     func testExportFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }

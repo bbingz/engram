@@ -3,6 +3,7 @@ import type { EmbeddingClient } from './embeddings.js';
 import type { VectorStore } from './vector-store.js';
 
 export class EmbeddingIndexer {
+  private static readonly MAX_INDEXED_CACHE = 10_000;
   private indexed = new Set<string>();
 
   constructor(
@@ -19,7 +20,7 @@ export class EmbeddingIndexer {
           .getRawDb()
           .prepare('SELECT session_id FROM session_embeddings')
           .all() as { session_id: string }[];
-        for (const row of existing) this.indexed.add(row.session_id);
+        for (const row of existing) this.markIndexed(row.session_id);
       } catch {
         // Table may not exist yet if vector store hasn't initialized
       }
@@ -38,7 +39,7 @@ export class EmbeddingIndexer {
 
         const text = this.getSessionText(session.id);
         if (!text) {
-          this.indexed.add(session.id);
+          this.markIndexed(session.id);
           continue;
         }
 
@@ -46,7 +47,7 @@ export class EmbeddingIndexer {
         if (!embedding) continue;
 
         this.store.upsert(session.id, embedding, this.client.model);
-        this.indexed.add(session.id);
+        this.markIndexed(session.id);
         count++;
       }
 
@@ -65,8 +66,18 @@ export class EmbeddingIndexer {
     if (!embedding) return false;
 
     this.store.upsert(sessionId, embedding, this.client.model);
-    this.indexed.add(sessionId);
+    this.markIndexed(sessionId);
     return true;
+  }
+
+  private markIndexed(sessionId: string): void {
+    this.indexed.delete(sessionId);
+    this.indexed.add(sessionId);
+    while (this.indexed.size > EmbeddingIndexer.MAX_INDEXED_CACHE) {
+      const oldest = this.indexed.values().next().value;
+      if (oldest === undefined) break;
+      this.indexed.delete(oldest);
+    }
   }
 
   private getSessionText(sessionId: string): string | null {

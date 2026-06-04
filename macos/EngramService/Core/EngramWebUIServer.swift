@@ -166,18 +166,24 @@ final class EngramWebUIServer: @unchecked Sendable {
     }
 
     static func isLoopbackHost(_ host: String, expectedPort: Int) -> Bool {
-        let hostname = host.split(separator: ":").first.map(String.init) ?? host
-        guard hostname == "127.0.0.1" || hostname == "localhost" || hostname == "[::1]" || hostname == "::1" else {
-            return false
-        }
-        // `expectedPort` was previously ignored: a forged `Host: 127.0.0.1:<other
-        // local service port>` passed. When the simple host:port form carries a
-        // parseable port, require it to match the bound port (defense in depth).
-        let trailing = host.split(separator: ":", omittingEmptySubsequences: false).dropFirst()
-        if trailing.count == 1, let port = Int(trailing.first!) {
+        if host == "::1" { return true }
+        if host == "[::1]" { return true }
+        if host.hasPrefix("[::1]:") {
+            let rawPort = String(host.dropFirst("[::1]:".count))
+            guard let port = Int(rawPort), String(port) == rawPort else { return false }
             return port == expectedPort
         }
-        return true
+        if host.hasPrefix("[::1]") {
+            return false
+        }
+
+        let parts = host.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 1 || parts.count == 2 else { return false }
+        let hostname = String(parts[0])
+        guard hostname == "127.0.0.1" || hostname == "localhost" else { return false }
+        if parts.count == 1 { return true }
+        guard let port = Int(parts[1]), String(port) == String(parts[1]) else { return false }
+        return port == expectedPort
     }
 
     static func isLoopbackOrigin(_ origin: String, expectedPort: Int) -> Bool {
@@ -266,6 +272,7 @@ final class EngramWebUIServer: @unchecked Sendable {
         let limit = min(200, max(1, Int(String(request.uri.queryParameters["limit"] ?? "50")) ?? 50))
         let messageHTML: String
         let pager: String
+        let status: HTTPResponse.Status
         do {
             let page = try await readMessages(for: session, offset: offset, limit: limit)
             messageHTML = page.messages.map { message in
@@ -286,9 +293,11 @@ final class EngramWebUIServer: @unchecked Sendable {
               \(nextLink)
             </nav>
             """
+            status = .ok
         } catch {
             messageHTML = Self.transcriptErrorHTML(error)
             pager = ""
+            status = Self.transcriptErrorStatus(error)
         }
 
         return (layout(
@@ -310,7 +319,7 @@ final class EngramWebUIServer: @unchecked Sendable {
             </main>
             \(pager)
             """
-        ), .ok)
+        ), status)
     }
 
     private func readSessions(limit: Int) throws -> [WebSession] {
@@ -437,6 +446,20 @@ final class EngramWebUIServer: @unchecked Sendable {
           <pre>\(escape(transcriptErrorMessage(error)))</pre>
         </article>
         """
+    }
+
+    static func transcriptErrorStatus(_ error: Error) -> HTTPResponse.Status {
+        guard let failure = error as? ParserFailure else {
+            return .internalServerError
+        }
+        switch failure {
+        case .fileMissing, .fileModifiedDuringParse:
+            return .notFound
+        case .fileTooLarge, .messageLimitExceeded:
+            return .init(code: 413, reasonPhrase: "Payload Too Large")
+        default:
+            return .internalServerError
+        }
     }
 
     private static func transcriptErrorMessage(_ error: Error) -> String {

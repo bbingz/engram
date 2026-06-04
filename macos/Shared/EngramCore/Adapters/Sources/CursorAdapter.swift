@@ -3,6 +3,7 @@ import Foundation
 final class CursorAdapter: SessionAdapter, Sendable {
     let source: SourceName = .cursor
     private let dbPath: String
+    private let accessibilityCache = Phase4SQLiteAccessibilityCache()
 
     init(
         dbPath: String = FileManager.default.homeDirectoryForCurrentUser
@@ -157,17 +158,15 @@ final class CursorAdapter: SessionAdapter, Sendable {
     }
 
     func isAccessible(locator: String) async -> Bool {
-        guard let locatorParts = Self.parseVirtualLocator(locator),
-              JSONLAdapterSupport.fileExists(locatorParts.dbPath),
-              let database = try? Phase4SQLiteDatabase(path: locatorParts.dbPath)
-        else {
+        guard let locatorParts = Self.parseVirtualLocator(locator) else {
             return false
         }
-        let rows = try? database.query(
+        return await accessibilityCache.contains(
+            path: locatorParts.dbPath,
+            sql:
             "SELECT 1 FROM cursorDiskKV WHERE key = ? LIMIT 1",
             bindings: ["composerData:\(locatorParts.composerId)"]
         )
-        return rows?.isEmpty == false
     }
 
     private static func parseVirtualLocator(_ locator: String) -> (dbPath: String, composerId: String)? {

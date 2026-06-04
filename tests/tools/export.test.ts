@@ -75,6 +75,7 @@ describe('export', () => {
     expect(result.format).toBe('markdown');
     expect(result.messageCount).toBe(2);
     expect(result.outputPath).toMatch(/\.md$/);
+    expect(result.outputPath).toContain(join('.engram', 'exports'));
     expect(existsSync(result.outputPath)).toBe(true);
 
     const content = readFileSync(result.outputPath, 'utf8');

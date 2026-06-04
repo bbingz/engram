@@ -153,7 +153,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                     startTime: startTime,
                     endTime: endTime != startTime ? endTime : nil,
                     cwd: cwd,
-                    project: nil,
+                    project: Self.projectName(fromCwd: cwd),
                     model: detectedModel.isEmpty ? nil : detectedModel,
                     messageCount: userCount + assistantCount + toolCount,
                     userMessageCount: userCount,
@@ -196,6 +196,12 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
+    }
+
+    private static func projectName(fromCwd cwd: String) -> String? {
+        let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: trimmed).lastPathComponent
     }
 
     static func detectSource(model: String, filePath: String? = nil) -> SourceName {

@@ -77,6 +77,7 @@ struct DataSourceRow: View {
     let def: DataSourceDef
     @State private var path: String = ""
     @State private var exists: Bool? = nil
+    @State private var isLoading = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -94,12 +95,15 @@ struct DataSourceRow: View {
             }
         }
         .onAppear {
+            isLoading = true
+            defer { isLoading = false }
             path = UserDefaults.standard.string(forKey: def.key) ?? def.defaultPath
             checkExists(path)
         }
     }
 
     private func savePath(_ value: String) {
+        guard !isLoading else { return }
         if value == def.defaultPath {
             UserDefaults.standard.removeObject(forKey: def.key)
         } else {

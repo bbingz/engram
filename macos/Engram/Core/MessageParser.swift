@@ -70,7 +70,43 @@ struct MessageParser {
             locator: filePath,
             source: source,
             options: StreamMessagesOptions(offset: offset, limit: limit)
-        )
+        )?.messages
+    }
+
+    /// Window a transcript in PRODUCED-message space (the unit the adapters'
+    /// offset/limit use) and report how many produced messages the window
+    /// consumed. The returned `messages` are the displayable (user/assistant)
+    /// subset — the same filtering `parse` applies — but `producedCount` counts
+    /// PRE-filter messages, so a pager can advance its offset by `producedCount`
+    /// (no seam drift from the filtered count) and detect EOF via
+    /// `producedCount >= limit`. Falls back to the legacy parser only when the
+    /// adapter yields nothing at all.
+    static func parseWindowed(
+        filePath: String,
+        source: String,
+        offset: Int,
+        limit: Int?
+    ) -> (messages: [ChatMessage], producedCount: Int) {
+        if let sourceName = SourceName(rawValue: source),
+           let adapter = uiAdapterRegistry().adapter(for: sourceName) {
+            // Trust the adapter on success, INCLUDING a legitimately empty window
+            // (paging past EOF, or a window that is entirely tool messages). Only a
+            // nil result — adapter error / no stream — falls back to the legacy
+            // parser, which has no offset/limit support and would re-read the whole
+            // file just to discard it.
+            if let result = blockingAdapterMessages(
+                adapter: adapter,
+                locator: filePath,
+                source: source,
+                options: StreamMessagesOptions(offset: offset, limit: limit)
+            ) {
+                return result
+            }
+        }
+        // No adapter for the source, or the adapter errored: legacy parsers emit
+        // displayable messages directly, so produced == displayable here.
+        let windowed = applyWindow(parseLegacy(filePath: filePath, source: source), offset: offset, limit: limit)
+        return (windowed, windowed.count)
     }
 
     private static func uiAdapterRegistry() -> AdapterRegistry {
@@ -102,10 +138,10 @@ struct MessageParser {
         locator: String,
         source: String,
         options: StreamMessagesOptions
-    ) -> [ChatMessage]? {
+    ) -> (messages: [ChatMessage], producedCount: Int)? {
         let semaphore = DispatchSemaphore(value: 0)
         final class Box: @unchecked Sendable {
-            var messages: [ChatMessage]?
+            var result: (messages: [ChatMessage], producedCount: Int)?
         }
         let box = Box()
 
@@ -114,7 +150,12 @@ struct MessageParser {
             do {
                 let stream = try await adapter.streamMessages(locator: locator, options: options)
                 var messages: [ChatMessage] = []
+                var produced = 0
                 for try await message in stream {
+                    // Count PRE-filter (adapter-produced) messages so a caller paging
+                    // in produced-message space can advance offset correctly even when
+                    // role filtering drops tool messages from `messages`.
+                    produced += 1
                     guard message.role == .user || message.role == .assistant,
                           !message.content.isEmpty
                     else {
@@ -124,14 +165,14 @@ struct MessageParser {
                     let category = message.role == .user ? classifySystem(content: message.content, source: source) : .none
                     messages.append(ChatMessage(role: role, content: message.content, systemCategory: category))
                 }
-                box.messages = messages
+                box.result = (messages, produced)
             } catch {
-                box.messages = nil
+                box.result = nil
             }
         }
 
         semaphore.wait()
-        return box.messages
+        return box.result
     }
 
     private static func applyWindow(_ messages: [ChatMessage], offset: Int?, limit: Int?) -> [ChatMessage] {

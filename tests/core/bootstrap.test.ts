@@ -37,7 +37,9 @@ describe('createShutdownHandler', () => {
     expect(resources.liveMonitor?.stop).toHaveBeenCalledOnce();
     expect(resources.backgroundMonitor?.stop).toHaveBeenCalledOnce();
     expect(resources.usageCollector?.stop).toHaveBeenCalledOnce();
-    expect(resources.autoSummary?.cleanup).toHaveBeenCalledOnce();
+    expect(
+      (resources.autoSummary as { cleanup: () => void } | null)?.cleanup,
+    ).toHaveBeenCalledOnce();
   });
 
   it('is idempotent — second call is a no-op', () => {
@@ -86,6 +88,36 @@ describe('createShutdownHandler', () => {
 
     const shutdown = createShutdownHandler(resources);
     expect(() => shutdown()).not.toThrow();
+  });
+
+  it('clears timer handles resolved at shutdown time', () => {
+    const dynamicTimer = setInterval(() => {}, 999_999);
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+    const resources = createMockResources({
+      timers: [
+        (() => dynamicTimer) as unknown as ShutdownResources['timers'][number],
+      ],
+    });
+
+    const shutdown = createShutdownHandler(resources);
+    shutdown();
+
+    expect(clearIntervalSpy).toHaveBeenCalledWith(dynamicTimer);
+    clearIntervalSpy.mockRestore();
+  });
+
+  it('cleans up auto summary resolved at shutdown time', () => {
+    const cleanup = vi.fn();
+    const resources = createMockResources({
+      autoSummary: (() => ({
+        cleanup,
+      })) as unknown as ShutdownResources['autoSummary'],
+    });
+
+    const shutdown = createShutdownHandler(resources);
+    shutdown();
+
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 
   it('calls log.info when logger is provided', () => {

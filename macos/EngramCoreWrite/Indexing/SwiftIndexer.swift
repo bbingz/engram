@@ -64,7 +64,7 @@ public final class SwiftIndexer {
         for item in result.results where item.action == .failure {
             failures += 1
             Self.log.error(
-                "session upsert failed: session=\(item.sessionId, privacy: .public) error=\(item.error ?? "unknown", privacy: .public)"
+                "session upsert failed: session=\(item.sessionId, privacy: .private) error=\(item.error ?? "unknown", privacy: .private)"
             )
         }
         return batch.count - failures
@@ -116,7 +116,7 @@ public final class SwiftIndexer {
                 // Isolate per-adapter failures: one unreadable source must not
                 // abort the entire scan across all other adapters.
                 Self.log.error(
-                    "adapter listSessionLocators failed: source=\(adapter.source.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                    "adapter listSessionLocators failed: source=\(adapter.source.rawValue, privacy: .private) error=\(String(describing: error), privacy: .private)"
                 )
                 continue
             }
@@ -127,7 +127,7 @@ public final class SwiftIndexer {
                     switch try await adapter.parseSessionInfo(locator: locator) {
                     case .failure(let reason):
                         Self.log.error(
-                            "session parse failed: source=\(adapter.source.rawValue, privacy: .public) reason=\(reason.rawValue, privacy: .public) locator=\(locator, privacy: .public)"
+                            "session parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(reason.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
                         )
                         continue
                     case .success(var info):
@@ -144,7 +144,7 @@ public final class SwiftIndexer {
                     // Isolate per-session errors (e.g. transient stream failures)
                     // so a single bad transcript does not abort the whole scan.
                     Self.log.error(
-                        "session index error: source=\(adapter.source.rawValue, privacy: .public) locator=\(locator, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                        "session index error: source=\(adapter.source.rawValue, privacy: .private) locator=\(locator, privacy: .private) error=\(String(describing: error), privacy: .private)"
                     )
                     continue
                 }

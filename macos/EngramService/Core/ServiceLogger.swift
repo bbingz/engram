@@ -26,23 +26,23 @@ public enum ServiceLogger {
     }
 
     public static func debug(_ message: String, category: ServiceLogCategory) {
-        logger(for: category).debug("\(message, privacy: .public)")
+        logger(for: category).debug("\(message, privacy: .private)")
     }
 
     public static func info(_ message: String, category: ServiceLogCategory) {
-        logger(for: category).info("\(message, privacy: .public)")
+        logger(for: category).info("\(message, privacy: .private)")
     }
 
     public static func notice(_ message: String, category: ServiceLogCategory) {
-        logger(for: category).notice("\(message, privacy: .public)")
+        logger(for: category).notice("\(message, privacy: .private)")
     }
 
     public static func warn(_ message: String, category: ServiceLogCategory) {
-        logger(for: category).warning("\(message, privacy: .public)")
+        logger(for: category).warning("\(message, privacy: .private)")
     }
 
     public static func error(_ message: String, category: ServiceLogCategory, error: Error? = nil) {
         let msg = error.map { "\(message): \($0.localizedDescription)" } ?? message
-        logger(for: category).error("\(msg, privacy: .public)")
+        logger(for: category).error("\(msg, privacy: .private)")
     }
 }

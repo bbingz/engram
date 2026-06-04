@@ -12,6 +12,10 @@ type OptionalIntegerParamResult =
   | { ok: true; value: number | undefined }
   | { ok: false; error: string };
 
+export function searchFailureWarning(_err: unknown): string {
+  return 'Search failed. Check server logs for details.';
+}
+
 function createRateLimiter(maxPerMinute: number) {
   const timestamps: number[] = [];
   return (): boolean => {
@@ -101,7 +105,7 @@ export function registerSearchRoutes(
         results: [],
         query: q,
         searchModes: [],
-        warning: `Search failed: ${String(err)}`,
+        warning: searchFailureWarning(err),
       });
     }
   });
@@ -141,7 +145,7 @@ export function registerSearchRoutes(
         results: [],
         query: q,
         searchModes: [],
-        warning: `Search failed: ${String(err)}`,
+        warning: searchFailureWarning(err),
       });
     }
   });

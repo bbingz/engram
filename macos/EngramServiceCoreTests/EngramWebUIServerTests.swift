@@ -162,6 +162,14 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertTrue(html.contains("message system transcript-error"))
     }
 
+    func testTranscriptParserFailureMapsToNonOkStatus() {
+        XCTAssertEqual(EngramWebUIServer.transcriptErrorStatus(ParserFailure.fileMissing), .notFound)
+        XCTAssertEqual(EngramWebUIServer.transcriptErrorStatus(ParserFailure.fileModifiedDuringParse), .notFound)
+        XCTAssertEqual(EngramWebUIServer.transcriptErrorStatus(ParserFailure.fileTooLarge), .init(code: 413, reasonPhrase: "Payload Too Large"))
+        XCTAssertEqual(EngramWebUIServer.transcriptErrorStatus(ParserFailure.messageLimitExceeded), .init(code: 413, reasonPhrase: "Payload Too Large"))
+        XCTAssertEqual(EngramWebUIServer.transcriptErrorStatus(ParserFailure.malformedJSON), .internalServerError)
+    }
+
     func testTranscriptDisplayFiltersToolMessagesLikeSwiftApp() {
         XCTAssertTrue(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .user, content: "hello"), source: "codex"))
         XCTAssertTrue(EngramWebUIServer.shouldDisplayTranscriptMessage(NormalizedMessage(role: .assistant, content: "done"), source: "codex"))
@@ -202,6 +210,26 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertTrue(redacted.contains("[REDACTED]"))
     }
 
+    func testRedactionCoversCommonTokenFamilies() {
+        let input = """
+        github_pat_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ
+        AKIA1234567890ABCDEF
+        npm_1234567890abcdef
+        xoxe-1234567890-abcdef
+        -----BEGIN PRIVATE KEY-----
+        secret
+        -----END PRIVATE KEY-----
+        """
+        let redacted = EngramWebUIServer.redactSensitiveContent(input)
+
+        XCTAssertFalse(redacted.contains("github_pat_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+        XCTAssertFalse(redacted.contains("AKIA1234567890ABCDEF"))
+        XCTAssertFalse(redacted.contains("npm_1234567890abcdef"))
+        XCTAssertFalse(redacted.contains("xoxe-1234567890-abcdef"))
+        XCTAssertFalse(redacted.contains("BEGIN PRIVATE KEY"))
+        XCTAssertTrue(redacted.contains("[REDACTED]"))
+    }
+
     func testWebUIRedactionUsesExportCanonicalRedaction() {
         let input = "Authorization: Bearer ABCDEF0123456789"
         XCTAssertEqual(
@@ -220,6 +248,8 @@ final class EngramWebUIServerTests: XCTestCase {
         // expectedPort is now enforced: a loopback Host/Origin on a DIFFERENT
         // local port is rejected (the parameter was previously ignored).
         XCTAssertFalse(EngramWebUIServer.isLoopbackHost("127.0.0.1:9999", expectedPort: 3457))
+        XCTAssertFalse(EngramWebUIServer.isLoopbackHost("127.0.0.1:3457.attacker.com", expectedPort: 3457))
+        XCTAssertFalse(EngramWebUIServer.isLoopbackHost("127.0.0.1:3457:extra", expectedPort: 3457))
         XCTAssertFalse(EngramWebUIServer.isLoopbackOrigin("http://127.0.0.1:9999", expectedPort: 3457))
         // A bare loopback host with no port is still allowed.
         XCTAssertTrue(EngramWebUIServer.isLoopbackHost("127.0.0.1", expectedPort: 3457))
@@ -238,6 +268,16 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertTrue(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "true"]))
         XCTAssertFalse(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "0"]))
         XCTAssertFalse(EngramServiceRunner.readWebUIEnabled(environment: ["ENGRAM_WEB_UI_ENABLED": "false"]))
+    }
+
+    func testRunnerLogsWebUIEnabledAndDisabledBranches() throws {
+        let source = try serviceCoreSource("EngramServiceRunner.swift")
+
+        XCTAssertTrue(source.contains("web ui disabled (webUIEnabled=false); not starting"))
+        XCTAssertTrue(
+            source.contains("web ui enabled (webUIEnabled=true); starting local server"),
+            "the enabled-by-settings branch should leave a startup breadcrumb before the health probe"
+        )
     }
 
     // MARK: - Transcript pager (raw-index consistency + capped window)

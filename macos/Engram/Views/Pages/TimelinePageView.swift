@@ -27,6 +27,18 @@ private enum TimelineSortMode: String, CaseIterable, Identifiable {
 }
 
 struct TimelinePageView: View {
+    private static let inputDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let outputDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE, MMM d"
+        return formatter
+    }()
+
     @Environment(DatabaseManager.self) var db
     @State private var timeline: [(date: String, sessions: [Session])] = []
     @State private var confirmedCounts: [String: Int] = [:]
@@ -115,13 +127,10 @@ struct TimelinePageView: View {
     }
 
     private func formatDateLabel(_ dateStr: String) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let date = formatter.date(from: dateStr) else { return dateStr }
+        guard let date = Self.inputDateFormatter.date(from: dateStr) else { return dateStr }
         if Calendar.current.isDateInToday(date) { return String(localized: "Today") }
         if Calendar.current.isDateInYesterday(date) { return String(localized: "Yesterday") }
-        formatter.dateFormat = "EEEE, MMM d"
-        return formatter.string(from: date)
+        return Self.outputDateFormatter.string(from: date)
     }
 
     private func sessionCountLabel(_ count: Int) -> String {

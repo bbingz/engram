@@ -5,6 +5,16 @@ import {
   type EmbeddingClient,
 } from '../../src/core/embeddings.js';
 
+const { mockOpenAIEmbeddingCreate } = vi.hoisted(() => ({
+  mockOpenAIEmbeddingCreate: vi.fn(),
+}));
+
+vi.mock('openai', () => ({
+  default: class {
+    embeddings = { create: mockOpenAIEmbeddingCreate };
+  },
+}));
+
 describe('EmbeddingClient', () => {
   it('returns null when no provider is available', async () => {
     const client = createEmbeddingClient({
@@ -30,6 +40,7 @@ describe('EmbeddingClient', () => {
 describe('L2 normalization after truncation', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    mockOpenAIEmbeddingCreate.mockReset();
   });
 
   it('L2-normalizes vectors when truncating to smaller dimension', async () => {
@@ -181,31 +192,20 @@ describe('EmbeddingClient audit', () => {
     // Make Ollama fail first so we fall through to OpenAI
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no ollama')));
 
-    // Mock the OpenAI SDK via vi.hoisted + vi.mock
-    const { mockCreate } = vi.hoisted(() => ({
-      mockCreate: vi.fn().mockResolvedValue({
-        data: [{ embedding: [0.1, 0.2, 0.3] }],
-        usage: { prompt_tokens: 7, total_tokens: 7 },
-      }),
-    }));
+    mockOpenAIEmbeddingCreate.mockResolvedValue({
+      data: [{ embedding: [0.1, 0.2, 0.3] }],
+      usage: { prompt_tokens: 7, total_tokens: 7 },
+    });
 
-    vi.mock('openai', () => ({
-      default: class {
-        embeddings = { create: mockCreate };
-      },
-    }));
-
-    // Re-import after mock
-    const { createEmbeddingClient: create } = await import(
-      '../../src/core/embeddings.js'
-    );
-    const client = create({
+    const client = createEmbeddingClient({
       provider: 'openai',
       openaiApiKey: 'sk-test',
       audit,
     });
     const result = await client.embed('hello');
     expect(result).toBeInstanceOf(Float32Array);
+    const norm = Math.sqrt(result!.reduce((sum, v) => sum + v * v, 0));
+    expect(norm).toBeCloseTo(1, 5);
 
     const openaiCall = audit.record.mock.calls.find(
       (c: any) => c[0].provider === 'openai',
@@ -221,8 +221,6 @@ describe('EmbeddingClient audit', () => {
     expect(call.method).toBeUndefined();
     expect(call.url).toBeUndefined();
     expect(call.statusCode).toBeUndefined();
-
-    vi.restoreAllMocks();
   });
 
   it('no audit writer does not crash', async () => {

@@ -128,6 +128,60 @@ final class MigrationLockTests: XCTestCase {
         XCTAssertEqual(holder.migrationId, "fresh")
     }
 
+    func testAcquireBreaksLiveHolderOlderThanTTL() throws {
+        let lockPath = tmpRoot.appendingPathComponent("ttl.lock").path
+        let oldStart = "2026-04-28T00:00:00.000Z"
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-04-28T02:00:00Z"))
+        let liveButOld = LockHolder(pid: 1, startedAt: oldStart, migrationId: "old")
+        try FileManager.default.createDirectory(
+            atPath: (lockPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(liveButOld).write(to: URL(fileURLWithPath: lockPath))
+
+        try MigrationLock.acquire(migrationId: "fresh", lockPath: lockPath, now: now, staleTTL: 60)
+        defer { MigrationLock.release(lockPath: lockPath) }
+
+        let holder = try XCTUnwrap(MigrationLock.read(lockPath: lockPath))
+        XCTAssertEqual(holder.pid, getpid(), "TTL-expired lock must be replaced even when pid is alive")
+        XCTAssertEqual(holder.migrationId, "fresh")
+    }
+
+    func testAcquireBreaksZombieHolder() throws {
+        let lockPath = tmpRoot.appendingPathComponent("zombie.lock").path
+        var childPid: pid_t = 0
+        let executable = try XCTUnwrap(strdup("/usr/bin/true"))
+        var argv: [UnsafeMutablePointer<CChar>?] = [executable, nil]
+        defer { free(executable) }
+        let spawnResult = posix_spawn(&childPid, executable, nil, nil, &argv, nil)
+        if spawnResult != 0 {
+            throw XCTSkip("posix_spawn() failed: \(spawnResult)")
+        }
+        defer {
+            var status: Int32 = 0
+            waitpid(childPid, &status, 0)
+        }
+        usleep(50_000)
+
+        let zombie = LockHolder(
+            pid: childPid,
+            startedAt: "2026-04-28T00:00:00.000Z",
+            migrationId: "zombie"
+        )
+        try FileManager.default.createDirectory(
+            atPath: (lockPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(zombie).write(to: URL(fileURLWithPath: lockPath))
+
+        try MigrationLock.acquire(migrationId: "fresh", lockPath: lockPath, staleTTL: 3_600)
+        defer { MigrationLock.release(lockPath: lockPath) }
+
+        let holder = try XCTUnwrap(MigrationLock.read(lockPath: lockPath))
+        XCTAssertEqual(holder.pid, getpid(), "zombie holder must not keep the lock busy")
+        XCTAssertEqual(holder.migrationId, "fresh")
+    }
+
     func testAcquireBreaksCorruptLock() throws {
         let lockPath = tmpRoot.appendingPathComponent("f.lock").path
         try FileManager.default.createDirectory(

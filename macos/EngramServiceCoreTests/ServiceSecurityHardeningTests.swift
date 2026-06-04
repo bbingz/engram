@@ -320,6 +320,24 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         }
     }
 
+    func testProjectPathConfinementRejectsSymlinkEscapingHome() async throws {
+        try await withTemporaryHome { home in
+            let outside = FileManager.default.temporaryDirectory
+                .appendingPathComponent("engram-sec-outside-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: outside) }
+
+            let symlink = home.appendingPathComponent("project-link")
+            try FileManager.default.createSymbolicLink(atPath: symlink.path, withDestinationPath: outside.path)
+
+            XCTAssertThrowsError(
+                try EngramServiceCommandHandler.validateProjectPathConfined(symlink.path, label: "source")
+            ) { error in
+                XCTAssertTrue("\(error)".contains("outside the home directory"), "\(error)")
+            }
+        }
+    }
+
     // MARK: - IPC-H2: oversized snippet / writeFrame guard
 
     func testSearchSnippetTruncatedServerSide() {

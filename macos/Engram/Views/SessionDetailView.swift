@@ -5,6 +5,13 @@ import os.log
 private let logger = Logger(subsystem: "com.engram.app", category: "SessionDetail")
 private let agentSessionPreviewLimit = 20
 private let agentSessionListMaxHeight: CGFloat = 220
+// Transcript paging: small/normal sessions load fully (unchanged). Only sessions
+// past this message count load incrementally — a first page, then "Load more /
+// Load all" — so a huge transcript isn't fully materialized on open. Counts and
+// search reflect the loaded prefix and the UI says so; nothing is silently
+// truncated (the full transcript is always one click away).
+private let transcriptPageThreshold = 800
+private let transcriptPageSize = 500
 
 struct SessionDetailView: View {
     let session: Session
@@ -51,6 +58,19 @@ struct SessionDetailView: View {
     @State private var displayIndexed: [IndexedMessage] = []
     @State private var matchIndices: [Int] = []
 
+    // Transcript paging state. `hasMoreToLoad` gates the "Load more / Load all"
+    // footer. `loadedProducedCount` is the next adapter offset in PRODUCED-message
+    // space (counts pre-filter messages, incl. tool rows the UI drops) so appended
+    // pages don't drift at the seam.
+    @State private var hasMoreToLoad = false
+    @State private var isLoadingMore = false
+    @State private var loadedProducedCount = 0
+    @State private var transcriptLoadTask: Task<Void, Never>? = nil
+    // Bumped whenever `displayIndexed` is recomputed; the match-scan task is keyed
+    // on it (plus searchText) so the off-main scan re-runs after a filter change or
+    // a paged rebuild, never on a stale snapshot.
+    @State private var displayVersion = 0
+
     private static let defaultTypeVisibility: [MessageType: Bool] = Dictionary(
         uniqueKeysWithValues: MessageType.allCases.map { type in
             (type, type == .user || type == .assistant)
@@ -66,7 +86,8 @@ struct SessionDetailView: View {
                 showAgentComm: showAgentComm
             )
         }
-        updateMatchIndices()
+        // Drive the off-main match rescan (keyed on displayVersion + searchText).
+        displayVersion &+= 1
     }
 
     /// Decides whether an indexed message survives the current filters.
@@ -92,18 +113,30 @@ struct SessionDetailView: View {
         }
     }
 
-    private func updateMatchIndices() {
-        guard !searchText.isEmpty else { matchIndices = []; return }
-        let query = searchText.lowercased()
-        matchIndices = displayIndexed.enumerated().compactMap { i, msg in
-            msg.message.content.lowercased().contains(query) ? i : nil
-        }
+    /// Initial transcript window: `nil` (load the whole transcript, the prior
+    /// behavior) for sessions at or below the paging threshold; a first-page
+    /// limit for larger ones. Pure so the gating is unit-testable.
+    static func initialTranscriptLimit(messageCount: Int) -> Int? {
+        messageCount > transcriptPageThreshold ? transcriptPageSize : nil
     }
 
-    /// Search-driven variant: debounced, and the per-message content scan runs
-    /// off the main actor so typing in the find bar can't hitch the UI on a
-    /// large transcript. Driven by `.task(id: searchText)`, which cancels the
-    /// prior run on each keystroke.
+    /// After a windowed load returns `returnedCount` messages for a `requestedLimit`,
+    /// there may be more iff the page came back full. A nil limit means "load all",
+    /// so never more. Pure so the pager state is unit-testable.
+    static func hasMoreAfterLoad(returnedCount: Int, requestedLimit: Int?) -> Bool {
+        guard let requestedLimit else { return false }
+        return returnedCount >= requestedLimit
+    }
+
+    /// Re-runs the match scan whenever the query OR the displayed set changes.
+    /// `\u{1}` separates the two so distinct (version, query) pairs can't collide.
+    private var matchScanToken: String { "\(displayVersion)\u{1}\(searchText)" }
+
+    /// Sole match-index path: debounced, and the per-message content scan runs off
+    /// the main actor so neither typing in the find bar nor a paged rebuild hitches
+    /// the UI on a large transcript. Driven by `.task(id: matchScanToken)`, which
+    /// re-runs (cancelling the prior scan) whenever the query OR the displayed set
+    /// changes — always reading live state, so it can't clobber a concurrent edit.
     private func updateMatchIndicesDebounced() async {
         let query = searchText.lowercased()
         guard !query.isEmpty else { matchIndices = []; return }
@@ -130,6 +163,7 @@ struct SessionDetailView: View {
                 typeCounts: typeCounts,
                 typeVisibility: typeVisibility,
                 navPositions: navPositions,
+                partiallyLoaded: hasMoreToLoad,
                 onToggleFavorite: {
                     Task {
                         let next = !isFavorite
@@ -181,6 +215,30 @@ struct SessionDetailView: View {
                     onNext: { navigateFind(direction: 1) }
                 )
                 .accessibilityIdentifier("detail_findBar")
+                Divider()
+            }
+
+            // Partial-load search disclosure. Search state (searchText, match
+            // highlights, ⌘G navigation) outlives the find bar — ⌘F and the toolbar
+            // Find button toggle the bar without clearing the query — so this hint
+            // lives OUTSIDE `if showFind`: whenever a search is active on a partially
+            // loaded transcript, matches can't silently confine to the loaded prefix
+            // without the user being told.
+            if hasMoreToLoad && !searchText.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle").font(.caption2)
+                    Text("Search covers loaded messages only.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Load all") { loadMoreMessages(all: true) }
+                        .font(.caption2)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.accent)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .accessibilityIdentifier("detail_findPartialHint")
                 Divider()
             }
 
@@ -268,19 +326,28 @@ struct SessionDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(40)
             } else if viewMode == .session && displayIndexed.isEmpty && !indexedMessages.isEmpty {
-                ContentUnavailableView {
-                    Label("Filtered Out", systemImage: "eye.slash")
-                } description: {
-                    Text("All messages are hidden by current filters. Tap \"All\" to reset.")
+                VStack(spacing: 0) {
+                    ContentUnavailableView {
+                        Label("Filtered Out", systemImage: "eye.slash")
+                    } description: {
+                        Text("All messages are hidden by current filters. Tap \"All\" to reset.")
+                    }
+                    .padding(.top, 20)
+                    // More may be loadable even when the loaded page is fully filtered.
+                    if hasMoreToLoad { transcriptLoadMoreFooter }
                 }
-                .padding(.top, 20)
             } else if messages.isEmpty {
-                ContentUnavailableView {
-                    Label("No Messages", systemImage: "bubble.left.and.bubble.right")
-                } description: {
-                    Text(unsupportedMessage)
+                VStack(spacing: 0) {
+                    ContentUnavailableView {
+                        Label("No Messages", systemImage: "bubble.left.and.bubble.right")
+                    } description: {
+                        Text(unsupportedMessage)
+                    }
+                    .padding(.top, 20)
+                    // A large session whose first page is entirely tool messages loads
+                    // zero displayable rows but has more — keep the Load affordance.
+                    if hasMoreToLoad { transcriptLoadMoreFooter }
                 }
-                .padding(.top, 20)
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -296,6 +363,9 @@ struct SessionDetailView: View {
                                     RawMessageRow(message: msg)
                                     Divider().opacity(0.3)
                                 }
+                            }
+                            if hasMoreToLoad {
+                                transcriptLoadMoreFooter
                             }
                         }
                     }
@@ -338,6 +408,19 @@ struct SessionDetailView: View {
             indexedMessages = []
             typeCounts = [:]
             typeVisibility = Self.defaultTypeVisibility
+            hasMoreToLoad = false
+            isLoadingMore = false
+            loadedProducedCount = 0
+            transcriptLoadTask?.cancel()
+            transcriptLoadTask = nil
+            // Clear transcript-derived + nav state too, or a stale per-type position
+            // from the previous session can index out of the new (shorter) one.
+            displayIndexed = []
+            matchIndices = []
+            currentMatchIndex = -1
+            searchText = ""
+            scrollTarget = nil
+            navPositions = Dictionary(uniqueKeysWithValues: MessageType.allCases.map { ($0, -1) })
             childrenSessions = []
             childrenSessionCount = 0
             suggestedChildrenSessions = []
@@ -350,47 +433,17 @@ struct SessionDetailView: View {
                 let fav = (try? dbRef.isFavorite(sessionId: sessionId)) ?? false
                 await MainActor.run { isFavorite = fav }
             }
-            var effectivePath = session.effectiveFilePath
-            let source = session.source
-            // Resolve relative paths against the DB's parent directory (test fixtures)
-            if !effectivePath.isEmpty && !effectivePath.hasPrefix("/") {
-                let dbDir = (db.path as NSString).deletingLastPathComponent
-                let resolved = (dbDir as NSString).appendingPathComponent(effectivePath)
-                if FileManager.default.fileExists(atPath: resolved) {
-                    effectivePath = resolved
-                }
-            }
-            // Parse + classify + initial filter all run off the main thread; the
-            // finished arrays hop back together so a large transcript never
-            // classifies/filters on the main actor.
-            let visibility = typeVisibility
-            let showSystem = showSystemPrompts
-            let showAgent = showAgentComm
-            let built = await Task.detached(priority: .userInitiated) {
-                let parsed = MessageParser.parse(filePath: effectivePath, source: source)
-                let result = IndexedMessage.build(from: parsed)
-                let display = result.messages.filter {
-                    Self.isMessageVisible(
-                        $0,
-                        typeVisibility: visibility,
-                        showSystemPrompts: showSystem,
-                        showAgentComm: showAgent
-                    )
-                }
-                return (parsed, result.messages, result.counts, display)
-            }.value
-            messages = built.0
-            indexedMessages = built.1
-            typeCounts = built.2
-            displayIndexed = built.3
-            updateMatchIndices()
+            await loadInitialTranscript()
+            // The detached parse can outlive a session switch; don't let the
+            // trailing assignments stomp the next session's reset state.
+            if Task.isCancelled { return }
             isLoadingMessages = false
             loadParentInfo()
         }
         .onChange(of: typeVisibility) { _, _ in updateDisplayIndexed() }
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
         .onChange(of: showAgentComm) { _, _ in updateDisplayIndexed() }
-        .task(id: searchText) { await updateMatchIndicesDebounced() }
+        .task(id: matchScanToken) { await updateMatchIndicesDebounced() }
         .sheet(isPresented: $showReplay) {
             SessionReplayView(sessionId: session.id)
                 .frame(minWidth: 600, minHeight: 450)
@@ -398,7 +451,10 @@ struct SessionDetailView: View {
         .sheet(isPresented: $showResume) {
             ResumeDialog(session: session)
         }
-        .onDisappear { parentInfoTask?.cancel(); parentInfoTask = nil }
+        .onDisappear {
+            parentInfoTask?.cancel(); parentInfoTask = nil
+            transcriptLoadTask?.cancel(); transcriptLoadTask = nil
+        }
     }
 
     // MARK: - Parent/Child Helpers
@@ -590,16 +646,22 @@ struct SessionDetailView: View {
 
     func navigateType(_ type: MessageType, direction: Int) {
         let matching = displayIndexed.enumerated().filter { $0.element.messageType == type }
-        guard !matching.isEmpty else { return }
-        let current = navPositions[type] ?? -1
-        let newPos: Int
-        if direction > 0 {
-            newPos = (current + 1) % matching.count
-        } else {
-            newPos = current <= 0 ? matching.count - 1 : current - 1
-        }
+        guard let newPos = Self.nextNavPosition(
+            current: navPositions[type] ?? -1, direction: direction, count: matching.count
+        ) else { return }
         navPositions[type] = newPos
         scrollTarget = matching[newPos].element.id
+    }
+
+    /// Next per-type nav position. Clamps `current` into range first so a stale
+    /// position (e.g. left over from a longer prior session) can't index past the
+    /// current matches — the `direction < 0` branch is otherwise unbounded and traps.
+    /// Returns nil when there are no matches. Pure, so it's unit-testable.
+    static func nextNavPosition(current: Int, direction: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        let clamped = min(current, count - 1)
+        if direction > 0 { return (clamped + 1) % count }
+        return clamped <= 0 ? count - 1 : clamped - 1
     }
 
     func navigateFind(direction: Int) {
@@ -640,9 +702,166 @@ struct SessionDetailView: View {
     }
 
     func copyAllTranscript() {
+        // "Copy" / "Copy Entire Conversation" / ⌘⌥C promise the whole transcript.
+        // If only a prefix is loaded, load the rest first so the clipboard never
+        // gets a silent partial copy.
+        guard hasMoreToLoad else {
+            copyLoadedTranscript()
+            return
+        }
+        guard !isLoadingMore else {
+            // A load is already in flight; don't drop the copy silently.
+            showTranscriptStatus(String(localized: "Still loading — try Copy again in a moment"))
+            return
+        }
+        transcriptLoadTask?.cancel()
+        transcriptLoadTask = Task {
+            isLoadingMore = true
+            defer { isLoadingMore = false }
+            await appendMessages(all: true)
+            if Task.isCancelled { return }
+            copyLoadedTranscript()
+        }
+    }
+
+    private func copyLoadedTranscript() {
         let text = TranscriptText.conversationText(displayIndexed)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// Surface a transient status in the existing toast, auto-clearing after 3s
+    /// (only if nothing else replaced it meanwhile).
+    private func showTranscriptStatus(_ message: String) {
+        handoffStatus = message
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            if handoffStatus == message { handoffStatus = nil }
+        }
+    }
+
+    // MARK: - Transcript loading / paging
+
+    /// Resolve the on-disk transcript path, mapping a relative fixture path against
+    /// the DB directory (matches the prior inline resolution).
+    private func resolvedTranscriptPath() -> String {
+        var path = session.effectiveFilePath
+        if !path.isEmpty && !path.hasPrefix("/") {
+            let dbDir = (db.path as NSString).deletingLastPathComponent
+            let resolved = (dbDir as NSString).appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: resolved) { path = resolved }
+        }
+        return path
+    }
+
+    /// Off-main parse of one window. Returns the displayable messages plus the
+    /// PRODUCED count (pre-filter) so the caller can advance its offset without
+    /// seam drift. Touches no view state.
+    private func parseWindow(offset: Int, limit: Int?) async -> (messages: [ChatMessage], producedCount: Int) {
+        let path = resolvedTranscriptPath()
+        let source = session.source
+        return await Task.detached(priority: .userInitiated) {
+            MessageParser.parseWindowed(filePath: path, source: source, offset: offset, limit: limit)
+        }.value
+    }
+
+    /// Re-derive indexed messages, type counts, the filtered display set, AND the
+    /// search match indices from the currently-loaded `messages` — all off the main
+    /// actor (the match scan is O(N · content) and must not run on main). Rebuilding
+    /// over the full loaded prefix keeps `typeIndex`/counts correct; because loaded
+    /// `ChatMessage`s keep their identity, an appended page diffs cleanly so the
+    /// scroll position is preserved.
+    private func rebuildIndexed() async {
+        let snapshot = messages
+        let built = await Task.detached(priority: .userInitiated) {
+            IndexedMessage.build(from: snapshot)
+        }.value
+        // The detached build can outlive a session switch; don't clobber the reset.
+        if Task.isCancelled { return }
+        indexedMessages = built.messages
+        typeCounts = built.counts
+        // Derive display + matches from LIVE state (not the entry snapshot): a chip
+        // toggle or search edit during the off-main build must not be overwritten.
+        // updateDisplayIndexed bumps displayVersion → the match scan re-runs off-main.
+        updateDisplayIndexed()
+    }
+
+    /// First load for a session: the whole transcript for normal sessions, or a
+    /// first page for large ones (`hasMoreToLoad` then drives the footer).
+    private func loadInitialTranscript() async {
+        let limit = Self.initialTranscriptLimit(messageCount: session.messageCount)
+        let (parsed, produced) = await parseWindow(offset: 0, limit: limit)
+        if Task.isCancelled { return }
+        messages = parsed
+        loadedProducedCount = produced
+        hasMoreToLoad = Self.hasMoreAfterLoad(returnedCount: produced, requestedLimit: limit)
+        await rebuildIndexed()
+    }
+
+    /// Append the next page — or, when `all`, the entire remainder — to the loaded
+    /// transcript. Parses from `loadedProducedCount` (PRODUCED-message space) so
+    /// earlier pages aren't re-materialized and the seam doesn't drift, then
+    /// rebuilds the indexed view over the full prefix.
+    private func appendMessages(all: Bool) async {
+        let offset = loadedProducedCount
+        let pageLimit: Int? = all ? nil : transcriptPageSize
+        let (parsed, produced) = await parseWindow(offset: offset, limit: pageLimit)
+        if Task.isCancelled { return }
+        messages += parsed
+        loadedProducedCount += produced
+        hasMoreToLoad = all ? false : Self.hasMoreAfterLoad(returnedCount: produced, requestedLimit: pageLimit)
+        await rebuildIndexed()
+    }
+
+    private func loadMoreMessages(all: Bool) {
+        guard !isLoadingMore else { return }
+        transcriptLoadTask?.cancel()
+        transcriptLoadTask = Task {
+            isLoadingMore = true
+            defer { isLoadingMore = false }
+            await appendMessages(all: all)
+        }
+    }
+
+    @ViewBuilder
+    private var transcriptLoadMoreFooter: some View {
+        VStack(spacing: 8) {
+            Divider().opacity(0.3)
+            if isLoadingMore {
+                ProgressView().controlSize(.small)
+            } else {
+                HStack(spacing: 10) {
+                    Text(transcriptPartialLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(loadMoreButtonLabel) { loadMoreMessages(all: false) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Load all") { loadMoreMessages(all: true) }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .accessibilityIdentifier("detail_loadMoreFooter")
+    }
+
+    private var transcriptPartialLabel: String {
+        if messages.isEmpty {
+            return String(localized: "No displayable messages in the loaded range")
+        }
+        return String.localizedStringWithFormat(
+            String(localized: "Showing first %lld messages"), messages.count
+        )
+    }
+
+    private var loadMoreButtonLabel: String {
+        String.localizedStringWithFormat(
+            String(localized: "Load %lld more"), transcriptPageSize
+        )
     }
 }
 

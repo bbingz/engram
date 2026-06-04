@@ -188,14 +188,48 @@ final class TodayWorkbenchScopeTests: XCTestCase {
             "transcript classification must not run on the main actor (perf finding)"
         )
         XCTAssertTrue(
-            s.contains("IndexedMessage.build(from: parsed)"),
-            "transcript must be built inside the detached parse task"
+            s.contains("IndexedMessage.build(from: snapshot)"),
+            "transcript must be built off-main inside the detached rebuild task"
         )
         // isFavorite must be read off the main actor.
         XCTAssertFalse(
             s.contains("isFavorite = (try? db.isFavorite(sessionId: session.id)) ?? false"),
             "isFavorite must not be read synchronously on the main actor"
         )
+    }
+
+    // MARK: - Transcript paging (perf/transcript-paging)
+
+    func testInitialTranscriptLimitGatesOnMessageCount() {
+        // At/under the threshold → load the whole transcript (nil), unchanged.
+        XCTAssertNil(SessionDetailView.initialTranscriptLimit(messageCount: 0))
+        XCTAssertNil(SessionDetailView.initialTranscriptLimit(messageCount: 800))
+        // Past the threshold → a bounded first page.
+        XCTAssertEqual(SessionDetailView.initialTranscriptLimit(messageCount: 801), 500)
+        XCTAssertEqual(SessionDetailView.initialTranscriptLimit(messageCount: 50_000), 500)
+    }
+
+    func testNextNavPositionClampsStaleIndex() {
+        // A stale position (50) carried into a 10-match set must not index past the
+        // end — the `direction < 0` branch used to trap (matching[49] on 10 items).
+        XCTAssertEqual(SessionDetailView.nextNavPosition(current: 50, direction: -1, count: 10), 8)
+        XCTAssertEqual(SessionDetailView.nextNavPosition(current: 50, direction: 1, count: 10), 0)
+        // Normal wrap-around from the initial -1.
+        XCTAssertEqual(SessionDetailView.nextNavPosition(current: -1, direction: 1, count: 10), 0)
+        XCTAssertEqual(SessionDetailView.nextNavPosition(current: -1, direction: -1, count: 10), 9)
+        // No matches → no navigation.
+        XCTAssertNil(SessionDetailView.nextNavPosition(current: 0, direction: 1, count: 0))
+    }
+
+    func testHasMoreAfterLoadReflectsFilledPage() {
+        // A full (limit == nil) load is always complete.
+        XCTAssertFalse(SessionDetailView.hasMoreAfterLoad(returnedCount: 4, requestedLimit: nil))
+        XCTAssertFalse(SessionDetailView.hasMoreAfterLoad(returnedCount: 0, requestedLimit: nil))
+        // A page that came back full may have more behind it.
+        XCTAssertTrue(SessionDetailView.hasMoreAfterLoad(returnedCount: 500, requestedLimit: 500))
+        // A short page is the last one.
+        XCTAssertFalse(SessionDetailView.hasMoreAfterLoad(returnedCount: 480, requestedLimit: 500))
+        XCTAssertFalse(SessionDetailView.hasMoreAfterLoad(returnedCount: 0, requestedLimit: 500))
     }
 
     func testAISettingsPersistGenerationConfigUnconditionally() throws {

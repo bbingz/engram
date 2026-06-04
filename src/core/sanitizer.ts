@@ -14,6 +14,27 @@ const PII_PATTERNS: Array<{
     replacement: 'sk-***',
   },
   {
+    name: 'gemini_key',
+    regex: /AIza[a-zA-Z0-9_-]{20,}/g,
+    replacement: 'AIza***',
+  },
+  {
+    name: 'github_pat',
+    regex: /(gh[psuor]_)[a-zA-Z0-9_]{20,}/g,
+    replacement: '$1***',
+  },
+  {
+    name: 'aws_access_key',
+    regex: /(A(?:KIA|SIA))[A-Z0-9]{16}/g,
+    replacement: '$1***',
+  },
+  {
+    name: 'pem_private_key',
+    regex:
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    replacement: '-----PRIVATE KEY***-----',
+  },
+  {
     name: 'bearer_token',
     regex: /Bearer\s+[a-zA-Z0-9._-]{10,}/gi,
     replacement: 'Bearer ***',

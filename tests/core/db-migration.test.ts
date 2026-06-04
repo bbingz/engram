@@ -106,6 +106,34 @@ describe('Database migration', () => {
     db.close();
   });
 
+  it('backfills indexed_at when adding it to a legacy sessions table', () => {
+    const dbPath = makeTmpDb();
+
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        cwd TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL
+      );
+      INSERT INTO sessions (id, source, start_time, cwd, file_path)
+      VALUES ('legacy-1', 'codex', '2026-01-01T00:00:00Z', '/repo', '/tmp/session.jsonl');
+    `);
+    rawDb.close();
+
+    const db = new Database(dbPath);
+    const row = db.raw
+      .prepare('SELECT indexed_at FROM sessions WHERE id = ?')
+      .get('legacy-1') as { indexed_at: string };
+
+    expect(row.indexed_at).not.toBe('');
+    expect(Number.isNaN(Date.parse(row.indexed_at))).toBe(false);
+
+    db.close();
+  });
+
   // 3. Parent session columns exist after migration
   it('adds parent_session_id, suggested_parent_id, link_source, link_checked_at columns', () => {
     const dbPath = makeTmpDb();
@@ -144,6 +172,77 @@ describe('Database migration', () => {
     const names = indexes.map((i) => i.name);
     expect(names).toContain('idx_sessions_parent');
     expect(names).toContain('idx_sessions_suggested_parent');
+    expect(names).toContain('idx_sessions_project');
+    db.close();
+  });
+
+  it('creates consistent metrics schema and retention index', () => {
+    const dbPath = makeTmpDb();
+    const db = new Database(dbPath);
+
+    const metricsTable = db.raw
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='metrics'",
+      )
+      .get() as { sql: string };
+    const indexes = db.raw
+      .prepare("SELECT name FROM sqlite_master WHERE type='index'")
+      .all() as { name: string }[];
+
+    expect(metricsTable.sql).toContain(
+      "CHECK (type IN ('counter', 'gauge', 'histogram'))",
+    );
+    expect(indexes.map((i) => i.name)).toContain('idx_metrics_ts');
+
+    db.close();
+  });
+
+  it('preserves live FTS content while marking sessions for FTS reindex', () => {
+    const dbPath = makeTmpDb();
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT,
+        cwd TEXT NOT NULL DEFAULT '',
+        project TEXT,
+        model TEXT,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        user_message_count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT,
+        file_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 123,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE VIRTUAL TABLE sessions_fts USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO metadata(key, value) VALUES ('fts_version', '2');
+      INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes)
+      VALUES ('legacy-fts', 'codex', '2026-01-01T00:00:00Z', '/repo', '/tmp/session.jsonl', 123);
+      INSERT INTO sessions_fts(session_id, content)
+      VALUES ('legacy-fts', 'existing searchable text');
+    `);
+    rawDb.close();
+
+    const db = new Database(dbPath);
+    const ftsRows = db.getFtsContent('legacy-fts');
+    const row = db.raw
+      .prepare('SELECT size_bytes FROM sessions WHERE id = ?')
+      .get('legacy-fts') as { size_bytes: number };
+
+    expect(ftsRows).toEqual(['existing searchable text']);
+    expect(row.size_bytes).toBe(0);
+    expect(db.getMetadata('fts_version')).toBe('3');
+
     db.close();
   });
 

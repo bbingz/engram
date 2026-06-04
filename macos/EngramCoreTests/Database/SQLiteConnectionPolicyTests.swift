@@ -86,7 +86,29 @@ final class SQLiteConnectionPolicyTests: XCTestCase {
         }
     }
 
+    func testFileSecurityAssertsOwnerAndModeForDatabaseSiblings() throws {
+        let source = try coreReadSource("Database/SQLiteConnectionPolicy.swift")
+        let start = try XCTUnwrap(source.range(of: "public enum SQLiteFileSecurity"))
+        let securitySource = String(source[start.lowerBound...])
+
+        XCTAssertTrue(securitySource.contains("stat("))
+        XCTAssertTrue(securitySource.contains("st_uid"))
+        XCTAssertTrue(securitySource.contains("geteuid()"))
+        XCTAssertTrue(securitySource.contains("0o600"))
+    }
+
     private func databasePath(_ name: String) -> String {
         tempDir.appendingPathComponent(name).path
+    }
+
+    private func coreReadSource(_ relativePath: String) throws -> String {
+        var directory = URL(fileURLWithPath: #filePath)
+        while directory.lastPathComponent != "macos" {
+            directory.deleteLastPathComponent()
+        }
+        let file = directory
+            .appendingPathComponent("EngramCoreRead")
+            .appendingPathComponent(relativePath)
+        return try String(contentsOf: file, encoding: .utf8)
     }
 }

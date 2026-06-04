@@ -49,6 +49,7 @@ struct AISettingsSection: View {
     @State private var titleAutoGenerate: Bool = false
     @State private var titleTestStatus: TitleConnectionStatus = .idle
     @State private var titleRegenerateStatus: TitleRegenerationStatus = .idle
+    @State private var isLoadingSettings = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -350,6 +351,7 @@ struct AISettingsSection: View {
     }
 
     private func saveAISettings() {
+        guard !isLoadingSettings else { return }
         // Try Keychain first; fall back to plaintext JSON for ad-hoc builds
         if !aiApiKey.isEmpty {
             let saved = KeychainHelper.set("aiApiKey", value: aiApiKey)
@@ -397,6 +399,7 @@ struct AISettingsSection: View {
     }
 
     private func saveTitleSettings() {
+        guard !isLoadingSettings else { return }
         // Try Keychain first; fall back to plaintext JSON for ad-hoc builds
         if titleProvider != "ollama" && !titleApiKey.isEmpty {
             let saved = KeychainHelper.set("titleApiKey", value: titleApiKey)
@@ -426,6 +429,8 @@ struct AISettingsSection: View {
 
     private func loadAISettings() {
         guard let settings = readEngramSettings() else { return }
+        isLoadingSettings = true
+        defer { isLoadingSettings = false }
 
         if let v = settings["aiProtocol"] as? String { aiProtocol = v }
         if let v = settings["aiBaseURL"] as? String { aiBaseURL = v }

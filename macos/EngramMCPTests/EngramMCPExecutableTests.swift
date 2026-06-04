@@ -94,6 +94,15 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(search["description"]?.stringValue?.localizedCaseInsensitiveContains("semantic") ?? true)
     }
 
+    func testMCPDatabaseRetriesTransientMissingFTSTables() throws {
+        let source = try String(contentsOfFile: sourcePath("EngramMCP/Core/MCPDatabase.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("readRetryingTransientMissingFTS"))
+        XCTAssertTrue(source.contains("no such table: sessions_fts"))
+        XCTAssertTrue(source.contains("no such table: insights_fts"))
+        XCTAssertTrue(source.contains("Thread.sleep(forTimeInterval: 0.02)"))
+    }
+
     func testInitializeMatchesGolden() throws {
         let capture = try rpc(
             """
@@ -192,6 +201,44 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/get_costs.project.json"
         )
+    }
+
+    func testGetCostsSerializesNonFiniteCostAsNull() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        let queue = try DatabaseQueue(path: dbURL.path)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE session_costs SET cost_usd = ? WHERE session_id = ?",
+                arguments: [Double.infinity, "mcp-fixture-01"]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_costs","arguments":{"group_by":"source","since":"2026-01-01T00:00:00.000Z"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+            ]
+        )
+
+        XCTAssertEqual(capture.response.error?.code, nil)
+        let breakdown = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["breakdown"]?.arrayValue)
+        var foundNullCost = false
+        for group in breakdown {
+            if case .null? = group["costUsd"] {
+                foundNullCost = true
+                break
+            }
+        }
+        let renderedResult = try prettyJSONString(from: XCTUnwrap(capture.ordered["result"]))
+        XCTAssertTrue(foundNullCost, renderedResult)
     }
 
     func testToolAnalyticsMatchesGolden() throws {
@@ -314,6 +361,86 @@ final class EngramMCPExecutableTests: XCTestCase {
                 "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
             ]
         )
+    }
+
+    func testGetContextFullEnvironmentIncludesOperationalSignals() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "mcp-context-env")
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT OR REPLACE INTO sessions (
+                    id, source, start_time, cwd, project, summary, file_path, message_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "mcp-env-session",
+                    "codex",
+                    "2026-01-08T12:00:00.000Z",
+                    "/Users/test/work/engram",
+                    "engram",
+                    "environment signal fixture",
+                    "/tmp/mcp-env-session.jsonl",
+                    1,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT OR REPLACE INTO git_repos (
+                    path, name, branch, dirty_count, unpushed_count, probed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "/Users/test/work/engram",
+                    "engram",
+                    "followups/env",
+                    2,
+                    1,
+                    "2026-01-09T11:30:00.000Z",
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT OR REPLACE INTO session_files (session_id, file_path, action, count)
+                VALUES (?, ?, ?, ?)
+                """,
+                arguments: ["mcp-env-session", "macos/EngramMCP/Core/MCPDatabase.swift", "Edit", 4]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO logs (ts, level, module, message, source)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "2026-01-09T11:45:00.000Z",
+                    "error",
+                    "mcp",
+                    "fixture environment error",
+                    "daemon",
+                ]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"full","include_environment":true,"sort_by":"score","max_tokens":4000}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+            ]
+        )
+        guard case .array(let content)? = capture.ordered["result"]?["content"] else {
+            return XCTFail("Expected get_context text content")
+        }
+        let text = try XCTUnwrap(content.first?["text"]?.stringValue)
+
+        XCTAssertTrue(text.contains("Git repos with changes (1):"))
+        XCTAssertTrue(text.contains("engram (followups/env): 2 dirty, 1 unpushed"))
+        XCTAssertTrue(text.contains("File hotspots (7d):"))
+        XCTAssertTrue(text.contains("macos/EngramMCP/Core/MCPDatabase.swift (4 edits, 1 sessions)"))
+        XCTAssertTrue(text.contains("Recent errors (24h):"))
+        XCTAssertTrue(text.contains("[mcp] fixture environment error (×1)"))
     }
 
     func testGetInsightsMatchesGolden() throws {
@@ -469,6 +596,94 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(messages.count, 3, "empty roles must not filter out every message")
         let roles = messages.compactMap { $0["role"]?.stringValue }
         XCTAssertEqual(roles, ["user", "assistant", "user"])
+    }
+
+    func testGetSessionPaginatesLargeCodexTranscript() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("large-codex-session.jsonl")
+        let lines = (1...55).map { index in
+            let role = index % 2 == 0 ? "assistant" : "user"
+            return #"{"timestamp":"2026-04-23T01:00:00Z","type":"response_item","payload":{"type":"message","role":"\#(role)","content":[{"type":"input_text","text":"visible message \#(index)"}]}}"#
+        }
+        try lines.joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-large-transcript-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: transcript.path,
+            messageCount: 55,
+            userMessageCount: 28,
+            assistantMessageCount: 27,
+            toolMessageCount: 0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":2}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["currentPage"]?.intValue, 2)
+        XCTAssertEqual(structured["totalPages"]?.intValue, 2)
+        let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+        XCTAssertEqual(messages.count, 5)
+        let contents = messages.compactMap { $0["content"]?.stringValue }
+        XCTAssertEqual(contents, (51...55).map { "visible message \($0)" })
+    }
+
+    func testGetSessionRejectsOversizedGeminiJSONTranscript() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("oversized-gemini-session.json")
+        let largeBody = String(repeating: "x", count: 512)
+        try """
+        {"messages":[{"type":"user","content":"\(largeBody)"}]}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-oversized-gemini-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "gemini-cli",
+            filePath: transcript.path,
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES": "128",
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        XCTAssertEqual(result["structuredContent"]?["code"]?.stringValue, "transcriptTooLarge")
+        guard case .array(let content)? = result["content"],
+              let text = content.first?["text"]?.stringValue else {
+            return XCTFail("Expected text error content")
+        }
+        XCTAssertTrue(text.contains("gemini-cli transcript is too large"), text)
+        XCTAssertFalse(text.contains(largeBody), "error must not echo transcript contents")
     }
 
     func testGetSessionRejectsUnknownRoleEnumValue() throws {
@@ -665,6 +880,43 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/handoff.empty.json"
         )
+    }
+
+    func testHandoffSessionIdFocusesSingleSession() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff","arguments":{"cwd":"/Users/test/work/engram","sessionId":"mcp-fixture-02","format":"markdown"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["sessionCount"]?.intValue, 1)
+        let brief = try XCTUnwrap(structured["brief"]?.stringValue)
+        XCTAssertTrue(brief.contains("engram codex session 2"), brief)
+        XCTAssertFalse(brief.contains("engram windsurf session 6"), brief)
+    }
+
+    func testHandoffIncludesCostDurationModelAndSuggestedPrompt() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff","arguments":{"cwd":"/Users/test/work/engram","format":"markdown"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["sessionCount"]?.intValue, 6)
+        let brief = try XCTUnwrap(structured["brief"]?.stringValue)
+        XCTAssertTrue(brief.contains("**Last active**:"), brief)
+        XCTAssertTrue(brief.contains("via windsurf (sonnet)"), brief)
+        XCTAssertTrue(brief.contains("19 msgs, 35m, $0.07"), brief)
+        XCTAssertTrue(brief.contains("**Last task**:"), brief)
+        XCTAssertTrue(brief.contains("**Suggested prompt**:"), brief)
     }
 
     func testProjectRecoverMatchesGolden() throws {
@@ -921,6 +1173,50 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testCancellationNotificationCancelsInFlightToolCall() throws {
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "linkSessions":
+                Thread.sleep(forTimeInterval: 2)
+                return try request.success(.object(["linked": .int(0)]), databaseGeneration: 1)
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 107)
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let captures = try rpcLines(
+            [
+                """
+                {"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"link_sessions","arguments":{"targetDir":"/tmp"}}}
+                """,
+                """
+                {"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99,"reason":"test cancellation"}}
+                """,
+            ],
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+
+        let capture = try XCTUnwrap(captures.first)
+        XCTAssertEqual(capture.ordered["id"]?.intValue, 99)
+        let result = try XCTUnwrap(capture.ordered["result"]?.objectValue)
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        let structured = result["structuredContent"]?.objectValue
+        XCTAssertEqual(structured?["code"]?.stringValue, "cancelled")
+    }
+
     func testNativeProjectOperationsRouteThroughTheService() throws {
         // Stage 4 ships the four project_* tools natively. Without a
         // service socket they MUST fall through to the standard
@@ -962,6 +1258,15 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     private func rpc(_ request: String, environment: [String: String] = [:]) throws -> RPCCapture {
+        let captures = try rpcLines([request], environment: environment)
+        return try XCTUnwrap(captures.first)
+    }
+
+    private func rpcLines(
+        _ requests: [String],
+        environment: [String: String] = [:],
+        timeout: TimeInterval = 5
+    ) throws -> [RPCCapture] {
         let process = Process()
         process.executableURL = executableURL()
         process.environment = ProcessInfo.processInfo.environment
@@ -975,22 +1280,32 @@ final class EngramMCPExecutableTests: XCTestCase {
         process.standardError = Pipe()
         try process.run()
 
-        if let data = "\(request)\n".data(using: .utf8) {
+        if let data = "\(requests.joined(separator: "\n"))\n".data(using: .utf8) {
             stdinPipe.fileHandleForWriting.write(data)
         }
         try stdinPipe.fileHandleForWriting.close()
-        process.waitUntilExit()
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+            XCTFail("EngramMCP process did not exit within \(timeout)s")
+        }
 
         let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let output = try XCTUnwrap(String(data: outputData, encoding: .utf8))
-        let firstLine = try XCTUnwrap(output.split(separator: "\n").first.map(String.init))
-        let responseData = try XCTUnwrap(firstLine.data(using: .utf8))
-        var parser = OrderedTestJSONParser(text: firstLine)
-        return RPCCapture(
-            rawLine: firstLine,
-            response: try JSONDecoder().decode(TestJSONRPCResponse.self, from: responseData),
-            ordered: try parser.parse()
-        )
+        return try output.split(separator: "\n").map { rawLine in
+            let line = String(rawLine)
+            let responseData = try XCTUnwrap(line.data(using: .utf8))
+            var parser = OrderedTestJSONParser(text: line)
+            return RPCCapture(
+                rawLine: line,
+                response: try JSONDecoder().decode(TestJSONRPCResponse.self, from: responseData),
+                ordered: try parser.parse()
+            )
+        }
     }
 
     private func executableURL() -> URL {
@@ -1006,6 +1321,14 @@ final class EngramMCPExecutableTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("tests/fixtures")
+            .appendingPathComponent(relativePath)
+            .path
+    }
+
+    private func sourcePath(_ relativePath: String) -> String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
             .appendingPathComponent(relativePath)
             .path
     }
@@ -1093,6 +1416,13 @@ final class EngramMCPExecutableTests: XCTestCase {
             toPath: destination.path
         )
         return destination.path
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-mcp-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     private func rewriteTranscriptFixtureSession(
@@ -1692,6 +2022,11 @@ private indirect enum OrderedTestJSONValue {
 
     var boolValue: Bool? {
         guard case .bool(let value) = self else { return nil }
+        return value
+    }
+
+    var intValue: Int? {
+        guard case .int(let value) = self else { return nil }
         return value
     }
 

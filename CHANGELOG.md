@@ -7,6 +7,375 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Additional non-blocking follow-up remediation (2026-06-04, Codex)
+
+Continued PR #34 after the first closeout to finish the remaining necessary
+non-blocking items without broad refactors.
+
+- **CI runtime hygiene**: opted GitHub Actions workflows into Node 24 JavaScript
+  action execution via `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`, and fixed
+  existing actionlint screenshot-copy shell quoting warnings.
+- **TS follow-ups**: shared duration-minute parsing through `src/core/time.ts`
+  for scoring/tiering invalid timestamp handling; FTS version refresh now keeps
+  existing `sessions_fts` rows live while `size_bytes = 0` schedules reindexing,
+  avoiding a temporary empty-search window during version upgrades.
+- **Swift MCP cancellation**: stdio `tools/call` requests now run as tracked
+  in-flight tasks; `notifications/cancelled` cancels matching numeric/string
+  request ids; stdout writes are serialized; EOF drains in-flight responses; and
+  cancelled tool calls return structured MCP errors with
+  `structuredContent.code = "cancelled"`. Unix socket service cancellation now
+  normalizes post-cancel I/O failures into `CancellationError` instead of
+  `serviceUnavailable`.
+- **Verification**: actionlint passed for `test.yml` and `release.yml`;
+  targeted Vitest coverage passed 60 tests; `npm run typecheck:test`,
+  `npm run lint`, full `npm test` passed 1481 tests; Swift
+  `EngramMCPTests` passed 67 tests.
+- **Intentionally deferred**: removing the `database.ts` `raw`/`getRawDb()`
+  compatibility surface and designing a full online FTS table-swap rebuild
+  remain separate larger refactors, not necessary closeout fixes.
+
+### Follow-up remediation branch closeout (2026-06-04, Codex)
+
+Continued the review-remediation branch with focused safety, parity, and
+coverage fixes after the main 2026-06-03 adjudication pass.
+
+- **Swift MCP/Service transcript safety**: added shared oversized transcript
+  guarding for Gemini JSON reads, returning structured MCP/service failures
+  before full-file loading.
+- **Swift secret handling**: stopped passing Keychain-derived API keys through
+  the service process environment; the service now resolves `@keychain`
+  settings directly and ignores legacy `ENGRAM_KEYCHAIN_*` environment
+  fallbacks.
+- **Swift MCP context parity**: enriched `get_context` full-detail environment
+  output with SQLite-backed git repo, file hotspot, and recent-error signals.
+- **CLI and web/tool fixes**: added import-safe resume helpers and CLI coverage,
+  made the dispatcher explicitly call `resume.main`, covered project flag
+  parsing, corrected `list_sessions.total` to report total matching rows, and
+  stopped search route failures from echoing internal exception strings.
+- **Test isolation**: isolated the former bridge-command ServiceCore test from
+  the developer machine's real AI settings so it consistently exercises native
+  fallback behavior.
+- **Verification**: `npm run build`, `npm run typecheck:test`, `npm run lint`,
+  `npm audit --audit-level=moderate`, and full `npm test` passed; Swift
+  `EngramMCPTests`, `EngramServiceCore`, and `EngramTests` passed locally after
+  the ServiceCore HOME-isolation fix.
+
+### Multi-model review adjudication and fixes (2026-06-03, Codex)
+
+Adjudicated the Kimi/Gemini/MiniMax/Mimo review bundle against the current
+`perf/transcript-paging` worktree and fixed the confirmed high-impact items with
+focused tests.
+
+- **Embedding/search correctness**: OpenAI truncated embeddings are normalized
+  before storage/search; `deleteSession` now transactionally removes FTS,
+  embedding, vector, chunk, and retry-job rows; parent cascade preserves
+  subagent `tier='skip'`; session project and metrics timestamp indexes were
+  added; `indexed_at` empty values are backfilled; today's parent count uses
+  indexable string comparisons.
+- **TS runtime hardening**: daemon shutdown resolves timers/auto-summary
+  dynamically, MCP exit closes the DB, watcher indexing has a per-file in-flight
+  lock, database statement wrapper functions are cached, AI audit event entries
+  are sanitized before emit, Gemini JSON parsing has a 10 MiB cap, Antigravity
+  cwd inference reads only a file head, sanitizer patterns cover common API key
+  formats, config parse errors warn, title generation avoids
+  `AbortSignal.timeout`, and `link_sessions` rejects protected system targets
+  before writing; project-move core now rejects non-absolute/protected system
+  paths before any filesystem step; `lint_config` rejects unsafe cwd roots; FTS
+  empty queries return directly without relying on SQLite parser fallback.
+- **Tooling and MCP behavior**: Vitest upgraded to 4.1.8; CI now runs
+  `npm audit --audit-level=moderate`; daemon is no longer excluded from TS
+  coverage; export output moved to `~/.engram/exports`; `hide_session` returns
+  not-found for missing IDs; early MCP errors include `structuredContent`;
+  production TS `noExplicitAny` is now an error; Swift CI tests run with code
+  coverage enabled; Dependabot now covers npm and GitHub Actions; the CLI
+  dispatcher now awaits dynamic imports with a top-level error handler.
+- **Swift/macOS parity and MCP fixes**: migrations now align indexes,
+  `insights_fts` tokenizer, metrics CHECK, and indexed-at backfill; suggested
+  parent backfill avoids N+1 parent fetches; ClaudeCode project is inferred from
+  cwd; MCP search fetches rows in one joined query; handoff respects `sessionId`
+  and includes cost/duration/model/task prompt context; schema validation
+  enforces numeric bounds; OrderedJSON renders non-finite doubles as `null`;
+  `get_session` streams JSONL/adapter transcripts and retains only the requested
+  page; generic os_log wrappers and CoreWrite direct os.Logger callsites use
+  private interpolation; SearchView cancels async search and embedding-status
+  tasks before stale callbacks can publish results; hygiene reports an explicit
+  degraded result instead of a false perfect score.
+- **Swift service hardening follow-ups**: Unix socket client transport retries
+  interrupted read/write syscalls; `confirmSuggestion` refreshes
+  `link_checked_at`; snapshot merge/upsert preserves existing `cwd` and message
+  counts when new parse data is empty; migration audit notes are capped before
+  insert; LLM non-2xx IPC errors no longer echo upstream response bodies;
+  transcript export/web redaction covers common PAT/AWS/npm/Slack/PEM token
+  families; native project migration commands now log requested/finished/failed
+  paths.
+- **Additional Swift review follow-ups**: batch snapshot upsert now runs inside
+  a savepoint even for bare test callers; startup emits explicit
+  `backfill_inline` events for Swift's inline count/cost path; `MigrationLock`
+  has a default 1h TTL and treats Darwin zombie holders as stale; iFlow lossy
+  project-dir collisions are rejected before any filesystem move even when
+  old/new encoded dirs are equal; Web UI transcript parser failures return
+  non-200 statuses; export leaf symlinks are locked by regression coverage.
+- **Swift startup dedup follow-up**: startup file-path dedup now reparents
+  confirmed and suggested children from duplicate session ids to the kept
+  session id before deleting duplicate rows, preserving parent links instead of
+  letting the delete trigger clear them.
+- **Swift observability follow-up**: startup observability retention now always
+  logs a completion line with the pruned row count, including zero-row runs, so
+  the maintenance path is visible after restart.
+- **Swift service-test isolation follow-up**: project-migration IPC pipeline
+  error coverage now uses `ServiceCoreTestHomeScope` with a temp HOME instead
+  of constructing absent-source paths under the user's real home directory.
+- **Swift UI formatter follow-up**: `TimelinePageView` now reuses static date
+  formatters for timeline group labels instead of allocating a formatter on
+  every render.
+- **Project-move/source filesystem hardening**: JSONL patching now rejects
+  symlink source files and fsyncs the temporary replacement file before rename;
+  project-move source walking reports FIFO/socket/device entries as
+  `skipped_non_regular`; `migration_log` now has a `(state, started_at)` index
+  for the pending-migration hot path; shared JSONL adapter discovery uses
+  lstat-based directory/regular-file checks so direct-child adapters do not
+  traverse symlinked source dirs; TS Claude Code parsing now also derives
+  `project` from `cwd` so adapter parity fixtures remain source-generated.
+- **UI/settings/security follow-ups**: LogStream reloads are now task-owned and
+  cancel superseded timer/filter work; AI and source-path settings avoid
+  writeback while loading persisted values; Web UI Host validation rejects
+  malformed multi-colon loopback hosts instead of accepting them as bare
+  loopback.
+- **Title-regeneration follow-up**: `regenerateAllTitles` now checks
+  cancellation before each generated title and again before DB writes, preserves
+  resilient per-session AI failure skips, caps concurrent AI title calls at 4 by
+  default, and logs coarse progress every 10 processed title contexts and at
+  completion.
+- **Swift app concurrency follow-up**: `DatabaseManager` is no longer globally
+  `@MainActor`; it remains observable and is explicitly `@unchecked Sendable`
+  with the existing lock-protected read pool, so detached view reads no longer
+  depend on a type-system-unenforced `nonisolated` contract.
+- **Swift IPC sendability follow-up**: `UnixSocketEngramServiceTransport` now
+  uses checked `Sendable` conformance; the internal mutable `FdBox` remains
+  `@unchecked Sendable`.
+- **Swift app service-event follow-up**: the AppDelegate service status/event
+  pump now starts with `Task.detached`, keeping the stream off the MainActor and
+  returning to MainActor only for status-store updates.
+- **Swift navigation race follow-up**: `MainWindowView.navigateToSession` now
+  tracks the latest palette-requested session id and ignores stale detached DB
+  lookup completions, so a slower lookup cannot overwrite a newer navigation or
+  a direct `.openSession` notification.
+- **Swift session-list race follow-up**: `SessionListView.loadSessions` now uses
+  a monotonic load generation guard so the initial appear load, filter debounce
+  reload, and action-triggered reloads cannot overwrite newer session/filter
+  state when detached DB reads complete out of order.
+- **MCP FTS transient-rebuild follow-up**: keyword reads against `sessions_fts`
+  and `insights_fts` now retry once after a short delay when SQLite reports the
+  canonical FTS table is transiently absent during rebuild swap.
+- **Swift watcher/orphan follow-up**: `SessionSnapshotWriter` now clears
+  `orphan_status`, `orphan_since`, and `orphan_reason` after successful
+  authoritative snapshot handling, including same-content noop re-indexes, so
+  unlink+add/rename recovery does not leave reappeared sessions hidden by MCP
+  orphan filters.
+- **Swift startup dedup follow-up**: `StartupBackfills.deduplicateFilePaths`
+  now reparents confirmed and suggested children from duplicate session ids to
+  the kept session id before deleting duplicate `file_path` rows, preserving
+  parent links instead of letting the delete trigger clear them.
+- **Swift observability follow-up**: startup observability retention now logs
+  `observability retention complete: pruned=<count>` for both pruning and
+  zero-row runs, so maintenance execution is visible after restart.
+- **Swift service-test isolation follow-up**: project-migration IPC pipeline
+  error coverage now runs under `ServiceCoreTestHomeScope` with a temp HOME
+  instead of constructing absent-source paths under the user's real home.
+- **Swift UI formatter follow-up**: `TimelinePageView.formatDateLabel` now
+  reuses static input/output formatters instead of allocating `DateFormatter`
+  per timeline group render.
+- **Swift Web UI observability follow-up**: service startup now logs both
+  disabled and enabled `webUIEnabled` branches before the ready event, so
+  enabled-by-settings startup leaves a breadcrumb before the health probe.
+- **Swift service log-category follow-up**: `.ipc` and `.reader` now have
+  production `ServiceLogger` callsites for listener readiness and search-mode
+  degradation; `.writer` and `.ai` were already exercised by production paths.
+- **Swift link-sessions symlink follow-up**: native `linkSessions` no longer
+  removes or replaces existing link paths; matching symlinks are skipped,
+  different symlinks and non-symlinks are reported as errors, and missing paths
+  are the only created paths.
+- **Swift database file-security follow-up**: `SQLiteFileSecurity` now chmods
+  and then asserts DB/WAL/SHM siblings are owned by the current uid and mode
+  0600, keeping plaintext `migration_log` paths behind an explicit invariant.
+- **Swift project-path symlink confinement follow-up**:
+  `validateProjectPathConfined` now checks both the standardized caller path and
+  the symlink-resolved path under the corresponding home root, so project
+  move/archive/link targets cannot pass by placing a symlink inside `$HOME` that
+  resolves outside it.
+- **Swift project-move errno follow-up**: `OrchestratorError` now conforms to
+  the `ProjectMoveError` envelope contract, and per-source dir rename failures
+  preserve POSIX `errno=<code>` plus the strerror text in the
+  `DirRenameFailedError` message/details path.
+- **Swift SQLite adapter accessibility follow-up**: Cursor and OpenCode
+  `isAccessible` now reuse an actor-isolated `Phase4SQLiteDatabase` per db path,
+  avoiding one SQLite open per session/composer during startup orphan scans.
+
+Verification: `npm run lint`, `npm run typecheck:test`, `npm run build`,
+`npm audit --audit-level=moderate`, `npm test` (124 files, 1471 tests),
+`npm run test:coverage` (124 files, 1471 tests; true coverage floor enforced
+after daemon inclusion);
+`xcodebuild test -project macos/Engram.xcodeproj -scheme EngramMCPTests
+-destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` (63 tests); targeted
+Engram and EngramServiceCore xcodebuild tests for migrations, startup backfills,
+Claude adapter message counts, SearchView task cancellation, OS log privacy, and
+service IPC hygiene; additional targeted Engram tests for snapshot preservation
+and migration audit-note capping (21 tests); additional targeted
+EngramServiceCore tests for IPC `EINTR`, LLM error body suppression,
+`confirmSuggestion`, project migration logging, and redaction (6 tests);
+additional EngramCore tests for batch upsert, startup inline progress,
+MigrationLock TTL/zombie, and iFlow collision (36 tests across targeted
+commands); additional EngramServiceCore tests for Web UI parser status and
+export leaf symlink; additional EngramCore tests for JSONL patch symlink
+rejection, source walking, adapter symlink discovery, migration schema, and
+adapter parity (69 tests across targeted commands); `npx vitest run
+tests/adapters/claude-code.test.ts`; `npm run check:adapter-parity-fixtures`;
+`npm run typecheck:test`; `xcodebuild test -project macos/Engram.xcodeproj
+-scheme EngramTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+-only-testing:EngramTests/ViewMainThreadReadTests` (9 tests);
+`xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+-destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+-only-testing:EngramServiceCoreTests/EngramWebUIServerTests` (24 tests);
+targeted EngramServiceCore title-regeneration tests for cancellation/progress
+concurrency limiting, and the native command path (4 tests);
+targeted Engram DatabaseManager/ViewMainThread tests for the app read facade
+actor-isolation change (55 tests);
+targeted EngramServiceCore Unix socket transport sendability/EINTR tests
+(2 tests);
+targeted Engram ServiceEventRouting tests for detached service-event pumping
+(6 tests);
+targeted Engram ViewMainThreadReadTests for MainWindow stale navigation guards
+(11 tests, with the new guard RED before the fix);
+targeted Engram ViewMainThreadReadTests for SessionList stale load guards
+(12 tests, with the new guard RED before the fix);
+targeted EngramMCP FTS retry guard (1 test);
+targeted EngramCore orphan recovery RED/GREEN guard
+`IndexerParityTests/testReindexClearsRecoveredOrphanStatus` (1 test);
+targeted EngramCore startup dedup RED/GREEN guard
+`StartupBackfillTests/testDeduplicateFilePathsReparentsChildrenBeforeDeletingDuplicateParent`
+(1 test) and full `StartupBackfillTests` (21 tests);
+targeted EngramServiceCore observability-retention RED/GREEN guard
+`EngramServiceIPCTests/testRunnerObservabilityRetentionLogsZeroRowCompletion`
+(1 test) plus adjacent runner source guards (6 tests);
+targeted EngramServiceCore HOME-isolation RED/GREEN guard
+`EngramServiceIPCTests/testProjectMigrationPipelineErrorTestUsesScopedHome`
+and `testProjectMigrationCommandsSurfacePipelineErrors` (2 tests);
+targeted Engram Timeline formatter RED/GREEN guard
+`ViewMainThreadReadTests/testTimelinePageReusesDateFormatters` (1 test) and
+full `ViewMainThreadReadTests` (13 tests);
+targeted EngramServiceCore Web UI startup branch logging RED/GREEN guard
+`EngramWebUIServerTests/testRunnerLogsWebUIEnabledAndDisabledBranches` plus
+`testWebUIEnvOverride` (2 tests);
+targeted EngramServiceCore service log-category callsite RED/GREEN guard
+`EngramServiceIPCTests/testServiceLogCategoriesHaveProductionCallsites`, plus
+`testSearchSemanticModeDegradesToKeywordWithWarning` in the combined GREEN run
+(2 tests);
+targeted EngramServiceCore linkSessions symlink replacement RED/GREEN guard
+`EngramServiceIPCTests/testLinkSessionsDoesNotReplaceExistingDifferentSymlink`
+plus `testLinkSessionsRejectsPathsOutsideKnownSessionRoots` (2 tests);
+targeted EngramCore database file-security RED/GREEN guard
+`SQLiteConnectionPolicyTests/testFileSecurityAssertsOwnerAndModeForDatabaseSiblings`
+and full `SQLiteConnectionPolicyTests` (5 tests);
+`git diff --check`.
+
+Residual: Swift `gemini-cli` transcript JSON remains whole-file parse; full
+Keychain/service IPC secret-flow refactor, Swift `get_context` TS parity, broader
+CLI/security-policy work that requires external services or secrets, and P3
+cleanups remain outside this pass.
+
+### Transcript paging — ultrareview round 2 fixes (2026-06-03, Claude)
+
+Second cloud ultrareview of PR #34 (5 findings):
+
+- **Chip Prev crash (real)**: switching from a long session to a shorter one left
+  `navPositions` (and other transcript-derived state) stale; clicking a chip's Prev
+  then indexed past the new match set and trapped. The `.task(id: session.id)` reset
+  now also clears `navPositions`/`displayIndexed`/`matchIndices`/`currentMatchIndex`/
+  `searchText`/`scrollTarget`, and the index math moved to a pure, clamped
+  `nextNavPosition(current:direction:count:)` (unit-tested) so a stale position can
+  never trap.
+- **Dead-end empty state**: a huge session whose first page is entirely tool messages
+  loads zero displayable rows but has more — the "No Messages"/"Filtered Out" states
+  now show the Load more / Load all footer, so the rest is still reachable.
+- **Rebuild clobber race**: `rebuildIndexed` snapshotted filter/search state then
+  wrote back after the off-main build, clobbering a chip toggle or search edit made
+  during the build. It now publishes only `messages`-derived state (indexed + counts)
+  and recomputes display + matches from LIVE state; the match scan is a single
+  off-main path keyed on `displayVersion + searchText`, so it never runs on main and
+  never overwrites a concurrent edit.
+- **Copy while loading**: Copy no longer silently no-ops when a load is in flight —
+  it surfaces a transient "still loading" status.
+- **EOF reparse (nit)**: `parseWindowed` now trusts an empty adapter result (paging
+  past EOF) instead of falling through to a full-file legacy reparse; legacy is only
+  the fallback on adapter error.
+
+Full EngramTests 290 green (0 failures, 1 pre-existing skip).
+
+### Transcript paging — ultrareview fixes (2026-06-03, Claude)
+
+Addressed the cloud ultrareview of PR #34 (7 findings):
+
+- **Page-seam offset bug (the real one)**: the pager advanced `offset` by the
+  filtered (user/assistant) count, but adapter offset/limit count PRODUCED
+  messages (incl. tool rows the UI drops) — so a transcript with tool messages
+  could drift/dup at the seam and, worse, a first page thinned by tool rows set
+  `hasMore=false` → silent truncation. Added `MessageParser.parseWindowed(...)`
+  returning a PRODUCED count; the pager now advances in produced space. Locked by
+  a Codex `function_call` test (produced > displayable; paged union == full).
+- **Cross-session races**: added `Task.isCancelled` guards in `rebuildIndexed`
+  (after the detached classify) and after `loadInitialTranscript()` in `.task`,
+  so a slow load can't stomp the next session's state.
+- **Main-thread match rescan**: the post-load match-index scan now runs inside
+  the detached rebuild (was synchronous on main after Load all).
+- **Copy honesty**: Copy / Copy Entire Conversation / ⌘⌥C now load the full
+  transcript before copying when only a prefix is loaded (no silent partial copy).
+- **Chip counts**: type-chip counts render `N+` while partially loaded so they
+  don't read as authoritative session totals.
+- **Search hint**: hoisted out of `if showFind` — it shows whenever a search is
+  active on a partial transcript, even after the find bar is closed (search state
+  outlives the bar via ⌘F / toolbar Find).
+- **Cancel on disappear**: `transcriptLoadTask` is now cancelled in `.onDisappear`.
+- Accepted nit (documented): when the produced count is an exact multiple of the
+  page size the footer survives one extra "Load more" that fetches an empty
+  window. The `>=` test is deliberate — `>` would silently truncate a transcript
+  whose size equals the page size, and consulting `session.messageCount` (a
+  differently-counted total) risks truncation, so produced-fullness is the safe
+  signal.
+
+Full EngramTests 289 green (0 failures, 1 pre-existing skip).
+
+### SessionDetailView transcript paging (2026-06-02, Claude)
+
+Closes the second deferred perf item from the review cleanup round.
+
+`SessionDetailView` parsed + classified the WHOLE transcript into memory on open.
+Rendering was already lazy (`LazyVStack`), so the residual cost was peak memory
+and first-paint parse time for very large sessions.
+
+Now threshold-gated: sessions at/under `transcriptPageThreshold` (800 messages)
+load fully exactly as before (zero behavior change for the common case). Larger
+sessions load a first page (`transcriptPageSize` = 500) and show a footer with
+**Load more** / **Load all**. Paging is APPEND-based — each step parses from the
+current loaded count (`MessageParser.parse(offset:limit:)`, which now
+early-terminates per the prior change) and appends, so earlier pages aren't
+re-materialized and loaded `ChatMessage` identities stay stable (the list diffs
+cleanly; scroll position is preserved). The indexed view is rebuilt over the full
+loaded prefix off the main actor, so `typeIndex`/type counts stay correct.
+
+Honesty (no silent truncation): the footer reads "Showing first N messages" and
+the full transcript is always one click away; when a search runs on a partially
+loaded transcript the find bar shows "Search covers loaded messages only" with a
+one-tap **Load all**.
+
+Pure gating (`initialTranscriptLimit`, `hasMoreAfterLoad`) is unit-tested; a
+`MessageParser` test proves a paged load (first page + remainder from
+`offset = loadedCount`) reconstructs the full transcript exactly — no gap, dup,
+or truncation at the seam. The off-main classification source guard was updated
+to the new rebuild path. Green: full EngramTests 288 (0 failures, 1 pre-existing
+skip).
+
+Branch `perf/transcript-paging` (ultrareview pending).
+
 ### Web UI pager: O(N²) → O(N) via shared lazy-streaming window (2026-06-02, Claude)
 
 Closes the first of the two deferred perf items from the review cleanup round.

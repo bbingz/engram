@@ -32,6 +32,7 @@ struct SessionListView: View {
     @State private var refreshTrigger = UUID()
     @State private var filterTask: Task<Void, Never>?
     @State private var isChurning = false
+    @State private var loadGeneration = 0
     /// Cached session to hold detail panel steady during reloads
     @State private var lastSelectedSession: Session?
 
@@ -403,6 +404,8 @@ struct SessionListView: View {
         // UI-C1/C2: run the synchronous GRDB reads + child-count IN-queries off the
         // main thread. `readInBackground` runs `pool.read` on the calling thread, so
         // calling these directly from a @MainActor func froze the UI on a large DB.
+        loadGeneration += 1
+        let generation = loadGeneration
         let db = self.db
         let showingTrash = self.showingTrash
         let agentFilter = self.agentFilter
@@ -422,12 +425,14 @@ struct SessionListView: View {
                 let suggested = (try? db.suggestedChildCount(parentIds: ids)) ?? [:]
                 return (hidden, sessions, confirmed, suggested)
             }.value
+            guard loadGeneration == generation else { return }
             hiddenCount = loaded.0
             sessions = loaded.1
             confirmedCounts = loaded.2
             suggestedCounts = loaded.3
             loadError = nil
         } catch {
+            guard loadGeneration == generation else { return }
             EngramLogger.error("SessionListView load failed", module: .ui, error: error)
             sessions = []
             confirmedCounts = [:]

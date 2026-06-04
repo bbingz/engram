@@ -221,6 +221,56 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
     }
 
+    func testIflowSharedEncodingRejectedEvenWhenDirRenameWouldBeNoop() async throws {
+        let srcURL = tempRoot
+            .appendingPathComponent("a", isDirectory: true)
+            .appendingPathComponent("-foo-", isDirectory: true)
+            .appendingPathComponent("p", isDirectory: true)
+        let dst = tempRoot
+            .appendingPathComponent("a", isDirectory: true)
+            .appendingPathComponent("foo", isDirectory: true)
+            .appendingPathComponent("p", isDirectory: true)
+            .path
+        try FileManager.default.createDirectory(at: srcURL, withIntermediateDirectories: true)
+        let gitDir = srcURL.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        try "ref: refs/heads/main".write(
+            to: gitDir.appendingPathComponent("HEAD"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let encoded = SessionSources.encodeIflow(dst)
+        XCTAssertEqual(encoded, SessionSources.encodeIflow(srcURL.path))
+        let iflowDir = tempRoot.appendingPathComponent(".iflow/projects/\(encoded)", isDirectory: true)
+        try FileManager.default.createDirectory(at: iflowDir, withIntermediateDirectories: true)
+        try """
+        {"sessionId":"src","cwd":"\(srcURL.path)","type":"summary"}
+        {"sessionId":"other","cwd":"\(dst)","type":"summary"}
+        """.write(to: iflowDir.appendingPathComponent("session-1.jsonl"), atomically: true, encoding: .utf8)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: srcURL.path, dst: dst)
+            )
+            XCTFail("expected SharedEncodingCollisionError")
+        } catch let err as SharedEncodingCollisionError {
+            XCTAssertEqual(err.sourceId, .iflow)
+            XCTAssertEqual(err.sharingCwds, [dst])
+        } catch {
+            XCTFail("expected SharedEncodingCollisionError, got \(error)")
+        }
+
+        try writer.read { db in
+            let row = try Row.fetchOne(db, sql: "SELECT state, error FROM migration_log LIMIT 1")
+            XCTAssertEqual(row?["state"], "failed")
+            XCTAssertNotNil(row?["error"])
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: srcURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
     // MARK: - lock contract
 
     func testLockBusyErrorWithLiveHolderDoesNotInsertFsPendingRow() async throws {
@@ -350,6 +400,30 @@ final class OrchestratorTests: XCTestCase {
             "iflow dir must be renamed alongside cc dir"
         )
         XCTAssertFalse(FileManager.default.fileExists(atPath: iflowSrc.path))
+    }
+
+    func testDirRenameFailureMessageIncludesPosixErrno() async throws {
+        let (src, ccDir) = try makeProjectFixture(name: "proj")
+        try "{}".write(to: ccDir.appendingPathComponent("s1.jsonl"), atomically: true, encoding: .utf8)
+        let parent = ccDir.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: parent.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+        }
+
+        let dst = tempRoot.appendingPathComponent("renamed").path
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected dir rename failure")
+        } catch OrchestratorError.dirRenameFailed(_, _, _, let message) {
+            XCTAssertTrue(message.contains("errno="), message)
+            XCTAssertTrue(message.contains("Permission denied") || message.contains("Operation not permitted"), message)
+        } catch {
+            XCTFail("expected dirRenameFailed, got \(error)")
+        }
     }
 
     // MARK: - rolledBackOf round-trips

@@ -46,6 +46,7 @@ public enum WalkIssueReason: String, Equatable, Sendable {
     case tooLarge = "too_large"
     case skippedSymlink = "skipped_symlink"
     case skippedWrongExt = "skipped_wrong_ext"
+    case skippedNonRegular = "skipped_non_regular"
 }
 
 public struct WalkIssue: Equatable, Sendable {
@@ -126,8 +127,8 @@ public enum SessionSources {
     /// Encode a project cwd into the iFlow project-directory name. Joins
     /// path segments with `-` after stripping per-segment leading/trailing
     /// dashes. Lossy by design — `/a/-foo-/p` and `/a/foo/p` both encode
-    /// to `-a-foo-p`; the orchestrator's pre-flight stat catches the
-    /// collision rather than overwriting.
+    /// to `-a-foo-p`; the orchestrator's iFlow pre-flight cwd probe catches
+    /// the collision rather than overwriting.
     public static func encodeIflow(_ absolutePath: String) -> String {
         absolutePath
             .split(separator: "/", omittingEmptySubsequences: false)
@@ -138,6 +139,27 @@ public enum SessionSources {
                 return String(s)
             }
             .joined(separator: "-")
+    }
+
+    public static func collectOtherIflowCwdsSharingEncodedDir(
+        root: String,
+        targetEncodedDir: String,
+        srcCwd: String
+    ) -> [String] {
+        var conflicts = Set<String>()
+        walkSessionFiles(root: root) { filePath in
+            guard filePath.contains("/\(targetEncodedDir)/"),
+                  let content = try? String(contentsOfFile: filePath, encoding: .utf8)
+            else { return }
+            for line in content.split(whereSeparator: \.isNewline) {
+                guard let cwd = extractJSONLineCwd(String(line)),
+                      cwd != srcCwd,
+                      encodeIflow(cwd) == targetEncodedDir
+                else { continue }
+                conflicts.insert(cwd)
+            }
+        }
+        return conflicts.sorted()
     }
 
     /// Encode a project cwd into the Gemini CLI project slug used both as the
@@ -204,7 +226,14 @@ public enum SessionSources {
                     stack.append(full)
                     continue
                 }
-                if mode != S_IFREG { continue }
+                if mode != S_IFREG {
+                    onIssue?(WalkIssue(
+                        path: full,
+                        reason: .skippedNonRegular,
+                        detail: "mode=\(String(info.st_mode, radix: 8))"
+                    ))
+                    continue
+                }
                 guard let dot = name.lastIndex(of: ".") else { continue }
                 let ext = String(name[dot...])
                 if !extensions.contains(ext) { continue }
@@ -319,5 +348,14 @@ public enum SessionSources {
             }
         }
         return Array(Set(hits))
+    }
+
+    private static func extractJSONLineCwd(_ line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cwd = object["cwd"] as? String,
+              !cwd.isEmpty
+        else { return nil }
+        return cwd
     }
 }

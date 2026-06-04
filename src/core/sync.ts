@@ -47,7 +47,9 @@ export class SyncEngine {
         ? raw.authoritativeNode
         : peerName;
     const syncVersion =
-      'syncVersion' in raw && typeof raw.syncVersion === 'number'
+      'syncVersion' in raw &&
+      typeof raw.syncVersion === 'number' &&
+      Number.isFinite(raw.syncVersion)
         ? raw.syncVersion
         : raw.messageCount;
     const snapshotHash =

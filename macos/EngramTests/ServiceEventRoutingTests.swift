@@ -7,8 +7,32 @@ import XCTest
 /// and a subsequent successful index clears it.
 @MainActor
 final class ServiceEventRoutingTests: XCTestCase {
+    private var appSource: String {
+        get throws {
+            var directory = URL(fileURLWithPath: #filePath)
+            while directory.lastPathComponent != "macos" {
+                directory.deleteLastPathComponent()
+            }
+            return try String(contentsOf: directory.appendingPathComponent("Engram/App.swift"), encoding: .utf8)
+        }
+    }
+
     private func decode(_ json: String) throws -> EngramServiceEvent {
         try JSONDecoder().decode(EngramServiceEvent.self, from: Data(json.utf8))
+    }
+
+    func testServiceStatusObservationUsesDetachedEventPump() throws {
+        let source = try appSource
+        let start = try XCTUnwrap(source.range(of: "private func startServiceStatusObservation()"))
+        let end = try XCTUnwrap(source.range(of: "/// OBS-O2:"))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("serviceStatusTask = Task.detached"))
+        XCTAssertTrue(body.contains("await MainActor.run"))
+        XCTAssertFalse(
+            body.contains("serviceStatusTask = Task {"),
+            "service event pump must not inherit AppDelegate's MainActor isolation"
+        )
     }
 
     func testIndexErrorEventSurfacesAsDegraded() throws {

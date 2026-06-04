@@ -3,7 +3,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionInfo } from '../../src/adapters/types.js';
 import {
   containsCJK,
@@ -127,10 +127,61 @@ describe('Database', () => {
     expect(filtered[0].sessionId).toBe('session-001');
   });
 
+  it('returns no FTS results for an empty query', () => {
+    db.upsertSession(mockSession);
+    db.indexSessionContent('session-001', [
+      { role: 'user', content: 'some searchable text' },
+    ]);
+
+    expect(db.searchSessions('')).toEqual([]);
+    expect(db.searchSessions('   ')).toEqual([]);
+  });
+
   it('deletes a session', () => {
     db.upsertSession(mockSession);
     db.deleteSession('session-001');
     expect(db.getSession('session-001')).toBeNull();
+  });
+
+  it('deletes all index artifacts for a session in the same operation', () => {
+    db.upsertSession(mockSession);
+    db.getRawDb().exec(`
+      CREATE TABLE session_embeddings(session_id TEXT PRIMARY KEY, model TEXT);
+      CREATE TABLE vec_sessions(session_id TEXT PRIMARY KEY);
+      CREATE TABLE session_chunks(chunk_id TEXT PRIMARY KEY, session_id TEXT, text TEXT);
+      CREATE TABLE vec_chunks(chunk_id TEXT PRIMARY KEY);
+    `);
+    db.getRawDb()
+      .prepare(
+        'INSERT INTO session_embeddings(session_id, model) VALUES (?, ?)',
+      )
+      .run('session-001', 'test-model');
+    db.getRawDb()
+      .prepare('INSERT INTO vec_sessions(session_id) VALUES (?)')
+      .run('session-001');
+    db.getRawDb()
+      .prepare(
+        'INSERT INTO session_chunks(chunk_id, session_id, text) VALUES (?, ?, ?)',
+      )
+      .run('chunk-001', 'session-001', 'hello');
+    db.getRawDb()
+      .prepare('INSERT INTO vec_chunks(chunk_id) VALUES (?)')
+      .run('chunk-001');
+
+    db.deleteSession('session-001');
+
+    for (const [table, where] of [
+      ['session_embeddings', "session_id = 'session-001'"],
+      ['vec_sessions', "session_id = 'session-001'"],
+      ['session_chunks', "session_id = 'session-001'"],
+      ['vec_chunks', "chunk_id = 'chunk-001'"],
+    ] as const) {
+      const row = db
+        .getRawDb()
+        .prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`)
+        .get() as { count: number };
+      expect(row.count).toBe(0);
+    }
   });
 
   it('checks if file is already indexed', () => {
@@ -174,6 +225,16 @@ describe('Database', () => {
     const names = new Set(tables.map((t) => t.name));
     expect(names.has('session_local_state')).toBe(true);
     expect(names.has('session_index_jobs')).toBe(true);
+  });
+
+  it('reuses instrumented statement method wrappers', () => {
+    db.setMetrics({
+      histogram: vi.fn(),
+    } as any);
+
+    const stmt = db.getRawDb().prepare('SELECT 1 AS value');
+
+    expect(stmt.get).toBe(stmt.get);
   });
 
   it('adds authoritative snapshot columns to sessions', () => {
@@ -282,6 +343,30 @@ describe('Database', () => {
         'Asia/Shanghai',
       ),
     ).toBe(1);
+  });
+
+  it('keeps local-day counting sargable on start_time', () => {
+    const raw = db.getRawDb() as typeof db.raw & {
+      prepare: typeof db.raw.prepare;
+    };
+    const originalPrepare = raw.prepare.bind(raw);
+    let capturedSql = '';
+    raw.prepare = ((sql: string) => {
+      if (sql.includes('COUNT(*) as n FROM sessions')) {
+        capturedSql = sql;
+      }
+      return originalPrepare(sql);
+    }) as typeof raw.prepare;
+
+    db.countTodayParentSessions(
+      new Date('2026-04-14T13:56:07.817Z'),
+      'Asia/Shanghai',
+    );
+
+    raw.prepare = originalPrepare as typeof raw.prepare;
+    expect(capturedSql).toContain('start_time >= @dayStart');
+    expect(capturedSql).toContain('start_time < @dayEnd');
+    expect(capturedSql).not.toContain('datetime(start_time)');
   });
 
   it('stores sync cursor as indexed_at + session_id tuple', () => {

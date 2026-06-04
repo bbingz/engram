@@ -1,9 +1,12 @@
+import Darwin
 import Foundation
 import GRDB
 
 public enum SQLiteConnectionPolicyError: Error, Equatable {
     case journalModeNotWAL(String)
     case busyTimeoutTooLow(Int)
+    case fileSecurityOwnerMismatch(String)
+    case fileSecurityModeMismatch(String, Int)
 }
 
 public enum SQLiteConnectionPolicy {
@@ -74,6 +77,17 @@ public enum SQLiteFileSecurity {
         let fileManager = FileManager.default
         for candidate in [path, "\(path)-wal", "\(path)-shm"] where fileManager.fileExists(atPath: candidate) {
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: candidate)
+            var info = stat()
+            guard lstat(candidate, &info) == 0 else {
+                throw CocoaError(.fileReadNoSuchFile)
+            }
+            guard info.st_uid == geteuid() else {
+                throw SQLiteConnectionPolicyError.fileSecurityOwnerMismatch(candidate)
+            }
+            let mode = Int(info.st_mode & 0o777)
+            guard mode == 0o600 else {
+                throw SQLiteConnectionPolicyError.fileSecurityModeMismatch(candidate, mode)
+            }
         }
     }
 }

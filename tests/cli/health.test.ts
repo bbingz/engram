@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { DiagnoseResult, HealthResult } from '../../src/cli/health.js';
 import { diagnose, queryHealth } from '../../src/cli/health.js';
 import { Database } from '../../src/core/db.js';
 
@@ -20,7 +21,7 @@ describe('queryHealth', () => {
   });
 
   it('returns db size info', () => {
-    const result = queryHealth(db.raw);
+    const result: HealthResult = queryHealth(db.raw);
     expect(result).toHaveProperty('dbSizeBytes');
     expect(typeof result.dbSizeBytes).toBe('number');
   });
@@ -48,7 +49,7 @@ describe('diagnose', () => {
   });
 
   it('returns error summary', () => {
-    const result = diagnose(db.raw, {});
+    const result: DiagnoseResult = diagnose(db.raw, {});
     expect(result.errorCount).toBe(3);
     expect(result.errorsByModule).toHaveProperty('indexer');
     expect(result.errorsByModule.indexer).toBe(2);

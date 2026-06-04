@@ -7,6 +7,7 @@ struct MainWindowView: View {
     @State private var showPalette: Bool = false
     @State private var paletteItems: [PaletteItem] = []
     @State private var paletteSelection: Int = 0
+    @State private var pendingNavigationId: String? = nil
     @Environment(DatabaseManager.self) var db
 
     var body: some View {
@@ -26,10 +27,12 @@ struct MainWindowView: View {
         .background(Theme.background)
         .onChange(of: selectedScreen) { _, _ in
             // Clear session detail when navigating to a different page
+            pendingNavigationId = nil
             selectedSession = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSession)) { notification in
             if let box = notification.object as? SessionBox {
+                pendingNavigationId = nil
                 selectedSession = box.session
             }
         }
@@ -102,11 +105,21 @@ struct MainWindowView: View {
     private func navigateToSession(id: String) {
         // Detached so the SQLite lookup runs off the main thread (an unstructured
         // Task started here inherits the MainActor executor).
+        pendingNavigationId = id
         let db = self.db
         Task.detached {
-            guard let session = try? db.getSession(id: id) else { return }
+            guard let session = try? db.getSession(id: id) else {
+                await MainActor.run {
+                    if pendingNavigationId == id {
+                        pendingNavigationId = nil
+                    }
+                }
+                return
+            }
             await MainActor.run {
+                guard pendingNavigationId == id else { return }
                 selectedSession = session
+                pendingNavigationId = nil
             }
         }
     }

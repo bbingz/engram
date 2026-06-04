@@ -212,5 +212,16 @@ describe('computeTier()', () => {
         'normal',
       );
     });
+
+    it('treats invalid timestamps as duration 0', () => {
+      expect(
+        computeTier(
+          makeInput({
+            startTime: 'not-a-date',
+            endTime: '2024-01-01T10:40:00Z',
+          }),
+        ),
+      ).toBe('normal');
+    });
   });
 });

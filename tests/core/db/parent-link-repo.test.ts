@@ -689,6 +689,41 @@ describe('parent-link-repo', () => {
       expect(after.tier).toBeNull();
     });
 
+    it('keeps deleted-parent subagents hidden after clearing the parent link', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'parent',
+          filePath: '/f/p',
+          startTime: '2026-01-01T09:00:00Z',
+        }),
+      );
+      db.upsertSession(
+        makeSession({
+          id: 'child',
+          filePath: '/f/c',
+          startTime: '2026-01-01T10:00:00Z',
+        }),
+      );
+      db.getRawDb()
+        .prepare(
+          "UPDATE sessions SET agent_role = 'subagent', tier = 'skip' WHERE id = 'child'",
+        )
+        .run();
+      setParentSession(db.getRawDb(), 'child', 'parent', 'path');
+
+      db.deleteSession('parent');
+
+      const after = db
+        .getRawDb()
+        .prepare(
+          'SELECT parent_session_id, link_source, tier FROM sessions WHERE id = ?',
+        )
+        .get('child') as Record<string, unknown>;
+      expect(after.parent_session_id).toBeNull();
+      expect(after.link_source).toBeNull();
+      expect(after.tier).toBe('skip');
+    });
+
     it('clears suggested_parent_id when suggested parent is deleted', () => {
       db.upsertSession(
         makeSession({
@@ -713,6 +748,38 @@ describe('parent-link-repo', () => {
         .prepare('SELECT suggested_parent_id FROM sessions WHERE id = ?')
         .get('child') as Record<string, unknown>;
       expect(row.suggested_parent_id).toBeNull();
+    });
+
+    it('keeps suggested-parent subagents hidden after clearing the suggestion', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'parent',
+          filePath: '/f/p',
+          startTime: '2026-01-01T09:00:00Z',
+        }),
+      );
+      db.upsertSession(
+        makeSession({
+          id: 'child',
+          filePath: '/f/c',
+          startTime: '2026-01-01T10:00:00Z',
+        }),
+      );
+      db.getRawDb()
+        .prepare(
+          "UPDATE sessions SET agent_role = 'subagent', tier = 'skip' WHERE id = 'child'",
+        )
+        .run();
+      setSuggestedParent(db.getRawDb(), 'child', 'parent');
+
+      db.deleteSession('parent');
+
+      const row = db
+        .getRawDb()
+        .prepare('SELECT suggested_parent_id, tier FROM sessions WHERE id = ?')
+        .get('child') as Record<string, unknown>;
+      expect(row.suggested_parent_id).toBeNull();
+      expect(row.tier).toBe('skip');
     });
   });
 

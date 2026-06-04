@@ -64,6 +64,15 @@ final class EngramServiceLauncher {
         return arguments
     }
 
+    nonisolated static func environment(
+        baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        keychainReader _: (String) -> String? = { _ in nil }
+    ) -> [String: String] {
+        baseEnvironment.filter { key, _ in
+            !key.hasPrefix("ENGRAM_KEYCHAIN_")
+        }
+    }
+
     var isRunning: Bool {
         process?.isRunning == true
     }
@@ -74,13 +83,7 @@ final class EngramServiceLauncher {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: configuration.executablePath)
         proc.arguments = Self.arguments(for: configuration)
-        var environment = ProcessInfo.processInfo.environment
-        for key in ["aiApiKey", "titleApiKey"] {
-            if let value = KeychainHelper.get(key), !value.isEmpty {
-                environment["ENGRAM_KEYCHAIN_\(key)"] = value
-            }
-        }
-        proc.environment = environment
+        proc.environment = Self.environment(baseEnvironment: ProcessInfo.processInfo.environment)
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         proc.standardOutput = stdoutPipe

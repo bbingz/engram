@@ -124,12 +124,14 @@ public enum MigrationLogStoreError: Error, Equatable {
 }
 
 public enum MigrationLogStore {
+    public static let maxAuditNoteLength = 2_000
 
     /// Phase A. Inserts an `fs_pending` row.
     public static func startMigration(_ db: GRDB.Database, input: StartMigrationInput) throws {
         if input.oldPath == input.newPath {
             throw MigrationLogStoreError.sameOldNewPath(input.oldPath)
         }
+        let auditNote = input.auditNote.map { String($0.prefix(maxAuditNoteLength)) }
         try db.execute(
             sql: """
             INSERT INTO migration_log (
@@ -148,7 +150,7 @@ public enum MigrationLogStore {
                 input.oldBasename,
                 input.newBasename,
                 input.dryRun ? 1 : 0,
-                input.auditNote,
+                auditNote,
                 input.archived ? 1 : 0,
                 input.actor.rawValue,
                 input.rolledBackOf,

@@ -29,7 +29,7 @@
   "nodeVersion": "v26.0.0",
   "projectFields": {
     "cwd": "/Users/test/my-project",
-    "project": null,
+    "project": "my-project",
     "source": "claude-code"
   },
   "schemaVersion": 1,
@@ -49,6 +49,7 @@
     "filePath": "<fixtureRoot>/claude-code/input/-Users-test-my-project/sample.jsonl",
     "id": "cc-session-001",
     "messageCount": 3,
+    "project": "my-project",
     "sizeBytes": 976,
     "source": "claude-code",
     "startTime": "2026-01-20T09:00:00.000Z",

@@ -75,13 +75,48 @@ public struct SharedEncodingCollisionError: ProjectMoveError, Equatable {
     }
 }
 
-public enum OrchestratorError: Error, Equatable {
+public enum OrchestratorError: ProjectMoveError, Equatable {
     case missingPaths(src: String, dst: String)
     case sameSourceAndDest(path: String)
     case dstInsideSrc(src: String, dst: String)
     case srcInsideDst(src: String, dst: String)
     case gitDirty(src: String)
     case dirRenameFailed(sourceId: SourceId, oldDir: String, newDir: String, message: String)
+
+    public var errorName: String {
+        switch self {
+        case .dirRenameFailed:
+            "DirRenameFailedError"
+        default:
+            "OrchestratorError"
+        }
+    }
+
+    public var errorMessage: String {
+        switch self {
+        case .missingPaths:
+            "project-move: source and destination paths are required"
+        case .sameSourceAndDest(let path):
+            "project-move: source and destination are the same path — \(path)"
+        case .dstInsideSrc(let src, let dst):
+            "project-move: destination \(dst) is inside source \(src)"
+        case .srcInsideDst(let src, let dst):
+            "project-move: source \(src) is inside destination \(dst)"
+        case .gitDirty(let src):
+            "project-move: git worktree has tracked changes — \(src)"
+        case .dirRenameFailed(let sourceId, let oldDir, let newDir, let message):
+            "project-move: \(sourceId.rawValue) dir rename failed \(oldDir) -> \(newDir): \(message)"
+        }
+    }
+
+    public var errorDetails: ErrorDetails? {
+        switch self {
+        case .dirRenameFailed(let sourceId, let oldDir, let newDir, _):
+            ErrorDetails(sourceId: sourceId.rawValue, oldDir: oldDir, newDir: newDir)
+        default:
+            nil
+        }
+    }
 }
 
 // MARK: - input/output
@@ -348,6 +383,25 @@ public enum ProjectMoveOrchestrator {
                 }
             }
 
+            // Step 0.8: iFlow-specific lossy encoder probe. encodeIflow strips
+            // leading/trailing dashes per segment, so src/dst can share the
+            // same project dir name and skip the generic dir-collision check.
+            if let iflowRoot = roots.first(where: { $0.id == .iflow }) {
+                let targetEncodedDir = SessionSources.encodeIflow(dst)
+                let conflicts = SessionSources.collectOtherIflowCwdsSharingEncodedDir(
+                    root: iflowRoot.path,
+                    targetEncodedDir: targetEncodedDir,
+                    srcCwd: src
+                )
+                if !conflicts.isEmpty {
+                    throw SharedEncodingCollisionError(
+                        sourceId: .iflow,
+                        dir: (iflowRoot.path as NSString).appendingPathComponent(targetEncodedDir),
+                        sharingCwds: conflicts
+                    )
+                }
+            }
+
             // Step 1: physical move
             let moveResult = try SafeMoveDir.run(src: src, dst: dst)
             moveStrategy = moveResult.strategy
@@ -368,7 +422,7 @@ public enum ProjectMoveOrchestrator {
                         sourceId: plan.sourceId,
                         oldDir: plan.oldDir,
                         newDir: plan.newDir,
-                        message: error.localizedDescription
+                        message: renameFailureMessage(error)
                     )
                 }
             }
@@ -831,6 +885,14 @@ private func moveItemRespectingExisting(_ src: String, to dst: String) throws {
         code: Int(code),
         userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(code))]
     )
+}
+
+private func renameFailureMessage(_ error: Error) -> String {
+    let nsError = error as NSError
+    if nsError.domain == NSPOSIXErrorDomain {
+        return "errno=\(nsError.code) \(nsError.localizedDescription)"
+    }
+    return errorMessage(error)
 }
 
 private func countOccurrences(of needle: Data, in haystack: Data) -> Int {
