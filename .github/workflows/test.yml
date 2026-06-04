@@ -64,7 +64,7 @@ jobs:
       - run: npm run build
       - run: npm run typecheck:test
       - run: npm run test:coverage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-report
@@ -216,7 +216,7 @@ jobs:
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload diff artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: screenshot-diffs
           path: |
@@ -307,7 +307,7 @@ jobs:
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: screenshot-diffs-full
           path: |
