@@ -7,6 +7,45 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Project migration Gemini/iFlow compatibility follow-up (2026-06-06, Codex)
+
+Closed the remaining grouped-source compatibility audit left by the Claude Code
+encoder fix.
+
+- **Real-disk audit**: `~/.gemini/tmp` had 3 live project dirs; all 3 match the
+  Swift/real Gemini slug rule (`basename.lowercased`, `_` → `-`, strip wrapping
+  dashes). The TypeScript reference still used raw `basename`, which mismatched
+  3/3 (`network`, `surge`, `tailscale-config`).
+- **Fix**: added TS `encodeGemini()` and wired it through project source roots,
+  Gemini `projects.json` update planning, and Gemini shared-slug collision
+  checks so TS matches the Swift product encoder and real `projects.json`. The
+  orchestrator now uses the old `projects.json` entry name when it differs from
+  `encode(src)`, so existing Gemini tmp dirs with historical/custom slugs still
+  move with the project.
+- **iFlow drift guard**: the real `~/.iflow/projects` tree has one observed
+  directory/content mismatch (`-Users-bing-Code-engram` contains a session whose
+  cwd is `/Users/bing/-Code-/coding-memory`). Both TS and Swift project-move
+  planning now scan grouped source roots for files whose structured `cwd` or
+  `payload.cwd` equals the old cwd and prefer those observed dirs over the
+  theoretical `encode(src)` dir. Plain text references remain patch candidates,
+  but no longer prove project-dir ownership, preventing false renames of
+  unrelated dirs that merely mention the old path.
+- **Dry-run parity**: the same structured observed-dir discovery is used in both
+  live migration and dry-run preview paths.
+- **Review closeout**: a read-only subagent review caught the unsafe substring
+  version of observed-dir discovery; the final implementation adds the
+  structured-cwd gate plus TS/Swift negative tests for unrelated text mentions.
+- **Verification**: RED/green TS coverage in `tests/core/project-move`
+  (`sources`, `gemini-projects-json`, orchestrator integration); RED/green Swift
+  coverage in `OrchestratorTests`; `npm test -- tests/core/project-move` (16
+  files / 187 tests); selected Swift `OrchestratorTests`,
+  `SessionSourcesTests`, and `GeminiProjectsJSONTests` (56 tests);
+  `npm test` (127 files / 1512 tests); `npm run lint`; `npm run build`;
+  `npm run typecheck:test`.
+- **Residual risk**: this does not proactively reconcile already-mismatched
+  source dirs at startup; it ensures a future project move of the affected cwd
+  renames the observed dir instead of skipping it as missing.
+
 ### Codex archived-session project-migration coverage (2026-06-05, Codex)
 
 Closed the Codex-side project-migration compatibility gap left after the
@@ -89,11 +128,9 @@ the same way.
    rename for codex, only content patching of `~/.codex/sessions/*`. Confirm the
    content rewrite covers every codex path reference (e.g. `session_meta.cwd`,
    originator, embedded paths) and that no codex case relies on a dir name.
-2. **Other grouped encoders** (out of CC scope, same method applies if wanted):
-   `gemini-cli` `encodeGemini` (basename slug) and `iflow` `encodeIflow`
-   (per-segment dash-strip) have their own lossy encoders + collision probes —
-   audit with the same `basename(dir) == encode(cwd)` check against
-   `~/.gemini/tmp` / `~/.iflow/projects`.
+2. **Other grouped encoders**: closed by "Project migration Gemini/iFlow
+   compatibility follow-up" above. Gemini TS now matches real slug values; iFlow
+   has an observed-dir drift guard for real content/dir mismatches.
 3. **Reconcile feature** for dirs ALREADY orphaned by a past buggy CC migration
    (design in this entry §"Not done"): startup backfill, detection MUST use the
    corrected encoder, collision-safe rename, ship after the encoder fix. Deferred

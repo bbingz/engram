@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Database } from '../../../src/core/db.js';
 import { encodeCC } from '../../../src/core/project-move/encode-cc.js';
 import { runProjectMove } from '../../../src/core/project-move/orchestrator.js';
+import { encodeIflow } from '../../../src/core/project-move/sources.js';
 
 describe('runProjectMove — orchestrator integration', () => {
   let tmp: string;
@@ -552,6 +553,59 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(updated.projects[dst]).toBe('new-proj');
   });
 
+  it('uses Gemini projects.json old slug when it differs from encoded src', async () => {
+    const projects = join(tmp, 'projects');
+    const geminiSrc = join(projects, 'WebSite_Gemini');
+    const geminiDst = join(projects, 'mac_Book_Pro_Debug');
+    mkdirSync(geminiSrc);
+    writeFileSync(join(geminiSrc, 'main.py'), 'print("hi")');
+
+    const geminiOld = join(home, '.gemini', 'tmp', 'custom-old');
+    const geminiNew = join(home, '.gemini', 'tmp', 'mac-book-pro-debug');
+    mkdirSync(join(geminiOld, 'chats'), { recursive: true });
+    writeFileSync(
+      join(geminiOld, 'chats', 'session.json'),
+      JSON.stringify({
+        sessionId: 'gemini-drift',
+        projectHash: 'custom-old',
+        startTime: '2026-06-06T00:00:00.000Z',
+        messages: [
+          {
+            id: 'm1',
+            timestamp: '2026-06-06T00:00:00.000Z',
+            type: 'user',
+            content: 'hello',
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(home, '.gemini', 'projects.json'),
+      JSON.stringify({ projects: { [geminiSrc]: 'custom-old' } }),
+    );
+
+    const result = await runProjectMove(db, {
+      src: geminiSrc,
+      dst: geminiDst,
+      home,
+      actor: 'cli',
+    });
+
+    expect(result.state).toBe('committed');
+    expect(existsSync(geminiOld)).toBe(false);
+    expect(existsSync(geminiNew)).toBe(true);
+    expect(
+      result.renamedDirs.some(
+        (d) => d.sourceId === 'gemini-cli' && d.oldDir === geminiOld,
+      ),
+    ).toBe(true);
+    const updated = JSON.parse(
+      readFileSync(join(home, '.gemini', 'projects.json'), 'utf8'),
+    ) as { projects: Record<string, string> };
+    expect(updated.projects[geminiSrc]).toBeUndefined();
+    expect(updated.projects[geminiDst]).toBe('mac-book-pro-debug');
+  });
+
   it('compensation: restores Gemini projects.json on later failure', async () => {
     // Force failure AFTER projects.json is updated (bogus dst). Confirm
     // the snapshot is put back so the adapter keeps working.
@@ -627,5 +681,81 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(existsSync(iflowNew)).toBe(true);
     const patched = readFileSync(join(iflowNew, 'session-lossy.jsonl'), 'utf8');
     expect(patched).toContain(lossyDst);
+  });
+
+  it('renames an iFlow dir discovered from real cwd content even when encoded src name differs', async () => {
+    const projects = join(tmp, 'projects');
+    const driftSrc = join(projects, 'coding-memory');
+    const driftDst = join(projects, 'coding-memory-v2');
+    mkdirSync(driftSrc);
+    writeFileSync(join(driftSrc, 'main.py'), 'print("hi")');
+
+    const iflowRoot = join(home, '.iflow', 'projects');
+    mkdirSync(iflowRoot, { recursive: true });
+    const observedOldName = '-Users-bing-Code-engram';
+    const observedOld = join(iflowRoot, observedOldName);
+    const expectedNew = join(iflowRoot, encodeIflow(driftDst));
+    mkdirSync(observedOld);
+    writeFileSync(
+      join(observedOld, 'session-drift.jsonl'),
+      `{"cwd":"${driftSrc}","text":"working on ${driftSrc}/main.py"}\n`,
+    );
+
+    const result = await runProjectMove(db, {
+      src: driftSrc,
+      dst: driftDst,
+      home,
+      actor: 'cli',
+    });
+
+    expect(result.state).toBe('committed');
+    expect(existsSync(observedOld)).toBe(false);
+    expect(existsSync(expectedNew)).toBe(true);
+    expect(
+      result.renamedDirs.some(
+        (d) => d.sourceId === 'iflow' && d.oldDir === observedOld,
+      ),
+    ).toBe(true);
+    const patched = readFileSync(
+      join(expectedNew, 'session-drift.jsonl'),
+      'utf8',
+    );
+    expect(patched).toContain(driftDst);
+    expect(patched).not.toContain(`"cwd":"${driftSrc}"`);
+    expect(patched).not.toContain(`working on ${driftSrc}/main.py`);
+  });
+
+  it('does not rename an unrelated iFlow dir that only mentions the old path in text', async () => {
+    const projects = join(tmp, 'projects');
+    const mentionSrc = join(projects, 'mentioned-project');
+    const mentionDst = join(projects, 'mentioned-project-v2');
+    mkdirSync(mentionSrc);
+    writeFileSync(join(mentionSrc, 'main.py'), 'print("hi")');
+
+    const iflowRoot = join(home, '.iflow', 'projects');
+    mkdirSync(iflowRoot, { recursive: true });
+    const unrelatedDir = join(iflowRoot, '-Users-bing-Code-unrelated');
+    mkdirSync(unrelatedDir);
+    writeFileSync(
+      join(unrelatedDir, 'session-unrelated.jsonl'),
+      `{"cwd":"/Users/bing/-Code-/unrelated","text":"please inspect ${mentionSrc}/main.py"}\n`,
+    );
+
+    const result = await runProjectMove(db, {
+      src: mentionSrc,
+      dst: mentionDst,
+      home,
+      actor: 'cli',
+    });
+
+    expect(result.state).toBe('committed');
+    expect(existsSync(unrelatedDir)).toBe(true);
+    expect(result.renamedDirs.some((d) => d.sourceId === 'iflow')).toBe(false);
+    const patched = readFileSync(
+      join(unrelatedDir, 'session-unrelated.jsonl'),
+      'utf8',
+    );
+    expect(patched).toContain(mentionDst);
+    expect(patched).toContain('"cwd":"/Users/bing/-Code-/unrelated"');
   });
 });

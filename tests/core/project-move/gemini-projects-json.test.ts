@@ -49,6 +49,28 @@ describe('gemini-projects-json', () => {
       expect(plan.originalText).not.toBeNull();
     });
 
+    it('uses Gemini slug rules for new project names', async () => {
+      writeFileSync(
+        file,
+        JSON.stringify({
+          projects: {
+            '/Users/bing/-Code-/old_proj': 'old-proj',
+          },
+        }),
+      );
+
+      const plan = await planGeminiProjectsJsonUpdate(
+        file,
+        '/Users/bing/-Code-/old_proj',
+        '/Users/bing/-Code-/WebSite_Gemini',
+      );
+
+      expect(plan.newEntry).toEqual({
+        cwd: '/Users/bing/-Code-/WebSite_Gemini',
+        name: 'website-gemini',
+      });
+    });
+
     it('handles missing file — no oldEntry, null snapshot', async () => {
       const plan = await planGeminiProjectsJsonUpdate(
         file,

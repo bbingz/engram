@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  encodeGemini,
   encodeIflow,
   findReferencingFiles,
   getSourceRoots,
@@ -76,6 +77,13 @@ describe('getSourceRoots', () => {
     );
     const geminiRoot = roots.find((r) => r.id === 'gemini-cli');
     expect(geminiRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe('proj');
+    expect(geminiRoot?.encodeProjectDir?.('/Users/bing/-Code-')).toBe('code');
+    expect(
+      geminiRoot?.encodeProjectDir?.('/Users/bing/-Code-/WebSite_Gemini'),
+    ).toBe('website-gemini');
+    expect(
+      geminiRoot?.encodeProjectDir?.('/Users/bing/-Code-/java_charge'),
+    ).toBe('java-charge');
     const iflowRoot = roots.find((r) => r.id === 'iflow');
     expect(iflowRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
       '-Users-a-b-proj',
@@ -99,6 +107,22 @@ describe('encodeIflow', () => {
     expect(encodeIflow('/Users/bing/-Code-/WebSite_GLM')).toBe(
       '-Users-bing-Code-WebSite_GLM',
     );
+  });
+});
+
+describe('encodeGemini', () => {
+  it('mirrors Gemini CLI project slug values observed in projects.json', () => {
+    expect(encodeGemini('/Users/bing/-Code-')).toBe('code');
+    expect(encodeGemini('/Users/bing/-NetWork-/Screen-disconnet-erro')).toBe(
+      'screen-disconnet-erro',
+    );
+    expect(encodeGemini('/Users/bing/-Code-/WebSite_Gemini')).toBe(
+      'website-gemini',
+    );
+    expect(encodeGemini('/Users/bing/-Code-/mac_Book_Pro_Debug')).toBe(
+      'mac-book-pro-debug',
+    );
+    expect(encodeGemini('/a/_foo_')).toBe('foo');
   });
 });
 

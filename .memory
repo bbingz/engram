@@ -1,5 +1,51 @@
 # Engram Local Memory
 
+## 2026-06-06 — Project migration Gemini/iFlow compatibility follow-up (Codex)
+
+Codex closed the remaining grouped-source compatibility audit from the Claude
+Code encoder handoff.
+
+Real-disk evidence:
+- `~/.gemini/tmp`: 3/3 live dirs match the Swift/real Gemini slug rule
+  (`basename.lowercased`, `_` -> `-`, strip wrapping dashes). TS was still raw
+  `basename`, mismatching `network`, `surge`, and `tailscale-config`.
+- `~/.iflow/projects`: 1/2 live dirs has content/dir drift:
+  `-Users-bing-Code-engram/session-041101e6-2a7f-4dfd-90b0-57888a353f6a.jsonl`
+  records cwd `/Users/bing/-Code-/coding-memory`, whose theoretical encoder is
+  `-Users-bing-Code-coding-memory`.
+
+Fix:
+- Added TS `encodeGemini()` and wired it into `getSourceRoots`,
+  `planGeminiProjectsJsonUpdate`, and Gemini shared-slug collision checks.
+- TS and Swift project-move planning now use structured `cwd` / `payload.cwd`
+  proof when a grouped dir's real content disagrees with theoretical
+  `encode(src)`. Plain text references are still patch candidates, but do not
+  prove project-dir ownership. Live migration and dry-run use the same discovery
+  path.
+- Gemini planning now uses the old `~/.gemini/projects.json` entry name when it
+  differs from `encode(src)`, so historical/custom tmp slugs still move.
+
+Verification:
+- RED/green TS tests in `tests/core/project-move/sources.test.ts`,
+  `gemini-projects-json.test.ts`, and `orchestrator.integration.test.ts`.
+- RED/green Swift tests for Gemini projects.json old-slug drift, iFlow
+  content/dir drift, and unrelated text mentions that must not trigger a dir
+  rename.
+- Read-only subagent review found the first observed-dir implementation was too
+  broad because it trusted any substring hit; fixed with the structured-cwd
+  gate and negative regressions.
+- GREEN: `npm test -- tests/core/project-move` -> 16 files / 187 tests.
+- GREEN: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramCoreTests -only-testing:EngramCoreTests/OrchestratorTests
+  -only-testing:EngramCoreTests/SessionSourcesTests
+  -only-testing:EngramCoreTests/GeminiProjectsJSONTests` -> 56 tests.
+- GREEN: `npm test` -> 127 files / 1512 tests.
+- GREEN: `npm run lint`, `npm run build`, `npm run typecheck:test`.
+
+Residual risk: this does not proactively reconcile already-mismatched source
+dirs at startup; it makes a future project move of the affected cwd rename the
+observed dir instead of silently skipping it as missing.
+
 ## 2026-06-05 — Codex archived-session project migration compatibility (Codex)
 
 Codex project migration had one real compatibility gap: Swift/TS project-move

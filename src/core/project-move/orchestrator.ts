@@ -9,7 +9,7 @@
 //   0.5. acquireLock (prevents concurrent project moves)
 //   1. safeMoveDir physical
 //   2. Rename per-project dirs for each source that groups by project
-//      (Claude Code = encoded cwd, Gemini = basename, iFlow = iflow-encoded)
+//      (Claude Code = encoded cwd, Gemini = slug, iFlow = iflow-encoded)
 //   3. Scan all source roots → findReferencingFiles → patchFile (per-file CAS)
 //   4. auto_fix_dot_quote on the patched files
 //   B. markFsDone (state='fs_done', detail=per-source stats + manifest)
@@ -25,7 +25,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
-import { rename, stat } from 'node:fs/promises';
+import { readFile, rename, stat } from 'node:fs/promises';
 import { isAbsolute, join, resolve as pathResolve } from 'node:path';
 import type { Database } from '../db.js';
 import { safeMoveDir } from './fs-ops.js';
@@ -40,6 +40,7 @@ import { patchFile } from './jsonl-patch.js';
 import { acquireLock, defaultLockPath, releaseLock } from './lock.js';
 import { type ReviewResult, reviewScan } from './review.js';
 import {
+  encodeGemini,
   findReferencingFiles,
   getSourceRoots,
   type SourceId,
@@ -317,24 +318,53 @@ export async function runProjectMove(
     // Step 0.5: compute per-source rename plans BEFORE moving (src exists,
     // dst does not). Each source with a non-null encodeProjectDir contributes
     // one plan; sources with flat layouts (codex/opencode/etc.) are skipped.
+    // If structured session content proves the old cwd lives under a
+    // different grouped dir, trust the observed dir over the theoretical
+    // encoder. This preserves history across upstream encoder drift or older
+    // buggy migrations instead of silently leaving an orphaned project dir.
     const roots = getSourceRoots(opts.home);
     const dirRenamePlans: DirRenamePlan[] = [];
     for (const root of roots) {
       if (!root.encodeProjectDir) continue;
-      const oldName = root.encodeProjectDir(src);
+      let oldName = root.encodeProjectDir(src);
       const newName = root.encodeProjectDir(dst);
-      if (oldName === newName) {
-        // Lossy encoding may collapse (e.g. iflow `/a/-foo-/p` and
-        // `/a/foo/p` both → `-a-foo-p`). Or cross-parent move where
-        // basename stayed the same (gemini). Either way, no rename needed.
-        skippedDirs.push({ sourceId: root.id, reason: 'noop' });
-        continue;
+      if (root.id === 'gemini-cli') {
+        const projectsFile = join(root.path, '..', 'projects.json');
+        geminiProjectsPlan = await planGeminiProjectsJsonUpdate(
+          projectsFile,
+          src,
+          dst,
+        );
+        oldName = geminiProjectsPlan.oldEntry?.name ?? oldName;
       }
-      dirRenamePlans.push({
-        sourceId: root.id,
-        oldDir: join(root.path, oldName),
-        newDir: join(root.path, newName),
-      });
+      const observedOldDirs = await findGroupedDirsWithCwd(root.path, src);
+      const oldDirs =
+        observedOldDirs.length > 0
+          ? observedOldDirs
+          : [join(root.path, oldName)];
+      for (const oldDir of oldDirs) {
+        if (basename(oldDir) === newName) {
+          // Lossy encoding may collapse (e.g. iflow `/a/-foo-/p` and
+          // `/a/foo/p` both → `-a-foo-p`). Or cross-parent move where
+          // the Gemini slug stayed the same. Either way, no rename needed.
+          skippedDirs.push({ sourceId: root.id, reason: 'noop' });
+          continue;
+        }
+        dirRenamePlans.push({
+          sourceId: root.id,
+          oldDir,
+          newDir: join(root.path, newName),
+        });
+      }
+    }
+
+    const plannedTargets = new Map<string, DirRenamePlan>();
+    for (const plan of dirRenamePlans) {
+      const prev = plannedTargets.get(plan.newDir);
+      if (prev && prev.oldDir !== plan.oldDir) {
+        throw new DirCollisionError(plan.sourceId, prev.oldDir, plan.newDir);
+      }
+      plannedTargets.set(plan.newDir, plan);
     }
 
     // Step 0.6: pre-flight — catch collisions BEFORE the physical move so
@@ -369,7 +399,7 @@ export async function runProjectMove(
       throw new DirCollisionError(plan.sourceId, plan.oldDir, plan.newDir);
     }
 
-    // Step 0.7: Gemini-specific probes. Shared-basename hijack + plan the
+    // Step 0.7: Gemini-specific probes. Shared-slug hijack + plan the
     // projects.json rewrite. Only runs if gemini-cli is in the plan list.
     const geminiPlan = dirRenamePlans.find((d) => d.sourceId === 'gemini-cli');
     if (geminiPlan) {
@@ -378,12 +408,12 @@ export async function runProjectMove(
         ? join(geminiRoot.path, '..', 'projects.json')
         : null;
       if (projectsFile) {
-        // Gemini major #3: shared-basename hijack. If another cwd maps to
-        // the same basename as dst, renaming the dir would steal their
+        // Gemini major #3: shared-slug hijack. If another cwd maps to
+        // the same slug as dst, renaming the dir would steal their
         // sessions.
         const conflicts = await collectOtherGeminiCwdsSharingBasename(
           projectsFile,
-          basename(dst),
+          encodeGemini(dst),
           src,
         );
         if (conflicts.length > 0) {
@@ -393,13 +423,8 @@ export async function runProjectMove(
             conflicts,
           );
         }
-        // Codex MAJOR #1: plan the projects.json rewrite. Snapshot is
-        // captured here so compensation can restore even if apply fails.
-        geminiProjectsPlan = await planGeminiProjectsJsonUpdate(
-          projectsFile,
-          src,
-          dst,
-        );
+        // Codex MAJOR #1: projects.json rewrite was already planned in Step
+        // 0.5 so its old entry can also identify the real old tmp dir.
       }
     }
 
@@ -677,6 +702,51 @@ function basename(p: string): string {
   return parts[parts.length - 1] ?? '';
 }
 
+async function findGroupedDirsWithCwd(
+  rootPath: string,
+  cwd: string,
+): Promise<string[]> {
+  const prefix = rootPath.endsWith('/') ? rootPath : `${rootPath}/`;
+  const dirs = new Set<string>();
+  for (const file of await findReferencingFiles(rootPath, cwd)) {
+    if (!file.startsWith(prefix)) continue;
+    if (!(await fileHasStructuredCwd(file, cwd))) continue;
+    const rest = file.slice(prefix.length);
+    const firstSegment = rest.split('/')[0];
+    if (!firstSegment) continue;
+    dirs.add(join(rootPath, firstSegment));
+  }
+  return [...dirs].sort();
+}
+
+async function fileHasStructuredCwd(
+  file: string,
+  cwd: string,
+): Promise<boolean> {
+  try {
+    const st = await stat(file);
+    if (st.size > DRY_RUN_READ_CAP) return false;
+    const text = await readFile(file, 'utf8');
+    const lines = text.includes('\n') ? text.split(/\r?\n/) : [text];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const obj = JSON.parse(trimmed) as {
+          cwd?: unknown;
+          payload?: { cwd?: unknown };
+        };
+        if (obj.cwd === cwd || obj.payload?.cwd === cwd) return true;
+      } catch {
+        // Literal references are patch candidates, but not project-dir proof.
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 /**
  * Simple bounded-concurrency map. No external dep — we run `limit` workers
  * that pull from an index cursor. Keeps input order in the output array.
@@ -802,26 +872,45 @@ export async function buildDryRunPlan(
   }> = [];
   for (const root of roots) {
     if (!root.encodeProjectDir) continue;
-    const oldName = root.encodeProjectDir(src);
+    let oldName = root.encodeProjectDir(src);
     const newName = root.encodeProjectDir(dst);
-    if (oldName === newName) {
-      // encodeProjectDir produced the same name — lossy encoding (iFlow)
-      // or semantically equivalent rename. Content still gets patched.
-      skippedDirs.push({ sourceId: root.id, reason: 'noop' });
-      continue;
+    if (root.id === 'gemini-cli') {
+      const projectsFile = join(root.path, '..', 'projects.json');
+      const plan = await planGeminiProjectsJsonUpdate(projectsFile, src, dst);
+      oldName = plan.oldEntry?.name ?? oldName;
     }
-    const plan: DirRenamePlan = {
-      sourceId: root.id,
-      oldDir: join(root.path, oldName),
-      newDir: join(root.path, newName),
-    };
-    try {
-      await stat(plan.oldDir);
-      renamedDirs.push(plan);
-    } catch {
-      // oldDir absent on this source — project never had history here.
-      skippedDirs.push({ sourceId: root.id, reason: 'missing' });
+    const observedOldDirs = await findGroupedDirsWithCwd(root.path, src);
+    const oldDirs =
+      observedOldDirs.length > 0 ? observedOldDirs : [join(root.path, oldName)];
+    for (const oldDir of oldDirs) {
+      if (basename(oldDir) === newName) {
+        // encodeProjectDir produced the same name — lossy encoding (iFlow)
+        // or semantically equivalent rename. Content still gets patched.
+        skippedDirs.push({ sourceId: root.id, reason: 'noop' });
+        continue;
+      }
+      const plan: DirRenamePlan = {
+        sourceId: root.id,
+        oldDir,
+        newDir: join(root.path, newName),
+      };
+      try {
+        await stat(plan.oldDir);
+        renamedDirs.push(plan);
+      } catch {
+        // oldDir absent on this source — project never had history here.
+        skippedDirs.push({ sourceId: root.id, reason: 'missing' });
+      }
     }
+  }
+
+  const plannedTargets = new Map<string, DirRenamePlan>();
+  for (const plan of renamedDirs) {
+    const prev = plannedTargets.get(plan.newDir);
+    if (prev && prev.oldDir !== plan.oldDir) {
+      throw new DirCollisionError(plan.sourceId, prev.oldDir, plan.newDir);
+    }
+    plannedTargets.set(plan.newDir, plan);
   }
 
   // Scan every source root for files referencing `src`. Count via byte-level

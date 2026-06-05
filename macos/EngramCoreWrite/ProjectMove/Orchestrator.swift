@@ -11,7 +11,7 @@
 //   0.5 acquireLock                      (cross-process advisory lock)
 //   1. safeMoveDir physical
 //   2. Rename per-project dirs for each source that groups by project
-//      (Claude Code = encoded cwd, Gemini = basename, iFlow = iflow-encoded)
+//      (Claude Code = encoded cwd, Gemini = slug, iFlow = iflow-encoded)
 //   3. Scan all source roots → findReferencingFiles → patchFile (per-file CAS)
 //   B. markFsDone                        (state='fs_done', detail = stats)
 //   C. applyMigrationDb in transaction   (state='committed')
@@ -321,21 +321,49 @@ public enum ProjectMoveOrchestrator {
         do {
             let roots = SessionSources.roots(homeDirectory: options.homeDirectory)
 
-            // Step 0.5: per-source rename plans
+            // Step 0.5: per-source rename plans. If session content proves the
+            // old cwd lives under a different grouped dir, trust the observed
+            // dir over the theoretical encoder to avoid orphaning history after
+            // upstream encoder drift or older buggy migrations.
             var dirRenamePlans: [DirRenamePlan] = []
             for root in roots {
                 guard let encode = root.encodeProjectDir else { continue }
-                let oldName = encode(src)
+                var oldName = encode(src)
                 let newName = encode(dst)
-                if oldName == newName {
-                    skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .noop))
-                    continue
+                if root.id == .geminiCli {
+                    let projectsFile = ((root.path as NSString)
+                        .deletingLastPathComponent as NSString)
+                        .appendingPathComponent("projects.json")
+                    geminiProjectsPlan = try GeminiProjectsJSON.plan(
+                        filePath: projectsFile,
+                        oldCwd: src,
+                        newCwd: dst
+                    )
+                    oldName = geminiProjectsPlan?.oldEntry?.name ?? oldName
                 }
-                dirRenamePlans.append(DirRenamePlan(
-                    sourceId: root.id,
-                    oldDir: (root.path as NSString).appendingPathComponent(oldName),
-                    newDir: (root.path as NSString).appendingPathComponent(newName)
-                ))
+                let observedOldDirs = findGroupedDirsWithCwd(rootPath: root.path, cwd: src)
+                let oldDirs = observedOldDirs.isEmpty
+                    ? [(root.path as NSString).appendingPathComponent(oldName)]
+                    : observedOldDirs
+                for oldDir in oldDirs {
+                    if basename(oldDir) == newName {
+                        skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .noop))
+                        continue
+                    }
+                    dirRenamePlans.append(DirRenamePlan(
+                        sourceId: root.id,
+                        oldDir: oldDir,
+                        newDir: (root.path as NSString).appendingPathComponent(newName)
+                    ))
+                }
+            }
+
+            var plannedTargets: [String: DirRenamePlan] = [:]
+            for plan in dirRenamePlans {
+                if let prev = plannedTargets[plan.newDir], prev.oldDir != plan.oldDir {
+                    throw DirCollisionError(sourceId: plan.sourceId, oldDir: prev.oldDir, newDir: plan.newDir)
+                }
+                plannedTargets[plan.newDir] = plan
             }
 
             // Step 0.6: pre-flight collision detection. APFS case-insensitive
@@ -375,11 +403,6 @@ public enum ProjectMoveOrchestrator {
                             sharingCwds: conflicts
                         )
                     }
-                    geminiProjectsPlan = try GeminiProjectsJSON.plan(
-                        filePath: projectsFile,
-                        oldCwd: src,
-                        newCwd: dst
-                    )
                 }
             }
 
@@ -600,22 +623,47 @@ public enum ProjectMoveOrchestrator {
 
         for root in roots {
             guard let encode = root.encodeProjectDir else { continue }
-            let oldName = encode(src)
+            var oldName = encode(src)
             let newName = encode(dst)
-            if oldName == newName {
-                skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .noop))
-                continue
+            if root.id == .geminiCli {
+                let projectsFile = ((root.path as NSString)
+                    .deletingLastPathComponent as NSString)
+                    .appendingPathComponent("projects.json")
+                let plan = try GeminiProjectsJSON.plan(
+                    filePath: projectsFile,
+                    oldCwd: src,
+                    newCwd: dst
+                )
+                oldName = plan.oldEntry?.name ?? oldName
             }
-            let plan = DirRenamePlan(
-                sourceId: root.id,
-                oldDir: (root.path as NSString).appendingPathComponent(oldName),
-                newDir: (root.path as NSString).appendingPathComponent(newName)
-            )
-            if FileManager.default.fileExists(atPath: plan.oldDir) {
-                renamedDirs.append(plan)
-            } else {
-                skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .missing))
+            let observedOldDirs = findGroupedDirsWithCwd(rootPath: root.path, cwd: src)
+            let oldDirs = observedOldDirs.isEmpty
+                ? [(root.path as NSString).appendingPathComponent(oldName)]
+                : observedOldDirs
+            for oldDir in oldDirs {
+                if basename(oldDir) == newName {
+                    skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .noop))
+                    continue
+                }
+                let plan = DirRenamePlan(
+                    sourceId: root.id,
+                    oldDir: oldDir,
+                    newDir: (root.path as NSString).appendingPathComponent(newName)
+                )
+                if FileManager.default.fileExists(atPath: plan.oldDir) {
+                    renamedDirs.append(plan)
+                } else {
+                    skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .missing))
+                }
             }
+        }
+
+        var plannedTargets: [String: DirRenamePlan] = [:]
+        for plan in renamedDirs {
+            if let prev = plannedTargets[plan.newDir], prev.oldDir != plan.oldDir {
+                throw DirCollisionError(sourceId: plan.sourceId, oldDir: prev.oldDir, newDir: plan.newDir)
+            }
+            plannedTargets[plan.newDir] = plan
         }
 
         var perSource: [PerSourceStats] = []
@@ -862,6 +910,49 @@ private func basename(_ p: String) -> String {
         trimmed.removeLast()
     }
     return (trimmed as NSString).lastPathComponent
+}
+
+private let structuredCwdReadCapBytes: Int64 = 50 * 1024 * 1024
+
+private func findGroupedDirsWithCwd(rootPath: String, cwd: String) -> [String] {
+    let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+    var dirs = Set<String>()
+    for file in SessionSources.findReferencingFiles(root: rootPath, needle: cwd) {
+        guard file.hasPrefix(prefix) else { continue }
+        guard fileHasStructuredCwd(file, cwd: cwd) else { continue }
+        let rest = String(file.dropFirst(prefix.count))
+        guard let first = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first,
+              !first.isEmpty
+        else { continue }
+        dirs.insert((rootPath as NSString).appendingPathComponent(String(first)))
+    }
+    return dirs.sorted()
+}
+
+private func fileHasStructuredCwd(_ file: String, cwd: String) -> Bool {
+    do {
+        let attrs = try FileManager.default.attributesOfItem(atPath: file)
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        if size > structuredCwdReadCapBytes { return false }
+        let text = try String(contentsOfFile: file, encoding: .utf8)
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            guard let data = trimmed.data(using: .utf8) else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            if object["cwd"] as? String == cwd {
+                return true
+            }
+            if let payload = object["payload"] as? [String: Any],
+               payload["cwd"] as? String == cwd {
+                return true
+            }
+        }
+    } catch {
+        return false
+    }
+    return false
 }
 
 /// macOS `realpath(3)` that returns nil on failure rather than throwing.

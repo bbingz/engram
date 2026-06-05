@@ -223,6 +223,96 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertEqual(result.review.own, [])
     }
 
+    func testIflowDirDiscoveredFromRealCwdContentWhenEncodedSrcNameDiffers() async throws {
+        let (src, _) = try makeProjectFixture(name: "coding-memory")
+        let dst = tempRoot.appendingPathComponent("coding-memory-v2").path
+
+        let iflowRoot = tempRoot.appendingPathComponent(".iflow/projects", isDirectory: true)
+        let observedOld = iflowRoot.appendingPathComponent("-Users-bing-Code-engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: observedOld, withIntermediateDirectories: true)
+        let sessionFile = observedOld.appendingPathComponent("session-drift.jsonl")
+        try """
+        {"cwd":"\(src)","text":"working on \(src)/main.py"}
+        """.write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let expectedNew = iflowRoot.appendingPathComponent(SessionSources.encodeIflow(dst), isDirectory: true)
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: observedOld.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedNew.path))
+        XCTAssertTrue(result.renamedDirs.contains {
+            $0.sourceId == .iflow && $0.oldDir == observedOld.path
+        })
+
+        let patched = try String(contentsOf: expectedNew.appendingPathComponent("session-drift.jsonl"), encoding: .utf8)
+        XCTAssertTrue(patched.contains(dst))
+        XCTAssertFalse(patched.contains("\"cwd\":\"\(src)\""))
+        XCTAssertFalse(patched.contains("working on \(src)/main.py"))
+    }
+
+    func testGeminiOldSlugComesFromProjectsJsonWhenItDiffersFromEncodedSrc() async throws {
+        let (src, _) = try makeProjectFixture(name: "WebSite_Gemini")
+        let dst = tempRoot.appendingPathComponent("mac_Book_Pro_Debug").path
+
+        let geminiOld = tempRoot.appendingPathComponent(".gemini/tmp/custom-old/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: geminiOld, withIntermediateDirectories: true)
+        try """
+        {"sessionId":"gemini-drift","projectHash":"custom-old","startTime":"2026-06-06T00:00:00.000Z","messages":[{"id":"m1","timestamp":"2026-06-06T00:00:00.000Z","type":"user","content":"hello"}]}
+        """.write(to: geminiOld.appendingPathComponent("session.json"), atomically: true, encoding: .utf8)
+        let projectsJson = tempRoot.appendingPathComponent(".gemini/projects.json")
+        try """
+        {"projects":{"\(src)":"custom-old"}}
+        """.write(to: projectsJson, atomically: true, encoding: .utf8)
+
+        let expectedNew = tempRoot.appendingPathComponent(".gemini/tmp/mac-book-pro-debug", isDirectory: true)
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent(".gemini/tmp/custom-old").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedNew.path))
+        XCTAssertTrue(result.renamedDirs.contains {
+            $0.sourceId == .geminiCli
+                && $0.oldDir == tempRoot.appendingPathComponent(".gemini/tmp/custom-old").path
+        })
+        let updated = try JSONSerialization.jsonObject(with: Data(contentsOf: projectsJson)) as? [String: Any]
+        let projects = updated?["projects"] as? [String: String]
+        XCTAssertNil(projects?[src])
+        XCTAssertEqual(projects?[dst], "mac-book-pro-debug")
+    }
+
+    func testUnrelatedIflowDirMentioningOldPathIsNotRenamed() async throws {
+        let (src, _) = try makeProjectFixture(name: "mentioned-project")
+        let dst = tempRoot.appendingPathComponent("mentioned-project-v2").path
+
+        let unrelatedDir = tempRoot.appendingPathComponent(".iflow/projects/-Users-bing-Code-unrelated", isDirectory: true)
+        try FileManager.default.createDirectory(at: unrelatedDir, withIntermediateDirectories: true)
+        let sessionFile = unrelatedDir.appendingPathComponent("session-unrelated.jsonl")
+        try """
+        {"cwd":"/Users/bing/-Code-/unrelated","text":"please inspect \(src)/main.py"}
+        """.write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedDir.path))
+        XCTAssertFalse(result.renamedDirs.contains { $0.sourceId == .iflow })
+        let patched = try String(contentsOf: sessionFile, encoding: .utf8)
+        XCTAssertTrue(patched.contains(dst))
+        XCTAssertTrue(patched.contains("\"cwd\":\"/Users/bing/-Code-/unrelated\""))
+    }
+
     // MARK: - pre-flight collision
 
     func testDirCollisionRejectedBeforeAnyFsSideEffect() async throws {
