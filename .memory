@@ -1,5 +1,30 @@
 # Engram Local Memory
 
+## 2026-06-06 — MCP project_review Claude Code encoding parity (Codex)
+
+Codex found and fixed a residual Claude Code compatibility gap after PR #51.
+
+Root cause: Swift product project migration and TS reference code were fixed to
+match real Claude Code project-dir encoding, but `macos/EngramMCP/Core/
+MCPFileTools.swift` still had a private MCP-only `encodeCC()` that replaced
+only `/` with `-`. This affects the read-only MCP `project_review` classifier:
+for a migrated project like `/Users/test/work/CCTV_Admin`, the own Claude Code
+dir is `-Users-test-work-CCTV-Admin`, but the stale helper expected
+`-Users-test-work-CCTV_Admin` and classified own leftovers as `other`.
+
+Fix:
+- Updated MCP `encodeCC()` to match the Swift product encoder's UTF-16 code
+  unit rule: every non-`[A-Za-z0-9]` code unit becomes `-`.
+- Added MCP executable golden coverage:
+  `testProjectReviewClassifiesClaudeCodeDirsWithNonAlnumEncoding`.
+
+Verification:
+- RED: the new test failed with `own: []` and both Claude Code files under
+  `other`.
+- GREEN: the same test passed after the MCP helper fix.
+- Current compatibility spot-checks also passed: TS project-move/MCP/API
+  compatibility tests (5 files / 88 tests) and Swift encoder tests (10 tests).
+
 ## 2026-06-06 — Project migration OpenCode SQLite compatibility (Codex)
 
 Codex closed the remaining SQLite-backed project-move source gap.

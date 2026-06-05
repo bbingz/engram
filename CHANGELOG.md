@@ -7,6 +7,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### MCP project_review Claude Code encoding parity (2026-06-06, Codex)
+
+Closed a residual Claude Code compatibility gap outside the main project-move
+pipeline.
+
+- **Root cause**: PR #51 fixed the Swift product encoder and TS reference
+  encoder, but Swift MCP `project_review` kept a private `encodeCC()` helper
+  that only replaced `/` with `-`. For migrated projects whose Claude Code dir
+  contains encoded `_`, spaces, dots, or other punctuation, `project_review`
+  could classify the migrated project's own Claude Code leftovers as `other`.
+- **Fix**: updated `macos/EngramMCP/Core/MCPFileTools.swift` to use the same
+  UTF-16 code-unit rule as the product encoder: every non-`[A-Za-z0-9]` code
+  unit maps to `-`.
+- **Regression coverage**: added a golden MCP executable test using
+  `CCTV_Admin`, which fails under the old slash-only helper and passes after
+  the fix.
+- **Verification**: RED confirmed
+  `testProjectReviewClassifiesClaudeCodeDirsWithNonAlnumEncoding` misclassified
+  the own Claude Code dir as `other`; GREEN after the helper fix. Also reran
+  TS project-move/MCP/API compatibility tests (5 files / 88 tests) and Swift
+  encoder tests (10 tests).
+
 ### Project migration OpenCode SQLite compatibility (2026-06-06, Codex)
 
 Closed the SQLite-backed source gap in project migration.

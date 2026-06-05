@@ -264,7 +264,13 @@ private func expandHome(_ path: String) -> String {
 }
 
 private func encodeCC(_ path: String) -> String {
-    path.replacingOccurrences(of: "/", with: "-")
+    let units = path.utf16.map { u -> UInt16 in
+        let isAlnum = (u >= 48 && u <= 57) // 0-9
+            || (u >= 65 && u <= 90) // A-Z
+            || (u >= 97 && u <= 122) // a-z
+        return isAlnum ? u : 45 // '-'
+    }
+    return String(utf16CodeUnits: units, count: units.count)
 }
 
 private func sourceRoots(home: String) -> [MCPSourceRoot] {

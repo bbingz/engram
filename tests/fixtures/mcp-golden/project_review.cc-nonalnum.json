@@ -1,0 +1,16 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"own\": [\n    \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.claude/projects/-Users-test-work-CCTV-Admin/session-own.jsonl\"\n  ],\n  \"other\": [\n    \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.claude/projects/-Users-test-work-other-admin/session-other.jsonl\"\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "own": [
+      "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.claude/projects/-Users-test-work-CCTV-Admin/session-own.jsonl"
+    ],
+    "other": [
+      "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/review-home/.claude/projects/-Users-test-work-other-admin/session-other.jsonl"
+    ]
+  }
+}

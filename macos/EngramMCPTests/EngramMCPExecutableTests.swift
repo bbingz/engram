@@ -649,6 +649,19 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testProjectReviewClassifiesClaudeCodeDirsWithNonAlnumEncoding() throws {
+        try assertToolCallMatchesGolden(
+            tool: "project_review",
+            arguments: """
+            {"old_path":"/Users/test/work/CCTV_Admin-old","new_path":"/Users/test/work/CCTV_Admin","max_items":100}
+            """,
+            goldenFixture: "mcp-golden/project_review.cc-nonalnum.json",
+            environment: [
+                "HOME": fixturePath("mcp-runtime/review-home"),
+            ]
+        )
+    }
+
     func testGetSessionMatchesGolden() throws {
         let dbPath = try temporaryFixtureCopy(
             "mcp-contract.sqlite",
