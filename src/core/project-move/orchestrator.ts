@@ -24,9 +24,10 @@
 //   - release lock
 
 import { randomUUID } from 'node:crypto';
-import { unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync } from 'node:fs';
 import { readFile, rename, stat } from 'node:fs/promises';
 import { isAbsolute, join, resolve as pathResolve } from 'node:path';
+import BetterSqlite3, { type Database as SqliteDatabase } from 'better-sqlite3';
 import type { Database } from '../db.js';
 import { safeMoveDir } from './fs-ops.js';
 import {
@@ -53,6 +54,17 @@ interface DirRenamePlan {
   sourceId: SourceId;
   oldDir: string;
   newDir: string;
+}
+
+interface SqlitePatchEntry {
+  path: string;
+  sessionIds: string[];
+}
+
+interface OpenCodeMatchingSession {
+  id: string;
+  directory: string;
+  matchedPath: string;
 }
 
 /**
@@ -313,6 +325,7 @@ export async function runProjectMove(
     | import('./gemini-projects-json.js').GeminiProjectsJsonUpdatePlan
     | null = null;
   let geminiProjectsApplied = false;
+  const sqlitePatches: SqlitePatchEntry[] = [];
 
   try {
     // Step 0.5: compute per-source rename plans BEFORE moving (src exists,
@@ -529,6 +542,14 @@ export async function runProjectMove(
           occurrences += r.count;
         }
       }
+      if (root.id === 'opencode') {
+        const sqlitePatch = patchOpenCodeSqlite(root.path, src, dst);
+        if (sqlitePatch.sessionIds.length > 0) {
+          sqlitePatches.push(sqlitePatch);
+          filesPatched++;
+          occurrences += sqlitePatch.sessionIds.length;
+        }
+      }
       perSource.push({
         id: root.id,
         root: root.path,
@@ -626,6 +647,8 @@ export async function runProjectMove(
           patchFailed: [] as Array<{ path: string; error: string }>,
           dirsRestored: [] as DirRenamePlan[],
           dirRestoreErrors: [] as Array<{ sourceId: SourceId; error: string }>,
+          sqliteReverted: 0,
+          sqliteFailed: [] as Array<{ path: string; error: string }>,
           moveReverted: false,
           moveRevertError: null as string | null,
           geminiProjectsJsonRestored: 'skipped' as const,
@@ -636,6 +659,7 @@ export async function runProjectMove(
           dst,
           renamedDirs,
           geminiProjectsApplied ? geminiProjectsPlan : null,
+          sqlitePatches,
         );
     const combined = formatFailureWithCompensation(errorMsg, report);
     db.failMigration(migrationId, combined);
@@ -656,6 +680,8 @@ export async function runProjectMove(
 interface CompensationReport {
   patchReverted: number;
   patchFailed: Array<{ path: string; error: string }>;
+  sqliteReverted: number;
+  sqliteFailed: Array<{ path: string; error: string }>;
   dirsRestored: DirRenamePlan[];
   dirRestoreErrors: Array<{ sourceId: SourceId; error: string }>;
   moveReverted: boolean;
@@ -687,6 +713,12 @@ function formatFailureWithCompensation(
   if (report.geminiProjectsJsonRestored === 'failed') {
     parts.push(
       'rollback: ~/.gemini/projects.json reverse failed — inspect manually',
+    );
+  }
+  if (report.sqliteFailed.length > 0) {
+    parts.push(
+      `rollback: ${report.sqliteFailed.length} sqlite source(s) could NOT be reverted ` +
+        `(e.g. ${report.sqliteFailed[0].path}: ${report.sqliteFailed[0].error})`,
     );
   }
   if (report.moveRevertError) {
@@ -779,16 +811,38 @@ async function compensate(
   geminiProjectsPlan:
     | import('./gemini-projects-json.js').GeminiProjectsJsonUpdatePlan
     | null,
+  sqlitePatches: SqlitePatchEntry[],
 ): Promise<CompensationReport> {
   const report: CompensationReport = {
     patchReverted: 0,
     patchFailed: [],
+    sqliteReverted: 0,
+    sqliteFailed: [],
     dirsRestored: [],
     dirRestoreErrors: [],
     moveReverted: false,
     moveRevertError: null,
     geminiProjectsJsonRestored: 'skipped',
   };
+  // Reverse sqlite patches first. The exact session ids are captured during
+  // the forward update so rollback cannot rewrite unrelated rows that
+  // already belonged to the attempted destination path.
+  for (const entry of [...sqlitePatches].reverse()) {
+    try {
+      reverseOpenCodeSqlite(
+        entry.path,
+        entry.sessionIds,
+        attemptedDst,
+        originalSrc,
+      );
+      report.sqliteReverted += entry.sessionIds.length;
+    } catch (err) {
+      report.sqliteFailed.push({
+        path: entry.path,
+        error: (err as Error).message,
+      });
+    }
+  }
   // Reverse file patches in LIFO order — last patched first
   for (const entry of [...manifest].reverse()) {
     try {
@@ -838,6 +892,166 @@ async function compensate(
     report.moveRevertError = (err as Error).message;
   }
   return report;
+}
+
+function openCodeDbPath(root: string): string {
+  return join(root, 'opencode.db');
+}
+
+function openCodeManifestPath(dbPath: string): string {
+  return `${dbPath}::session.directory`;
+}
+
+function countOpenCodeSqliteReferences(
+  root: string,
+  oldPath: string,
+): SqlitePatchEntry {
+  const dbPath = openCodeDbPath(root);
+  if (!existsSync(dbPath)) return { path: dbPath, sessionIds: [] };
+  const sqlite = new BetterSqlite3(dbPath, { readonly: true });
+  try {
+    if (!hasOpenCodeSessionDirectory(sqlite)) {
+      return { path: dbPath, sessionIds: [] };
+    }
+    return {
+      path: dbPath,
+      sessionIds: selectOpenCodeMatchingSessions(sqlite, oldPath).map(
+        (row) => row.id,
+      ),
+    };
+  } finally {
+    sqlite.close();
+  }
+}
+
+function patchOpenCodeSqlite(
+  root: string,
+  oldPath: string,
+  newPath: string,
+): SqlitePatchEntry {
+  const dbPath = openCodeDbPath(root);
+  if (!existsSync(dbPath)) return { path: dbPath, sessionIds: [] };
+  const sqlite = new BetterSqlite3(dbPath);
+  try {
+    if (!hasOpenCodeSessionDirectory(sqlite)) {
+      return { path: dbPath, sessionIds: [] };
+    }
+    const rows = selectOpenCodeMatchingSessions(sqlite, oldPath);
+    const update = sqlite.prepare(`
+      UPDATE session
+      SET directory = ?
+      WHERE id = ? AND directory = ?
+    `);
+    const run = sqlite.transaction((matches: OpenCodeMatchingSession[]) => {
+      for (const row of matches) {
+        const suffix = row.directory.slice(row.matchedPath.length);
+        update.run(`${newPath}${suffix}`, row.id, row.directory);
+      }
+    });
+    run(rows);
+    return { path: dbPath, sessionIds: rows.map((row) => row.id) };
+  } finally {
+    sqlite.close();
+  }
+}
+
+function reverseOpenCodeSqlite(
+  dbPath: string,
+  sessionIds: string[],
+  oldPath: string,
+  newPath: string,
+): void {
+  if (sessionIds.length === 0 || !existsSync(dbPath)) return;
+  const sqlite = new BetterSqlite3(dbPath);
+  try {
+    if (!hasOpenCodeSessionDirectory(sqlite)) return;
+    const update = sqlite.prepare(`
+      UPDATE session
+      SET directory = ?
+      WHERE id = ? AND directory = ?
+    `);
+    const variants = pathVariants(oldPath);
+    const getDirectory = sqlite
+      .prepare('SELECT directory FROM session WHERE id = ?')
+      .pluck();
+    const run = sqlite.transaction((ids: string[]) => {
+      for (const id of ids) {
+        const directory = getDirectory.get(id) as string | undefined;
+        if (!directory) continue;
+        const matchedPath = matchingPrefix(directory, variants);
+        if (!matchedPath) continue;
+        const suffix = directory.slice(matchedPath.length);
+        update.run(`${newPath}${suffix}`, id, directory);
+      }
+    });
+    run(sessionIds);
+  } finally {
+    sqlite.close();
+  }
+}
+
+function hasOpenCodeSessionDirectory(sqlite: SqliteDatabase): boolean {
+  const table = sqlite
+    .prepare(
+      "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session') AS present",
+    )
+    .get() as { present: number } | undefined;
+  if (table?.present !== 1) return false;
+  const columns = sqlite.prepare('PRAGMA table_info(session)').all() as Array<{
+    name: string;
+  }>;
+  const names = new Set(columns.map((column) => column.name));
+  return names.has('id') && names.has('directory');
+}
+
+function selectOpenCodeMatchingSessions(
+  sqlite: SqliteDatabase,
+  oldPath: string,
+): OpenCodeMatchingSession[] {
+  const variants = pathVariants(oldPath);
+  const rows = sqlite
+    .prepare(
+      `
+      SELECT id, directory FROM session
+      WHERE directory IN (?, ?, ?)
+        OR substr(directory, 1, length(?)) = ?
+        OR substr(directory, 1, length(?)) = ?
+        OR substr(directory, 1, length(?)) = ?
+      ORDER BY id
+      `,
+    )
+    .all(
+      variants[0],
+      variants[1],
+      variants[2],
+      `${variants[0]}/`,
+      `${variants[0]}/`,
+      `${variants[1]}/`,
+      `${variants[1]}/`,
+      `${variants[2]}/`,
+      `${variants[2]}/`,
+    ) as Array<{ id: string; directory: string }>;
+  return rows.flatMap((row) => {
+    const matchedPath = matchingPrefix(row.directory, variants);
+    return matchedPath ? [{ ...row, matchedPath }] : [];
+  });
+}
+
+function pathVariants(path: string): [string, string, string] {
+  const variants = Array.from(
+    new Set([path, path.normalize('NFC'), path.normalize('NFD')]),
+  );
+  while (variants.length < 3) variants.push(variants[0]);
+  return variants as [string, string, string];
+}
+
+function matchingPrefix(directory: string, variants: string[]): string | null {
+  for (const variant of variants) {
+    if (directory === variant || directory.startsWith(`${variant}/`)) {
+      return variant;
+    }
+  }
+  return null;
 }
 
 /**
@@ -964,6 +1178,25 @@ export async function buildDryRunPlan(
         // a permissions issue the user should know about.
         issues.push({
           path: file,
+          reason: 'stat_failed',
+          detail: (err as Error).message,
+        });
+      }
+    }
+    if (root.id === 'opencode') {
+      try {
+        const sqliteRefs = countOpenCodeSqliteReferences(root.path, src);
+        if (sqliteRefs.sessionIds.length > 0) {
+          manifest.push({
+            path: openCodeManifestPath(sqliteRefs.path),
+            occurrences: sqliteRefs.sessionIds.length,
+          });
+          filesPatched++;
+          occurrences += sqliteRefs.sessionIds.length;
+        }
+      } catch (err) {
+        issues.push({
+          path: openCodeDbPath(root.path),
           reason: 'stat_failed',
           detail: (err as Error).message,
         });

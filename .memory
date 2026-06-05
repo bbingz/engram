@@ -1,5 +1,43 @@
 # Engram Local Memory
 
+## 2026-06-06 — Project migration OpenCode SQLite compatibility (Codex)
+
+Codex closed the remaining SQLite-backed project-move source gap.
+
+Root cause: OpenCode sessions store cwd in
+`~/.local/share/opencode/opencode.db`, table `session`, column `directory`.
+Swift/TS project migration listed `.local/share/opencode` as a source root but
+only scanned JSON/JSONL files via `findReferencingFiles`, so `project_move`
+could commit while OpenCode rows still pointed at the old cwd. Review scans
+also missed this because `.db` files are not text session files.
+
+Fix:
+- Added Swift `OpenCodeSQLiteProjectMove` helper in ProjectMove sources.
+- Added TS better-sqlite3 helper in the project-move orchestrator and a
+  read-only residual detector in `review.ts`.
+- Live migration patches `session.directory` where it is exactly `oldPath` or
+  under `oldPath/`; lookalikes such as `oldPath-lookalike` are intentionally
+  untouched.
+- SQLite matching checks `oldPath`, NFC, and NFD variants by UTF-8 byte
+  identity before computing the replacement suffix. This avoids Swift
+  `String` canonical-equivalence collapsing decomposed paths during variant
+  generation.
+- Dry-run counts OpenCode SQLite rows in the `opencode` per-source stats.
+- Review reports residual OpenCode refs as virtual locators:
+  `opencode.db::session:<id>:directory`.
+- Compensation records the exact OpenCode session ids changed by the forward
+  update and reverses only those ids, so rollback cannot corrupt rows that
+  already belonged to the attempted destination path.
+
+Verification:
+- RED first: TS orchestrator integration showed `opencode` stayed 0/0 and
+  Swift showed `session.directory` retained the old cwd.
+- GREEN: `npm test -- tests/core/project-move` -> 16 files / 191 tests.
+- GREEN: selected Swift `OrchestratorTests` + `ReviewScanTests` -> 30 tests.
+- GREEN: `npm test` -> 127 files / 1516 tests.
+- GREEN: `npm run lint`, `npm run build`, `npm run typecheck:test`,
+  `git diff --check`.
+
 ## 2026-06-06 — Project migration Gemini/iFlow compatibility follow-up (Codex)
 
 Codex closed the remaining grouped-source compatibility audit from the Claude

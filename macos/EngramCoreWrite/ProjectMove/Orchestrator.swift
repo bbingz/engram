@@ -317,6 +317,7 @@ public enum ProjectMoveOrchestrator {
         var moveStrategy: MoveResult.Strategy = .rename
         var geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?
         var geminiProjectsApplied = false
+        var sqlitePatches: [OpenCodeSQLitePatchResult] = []
 
         do {
             let roots = SessionSources.roots(homeDirectory: options.homeDirectory)
@@ -508,6 +509,22 @@ public enum ProjectMoveOrchestrator {
                         detail: errorMessage(err)
                     ))
                 }
+                if root.id == .opencode {
+                    do {
+                        let sqlitePatch = try OpenCodeSQLiteProjectMove.patch(
+                            root: root.path,
+                            oldPath: src,
+                            newPath: dst
+                        )
+                        if sqlitePatch.occurrences > 0 {
+                            sqlitePatches.append(sqlitePatch)
+                            filesPatched += 1
+                            occurrences += sqlitePatch.occurrences
+                        }
+                    } catch {
+                        throw error
+                    }
+                }
                 perSource.append(PerSourceStats(
                     id: root.id.rawValue,
                     root: root.path,
@@ -592,7 +609,8 @@ public enum ProjectMoveOrchestrator {
                     originalSrc: src,
                     attemptedDst: dst,
                     renamedDirs: renamedDirs,
-                    geminiProjectsPlan: geminiProjectsApplied ? geminiProjectsPlan : nil
+                    geminiProjectsPlan: geminiProjectsApplied ? geminiProjectsPlan : nil,
+                    sqlitePatches: sqlitePatches
                 )
             }
             let combined = formatFailureWithCompensation(
@@ -705,6 +723,28 @@ public enum ProjectMoveOrchestrator {
                     ))
                 }
             }
+            if root.id == .opencode {
+                do {
+                    let sqliteRefs = try OpenCodeSQLiteProjectMove.countReferences(
+                        root: root.path,
+                        oldPath: src
+                    )
+                    if sqliteRefs.occurrences > 0 {
+                        manifest.append(ManifestEntry(
+                            path: "\(sqliteRefs.databasePath)::session.directory",
+                            occurrences: sqliteRefs.occurrences
+                        ))
+                        filesPatched += 1
+                        occurrences += sqliteRefs.occurrences
+                    }
+                } catch {
+                    issues.append(WalkIssue(
+                        path: OpenCodeSQLiteProjectMove.databasePath(root: root.path),
+                        reason: .statFailed,
+                        detail: errorMessage(error)
+                    ))
+                }
+            }
             perSource.append(PerSourceStats(
                 id: root.id.rawValue,
                 root: root.path,
@@ -742,6 +782,8 @@ public enum ProjectMoveOrchestrator {
 struct CompensationReport: Equatable {
     var patchReverted: Int
     var patchFailed: [(path: String, error: String)]
+    var sqliteReverted: Int
+    var sqliteFailed: [(path: String, error: String)]
     var dirsRestored: [DirRenamePlan]
     var dirRestoreErrors: [(sourceId: SourceId, error: String)]
     var moveReverted: Bool
@@ -753,6 +795,8 @@ struct CompensationReport: Equatable {
     static let empty = CompensationReport(
         patchReverted: 0,
         patchFailed: [],
+        sqliteReverted: 0,
+        sqliteFailed: [],
         dirsRestored: [],
         dirRestoreErrors: [],
         moveReverted: false,
@@ -764,6 +808,9 @@ struct CompensationReport: Equatable {
         lhs.patchReverted == rhs.patchReverted
             && lhs.patchFailed.map { "\($0.path)|\($0.error)" }
                 == rhs.patchFailed.map { "\($0.path)|\($0.error)" }
+            && lhs.sqliteReverted == rhs.sqliteReverted
+            && lhs.sqliteFailed.map { "\($0.path)|\($0.error)" }
+                == rhs.sqliteFailed.map { "\($0.path)|\($0.error)" }
             && lhs.dirsRestored == rhs.dirsRestored
             && lhs.dirRestoreErrors.map { "\($0.sourceId.rawValue)|\($0.error)" }
                 == rhs.dirRestoreErrors.map { "\($0.sourceId.rawValue)|\($0.error)" }
@@ -778,11 +825,29 @@ private func compensate(
     originalSrc: String,
     attemptedDst: String,
     renamedDirs: [DirRenamePlan],
-    geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?
+    geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?,
+    sqlitePatches: [OpenCodeSQLitePatchResult]
 ) -> CompensationReport {
     var report = CompensationReport.empty
 
-    // 1. Reverse file patches LIFO (last patched first).
+    // 1. Reverse sqlite patches LIFO. The exact session ids are captured
+    // during the forward update so rollback cannot rewrite unrelated rows
+    // that already belonged to the attempted destination path.
+    for entry in sqlitePatches.reversed() {
+        do {
+            try OpenCodeSQLiteProjectMove.reverse(
+                databasePath: entry.databasePath,
+                sessionIds: entry.sessionIds,
+                oldPath: attemptedDst,
+                newPath: originalSrc
+            )
+            report.sqliteReverted += entry.occurrences
+        } catch {
+            report.sqliteFailed.append((entry.databasePath, errorMessage(error)))
+        }
+    }
+
+    // 2. Reverse file patches LIFO (last patched first).
     for entry in manifest.reversed() {
         do {
             _ = try JsonlPatch.patchFile(
@@ -796,7 +861,7 @@ private func compensate(
         }
     }
 
-    // 2. Reverse Gemini projects.json BEFORE the per-source dir rename — it
+    // 3. Reverse Gemini projects.json BEFORE the per-source dir rename — it
     // was applied AFTER the dir rename, so LIFO means it goes first.
     if let plan = geminiProjectsPlan {
         do {
@@ -811,7 +876,7 @@ private func compensate(
         }
     }
 
-    // 3. Reverse per-source dir renames LIFO.
+    // 4. Reverse per-source dir renames LIFO.
     for d in renamedDirs.reversed() {
         do {
             try moveItemRespectingExisting(d.newDir, to: d.oldDir)
@@ -821,7 +886,7 @@ private func compensate(
         }
     }
 
-    // 4. Reverse the physical move.
+    // 5. Reverse the physical move.
     do {
         _ = try SafeMoveDir.run(src: attemptedDst, dst: originalSrc)
         report.moveReverted = true
@@ -851,6 +916,12 @@ private func formatFailureWithCompensation(
     }
     if report.geminiProjectsJsonRestored == .failed {
         parts.append("rollback: ~/.gemini/projects.json reverse failed — inspect manually")
+    }
+    if !report.sqliteFailed.isEmpty, let first = report.sqliteFailed.first {
+        parts.append(
+            "rollback: \(report.sqliteFailed.count) sqlite source(s) could NOT be reverted " +
+            "(e.g. \(first.path): \(first.error))"
+        )
     }
     if let move = report.moveRevertError {
         parts.append("rollback: physical move-back failed — \(move)")

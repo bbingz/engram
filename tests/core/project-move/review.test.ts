@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { reviewScan } from '../../../src/core/project-move/review.js';
 
@@ -75,6 +76,48 @@ describe('reviewScan', () => {
     });
     expect(r.own).toContain(codexFile);
     expect(r.other).toEqual([]);
+  });
+
+  it('OpenCode sqlite directory hits count as own residual refs', async () => {
+    const dbPath = join(tmp, '.local', 'share', 'opencode', 'opencode.db');
+    const sqlite = new BetterSqlite3(dbPath);
+    sqlite.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY,
+        directory TEXT,
+        time_archived INTEGER
+      );
+    `);
+    sqlite
+      .prepare('INSERT INTO session (id, directory) VALUES (?, ?)')
+      .run('open-1', '/old/path');
+    sqlite
+      .prepare('INSERT INTO session (id, directory) VALUES (?, ?)')
+      .run('open-2', '/old/path/nested');
+    sqlite
+      .prepare('INSERT INTO session (id, directory) VALUES (?, ?)')
+      .run('open-nfd', '/old/café'.normalize('NFD'));
+    sqlite
+      .prepare('INSERT INTO session (id, directory) VALUES (?, ?)')
+      .run('open-other', '/old/path-lookalike');
+    sqlite.close();
+
+    const r = await reviewScan('/old/path', {
+      newPath: '/Users/bing/-Code-/engram',
+      home: tmp,
+    });
+    const unicode = await reviewScan('/old/café', {
+      newPath: '/Users/bing/-Code-/engram',
+      home: tmp,
+    });
+
+    expect(r.own).toEqual([
+      `${dbPath}::session:open-1:directory`,
+      `${dbPath}::session:open-2:directory`,
+    ]);
+    expect(r.other).toEqual([]);
+    expect(unicode.own).toEqual([`${dbPath}::session:open-nfd:directory`]);
+    expect(unicode.other).toEqual([]);
   });
 
   it('empty result when nothing references old path', async () => {

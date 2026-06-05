@@ -19,6 +19,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Database } from '../../../src/core/db.js';
 import { encodeCC } from '../../../src/core/project-move/encode-cc.js';
@@ -229,6 +230,171 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(result.review.own).toEqual([]);
   });
 
+  it('patches OpenCode sqlite session directories', async () => {
+    const unicodeSrc = join(tmp, 'projects', 'old-café');
+    const unicodeDst = join(tmp, 'projects', 'new-café');
+    mkdirSync(unicodeSrc);
+    writeFileSync(join(unicodeSrc, 'main.py'), 'print("hi")');
+    const openCodeDbPath = join(
+      home,
+      '.local',
+      'share',
+      'opencode',
+      'opencode.db',
+    );
+    const openCodeDb = new BetterSqlite3(openCodeDbPath);
+    openCodeDb.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY,
+        directory TEXT,
+        title TEXT,
+        time_created INTEGER,
+        time_updated INTEGER,
+        time_archived INTEGER
+      );
+    `);
+    openCodeDb
+      .prepare(
+        'INSERT INTO session (id, directory, time_created, time_updated) VALUES (?, ?, 1, 1)',
+      )
+      .run('open-1', unicodeSrc);
+    openCodeDb
+      .prepare(
+        'INSERT INTO session (id, directory, time_created, time_updated) VALUES (?, ?, 1, 1)',
+      )
+      .run('open-2', `${unicodeSrc}/nested`);
+    openCodeDb
+      .prepare(
+        'INSERT INTO session (id, directory, time_created, time_updated) VALUES (?, ?, 1, 1)',
+      )
+      .run('open-nfd', `${unicodeSrc.normalize('NFD')}/nfd`);
+    openCodeDb
+      .prepare(
+        'INSERT INTO session (id, directory, time_created, time_updated) VALUES (?, ?, 1, 1)',
+      )
+      .run('open-other', `${unicodeSrc}-lookalike`);
+    openCodeDb.close();
+
+    const result = await runProjectMove(db, {
+      src: unicodeSrc,
+      dst: unicodeDst,
+      home,
+      actor: 'cli',
+    });
+
+    expect(result.perSource.find((s) => s.id === 'opencode')).toMatchObject({
+      filesPatched: 1,
+      occurrences: 3,
+    });
+
+    const after = new BetterSqlite3(openCodeDbPath, { readonly: true });
+    expect(
+      after
+        .prepare("SELECT directory FROM session WHERE id = 'open-1'")
+        .pluck()
+        .get(),
+    ).toBe(unicodeDst);
+    expect(
+      after
+        .prepare("SELECT directory FROM session WHERE id = 'open-2'")
+        .pluck()
+        .get(),
+    ).toBe(`${unicodeDst}/nested`);
+    expect(
+      after
+        .prepare("SELECT directory FROM session WHERE id = 'open-nfd'")
+        .pluck()
+        .get(),
+    ).toBe(`${unicodeDst}/nfd`);
+    expect(
+      after
+        .prepare("SELECT directory FROM session WHERE id = 'open-other'")
+        .pluck()
+        .get(),
+    ).toBe(`${unicodeSrc}-lookalike`);
+    after.close();
+    expect(result.review.own).toEqual([]);
+  });
+
+  it('rolls back OpenCode sqlite rows if a later source patch fails', async () => {
+    const openCodeDbPath = join(
+      home,
+      '.local',
+      'share',
+      'opencode',
+      'opencode.db',
+    );
+    const openCodeDb = new BetterSqlite3(openCodeDbPath);
+    openCodeDb.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY,
+        directory TEXT,
+        time_archived INTEGER
+      );
+    `);
+    openCodeDb
+      .prepare('INSERT INTO session (id, directory) VALUES (?, ?)')
+      .run('open-1', src);
+    openCodeDb
+      .prepare('INSERT INTO session (id, directory) VALUES (?, ?)')
+      .run('open-existing-dst', dst);
+    openCodeDb.close();
+
+    writeFileSync(
+      join(home, '.gemini', 'antigravity-cli', 'brain', 'bad.jsonl'),
+      Buffer.concat([Buffer.from(`{"cwd":"${src}"}`), Buffer.from([0xff])]),
+    );
+
+    await expect(
+      runProjectMove(db, {
+        src,
+        dst,
+        home,
+        actor: 'cli',
+      }),
+    ).rejects.toThrow(/not valid UTF-8|patchBuffer/);
+
+    const after = new BetterSqlite3(openCodeDbPath, { readonly: true });
+    expect(
+      after
+        .prepare("SELECT directory FROM session WHERE id = 'open-1'")
+        .pluck()
+        .get(),
+    ).toBe(src);
+    expect(
+      after
+        .prepare("SELECT directory FROM session WHERE id = 'open-existing-dst'")
+        .pluck()
+        .get(),
+    ).toBe(dst);
+    after.close();
+    expect(existsSync(src)).toBe(true);
+    expect(existsSync(dst)).toBe(false);
+  });
+
+  it('aborts and compensates when OpenCode sqlite patch fails', async () => {
+    const openCodeDbPath = join(
+      home,
+      '.local',
+      'share',
+      'opencode',
+      'opencode.db',
+    );
+    writeFileSync(openCodeDbPath, 'not a sqlite database');
+
+    await expect(
+      runProjectMove(db, {
+        src,
+        dst,
+        home,
+        actor: 'cli',
+      }),
+    ).rejects.toThrow();
+
+    expect(existsSync(src)).toBe(true);
+    expect(existsSync(dst)).toBe(false);
+  });
+
   it('allows untracked-only git state without force and reports it', async () => {
     execFileSync('git', ['init', '-q'], { cwd: src });
     execFileSync('git', ['config', 'user.email', 't@t'], { cwd: src });
@@ -269,6 +435,26 @@ describe('runProjectMove — orchestrator integration', () => {
   });
 
   it('dry-run: no FS changes, no DB writes', async () => {
+    const openCodeDbPath = join(
+      home,
+      '.local',
+      'share',
+      'opencode',
+      'opencode.db',
+    );
+    const openCodeDb = new BetterSqlite3(openCodeDbPath);
+    openCodeDb.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY,
+        directory TEXT,
+        time_archived INTEGER
+      );
+    `);
+    openCodeDb
+      .prepare('INSERT INTO session (id, directory) VALUES (?, ?)')
+      .run('open-dry-run', src);
+    openCodeDb.close();
+
     const result = await runProjectMove(db, {
       src,
       dst,
@@ -288,6 +474,10 @@ describe('runProjectMove — orchestrator integration', () => {
       0,
     );
     expect(occSum).toBe(result.totalOccurrences);
+    expect(result.manifest).toContainEqual({
+      path: `${openCodeDbPath}::session.directory`,
+      occurrences: 1,
+    });
     expect(db.listMigrations()).toEqual([]); // no log row
   });
 

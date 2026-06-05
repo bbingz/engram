@@ -102,6 +102,10 @@ final class OrchestratorTests: XCTestCase {
         // Plant a JSONL session containing the literal src path.
         let sessionFile = ccDir.appendingPathComponent("s1.jsonl")
         try writeJsonlSession(at: sessionFile, cwd: src)
+        let openCodeDb = tempRoot
+            .appendingPathComponent(".local/share/opencode", isDirectory: true)
+            .appendingPathComponent("opencode.db")
+        try makeOpenCodeDatabase(at: openCodeDb, rows: [("open-dry-run", src)])
         let dst = (tempRoot.appendingPathComponent("renamed").path)
 
         let result = try await ProjectMoveOrchestrator.run(
@@ -111,7 +115,12 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertEqual(result.state, .dryRun)
         XCTAssertEqual(result.migrationId, "dry-run")
         XCTAssertGreaterThan(result.totalOccurrences, 0)
-        XCTAssertEqual(result.totalFilesPatched, 1)
+        XCTAssertEqual(result.totalFilesPatched, 2)
+        XCTAssertEqual(result.manifest.count, result.totalFilesPatched)
+        XCTAssertTrue(result.manifest.contains(ManifestEntry(
+            path: "\(openCodeDb.path)::session.directory",
+            occurrences: 1
+        )))
         XCTAssertTrue(FileManager.default.fileExists(atPath: src), "dry-run must NOT move src")
         XCTAssertFalse(FileManager.default.fileExists(atPath: dst), "dry-run must NOT create dst")
         XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath), "dry-run must NOT acquire lock")
@@ -221,6 +230,135 @@ final class OrchestratorTests: XCTestCase {
             )
         }
         XCTAssertEqual(result.review.own, [])
+    }
+
+    func testOpenCodeSqliteSessionDirectoriesArePatchedAndCommitted() async throws {
+        let (src, _) = try makeProjectFixture(name: "opencode-café")
+        let openCodeDb = tempRoot
+            .appendingPathComponent(".local/share/opencode", isDirectory: true)
+            .appendingPathComponent("opencode.db")
+        let nfdSrc = src.decomposedStringWithCanonicalMapping
+        try makeOpenCodeDatabase(
+            at: openCodeDb,
+            rows: [
+                ("open-1", src),
+                ("open-2", "\(src)/nested"),
+                ("open-nfd", "\(nfdSrc)/nfd"),
+                ("open-other", "\(src)-lookalike"),
+            ]
+        )
+        let dst = tempRoot.appendingPathComponent("opencode-renamed").path
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertEqual(
+            result.perSource.first(where: { $0.id == "opencode" })?.filesPatched,
+            1
+        )
+        XCTAssertEqual(
+            result.perSource.first(where: { $0.id == "opencode" })?.occurrences,
+            3
+        )
+
+        let queue = try DatabaseQueue(path: openCodeDb.path)
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT directory FROM session WHERE id = 'open-1'"),
+                dst
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT directory FROM session WHERE id = 'open-2'"),
+                "\(dst)/nested"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT directory FROM session WHERE id = 'open-nfd'"),
+                "\(dst)/nfd"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT directory FROM session WHERE id = 'open-other'"),
+                "\(src)-lookalike"
+            )
+        }
+        XCTAssertEqual(result.review.own, [])
+    }
+
+    func testOpenCodeSqliteRowsRollBackWhenLaterSourcePatchFails() async throws {
+        let (src, _) = try makeProjectFixture(name: "opencode-rollback")
+        let dst = tempRoot.appendingPathComponent("opencode-rollback-renamed").path
+        let openCodeDb = tempRoot
+            .appendingPathComponent(".local/share/opencode", isDirectory: true)
+            .appendingPathComponent("opencode.db")
+        try makeOpenCodeDatabase(
+            at: openCodeDb,
+            rows: [
+                ("open-1", src),
+                ("open-existing-dst", dst),
+            ]
+        )
+        let badFile = tempRoot.appendingPathComponent(".gemini/antigravity-cli/brain/bad.jsonl")
+        try FileManager.default.createDirectory(
+            at: badFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var badData = Data("{\"cwd\":\"\(src)\"}".utf8)
+        badData.append(0xff)
+        try badData.write(to: badFile)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected InvalidUtf8Error")
+        } catch is InvalidUtf8Error {
+            // ok
+        } catch {
+            XCTFail("expected InvalidUtf8Error, got \(error)")
+        }
+
+        let queue = try DatabaseQueue(path: openCodeDb.path)
+        try await queue.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT directory FROM session WHERE id = 'open-1'"),
+                src
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT directory FROM session WHERE id = 'open-existing-dst'"),
+                dst
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testOpenCodeSqlitePatchFailureCompensatesPhysicalMove() async throws {
+        let (src, _) = try makeProjectFixture(name: "opencode-corrupt")
+        let dst = tempRoot.appendingPathComponent("opencode-corrupt-renamed").path
+        let openCodeDb = tempRoot
+            .appendingPathComponent(".local/share/opencode", isDirectory: true)
+            .appendingPathComponent("opencode.db")
+        try FileManager.default.createDirectory(
+            at: openCodeDb.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("not a sqlite database".utf8).write(to: openCodeDb)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected sqlite patch failure")
+        } catch {
+            // ok
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
     }
 
     func testIflowDirDiscoveredFromRealCwdContentWhenEncodedSrcNameDiffers() async throws {
@@ -716,6 +854,32 @@ final class OrchestratorTests: XCTestCase {
         {"type":"session_meta","payload":{"id":"\(UUID().uuidString)","timestamp":"2026-06-05T00:00:00.000Z","cwd":"\(cwd)"}}
         """
         try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func makeOpenCodeDatabase(at url: URL, rows: [(id: String, directory: String)]) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let queue = try DatabaseQueue(path: url.path)
+        try queue.write { db in
+            try db.execute(sql: """
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                directory TEXT,
+                title TEXT,
+                time_created INTEGER,
+                time_updated INTEGER,
+                time_archived INTEGER
+            )
+            """)
+            for row in rows {
+                try db.execute(
+                    sql: "INSERT INTO session (id, directory, time_created, time_updated) VALUES (?, ?, 1, 1)",
+                    arguments: [row.id, row.directory]
+                )
+            }
+        }
     }
 
     private func seedSessionRow(
