@@ -11,6 +11,10 @@ import type {
   SyncCursor,
 } from '../session-snapshot.js';
 import * as aliases from './alias-repo.js';
+import {
+  deleteFtsContentForRebuild,
+  finalizeFtsRebuildIfReady,
+} from './fts-rebuild-policy.js';
 import * as fts from './fts-repo.js';
 import * as jobs from './index-job-repo.js';
 import type { InsightRow } from './insight-repo.js';
@@ -149,6 +153,7 @@ export class Database {
   }
   deleteSession(id: string): void {
     sessions.deleteSession(this.db, id);
+    this.finalizeFtsRebuildIfReady();
   }
   isIndexed(filePath: string, sizeBytes: number): boolean {
     return sessions.isIndexed(this.db, filePath, sizeBytes);
@@ -232,9 +237,7 @@ export class Database {
   }
   deleteIndexArtifacts(sessionId: string): void {
     const tx = this.db.transaction(() => {
-      this.db
-        .prepare('DELETE FROM sessions_fts WHERE session_id = ?')
-        .run(sessionId);
+      deleteFtsContentForRebuild(this.db, sessionId);
       const hasEmbeddings =
         this.db
           .prepare(
@@ -253,6 +256,13 @@ export class Database {
         .run(sessionId);
     });
     tx();
+    this.finalizeFtsRebuildIfReady();
+  }
+  finalizeFtsRebuildIfReady(): boolean {
+    return finalizeFtsRebuildIfReady(this.db, {
+      getMetadata: (key) => this.getMetadata(key),
+      setMetadata: (key, value) => this.setMetadata(key, value),
+    });
   }
 
   // --- Metrics repo ---

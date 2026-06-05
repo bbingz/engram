@@ -132,4 +132,98 @@ describe('IndexJobRunner', () => {
     expect(db.getFtsContent('sess-3')).toEqual(['new searchable summary']);
     expect(db.listIndexJobs('sess-3')[0]?.status).toBe('completed');
   });
+
+  it('finalizes a pending FTS rebuild after the last FTS job completes', async () => {
+    db.upsertAuthoritativeSnapshot({
+      id: 'sess-finalize',
+      source: 'codex',
+      authoritativeNode: 'local',
+      syncVersion: 1,
+      snapshotHash: 'hash-finalize',
+      indexedAt: '2026-03-18T12:00:00Z',
+      sourceLocator: '/tmp/rollout.jsonl',
+      startTime: '2026-03-18T11:00:00Z',
+      cwd: '/repo',
+      messageCount: 1,
+      userMessageCount: 1,
+      assistantMessageCount: 0,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      summary: 'final active text',
+    });
+    db.replaceFtsContent('sess-finalize', ['final active text']);
+    db.setMetadata('fts_version', '2');
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO sessions_fts_rebuild(session_id, content)
+      VALUES ('sess-finalize', 'final active text');
+    `);
+    db.insertIndexJobs('sess-finalize', 1, ['fts']);
+
+    const runner = new IndexJobRunner(db, mockStore, mockClient);
+    await runner.runRecoverableJobs();
+
+    expect(db.getMetadata('fts_version')).toBe('3');
+    expect(db.getMetadata('fts_rebuild_version')).toBeNull();
+    expect(db.getFtsContent('sess-finalize')).toEqual(['final active text']);
+    expect(
+      db.raw
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions_fts_rebuild'",
+        )
+        .get(),
+    ).toBeUndefined();
+  });
+
+  it('preserves copied active FTS rows when reopened jobs only mark completed', async () => {
+    db.upsertAuthoritativeSnapshot({
+      id: 'sess-copy',
+      source: 'codex',
+      authoritativeNode: 'local',
+      syncVersion: 1,
+      snapshotHash: 'hash-copy',
+      indexedAt: '2026-03-18T12:00:00Z',
+      sourceLocator: '/tmp/rollout.jsonl',
+      startTime: '2026-03-18T11:00:00Z',
+      cwd: '/repo',
+      messageCount: 1,
+      userMessageCount: 1,
+      assistantMessageCount: 0,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      summary: 'summary fallback',
+    });
+    db.replaceFtsContent('sess-copy', ['full copied transcript text']);
+    db.setMetadata('fts_version', '2');
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO sessions_fts_rebuild(session_id, content)
+      VALUES ('sess-copy', 'full copied transcript text');
+    `);
+    db.insertIndexJobs('sess-copy', 1, ['fts']);
+
+    const runner = new IndexJobRunner(db, mockStore, mockClient);
+    await runner.runRecoverableJobs();
+
+    expect(db.getFtsContent('sess-copy')).toEqual([
+      'full copied transcript text',
+    ]);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT COUNT(*) AS count FROM sessions_fts WHERE session_id = ?',
+        )
+        .get('sess-copy'),
+    ).toEqual({ count: 1 });
+  });
 });

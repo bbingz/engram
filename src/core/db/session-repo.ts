@@ -11,6 +11,7 @@ import type {
   AuthoritativeSessionSnapshot,
   SyncCursor,
 } from '../session-snapshot.js';
+import { deleteFtsContentForRebuild } from './fts-rebuild-policy.js';
 import { setParentSession, validateParentLink } from './parent-link-repo.js';
 import type { ListSessionsOptions, NoiseFilter } from './types.js';
 
@@ -381,7 +382,7 @@ export function listSessionsAfterCursor(
 
 export function deleteSession(db: BetterSqlite3.Database, id: string): void {
   const tx = db.transaction(() => {
-    db.prepare('DELETE FROM sessions_fts WHERE session_id = ?').run(id);
+    deleteFtsContentForRebuild(db, id);
 
     if (
       tableOrViewExists(db, 'vec_chunks') &&

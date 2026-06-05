@@ -134,6 +134,54 @@ Current resume point:
 - PR #49 from `codex/followup-remediation` to `main` was marked ready and
   squash-merged as `3c2303ab`:
   https://github.com/bbingz/engram/pull/49.
+## 2026-06-04 — TypeScript FTS table-swap rebuild PR (Codex)
+
+Branch/worktree: `feat/fts-table-swap-rebuild` at
+`.worktrees/fts-table-swap-rebuild`; started from `origin/main` after PR #37
+merged as `5cccdd5b`.
+
+Implemented:
+- Added `src/core/db/fts-rebuild-policy.ts` to own TypeScript `FTS_VERSION`,
+  rebuild metadata, `sessions_fts_rebuild` shadow-table setup, copied active FTS
+  rows, dual-write/delete helpers, and transactional final swap.
+- Changed TypeScript migration from direct FTS-version completion to an online
+  pending rebuild: active `sessions_fts` remains the search source, shadow rows
+  are copied once, completed FTS jobs reopen, vector tables clear, and empty DBs
+  mark the current version without a pending rebuild.
+- Routed `replaceFtsContent`, `indexSessionContent`, `deleteIndexArtifacts`,
+  `deleteSession`, and subagent FTS maintenance cleanup through rebuild-aware
+  helpers while keeping active reads on `sessions_fts`.
+- Exposed `Database.finalizeFtsRebuildIfReady()` and made `IndexJobRunner`
+  attempt finalization after each FTS job completion path.
+- Addressed follow-up review findings before PR: pending shadow tables now must
+  match the expected FTS5/trigram schema before reuse/final swap, stale or
+  non-FTS `sessions_fts_rebuild` tables are recreated from active rows, and
+  `deleteIndexArtifacts`/`deleteSession` attempt finalization after draining the
+  last recoverable FTS job.
+
+Verification so far:
+- Spec and implementation plan were reviewed by subagent before code work; final
+  verdict approved before implementation.
+- Task 1 red test failed first with missing `sessions_fts_rebuild`, then
+  `npx vitest run tests/core/db-migration.test.ts` passed: 13 tests.
+- Task 2 red tests failed first for missing shadow writes/deletes, then
+  `npx vitest run tests/core/db.test.ts tests/core/maintenance.test.ts` passed:
+  69 tests.
+- Task 3 red test failed first with `fts_version` still old, then
+  `npx vitest run tests/core/index-job-runner.test.ts` passed: 5 tests.
+- Task-level subagent review gates approved Tasks 1, 2, and 3.
+- Final subagent review found two Important issues; both were reproduced with
+  failing tests, fixed, and re-reviewed as fixed with no remaining issues.
+- Post-fix verification passed: targeted new tests; the FTS matrix
+  `npm test -- tests/core/db-migration.test.ts tests/core/db.test.ts
+  tests/core/index-job-runner.test.ts tests/core/maintenance.test.ts` (90 tests);
+  `npm run typecheck:test`; `npm run build`; full `npm test` (1494 tests);
+  `npm run lint`; `git diff --check`; and `actionlint` for `test.yml` and
+  `release.yml`.
+
+Residual risk:
+- `insights_fts` table-swap rebuild is intentionally out of scope for this PR.
+- Full PR verification and GitHub CI still need to pass before merge.
 
 ## 2026-06-04 — Database raw handle API cleanup (Codex)
 

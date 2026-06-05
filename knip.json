@@ -10,6 +10,16 @@
     "tests/**/*.test.ts"
   ],
   "project": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"],
+  "ignoreDependencies": ["@biomejs/biome", "husky", "lint-staged", "tsx"],
+  "ignoreBinaries": [
+    "tsx",
+    "lint-staged",
+    "tsc",
+    "vitest",
+    "biome",
+    "knip",
+    "husky"
+  ],
   "ignoreIssues": {
     "tests/fixtures/mcp-runtime/lint-project/src/existing.ts": ["files"],
     "src/core/daemon-client.ts": ["types"],

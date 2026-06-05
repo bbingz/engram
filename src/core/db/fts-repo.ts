@@ -1,5 +1,6 @@
 // src/core/db/fts-repo.ts — FTS indexing and search
 import type BetterSqlite3 from 'better-sqlite3';
+import { replaceFtsContentForRebuild } from './fts-rebuild-policy.js';
 import type { FtsSearchResult, SearchFilters } from './types.js';
 
 /** Detect CJK characters that break SQLite's byte-level trigram tokenizer */
@@ -23,28 +24,17 @@ export function indexSessionContent(
   messages: { role: string; content: string }[],
   summary?: string,
 ): void {
-  const deleteStmt = db.prepare(
-    'DELETE FROM sessions_fts WHERE session_id = ?',
-  );
-  const insertStmt = db.prepare(
-    'INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)',
-  );
-
-  const transaction = db.transaction(() => {
-    deleteStmt.run(sessionId);
-    for (const msg of messages) {
-      if (
-        (msg.role === 'user' || msg.role === 'assistant') &&
-        msg.content.trim()
-      ) {
-        insertStmt.run(sessionId, msg.content);
-      }
+  const contents: string[] = [];
+  for (const msg of messages) {
+    if (
+      (msg.role === 'user' || msg.role === 'assistant') &&
+      msg.content.trim()
+    ) {
+      contents.push(msg.content);
     }
-    if (summary?.trim()) {
-      insertStmt.run(sessionId, summary);
-    }
-  });
-  transaction();
+  }
+  if (summary?.trim()) contents.push(summary);
+  replaceFtsContentForRebuild(db, sessionId, contents);
 }
 
 export function searchSessions(
@@ -244,17 +234,5 @@ export function replaceFtsContent(
   sessionId: string,
   contents: string[],
 ): void {
-  const deleteStmt = db.prepare(
-    'DELETE FROM sessions_fts WHERE session_id = ?',
-  );
-  const insertStmt = db.prepare(
-    'INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)',
-  );
-  const tx = db.transaction(() => {
-    deleteStmt.run(sessionId);
-    for (const content of contents) {
-      if (content.trim()) insertStmt.run(sessionId, content);
-    }
-  });
-  tx();
+  replaceFtsContentForRebuild(db, sessionId, contents);
 }

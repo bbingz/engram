@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
+import { FTS_VERSION } from '../../src/core/db/fts-rebuild-policy.js';
 import { Database, SCHEMA_VERSION } from '../../src/core/db.js';
 
 describe('Database migration', () => {
@@ -131,6 +132,199 @@ describe('Database migration', () => {
     expect(row.indexed_at).not.toBe('');
     expect(Number.isNaN(Date.parse(row.indexed_at))).toBe(false);
 
+    db.close();
+  });
+
+  it('starts an idempotent FTS table-swap rebuild while keeping active search live', () => {
+    const dbPath = makeTmpDb();
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        cwd TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 123,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE session_index_jobs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        job_kind TEXT NOT NULL,
+        target_sync_version INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE session_embeddings (
+        session_id TEXT PRIMARY KEY,
+        embedding BLOB
+      );
+      CREATE TABLE vec_sessions (
+        rowid INTEGER PRIMARY KEY,
+        embedding BLOB
+      );
+      CREATE VIRTUAL TABLE sessions_fts USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO metadata(key, value) VALUES ('fts_version', '2');
+      INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes)
+      VALUES ('legacy-fts', 'codex', '2026-01-01T00:00:00Z', '/repo', '/tmp/session.jsonl', 123);
+      INSERT INTO sessions_fts(session_id, content)
+      VALUES ('legacy-fts', 'existing searchable text');
+      INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+      VALUES ('legacy-fts:1:fts', 'legacy-fts', 'fts', 1, 'completed');
+      INSERT INTO session_embeddings(session_id, embedding)
+      VALUES ('legacy-fts', x'0102');
+      INSERT INTO vec_sessions(rowid, embedding)
+      VALUES (1, x'0304');
+    `);
+    rawDb.close();
+
+    const db = new Database(dbPath);
+    expect(db.getFtsContent('legacy-fts')).toEqual([
+      'existing searchable text',
+    ]);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT content FROM sessions_fts_rebuild WHERE session_id = ?',
+        )
+        .pluck()
+        .all('legacy-fts'),
+    ).toEqual(['existing searchable text']);
+    expect(db.getMetadata('fts_rebuild_version')).toBe(FTS_VERSION);
+    expect(db.getMetadata('fts_version')).toBe('2');
+    expect(
+      db.raw
+        .prepare('SELECT size_bytes FROM sessions WHERE id = ?')
+        .get('legacy-fts'),
+    ).toEqual({ size_bytes: 0 });
+    expect(
+      db.raw.prepare('SELECT COUNT(*) AS count FROM session_embeddings').get(),
+    ).toEqual({ count: 0 });
+    expect(
+      db.raw.prepare('SELECT COUNT(*) AS count FROM vec_sessions').get(),
+    ).toEqual({ count: 0 });
+    expect(
+      db.raw
+        .prepare(
+          'SELECT status, retry_count, last_error FROM session_index_jobs WHERE id = ?',
+        )
+        .get('legacy-fts:1:fts'),
+    ).toEqual({ status: 'pending', retry_count: 0, last_error: null });
+    db.close();
+
+    const reopened = new Database(dbPath);
+    expect(
+      reopened.raw
+        .prepare(
+          'SELECT COUNT(*) AS count FROM sessions_fts_rebuild WHERE session_id = ?',
+        )
+        .get('legacy-fts'),
+    ).toEqual({ count: 1 });
+    reopened.close();
+  });
+
+  it('marks FTS version current for an empty database without pending rebuild', () => {
+    const dbPath = makeTmpDb();
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        cwd TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL
+      );
+      CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO metadata(key, value) VALUES ('fts_version', '2');
+    `);
+    rawDb.close();
+
+    const db = new Database(dbPath);
+    expect(db.getMetadata('fts_version')).toBe(FTS_VERSION);
+    expect(db.getMetadata('fts_rebuild_version')).toBeNull();
+    expect(
+      db.raw
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions_fts_rebuild'",
+        )
+        .get(),
+    ).toBeUndefined();
+    db.close();
+  });
+
+  it('recreates a pending FTS rebuild table when the shadow schema is stale', () => {
+    const dbPath = makeTmpDb();
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        cwd TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 123,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE session_index_jobs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        job_kind TEXT NOT NULL,
+        target_sync_version INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE VIRTUAL TABLE sessions_fts USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      CREATE TABLE sessions_fts_rebuild(session_id TEXT, content TEXT);
+      INSERT INTO metadata(key, value) VALUES ('fts_version', '2');
+      INSERT INTO metadata(key, value) VALUES ('fts_rebuild_version', '3');
+      INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes)
+      VALUES ('legacy-fts', 'codex', '2026-01-01T00:00:00Z', '/repo', '/tmp/session.jsonl', 123);
+      INSERT INTO sessions_fts(session_id, content)
+      VALUES ('legacy-fts', 'active searchable text');
+      INSERT INTO sessions_fts_rebuild(session_id, content)
+      VALUES ('legacy-fts', 'stale shadow text');
+      INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+      VALUES ('legacy-fts:1:fts', 'legacy-fts', 'fts', 1, 'completed');
+    `);
+    rawDb.close();
+
+    const db = new Database(dbPath);
+
+    expect(
+      db.raw
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions_fts_rebuild'",
+        )
+        .pluck()
+        .get(),
+    ).toContain('USING fts5');
+    expect(
+      db.raw
+        .prepare(
+          'SELECT content FROM sessions_fts_rebuild WHERE session_id = ?',
+        )
+        .pluck()
+        .all('legacy-fts'),
+    ).toEqual(['active searchable text']);
+    expect(db.getMetadata('fts_version')).toBe('2');
+    expect(db.getMetadata('fts_rebuild_version')).toBe(FTS_VERSION);
     db.close();
   });
 
@@ -275,7 +469,7 @@ describe('Database migration', () => {
 
     expect(ftsRows).toEqual(['existing searchable text']);
     expect(row.size_bytes).toBe(0);
-    expect(db.getMetadata('fts_version')).toBe('3');
+    expect(db.getMetadata('fts_version')).toBe(FTS_VERSION);
 
     db.close();
   });

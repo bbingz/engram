@@ -142,10 +142,183 @@ describe('Database', () => {
     expect(db.searchSessions('   ')).toEqual([]);
   });
 
+  it('dual-writes replaceFtsContent while an FTS rebuild is pending', () => {
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      )
+    `);
+
+    db.replaceFtsContent('session-001', ['fresh searchable text']);
+
+    expect(db.getFtsContent('session-001')).toEqual(['fresh searchable text']);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT content FROM sessions_fts_rebuild WHERE session_id = ?',
+        )
+        .pluck()
+        .all('session-001'),
+    ).toEqual(['fresh searchable text']);
+  });
+
+  it('dual-writes indexSessionContent while an FTS rebuild is pending', () => {
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      )
+    `);
+
+    db.indexSessionContent('session-001', [
+      { role: 'user', content: 'hello rebuild' },
+      { role: 'assistant', content: 'answer rebuild' },
+    ]);
+
+    expect(db.getFtsContent('session-001')).toEqual([
+      'hello rebuild',
+      'answer rebuild',
+    ]);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT content FROM sessions_fts_rebuild WHERE session_id = ? ORDER BY rowid',
+        )
+        .pluck()
+        .all('session-001'),
+    ).toEqual(['hello rebuild', 'answer rebuild']);
+  });
+
+  it('deletes index artifacts from active and rebuild FTS tables', () => {
+    db.upsertSession(mockSession);
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      )
+    `);
+    db.upsertSession({
+      ...mockSession,
+      id: 'other-session',
+      filePath: '/other',
+    });
+    db.insertIndexJobs('other-session', 0, ['fts']);
+    db.replaceFtsContent('session-001', ['delete me']);
+
+    db.deleteIndexArtifacts('session-001');
+
+    expect(db.getFtsContent('session-001')).toEqual([]);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT content FROM sessions_fts_rebuild WHERE session_id = ?',
+        )
+        .all('session-001'),
+    ).toEqual([]);
+  });
+
+  it('finalizes a pending FTS rebuild when deleteIndexArtifacts drains the last FTS job', () => {
+    db.upsertSession(mockSession);
+    db.replaceFtsContent('session-001', ['active text']);
+    db.setMetadata('fts_version', '2');
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO sessions_fts_rebuild(session_id, content)
+      VALUES ('session-001', 'active text');
+    `);
+    db.insertIndexJobs('session-001', 0, ['fts']);
+
+    db.deleteIndexArtifacts('session-001');
+
+    expect(db.getMetadata('fts_version')).toBe('3');
+    expect(db.getMetadata('fts_rebuild_version')).toBeNull();
+    expect(
+      db.raw
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions_fts_rebuild'",
+        )
+        .get(),
+    ).toBeUndefined();
+    expect(db.getFtsContent('session-001')).toEqual([]);
+  });
+
   it('deletes a session', () => {
     db.upsertSession(mockSession);
     db.deleteSession('session-001');
     expect(db.getSession('session-001')).toBeNull();
+  });
+
+  it('deleteSession removes active and rebuild FTS rows in one transaction', () => {
+    db.upsertSession(mockSession);
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      )
+    `);
+    db.upsertSession({
+      ...mockSession,
+      id: 'other-session',
+      filePath: '/other',
+    });
+    db.insertIndexJobs('other-session', 0, ['fts']);
+    db.replaceFtsContent('session-001', ['delete session text']);
+
+    db.deleteSession('session-001');
+
+    expect(db.getSession('session-001')).toBeNull();
+    expect(db.getFtsContent('session-001')).toEqual([]);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT content FROM sessions_fts_rebuild WHERE session_id = ?',
+        )
+        .all('session-001'),
+    ).toEqual([]);
+  });
+
+  it('finalizes a pending FTS rebuild when deleteSession drains the last FTS job', () => {
+    db.upsertSession(mockSession);
+    db.replaceFtsContent('session-001', ['delete session text']);
+    db.setMetadata('fts_version', '2');
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO sessions_fts_rebuild(session_id, content)
+      VALUES ('session-001', 'delete session text');
+    `);
+    db.insertIndexJobs('session-001', 0, ['fts']);
+
+    db.deleteSession('session-001');
+
+    expect(db.getSession('session-001')).toBeNull();
+    expect(db.getMetadata('fts_version')).toBe('3');
+    expect(db.getMetadata('fts_rebuild_version')).toBeNull();
+    expect(
+      db.raw
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions_fts_rebuild'",
+        )
+        .get(),
+    ).toBeUndefined();
   });
 
   it('deletes all index artifacts for a session in the same operation', () => {
