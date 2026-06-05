@@ -1,5 +1,34 @@
 # Engram Local Memory
 
+## 2026-06-06 — Project archive gitdir marker validation (Codex)
+
+Codex closed a surviving low-priority project-migration review finding in
+archive auto-categorization.
+
+Root cause:
+- Swift and TS archive suggestion logic treated any regular `.git` file as a
+  valid worktree/submodule marker. Empty or malformed marker files could be
+  auto-classified as `archived-done` instead of requiring an explicit `--to`
+  category.
+
+Change:
+- Swift `Archive.suggestTarget` and TS `suggestArchiveTarget` now parse regular
+  `.git` files as bounded 512-byte `gitdir:` markers.
+- The resolved git metadata directory must contain `HEAD`; malformed or empty
+  marker files fall through to the existing ambiguous-project path.
+- Added Swift and TS regression tests for valid gitdir marker files and
+  malformed marker files.
+
+Verification:
+- `npx biome check --write src/core/project-move/archive.ts
+  tests/core/project-move/lock-and-archive.test.ts` passed with no fixes.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' -only-testing:EngramCoreTests/ArchiveTests
+  CODE_SIGNING_ALLOWED=NO` passed 18 tests.
+- `npx vitest run tests/core/project-move/lock-and-archive.test.ts
+  tests/core/project-move/batch.test.ts tests/tools/project-mcp.test.ts`
+  passed 3 files / 43 tests.
+
 ## 2026-06-06 — Node 24 agent-instruction drift cleanup (Codex)
 
 Codex reconciled the current Node runtime surfaces after the earlier Node 24

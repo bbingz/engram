@@ -145,6 +145,34 @@ describe('suggestArchiveTarget', () => {
     expect(r.category).toBe('归档完成');
   });
 
+  it('gitdir file with real HEAD → 归档完成', async () => {
+    const src = join(tmp, 'worktree-proj');
+    mkdirSync(src);
+    const gitDir = join(tmp, 'linked-worktree-git');
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(join(gitDir, 'HEAD'), 'ref: refs/heads/main\n');
+    writeFileSync(join(src, '.git'), `gitdir: ${gitDir}\n`);
+    writeFileSync(join(src, 'main.py'), 'print("hi")');
+
+    const r = await suggestArchiveTarget(src, {
+      archiveRoot: join(tmp, '_archive'),
+    });
+
+    expect(r.category).toBe('归档完成');
+    expect(r.reason).toMatch(/worktree|submodule/);
+  });
+
+  it('malformed gitdir file with content → throws, user must pass --to', async () => {
+    const src = join(tmp, 'malformed-worktree');
+    mkdirSync(src);
+    writeFileSync(join(src, '.git'), '');
+    writeFileSync(join(src, 'main.py'), 'print("hi")');
+
+    await expect(
+      suggestArchiveTarget(src, { archiveRoot: join(tmp, '_archive') }),
+    ).rejects.toThrow(/cannot auto-categorize|--to/);
+  });
+
   it('ambiguous non-git with content → throws, user must pass --to', async () => {
     const src = join(tmp, 'ambiguous');
     mkdirSync(src);

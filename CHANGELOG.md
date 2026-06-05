@@ -7,6 +7,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Project archive gitdir marker validation (2026-06-06, Codex)
+
+Closed a surviving low-priority project-migration review finding.
+
+- **Root cause**: archive auto-categorization treated any regular `.git` file
+  as a valid worktree/submodule marker. Empty or malformed marker files could
+  therefore be auto-classified as `archived-done` instead of requiring an
+  explicit category.
+- **Fix**: Swift and TS archive suggestion logic now parse regular `.git`
+  files as bounded 512-byte `gitdir:` markers and require the resolved git
+  metadata directory to contain `HEAD`.
+- **Regression coverage**: added Swift and TS tests for valid gitdir marker
+  files and malformed marker files.
+- **Verification**: `ArchiveTests` passed 18 tests; TS project-move archive,
+  batch, and MCP tests passed 43 tests; targeted Biome check passed.
+
 ### Node 24 agent-instruction drift cleanup (2026-06-06, Codex)
 
 Closed the remaining current-documentation drift after the Node 24 migration.
