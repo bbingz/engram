@@ -7,6 +7,100 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Codex archived-session project-migration coverage (2026-06-05, Codex)
+
+Closed the Codex-side project-migration compatibility gap left after the
+Claude Code encoder audit.
+
+- **Root cause**: the Codex adapter reads both `~/.codex/sessions` and
+  `~/.codex/archived_sessions` (`CodexAdapter.expandSessionRoots`), but
+  project migration only scanned/patched `~/.codex/sessions`. Archived Codex
+  rollout JSONL files could therefore retain the old cwd after a project move.
+- **Fix**: added a flat-layout `codex-archived` source root in both the Swift
+  product pipeline (`SessionSources.roots`) and the TypeScript reference
+  pipeline (`getSourceRoots`). Like active Codex sessions, it has no
+  `encodeProjectDir`; migration only rewrites file contents and review treats
+  residual refs as own leftovers.
+- **Regression coverage**: added Swift and TS source-root assertions plus
+  orchestrator integration tests that plant active and archived Codex JSONL,
+  run a project move, and assert both files are patched and review has no own
+  residual refs.
+- **Real-disk check**: this machine has 5 real files in
+  `~/.codex/archived_sessions`; none currently reference this checkout, but the
+  missing root was real, not hypothetical.
+- **Verification**: RED confirmed before the fix (`codex-archived` missing and
+  archived JSONL kept the old path). GREEN: `npm test -- tests/core/project-move`
+  16 files / 182 tests; selected Swift ProjectMove suite 87/87; `npm run lint`;
+  `npm run build`; `npm run typecheck:test`.
+
+### Claude Code project-migration encoder fix (2026-06-05, Claude)
+
+Fixed a Claude Code compatibility bug in the project-migration pipeline and
+recorded the verification method so the Codex/other-source side can be audited
+the same way.
+
+- **Root cause**: `ClaudeCodeProjectDir.encode`
+  (`macos/EngramCoreWrite/ProjectMove/EncodeClaudeCodeDir.swift`) replaced only
+  `/` and `.` with `-`. Real Claude Code replaces **every** char not in
+  `[A-Za-z0-9]` with `-` (`path.replace(/[^a-zA-Z0-9]/g, "-")`, per UTF-16 code
+  unit, no collapse/case-change). The TS reference `encodeCC` was worse (`/`
+  only).
+- **Empirical truth**: verified 39/39 real `~/.claude/projects` dirs (and 7/7
+  `~/.qoder/projects`) match the all-non-alnum rule; the old Swift encoder
+  matched 30/39 and broke 9 real cwds across 7+ projects containing `_`/space
+  (`CCTV_Admin`, `java_charge`, `Service_Asset`, `Service_Electricity`,
+  `Service_Umami`, `mac_Book_Pro_Debug`, `Application Support/CodexBar/...`).
+- **Failure mode (silent, no error)**: Orchestrator Step 0.5/2 computed the
+  wrong old dir name → `rename(2)` ENOENT → `skippedDirs(.missing)` → the real
+  dir was never renamed. Content patching (grep-by-cwd-substring in Step 3) still
+  rewrote the in-file `cwd`, so Engram's own index looked healthy while Claude
+  Code, relaunched in the new path, computed a fresh dir name and could not see
+  the migrated history. Same blast radius hit dry-run, `Review.swift:34`
+  own/other classification, undo (re-runs the orchestrator), batch, and the
+  shared qoder source.
+- **Why it survived**: the unit tests baked in the bug —
+  `EncodeClaudeCodeDirTests` asserted `john_doe`→`john_doe` and `my proj`→`my
+  proj` (only `.config` was checked against a real dir). TS test did the same.
+- **Reverse-op safety (verified)**: undo/recover read raw `oldPath`/`newPath`
+  from `migration_log` and recompute `encode()`; persisted `renamed_dirs` is
+  write-only audit metadata, never consumed on the reverse path. So the fix does
+  not break undo/recover of historical rows.
+- **Fix**: encoder now maps every non-`[A-Za-z0-9]` UTF-16 unit to `-` (omits
+  CC's unreachable >200-code-unit truncate+hash branch — documented). Mirrored
+  the TS reference. Rewrote the two bug-asserting tests + added a real-corpus
+  regression table (hardcoded literal expectations) in both Swift and TS.
+- **Verification**: `EncodeClaudeCodeDirTests` 10/10; full encoder-consuming
+  ProjectMove suite (SessionSources/Orchestrator/Batch/ReviewScan/Archive/Undo)
+  86/86; TS `encode-cc.test.ts` 9/9; biome clean.
+- **Not done (designed, not urgent)**: a startup reconcile to repair dirs
+  ALREADY orphaned by a past buggy migration. On this machine the reconcile is a
+  verified no-op (all 39 dirs already match the corrected encoder — no buggy
+  `_`/space migration has actually run yet), so it is deferred. Detection MUST
+  use the corrected encoder; ship encoder fix first, reconcile second.
+- **Reusable verification method (for the Codex side)**: for each dir under a
+  source root, read the first session file's `cwd`, recompute the adapter's
+  `encode(cwd)`, assert `basename(dir) == encode(cwd)`; any mismatch = encoder
+  diverges from real on-disk naming. (Dir names start with `-`, so prefix paths
+  with `./` or use `--` with find/grep.)
+
+**Handoff — open items for Codex to finish (收尾):**
+1. **Codex source audit**: `codex` is wired flat-layout in
+   `Sources.swift` (`encodeProjectDir: nil`) — there is NO per-project dir
+   rename for codex, only content patching of `~/.codex/sessions/*`. Confirm the
+   content rewrite covers every codex path reference (e.g. `session_meta.cwd`,
+   originator, embedded paths) and that no codex case relies on a dir name.
+2. **Other grouped encoders** (out of CC scope, same method applies if wanted):
+   `gemini-cli` `encodeGemini` (basename slug) and `iflow` `encodeIflow`
+   (per-segment dash-strip) have their own lossy encoders + collision probes —
+   audit with the same `basename(dir) == encode(cwd)` check against
+   `~/.gemini/tmp` / `~/.iflow/projects`.
+3. **Reconcile feature** for dirs ALREADY orphaned by a past buggy CC migration
+   (design in this entry §"Not done"): startup backfill, detection MUST use the
+   corrected encoder, collision-safe rename, ship after the encoder fix. Deferred
+   — verified no real orphans on this machine yet.
+4. **Branch**: `fix/cc-dir-encoding-compat` @ `c3bd626d` is committed but NOT
+   pushed and has no PR. Push + open PR when ready.
+
 ### PR #49 CI follow-up (2026-06-05, Codex)
 
 Continued draft PR #49 after GitHub Actions exposed CI-only gaps on

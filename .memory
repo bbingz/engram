@@ -1,5 +1,59 @@
 # Engram Local Memory
 
+## 2026-06-05 — Codex archived-session project migration compatibility (Codex)
+
+Codex project migration had one real compatibility gap: Swift/TS project-move
+source roots scanned `~/.codex/sessions` but not `~/.codex/archived_sessions`,
+while `CodexAdapter.expandSessionRoots` reads both. Archived Codex rollout JSONL
+could retain an old cwd after a move.
+
+Fix: added flat-layout `codex-archived` to Swift `SessionSources.roots` and TS
+`getSourceRoots`, with `encodeProjectDir: nil`. Added source-root and
+orchestrator regression tests in both stacks; tests plant active and archived
+Codex JSONL and assert both are patched and review has no own residual refs.
+
+Verification:
+- RED first: Swift/TS tests failed because `codex-archived` was missing and the
+  archived JSONL retained old cwd.
+- GREEN: `npm test -- tests/core/project-move` passed 16 files / 182 tests.
+- GREEN: selected Swift ProjectMove suite passed 87/87 via xcodebuild.
+- GREEN: `npm run lint`, `npm run build`, `npm run typecheck:test`.
+- Real-disk check: local `~/.codex/archived_sessions` exists with 5 rollout
+  files; 0 currently reference this checkout.
+
+Branch context: this is stacked on Claude's `fix/cc-dir-encoding-compat`
+commit `c3bd626d`. Keep `.claude/wf-codex-review*.js` uncommitted; they are
+local Claude workflow artifacts. `macos/Engram.xcodeproj/project.pbxproj` was
+already dirty from local release build/deploy and is not part of this fix.
+
+## 2026-06-05 — Claude Code dir-encoding compat fix (Claude)
+
+Real Claude Code project-dir rule = replace EVERY char not in `[A-Za-z0-9]`
+with `-` (`s.replace(/[^a-zA-Z0-9]/g,"-")`, per UTF-16 unit, no collapse/case).
+Engram's Swift `ClaudeCodeProjectDir.encode` only did `/`+`.` → broke 9/39 real
+dirs (projects with `_`/space); TS `encodeCC` only did `/`. Fixed both + tests.
+
+Why it mattered: wrong dir name → orchestrator `rename` ENOENT → silently
+`skippedDirs(.missing)` → real session dir never renamed → Claude Code can't see
+migrated history (Engram's content index still showed it, masking the bug). The
+bug was enshrined in unit tests (`john_doe`→`john_doe`, `my proj`→`my proj`).
+
+Verified: 39/39 real CC dirs + 7/7 qoder dirs follow the all-non-alnum rule;
+undo/recover are path-derived (recompute encode) so the fix is reverse-safe;
+ProjectMove tests 86/86 + encoder 10/10 + TS 9/9.
+
+Reusable audit method (Codex side): per dir, read first file's `cwd`, assert
+`basename(dir) == adapter.encode(cwd)`; mismatch = encoder wrong. Dir names
+start with `-` → prefix `./` for find/grep. Reconcile for already-orphaned dirs
+designed but deferred (no real orphans on this machine yet). Details in
+CHANGELOG.md "Claude Code project-migration encoder fix".
+
+Handoff to Codex (收尾): (1) codex source is flat-layout (`encodeProjectDir:
+nil` in Sources.swift) → no dir-rename, content-patch only; confirm it covers
+all codex path refs. (2) gemini-cli/iflow have their own lossy encoders — same
+audit method applies. (3) reconcile feature for already-orphaned dirs deferred.
+(4) branch `fix/cc-dir-encoding-compat` @ c3bd626d committed, not pushed, no PR.
+
 ## 2026-06-05 — PR #49 CI follow-up (Codex)
 
 Codex continued PR #49 after GitHub Actions exposed three branch-only CI issues.

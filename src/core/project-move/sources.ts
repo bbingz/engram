@@ -43,6 +43,7 @@ export function encodeIflow(abs: string): string {
 export type SourceId =
   | 'claude-code'
   | 'codex'
+  | 'codex-archived'
   | 'gemini-cli'
   | 'opencode'
   | 'antigravity'
@@ -68,8 +69,8 @@ export interface SourceRoot {
  * The session root directories a project move must consider.
  * Returns absolute paths rooted at `home` (default: homedir()).
  *
- * Ordering: known grouped sources first (claude-code, codex, gemini-cli,
- * iflow, qoder), followed by flat-layout roots.
+ * Ordering: known grouped sources first (claude-code, codex active/archived,
+ * gemini-cli, iflow, qoder), followed by flat-layout roots.
  */
 export function getSourceRoots(home?: string): SourceRoot[] {
   const h = home ?? homedir();
@@ -83,6 +84,11 @@ export function getSourceRoots(home?: string): SourceRoot[] {
       id: 'codex',
       path: join(h, '.codex', 'sessions'),
       encodeProjectDir: null, // flat: date-based subdirs, no per-project grouping
+    },
+    {
+      id: 'codex-archived',
+      path: join(h, '.codex', 'archived_sessions'),
+      encodeProjectDir: null, // flat: archived rollout JSONL files
     },
     {
       id: 'gemini-cli',

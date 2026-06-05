@@ -11,6 +11,7 @@ import Foundation
 public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case claudeCode = "claude-code"
     case codex
+    case codexArchived = "codex-archived"
     case geminiCli = "gemini-cli"
     case iflow
     case qoder
@@ -63,9 +64,9 @@ public struct WalkIssue: Equatable, Sendable {
 
 public enum SessionSources {
     /// The session roots a project move must consider. Ordering matches
-    /// Node parity: known-active first (claude-code → codex → gemini-cli →
-    /// iflow → qoder), then flat-layout tail (opencode → antigravity →
-    /// antigravity-legacy → commandcode → copilot).
+    /// Node parity: known-active first (claude-code → codex active/archived
+    /// → gemini-cli → iflow → qoder), then flat-layout tail (opencode →
+    /// antigravity → antigravity-legacy → commandcode → copilot).
     public static func roots(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [SourceRoot] {
@@ -79,6 +80,11 @@ public enum SessionSources {
             SourceRoot(
                 id: .codex,
                 path: (home as NSString).appendingPathComponent(".codex/sessions"),
+                encodeProjectDir: nil
+            ),
+            SourceRoot(
+                id: .codexArchived,
+                path: (home as NSString).appendingPathComponent(".codex/archived_sessions"),
                 encodeProjectDir: nil
             ),
             SourceRoot(
