@@ -7,6 +7,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Service writer gate timing test hardening (2026-06-06, Codex)
+
+Closed a still-current Round 5 test-stability finding.
+
+- **Fix**: `ServiceWriterGateTests.testSemaphoreReleasesPermitWhenWaiterCancelledAfterSignal`
+  now runs 200 deterministic queued-waiter iterations instead of 2000 and uses
+  a 1s acquire timeout instead of 200ms. The test still exercises the
+  cancel-after-signal permit leak window, but no longer creates an avoidable CI
+  timing hazard.
+- **Verification**: the correct scheme is `EngramServiceCore` with the
+  `EngramServiceCoreTests` target selected; `ServiceWriterGateTests` passed 9
+  tests. The initially tried non-existent `EngramServiceCoreTests` scheme
+  failed at xcodebuild scheme resolution, not test execution.
+
 ### Project archive gitdir marker validation (2026-06-06, Codex)
 
 Closed a surviving low-priority project-migration review finding.

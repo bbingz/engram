@@ -1,5 +1,25 @@
 # Engram Local Memory
 
+## 2026-06-06 — Service writer gate timing test hardening (Codex)
+
+Codex closed a still-current Round 5 test-stability finding.
+
+Change:
+- `ServiceWriterGateTests.testSemaphoreReleasesPermitWhenWaiterCancelledAfterSignal`
+  now runs 200 deterministic queued-waiter iterations instead of 2000.
+- The fresh-acquire leak detector timeout is now 1s instead of 200ms, reducing
+  avoidable CI timing sensitivity while preserving the cancel-after-signal
+  permit-leak assertion.
+
+Verification:
+- First attempted `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramServiceCoreTests ...`; this failed because `EngramServiceCoreTests` is
+  a target, not a scheme.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS'
+  -only-testing:EngramServiceCoreTests/ServiceWriterGateTests
+  CODE_SIGNING_ALLOWED=NO` passed 9 tests.
+
 ## 2026-06-06 — Project archive gitdir marker validation (Codex)
 
 Codex closed a surviving low-priority project-migration review finding in
