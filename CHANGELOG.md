@@ -7,6 +7,53 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Node 24 agent-instruction drift cleanup (2026-06-06, Codex)
+
+Closed the remaining current-documentation drift after the Node 24 migration.
+
+- **Fix**: `.github/copilot-instructions.md` now tells Copilot agents to use
+  Node 24 and cites `.nvmrc`, `package.json` engines, and CI as the source of
+  truth.
+- **Verification**: checked `.nvmrc`, `package.json` engines, current GitHub
+  workflows, and non-archive Node-version references. The only remaining Node
+  20/22 mentions are package dependency engine ranges or archived/historical
+  review documents that should not be rewritten.
+
+### Local build 752 deployed (2026-06-06, Codex)
+
+Deployed and restarted the local macOS app from current `main`.
+
+- **Build**: ran `ENGRAM_BUILD_NUMBER=$(git rev-list --count HEAD)
+  macos/scripts/build-release.sh --local-only`; Developer ID export succeeded
+  anyway, producing `macos/build/EngramExport/Engram.app`.
+- **Verification**: `release-verify.sh` passed full Developer ID checks:
+  bundle hygiene, helper structure, version `0.1.0 (752)`,
+  `codesign --verify --deep --strict`, Hardened Runtime, Developer ID
+  authority, and secure timestamp.
+- **Deploy/restart**: ran `macos/scripts/deploy-local.sh
+  macos/build/EngramExport/Engram.app`, opened `/Applications/Engram.app`, and
+  terminated old `EngramMCP` helpers so future MCP clients respawn from the new
+  bundle.
+- **Runtime proof**: `/Applications/Engram.app` reports
+  `CFBundleVersion=752`; running processes are
+  `/Applications/Engram.app/Contents/MacOS/Engram` and
+  `/Applications/Engram.app/Contents/Helpers/EngramService`; service socket is
+  present at `~/.engram/run/engram-service.sock`.
+
+### Stale follow-up plan reconciliation (2026-06-06, Codex)
+
+Reconciled current backlog surfaces after the recent PR sequence.
+
+- **Project migration handoff**: updated the older Claude Code encoder handoff
+  entry to reflect that Codex active/archived coverage, Gemini/iFlow grouped
+  source coverage, PR #51, and PR #52 are closed. Historical reconcile for
+  already-orphaned Claude Code dirs remains explicitly deferred because the
+  real-disk audit found no local orphan to repair.
+- **FTS plan status**: marked
+  `docs/superpowers/plans/2026-06-04-fts-table-swap-rebuild.md` complete and
+  linked it to merged PR #48 (`d199808c`), so backlog scans no longer report the
+  already-shipped FTS table-swap work as open.
+
 ### Swift UI P3 cleanup follow-up (2026-06-06, Codex)
 
 Closed a small still-current UI/concurrency cleanup slice from
@@ -196,21 +243,21 @@ the same way.
   diverges from real on-disk naming. (Dir names start with `-`, so prefix paths
   with `./` or use `--` with find/grep.)
 
-**Handoff — open items for Codex to finish (收尾):**
-1. **Codex source audit**: `codex` is wired flat-layout in
-   `Sources.swift` (`encodeProjectDir: nil`) — there is NO per-project dir
-   rename for codex, only content patching of `~/.codex/sessions/*`. Confirm the
-   content rewrite covers every codex path reference (e.g. `session_meta.cwd`,
-   originator, embedded paths) and that no codex case relies on a dir name.
+**Handoff closeout update (2026-06-06, Codex):**
+1. **Codex source audit**: closed by "Codex archived-session
+   project-migration coverage" above. Codex remains intentionally flat-layout
+   (`encodeProjectDir: nil`); active and archived JSONL roots are content-patched
+   and covered by Swift/TS orchestrator tests.
 2. **Other grouped encoders**: closed by "Project migration Gemini/iFlow
-   compatibility follow-up" above. Gemini TS now matches real slug values; iFlow
-   has an observed-dir drift guard for real content/dir mismatches.
-3. **Reconcile feature** for dirs ALREADY orphaned by a past buggy CC migration
-   (design in this entry §"Not done"): startup backfill, detection MUST use the
-   corrected encoder, collision-safe rename, ship after the encoder fix. Deferred
-   — verified no real orphans on this machine yet.
-4. **Branch**: `fix/cc-dir-encoding-compat` @ `c3bd626d` is committed but NOT
-   pushed and has no PR. Push + open PR when ready.
+   compatibility follow-up" above. Gemini TS matches real slug values; iFlow has
+   an observed-dir drift guard for real content/dir mismatches.
+3. **Claude Code / qoder encoder branch**: pushed, reviewed, and merged via PR
+   #51 (`485b932b`), with the MCP-only residual helper fixed via PR #52
+   (`f8180379`).
+4. **Reconcile feature** for dirs ALREADY orphaned by a past buggy CC migration
+   remains intentionally deferred. It is a no-op on this machine per the real-disk
+   encoder audit; future implementation must use the corrected encoder and
+   collision-safe rename logic.
 
 ### PR #49 CI follow-up (2026-06-05, Codex)
 

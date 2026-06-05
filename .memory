@@ -1,5 +1,76 @@
 # Engram Local Memory
 
+## 2026-06-06 — Node 24 agent-instruction drift cleanup (Codex)
+
+Codex reconciled the current Node runtime surfaces after the earlier Node 24
+migration. `.nvmrc` pins `24`, `package.json` declares `>=24 <27`, and the
+active GitHub Actions workflows use `actions/setup-node` with `node-version:
+24`, but `.github/copilot-instructions.md` still told Copilot to use Node 22
+and claimed CI used 22.
+
+Change:
+- Updated `.github/copilot-instructions.md` to instruct agents to use Node 24
+  and to cite `.nvmrc`, `package.json`, and CI as the authoritative runtime
+  surfaces.
+
+Verification:
+- `cat .nvmrc` -> `24`.
+- `node -e "const p=require('./package.json'); console.log(p.engines.node,
+  p.devDependencies['@types/node'])"` confirmed `>=24 <27` and `^24.0.0`.
+- `rg` over non-archive repo files found no active Node 20/22 runtime
+  instruction besides package dependency engine ranges; archive/review
+  historical references were intentionally left alone.
+
+## 2026-06-06 — Local build 752 deployed (Codex)
+
+Codex deployed current `main` to the local macOS app install and restarted the
+runtime.
+
+Build/deploy:
+- Previous `/Applications/Engram.app` was build `747`; current `main` commit
+  count is `752`.
+- Ran `ENGRAM_BUILD_NUMBER=$(git rev-list --count HEAD)
+  macos/scripts/build-release.sh --local-only`. The build resolved version
+  `0.1.0 (752)` and Developer ID export succeeded despite `--local-only`.
+- `release-verify.sh` passed full Developer ID verification on
+  `macos/build/EngramExport/Engram.app`: bundle hygiene, helper structure,
+  version `0.1.0 (752)`, `codesign --verify --deep --strict`, Hardened Runtime,
+  Developer ID Application authority, and secure timestamp.
+- Ran `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app` and
+  `open -a /Applications/Engram.app`.
+
+Runtime verification:
+- `/Applications/Engram.app/Contents/Info.plist` reports
+  `CFBundleVersion=752`, `CFBundleShortVersionString=0.1.0`.
+- Running processes after restart:
+  `/Applications/Engram.app/Contents/MacOS/Engram` and
+  `/Applications/Engram.app/Contents/Helpers/EngramService --service-socket
+  /Users/bing/.engram/run/engram-service.sock --database-path
+  /Users/bing/.engram/index.sqlite`.
+- Old long-running `EngramMCP` helpers were terminated; no `EngramMCP` process
+  remained immediately after cleanup. Future MCP clients will respawn from the
+  newly installed bundle.
+- Service socket exists at `~/.engram/run/engram-service.sock`.
+
+## 2026-06-06 — Stale follow-up plan reconciliation (Codex)
+
+Codex reconciled current backlog/handoff surfaces after PR #48/#51/#52/#53.
+
+Changes:
+- Updated the Claude Code encoder handoff inside `CHANGELOG.md` so it no
+  longer claims Codex source audit, grouped-source audit, or PR push/open work
+  is pending. Those are closed by Codex active+archived migration coverage,
+  Gemini/iFlow compatibility work, PR #51 (`485b932b`), and PR #52
+  (`f8180379`).
+- Marked `docs/superpowers/plans/2026-06-04-fts-table-swap-rebuild.md`
+  checklist items complete and added a status note linking completion to PR #48
+  (`d199808c feat(db): add fts table-swap rebuild (#48)`).
+
+Remaining explicit deferred item:
+- Reconcile for already-orphaned historical Claude Code dirs remains deferred;
+  the real-disk audit found no local orphan to repair, so this is not an active
+  blocker.
+
 ## 2026-06-06 — Swift UI P3 cleanup follow-up (Codex)
 
 Codex continued the broad review-remediation goal on branch
@@ -195,11 +266,13 @@ start with `-` → prefix `./` for find/grep. Reconcile for already-orphaned dir
 designed but deferred (no real orphans on this machine yet). Details in
 CHANGELOG.md "Claude Code project-migration encoder fix".
 
-Handoff to Codex (收尾): (1) codex source is flat-layout (`encodeProjectDir:
-nil` in Sources.swift) → no dir-rename, content-patch only; confirm it covers
-all codex path refs. (2) gemini-cli/iflow have their own lossy encoders — same
-audit method applies. (3) reconcile feature for already-orphaned dirs deferred.
-(4) branch `fix/cc-dir-encoding-compat` @ c3bd626d committed, not pushed, no PR.
+Closeout update (2026-06-06, Codex): the handoff items above are resolved except
+for the intentionally deferred reconcile feature. Codex flat-layout coverage is
+closed by the active+archived Codex migration tests; Gemini/iFlow grouped-source
+coverage is closed by the compatibility follow-up; the Claude/qoder encoder fix
+was pushed and merged via PR #51 (`485b932b`), and the MCP-only residual helper
+was fixed via PR #52 (`f8180379`). Reconcile for already-orphaned historical dirs
+remains deferred because the real-disk audit found no local orphan to repair.
 
 ## 2026-06-05 — PR #49 CI follow-up (Codex)
 
@@ -356,7 +429,8 @@ Verification:
 
 Residual risk:
 - This is a TypeScript API cleanup only. Swift/macOS code was not changed.
-- Full online FTS table-swap rebuild remains the next independent follow-up.
+- Historical note: at the time, full online FTS table-swap rebuild was still
+  pending. It is now closed by PR #48 (`d199808c`).
 
 ## 2026-06-04 — Additional non-blocking follow-up remediation (Codex)
 

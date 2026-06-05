@@ -1,8 +1,15 @@
 # FTS Table-Swap Rebuild Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add TypeScript `sessions_fts` online table-swap rebuild support that keeps active search available, builds a shadow FTS table safely, and swaps it in after recoverable FTS work is clear.
+
+**Status (2026-06-06):** Completed and merged via PR #48,
+`d199808c feat(db): add fts table-swap rebuild (#48)`. The implementation
+added `src/core/db/fts-rebuild-policy.ts`, migration/repository/index-job
+wiring, targeted Vitest coverage, and durable records in `CHANGELOG.md` /
+`.memory`. The checklist below is marked complete to reflect current `main`;
+the plan remains as historical implementation evidence.
 
 **Architecture:** Add `src/core/db/fts-rebuild-policy.ts` as the fixed-name policy module for FTS version state, shadow table creation/copy, dual-write helpers, dual-delete helpers, and finalization. Wire migration, FTS write/delete paths, and `IndexJobRunner` through the policy while preserving existing search reads from active `sessions_fts`.
 
@@ -33,7 +40,7 @@
 - Modify: `src/core/db/migration.ts`
 - Test: `tests/core/db-migration.test.ts`
 
-- [ ] **Step 1: Write failing migration tests**
+- [x] **Step 1: Write failing migration tests**
 
 Add tests to `tests/core/db-migration.test.ts`:
 
@@ -153,7 +160,7 @@ it('marks FTS version current for an empty database without pending rebuild', ()
 });
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run:
 
@@ -163,7 +170,7 @@ npx vitest run tests/core/db-migration.test.ts -t "FTS table-swap|empty database
 
 Expected: FAIL because `sessions_fts_rebuild` and `fts_rebuild_version` do not exist yet.
 
-- [ ] **Step 3: Add the rebuild policy module and wire migration**
+- [x] **Step 3: Add the rebuild policy module and wire migration**
 
 Create `src/core/db/fts-rebuild-policy.ts` with fixed-name helpers:
 
@@ -331,7 +338,7 @@ Replace the inline `ftsVersion !== FTS_VERSION` transaction with:
 applyFtsRebuildPolicy(db, { getMetadata, setMetadata });
 ```
 
-- [ ] **Step 4: Run migration tests and verify they pass**
+- [x] **Step 4: Run migration tests and verify they pass**
 
 Run:
 
@@ -341,7 +348,7 @@ npx vitest run tests/core/db-migration.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
 git add src/core/db/fts-rebuild-policy.ts src/core/db/migration.ts tests/core/db-migration.test.ts
@@ -358,7 +365,7 @@ git commit -m "feat(db): start fts table-swap rebuilds"
 - Test: `tests/core/db.test.ts`
 - Test: `tests/core/maintenance.test.ts`
 
-- [ ] **Step 1: Write failing dual-write and dual-delete tests**
+- [x] **Step 1: Write failing dual-write and dual-delete tests**
 
 Add tests to `tests/core/db.test.ts`:
 
@@ -509,7 +516,7 @@ it('removes subagent FTS rows from active and rebuild tables', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run:
 
@@ -519,7 +526,7 @@ npx vitest run tests/core/db.test.ts tests/core/maintenance.test.ts -t "dual|sub
 
 Expected: FAIL because rebuild table is not yet updated/deleted.
 
-- [ ] **Step 3: Implement dual-write / dual-delete helpers**
+- [x] **Step 3: Implement dual-write / dual-delete helpers**
 
 Extend `src/core/db/fts-rebuild-policy.ts`:
 
@@ -606,7 +613,7 @@ deletes call `deleteFtsContentForRebuild`.
 Update `src/core/db/maintenance.ts` so subagent FTS cleanup calls
 `deleteSubagentFtsForRebuild`.
 
-- [ ] **Step 4: Run targeted tests and verify they pass**
+- [x] **Step 4: Run targeted tests and verify they pass**
 
 Run:
 
@@ -616,7 +623,7 @@ npx vitest run tests/core/db.test.ts tests/core/maintenance.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 git add src/core/db/fts-rebuild-policy.ts src/core/db/fts-repo.ts src/core/db/database.ts src/core/db/session-repo.ts src/core/db/maintenance.ts tests/core/db.test.ts tests/core/maintenance.test.ts
@@ -629,7 +636,7 @@ git commit -m "fix(db): dual-write pending fts rebuild content"
 - Modify: `src/core/index-job-runner.ts`
 - Test: `tests/core/index-job-runner.test.ts`
 
-- [ ] **Step 1: Write failing finalization tests**
+- [x] **Step 1: Write failing finalization tests**
 
 Add tests to `tests/core/index-job-runner.test.ts`:
 
@@ -718,7 +725,7 @@ it('preserves copied active FTS rows when reopened jobs only mark completed', as
 });
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run:
 
@@ -728,7 +735,7 @@ npx vitest run tests/core/index-job-runner.test.ts -t "finalizes|preserves copie
 
 Expected: FAIL because `IndexJobRunner` does not finalize the rebuild.
 
-- [ ] **Step 3: Wire finalization**
+- [x] **Step 3: Wire finalization**
 
 Update `src/core/index-job-runner.ts` to call finalization after FTS jobs that
 leave recoverable status.
@@ -755,7 +762,7 @@ finalizeFtsRebuildIfReady(): boolean {
 }
 ```
 
-- [ ] **Step 4: Run index job tests and verify they pass**
+- [x] **Step 4: Run index job tests and verify they pass**
 
 Run:
 
@@ -765,7 +772,7 @@ npx vitest run tests/core/index-job-runner.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```bash
 git add src/core/index-job-runner.ts src/core/db/database.ts tests/core/index-job-runner.test.ts
@@ -778,7 +785,7 @@ git commit -m "fix(index): finalize pending fts rebuilds"
 - Modify: `CHANGELOG.md`
 - Modify: `.memory`
 
-- [ ] **Step 1: Update durable docs**
+- [x] **Step 1: Update durable docs**
 
 Add a new `[Unreleased]` entry to `CHANGELOG.md`:
 
@@ -796,7 +803,7 @@ Add a new `[Unreleased]` entry to `CHANGELOG.md`:
 Add a matching top entry to `.memory` with branch, files, checks run, and
 remaining risk that `insights_fts` table-swap is intentionally out of scope.
 
-- [ ] **Step 2: Run full local verification**
+- [x] **Step 2: Run full local verification**
 
 Run:
 
@@ -818,14 +825,14 @@ Expected:
 - full test suite: PASS
 - diff check: no output
 
-- [ ] **Step 3: Commit docs**
+- [x] **Step 3: Commit docs**
 
 ```bash
 git add CHANGELOG.md .memory
 git commit -m "docs(memory): record fts table-swap rebuild"
 ```
 
-- [ ] **Step 4: Push and open PR**
+- [x] **Step 4: Push and open PR**
 
 ```bash
 git status --short
@@ -837,7 +844,7 @@ gh pr create --base main --head feat/fts-table-swap-rebuild \
 
 PR body must include summary and the exact verification commands from Step 2.
 
-- [ ] **Step 5: Watch CI**
+- [x] **Step 5: Watch CI**
 
 Run:
 
