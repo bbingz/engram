@@ -7,6 +7,7 @@
 // orchestrator and the post-move review.
 import Darwin
 import Foundation
+import GRDB
 
 public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case claudeCode = "claude-code"
@@ -20,6 +21,188 @@ public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case antigravityLegacy = "antigravity-legacy"
     case commandcode
     case copilot
+}
+
+public struct OpenCodeSQLitePatchResult: Equatable, Sendable {
+    public let databasePath: String
+    public let sessionIds: [String]
+
+    public init(databasePath: String, sessionIds: [String]) {
+        self.databasePath = databasePath
+        self.sessionIds = sessionIds
+    }
+
+    public var occurrences: Int { sessionIds.count }
+}
+
+public enum OpenCodeSQLiteProjectMove {
+    public static func databasePath(root: String) -> String {
+        (root as NSString).appendingPathComponent("opencode.db")
+    }
+
+    public static func countReferences(
+        root: String,
+        oldPath: String
+    ) throws -> OpenCodeSQLitePatchResult {
+        let dbPath = databasePath(root: root)
+        guard FileManager.default.fileExists(atPath: dbPath) else {
+            return OpenCodeSQLitePatchResult(databasePath: dbPath, sessionIds: [])
+        }
+        var configuration = Configuration()
+        configuration.readonly = true
+        let queue = try DatabaseQueue(path: dbPath, configuration: configuration)
+        let ids = try queue.read { db -> [String] in
+            guard try hasSessionDirectory(db) else { return [] }
+            return try matchingSessions(db, oldPath: oldPath).map(\.id)
+        }
+        return OpenCodeSQLitePatchResult(databasePath: dbPath, sessionIds: ids)
+    }
+
+    public static func patch(
+        root: String,
+        oldPath: String,
+        newPath: String
+    ) throws -> OpenCodeSQLitePatchResult {
+        let dbPath = databasePath(root: root)
+        guard FileManager.default.fileExists(atPath: dbPath) else {
+            return OpenCodeSQLitePatchResult(databasePath: dbPath, sessionIds: [])
+        }
+        let queue = try DatabaseQueue(path: dbPath)
+        let ids = try queue.write { db -> [String] in
+            guard try hasSessionDirectory(db) else { return [] }
+            let rows = try matchingSessions(db, oldPath: oldPath)
+            for row in rows {
+                let suffix = String(row.directory.dropFirst(row.matchedPath.count))
+                try db.execute(
+                    sql: "UPDATE session SET directory = ? WHERE id = ? AND directory = ?",
+                    arguments: [newPath + suffix, row.id, row.directory]
+                )
+            }
+            return rows.map(\.id)
+        }
+        return OpenCodeSQLitePatchResult(databasePath: dbPath, sessionIds: ids)
+    }
+
+    public static func reverse(
+        databasePath: String,
+        sessionIds: [String],
+        oldPath: String,
+        newPath: String
+    ) throws {
+        guard !sessionIds.isEmpty,
+              FileManager.default.fileExists(atPath: databasePath)
+        else { return }
+        let queue = try DatabaseQueue(path: databasePath)
+        try queue.write { db in
+            guard try hasSessionDirectory(db) else { return }
+            let variants = pathVariants(oldPath)
+            for id in sessionIds {
+                guard
+                    let directory = try String.fetchOne(
+                        db,
+                        sql: "SELECT directory FROM session WHERE id = ?",
+                        arguments: [id]
+                    ),
+                    let matched = matchingPrefix(directory: directory, variants: variants)
+                else { continue }
+                let suffix = String(directory.dropFirst(matched.count))
+                try db.execute(
+                    sql: "UPDATE session SET directory = ? WHERE id = ? AND directory = ?",
+                    arguments: [newPath + suffix, id, directory]
+                )
+            }
+        }
+    }
+
+    public static func residualReferenceLocators(root: String, oldPath: String) -> [String] {
+        guard let result = try? countReferences(root: root, oldPath: oldPath) else {
+            return []
+        }
+        return result.sessionIds.map { "\(result.databasePath)::session:\($0):directory" }
+    }
+
+    private static func hasSessionDirectory(_ db: GRDB.Database) throws -> Bool {
+        let tableExists = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'session'
+            )
+            """
+        ) ?? false
+        guard tableExists else { return false }
+        let names = Set(try String.fetchAll(
+            db,
+            sql: "SELECT name FROM pragma_table_info('session')"
+        ))
+        return names.contains("id") && names.contains("directory")
+    }
+
+    private struct MatchingSession {
+        let id: String
+        let directory: String
+        let matchedPath: String
+    }
+
+    private static func matchingSessions(_ db: GRDB.Database, oldPath: String) throws -> [MatchingSession] {
+        let variants = pathVariants(oldPath)
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, directory FROM session
+            WHERE directory IN (?, ?, ?)
+               OR substr(directory, 1, length(?)) = ?
+               OR substr(directory, 1, length(?)) = ?
+               OR substr(directory, 1, length(?)) = ?
+            ORDER BY id
+            """,
+            arguments: [
+                variants[0], variants[1], variants[2],
+                variants[0] + "/", variants[0] + "/",
+                variants[1] + "/", variants[1] + "/",
+                variants[2] + "/", variants[2] + "/",
+            ]
+        )
+        return rows.compactMap { row in
+            let directory: String = row["directory"]
+            guard let matched = matchingPrefix(directory: directory, variants: variants) else {
+                return nil
+            }
+            return MatchingSession(id: row["id"], directory: directory, matchedPath: matched)
+        }
+    }
+
+    private static func pathVariants(_ path: String) -> [String] {
+        var variants: [String] = []
+        for value in [
+            path,
+            path.precomposedStringWithCanonicalMapping,
+            path.decomposedStringWithCanonicalMapping,
+        ] {
+            let alreadySeen = variants.contains { existing in
+                existing.utf8.elementsEqual(value.utf8)
+            }
+            if !alreadySeen {
+                variants.append(value)
+            }
+        }
+        while variants.count < 3 {
+            variants.append(variants[0])
+        }
+        return variants
+    }
+
+    private static func matchingPrefix(directory: String, variants: [String]) -> String? {
+        for variant in variants {
+            if directory.utf8.elementsEqual(variant.utf8)
+                || directory.utf8.starts(with: (variant + "/").utf8)
+            {
+                return variant
+            }
+        }
+        return nil
+    }
 }
 
 public struct SourceRoot: Sendable {

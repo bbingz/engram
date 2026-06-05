@@ -40,6 +40,21 @@ export function encodeIflow(abs: string): string {
     .join('-');
 }
 
+/**
+ * Encode a project cwd into the Gemini CLI project slug used under
+ * `~/.gemini/tmp/<slug>/` and in `~/.gemini/projects.json`.
+ *
+ * Observed Gemini CLI rule: slugify basename by lowercasing, converting `_` to
+ * `-`, then stripping wrapping dashes.
+ */
+export function encodeGemini(abs: string): string {
+  return basename(abs)
+    .toLowerCase()
+    .replace(/_/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
+}
+
 export type SourceId =
   | 'claude-code'
   | 'codex'
@@ -93,10 +108,7 @@ export function getSourceRoots(home?: string): SourceRoot[] {
     {
       id: 'gemini-cli',
       path: join(h, '.gemini', 'tmp'),
-      // Gemini's tmp/ groups chats under <basename(cwd)>/. Sharp edge:
-      // two projects with the same basename collide in one dir. Accepting
-      // the risk (mvp.py never handled this either).
-      encodeProjectDir: basename,
+      encodeProjectDir: encodeGemini,
     },
     {
       id: 'iflow',

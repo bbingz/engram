@@ -9,7 +9,7 @@
 //   0.5. acquireLock (prevents concurrent project moves)
 //   1. safeMoveDir physical
 //   2. Rename per-project dirs for each source that groups by project
-//      (Claude Code = encoded cwd, Gemini = basename, iFlow = iflow-encoded)
+//      (Claude Code = encoded cwd, Gemini = slug, iFlow = iflow-encoded)
 //   3. Scan all source roots → findReferencingFiles → patchFile (per-file CAS)
 //   4. auto_fix_dot_quote on the patched files
 //   B. markFsDone (state='fs_done', detail=per-source stats + manifest)
@@ -24,9 +24,10 @@
 //   - release lock
 
 import { randomUUID } from 'node:crypto';
-import { unlinkSync } from 'node:fs';
-import { rename, stat } from 'node:fs/promises';
+import { existsSync, unlinkSync } from 'node:fs';
+import { readFile, rename, stat } from 'node:fs/promises';
 import { isAbsolute, join, resolve as pathResolve } from 'node:path';
+import BetterSqlite3, { type Database as SqliteDatabase } from 'better-sqlite3';
 import type { Database } from '../db.js';
 import { safeMoveDir } from './fs-ops.js';
 import {
@@ -40,6 +41,7 @@ import { patchFile } from './jsonl-patch.js';
 import { acquireLock, defaultLockPath, releaseLock } from './lock.js';
 import { type ReviewResult, reviewScan } from './review.js';
 import {
+  encodeGemini,
   findReferencingFiles,
   getSourceRoots,
   type SourceId,
@@ -52,6 +54,17 @@ interface DirRenamePlan {
   sourceId: SourceId;
   oldDir: string;
   newDir: string;
+}
+
+interface SqlitePatchEntry {
+  path: string;
+  sessionIds: string[];
+}
+
+interface OpenCodeMatchingSession {
+  id: string;
+  directory: string;
+  matchedPath: string;
 }
 
 /**
@@ -312,29 +325,59 @@ export async function runProjectMove(
     | import('./gemini-projects-json.js').GeminiProjectsJsonUpdatePlan
     | null = null;
   let geminiProjectsApplied = false;
+  const sqlitePatches: SqlitePatchEntry[] = [];
 
   try {
     // Step 0.5: compute per-source rename plans BEFORE moving (src exists,
     // dst does not). Each source with a non-null encodeProjectDir contributes
     // one plan; sources with flat layouts (codex/opencode/etc.) are skipped.
+    // If structured session content proves the old cwd lives under a
+    // different grouped dir, trust the observed dir over the theoretical
+    // encoder. This preserves history across upstream encoder drift or older
+    // buggy migrations instead of silently leaving an orphaned project dir.
     const roots = getSourceRoots(opts.home);
     const dirRenamePlans: DirRenamePlan[] = [];
     for (const root of roots) {
       if (!root.encodeProjectDir) continue;
-      const oldName = root.encodeProjectDir(src);
+      let oldName = root.encodeProjectDir(src);
       const newName = root.encodeProjectDir(dst);
-      if (oldName === newName) {
-        // Lossy encoding may collapse (e.g. iflow `/a/-foo-/p` and
-        // `/a/foo/p` both → `-a-foo-p`). Or cross-parent move where
-        // basename stayed the same (gemini). Either way, no rename needed.
-        skippedDirs.push({ sourceId: root.id, reason: 'noop' });
-        continue;
+      if (root.id === 'gemini-cli') {
+        const projectsFile = join(root.path, '..', 'projects.json');
+        geminiProjectsPlan = await planGeminiProjectsJsonUpdate(
+          projectsFile,
+          src,
+          dst,
+        );
+        oldName = geminiProjectsPlan.oldEntry?.name ?? oldName;
       }
-      dirRenamePlans.push({
-        sourceId: root.id,
-        oldDir: join(root.path, oldName),
-        newDir: join(root.path, newName),
-      });
+      const observedOldDirs = await findGroupedDirsWithCwd(root.path, src);
+      const oldDirs =
+        observedOldDirs.length > 0
+          ? observedOldDirs
+          : [join(root.path, oldName)];
+      for (const oldDir of oldDirs) {
+        if (basename(oldDir) === newName) {
+          // Lossy encoding may collapse (e.g. iflow `/a/-foo-/p` and
+          // `/a/foo/p` both → `-a-foo-p`). Or cross-parent move where
+          // the Gemini slug stayed the same. Either way, no rename needed.
+          skippedDirs.push({ sourceId: root.id, reason: 'noop' });
+          continue;
+        }
+        dirRenamePlans.push({
+          sourceId: root.id,
+          oldDir,
+          newDir: join(root.path, newName),
+        });
+      }
+    }
+
+    const plannedTargets = new Map<string, DirRenamePlan>();
+    for (const plan of dirRenamePlans) {
+      const prev = plannedTargets.get(plan.newDir);
+      if (prev && prev.oldDir !== plan.oldDir) {
+        throw new DirCollisionError(plan.sourceId, prev.oldDir, plan.newDir);
+      }
+      plannedTargets.set(plan.newDir, plan);
     }
 
     // Step 0.6: pre-flight — catch collisions BEFORE the physical move so
@@ -369,7 +412,7 @@ export async function runProjectMove(
       throw new DirCollisionError(plan.sourceId, plan.oldDir, plan.newDir);
     }
 
-    // Step 0.7: Gemini-specific probes. Shared-basename hijack + plan the
+    // Step 0.7: Gemini-specific probes. Shared-slug hijack + plan the
     // projects.json rewrite. Only runs if gemini-cli is in the plan list.
     const geminiPlan = dirRenamePlans.find((d) => d.sourceId === 'gemini-cli');
     if (geminiPlan) {
@@ -378,12 +421,12 @@ export async function runProjectMove(
         ? join(geminiRoot.path, '..', 'projects.json')
         : null;
       if (projectsFile) {
-        // Gemini major #3: shared-basename hijack. If another cwd maps to
-        // the same basename as dst, renaming the dir would steal their
+        // Gemini major #3: shared-slug hijack. If another cwd maps to
+        // the same slug as dst, renaming the dir would steal their
         // sessions.
         const conflicts = await collectOtherGeminiCwdsSharingBasename(
           projectsFile,
-          basename(dst),
+          encodeGemini(dst),
           src,
         );
         if (conflicts.length > 0) {
@@ -393,13 +436,8 @@ export async function runProjectMove(
             conflicts,
           );
         }
-        // Codex MAJOR #1: plan the projects.json rewrite. Snapshot is
-        // captured here so compensation can restore even if apply fails.
-        geminiProjectsPlan = await planGeminiProjectsJsonUpdate(
-          projectsFile,
-          src,
-          dst,
-        );
+        // Codex MAJOR #1: projects.json rewrite was already planned in Step
+        // 0.5 so its old entry can also identify the real old tmp dir.
       }
     }
 
@@ -504,6 +542,14 @@ export async function runProjectMove(
           occurrences += r.count;
         }
       }
+      if (root.id === 'opencode') {
+        const sqlitePatch = patchOpenCodeSqlite(root.path, src, dst);
+        if (sqlitePatch.sessionIds.length > 0) {
+          sqlitePatches.push(sqlitePatch);
+          filesPatched++;
+          occurrences += sqlitePatch.sessionIds.length;
+        }
+      }
       perSource.push({
         id: root.id,
         root: root.path,
@@ -601,6 +647,8 @@ export async function runProjectMove(
           patchFailed: [] as Array<{ path: string; error: string }>,
           dirsRestored: [] as DirRenamePlan[],
           dirRestoreErrors: [] as Array<{ sourceId: SourceId; error: string }>,
+          sqliteReverted: 0,
+          sqliteFailed: [] as Array<{ path: string; error: string }>,
           moveReverted: false,
           moveRevertError: null as string | null,
           geminiProjectsJsonRestored: 'skipped' as const,
@@ -611,6 +659,7 @@ export async function runProjectMove(
           dst,
           renamedDirs,
           geminiProjectsApplied ? geminiProjectsPlan : null,
+          sqlitePatches,
         );
     const combined = formatFailureWithCompensation(errorMsg, report);
     db.failMigration(migrationId, combined);
@@ -631,6 +680,8 @@ export async function runProjectMove(
 interface CompensationReport {
   patchReverted: number;
   patchFailed: Array<{ path: string; error: string }>;
+  sqliteReverted: number;
+  sqliteFailed: Array<{ path: string; error: string }>;
   dirsRestored: DirRenamePlan[];
   dirRestoreErrors: Array<{ sourceId: SourceId; error: string }>;
   moveReverted: boolean;
@@ -664,6 +715,12 @@ function formatFailureWithCompensation(
       'rollback: ~/.gemini/projects.json reverse failed — inspect manually',
     );
   }
+  if (report.sqliteFailed.length > 0) {
+    parts.push(
+      `rollback: ${report.sqliteFailed.length} sqlite source(s) could NOT be reverted ` +
+        `(e.g. ${report.sqliteFailed[0].path}: ${report.sqliteFailed[0].error})`,
+    );
+  }
   if (report.moveRevertError) {
     parts.push(
       `rollback: physical move-back failed — ${report.moveRevertError}`,
@@ -675,6 +732,51 @@ function formatFailureWithCompensation(
 function basename(p: string): string {
   const parts = p.replace(/\/+$/, '').split('/');
   return parts[parts.length - 1] ?? '';
+}
+
+async function findGroupedDirsWithCwd(
+  rootPath: string,
+  cwd: string,
+): Promise<string[]> {
+  const prefix = rootPath.endsWith('/') ? rootPath : `${rootPath}/`;
+  const dirs = new Set<string>();
+  for (const file of await findReferencingFiles(rootPath, cwd)) {
+    if (!file.startsWith(prefix)) continue;
+    if (!(await fileHasStructuredCwd(file, cwd))) continue;
+    const rest = file.slice(prefix.length);
+    const firstSegment = rest.split('/')[0];
+    if (!firstSegment) continue;
+    dirs.add(join(rootPath, firstSegment));
+  }
+  return [...dirs].sort();
+}
+
+async function fileHasStructuredCwd(
+  file: string,
+  cwd: string,
+): Promise<boolean> {
+  try {
+    const st = await stat(file);
+    if (st.size > DRY_RUN_READ_CAP) return false;
+    const text = await readFile(file, 'utf8');
+    const lines = text.includes('\n') ? text.split(/\r?\n/) : [text];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const obj = JSON.parse(trimmed) as {
+          cwd?: unknown;
+          payload?: { cwd?: unknown };
+        };
+        if (obj.cwd === cwd || obj.payload?.cwd === cwd) return true;
+      } catch {
+        // Literal references are patch candidates, but not project-dir proof.
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 /**
@@ -709,16 +811,38 @@ async function compensate(
   geminiProjectsPlan:
     | import('./gemini-projects-json.js').GeminiProjectsJsonUpdatePlan
     | null,
+  sqlitePatches: SqlitePatchEntry[],
 ): Promise<CompensationReport> {
   const report: CompensationReport = {
     patchReverted: 0,
     patchFailed: [],
+    sqliteReverted: 0,
+    sqliteFailed: [],
     dirsRestored: [],
     dirRestoreErrors: [],
     moveReverted: false,
     moveRevertError: null,
     geminiProjectsJsonRestored: 'skipped',
   };
+  // Reverse sqlite patches first. The exact session ids are captured during
+  // the forward update so rollback cannot rewrite unrelated rows that
+  // already belonged to the attempted destination path.
+  for (const entry of [...sqlitePatches].reverse()) {
+    try {
+      reverseOpenCodeSqlite(
+        entry.path,
+        entry.sessionIds,
+        attemptedDst,
+        originalSrc,
+      );
+      report.sqliteReverted += entry.sessionIds.length;
+    } catch (err) {
+      report.sqliteFailed.push({
+        path: entry.path,
+        error: (err as Error).message,
+      });
+    }
+  }
   // Reverse file patches in LIFO order — last patched first
   for (const entry of [...manifest].reverse()) {
     try {
@@ -770,6 +894,166 @@ async function compensate(
   return report;
 }
 
+function openCodeDbPath(root: string): string {
+  return join(root, 'opencode.db');
+}
+
+function openCodeManifestPath(dbPath: string): string {
+  return `${dbPath}::session.directory`;
+}
+
+function countOpenCodeSqliteReferences(
+  root: string,
+  oldPath: string,
+): SqlitePatchEntry {
+  const dbPath = openCodeDbPath(root);
+  if (!existsSync(dbPath)) return { path: dbPath, sessionIds: [] };
+  const sqlite = new BetterSqlite3(dbPath, { readonly: true });
+  try {
+    if (!hasOpenCodeSessionDirectory(sqlite)) {
+      return { path: dbPath, sessionIds: [] };
+    }
+    return {
+      path: dbPath,
+      sessionIds: selectOpenCodeMatchingSessions(sqlite, oldPath).map(
+        (row) => row.id,
+      ),
+    };
+  } finally {
+    sqlite.close();
+  }
+}
+
+function patchOpenCodeSqlite(
+  root: string,
+  oldPath: string,
+  newPath: string,
+): SqlitePatchEntry {
+  const dbPath = openCodeDbPath(root);
+  if (!existsSync(dbPath)) return { path: dbPath, sessionIds: [] };
+  const sqlite = new BetterSqlite3(dbPath);
+  try {
+    if (!hasOpenCodeSessionDirectory(sqlite)) {
+      return { path: dbPath, sessionIds: [] };
+    }
+    const rows = selectOpenCodeMatchingSessions(sqlite, oldPath);
+    const update = sqlite.prepare(`
+      UPDATE session
+      SET directory = ?
+      WHERE id = ? AND directory = ?
+    `);
+    const run = sqlite.transaction((matches: OpenCodeMatchingSession[]) => {
+      for (const row of matches) {
+        const suffix = row.directory.slice(row.matchedPath.length);
+        update.run(`${newPath}${suffix}`, row.id, row.directory);
+      }
+    });
+    run(rows);
+    return { path: dbPath, sessionIds: rows.map((row) => row.id) };
+  } finally {
+    sqlite.close();
+  }
+}
+
+function reverseOpenCodeSqlite(
+  dbPath: string,
+  sessionIds: string[],
+  oldPath: string,
+  newPath: string,
+): void {
+  if (sessionIds.length === 0 || !existsSync(dbPath)) return;
+  const sqlite = new BetterSqlite3(dbPath);
+  try {
+    if (!hasOpenCodeSessionDirectory(sqlite)) return;
+    const update = sqlite.prepare(`
+      UPDATE session
+      SET directory = ?
+      WHERE id = ? AND directory = ?
+    `);
+    const variants = pathVariants(oldPath);
+    const getDirectory = sqlite
+      .prepare('SELECT directory FROM session WHERE id = ?')
+      .pluck();
+    const run = sqlite.transaction((ids: string[]) => {
+      for (const id of ids) {
+        const directory = getDirectory.get(id) as string | undefined;
+        if (!directory) continue;
+        const matchedPath = matchingPrefix(directory, variants);
+        if (!matchedPath) continue;
+        const suffix = directory.slice(matchedPath.length);
+        update.run(`${newPath}${suffix}`, id, directory);
+      }
+    });
+    run(sessionIds);
+  } finally {
+    sqlite.close();
+  }
+}
+
+function hasOpenCodeSessionDirectory(sqlite: SqliteDatabase): boolean {
+  const table = sqlite
+    .prepare(
+      "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session') AS present",
+    )
+    .get() as { present: number } | undefined;
+  if (table?.present !== 1) return false;
+  const columns = sqlite.prepare('PRAGMA table_info(session)').all() as Array<{
+    name: string;
+  }>;
+  const names = new Set(columns.map((column) => column.name));
+  return names.has('id') && names.has('directory');
+}
+
+function selectOpenCodeMatchingSessions(
+  sqlite: SqliteDatabase,
+  oldPath: string,
+): OpenCodeMatchingSession[] {
+  const variants = pathVariants(oldPath);
+  const rows = sqlite
+    .prepare(
+      `
+      SELECT id, directory FROM session
+      WHERE directory IN (?, ?, ?)
+        OR substr(directory, 1, length(?)) = ?
+        OR substr(directory, 1, length(?)) = ?
+        OR substr(directory, 1, length(?)) = ?
+      ORDER BY id
+      `,
+    )
+    .all(
+      variants[0],
+      variants[1],
+      variants[2],
+      `${variants[0]}/`,
+      `${variants[0]}/`,
+      `${variants[1]}/`,
+      `${variants[1]}/`,
+      `${variants[2]}/`,
+      `${variants[2]}/`,
+    ) as Array<{ id: string; directory: string }>;
+  return rows.flatMap((row) => {
+    const matchedPath = matchingPrefix(row.directory, variants);
+    return matchedPath ? [{ ...row, matchedPath }] : [];
+  });
+}
+
+function pathVariants(path: string): [string, string, string] {
+  const variants = Array.from(
+    new Set([path, path.normalize('NFC'), path.normalize('NFD')]),
+  );
+  while (variants.length < 3) variants.push(variants[0]);
+  return variants as [string, string, string];
+}
+
+function matchingPrefix(directory: string, variants: string[]): string | null {
+  for (const variant of variants) {
+    if (directory === variant || directory.startsWith(`${variant}/`)) {
+      return variant;
+    }
+  }
+  return null;
+}
+
 /**
  * Build the dry-run plan — shape matches a committed PipelineResult but
  * state='dry-run' and no FS side effects. Performs a read-only scan so the
@@ -802,26 +1086,45 @@ export async function buildDryRunPlan(
   }> = [];
   for (const root of roots) {
     if (!root.encodeProjectDir) continue;
-    const oldName = root.encodeProjectDir(src);
+    let oldName = root.encodeProjectDir(src);
     const newName = root.encodeProjectDir(dst);
-    if (oldName === newName) {
-      // encodeProjectDir produced the same name — lossy encoding (iFlow)
-      // or semantically equivalent rename. Content still gets patched.
-      skippedDirs.push({ sourceId: root.id, reason: 'noop' });
-      continue;
+    if (root.id === 'gemini-cli') {
+      const projectsFile = join(root.path, '..', 'projects.json');
+      const plan = await planGeminiProjectsJsonUpdate(projectsFile, src, dst);
+      oldName = plan.oldEntry?.name ?? oldName;
     }
-    const plan: DirRenamePlan = {
-      sourceId: root.id,
-      oldDir: join(root.path, oldName),
-      newDir: join(root.path, newName),
-    };
-    try {
-      await stat(plan.oldDir);
-      renamedDirs.push(plan);
-    } catch {
-      // oldDir absent on this source — project never had history here.
-      skippedDirs.push({ sourceId: root.id, reason: 'missing' });
+    const observedOldDirs = await findGroupedDirsWithCwd(root.path, src);
+    const oldDirs =
+      observedOldDirs.length > 0 ? observedOldDirs : [join(root.path, oldName)];
+    for (const oldDir of oldDirs) {
+      if (basename(oldDir) === newName) {
+        // encodeProjectDir produced the same name — lossy encoding (iFlow)
+        // or semantically equivalent rename. Content still gets patched.
+        skippedDirs.push({ sourceId: root.id, reason: 'noop' });
+        continue;
+      }
+      const plan: DirRenamePlan = {
+        sourceId: root.id,
+        oldDir,
+        newDir: join(root.path, newName),
+      };
+      try {
+        await stat(plan.oldDir);
+        renamedDirs.push(plan);
+      } catch {
+        // oldDir absent on this source — project never had history here.
+        skippedDirs.push({ sourceId: root.id, reason: 'missing' });
+      }
     }
+  }
+
+  const plannedTargets = new Map<string, DirRenamePlan>();
+  for (const plan of renamedDirs) {
+    const prev = plannedTargets.get(plan.newDir);
+    if (prev && prev.oldDir !== plan.oldDir) {
+      throw new DirCollisionError(plan.sourceId, prev.oldDir, plan.newDir);
+    }
+    plannedTargets.set(plan.newDir, plan);
   }
 
   // Scan every source root for files referencing `src`. Count via byte-level
@@ -875,6 +1178,25 @@ export async function buildDryRunPlan(
         // a permissions issue the user should know about.
         issues.push({
           path: file,
+          reason: 'stat_failed',
+          detail: (err as Error).message,
+        });
+      }
+    }
+    if (root.id === 'opencode') {
+      try {
+        const sqliteRefs = countOpenCodeSqliteReferences(root.path, src);
+        if (sqliteRefs.sessionIds.length > 0) {
+          manifest.push({
+            path: openCodeManifestPath(sqliteRefs.path),
+            occurrences: sqliteRefs.sessionIds.length,
+          });
+          filesPatched++;
+          occurrences += sqliteRefs.sessionIds.length;
+        }
+      } catch (err) {
+        issues.push({
+          path: openCodeDbPath(root.path),
           reason: 'stat_failed',
           detail: (err as Error).message,
         });

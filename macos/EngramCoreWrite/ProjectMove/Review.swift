@@ -54,6 +54,14 @@ public enum ReviewScan {
                     ownSet.insert(hit)
                 }
             }
+            if root.id == .opencode {
+                for hit in OpenCodeSQLiteProjectMove.residualReferenceLocators(
+                    root: root.path,
+                    oldPath: oldPath
+                ) {
+                    ownSet.insert(hit)
+                }
+            }
         }
 
         return ReviewResult(

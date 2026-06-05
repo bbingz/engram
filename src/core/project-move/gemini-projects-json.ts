@@ -2,10 +2,10 @@
 // project registry during a project move.
 //
 // Gemini CLI stores a `~/.gemini/projects.json` file mapping
-// { absoluteCwd → projectBasename }. The adapter uses this reverse map to
-// resolve a session file (`tmp/<basename>/chats/…`) back to its real cwd.
+// { absoluteCwd → projectSlug }. The adapter uses this reverse map to
+// resolve a session file (`tmp/<slug>/chats/…`) back to its real cwd.
 // If we rename the tmp dir but leave this file stale, the adapter either
-// mis-resolves cwd or falls back to the basename string — silently
+// mis-resolves cwd or falls back to the slug string — silently
 // detaching the migrated sessions from the renamed project.
 //
 // This module keeps the two sides in sync. The orchestrator calls
@@ -15,7 +15,7 @@
 // Compensation reverses via `reverseGeminiProjectsJsonUpdate`.
 
 import { rename as fsRename, readFile, writeFile } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { encodeGemini } from './sources.js';
 
 /** Parsed shape of ~/.gemini/projects.json. Two formats observed in the wild:
  *    { "projects": { "<cwd>": "<name>", … } }   (current)
@@ -99,7 +99,7 @@ async function writeAtomic(filePath: string, text: string): Promise<void> {
  *
  * Rules:
  *   - If an entry `oldCwd → <anything>` exists, we'll replace it with
- *     `newCwd → basename(newPath)`.
+ *     `newCwd → encodeGemini(newPath)`.
  *   - If no such entry exists, the new entry is still written (so the
  *     adapter can reverse-resolve the renamed dir). The `oldEntry=null`
  *     signals this to compensation.
@@ -115,7 +115,7 @@ export async function planGeminiProjectsJsonUpdate(
     filePath,
     oldEntry:
       typeof oldName === 'string' ? { cwd: oldCwd, name: oldName } : null,
-    newEntry: { cwd: newCwd, name: basename(newCwd) },
+    newEntry: { cwd: newCwd, name: encodeGemini(newCwd) },
     originalText,
   };
 }
@@ -170,7 +170,7 @@ export async function reverseGeminiProjectsJsonUpdate(
 
 /**
  * Collision probe (Gemini major #3): find other cwds in projects.json
- * that share the target basename but are NOT the project being moved.
+ * that share the target slug but are NOT the project being moved.
  * If any exist, renaming the tmp dir would steal their sessions.
  *
  * Returns the list of conflicting cwds (empty = safe).

@@ -1,6 +1,7 @@
 // macos/EngramCoreTests/ProjectMove/ReviewScanTests.swift
 // Mirrors tests/core/project-move/review.test.ts (Node parity baseline).
 import Foundation
+import GRDB
 import XCTest
 @testable import EngramCoreWrite
 
@@ -87,6 +88,60 @@ final class ReviewScanTests: XCTestCase {
         )
         XCTAssertTrue(r.own.contains(codexFile.path))
         XCTAssertEqual(r.other, [])
+    }
+
+    func testOpenCodeSqliteDirectoryHitsCountAsOwnResidualRefs() throws {
+        let dbPath = tmpHome
+            .appendingPathComponent(".local/share/opencode", isDirectory: true)
+            .appendingPathComponent("opencode.db")
+        let queue = try DatabaseQueue(path: dbPath.path)
+        try queue.write { db in
+            try db.execute(sql: """
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                directory TEXT,
+                time_archived INTEGER
+            )
+            """)
+            try db.execute(
+                sql: "INSERT INTO session (id, directory) VALUES (?, ?)",
+                arguments: ["open-1", "/old/path"]
+            )
+            try db.execute(
+                sql: "INSERT INTO session (id, directory) VALUES (?, ?)",
+                arguments: ["open-2", "/old/path/nested"]
+            )
+            try db.execute(
+                sql: "INSERT INTO session (id, directory) VALUES (?, ?)",
+                arguments: ["open-nfd", "/old/café".decomposedStringWithCanonicalMapping]
+            )
+            try db.execute(
+                sql: "INSERT INTO session (id, directory) VALUES (?, ?)",
+                arguments: ["open-other", "/old/path-lookalike"]
+            )
+        }
+
+        let r = ReviewScan.run(
+            oldPath: "/old/path",
+            newPath: "/Users/bing/-Code-/engram",
+            homeDirectory: tmpHome
+        )
+
+        XCTAssertEqual(r.own, [
+            "\(dbPath.path)::session:open-1:directory",
+            "\(dbPath.path)::session:open-2:directory",
+        ])
+        XCTAssertEqual(r.other, [])
+
+        let unicode = ReviewScan.run(
+            oldPath: "/old/café",
+            newPath: "/Users/bing/-Code-/engram",
+            homeDirectory: tmpHome
+        )
+        XCTAssertEqual(unicode.own, [
+            "\(dbPath.path)::session:open-nfd:directory",
+        ])
+        XCTAssertEqual(unicode.other, [])
     }
 
     func testAntigravityLegacyHitsCountAsOwn() throws {
