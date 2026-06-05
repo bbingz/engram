@@ -1,5 +1,24 @@
 # Engram Local Memory
 
+## 2026-06-06 — Off-main segmented message parsing (Codex)
+
+Codex closed a still-current SwiftUI P3 performance finding from
+`CODE-REVIEW-ISSUES.md`.
+
+Change:
+- `SegmentedMessageView` no longer cold-parses markdown/content segments
+  synchronously from `body`.
+- The view checks the existing segment cache first; cache misses are parsed and
+  cached from `.task(id: content)` via `Task.detached(priority: .userInitiated)`.
+- `ViewMainThreadReadTests` now guards the off-main parse shape and rejects
+  returning to `ForEach(segments)` from body.
+
+Verification:
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/ViewMainThreadReadTests CODE_SIGNING_ALLOWED=NO`
+  passed 17 tests.
+
 ## 2026-06-06 — Service writer gate timing test hardening (Codex)
 
 Codex closed a still-current Round 5 test-stability finding.

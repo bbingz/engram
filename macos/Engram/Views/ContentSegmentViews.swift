@@ -60,6 +60,8 @@ private class SegmentCacheEntry {
 struct SegmentedMessageView: View {
     let content: String
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @State private var parsedContent: String = ""
+    @State private var parsedSegments: [ContentSegment] = []
 
     // Cache parsed segments keyed by content — avoids re-parsing on every render.
     // totalCostLimit bounds memory even when a few entries are very large
@@ -71,21 +73,28 @@ struct SegmentedMessageView: View {
         return cache
     }()
 
-    private var segments: [ContentSegment] {
+    private static func cachedSegments(for content: String) -> [ContentSegment]? {
         let key = NSString(string: content)
-        if let cached = Self.segmentCache.object(forKey: key) {
-            return cached.segments
-        }
+        return Self.segmentCache.object(forKey: key)?.segments
+    }
+
+    private static func parseAndCache(_ content: String) -> [ContentSegment] {
+        if let cached = cachedSegments(for: content) { return cached }
         let parsed = ContentSegmentParser.parse(content)
         let entry = SegmentCacheEntry(segments: parsed)
         // Cost ≈ UTF-16 byte length of the source string.
-        Self.segmentCache.setObject(entry, forKey: key, cost: content.utf16.count * 2)
+        Self.segmentCache.setObject(entry, forKey: NSString(string: content), cost: content.utf16.count * 2)
         return parsed
+    }
+
+    private var displaySegments: [ContentSegment] {
+        if let cached = Self.cachedSegments(for: content) { return cached }
+        return parsedContent == content ? parsedSegments : []
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(segments) { segment in
+            ForEach(displaySegments) { segment in
                 switch segment {
                 case .text(let text):
                     MarkdownText(text: text, fontSize: fontSize)
@@ -105,6 +114,22 @@ struct SegmentedMessageView: View {
                     Divider().padding(.vertical, 4)
                 }
             }
+        }
+        .task(id: content) {
+            if let cached = Self.cachedSegments(for: content) {
+                parsedContent = content
+                parsedSegments = cached
+                return
+            }
+            parsedContent = ""
+            parsedSegments = []
+            let contentToParse = content
+            let parsed = await Task.detached(priority: .userInitiated) {
+                Self.parseAndCache(contentToParse)
+            }.value
+            guard !Task.isCancelled else { return }
+            parsedContent = contentToParse
+            parsedSegments = parsed
         }
     }
 }

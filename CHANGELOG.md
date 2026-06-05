@@ -7,6 +7,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Off-main segmented message parsing (2026-06-06, Codex)
+
+Closed a still-current SwiftUI P3 performance finding.
+
+- **Fix**: `SegmentedMessageView` no longer cold-parses markdown/content
+  segments synchronously from `body`. It now reuses the existing segment cache
+  when available and otherwise parses/cache-fills from a `.task(id: content)`
+  `Task.detached(priority: .userInitiated)` path.
+- **Regression coverage**: extended `ViewMainThreadReadTests` with a source
+  guard that locks the off-main parse shape and rejects returning to
+  `ForEach(segments)` from body.
+- **Verification**: selected `ViewMainThreadReadTests` passed 17 tests.
+
 ### Service writer gate timing test hardening (2026-06-06, Codex)
 
 Closed a still-current Round 5 test-stability finding.

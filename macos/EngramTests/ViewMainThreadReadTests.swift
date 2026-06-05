@@ -170,6 +170,17 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertFalse(s.contains(".onChange(of: selectedModule) { _, _ in Task { await reload() } }"))
     }
 
+    func testSegmentedMessageParsingRunsOffMainThread() throws {
+        let s = try source("macos/Engram/Views/ContentSegmentViews.swift")
+        XCTAssertTrue(s.contains("@State private var parsedSegments: [ContentSegment] = []"))
+        XCTAssertTrue(s.contains(".task(id: content)"))
+        XCTAssertTrue(s.contains("Task.detached(priority: .userInitiated)"))
+        XCTAssertFalse(
+            s.contains("ForEach(segments)"),
+            "SegmentedMessageView must not synchronously parse markdown segments from body"
+        )
+    }
+
     func testSettingsLoadsDoNotImmediatelyWriteBackUnchangedValues() throws {
         let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
         XCTAssertTrue(ai.contains("@State private var isLoadingSettings = false"))
