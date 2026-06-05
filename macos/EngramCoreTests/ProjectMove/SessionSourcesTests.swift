@@ -25,13 +25,17 @@ final class SessionSourcesTests: XCTestCase {
 
     // MARK: - getSourceRoots
 
-    func testRootsReturnsCanonicalTenInOrder() {
+    func testRootsReturnsCanonicalRootsInOrder() {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/home/test"))
-        let ids = roots.map(\.id)
+        let ids = roots.map(\.id.rawValue)
         XCTAssertEqual(ids, [
-            .claudeCode, .codex, .geminiCli, .iflow,
-            .qoder, .opencode, .antigravity, .antigravityLegacy, .commandcode, .copilot,
+            "claude-code", "codex", "codex-archived", "gemini-cli", "iflow",
+            "qoder", "opencode", "antigravity", "antigravity-legacy", "commandcode", "copilot",
         ])
+        XCTAssertEqual(
+            roots.first(where: { $0.id.rawValue == "codex-archived" })?.path,
+            "/home/test/.codex/archived_sessions"
+        )
         XCTAssertEqual(
             roots.first(where: { $0.id == .copilot })?.path,
             "/home/test/.copilot"

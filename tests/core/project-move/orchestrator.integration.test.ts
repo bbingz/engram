@@ -185,6 +185,49 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(result.review.own).toEqual([]);
   });
 
+  it('patches Codex archived_sessions alongside active sessions', async () => {
+    const activeCodex = join(
+      home,
+      '.codex',
+      'sessions',
+      'rollout-active.jsonl',
+    );
+    const archivedCodex = join(
+      home,
+      '.codex',
+      'archived_sessions',
+      'rollout-archived.jsonl',
+    );
+    mkdirSync(join(home, '.codex', 'archived_sessions'), { recursive: true });
+    writeFileSync(
+      activeCodex,
+      `{"type":"session_meta","payload":{"cwd":"${src}"}}\n`,
+    );
+    writeFileSync(
+      archivedCodex,
+      `{"type":"session_meta","payload":{"cwd":"${src}"}}\n`,
+    );
+
+    const result = await runProjectMove(db, {
+      src,
+      dst,
+      home,
+      actor: 'cli',
+    });
+
+    expect(readFileSync(activeCodex, 'utf8')).toContain(dst);
+    expect(readFileSync(activeCodex, 'utf8')).not.toContain(src);
+    expect(readFileSync(archivedCodex, 'utf8')).toContain(dst);
+    expect(readFileSync(archivedCodex, 'utf8')).not.toContain(src);
+    expect(result.perSource.find((s) => s.id === 'codex')?.filesPatched).toBe(
+      2,
+    );
+    expect(
+      result.perSource.find((s) => s.id === 'codex-archived')?.filesPatched,
+    ).toBe(1);
+    expect(result.review.own).toEqual([]);
+  });
+
   it('allows untracked-only git state without force and reports it', async () => {
     execFileSync('git', ['init', '-q'], { cwd: src });
     execFileSync('git', ['config', 'user.email', 't@t'], { cwd: src });

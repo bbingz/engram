@@ -7,6 +7,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Codex archived-session project-migration coverage (2026-06-05, Codex)
+
+Closed the Codex-side project-migration compatibility gap left after the
+Claude Code encoder audit.
+
+- **Root cause**: the Codex adapter reads both `~/.codex/sessions` and
+  `~/.codex/archived_sessions` (`CodexAdapter.expandSessionRoots`), but
+  project migration only scanned/patched `~/.codex/sessions`. Archived Codex
+  rollout JSONL files could therefore retain the old cwd after a project move.
+- **Fix**: added a flat-layout `codex-archived` source root in both the Swift
+  product pipeline (`SessionSources.roots`) and the TypeScript reference
+  pipeline (`getSourceRoots`). Like active Codex sessions, it has no
+  `encodeProjectDir`; migration only rewrites file contents and review treats
+  residual refs as own leftovers.
+- **Regression coverage**: added Swift and TS source-root assertions plus
+  orchestrator integration tests that plant active and archived Codex JSONL,
+  run a project move, and assert both files are patched and review has no own
+  residual refs.
+- **Real-disk check**: this machine has 5 real files in
+  `~/.codex/archived_sessions`; none currently reference this checkout, but the
+  missing root was real, not hypothetical.
+- **Verification**: RED confirmed before the fix (`codex-archived` missing and
+  archived JSONL kept the old path). GREEN: `npm test -- tests/core/project-move`
+  16 files / 182 tests; selected Swift ProjectMove suite 87/87; `npm run lint`;
+  `npm run build`; `npm run typecheck:test`.
+
 ### Claude Code project-migration encoder fix (2026-06-05, Claude)
 
 Fixed a Claude Code compatibility bug in the project-migration pipeline and
@@ -72,7 +98,7 @@ the same way.
    (design in this entry §"Not done"): startup backfill, detection MUST use the
    corrected encoder, collision-safe rename, ship after the encoder fix. Deferred
    — verified no real orphans on this machine yet.
-4. **Branch**: `fix/cc-dir-encoding-compat` @ `78251621` is committed but NOT
+4. **Branch**: `fix/cc-dir-encoding-compat` @ `c3bd626d` is committed but NOT
    pushed and has no PR. Push + open PR when ready.
 
 ### PR #49 CI follow-up (2026-06-05, Codex)

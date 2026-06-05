@@ -179,6 +179,50 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
     }
 
+    func testCodexArchivedSessionsArePatchedAndCommitted() async throws {
+        let (src, _) = try makeProjectFixture(name: "codex-proj")
+        let codexActive = tempRoot.appendingPathComponent(
+            ".codex/sessions/2026/06/05/rollout-active.jsonl"
+        )
+        let codexArchived = tempRoot.appendingPathComponent(
+            ".codex/archived_sessions/rollout-archived.jsonl"
+        )
+        try writeCodexSession(at: codexActive, cwd: src)
+        try writeCodexSession(at: codexArchived, cwd: src)
+        try seedSessionRow(id: "codex-1", source: "codex", cwd: src, filePath: codexArchived.path)
+        let dst = tempRoot.appendingPathComponent("codex-renamed").path
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertEqual(
+            result.perSource.first(where: { $0.id == "codex" })?.filesPatched,
+            1
+        )
+        XCTAssertEqual(
+            result.perSource.first(where: { $0.id == "codex-archived" })?.filesPatched,
+            1
+        )
+
+        let activePatched = try String(contentsOf: codexActive, encoding: .utf8)
+        let archivedPatched = try String(contentsOf: codexArchived, encoding: .utf8)
+        XCTAssertTrue(activePatched.contains(dst))
+        XCTAssertFalse(activePatched.contains(src))
+        XCTAssertTrue(archivedPatched.contains(dst))
+        XCTAssertFalse(archivedPatched.contains(src))
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id='codex-1'"),
+                dst
+            )
+        }
+        XCTAssertEqual(result.review.own, [])
+    }
+
     // MARK: - pre-flight collision
 
     func testDirCollisionRejectedBeforeAnyFsSideEffect() async throws {
@@ -573,14 +617,30 @@ final class OrchestratorTests: XCTestCase {
         try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private func seedSessionRow(id: String, cwd: String, filePath: String) throws {
+    private func writeCodexSession(at url: URL, cwd: String) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let line = """
+        {"type":"session_meta","payload":{"id":"\(UUID().uuidString)","timestamp":"2026-06-05T00:00:00.000Z","cwd":"\(cwd)"}}
+        """
+        try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func seedSessionRow(
+        id: String,
+        source: String = "claude-code",
+        cwd: String,
+        filePath: String
+    ) throws {
         try writer.write { db in
             try db.execute(
                 sql: """
                 INSERT INTO sessions(id, source, start_time, cwd, file_path)
-                VALUES (?, 'claude-code', '2026-04-23T10:00:00.000Z', ?, ?)
+                VALUES (?, ?, '2026-04-23T10:00:00.000Z', ?, ?)
                 """,
-                arguments: [id, cwd, filePath]
+                arguments: [id, source, cwd, filePath]
             )
         }
     }

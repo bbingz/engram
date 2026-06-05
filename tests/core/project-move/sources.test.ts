@@ -18,12 +18,13 @@ import {
 } from '../../../src/core/project-move/sources.js';
 
 describe('getSourceRoots', () => {
-  it('returns the 10 canonical AI session roots (includes qoder + commandcode)', () => {
+  it('returns the canonical AI session roots, including active and archived Codex stores', () => {
     const roots = getSourceRoots('/home/test');
     const ids = roots.map((r) => r.id);
     expect(ids).toEqual([
       'claude-code',
       'codex',
+      'codex-archived',
       'gemini-cli',
       'iflow',
       'qoder',
@@ -36,6 +37,9 @@ describe('getSourceRoots', () => {
     // copilot root must match mvp.py COPILOT_DATA
     expect(roots.find((r) => r.id === 'copilot')?.path).toBe(
       '/home/test/.copilot',
+    );
+    expect(roots.find((r) => r.id === 'codex-archived')?.path).toBe(
+      '/home/test/.codex/archived_sessions',
     );
     expect(roots.find((r) => r.id === 'iflow')?.path).toBe(
       '/home/test/.iflow/projects',
