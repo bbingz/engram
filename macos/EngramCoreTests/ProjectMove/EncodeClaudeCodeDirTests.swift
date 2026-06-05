@@ -19,10 +19,14 @@ final class EncodeClaudeCodeDirTests: XCTestCase {
         XCTAssertEqual(ClaudeCodeProjectDir.encode("/a//b"), "-a--b")
     }
 
-    func testPreservesDashesAndUnderscores() {
+    func testReplacesUnderscoresWithDash() {
+        // Real Claude Code maps EVERY non-[A-Za-z0-9] char to '-', so '_'
+        // becomes '-' (existing '-' is preserved as identity).
+        // Verified on disk: /Users/bing/-Code-/CCTV_Admin lives under
+        // -Users-bing--Code--CCTV-Admin (underscore -> dash).
         XCTAssertEqual(
             ClaudeCodeProjectDir.encode("/Users/john_doe/my-proj"),
-            "-Users-john_doe-my-proj"
+            "-Users-john-doe-my-proj"
         )
     }
 
@@ -44,10 +48,37 @@ final class EncodeClaudeCodeDirTests: XCTestCase {
     }
 
     func testHandlesSpaces() {
+        // A space is non-[A-Za-z0-9] -> '-'. Verified on disk:
+        // "/Users/bing/Library/Application Support/..." lives under
+        // "-Users-bing-Library-Application-Support-...".
         XCTAssertEqual(
             ClaudeCodeProjectDir.encode("/Users/bing/my proj"),
-            "-Users-bing-my proj"
+            "-Users-bing-my-proj"
         )
+    }
+
+    /// Real-corpus regression: expected dir names are hardcoded literals (NOT
+    /// recomputed via the encoder) so they lock the output against the encoder
+    /// regressing back to the `/`-and-`.`-only rule. Every entry was captured
+    /// from a real ~/.claude/projects dir whose first session file's "cwd"
+    /// equals the input here.
+    func testRealCorpusDivergentPaths() {
+        let cases: [(cwd: String, dir: String)] = [
+            ("/Users/bing/-Code-/CCTV_Admin", "-Users-bing--Code--CCTV-Admin"),
+            ("/Users/bing/-Code-/java_charge", "-Users-bing--Code--java-charge"),
+            ("/Users/bing/-Code-/Service_Asset", "-Users-bing--Code--Service-Asset"),
+            (
+                "/Users/bing/-NetWork-/mac_Book_Pro_Debug",
+                "-Users-bing--NetWork--mac-Book-Pro-Debug"
+            ),
+            (
+                "/Users/bing/Library/Application Support/CodexBar/ClaudeProbe",
+                "-Users-bing-Library-Application-Support-CodexBar-ClaudeProbe"
+            ),
+        ]
+        for c in cases {
+            XCTAssertEqual(ClaudeCodeProjectDir.encode(c.cwd), c.dir, "cwd=\(c.cwd)")
+        }
     }
 
     func testTrailingSlashBecomesTrailingDash() {

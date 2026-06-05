@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeCC } from '../../../src/core/project-move/encode-cc.js';
 
 describe('encodeCC', () => {
-  it('replaces every slash with dash (mvp.py parity)', () => {
+  it('replaces every slash with dash', () => {
     expect(encodeCC('/Users/bing/-Code-/engram')).toBe(
       '-Users-bing--Code--engram',
     );
@@ -16,21 +16,39 @@ describe('encodeCC', () => {
     expect(encodeCC('/a//b')).toBe('-a--b');
   });
 
-  it('preserves dashes and underscores in the source', () => {
-    expect(encodeCC('/Users/john_doe/my-proj')).toBe('-Users-john_doe-my-proj');
+  it('replaces underscores with dash (every non-alnum char -> dash)', () => {
+    expect(encodeCC('/Users/john_doe/my-proj')).toBe('-Users-john-doe-my-proj');
   });
 
-  it('handles spaces', () => {
-    expect(encodeCC('/Users/bing/my proj')).toBe('-Users-bing-my proj');
+  it('replaces dots with dash', () => {
+    expect(encodeCC('/Users/bing/.config/superpowers')).toBe(
+      '-Users-bing--config-superpowers',
+    );
+    expect(encodeCC('/Users/bing/node-v18.2.0')).toBe(
+      '-Users-bing-node-v18-2-0',
+    );
   });
 
-  it('handles trailing slash', () => {
-    // mvp.py does a naive replace — trailing slash becomes trailing dash.
-    // Caller is responsible for normalizing absolute paths beforehand.
+  it('replaces spaces with dash', () => {
+    expect(encodeCC('/Users/bing/my proj')).toBe('-Users-bing-my-proj');
+  });
+
+  it('handles trailing slash (naive replace — caller normalizes)', () => {
     expect(encodeCC('/a/b/')).toBe('-a-b-');
   });
 
   it('empty string passes through', () => {
     expect(encodeCC('')).toBe('');
+  });
+
+  // Real-corpus regression: expected dir names are hardcoded literals captured
+  // from real ~/.claude/projects dirs, locking the rule against regression.
+  it('matches real on-disk dirs for divergent paths', () => {
+    expect(encodeCC('/Users/bing/-Code-/CCTV_Admin')).toBe(
+      '-Users-bing--Code--CCTV-Admin',
+    );
+    expect(
+      encodeCC('/Users/bing/Library/Application Support/CodexBar/ClaudeProbe'),
+    ).toBe('-Users-bing-Library-Application-Support-CodexBar-ClaudeProbe');
   });
 });
