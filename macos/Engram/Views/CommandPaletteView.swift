@@ -69,10 +69,16 @@ struct CommandPaletteView: View {
                     .onSubmit { executeSelected() }
                     .onChange(of: query) { _, newValue in
                         selectedIndex = 0
+                        searchTask?.cancel()
                         if !isCommandMode && !newValue.isEmpty {
                             performSearch()
                         } else if newValue.isEmpty {
+                            searchTask = nil
+                            isSearching = false
                             sessionResults = []
+                        } else {
+                            searchTask = nil
+                            isSearching = false
                         }
                     }
                 if isSearching {
@@ -181,15 +187,22 @@ struct CommandPaletteView: View {
         // Cancel any in-flight search before starting a new one — avoids racing
         // state writes and stops the old Task mutating state after dismiss.
         searchTask?.cancel()
-        isSearching = true
         let q = query
         let db = self.db
         searchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            isSearching = true
+            defer {
+                if !Task.isCancelled {
+                    isSearching = false
+                }
+            }
             do {
                 let response = try await serviceClient.search(
                     EngramServiceSearchRequest(query: q, mode: "hybrid", limit: 10)
                 )
-                if Task.isCancelled { return }
+                guard !Task.isCancelled else { return }
                 sessionResults = response.items.map { item in
                     SessionHit(
                         id: item.id,
@@ -199,10 +212,11 @@ struct CommandPaletteView: View {
                     )
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 let sessions = (try? await Task.detached {
                     try db.search(query: q, limit: 10)
                 }.value) ?? []
-                if Task.isCancelled { return }
+                guard !Task.isCancelled else { return }
                 sessionResults = sessions.map { session in
                     SessionHit(
                         id: session.id,
@@ -212,8 +226,7 @@ struct CommandPaletteView: View {
                     )
                 }
             }
-            if Task.isCancelled { return }
-            isSearching = false
+            guard !Task.isCancelled else { return }
         }
     }
 }
