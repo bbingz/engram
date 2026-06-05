@@ -240,7 +240,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         eventStream
     }
 
-    func close() async {}
+    func close() {}
 
     private static let defaultProjectMoveResult = EngramServiceProjectMoveResult(
         migrationId: "mock",

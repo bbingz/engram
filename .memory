@@ -1,5 +1,32 @@
 # Engram Local Memory
 
+## 2026-06-06 — Synchronous service client close on app termination (Codex)
+
+Codex closed a still-current Swift app termination cleanup finding.
+
+Change:
+- `EngramServiceTransport.close`, `EngramServiceClientProtocol.close`, and
+  `EngramServiceClient.close` are synchronous.
+- `AppDelegate.applicationWillTerminate` now calls `serviceClient.close()`
+  directly after cancelling status observation and stopping the owned service.
+- MCP service-client cleanup now uses ordinary `defer { serviceClient.close() }`
+  instead of nested fire-and-forget tasks.
+- `ViewMainThreadReadTests` now guards against reintroducing the detached
+  terminate-close pattern.
+
+Verification:
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/ViewMainThreadReadTests/testAppTerminateClosesServiceClientSynchronously
+  CODE_SIGNING_ALLOWED=NO` failed on the old detached close.
+- GREEN: the same selected test passed after the synchronous close change.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/EngramServiceClientTests
+  -only-testing:EngramTests/UnixSocketTransportTests
+  -only-testing:EngramTests/ViewMainThreadReadTests CODE_SIGNING_ALLOWED=NO`
+  passed 40 tests.
+
 ## 2026-06-06 — Async MessageParser adapter stream bridge (Codex)
 
 Codex closed a still-current SwiftUI P3 concurrency/performance finding from

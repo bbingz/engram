@@ -190,6 +190,15 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertFalse(s.contains("blockingAdapterMessages"))
     }
 
+    func testAppTerminateClosesServiceClientSynchronously() throws {
+        let s = try source("macos/Engram/App.swift")
+        XCTAssertTrue(s.contains("serviceClient.close()"))
+        XCTAssertFalse(
+            s.contains("Task.detached { [serviceClient] in\n            await serviceClient.close()"),
+            "applicationWillTerminate must not fire-and-forget service client close after returning"
+        )
+    }
+
     func testSettingsLoadsDoNotImmediatelyWriteBackUnchangedValues() throws {
         let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
         XCTAssertTrue(ai.contains("@State private var isLoadingSettings = false"))

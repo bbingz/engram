@@ -134,7 +134,7 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
         }
     }
 
-    func close() async {}
+    func close() {}
 
     /// Transient errors the status stream should ride out (yield degraded +
     /// retry) rather than terminate on — the socket briefly disappears during a

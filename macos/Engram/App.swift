@@ -204,9 +204,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         serviceStatusTask?.cancel()
         serviceLauncher.stopIfOwned()
-        Task.detached { [serviceClient] in
-            await serviceClient.close()
-        }
+        serviceClient.close()
     }
 
     private func startServiceStatusObservation() {

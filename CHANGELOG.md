@@ -7,6 +7,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Synchronous service client close on app termination (2026-06-06, Codex)
+
+Closed a still-current Swift app termination cleanup finding.
+
+- **Fix**: `EngramServiceClient.close` and the underlying transport close API
+  are now synchronous. `AppDelegate.applicationWillTerminate` calls
+  `serviceClient.close()` directly instead of launching a fire-and-forget
+  detached task after termination begins.
+- **Cleanup**: MCP service-client call sites now use ordinary
+  `defer { serviceClient.close() }` cleanup instead of spawning nested tasks
+  solely to await a no-op close.
+- **Regression coverage**: added a source guard that rejects reintroducing the
+  detached terminate-close pattern.
+- **Verification**: selected `EngramServiceClientTests`,
+  `UnixSocketTransportTests`, and `ViewMainThreadReadTests` passed 40 tests.
+
 ### Async MessageParser adapter stream bridge (2026-06-06, Codex)
 
 Closed a still-current SwiftUI P3 concurrency/performance finding.

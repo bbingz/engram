@@ -860,11 +860,7 @@ enum MCPToolRegistry {
             return .toolSuccess(MCPFileTools.lintConfig(cwd: try requiredString("cwd", in: arguments)))
         case "link_sessions":
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let response = try await serviceClient.linkSessions(
                 EngramServiceLinkSessionsRequest(
                     targetDir: try requiredString("targetDir", in: arguments),
@@ -891,11 +887,7 @@ enum MCPToolRegistry {
             return .toolSuccess(structured)
         case "export":
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let response = try await serviceClient.exportSession(
                 EngramServiceExportSessionRequest(
                     id: try requiredString("id", in: arguments),
@@ -917,11 +909,7 @@ enum MCPToolRegistry {
             return .toolSuccess(structured)
         case "generate_summary":
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let sessionId = try requiredString("sessionId", in: arguments)
             let response = try await serviceClient.generateSummary(
                 EngramServiceGenerateSummaryRequest(sessionId: sessionId)
@@ -939,11 +927,7 @@ enum MCPToolRegistry {
             ])
         case "save_insight":
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let raw = try await serviceClient.saveInsight(
                 EngramServiceSaveInsightRequest(
                     content: try requiredString("content", in: arguments),
@@ -970,11 +954,7 @@ enum MCPToolRegistry {
                 ]))
             }
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let raw = try await serviceClient.deleteInsight(
                 EngramServiceDeleteInsightRequest(id: id)
             )
@@ -988,11 +968,7 @@ enum MCPToolRegistry {
             let hidden = arguments["hidden"]?.boolValue ?? true
             if arguments["dry_run"]?.boolValue != true {
                 let serviceClient = makeServiceClient(config: config)
-                defer {
-                    Task {
-                        await serviceClient.close()
-                    }
-                }
+                defer { serviceClient.close() }
                 try await serviceClient.setSessionHidden(sessionId: sessionId, hidden: hidden)
             }
             return .toolSuccess(.object([
@@ -1008,11 +984,7 @@ enum MCPToolRegistry {
                 return .toolSuccess(try database.listProjectAliases())
             case "add", "remove":
                 let serviceClient = makeServiceClient(config: config)
-                defer {
-                    Task {
-                        await serviceClient.close()
-                    }
-                }
+                defer { serviceClient.close() }
                 let raw = try await serviceClient.manageProjectAlias(
                     EngramServiceProjectAliasRequest(
                         action: action,
@@ -1027,11 +999,7 @@ enum MCPToolRegistry {
             }
         case "project_move":
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let originalSrc = try requiredString("src", in: arguments)
             let originalDst = try requiredString("dst", in: arguments)
             let src = expandHomePath(originalSrc)
@@ -1053,11 +1021,7 @@ enum MCPToolRegistry {
             return .toolSuccess(ordered)
         case "project_archive":
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let src = expandHomePath(try requiredString("src", in: arguments))
             let response = try await serviceClient.projectArchive(
                 EngramServiceProjectArchiveRequest(
@@ -1072,11 +1036,7 @@ enum MCPToolRegistry {
             return .toolSuccess(orderedProjectArchiveResult(from: response))
         case "project_undo":
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let response = try await serviceClient.projectUndo(
                 EngramServiceProjectUndoRequest(
                     migrationId: try requiredString("migration_id", in: arguments),
@@ -1087,11 +1047,7 @@ enum MCPToolRegistry {
             return .toolSuccess(orderedPipelineResult(from: response))
         case "project_move_batch":
             let serviceClient = makeServiceClient(config: config)
-            defer {
-                Task {
-                    await serviceClient.close()
-                }
-            }
+            defer { serviceClient.close() }
             let raw = try await serviceClient.projectMoveBatch(
                 EngramServiceProjectMoveBatchRequest(
                     yaml: try requiredString("yaml", in: arguments),
