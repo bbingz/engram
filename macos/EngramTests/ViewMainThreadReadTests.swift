@@ -181,6 +181,15 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testMessageParserDoesNotBridgeAsyncAdaptersWithSemaphore() throws {
+        let s = try source("macos/Engram/Core/MessageParser.swift")
+        XCTAssertFalse(
+            s.contains("DispatchSemaphore"),
+            "MessageParser must stay async through adapter streams instead of blocking a thread on a semaphore"
+        )
+        XCTAssertFalse(s.contains("blockingAdapterMessages"))
+    }
+
     func testSettingsLoadsDoNotImmediatelyWriteBackUnchangedValues() throws {
         let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
         XCTAssertTrue(ai.contains("@State private var isLoadingSettings = false"))

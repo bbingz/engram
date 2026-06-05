@@ -765,7 +765,7 @@ struct SessionDetailView: View {
         let path = resolvedTranscriptPath()
         let source = session.source
         return await Task.detached(priority: .userInitiated) {
-            MessageParser.parseWindowed(filePath: path, source: source, offset: offset, limit: limit)
+            await MessageParser.parseWindowed(filePath: path, source: source, offset: offset, limit: limit)
         }.value
     }
 

@@ -7,6 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Async MessageParser adapter stream bridge (2026-06-06, Codex)
+
+Closed a still-current SwiftUI P3 concurrency/performance finding.
+
+- **Fix**: `MessageParser` no longer bridges async adapter streams through a
+  detached task plus `DispatchSemaphore`. `parse` and `parseWindowed` are now
+  async and await adapter `streamMessages` directly, while preserving the
+  existing legacy-parser fallback path.
+- **UI integration**: `SessionDetailView` keeps transcript parsing off the main
+  actor via `Task.detached`, but now awaits the async parser inside that worker
+  task instead of blocking a thread.
+- **Regression coverage**: converted `MessageParserTests` to async parser calls
+  and added a source guard rejecting `DispatchSemaphore` /
+  `blockingAdapterMessages` in `MessageParser`.
+- **Verification**: selected `MessageParserTests` and `ViewMainThreadReadTests`
+  passed 40 tests.
+
 ### Off-main segmented message parsing (2026-06-06, Codex)
 
 Closed a still-current SwiftUI P3 performance finding.

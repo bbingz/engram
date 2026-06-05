@@ -1,5 +1,30 @@
 # Engram Local Memory
 
+## 2026-06-06 — Async MessageParser adapter stream bridge (Codex)
+
+Codex closed a still-current SwiftUI P3 concurrency/performance finding from
+the remediation review follow-up.
+
+Change:
+- `MessageParser.parse` and `MessageParser.parseWindowed` are now async.
+- Adapter-backed transcript parsing awaits `SessionAdapter.streamMessages`
+  directly instead of spawning a detached task and blocking on
+  `DispatchSemaphore`.
+- Legacy parser fallback behavior remains in place for unsupported sources or
+  adapter errors.
+- `SessionDetailView` still runs transcript parsing off the main actor with
+  `Task.detached`, but now awaits the async parser inside that worker task.
+- `MessageParserTests` now exercise the async parser API, and
+  `ViewMainThreadReadTests` rejects reintroducing `DispatchSemaphore` or
+  `blockingAdapterMessages` in `MessageParser`.
+
+Verification:
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/MessageParserTests
+  -only-testing:EngramTests/ViewMainThreadReadTests CODE_SIGNING_ALLOWED=NO`
+  passed 40 tests.
+
 ## 2026-06-06 — Off-main segmented message parsing (Codex)
 
 Codex closed a still-current SwiftUI P3 performance finding from
