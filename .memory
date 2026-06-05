@@ -1,5 +1,43 @@
 # Engram Local Memory
 
+## 2026-06-06 — Swift UI P3 cleanup follow-up (Codex)
+
+Codex continued the broad review-remediation goal on branch
+`fix/ui-p3-cleanups` in worktree `.worktrees/ui-p3-cleanups`.
+
+Scope closed:
+- `CommandPaletteView` now mirrors the existing search-page concurrency shape:
+  query changes cancel the previous task, wait 300 ms, then run one service
+  search or local fallback path, with cancellation guards before publishing
+  results. A read-only subagent review caught that the first pass still entered
+  local fallback after a cancelled service call; the final code exits before
+  starting fallback work.
+- `LiveSessionCard.elapsedText` and `ReplayState.densityBuckets` now reuse
+  static `ISO8601DateFormatter` instances instead of allocating a formatter
+  during repeated render/state calculations.
+- `ViewMainThreadReadTests` gained source guards for the Command Palette
+  debounce/cancellation contract and live/replay ISO formatter reuse.
+
+Verification:
+- RED first:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/ViewMainThreadReadTests/testCommandPaletteDebouncesAndOwnsSearchTask
+  -only-testing:EngramTests/ViewMainThreadReadTests/testLiveAndReplayViewsReuseISO8601Formatters
+  CODE_SIGNING_ALLOWED=NO` failed with the expected missing debounce/guards and
+  formatter-allocation assertions.
+- GREEN targeted: same command passed after implementation.
+- GREEN broader:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/ViewMainThreadReadTests CODE_SIGNING_ALLOWED=NO`
+  passed 16 tests.
+
+Residual risk: this slice intentionally does not refactor the async no-op
+`EngramServiceClient.close()` protocol or the larger `MessageParser`
+semaphore-to-async rewrite; those are separate P3 cleanups with wider call-site
+blast radius.
+
 ## 2026-06-06 — MCP project_review Claude Code encoding parity (Codex)
 
 Codex found and fixed a residual Claude Code compatibility gap after PR #51.

@@ -74,6 +74,25 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testCommandPaletteDebouncesAndOwnsSearchTask() throws {
+        let s = try source("macos/Engram/Views/CommandPaletteView.swift")
+        XCTAssertTrue(s.contains("@State private var searchTask: Task<Void, Never>?"))
+        XCTAssertTrue(s.contains("searchTask?.cancel()"))
+        XCTAssertTrue(
+            s.contains("Task.sleep(nanoseconds: 300_000_000)"),
+            "CommandPaletteView must debounce per-keystroke session searches instead of spawning one service call per input change"
+        )
+        XCTAssertTrue(
+            s.contains("guard !Task.isCancelled"),
+            "CommandPaletteView async callbacks must not publish stale search results after cancellation"
+        )
+        XCTAssertTrue(
+            s.contains("} catch {\n                guard !Task.isCancelled else { return }\n                let sessions = (try? await Task.detached"),
+            "a cancelled service search must exit before starting the local DB fallback"
+        )
+        XCTAssertTrue(s.contains(".onDisappear { searchTask?.cancel(); searchTask = nil }"))
+    }
+
     func testExpandableSessionCardInvalidatesOnEitherCount() throws {
         let s = try source("macos/Engram/Components/ExpandableSessionCard.swift")
         XCTAssertTrue(
@@ -104,6 +123,28 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertFalse(
             functionSource.contains("DateFormatter()"),
             "formatDateLabel runs for every timeline group and must not allocate DateFormatter per call"
+        )
+    }
+
+    func testLiveAndReplayViewsReuseISO8601Formatters() throws {
+        let live = try source("macos/Engram/Components/LiveSessionCard.swift")
+        let elapsedStart = try XCTUnwrap(live.range(of: "private var elapsedText"))
+        let elapsedEnd = try XCTUnwrap(live.range(of: "var body"))
+        let elapsedSource = String(live[elapsedStart.lowerBound..<elapsedEnd.lowerBound])
+        XCTAssertTrue(live.contains("private static let isoFormatter"))
+        XCTAssertFalse(
+            elapsedSource.contains("ISO8601DateFormatter()"),
+            "LiveSessionCard.elapsedText runs during body updates and must not allocate ISO8601DateFormatter per render"
+        )
+
+        let replay = try source("macos/Engram/Models/ReplayState.swift")
+        let densityStart = try XCTUnwrap(replay.range(of: "var densityBuckets"))
+        let densityEnd = try XCTUnwrap(replay.range(of: "func play()"))
+        let densitySource = String(replay[densityStart.lowerBound..<densityEnd.lowerBound])
+        XCTAssertTrue(replay.contains("private static let isoFormatter"))
+        XCTAssertFalse(
+            densitySource.contains("ISO8601DateFormatter()"),
+            "ReplayState.densityBuckets runs repeatedly while rendering replay density and must reuse its parser"
         )
     }
 

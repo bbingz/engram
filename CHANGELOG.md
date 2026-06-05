@@ -7,6 +7,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Swift UI P3 cleanup follow-up (2026-06-06, Codex)
+
+Closed a small still-current UI/concurrency cleanup slice from
+`CODE-REVIEW-ISSUES.md` Round 4.
+
+- **Command Palette search**: `CommandPaletteView` now owns and cancels a single
+  debounced search task. Per-keystroke session search waits 300 ms before
+  calling the service, cancels superseded work, and checks cancellation before
+  publishing service or local fallback results. A read-only subagent review
+  caught the first pass still entering local fallback after a cancelled service
+  call; the final version exits before starting fallback work.
+- **Formatter reuse**: `LiveSessionCard.elapsedText` and
+  `ReplayState.densityBuckets` now reuse static `ISO8601DateFormatter`
+  instances instead of allocating one during repeated render/state calculations.
+- **Regression coverage**: extended `ViewMainThreadReadTests` with source guards
+  for Command Palette debounce/cancellation and live/replay ISO formatter reuse.
+- **Verification**: RED first on the two new guards; GREEN with selected
+  `ViewMainThreadReadTests` targeted tests, then the full
+  `ViewMainThreadReadTests` suite (16 tests).
+
 ### MCP project_review Claude Code encoding parity (2026-06-06, Codex)
 
 Closed a residual Claude Code compatibility gap outside the main project-move

@@ -5,6 +5,11 @@ struct LiveSessionCard: View {
     let session: EngramServiceLiveSessionInfo
 
     @State private var isPulsing = false
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     private var levelColor: Color {
         switch session.activityLevel {
@@ -23,10 +28,8 @@ struct LiveSessionCard: View {
     }
 
     private var elapsedText: String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         // Use lastModifiedAt for "how long ago was it active"
-        guard let date = formatter.date(from: session.lastModifiedAt) else { return "" }
+        guard let date = Self.isoFormatter.date(from: session.lastModifiedAt) else { return "" }
         let seconds = Int(Date().timeIntervalSince(date))
         if seconds < 60 { return "just now" }
         if seconds < 3600 { return "\(seconds / 60)m ago" }
