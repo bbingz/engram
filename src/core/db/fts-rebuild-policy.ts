@@ -28,17 +28,11 @@ export function applyFtsRebuildPolicy(
     }
 
     const pending = metadata.getMetadata(REBUILD_VERSION_KEY);
-    const rebuildMissing = !tableExists(db, REBUILD_TABLE);
-    const needsFreshRebuild = pending !== FTS_VERSION || rebuildMissing;
+    const needsFreshRebuild =
+      pending !== FTS_VERSION ||
+      !tableMatchesSessionsFtsSchema(db, REBUILD_TABLE);
     if (needsFreshRebuild) {
-      db.exec(`DROP TABLE IF EXISTS ${REBUILD_TABLE}`);
-      createSessionsFtsTable(db, REBUILD_TABLE);
-      if (tableExists(db, ACTIVE_TABLE)) {
-        db.exec(`
-          INSERT INTO ${REBUILD_TABLE}(session_id, content)
-          SELECT session_id, content FROM ${ACTIVE_TABLE}
-        `);
-      }
+      recreateRebuildTableFromActive(db);
     }
 
     db.exec('UPDATE sessions SET size_bytes = 0');
@@ -71,7 +65,9 @@ export function finalizeFtsRebuildIfReady(
   metadata: MetadataAccess,
 ): boolean {
   if (metadata.getMetadata(REBUILD_VERSION_KEY) !== FTS_VERSION) return false;
-  if (!tableExists(db, REBUILD_TABLE)) return false;
+  if (!tableMatchesSessionsFtsSchema(db, REBUILD_TABLE)) {
+    recreateRebuildTableFromActive(db);
+  }
   if (recoverableFtsJobCount(db) > 0) return false;
 
   const tx = db.transaction(() => {
@@ -162,6 +158,17 @@ function rebuildIsPending(db: BetterSqlite3.Database): boolean {
   );
 }
 
+function recreateRebuildTableFromActive(db: BetterSqlite3.Database): void {
+  db.exec(`DROP TABLE IF EXISTS ${REBUILD_TABLE}`);
+  createSessionsFtsTable(db, REBUILD_TABLE);
+  if (tableExists(db, ACTIVE_TABLE)) {
+    db.exec(`
+      INSERT INTO ${REBUILD_TABLE}(session_id, content)
+      SELECT session_id, content FROM ${ACTIVE_TABLE}
+    `);
+  }
+}
+
 function reopenCompletedFtsJobs(db: BetterSqlite3.Database): void {
   if (!tableExists(db, 'session_index_jobs')) return;
   db.exec(`
@@ -210,5 +217,24 @@ function tableExists(db: BetterSqlite3.Database, table: string): boolean {
         "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
       )
       .get(table) !== undefined
+  );
+}
+
+function tableMatchesSessionsFtsSchema(
+  db: BetterSqlite3.Database,
+  table: typeof ACTIVE_TABLE | typeof REBUILD_TABLE,
+): boolean {
+  const sql = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?")
+    .pluck()
+    .get(table);
+  if (typeof sql !== 'string') return false;
+  const normalized = sql.toLowerCase().replace(/\s+/g, ' ');
+  return (
+    normalized.includes('create virtual table') &&
+    normalized.includes('using fts5') &&
+    normalized.includes('session_id unindexed') &&
+    normalized.includes('content') &&
+    normalized.includes("tokenize='trigram case_sensitive 0'")
   );
 }

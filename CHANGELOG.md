@@ -160,8 +160,13 @@ squash-merged to `main`.
 - Kept active FTS search available during rebuilds, dual-wrote refreshed FTS
   content to active/rebuild tables, and dual-deleted rows for session artifact
   cleanup, session deletion, and subagent maintenance cleanup.
+- Hardened pending rebuild reuse after subagent review: stale/non-FTS
+  `sessions_fts_rebuild` tables are recreated from active FTS rows before reuse
+  or final swap, and `deleteIndexArtifacts`/`deleteSession` now attempt
+  finalization after deleting the last recoverable FTS job.
 - Covered idempotent pending rebuild startup, vector cleanup, empty DB
-  migration, dual-write/delete behavior, and `IndexJobRunner` finalization.
+  migration, stale shadow-table recreation, dual-write/delete behavior,
+  deletion-drained finalization, and `IndexJobRunner` finalization.
 - Intentionally left `insights_fts` table-swap support out of scope for this PR.
 
 ### Database raw handle API cleanup (2026-06-04, Codex)

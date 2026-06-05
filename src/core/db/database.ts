@@ -153,6 +153,7 @@ export class Database {
   }
   deleteSession(id: string): void {
     sessions.deleteSession(this.db, id);
+    this.finalizeFtsRebuildIfReady();
   }
   isIndexed(filePath: string, sizeBytes: number): boolean {
     return sessions.isIndexed(this.db, filePath, sizeBytes);
@@ -255,6 +256,7 @@ export class Database {
         .run(sessionId);
     });
     tx();
+    this.finalizeFtsRebuildIfReady();
   }
   finalizeFtsRebuildIfReady(): boolean {
     return finalizeFtsRebuildIfReady(this.db, {
