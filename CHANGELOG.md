@@ -7,6 +7,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Codex project-move compatibility verification (2026-06-06, Codex)
+
+Verified the Codex project-move surface after the Claude/Qoder directory
+encoding fix.
+
+- **Conclusion**: no Codex-specific directory encoder is needed. Codex active
+  sessions live under `.codex/sessions` and archived sessions under
+  `.codex/archived_sessions`; both are flat roots from project-move's
+  perspective, so migration patches literal path references in JSONL content
+  and does not rename per-project directories.
+- **Source evidence**: TypeScript and Swift `SessionSources` both register
+  `codex` and `codex-archived` with no `encodeProjectDir`; the Swift adapter
+  also expands `.codex/sessions` to include `.codex/archived_sessions`.
+- **Real-corpus verification**: scanned the local Codex corpus read-only:
+  2,175 rollout JSONL files, 2,165 cwd-bearing sessions, zero non-absolute
+  cwd values, and zero project-dir-like path layouts. Five archived sessions
+  live directly under `.codex/archived_sessions`, which is still covered by the
+  flat archived root.
+- **Verification**: TS project-move source/orchestrator/review tests passed
+  50 tests; selected Swift project-move Codex/source/review tests passed 10
+  tests.
+
 ### TypeScript empty-reindex session fact preservation (2026-06-06, Codex)
 
 Closed a TS/Swift parity gap in session snapshot persistence.

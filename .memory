@@ -1,5 +1,40 @@
 # Engram Local Memory
 
+## 2026-06-06 — Codex project-move compatibility verification (Codex)
+
+Codex verified the Codex project-move surface after the Claude/Qoder directory
+encoding fix.
+
+Conclusion:
+- Codex does not use Claude-style cwd-encoded project directories. Active
+  sessions live under `.codex/sessions`; archived sessions live under
+  `.codex/archived_sessions`.
+- TypeScript `src/core/project-move/sources.ts` and Swift
+  `macos/EngramCoreWrite/ProjectMove/Sources.swift` both register `codex` and
+  `codex-archived` as flat roots with no `encodeProjectDir`, so project move
+  scans and patches literal path references in JSONL content but does not
+  rename Codex directories.
+- The Swift `CodexAdapter` also expands `.codex/sessions` to include
+  `.codex/archived_sessions`.
+
+Evidence:
+- Read-only local corpus scan found 2,175 Codex rollout JSONL files, 2,165
+  cwd-bearing sessions, zero non-absolute cwd values, and zero project-dir-like
+  path layouts. Five archived sessions live directly under
+  `.codex/archived_sessions`, which is still covered by the flat archived root.
+
+Verification:
+- `npx vitest run tests/core/project-move/sources.test.ts
+  tests/core/project-move/orchestrator.integration.test.ts
+  tests/core/project-move/review.test.ts` passed 50 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/SessionSourcesTests/testRootsReturnsCanonicalRootsInOrder
+  -only-testing:EngramCoreTests/SessionSourcesTests/testEncodeProjectDirSetForGroupedSourcesOnly
+  -only-testing:EngramCoreTests/OrchestratorTests/testCodexArchivedSessionsArePatchedAndCommitted
+  -only-testing:EngramCoreTests/ReviewScanTests CODE_SIGNING_ALLOWED=NO`
+  passed 10 tests.
+
 ## 2026-06-06 — TypeScript empty-reindex session fact preservation (Codex)
 
 Codex closed a TS/Swift parity gap where an empty or degraded re-parse could
