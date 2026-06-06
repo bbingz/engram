@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Session snapshot noop write reduction (2026-06-06, Codex)
+
+Closed two still-current Swift indexing follow-ups from
+`CODE-REVIEW-ISSUES.md`.
+
+- **Fix**: `SessionSnapshotWriter` no longer rewrites `session_costs` for a
+  fully unchanged noop snapshot. It still creates a missing zero-cost row and
+  still refreshes a noop row when a previously-null model becomes non-empty.
+- **Regression coverage**: added a RED/GREEN test proving an unchanged noop
+  does not increase SQLite `total_changes()`, while preserving existing model,
+  tool refresh, and orphan recovery behavior.
+- **Link source guard**: added a behavior truth table for `link_source` so fresh
+  inserts, path-derived updates, incoming nil-parent updates, and manual-link
+  preservation stay aligned across the insert and conflict-update paths.
+- **Review**: a reused subagent performed read-only review of the diff, raised a
+  low-severity link-source coverage gap, and the gap was patched before commit.
+- **Verification**: selected writer tests passed, then the full
+  `IndexerParityTests` class passed 32 tests.
+
 ### MainActor UI trampoline cleanup (2026-06-06, Codex)
 
 Closed the remaining still-current SwiftUI P3 cleanup finding from

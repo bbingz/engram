@@ -111,6 +111,80 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testSessionSnapshotWriterLinkSourceTruthTable() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "parent"))
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "manual-parent"))
+
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "fresh-path", parentSessionId: "parent")
+            )
+            var row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = 'fresh-path'"
+            )
+            XCTAssertEqual(row?["parent_session_id"] as String?, "parent")
+            XCTAssertEqual(row?["link_source"] as String?, "path")
+
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "fresh-path", syncVersion: 2, snapshotHash: "h2")
+            )
+            row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = 'fresh-path'"
+            )
+            XCTAssertEqual(row?["parent_session_id"] as String?, "parent")
+            XCTAssertEqual(row?["link_source"] as String?, "path")
+
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "fresh-path", syncVersion: 3, snapshotHash: "h3", parentSessionId: "manual-parent")
+            )
+            row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = 'fresh-path'"
+            )
+            XCTAssertEqual(row?["parent_session_id"] as String?, "manual-parent")
+            XCTAssertEqual(row?["link_source"] as String?, "path")
+
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "fresh-null"))
+            row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = 'fresh-null'"
+            )
+            XCTAssertNil(row?["parent_session_id"] as String?)
+            XCTAssertNil(row?["link_source"] as String?)
+
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "fresh-null", syncVersion: 2, snapshotHash: "h2", parentSessionId: "parent")
+            )
+            row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = 'fresh-null'"
+            )
+            XCTAssertEqual(row?["parent_session_id"] as String?, "parent")
+            XCTAssertEqual(row?["link_source"] as String?, "path")
+
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET parent_session_id = 'manual-parent',
+                    link_source = 'manual'
+                WHERE id = 'fresh-path'
+                """
+            )
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "fresh-path", syncVersion: 4, snapshotHash: "h4", parentSessionId: "parent")
+            )
+            row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = 'fresh-path'"
+            )
+            XCTAssertEqual(row?["parent_session_id"] as String?, "manual-parent")
+            XCTAssertEqual(row?["link_source"] as String?, "manual")
+        }
+    }
+
     func testTierGatedIndexJobs() throws {
         try writer.write { db in
             let snapshotWriter = SessionSnapshotWriter(db: db)
@@ -284,6 +358,20 @@ final class IndexerParityTests: XCTestCase {
                 try String.fetchOne(db, sql: "SELECT model FROM session_costs WHERE session_id = 'noop-model'"),
                 "claude-opus"
             )
+        }
+    }
+
+    func testSessionSnapshotWriterDoesNotRewriteUnchangedNoopCostRows() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "noop-cost", model: "claude-opus"))
+
+            let before = try Int.fetchOne(db, sql: "SELECT total_changes()") ?? 0
+            let noop = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "noop-cost", model: "claude-opus"))
+            let after = try Int.fetchOne(db, sql: "SELECT total_changes()") ?? 0
+
+            XCTAssertEqual(noop.action, .noop)
+            XCTAssertEqual(after, before)
         }
     }
 
@@ -747,7 +835,8 @@ final class IndexerParityTests: XCTestCase {
         summary: String = "hello",
         tier: SessionTier = .normal,
         toolCallCounts: [String: Int] = [:],
-        model: String? = "openai"
+        model: String? = "openai",
+        parentSessionId: String? = nil
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
             id: id,
@@ -773,6 +862,7 @@ final class IndexerParityTests: XCTestCase {
             origin: nil,
             tier: tier,
             agentRole: nil,
+            parentSessionId: parentSessionId,
             toolCallCounts: toolCallCounts
         )
     }

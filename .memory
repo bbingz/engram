@@ -1,5 +1,39 @@
 # Engram Local Memory
 
+## 2026-06-06 — Session snapshot noop write reduction (Codex)
+
+Codex closed two still-current Swift indexing follow-ups from
+`CODE-REVIEW-ISSUES.md`: redundant noop cost-row writes and weak
+`link_source` parity coverage.
+
+Change:
+- `SessionSnapshotWriter` now checks the existing `session_costs` row on noop
+  snapshots and only writes when the row is missing or a non-empty incoming
+  model differs from the stored model.
+- Existing behavior remains intact: initial merge creates a zero-cost row, noop
+  nil-to-non-empty model refresh still works, nil model does not clear an
+  existing model, non-empty tool-count noop refresh still works, and recovered
+  orphan state is still cleared.
+- `IndexerParityTests` now includes a `link_source` truth table for fresh
+  path-parent insert, fresh nil-parent insert, nil-to-path update,
+  existing-path plus incoming-nil preservation, path-to-new-path update, and
+  manual-link preservation.
+
+Review:
+- A reused read-only subagent found no issue in the noop cost optimization.
+- The reviewer reported one low-severity link-source coverage gap; Codex added
+  the missing incoming-nil and path-to-new-path branches before committing.
+
+Verification:
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramCoreTests -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/IndexerParityTests/testSessionSnapshotWriterDoesNotRewriteUnchangedNoopCostRows
+  CODE_SIGNING_ALLOWED=NO` failed against the old cost-row rewrite behavior.
+- GREEN: selected writer tests passed after the fix.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' -only-testing:EngramCoreTests/IndexerParityTests
+  CODE_SIGNING_ALLOWED=NO` passed 32 tests.
+
 ## 2026-06-06 — MainActor UI trampoline cleanup (Codex)
 
 Codex closed the remaining still-current SwiftUI P3 cleanup finding from
