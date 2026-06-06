@@ -29,12 +29,16 @@ final class SessionSourcesTests: XCTestCase {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/home/test"))
         let ids = roots.map(\.id.rawValue)
         XCTAssertEqual(ids, [
-            "claude-code", "codex", "codex-archived", "gemini-cli", "iflow",
+            "claude-code", "codex", "codex-archived", "codex-rollout-summaries", "gemini-cli", "iflow",
             "qoder", "opencode", "antigravity", "antigravity-legacy", "commandcode", "copilot",
         ])
         XCTAssertEqual(
             roots.first(where: { $0.id.rawValue == "codex-archived" })?.path,
             "/home/test/.codex/archived_sessions"
+        )
+        XCTAssertEqual(
+            roots.first(where: { $0.id.rawValue == "codex-rollout-summaries" })?.path,
+            "/home/test/.codex/memories/rollout_summaries"
         )
         XCTAssertEqual(
             roots.first(where: { $0.id == .copilot })?.path,

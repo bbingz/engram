@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Project move covers Codex rollout summaries (2026-06-06, Codex)
+
+Closed the remaining Codex project-move compatibility gap found by checking
+the real `~/.codex` layout.
+
+- **Fix**: project moves now scan and patch
+  `~/.codex/memories/rollout_summaries` as a flat Codex source, in both the
+  TypeScript reference pipeline and the Swift product pipeline.
+- **Why**: Codex sessions and `archived_sessions` were already covered, but
+  exported/project-local rollout summary JSONL files can also retain
+  `turn_context.cwd` and workspace-root paths. Leaving that directory out made
+  project moves incomplete for Codex-derived durable memory artifacts.
+- **Verification**: real-disk audit confirmed current Codex primary sessions
+  live under `~/.codex/sessions`, archives under `~/.codex/archived_sessions`,
+  and the rollout-summary store under
+  `~/.codex/memories/rollout_summaries`. RED project-move tests failed until
+  the new source root was added. GREEN targeted Vitest project-move tests and
+  targeted `EngramCoreTests` Swift tests passed.
+
 ### Gemini CLI projects cache refresh (2026-06-06, Codex)
 
 Closed a still-current P3 cache-staleness finding in the TypeScript Gemini CLI

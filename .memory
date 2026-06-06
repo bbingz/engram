@@ -1,5 +1,49 @@
 # Engram Local Memory
 
+## 2026-06-06 — Project move covers Codex rollout summaries (Codex)
+
+Codex closed a remaining project-move compatibility gap for Codex-derived
+durable memory artifacts.
+
+Finding:
+- Real local Codex session history uses flat JSONL stores under
+  `~/.codex/sessions` and `~/.codex/archived_sessions`; those were already
+  covered by project-move roots.
+- The local Codex memory layout also has
+  `~/.codex/memories/rollout_summaries`, which can contain exported rollout
+  JSONL with `session_meta` / `turn_context` cwd and workspace-root fields.
+  Project move did not scan it, so moves could leave stale cwd references in
+  Codex-derived memory summaries.
+- `~/.codex/session_index.jsonl` samples contained ids, thread names, and
+  timestamps, not cwd. `~/.codex/history.jsonl` contains raw prompt history and
+  may mention paths, but it is not treated as session truth for project moves.
+
+Change:
+- `src/core/project-move/sources.ts` adds a flat
+  `codex-rollout-summaries` source root at
+  `~/.codex/memories/rollout_summaries`.
+- `macos/EngramCoreWrite/ProjectMove/Sources.swift` mirrors the same source
+  id and path for the Swift product pipeline.
+- TS and Swift project-move tests now assert source-root parity and verify the
+  orchestrator patches rollout-summary JSONL alongside active and archived
+  Codex sessions.
+
+Verification:
+- RED: `npx vitest run tests/core/project-move/sources.test.ts
+  tests/core/project-move/orchestrator.integration.test.ts` failed because
+  `codex-rollout-summaries` was absent and the rollout-summary fixture still
+  contained the old cwd.
+- GREEN: the same targeted Vitest command passed 44 tests after adding the
+  root.
+- GREEN: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramCoreTests -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/SessionSourcesTests/testRootsReturnsCanonicalRootsInOrder`
+  passed.
+- GREEN: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramCoreTests -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/OrchestratorTests/testAllCodexStoresArePatchedAndCommitted`
+  passed.
+
 ## 2026-06-06 — Gemini CLI projects cache refresh (Codex)
 
 Codex closed the still-current P3 Gemini CLI `projectsCache` refresh finding.

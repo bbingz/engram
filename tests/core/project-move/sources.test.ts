@@ -19,13 +19,14 @@ import {
 } from '../../../src/core/project-move/sources.js';
 
 describe('getSourceRoots', () => {
-  it('returns the canonical AI session roots, including active and archived Codex stores', () => {
+  it('returns the canonical AI session roots, including all Codex stores', () => {
     const roots = getSourceRoots('/home/test');
     const ids = roots.map((r) => r.id);
     expect(ids).toEqual([
       'claude-code',
       'codex',
       'codex-archived',
+      'codex-rollout-summaries',
       'gemini-cli',
       'iflow',
       'qoder',
@@ -41,6 +42,9 @@ describe('getSourceRoots', () => {
     );
     expect(roots.find((r) => r.id === 'codex-archived')?.path).toBe(
       '/home/test/.codex/archived_sessions',
+    );
+    expect(roots.find((r) => r.id === 'codex-rollout-summaries')?.path).toBe(
+      '/home/test/.codex/memories/rollout_summaries',
     );
     expect(roots.find((r) => r.id === 'iflow')?.path).toBe(
       '/home/test/.iflow/projects',
