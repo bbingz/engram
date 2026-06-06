@@ -1,5 +1,32 @@
 # Engram Local Memory
 
+## 2026-06-06 — Gemini CLI projects cache refresh (Codex)
+
+Codex closed the still-current P3 Gemini CLI `projectsCache` refresh finding.
+
+Change:
+- `src/adapters/gemini-cli.ts` now keys the in-memory `projects.json` cache by
+  the file's `size:mtimeMs:ctimeMs` signature.
+- `resolveProject()` keeps the cheap cache hit when `projects.json` is
+  unchanged, but reloads when Gemini rewrites the file so long-running Engram
+  processes resolve project slugs to the current cwd.
+- Oversized, missing, or invalid `projects.json` inputs still resolve to an
+  empty map and are cached by the observed signature to avoid repeated reads.
+
+Verification:
+- RED: `npx vitest run tests/adapters/gemini-cli.test.ts` failed because the
+  second `resolveProject('my-project')` returned `/Users/test/old-project`
+  after the fixture `projects.json` had been rewritten.
+- GREEN: `npx vitest run tests/adapters/gemini-cli.test.ts` passed 11 tests.
+- GREEN: `npx vitest run tests/adapters/gemini-cli.test.ts
+  tests/adapters/antigravity.test.ts tests/adapters/edge-cases.test.ts`
+  passed 30 tests.
+- After subagent review flagged the same-size/same-mtime stale-cache edge, a
+  RED source guard failed until `ctimeMs` became part of the signature.
+- GREEN: `npx biome check --write src/adapters/gemini-cli.ts
+  tests/adapters/gemini-cli.test.ts` passed with no fixes.
+- GREEN: `npm run typecheck:test` passed.
+
 ## 2026-06-06 — TypeScript generate_summary MCP status semantics (Codex)
 
 Codex closed the still-current `generate_summary` MCP `isError` misuse

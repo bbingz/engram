@@ -1,6 +1,13 @@
 // tests/adapters/gemini-cli.test.ts
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +52,88 @@ describe('GeminiCliAdapter', () => {
   it('resolveProject returns cwd for projectName', async () => {
     const cwd = await adapter.resolveProject('my-project');
     expect(cwd).toBe('/Users/test/my-project');
+  });
+
+  it('refreshes project cache when projects.json changes', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'engram-gemini-project-cache-'));
+    try {
+      const projectsFile = join(tmp, 'projects.json');
+      writeFileSync(
+        projectsFile,
+        JSON.stringify({
+          projects: {
+            '/Users/test/old-project': 'my-project',
+          },
+        }),
+      );
+      const adapter = new GeminiCliAdapter(tmp, projectsFile);
+
+      await expect(adapter.resolveProject('my-project')).resolves.toBe(
+        '/Users/test/old-project',
+      );
+
+      writeFileSync(
+        projectsFile,
+        JSON.stringify({
+          projects: {
+            '/Users/test/new-project-renamed': 'my-project',
+          },
+        }),
+      );
+      const future = new Date(Date.now() + 10_000);
+      utimesSync(projectsFile, future, future);
+
+      await expect(adapter.resolveProject('my-project')).resolves.toBe(
+        '/Users/test/new-project-renamed',
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes project cache when same-size rewrite preserves mtime', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'engram-gemini-project-ctime-'));
+    try {
+      const projectsFile = join(tmp, 'projects.json');
+      const oldPayload = JSON.stringify({
+        projects: {
+          '/Users/test/aaa-project': 'my-project',
+        },
+      });
+      const newPayload = JSON.stringify({
+        projects: {
+          '/Users/test/bbb-project': 'my-project',
+        },
+      });
+      expect(newPayload.length).toBe(oldPayload.length);
+      writeFileSync(projectsFile, oldPayload);
+      const originalTimes = statSync(projectsFile);
+      const adapter = new GeminiCliAdapter(tmp, projectsFile);
+
+      await expect(adapter.resolveProject('my-project')).resolves.toBe(
+        '/Users/test/aaa-project',
+      );
+
+      writeFileSync(projectsFile, newPayload);
+      utimesSync(projectsFile, originalTimes.atime, originalTimes.mtime);
+
+      await expect(adapter.resolveProject('my-project')).resolves.toBe(
+        '/Users/test/bbb-project',
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('keys project cache signature with ctime as well as size and mtime', () => {
+    const source = readFileSync(
+      join(__dirname, '../../src/adapters/gemini-cli.ts'),
+      'utf8',
+    );
+
+    expect(source).toContain('fileStat.size');
+    expect(source).toContain('fileStat.mtimeMs');
+    expect(source).toContain('fileStat.ctimeMs');
   });
 
   it('skips oversized session JSON files before reading them', async () => {

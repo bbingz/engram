@@ -7,6 +7,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Gemini CLI projects cache refresh (2026-06-06, Codex)
+
+Closed a still-current P3 cache-staleness finding in the TypeScript Gemini CLI
+adapter.
+
+- **Fix**: `GeminiCliAdapter` now keys its `projects.json` cache by the
+  file's `size:mtimeMs:ctimeMs` signature, keeping cache hits for unchanged
+  files while reloading after Gemini rewrites the project map.
+- **Why**: the prior cache lived for the adapter lifetime, so a long-running
+  Engram process could keep resolving a Gemini project slug to an old cwd after
+  `~/.gemini/projects.json` changed.
+- **Verification**: RED `tests/adapters/gemini-cli.test.ts` failed because a
+  rewritten `projects.json` still returned `/Users/test/old-project`. GREEN
+  Gemini adapter tests passed 11 tests; adjacent adapter tests passed 30 tests;
+  Biome and `npm run typecheck:test` passed. Subagent review approved the
+  change; the same-size/same-mtime residual risk it noted was closed by adding
+  `ctimeMs` to the cache signature.
+
 ### TypeScript generate_summary MCP status semantics (2026-06-06, Codex)
 
 Closed the still-current `generate_summary` `isError` misuse finding.
