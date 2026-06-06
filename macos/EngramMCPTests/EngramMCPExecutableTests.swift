@@ -1223,6 +1223,45 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(result["structuredContent"]?["hidden"]?.boolValue, true)
     }
 
+    func testHideSessionPropagatesServiceNotFound() throws {
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "setSessionHidden":
+                return try request.failure(name: "SessionNotFound", message: "session-not-found")
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 107)
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hide_session","arguments":{"session_id":"missing-session"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        guard case .array(let content)? = result["content"] else {
+            return XCTFail("Expected error content")
+        }
+        let message = content.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(message.contains("session-not-found"), message)
+    }
+
     func testManageProjectAliasRoutesReadAndWriteModes() throws {
         let fixtureDB = fixturePath("mcp-contract.sqlite")
 
@@ -1872,6 +1911,14 @@ private final class MockServiceSocketServer {
 
         func decodePayload<T: Decodable>(_ type: T.Type) throws -> T {
             try JSONDecoder().decode(type, from: try XCTUnwrap(payload))
+        }
+
+        func failure(name: String, message: String, retryPolicy: String = "never") throws -> Data {
+            let response = FailureEnvelope(
+                requestId: requestId,
+                error: .init(name: name, message: message, retryPolicy: retryPolicy)
+            )
+            return try JSONEncoder().encode(response)
         }
 
         func success(_ result: TestJSONValue, databaseGeneration: Int? = nil) throws -> Data {

@@ -7,6 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Swift hide_session not-found and local-state parity (2026-06-06, Codex)
+
+Closed the remaining Swift-side `hide_session` silent-success gap.
+
+- **Fix**: the service writer now checks the `sessions.hidden_at` update count
+  and returns a structured `SessionNotFound` / `session-not-found` command
+  failure when the session id does not exist.
+- **Parity**: successful hide/unhide operations now mirror `hidden_at` into
+  `session_local_state`, matching the local-state surface used by the app and
+  MCP tooling.
+- **Compatibility**: the service command guards minimal or older databases by
+  creating `session_local_state` and adding missing local-state columns before
+  the mirror write.
+- **Verification**: RED missing-session IPC test failed before the service fix;
+  targeted service and MCP tests passed; full `EngramServiceCore` passed 129
+  tests; full `EngramMCPTests` passed 75 tests; `git diff --check` passed.
+
 ### Gemini CLI adapter large sidecar/projects guard (2026-06-06, Codex)
 
 Closed the remaining P1 large-JSON gap in the TypeScript Gemini CLI adapter.

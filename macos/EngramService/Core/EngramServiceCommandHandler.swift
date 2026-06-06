@@ -542,9 +542,31 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         writer: EngramDatabaseWriter
     ) throws -> EmptyEncodableResult {
         try writer.write { db in
-            try db.execute(
+            try ensureSessionLocalStateTable(db)
+            let changed = try db.executeAndCountChanges(
                 sql: "UPDATE sessions SET hidden_at = \(request.hidden ? "datetime('now')" : "NULL") WHERE id = ?",
                 arguments: [request.sessionId]
+            )
+            guard changed > 0 else {
+                throw EngramServiceError.commandFailed(
+                    name: "SessionNotFound",
+                    message: "session-not-found",
+                    retryPolicy: "never",
+                    details: ["session_id": .string(request.sessionId)]
+                )
+            }
+            let hiddenAt = try String.fetchOne(
+                db,
+                sql: "SELECT hidden_at FROM sessions WHERE id = ?",
+                arguments: [request.sessionId]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO session_local_state (session_id, hidden_at)
+                    VALUES (?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET hidden_at = excluded.hidden_at
+                """,
+                arguments: [request.sessionId, hiddenAt]
             )
         }
         return EmptyEncodableResult()
@@ -592,6 +614,28 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 UNIQUE(session_id, tag)
             );
         """)
+    }
+
+    private static func ensureSessionLocalStateTable(_ db: GRDB.Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS session_local_state (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                hidden_at TEXT,
+                custom_name TEXT,
+                local_readable_path TEXT
+            );
+        """)
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(session_local_state)")
+        let columns = Set(rows.compactMap { $0["name"] as String? })
+        if !columns.contains("hidden_at") {
+            try db.execute(sql: "ALTER TABLE session_local_state ADD COLUMN hidden_at TEXT")
+        }
+        if !columns.contains("custom_name") {
+            try db.execute(sql: "ALTER TABLE session_local_state ADD COLUMN custom_name TEXT")
+        }
+        if !columns.contains("local_readable_path") {
+            try db.execute(sql: "ALTER TABLE session_local_state ADD COLUMN local_readable_path TEXT")
+        }
     }
 
     private static func ensureInsightTables(_ db: GRDB.Database) throws {
