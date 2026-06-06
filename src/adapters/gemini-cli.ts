@@ -56,6 +56,12 @@ function extractText(content: string | GeminiContentPart[]): string {
   return '';
 }
 
+async function readJsonFileIfSmall<T>(filePath: string): Promise<T | null> {
+  const fileStat = await stat(filePath);
+  if (fileStat.size > MAX_SESSION_JSON_BYTES) return null;
+  return JSON.parse(await readFile(filePath, 'utf8')) as T;
+}
+
 export class GeminiCliAdapter implements SessionAdapter {
   readonly name = 'gemini-cli' as const;
   private tmpRoot: string;
@@ -130,9 +136,14 @@ export class GeminiCliAdapter implements SessionAdapter {
           dirname(filePath),
           `${session.sessionId}.engram.json`,
         );
-        const sidecar = JSON.parse(await readFile(sidecarPath, 'utf8'));
-        if (sidecar.parentSessionId) parentSessionId = sidecar.parentSessionId;
-        if (sidecar.originator) originator = sidecar.originator;
+        const sidecar =
+          await readJsonFileIfSmall<Record<string, unknown>>(sidecarPath);
+        if (typeof sidecar?.parentSessionId === 'string') {
+          parentSessionId = sidecar.parentSessionId;
+        }
+        if (typeof sidecar?.originator === 'string') {
+          originator = sidecar.originator;
+        }
       } catch {
         // No sidecar — fall through to heuristic detection
       }
@@ -205,8 +216,13 @@ export class GeminiCliAdapter implements SessionAdapter {
   private async loadProjects(): Promise<Map<string, string>> {
     if (this.projectsCache) return this.projectsCache;
     try {
-      const raw = await readFile(this.projectsFile, 'utf8');
-      const obj = JSON.parse(raw) as Record<string, unknown>;
+      const obj = await readJsonFileIfSmall<Record<string, unknown>>(
+        this.projectsFile,
+      );
+      if (!obj) {
+        this.projectsCache = new Map();
+        return this.projectsCache;
+      }
       // 支持 {"projects": {...}} 和直接 {...} 两种格式
       const projects = (obj.projects ?? obj) as Record<string, string>;
       this.projectsCache = new Map(Object.entries(projects));

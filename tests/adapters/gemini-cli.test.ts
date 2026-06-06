@@ -68,6 +68,67 @@ describe('GeminiCliAdapter', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it('ignores oversized sidecar files before reading them', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'engram-gemini-large-sidecar-'));
+    try {
+      const sessionId = 'g-large-sidecar';
+      const sessionPath = join(tmp, `session-${sessionId}.json`);
+      writeFileSync(
+        sessionPath,
+        JSON.stringify({
+          sessionId,
+          projectHash: 'h',
+          startTime: '2026-01-25T14:00:00.000Z',
+          messages: [
+            {
+              id: '1',
+              timestamp: '2026-01-25T14:00:00.000Z',
+              type: 'user',
+              content: 'hi',
+            },
+          ],
+        }),
+      );
+      writeFileSync(
+        join(tmp, `${sessionId}.engram.json`),
+        JSON.stringify({
+          originator: 'Claude Code',
+          padding: 'x'.repeat(11 * 1024 * 1024),
+        }),
+      );
+      const adapter = new GeminiCliAdapter(tmp, join(tmp, 'projects.json'));
+
+      const info = await adapter.parseSessionInfo(sessionPath);
+
+      expect(info?.id).toBe(sessionId);
+      expect(info?.originator).toBeUndefined();
+      expect(info?.agentRole).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores oversized projects.json before reading it', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'engram-gemini-large-projects-'));
+    try {
+      const projectsFile = join(tmp, 'projects.json');
+      writeFileSync(
+        projectsFile,
+        JSON.stringify({
+          projects: {
+            '/Users/test/my-project': 'my-project',
+          },
+          padding: 'x'.repeat(11 * 1024 * 1024),
+        }),
+      );
+      const adapter = new GeminiCliAdapter(tmp, projectsFile);
+
+      await expect(adapter.resolveProject('my-project')).resolves.toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('GeminiCliAdapter sidecar originator (R5-31)', () => {

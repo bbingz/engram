@@ -7,6 +7,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Gemini CLI adapter large sidecar/projects guard (2026-06-06, Codex)
+
+Closed the remaining P1 large-JSON gap in the TypeScript Gemini CLI adapter.
+
+- **Fix**: `GeminiCliAdapter` now applies the same 10 MiB size cap to
+  `.engram.json` sidecars and `.gemini/projects.json` before reading JSON
+  into memory. Oversized sidecars are treated as absent; oversized
+  `projects.json` files resolve to an empty project map.
+- **Scope**: the existing 10 MiB guard for primary session JSON and streamed
+  message reads was already present; this change covers the two remaining
+  unconditional `readFile` paths.
+- **Verification**: `npx vitest run tests/adapters/gemini-cli.test.ts` first
+  failed on oversized sidecar/projects fixtures, then passed 10 tests after
+  the fix. `npx biome check src/adapters/gemini-cli.ts
+  tests/adapters/gemini-cli.test.ts` passed.
+
 ### Claude/Qoder grouped-dir reconcile for historical project moves (2026-06-06, Codex)
 
 Added startup repair for already-orphaned Claude Code/Qoder grouped project
