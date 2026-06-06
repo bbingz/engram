@@ -19,8 +19,8 @@ struct ChatMessage: Identifiable {
 
 struct MessageParser {
 
-    static func parse(filePath: String, source: String, offset: Int? = nil, limit: Int? = nil) -> [ChatMessage] {
-        if let adapterMessages = parseWithAdapterRegistry(filePath: filePath, source: source, offset: offset, limit: limit),
+    static func parse(filePath: String, source: String, offset: Int? = nil, limit: Int? = nil) async -> [ChatMessage] {
+        if let adapterMessages = await parseWithAdapterRegistry(filePath: filePath, source: source, offset: offset, limit: limit),
            !adapterMessages.isEmpty {
             return adapterMessages
         }
@@ -58,14 +58,14 @@ struct MessageParser {
         source: String,
         offset: Int?,
         limit: Int?
-    ) -> [ChatMessage]? {
+    ) async -> [ChatMessage]? {
         guard let sourceName = SourceName(rawValue: source),
               let adapter = uiAdapterRegistry().adapter(for: sourceName)
         else {
             return nil
         }
 
-        return blockingAdapterMessages(
+        return await adapterMessages(
             adapter: adapter,
             locator: filePath,
             source: source,
@@ -86,7 +86,7 @@ struct MessageParser {
         source: String,
         offset: Int,
         limit: Int?
-    ) -> (messages: [ChatMessage], producedCount: Int) {
+    ) async -> (messages: [ChatMessage], producedCount: Int) {
         if let sourceName = SourceName(rawValue: source),
            let adapter = uiAdapterRegistry().adapter(for: sourceName) {
             // Trust the adapter on success, INCLUDING a legitimately empty window
@@ -94,7 +94,7 @@ struct MessageParser {
             // nil result — adapter error / no stream — falls back to the legacy
             // parser, which has no offset/limit support and would re-read the whole
             // file just to discard it.
-            if let result = blockingAdapterMessages(
+            if let result = await adapterMessages(
                 adapter: adapter,
                 locator: filePath,
                 source: source,
@@ -133,46 +133,34 @@ struct MessageParser {
         )
     }
 
-    private static func blockingAdapterMessages(
+    private static func adapterMessages(
         adapter: any SessionAdapter,
         locator: String,
         source: String,
         options: StreamMessagesOptions
-    ) -> (messages: [ChatMessage], producedCount: Int)? {
-        let semaphore = DispatchSemaphore(value: 0)
-        final class Box: @unchecked Sendable {
-            var result: (messages: [ChatMessage], producedCount: Int)?
-        }
-        let box = Box()
-
-        Task.detached {
-            defer { semaphore.signal() }
-            do {
-                let stream = try await adapter.streamMessages(locator: locator, options: options)
-                var messages: [ChatMessage] = []
-                var produced = 0
-                for try await message in stream {
-                    // Count PRE-filter (adapter-produced) messages so a caller paging
-                    // in produced-message space can advance offset correctly even when
-                    // role filtering drops tool messages from `messages`.
-                    produced += 1
-                    guard message.role == .user || message.role == .assistant,
-                          !message.content.isEmpty
-                    else {
-                        continue
-                    }
-                    let role = message.role == .user ? "user" : "assistant"
-                    let category = message.role == .user ? classifySystem(content: message.content, source: source) : .none
-                    messages.append(ChatMessage(role: role, content: message.content, systemCategory: category))
+    ) async -> (messages: [ChatMessage], producedCount: Int)? {
+        do {
+            let stream = try await adapter.streamMessages(locator: locator, options: options)
+            var messages: [ChatMessage] = []
+            var produced = 0
+            for try await message in stream {
+                // Count PRE-filter (adapter-produced) messages so a caller paging
+                // in produced-message space can advance offset correctly even when
+                // role filtering drops tool messages from `messages`.
+                produced += 1
+                guard message.role == .user || message.role == .assistant,
+                      !message.content.isEmpty
+                else {
+                    continue
                 }
-                box.result = (messages, produced)
-            } catch {
-                box.result = nil
+                let role = message.role == .user ? "user" : "assistant"
+                let category = message.role == .user ? classifySystem(content: message.content, source: source) : .none
+                messages.append(ChatMessage(role: role, content: message.content, systemCategory: category))
             }
+            return (messages, produced)
+        } catch {
+            return nil
         }
-
-        semaphore.wait()
-        return box.result
     }
 
     private static func applyWindow(_ messages: [ChatMessage], offset: Int?, limit: Int?) -> [ChatMessage] {

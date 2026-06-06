@@ -185,9 +185,7 @@ public enum Archive {
                             reason: "git repository with substantive content"
                         )
                     }
-                } else if type == .typeRegular {
-                    // .git as a file = worktree / submodule. Accept without
-                    // further probe (Node parity).
+                } else if type == .typeRegular, validGitdirFile(at: gitPath) {
                     return ArchiveSuggestion(
                         dst: join(archiveRoot, ArchiveCategory.archivedDone.rawValue, name),
                         category: .archivedDone,
@@ -216,6 +214,29 @@ public enum Archive {
 
     private static func defaultArchiveRoot(of src: String) -> String {
         join((src as NSString).deletingLastPathComponent, "_archive")
+    }
+
+    private static func validGitdirFile(at gitPath: String) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: gitPath)) else {
+            return false
+        }
+        defer { try? handle.close() }
+
+        let data = handle.readData(ofLength: 512)
+        guard let content = String(data: data, encoding: .utf8) else { return false }
+        guard let line = content
+            .components(separatedBy: .newlines)
+            .first(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("gitdir:") })
+        else { return false }
+
+        let rawGitDir = String(line.dropFirst("gitdir:".count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawGitDir.isEmpty else { return false }
+
+        let gitDir = rawGitDir.hasPrefix("/")
+            ? rawGitDir
+            : join((gitPath as NSString).deletingLastPathComponent, rawGitDir)
+        return FileManager.default.fileExists(atPath: join(gitDir, "HEAD"))
     }
 
     private static func matchesYYYYMMDDPrefix(_ name: String) -> Bool {

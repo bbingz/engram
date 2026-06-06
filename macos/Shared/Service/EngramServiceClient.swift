@@ -185,8 +185,8 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         transport.events()
     }
 
-    func close() async {
-        await transport.close()
+    func close() {
+        transport.close()
     }
 
     private func command<Response: Decodable>(

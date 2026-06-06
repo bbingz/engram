@@ -170,6 +170,51 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertFalse(s.contains(".onChange(of: selectedModule) { _, _ in Task { await reload() } }"))
     }
 
+    func testSegmentedMessageParsingRunsOffMainThread() throws {
+        let s = try source("macos/Engram/Views/ContentSegmentViews.swift")
+        XCTAssertTrue(s.contains("@State private var parsedSegments: [ContentSegment] = []"))
+        XCTAssertTrue(s.contains(".task(id: content)"))
+        XCTAssertTrue(s.contains("Task.detached(priority: .userInitiated)"))
+        XCTAssertFalse(
+            s.contains("ForEach(segments)"),
+            "SegmentedMessageView must not synchronously parse markdown segments from body"
+        )
+    }
+
+    func testMessageParserDoesNotBridgeAsyncAdaptersWithSemaphore() throws {
+        let s = try source("macos/Engram/Core/MessageParser.swift")
+        XCTAssertFalse(
+            s.contains("DispatchSemaphore"),
+            "MessageParser must stay async through adapter streams instead of blocking a thread on a semaphore"
+        )
+        XCTAssertFalse(s.contains("blockingAdapterMessages"))
+    }
+
+    func testAppTerminateClosesServiceClientSynchronously() throws {
+        let s = try source("macos/Engram/App.swift")
+        XCTAssertTrue(s.contains("serviceClient.close()"))
+        XCTAssertFalse(
+            s.contains("Task.detached { [serviceClient] in\n            await serviceClient.close()"),
+            "applicationWillTerminate must not fire-and-forget service client close after returning"
+        )
+    }
+
+    func testMenuBarAndThemeUseMainActorTrampolinesConsistently() throws {
+        let menu = try source("macos/Engram/MenuBarController.swift")
+        XCTAssertTrue(menu.contains("@MainActor\nclass MenuBarController"))
+        XCTAssertFalse(
+            menu.contains("DispatchQueue.main.async"),
+            "MenuBarController is MainActor-isolated and should use Task { @MainActor in } for deferred UI work"
+        )
+
+        let theme = try source("macos/Engram/Components/Theme.swift")
+        XCTAssertFalse(
+            theme.contains("DispatchQueue.main.async"),
+            "ModernScrollViewConfigurator should use MainActor tasks instead of GCD main-queue trampolines"
+        )
+        XCTAssertTrue(theme.contains("Task { @MainActor in"))
+    }
+
     func testSettingsLoadsDoNotImmediatelyWriteBackUnchangedValues() throws {
         let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
         XCTAssertTrue(ai.contains("@State private var isLoadingSettings = false"))

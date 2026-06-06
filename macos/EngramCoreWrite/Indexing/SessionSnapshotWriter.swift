@@ -18,7 +18,7 @@ public final class SessionSnapshotWriter {
         let current = try currentSnapshot(id: snapshot.id)
         let merge = try mergeSessionSnapshot(current: current, incoming: snapshot)
         guard merge.action == .merge else {
-            try upsertZeroCostRow(snapshot)
+            try upsertZeroCostRowIfNeededForNoop(snapshot)
             if !snapshot.toolCallCounts.isEmpty {
                 try replaceSessionToolsIfDifferent(snapshot)
             }
@@ -379,6 +379,22 @@ public final class SessionSnapshotWriter {
             """,
             arguments: [snapshot.id, snapshot.model ?? ""]
         )
+    }
+
+    private func upsertZeroCostRowIfNeededForNoop(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT model FROM session_costs WHERE session_id = ?",
+            arguments: [snapshot.id]
+        ) else {
+            try upsertZeroCostRow(snapshot)
+            return
+        }
+        let existingModel: String? = row["model"]
+        guard let incomingModel = snapshot.model, !incomingModel.isEmpty, existingModel != incomingModel else {
+            return
+        }
+        try upsertZeroCostRow(snapshot)
     }
 
     private func replaceSessionToolsIfDifferent(_ snapshot: AuthoritativeSessionSnapshot) throws {

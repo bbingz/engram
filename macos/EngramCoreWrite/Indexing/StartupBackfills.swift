@@ -84,6 +84,7 @@ public protocol StartupBackfillDatabase: AnyObject {
     func optimizeFts() throws
     func vacuumIfNeeded(_ fragmentationPercent: Int) throws -> Bool
     func reconcileInsights() throws -> StartupInsightReconcileResult
+    func reconcileGroupedSourceDirs() throws -> GroupedDirReconcileResult
     func backfillFilePaths() throws -> Int
     func downgradeSubagentTiers() throws -> Int
     func backfillParentLinks() throws -> StartupBackfills.ParentLinkResult
@@ -254,6 +255,24 @@ public enum StartupBackfills {
                             "action": .string("reconcile_insights"),
                             "resetEmbedding": .int(reconciled.resetEmbedding),
                             "orphanedVector": .int(reconciled.orphanedVector)
+                        ]
+                    )
+                )
+            }
+            let grouped = try database.reconcileGroupedSourceDirs()
+            if grouped.scannedDirs > 0 || grouped.plannedRenames > 0 || grouped.appliedRenames > 0
+                || grouped.collisions > 0 || grouped.ambiguous > 0 || grouped.issues > 0 {
+                emit(
+                    StartupBackfillEvent(
+                        event: "db_maintenance",
+                        payload: [
+                            "action": .string("reconcile_grouped_dirs"),
+                            "scanned": .int(grouped.scannedDirs),
+                            "planned": .int(grouped.plannedRenames),
+                            "applied": .int(grouped.appliedRenames),
+                            "collisions": .int(grouped.collisions),
+                            "ambiguous": .int(grouped.ambiguous),
+                            "issues": .int(grouped.issues)
                         ]
                     )
                 )

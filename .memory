@@ -1,5 +1,429 @@
 # Engram Local Memory
 
+## 2026-06-06 — Claude/Qoder grouped-dir reconcile for historical project moves (Codex)
+
+Codex added startup repair for already-orphaned Claude Code/Qoder grouped
+project directories left behind by earlier runs that used the incomplete
+directory encoder.
+
+Change:
+- Swift startup maintenance calls `GroupedDirReconcile.run(roots:
+  SessionSources.roots())` after insight reconciliation and before file-path
+  backfill. It emits a `db_maintenance` event with scanned/planned/applied,
+  collision, ambiguous, and issue counts when there is work or a warning.
+- The reconcile scanner is intentionally scoped to `.claude/projects` and
+  `.qoder/projects`. It extracts structured `cwd` values from JSON/JSONL
+  session files and computes the corrected Claude/Qoder directory name.
+- Repair uses no-overwrite copy/delete semantics rather than blind rename, so
+  existing target directories become collisions and the source directory is
+  left in place.
+- Safety guards skip child symlinks, nested symlink evidence, ambiguous
+  directories, missing roots, already-correct directories, target collisions,
+  and session files above the 50 MiB structured-cwd read cap.
+- A TypeScript reference helper in `src/core/project-move/grouped-dir-reconcile.ts`
+  mirrors the same behavior for parity tests and future migrations.
+
+Review:
+- Plan review initially returned CHANGES_REQUESTED for no-overwrite races,
+  symlink coverage, startup ordering, Qoder parity, and wording mismatches.
+  The plan/spec were patched before implementation.
+- Implementation review initially returned CHANGES_REQUESTED because the new
+  scanner did not apply the existing 50 MiB structured-cwd read cap. Codex
+  added Swift/TS cap tests and implementation; the follow-up review returned
+  PASS.
+
+Verification:
+- RED oversized-file tests failed before the cap fix in both TS and Swift.
+- `npx vitest run tests/core/project-move/grouped-dir-reconcile.test.ts -t
+  "skips oversized files"` passed.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/SessionSourcesTests/testGroupedDirReconcileSkipsOversizedFiles
+  CODE_SIGNING_ALLOWED=NO` passed.
+- `npx biome check src/core/project-move/grouped-dir-reconcile.ts
+  tests/core/project-move/grouped-dir-reconcile.test.ts` passed.
+- `npx vitest run tests/core/project-move/grouped-dir-reconcile.test.ts
+  tests/core/project-move/encode-cc.test.ts
+  tests/core/project-move/orchestrator.integration.test.ts` passed 49 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' -only-testing:EngramCoreTests/SessionSourcesTests
+  -only-testing:EngramCoreTests/StartupBackfillTests
+  -only-testing:EngramCoreTests/OrchestratorTests CODE_SIGNING_ALLOWED=NO`
+  passed 78 tests.
+- `git diff --check` passed.
+
+## 2026-06-06 — CodeQL workflow Node 24 action cleanup (Codex)
+
+Codex closed the remaining CodeQL workflow Node 20 deprecation annotations
+seen on PR #54.
+
+Change:
+- `.github/workflows/codeql.yml` now uses `actions/checkout@v6`,
+  `actions/setup-node@v6`, and `github/codeql-action/init@v4` /
+  `github/codeql-action/analyze@v4`.
+- The Swift CodeQL job still sets up Node 24 explicitly and keeps
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"`.
+
+Verification:
+- `rg -n "actions/checkout@v4|actions/setup-node@v4|codeql-action/(init|analyze)@v3" .github/workflows/codeql.yml`
+  returned no matches.
+- `ruby -e "require 'yaml'; YAML.load_file('.github/workflows/codeql.yml'); puts 'yaml ok'"`
+  printed `yaml ok`.
+- `actionlint .github/workflows/codeql.yml` passed.
+
+## 2026-06-06 — Codex project-move compatibility verification (Codex)
+
+Codex verified the Codex project-move surface after the Claude/Qoder directory
+encoding fix.
+
+Conclusion:
+- Codex does not use Claude-style cwd-encoded project directories. Active
+  sessions live under `.codex/sessions`; archived sessions live under
+  `.codex/archived_sessions`.
+- TypeScript `src/core/project-move/sources.ts` and Swift
+  `macos/EngramCoreWrite/ProjectMove/Sources.swift` both register `codex` and
+  `codex-archived` as flat roots with no `encodeProjectDir`, so project move
+  scans and patches literal path references in JSONL content but does not
+  rename Codex directories.
+- The Swift `CodexAdapter` also expands `.codex/sessions` to include
+  `.codex/archived_sessions`.
+
+Evidence:
+- Read-only local corpus scan found 2,175 Codex rollout JSONL files, 2,165
+  cwd-bearing sessions, zero non-absolute cwd values, and zero project-dir-like
+  path layouts. Five archived sessions live directly under
+  `.codex/archived_sessions`, which is still covered by the flat archived root.
+
+Verification:
+- `npx vitest run tests/core/project-move/sources.test.ts
+  tests/core/project-move/orchestrator.integration.test.ts
+  tests/core/project-move/review.test.ts` passed 50 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/SessionSourcesTests/testRootsReturnsCanonicalRootsInOrder
+  -only-testing:EngramCoreTests/SessionSourcesTests/testEncodeProjectDirSetForGroupedSourcesOnly
+  -only-testing:EngramCoreTests/OrchestratorTests/testCodexArchivedSessionsArePatchedAndCommitted
+  -only-testing:EngramCoreTests/ReviewScanTests CODE_SIGNING_ALLOWED=NO`
+  passed 10 tests.
+
+## 2026-06-06 — TypeScript empty-reindex session fact preservation (Codex)
+
+Codex closed a TS/Swift parity gap where an empty or degraded re-parse could
+erase known-good session facts in the TypeScript reference layer.
+
+Change:
+- `src/core/session-merge.ts` now preserves the existing `cwd` when a newer
+  authoritative snapshot has an empty cwd.
+- The same merge path preserves the existing message-count breakdown when the
+  incoming snapshot reports zero total messages and the current snapshot already
+  has messages.
+- `src/core/db/session-repo.ts` applies the same preservation rule in both
+  `upsertSession` and `upsertAuthoritativeSnapshot` conflict updates, so direct
+  database writes cannot clobber those known-good facts.
+- Direct authoritative upsert also preserves the existing `quality_score` under
+  the same empty-reindex predicate, keeping the derived score aligned with the
+  preserved counts.
+
+Verification:
+- RED: `npx vitest run tests/core/session-merge.test.ts tests/core/db.test.ts`
+  failed against the old behavior with three expected cwd/count preservation
+  failures.
+- GREEN: the same command passed 57 tests after the fix.
+- Broader check: `npx vitest run tests/core/session-writer.test.ts
+  tests/core/session-merge.test.ts tests/core/db.test.ts` passed 69 tests.
+- Lint: `npx biome check src/core/session-merge.ts
+  src/core/db/session-repo.ts tests/core/session-merge.test.ts
+  tests/core/db.test.ts` passed.
+- Subagent review found the direct-upsert `quality_score` inconsistency; Codex
+  added a RED assertion and fixed it before commit.
+
+## 2026-06-06 — Claude Code/Qoder project-dir encoding parity (Codex)
+
+Codex closed the remaining known project-move compatibility gap for Claude
+Code/Qoder project directory names.
+
+Change:
+- `src/core/project-move/encode-cc.ts` and
+  `macos/EngramCoreWrite/ProjectMove/EncodeClaudeCodeDir.swift` now implement
+  Claude Code's full encoder: replace every non-`[A-Za-z0-9]` UTF-16 code unit
+  with `-`; if the encoded name exceeds 200 UTF-16 code units, use the first
+  200 encoded units plus `-` plus `Math.abs(SYH(originalPath)).toString(36)`.
+- Swift mirrors JavaScript UTF-16 behavior, including astral scalars becoming
+  two `-` code units and the 32-bit wrapping hash.
+- TS and Swift regression tests now cover exactly-200 paths, >200 truncation,
+  base36 hash suffixes, underscore/space/dot replacement, and long emoji paths.
+
+Evidence:
+- Local Claude Code 2.1.165 bundle contains `Hj(H)` with
+  `H.replace(/[^a-zA-Z0-9]/g,"-")`, `uUH=200`, and
+  `Math.abs(SYH(H)).toString(36)`.
+- Real-corpus replay of `~/.claude/projects` and `~/.qoder/projects` matched
+  after allowing any cwd inside a project directory to encode back to the
+  directory name. Claude Code: 39 cwd-bearing dirs checked across 88 total dirs,
+  zero mismatches; Qoder: 7/7, zero mismatches. The longest real dir observed
+  was 86 code units, so the >200 branch is covered by binary-derived synthetic
+  tests rather than live corpus.
+
+Verification:
+- `npx vitest run tests/core/project-move/encode-cc.test.ts` passed 12 tests.
+- `npx vitest run tests/core/project-move/*.test.ts
+  tests/tools/project-mcp.test.ts` passed 17 files / 217 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' -only-testing:EngramCoreTests/EncodeClaudeCodeDirTests
+  CODE_SIGNING_ALLOWED=NO` passed 13 tests.
+- Selected Swift project-move tests
+  (`EncodeClaudeCodeDirTests`, `SessionSourcesTests`, `OrchestratorTests`,
+  `BatchTests`, `ReviewScanTests`, `ArchiveTests`, `UndoTests`) passed 98 tests.
+
+## 2026-06-06 — Session snapshot noop write reduction (Codex)
+
+Codex closed two still-current Swift indexing follow-ups from
+`CODE-REVIEW-ISSUES.md`: redundant noop cost-row writes and weak
+`link_source` parity coverage.
+
+Change:
+- `SessionSnapshotWriter` now checks the existing `session_costs` row on noop
+  snapshots and only writes when the row is missing or a non-empty incoming
+  model differs from the stored model.
+- Existing behavior remains intact: initial merge creates a zero-cost row, noop
+  nil-to-non-empty model refresh still works, nil model does not clear an
+  existing model, non-empty tool-count noop refresh still works, and recovered
+  orphan state is still cleared.
+- `IndexerParityTests` now includes a `link_source` truth table for fresh
+  path-parent insert, fresh nil-parent insert, nil-to-path update,
+  existing-path plus incoming-nil preservation, path-to-new-path update, and
+  manual-link preservation.
+
+Review:
+- A reused read-only subagent found no issue in the noop cost optimization.
+- The reviewer reported one low-severity link-source coverage gap; Codex added
+  the missing incoming-nil and path-to-new-path branches before committing.
+
+Verification:
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramCoreTests -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/IndexerParityTests/testSessionSnapshotWriterDoesNotRewriteUnchangedNoopCostRows
+  CODE_SIGNING_ALLOWED=NO` failed against the old cost-row rewrite behavior.
+- GREEN: selected writer tests passed after the fix.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' -only-testing:EngramCoreTests/IndexerParityTests
+  CODE_SIGNING_ALLOWED=NO` passed 32 tests.
+
+## 2026-06-06 — MainActor UI trampoline cleanup (Codex)
+
+Codex closed the remaining still-current SwiftUI P3 cleanup finding from
+`CODE-REVIEW-ISSUES.md`.
+
+Change:
+- `MenuBarController` no longer mixes `DispatchQueue.main.async` with
+  `Task { @MainActor in }` for deferred UI activation/session-open work.
+- `ModernScrollViewConfigurator` keeps its immediate and delayed scroll-view
+  configuration passes, but schedules both through MainActor tasks instead of
+  GCD main-queue async/asyncAfter.
+- `ViewMainThreadReadTests` now rejects reintroducing the reviewed GCD
+  trampoline pattern in `MenuBarController` and `Theme`.
+
+Verification:
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/ViewMainThreadReadTests/testMenuBarAndThemeUseMainActorTrampolinesConsistently
+  CODE_SIGNING_ALLOWED=NO` failed on the old GCD trampolines.
+- GREEN: `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' -only-testing:EngramTests/ViewMainThreadReadTests
+  -only-testing:EngramTests/ThemeTests CODE_SIGNING_ALLOWED=NO` passed 26
+  tests.
+
+## 2026-06-06 — Synchronous service client close on app termination (Codex)
+
+Codex closed a still-current Swift app termination cleanup finding.
+
+Change:
+- `EngramServiceTransport.close`, `EngramServiceClientProtocol.close`, and
+  `EngramServiceClient.close` are synchronous.
+- `AppDelegate.applicationWillTerminate` now calls `serviceClient.close()`
+  directly after cancelling status observation and stopping the owned service.
+- MCP service-client cleanup now uses ordinary `defer { serviceClient.close() }`
+  instead of nested fire-and-forget tasks.
+- `ViewMainThreadReadTests` now guards against reintroducing the detached
+  terminate-close pattern.
+
+Verification:
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/ViewMainThreadReadTests/testAppTerminateClosesServiceClientSynchronously
+  CODE_SIGNING_ALLOWED=NO` failed on the old detached close.
+- GREEN: the same selected test passed after the synchronous close change.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/EngramServiceClientTests
+  -only-testing:EngramTests/UnixSocketTransportTests
+  -only-testing:EngramTests/ViewMainThreadReadTests CODE_SIGNING_ALLOWED=NO`
+  passed 40 tests.
+
+## 2026-06-06 — Async MessageParser adapter stream bridge (Codex)
+
+Codex closed a still-current SwiftUI P3 concurrency/performance finding from
+the remediation review follow-up.
+
+Change:
+- `MessageParser.parse` and `MessageParser.parseWindowed` are now async.
+- Adapter-backed transcript parsing awaits `SessionAdapter.streamMessages`
+  directly instead of spawning a detached task and blocking on
+  `DispatchSemaphore`.
+- Legacy parser fallback behavior remains in place for unsupported sources or
+  adapter errors.
+- `SessionDetailView` still runs transcript parsing off the main actor with
+  `Task.detached`, but now awaits the async parser inside that worker task.
+- `MessageParserTests` now exercise the async parser API, and
+  `ViewMainThreadReadTests` rejects reintroducing `DispatchSemaphore` or
+  `blockingAdapterMessages` in `MessageParser`.
+
+Verification:
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/MessageParserTests
+  -only-testing:EngramTests/ViewMainThreadReadTests CODE_SIGNING_ALLOWED=NO`
+  passed 40 tests.
+
+## 2026-06-06 — Off-main segmented message parsing (Codex)
+
+Codex closed a still-current SwiftUI P3 performance finding from
+`CODE-REVIEW-ISSUES.md`.
+
+Change:
+- `SegmentedMessageView` no longer cold-parses markdown/content segments
+  synchronously from `body`.
+- The view checks the existing segment cache first; cache misses are parsed and
+  cached from `.task(id: content)` via `Task.detached(priority: .userInitiated)`.
+- `ViewMainThreadReadTests` now guards the off-main parse shape and rejects
+  returning to `ForEach(segments)` from body.
+
+Verification:
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/ViewMainThreadReadTests CODE_SIGNING_ALLOWED=NO`
+  passed 17 tests.
+
+## 2026-06-06 — Service writer gate timing test hardening (Codex)
+
+Codex closed a still-current Round 5 test-stability finding.
+
+Change:
+- `ServiceWriterGateTests.testSemaphoreReleasesPermitWhenWaiterCancelledAfterSignal`
+  now runs 200 deterministic queued-waiter iterations instead of 2000.
+- The fresh-acquire leak detector timeout is now 1s instead of 200ms, reducing
+  avoidable CI timing sensitivity while preserving the cancel-after-signal
+  permit-leak assertion.
+
+Verification:
+- First attempted `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramServiceCoreTests ...`; this failed because `EngramServiceCoreTests` is
+  a target, not a scheme.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS'
+  -only-testing:EngramServiceCoreTests/ServiceWriterGateTests
+  CODE_SIGNING_ALLOWED=NO` passed 9 tests.
+
+## 2026-06-06 — Project archive gitdir marker validation (Codex)
+
+Codex closed a surviving low-priority project-migration review finding in
+archive auto-categorization.
+
+Root cause:
+- Swift and TS archive suggestion logic treated any regular `.git` file as a
+  valid worktree/submodule marker. Empty or malformed marker files could be
+  auto-classified as `archived-done` instead of requiring an explicit `--to`
+  category.
+
+Change:
+- Swift `Archive.suggestTarget` and TS `suggestArchiveTarget` now parse regular
+  `.git` files as bounded 512-byte `gitdir:` markers.
+- The resolved git metadata directory must contain `HEAD`; malformed or empty
+  marker files fall through to the existing ambiguous-project path.
+- Added Swift and TS regression tests for valid gitdir marker files and
+  malformed marker files.
+
+Verification:
+- `npx biome check --write src/core/project-move/archive.ts
+  tests/core/project-move/lock-and-archive.test.ts` passed with no fixes.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' -only-testing:EngramCoreTests/ArchiveTests
+  CODE_SIGNING_ALLOWED=NO` passed 18 tests.
+- `npx vitest run tests/core/project-move/lock-and-archive.test.ts
+  tests/core/project-move/batch.test.ts tests/tools/project-mcp.test.ts`
+  passed 3 files / 43 tests.
+
+## 2026-06-06 — Node 24 agent-instruction drift cleanup (Codex)
+
+Codex reconciled the current Node runtime surfaces after the earlier Node 24
+migration. `.nvmrc` pins `24`, `package.json` declares `>=24 <27`, and the
+active GitHub Actions workflows use `actions/setup-node` with `node-version:
+24`, but `.github/copilot-instructions.md` still told Copilot to use Node 22
+and claimed CI used 22.
+
+Change:
+- Updated `.github/copilot-instructions.md` to instruct agents to use Node 24
+  and to cite `.nvmrc`, `package.json`, and CI as the authoritative runtime
+  surfaces.
+
+Verification:
+- `cat .nvmrc` -> `24`.
+- `node -e "const p=require('./package.json'); console.log(p.engines.node,
+  p.devDependencies['@types/node'])"` confirmed `>=24 <27` and `^24.0.0`.
+- `rg` over non-archive repo files found no active Node 20/22 runtime
+  instruction besides package dependency engine ranges; archive/review
+  historical references were intentionally left alone.
+
+## 2026-06-06 — Local build 752 deployed (Codex)
+
+Codex deployed current `main` to the local macOS app install and restarted the
+runtime.
+
+Build/deploy:
+- Previous `/Applications/Engram.app` was build `747`; current `main` commit
+  count is `752`.
+- Ran `ENGRAM_BUILD_NUMBER=$(git rev-list --count HEAD)
+  macos/scripts/build-release.sh --local-only`. The build resolved version
+  `0.1.0 (752)` and Developer ID export succeeded despite `--local-only`.
+- `release-verify.sh` passed full Developer ID verification on
+  `macos/build/EngramExport/Engram.app`: bundle hygiene, helper structure,
+  version `0.1.0 (752)`, `codesign --verify --deep --strict`, Hardened Runtime,
+  Developer ID Application authority, and secure timestamp.
+- Ran `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app` and
+  `open -a /Applications/Engram.app`.
+
+Runtime verification:
+- `/Applications/Engram.app/Contents/Info.plist` reports
+  `CFBundleVersion=752`, `CFBundleShortVersionString=0.1.0`.
+- Running processes after restart:
+  `/Applications/Engram.app/Contents/MacOS/Engram` and
+  `/Applications/Engram.app/Contents/Helpers/EngramService --service-socket
+  /Users/bing/.engram/run/engram-service.sock --database-path
+  /Users/bing/.engram/index.sqlite`.
+- Old long-running `EngramMCP` helpers were terminated; no `EngramMCP` process
+  remained immediately after cleanup. Future MCP clients will respawn from the
+  newly installed bundle.
+- Service socket exists at `~/.engram/run/engram-service.sock`.
+
+## 2026-06-06 — Stale follow-up plan reconciliation (Codex)
+
+Codex reconciled current backlog/handoff surfaces after PR #48/#51/#52/#53.
+
+Changes:
+- Updated the Claude Code encoder handoff inside `CHANGELOG.md` so it no
+  longer claims Codex source audit, grouped-source audit, or PR push/open work
+  is pending. Those are closed by Codex active+archived migration coverage,
+  Gemini/iFlow compatibility work, PR #51 (`485b932b`), and PR #52
+  (`f8180379`).
+- Marked `docs/superpowers/plans/2026-06-04-fts-table-swap-rebuild.md`
+  checklist items complete and added a status note linking completion to PR #48
+  (`d199808c feat(db): add fts table-swap rebuild (#48)`).
+
+Remaining explicit deferred item:
+- Reconcile for already-orphaned historical Claude Code dirs remains deferred;
+  the real-disk audit found no local orphan to repair, so this is not an active
+  blocker.
+
 ## 2026-06-06 — Swift UI P3 cleanup follow-up (Codex)
 
 Codex continued the broad review-remediation goal on branch
@@ -195,11 +619,13 @@ start with `-` → prefix `./` for find/grep. Reconcile for already-orphaned dir
 designed but deferred (no real orphans on this machine yet). Details in
 CHANGELOG.md "Claude Code project-migration encoder fix".
 
-Handoff to Codex (收尾): (1) codex source is flat-layout (`encodeProjectDir:
-nil` in Sources.swift) → no dir-rename, content-patch only; confirm it covers
-all codex path refs. (2) gemini-cli/iflow have their own lossy encoders — same
-audit method applies. (3) reconcile feature for already-orphaned dirs deferred.
-(4) branch `fix/cc-dir-encoding-compat` @ c3bd626d committed, not pushed, no PR.
+Closeout update (2026-06-06, Codex): the handoff items above are resolved except
+for the intentionally deferred reconcile feature. Codex flat-layout coverage is
+closed by the active+archived Codex migration tests; Gemini/iFlow grouped-source
+coverage is closed by the compatibility follow-up; the Claude/qoder encoder fix
+was pushed and merged via PR #51 (`485b932b`), and the MCP-only residual helper
+was fixed via PR #52 (`f8180379`). Reconcile for already-orphaned historical dirs
+remains deferred because the real-disk audit found no local orphan to repair.
 
 ## 2026-06-05 — PR #49 CI follow-up (Codex)
 
@@ -356,7 +782,8 @@ Verification:
 
 Residual risk:
 - This is a TypeScript API cleanup only. Swift/macOS code was not changed.
-- Full online FTS table-swap rebuild remains the next independent follow-up.
+- Historical note: at the time, full online FTS table-swap rebuild was still
+  pending. It is now closed by PR #48 (`d199808c`).
 
 ## 2026-06-04 — Additional non-blocking follow-up remediation (Codex)
 

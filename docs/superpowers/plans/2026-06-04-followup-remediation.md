@@ -51,7 +51,7 @@ Committed in `fix: close post-review followup findings`.
 
 Add a launcher test proving service process environment no longer contains raw `aiApiKey` or `titleApiKey` values. Add service command handler tests proving `@keychain` resolution happens via an injected key provider rather than `ENGRAM_KEYCHAIN_*` environment variables.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run targeted launcher and service IPC tests. Confirm failures show raw key env injection and env-only key resolution.
 

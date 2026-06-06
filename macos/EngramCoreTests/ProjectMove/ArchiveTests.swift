@@ -107,11 +107,29 @@ final class ArchiveTests: XCTestCase {
     func testGitFileWorktreeAcceptedAsArchivedDone() throws {
         let src = try makeFixture(name: "worktree-project")
         try writeFile(src + "/main.swift", "code")
-        // .git as regular file = worktree marker
-        try writeFile(src + "/.git", "gitdir: /elsewhere/.git/worktrees/worktree-project")
+        let gitDir = tempRoot.appendingPathComponent("linked-worktree-git", isDirectory: true)
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        try writeFile(gitDir.appendingPathComponent("HEAD").path, "ref: refs/heads/main")
+        // .git as regular file = worktree/submodule marker, but only if it
+        // points at a real git metadata directory.
+        try writeFile(src + "/.git", "gitdir: \(gitDir.path)")
         let s = try Archive.suggestTarget(src: src)
         XCTAssertEqual(s.category, .archivedDone)
         XCTAssertTrue(s.reason.contains("worktree"))
+    }
+
+    func testMalformedGitFileIsAmbiguous() throws {
+        let src = try makeFixture(name: "malformed-worktree-project")
+        try writeFile(src + "/main.swift", "code")
+        try writeFile(src + "/.git", "")
+
+        XCTAssertThrowsError(try Archive.suggestTarget(src: src)) { err in
+            guard case ArchiveError.ambiguousProject(_, let nonDot, let hasGit) = err else {
+                return XCTFail("expected ambiguousProject, got \(err)")
+            }
+            XCTAssertEqual(nonDot, 1)
+            XCTAssertTrue(hasGit)
+        }
     }
 
     // MARK: - rule 4: ambiguous

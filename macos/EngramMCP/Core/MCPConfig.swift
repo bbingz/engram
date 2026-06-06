@@ -40,11 +40,7 @@ struct MCPConfig {
             transport: transport,
             defaultTimeout: timeout
         )
-        defer {
-            Task {
-                await client.close()
-            }
-        }
+        defer { client.close() }
         do {
             _ = try await client.status()
             return true

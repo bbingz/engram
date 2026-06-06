@@ -59,6 +59,36 @@ describe('Database', () => {
     expect(result?.cwd).toBe('/Users/test/project');
   });
 
+  it('preserves existing cwd and message counts when a legacy upsert parse is empty', () => {
+    db.upsertSession({
+      ...mockSession,
+      messageCount: 5,
+      userMessageCount: 2,
+      assistantMessageCount: 2,
+      toolMessageCount: 1,
+      systemMessageCount: 0,
+    });
+
+    db.upsertSession({
+      ...mockSession,
+      cwd: '',
+      messageCount: 0,
+      userMessageCount: 0,
+      assistantMessageCount: 0,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+      sizeBytes: 60000,
+    });
+
+    const result = db.getSession('session-001');
+    expect(result?.cwd).toBe('/Users/test/project');
+    expect(result?.messageCount).toBe(5);
+    expect(result?.userMessageCount).toBe(2);
+    expect(result?.assistantMessageCount).toBe(2);
+    expect(result?.toolMessageCount).toBe(1);
+    expect(result?.systemMessageCount).toBe(0);
+  });
+
   it('lists sessions with source filter', () => {
     db.upsertSession(mockSession);
     db.upsertSession({
@@ -575,6 +605,60 @@ describe('Database', () => {
     db.upsertAuthoritativeSnapshot(snapshot);
 
     expect(db.getAuthoritativeSnapshot('sess-1')?.syncVersion).toBe(2);
+  });
+
+  it('preserves existing authoritative cwd and message counts when a newer parse is empty', () => {
+    const snapshot: AuthoritativeSessionSnapshot = {
+      id: 'sess-preserve',
+      source: 'codex',
+      authoritativeNode: 'node-a',
+      syncVersion: 1,
+      snapshotHash: 'hash-1',
+      indexedAt: '2026-03-18T12:00:00Z',
+      sourceLocator: '/remote/sess-preserve.jsonl',
+      startTime: '2026-03-18T11:00:00Z',
+      cwd: '/repo/engram',
+      messageCount: 5,
+      userMessageCount: 2,
+      assistantMessageCount: 2,
+      toolMessageCount: 1,
+      systemMessageCount: 0,
+    };
+    db.upsertAuthoritativeSnapshot(snapshot);
+    const initialQuality = (
+      db.raw
+        .prepare('SELECT quality_score FROM sessions WHERE id = ?')
+        .get('sess-preserve') as { quality_score: number }
+    ).quality_score;
+    expect(initialQuality).toBeGreaterThan(0);
+
+    db.upsertAuthoritativeSnapshot({
+      ...snapshot,
+      syncVersion: 2,
+      snapshotHash: 'hash-2',
+      indexedAt: '2026-03-18T12:30:00Z',
+      cwd: '',
+      messageCount: 0,
+      userMessageCount: 0,
+      assistantMessageCount: 0,
+      toolMessageCount: 0,
+      systemMessageCount: 0,
+    });
+
+    const result = db.getAuthoritativeSnapshot('sess-preserve');
+    expect(result?.cwd).toBe('/repo/engram');
+    expect(result?.messageCount).toBe(5);
+    expect(result?.userMessageCount).toBe(2);
+    expect(result?.assistantMessageCount).toBe(2);
+    expect(result?.toolMessageCount).toBe(1);
+    expect(result?.systemMessageCount).toBe(0);
+    expect(
+      (
+        db.raw
+          .prepare('SELECT quality_score FROM sessions WHERE id = ?')
+          .get('sess-preserve') as { quality_score: number }
+      ).quality_score,
+    ).toBe(initialQuality);
   });
 
   it('creates durable jobs from a change set', () => {

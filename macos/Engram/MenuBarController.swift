@@ -182,7 +182,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             applyDockIcon()
             setupMainMenu()
             win.makeKeyAndOrderFront(nil)
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 NSApp.activate(ignoringOtherApps: true)
             }
             return
@@ -210,7 +210,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         applyDockIcon()
         setupMainMenu()
         win.makeKeyAndOrderFront(nil)
-        DispatchQueue.main.async {
+        Task { @MainActor in
             NSApp.activate(ignoringOtherApps: true)
         }
         self.settingsWindow = win
@@ -222,7 +222,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         openWindow()
         // If a SessionBox was passed, forward it after the window is ready
         if let box = notification.object as? SessionBox {
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 NotificationCenter.default.post(name: .openSession, object: box)
             }
         }
@@ -240,7 +240,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             setupMainMenu()
             win.makeKeyAndOrderFront(nil)
             // Delay activation to let macOS process the policy change
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 NSApp.activate(ignoringOtherApps: true)
             }
             return
@@ -275,7 +275,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         win.makeKeyAndOrderFront(nil)
         // Delay activation to let macOS process the policy change
-        DispatchQueue.main.async {
+        Task { @MainActor in
             NSApp.activate(ignoringOtherApps: true)
         }
         self.window = win

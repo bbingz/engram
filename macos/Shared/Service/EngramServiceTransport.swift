@@ -8,5 +8,5 @@ protocol EngramServiceTransport: Sendable {
 
     func events() -> AsyncThrowingStream<EngramServiceEvent, Error>
 
-    func close() async
+    func close()
 }

@@ -302,7 +302,7 @@ private actor RecordingServiceTransport: EngramServiceTransport {
         }
     }
 
-    func close() async {}
+    nonisolated func close() {}
 
     private func markEventSubscriptionCancelled() {
         eventSubscriptionCancelled = true

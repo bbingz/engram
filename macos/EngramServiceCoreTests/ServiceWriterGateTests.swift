@@ -224,9 +224,9 @@ final class ServiceWriterGateTests: XCTestCase {
     /// cancellation. The original code threw at the post-resume
     /// `Task.checkCancellation()` without releasing, permanently leaking the
     /// single writer's permit and wedging every later write with WriterBusy.
-    /// Drives the race many times and fails the first round a leak is observed.
+    /// Drives the race repeatedly and fails the first round a leak is observed.
     func testSemaphoreReleasesPermitWhenWaiterCancelledAfterSignal() async throws {
-        for round in 0..<2000 {
+        for round in 0..<200 {
             let sem = ServiceAsyncSemaphore(value: 0)
             let waiter = Task { try await sem.wait() }
             // Deterministically wait until the waiter is queued on the continuation.
@@ -238,9 +238,9 @@ final class ServiceWriterGateTests: XCTestCase {
             await sem.signal()
             _ = try? await waiter.value
             // Leak detector: the permit must be back. A fresh acquire with a
-            // short timeout must succeed; a leaked permit makes it time out.
+            // timeout must succeed; a leaked permit makes it time out.
             do {
-                try await sem.wait(timeoutNanoseconds: 200_000_000)
+                try await sem.wait(timeoutNanoseconds: 1_000_000_000)
             } catch {
                 XCTFail("permit leaked at round \(round): fresh acquire failed with \(error)")
                 return

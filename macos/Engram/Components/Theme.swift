@@ -159,14 +159,22 @@ final class ThinScroller: NSScroller {
 struct ModernScrollViewConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
-        DispatchQueue.main.async { configure(from: view) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { configure(from: view) }
+        configureAfterLayout(from: view)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { configure(from: nsView) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { configure(from: nsView) }
+        configureAfterLayout(from: nsView)
+    }
+
+    private func configureAfterLayout(from view: NSView) {
+        Task { @MainActor in
+            configure(from: view)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            configure(from: view)
+        }
     }
 
     private func configure(from view: NSView) {

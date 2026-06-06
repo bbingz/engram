@@ -8,8 +8,8 @@
 // This module suggests a target directory; the CLI asks for y/N confirmation.
 // We never auto-archive — user always confirms.
 
-import { readdir, stat } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { open, readdir, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 export type ArchiveCategory = '历史脚本' | '空项目' | '归档完成';
 
@@ -150,16 +150,20 @@ export async function suggestArchiveTarget(
 
   // Rule 3: has .git + substantive content. `.git` can be either:
   //  - a directory (normal checkout) — look for .git/HEAD
-  //  - a file (worktree / submodule) — its content is `gitdir: <path>`
-  // Either form counts as "has git history"; we don't need to read the file.
+  //  - a file (worktree / submodule) — verify its `gitdir: <path>` target
+  //    contains HEAD. Empty or malformed marker files fall through.
   if (hasGit && nonDotEntries.length > 0) {
     try {
-      const gs = await stat(join(src, '.git'));
+      const gitPath = join(src, '.git');
+      const gs = await stat(gitPath);
       if (gs.isDirectory()) {
         // Normal: verify .git/HEAD exists
-        await stat(join(src, '.git', 'HEAD'));
+        await stat(join(gitPath, 'HEAD'));
+      } else if (gs.isFile()) {
+        await stat(join(await resolveGitdirFile(gitPath), 'HEAD'));
+      } else {
+        throw new Error('malformed .git marker');
       }
-      // gs.isFile() counts as worktree/submodule — accept without further probe
       return {
         dst: join(archiveRoot, '归档完成', name),
         category: '归档完成',
@@ -178,4 +182,25 @@ export async function suggestArchiveTarget(
       `(${nonDotEntries.length} non-dot entries, hasGit=${hasGit}). ` +
       `Please pass --to explicitly (e.g. --to 历史脚本).`,
   );
+}
+
+async function resolveGitdirFile(gitPath: string): Promise<string> {
+  const file = await open(gitPath, 'r');
+  let content: string;
+  try {
+    const buffer = Buffer.alloc(512);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    content = buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await file.close();
+  }
+
+  const line = content
+    .split(/\r?\n/)
+    .find((candidate) => candidate.trimStart().startsWith('gitdir:'));
+  if (!line) throw new Error('missing gitdir marker');
+
+  const raw = line.slice(line.indexOf('gitdir:') + 'gitdir:'.length).trim();
+  if (!raw) throw new Error('empty gitdir marker');
+  return isAbsolute(raw) ? raw : resolve(dirname(gitPath), raw);
 }

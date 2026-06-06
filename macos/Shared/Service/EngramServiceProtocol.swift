@@ -35,5 +35,5 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse
     func exportSession(_ request: EngramServiceExportSessionRequest) async throws -> EngramServiceExportSessionResponse
     func events() -> AsyncThrowingStream<EngramServiceEvent, Error>
-    func close() async
+    func close()
 }

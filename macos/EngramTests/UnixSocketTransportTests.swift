@@ -120,7 +120,7 @@ final class UnixSocketTransportTests: XCTestCase {
         XCTAssertEqual(event?.event, "indexed")
         XCTAssertEqual(event?.total, 12)
         XCTAssertEqual(event?.todayParents, 3)
-        await transport.close()
+        transport.close()
     }
 
     func testLargeResponseCrossesFrameBoundary() async throws {

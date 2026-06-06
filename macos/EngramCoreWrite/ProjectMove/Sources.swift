@@ -224,6 +224,162 @@ public struct SourceRoot: Sendable {
     }
 }
 
+public struct GroupedDirReconcileResult: Equatable, Sendable {
+    public var scannedDirs: Int
+    public var plannedRenames: Int
+    public var appliedRenames: Int
+    public var collisions: Int
+    public var ambiguous: Int
+    public var issues: Int
+
+    public init(
+        scannedDirs: Int = 0,
+        plannedRenames: Int = 0,
+        appliedRenames: Int = 0,
+        collisions: Int = 0,
+        ambiguous: Int = 0,
+        issues: Int = 0
+    ) {
+        self.scannedDirs = scannedDirs
+        self.plannedRenames = plannedRenames
+        self.appliedRenames = appliedRenames
+        self.collisions = collisions
+        self.ambiguous = ambiguous
+        self.issues = issues
+    }
+}
+
+public enum GroupedDirReconcile {
+    private static let structuredCwdReadCapBytes: Int64 = 50 * 1024 * 1024
+
+    private struct RepairPlan {
+        let sourceDir: String
+        let targetDir: String
+    }
+
+    public static func run(
+        roots: [SourceRoot],
+        dryRun: Bool = false
+    ) -> GroupedDirReconcileResult {
+        var result = GroupedDirReconcileResult()
+        let fm = FileManager.default
+
+        for root in roots {
+            guard shouldReconcile(root), let encode = root.encodeProjectDir else { continue }
+            guard let entries = try? fm.contentsOfDirectory(atPath: root.path) else { continue }
+
+            for name in entries {
+                let sourceDir = (root.path as NSString).appendingPathComponent(name)
+                guard isDirectoryNoFollow(sourceDir) else { continue }
+                result.scannedDirs += 1
+
+                var walkIssues = 0
+                let targetNames = structuredCwds(in: sourceDir, issues: &walkIssues)
+                    .map(encode)
+                result.issues += walkIssues
+                let uniqueTargets = Set(targetNames)
+                if uniqueTargets.isEmpty { continue }
+                guard uniqueTargets.count == 1, let targetName = uniqueTargets.first else {
+                    result.ambiguous += 1
+                    continue
+                }
+                if targetName == name { continue }
+
+                let targetDir = (root.path as NSString).appendingPathComponent(targetName)
+                result.plannedRenames += 1
+                guard !dryRun else { continue }
+
+                let plan = RepairPlan(sourceDir: sourceDir, targetDir: targetDir)
+                switch apply(plan: plan) {
+                case .applied:
+                    result.appliedRenames += 1
+                case .collision:
+                    result.collisions += 1
+                case .issue:
+                    result.issues += 1
+                }
+            }
+        }
+
+        return result
+    }
+
+    private static func shouldReconcile(_ root: SourceRoot) -> Bool {
+        root.id == .claudeCode || root.id == .qoder
+    }
+
+    private enum ApplyResult {
+        case applied
+        case collision
+        case issue
+    }
+
+    private static func apply(plan: RepairPlan) -> ApplyResult {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: plan.targetDir) {
+            return .collision
+        }
+        do {
+            try fm.copyItem(atPath: plan.sourceDir, toPath: plan.targetDir)
+        } catch {
+            if fm.fileExists(atPath: plan.targetDir) {
+                return .collision
+            }
+            return .issue
+        }
+        do {
+            try fm.removeItem(atPath: plan.sourceDir)
+            return .applied
+        } catch {
+            return .issue
+        }
+    }
+
+    private static func isDirectoryNoFollow(_ path: String) -> Bool {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return false }
+        return (info.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    private static func structuredCwds(in dir: String, issues: inout Int) -> [String] {
+        var cwds = Set<String>()
+        var localIssues = 0
+        SessionSources.walkSessionFiles(
+            root: dir,
+            maxFileBytes: structuredCwdReadCapBytes,
+            onIssue: { _ in localIssues += 1 },
+            onFile: { file in
+                guard let text = try? String(contentsOfFile: file, encoding: .utf8) else {
+                    localIssues += 1
+                    return
+                }
+                for line in text.split(whereSeparator: \.isNewline) {
+                    if let cwd = extractStructuredCwd(String(line)) {
+                        cwds.insert(cwd)
+                    }
+                }
+            }
+        )
+        issues += localIssues
+        return cwds.sorted()
+    }
+
+    private static func extractStructuredCwd(_ line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        if let cwd = object["cwd"] as? String, !cwd.isEmpty {
+            return cwd
+        }
+        if let payload = object["payload"] as? [String: Any],
+           let cwd = payload["cwd"] as? String,
+           !cwd.isEmpty {
+            return cwd
+        }
+        return nil
+    }
+}
+
 public enum WalkIssueReason: String, Equatable, Sendable {
     case readdirFailed = "readdir_failed"
     case statFailed = "stat_failed"

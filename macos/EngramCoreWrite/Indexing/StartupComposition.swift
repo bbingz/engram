@@ -103,6 +103,10 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
         try writer.write { db in try StartupBackfills.reconcileInsights(db) }
     }
 
+    public func reconcileGroupedSourceDirs() throws -> GroupedDirReconcileResult {
+        GroupedDirReconcile.run(roots: SessionSources.roots())
+    }
+
     public func backfillFilePaths() throws -> Int {
         try writer.write { db in try StartupBackfills.backfillFilePaths(db) }
     }

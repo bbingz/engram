@@ -41,9 +41,9 @@ final class MessageParserTests: XCTestCase {
     // MARK: - claude-code format (type/message)
 
     /// 1. Parse claude-code JSONL with string and array content
-    func testParseClaudeCodeFormat() throws {
+    func testParseClaudeCodeFormat() async throws {
         let path = try fixturePath("claude-code.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
 
         XCTAssertEqual(messages.count, 4)
         XCTAssertEqual(messages[0].role, "user")
@@ -56,9 +56,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 2. Parse codex format (response_item/payload)
-    func testParseCodexFormat() throws {
+    func testParseCodexFormat() async throws {
         let path = try fixturePath("codex.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "codex")
+        let messages = await MessageParser.parse(filePath: path, source: "codex")
 
         guard messages.count == 2 else {
             return XCTFail("Expected 2 codex display messages, got \(messages.count)")
@@ -70,9 +70,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 3. Parse gemini-cli format (whole-file JSON with messages array)
-    func testParseGeminiFormat() throws {
+    func testParseGeminiFormat() async throws {
         let path = try fixturePath("gemini.json")
-        let messages = MessageParser.parse(filePath: path, source: "gemini-cli")
+        let messages = await MessageParser.parse(filePath: path, source: "gemini-cli")
 
         XCTAssertEqual(messages.count, 3)
         XCTAssertEqual(messages[0].role, "user")
@@ -84,25 +84,25 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 4. Malformed JSON lines are silently skipped
-    func testMalformedJSONSkipped() throws {
+    func testMalformedJSONSkipped() async throws {
         let path = try fixturePath("malformed.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
 
         // malformed.jsonl: 1 unparseable, 1 missing message field, 1 empty message content
         XCTAssertEqual(messages.count, 0, "All malformed entries should be skipped")
     }
 
     /// 5. Empty file returns empty array
-    func testEmptyFileReturnsEmpty() throws {
+    func testEmptyFileReturnsEmpty() async throws {
         let path = try fixturePath("empty.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
         XCTAssertTrue(messages.isEmpty)
     }
 
     /// 6. Mixed valid/invalid lines — empty content skipped, whitespace-only content kept
-    func testMixedValidInvalid() throws {
+    func testMixedValidInvalid() async throws {
         let path = try fixturePath("empty-content.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
 
         // empty-content.jsonl: "" is skipped (isEmpty), "valid" kept, "   " kept (not empty, just whitespace)
         guard messages.count == 2 else {
@@ -113,9 +113,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 7. CJK content preserved in claude-code format
-    func testCJKContentPreserved() throws {
+    func testCJKContentPreserved() async throws {
         let path = try fixturePath("cjk-claude.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
 
         XCTAssertEqual(messages.count, 3)
         XCTAssertEqual(messages[0].content, "请帮我写一个函数")
@@ -124,9 +124,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 8. Kimi format (role/content, no skip)
-    func testParseKimiFormat() throws {
+    func testParseKimiFormat() async throws {
         let path = try fixturePath("kimi.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "kimi")
+        let messages = await MessageParser.parse(filePath: path, source: "kimi")
 
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(messages[0].role, "user")
@@ -135,9 +135,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 9. Antigravity format (role/content, skips first line)
-    func testParseAntigravityFormat() throws {
+    func testParseAntigravityFormat() async throws {
         let path = try fixturePath("antigravity.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "antigravity")
+        let messages = await MessageParser.parse(filePath: path, source: "antigravity")
 
         // First line is metadata, should be skipped
         XCTAssertEqual(messages.count, 2)
@@ -146,9 +146,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 10. Copilot format (type-based with data.content)
-    func testParseCopilotFormat() throws {
+    func testParseCopilotFormat() async throws {
         let path = try fixturePath("copilot.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "copilot")
+        let messages = await MessageParser.parse(filePath: path, source: "copilot")
 
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(messages[0].role, "user")
@@ -157,8 +157,8 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(messages[1].content, "Hi from Copilot")
     }
 
-    func testParseQoderThroughAdapterRegistry() throws {
-        let messages = MessageParser.parse(
+    func testParseQoderThroughAdapterRegistry() async throws {
+        let messages = await MessageParser.parse(
             filePath: repoFixturePath("qoder/sample.jsonl"),
             source: "qoder"
         )
@@ -174,8 +174,8 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(messages[2].content, "`Read`")
     }
 
-    func testParseCommandCodeThroughAdapterRegistry() throws {
-        let messages = MessageParser.parse(
+    func testParseCommandCodeThroughAdapterRegistry() async throws {
+        let messages = await MessageParser.parse(
             filePath: repoFixturePath("commandcode/sample.jsonl"),
             source: "commandcode"
         )
@@ -189,7 +189,7 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(messages[1].content, "我会检查解析器。\n\n`read_file`")
     }
 
-    func testParseAntigravityCliThroughAdapterRegistry() throws {
+    func testParseAntigravityCliThroughAdapterRegistry() async throws {
         let tmpRoot = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("engram-ag-cli-\(UUID().uuidString)", isDirectory: true)
         let transcript = tmpRoot
@@ -204,7 +204,7 @@ final class MessageParserTests: XCTestCase {
             to: transcript
         )
 
-        let messages = MessageParser.parse(filePath: transcript.path, source: "antigravity")
+        let messages = await MessageParser.parse(filePath: transcript.path, source: "antigravity")
 
         guard messages.count == 3 else {
             return XCTFail("Expected 3 antigravity CLI display messages, got \(messages.count)")
@@ -218,9 +218,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 11. Cline format (whole-file JSON array with say/text)
-    func testParseClineFormat() throws {
+    func testParseClineFormat() async throws {
         let path = try fixturePath("cline.json")
-        let messages = MessageParser.parse(filePath: path, source: "cline")
+        let messages = await MessageParser.parse(filePath: path, source: "cline")
 
         // task → user, text(partial=false) → assistant, user_feedback → user, text(partial=true) → skipped
         XCTAssertEqual(messages.count, 3)
@@ -233,9 +233,9 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 12. System prompt detection — systemPrompt category
-    func testSystemPromptDetection() throws {
+    func testSystemPromptDetection() async throws {
         let path = try fixturePath("system-prompts.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "claude-code")
+        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
 
         XCTAssertEqual(messages.count, 4)
         // <system-reminder> → systemPrompt
@@ -250,9 +250,9 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(messages[3].systemCategory, .agentComm)
     }
 
-    func testParseWithOffsetAndLimit() throws {
+    func testParseWithOffsetAndLimit() async throws {
         let path = try fixturePath("codex.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "codex", offset: 1, limit: 1)
+        let messages = await MessageParser.parse(filePath: path, source: "codex", offset: 1, limit: 1)
 
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages[0].role, "assistant")
@@ -262,15 +262,15 @@ final class MessageParserTests: XCTestCase {
     /// Transcript paging (SessionDetailView) loads a first page then APPENDS the
     /// remainder from `offset = loadedCount`. That must reconstruct the full
     /// transcript exactly — no gap, dup, or silent truncation at the page seam.
-    func testPagedParseConcatenationEqualsFullTranscript() throws {
+    func testPagedParseConcatenationEqualsFullTranscript() async throws {
         let path = try fixturePath("claude-code.jsonl")
-        let full = MessageParser.parse(filePath: path, source: "claude-code")
+        let full = await MessageParser.parse(filePath: path, source: "claude-code")
         XCTAssertGreaterThan(full.count, 2, "fixture must have enough messages to page")
 
-        let firstPage = MessageParser.parse(filePath: path, source: "claude-code", offset: 0, limit: 2)
+        let firstPage = await MessageParser.parse(filePath: path, source: "claude-code", offset: 0, limit: 2)
         XCTAssertEqual(firstPage.count, 2)
         // "Load all" continues from the loaded count to the end (limit nil).
-        let remainder = MessageParser.parse(filePath: path, source: "claude-code", offset: firstPage.count, limit: nil)
+        let remainder = await MessageParser.parse(filePath: path, source: "claude-code", offset: firstPage.count, limit: nil)
         XCTAssertEqual(remainder.count, full.count - firstPage.count)
 
         let paged = (firstPage + remainder).map { ($0.role, $0.content) }
@@ -285,7 +285,7 @@ final class MessageParserTests: XCTestCase {
     /// drifts at the seam and can falsely conclude "no more" when tool messages
     /// thin the page. with-tools.jsonl: [user, assistant(tool_use), tool_result,
     /// assistant(text), user] — the tool_result is produced but filtered out.
-    func testParseWindowedReportsProducedCountIncludingFilteredToolMessages() throws {
+    func testParseWindowedReportsProducedCountIncludingFilteredToolMessages() async throws {
         // Codex emits .tool messages for function_call / function_call_output; the
         // UI parser filters them out, so PRODUCED > displayable. The pager must
         // advance its offset in produced space (this test's contract) — using the
@@ -306,12 +306,12 @@ final class MessageParserTests: XCTestCase {
         ]
         try lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
 
-        let full = MessageParser.parse(filePath: path, source: "codex")
+        let full = await MessageParser.parse(filePath: path, source: "codex")
         XCTAssertEqual(full.map(\.content), ["u0", "a0", "u1", "a1"])
 
         // First 3 PRODUCED messages: user, function_call, function_call_output —
         // only the user survives filtering, so produced (3) > displayable (1).
-        let page1 = MessageParser.parseWindowed(filePath: path, source: "codex", offset: 0, limit: 3)
+        let page1 = await MessageParser.parseWindowed(filePath: path, source: "codex", offset: 0, limit: 3)
         XCTAssertEqual(page1.producedCount, 3)
         XCTAssertLessThan(page1.messages.count, page1.producedCount)
         XCTAssertEqual(page1.messages.map(\.content), ["u0"])
@@ -322,7 +322,7 @@ final class MessageParserTests: XCTestCase {
         var collected: [ChatMessage] = []
         var producedOffset = 0
         while true {
-            let page = MessageParser.parseWindowed(filePath: path, source: "codex", offset: producedOffset, limit: 2)
+            let page = await MessageParser.parseWindowed(filePath: path, source: "codex", offset: producedOffset, limit: 2)
             collected += page.messages
             producedOffset += page.producedCount
             if page.producedCount < 2 { break }
@@ -331,20 +331,20 @@ final class MessageParserTests: XCTestCase {
     }
 
     /// 13. Unknown source returns empty array
-    func testUnknownSourceReturnsEmpty() throws {
+    func testUnknownSourceReturnsEmpty() async throws {
         let path = try fixturePath("valid.jsonl")
-        let messages = MessageParser.parse(filePath: path, source: "unknown-source")
+        let messages = await MessageParser.parse(filePath: path, source: "unknown-source")
         XCTAssertTrue(messages.isEmpty)
     }
 
     /// 14. Nonexistent file returns empty array
-    func testNonexistentFileReturnsEmpty() throws {
-        let messages = MessageParser.parse(filePath: "/nonexistent/path.jsonl", source: "claude-code")
+    func testNonexistentFileReturnsEmpty() async throws {
+        let messages = await MessageParser.parse(filePath: "/nonexistent/path.jsonl", source: "claude-code")
         XCTAssertTrue(messages.isEmpty)
     }
 
     /// 15. classifySystem unit tests — direct call
-    func testClassifySystemCategories() throws {
+    func testClassifySystemCategories() async throws {
         // System prompts
         XCTAssertEqual(
             MessageParser.classifySystem(content: "<system-reminder>test</system-reminder>", source: "claude-code"),
@@ -395,7 +395,7 @@ final class MessageParserTests: XCTestCase {
         )
     }
 
-    func testClassifySystemMatchesSharedTranscriptDisplayFixtures() throws {
+    func testClassifySystemMatchesSharedTranscriptDisplayFixtures() async throws {
         guard let path = Bundle(for: type(of: self)).path(
             forResource: "system-classification-cases",
             ofType: "json",
