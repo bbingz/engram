@@ -187,7 +187,7 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(result.review.own).toEqual([]);
   });
 
-  it('patches Codex archived_sessions alongside active sessions', async () => {
+  it('patches all Codex stores alongside active sessions', async () => {
     const activeCodex = join(
       home,
       '.codex',
@@ -200,7 +200,17 @@ describe('runProjectMove — orchestrator integration', () => {
       'archived_sessions',
       'rollout-archived.jsonl',
     );
+    const rolloutSummary = join(
+      home,
+      '.codex',
+      'memories',
+      'rollout_summaries',
+      'rollout-summary.jsonl',
+    );
     mkdirSync(join(home, '.codex', 'archived_sessions'), { recursive: true });
+    mkdirSync(join(home, '.codex', 'memories', 'rollout_summaries'), {
+      recursive: true,
+    });
     writeFileSync(
       activeCodex,
       `{"type":"session_meta","payload":{"cwd":"${src}"}}\n`,
@@ -208,6 +218,10 @@ describe('runProjectMove — orchestrator integration', () => {
     writeFileSync(
       archivedCodex,
       `{"type":"session_meta","payload":{"cwd":"${src}"}}\n`,
+    );
+    writeFileSync(
+      rolloutSummary,
+      `{"session_meta":{"payload":{"cwd":"${src}"}}}\n`,
     );
 
     const result = await runProjectMove(db, {
@@ -221,11 +235,17 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(readFileSync(activeCodex, 'utf8')).not.toContain(src);
     expect(readFileSync(archivedCodex, 'utf8')).toContain(dst);
     expect(readFileSync(archivedCodex, 'utf8')).not.toContain(src);
+    expect(readFileSync(rolloutSummary, 'utf8')).toContain(dst);
+    expect(readFileSync(rolloutSummary, 'utf8')).not.toContain(src);
     expect(result.perSource.find((s) => s.id === 'codex')?.filesPatched).toBe(
       2,
     );
     expect(
       result.perSource.find((s) => s.id === 'codex-archived')?.filesPatched,
+    ).toBe(1);
+    expect(
+      result.perSource.find((s) => s.id === 'codex-rollout-summaries')
+        ?.filesPatched,
     ).toBe(1);
     expect(result.review.own).toEqual([]);
   });
