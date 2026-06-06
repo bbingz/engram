@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### MainActor UI trampoline cleanup (2026-06-06, Codex)
+
+Closed the remaining still-current SwiftUI P3 cleanup finding from
+`CODE-REVIEW-ISSUES.md`.
+
+- **Fix**: `MenuBarController` no longer mixes GCD main-queue trampolines with
+  `Task { @MainActor in }` for deferred UI activation/session-open work. The
+  MainActor-isolated controller now uses the Swift concurrency form
+  consistently.
+- **Scroll chrome**: `ModernScrollViewConfigurator` preserves the existing
+  immediate + 200ms delayed configuration behavior, but schedules both passes
+  through `Task { @MainActor in }` instead of `DispatchQueue.main.async` /
+  `asyncAfter`.
+- **Regression coverage**: added a source guard that rejects reintroducing
+  `DispatchQueue.main.async` in `MenuBarController` and `Theme` for this
+  reviewed path.
+- **Verification**: the new guard failed against the old code, then selected
+  `ViewMainThreadReadTests` and `ThemeTests` passed 26 tests after the fix.
+
 ### Synchronous service client close on app termination (2026-06-06, Codex)
 
 Closed a still-current Swift app termination cleanup finding.

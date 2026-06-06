@@ -1,5 +1,29 @@
 # Engram Local Memory
 
+## 2026-06-06 — MainActor UI trampoline cleanup (Codex)
+
+Codex closed the remaining still-current SwiftUI P3 cleanup finding from
+`CODE-REVIEW-ISSUES.md`.
+
+Change:
+- `MenuBarController` no longer mixes `DispatchQueue.main.async` with
+  `Task { @MainActor in }` for deferred UI activation/session-open work.
+- `ModernScrollViewConfigurator` keeps its immediate and delayed scroll-view
+  configuration passes, but schedules both through MainActor tasks instead of
+  GCD main-queue async/asyncAfter.
+- `ViewMainThreadReadTests` now rejects reintroducing the reviewed GCD
+  trampoline pattern in `MenuBarController` and `Theme`.
+
+Verification:
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS'
+  -only-testing:EngramTests/ViewMainThreadReadTests/testMenuBarAndThemeUseMainActorTrampolinesConsistently
+  CODE_SIGNING_ALLOWED=NO` failed on the old GCD trampolines.
+- GREEN: `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' -only-testing:EngramTests/ViewMainThreadReadTests
+  -only-testing:EngramTests/ThemeTests CODE_SIGNING_ALLOWED=NO` passed 26
+  tests.
+
 ## 2026-06-06 — Synchronous service client close on app termination (Codex)
 
 Codex closed a still-current Swift app termination cleanup finding.

@@ -199,6 +199,22 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testMenuBarAndThemeUseMainActorTrampolinesConsistently() throws {
+        let menu = try source("macos/Engram/MenuBarController.swift")
+        XCTAssertTrue(menu.contains("@MainActor\nclass MenuBarController"))
+        XCTAssertFalse(
+            menu.contains("DispatchQueue.main.async"),
+            "MenuBarController is MainActor-isolated and should use Task { @MainActor in } for deferred UI work"
+        )
+
+        let theme = try source("macos/Engram/Components/Theme.swift")
+        XCTAssertFalse(
+            theme.contains("DispatchQueue.main.async"),
+            "ModernScrollViewConfigurator should use MainActor tasks instead of GCD main-queue trampolines"
+        )
+        XCTAssertTrue(theme.contains("Task { @MainActor in"))
+    }
+
     func testSettingsLoadsDoNotImmediatelyWriteBackUnchangedValues() throws {
         let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
         XCTAssertTrue(ai.contains("@State private var isLoadingSettings = false"))
