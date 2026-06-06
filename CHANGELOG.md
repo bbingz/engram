@@ -7,6 +7,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Claude Code project-dir long-path encoding parity (2026-06-06, Codex)
+
+Closed the remaining known Claude Code/Qoder project-move encoding gap.
+
+- **Fix**: the TypeScript reference encoder and Swift product encoder now match
+  Claude Code's long project-dir rule: replace every non-`[A-Za-z0-9]`
+  UTF-16 code unit with `-`; when the encoded name exceeds 200 UTF-16 code
+  units, keep the first 200 encoded units and append a base36 Java-style
+  32-bit hash of the original path.
+- **Source evidence**: verified against the local Claude Code 2.1.165 bundled
+  `Hj()` / `SYH()` implementation (`uUH=200`). The same encoder remains shared
+  with Qoder because the real Qoder corpus matches the same naming rule.
+- **Real-corpus verification**: replayed local `~/.claude/projects` and
+  `~/.qoder/projects` directories. Claude Code had 39 cwd-bearing dirs across
+  88 total dirs, with zero mismatches after accounting for subagent/subdirectory
+  cwd variation; Qoder matched 7/7. The longest observed real dir was 86
+  code units, so the >200 branch is covered by binary-derived regression cases.
+- **Regression coverage**: added TS and Swift tests for the 200-code-unit
+  boundary, truncated hash suffixes, and long emoji paths to lock JavaScript
+  UTF-16 semantics.
+- **Verification**: `npx vitest run tests/core/project-move/encode-cc.test.ts`
+  passed 12 tests; TS project-move/MCP tests passed 217 tests; selected Swift
+  project-move tests passed 98 tests.
+
 ### Session snapshot noop write reduction (2026-06-06, Codex)
 
 Closed two still-current Swift indexing follow-ups from

@@ -1,5 +1,43 @@
 # Engram Local Memory
 
+## 2026-06-06 — Claude Code/Qoder project-dir encoding parity (Codex)
+
+Codex closed the remaining known project-move compatibility gap for Claude
+Code/Qoder project directory names.
+
+Change:
+- `src/core/project-move/encode-cc.ts` and
+  `macos/EngramCoreWrite/ProjectMove/EncodeClaudeCodeDir.swift` now implement
+  Claude Code's full encoder: replace every non-`[A-Za-z0-9]` UTF-16 code unit
+  with `-`; if the encoded name exceeds 200 UTF-16 code units, use the first
+  200 encoded units plus `-` plus `Math.abs(SYH(originalPath)).toString(36)`.
+- Swift mirrors JavaScript UTF-16 behavior, including astral scalars becoming
+  two `-` code units and the 32-bit wrapping hash.
+- TS and Swift regression tests now cover exactly-200 paths, >200 truncation,
+  base36 hash suffixes, underscore/space/dot replacement, and long emoji paths.
+
+Evidence:
+- Local Claude Code 2.1.165 bundle contains `Hj(H)` with
+  `H.replace(/[^a-zA-Z0-9]/g,"-")`, `uUH=200`, and
+  `Math.abs(SYH(H)).toString(36)`.
+- Real-corpus replay of `~/.claude/projects` and `~/.qoder/projects` matched
+  after allowing any cwd inside a project directory to encode back to the
+  directory name. Claude Code: 39 cwd-bearing dirs checked across 88 total dirs,
+  zero mismatches; Qoder: 7/7, zero mismatches. The longest real dir observed
+  was 86 code units, so the >200 branch is covered by binary-derived synthetic
+  tests rather than live corpus.
+
+Verification:
+- `npx vitest run tests/core/project-move/encode-cc.test.ts` passed 12 tests.
+- `npx vitest run tests/core/project-move/*.test.ts
+  tests/tools/project-mcp.test.ts` passed 17 files / 217 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' -only-testing:EngramCoreTests/EncodeClaudeCodeDirTests
+  CODE_SIGNING_ALLOWED=NO` passed 13 tests.
+- Selected Swift project-move tests
+  (`EncodeClaudeCodeDirTests`, `SessionSourcesTests`, `OrchestratorTests`,
+  `BatchTests`, `ReviewScanTests`, `ArchiveTests`, `UndoTests`) passed 98 tests.
+
 ## 2026-06-06 — Session snapshot noop write reduction (Codex)
 
 Codex closed two still-current Swift indexing follow-ups from

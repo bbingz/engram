@@ -59,9 +59,8 @@ final class EncodeClaudeCodeDirTests: XCTestCase {
 
     /// Real-corpus regression: expected dir names are hardcoded literals (NOT
     /// recomputed via the encoder) so they lock the output against the encoder
-    /// regressing back to the `/`-and-`.`-only rule. Every entry was captured
-    /// from a real ~/.claude/projects dir whose first session file's "cwd"
-    /// equals the input here.
+    /// regressing back to the `/`-and-`.`-only rule. Entries are real
+    /// cwd/project-dir pairs captured from ~/.claude/projects.
     func testRealCorpusDivergentPaths() {
         let cases: [(cwd: String, dir: String)] = [
             ("/Users/bing/-Code-/CCTV_Admin", "-Users-bing--Code--CCTV-Admin"),
@@ -88,5 +87,30 @@ final class EncodeClaudeCodeDirTests: XCTestCase {
 
     func testEmptyStringPassesThrough() {
         XCTAssertEqual(ClaudeCodeProjectDir.encode(""), "")
+    }
+
+    func testKeepsExactly200EncodedUTF16CodeUnitsUnchanged() {
+        let path = "/Users/bing/" + String(repeating: "a", count: 188)
+        let expected = "-Users-bing-" + String(repeating: "a", count: 188)
+        XCTAssertEqual(path.utf16.count, 200)
+        XCTAssertEqual(ClaudeCodeProjectDir.encode(path), expected)
+    }
+
+    func testTruncatesEncodedNamesLongerThan200UTF16CodeUnitsWithHashSuffix() {
+        XCTAssertEqual(
+            ClaudeCodeProjectDir.encode("/Users/bing/" + String(repeating: "a", count: 189)),
+            "-Users-bing-" + String(repeating: "a", count: 188) + "-fqx13c"
+        )
+        XCTAssertEqual(
+            ClaudeCodeProjectDir.encode("/Users/bing/-Code-/" + String(repeating: "Project_", count: 35)),
+            "-Users-bing--Code--Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Proje-6bilpn"
+        )
+    }
+
+    func testUsesJavaScriptUTF16CodeUnitSemanticsForLongEmojiPaths() {
+        XCTAssertEqual(
+            ClaudeCodeProjectDir.encode("/Users/bing/-Code-/" + String(repeating: "emoji🙂", count: 35)),
+            "-Users-bing--Code--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--uooe3s"
+        )
     }
 }

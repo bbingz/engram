@@ -41,6 +41,27 @@ describe('encodeCC', () => {
     expect(encodeCC('')).toBe('');
   });
 
+  it('keeps exactly 200 encoded UTF-16 code units unchanged', () => {
+    expect(encodeCC(`/Users/bing/${'a'.repeat(188)}`)).toBe(
+      `-Users-bing-${'a'.repeat(188)}`,
+    );
+  });
+
+  it('truncates encoded names longer than 200 UTF-16 code units with hash suffix', () => {
+    expect(encodeCC(`/Users/bing/${'a'.repeat(189)}`)).toBe(
+      `-Users-bing-${'a'.repeat(188)}-fqx13c`,
+    );
+    expect(encodeCC(`/Users/bing/-Code-/${'Project_'.repeat(35)}`)).toBe(
+      '-Users-bing--Code--Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Project-Proje-6bilpn',
+    );
+  });
+
+  it('uses JavaScript UTF-16 code-unit semantics for long emoji paths', () => {
+    expect(encodeCC(`/Users/bing/-Code-/${'emoji🙂'.repeat(35)}`)).toBe(
+      '-Users-bing--Code--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--emoji--uooe3s',
+    );
+  });
+
   // Real-corpus regression: expected dir names are hardcoded literals captured
   // from real ~/.claude/projects dirs, locking the rule against regression.
   it('matches real on-disk dirs for divergent paths', () => {
