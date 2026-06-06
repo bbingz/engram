@@ -7,6 +7,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### TypeScript migration_log state/start-time index parity (2026-06-06, Codex)
+
+Closed a still-current TS/Swift schema parity gap from the review backlog.
+
+- **Fix**: TypeScript migrations now create
+  `idx_migration_log_state_started` on `migration_log(state, started_at)`,
+  matching the Swift schema and its startup migration repair path.
+- **Why**: pending/stale migration scans filter by state and order or compare by
+  start time; TS previously had separate `state` and `started_at` indexes but
+  lacked the compound access path already present in Swift.
+- **Verification**: RED `tests/core/db-migration.test.ts` failed because the
+  index was absent from `sqlite_master`; after the migration fix, the targeted
+  test file passed 16 tests. An old-DB smoke with an existing `migration_log`
+  table and no compound index confirmed reopening through `Database` creates
+  `CREATE INDEX idx_migration_log_state_started ON migration_log(state,
+  started_at)`. The committed test fixture database was regenerated and
+  inspected to confirm the same index exists there.
+
 ### Swift export directory parity with TypeScript (2026-06-06, Codex)
 
 Closed the remaining Swift-side export directory drift from the review backlog.

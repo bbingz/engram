@@ -236,6 +236,7 @@ export function runMigrations(
     CREATE INDEX IF NOT EXISTS idx_migration_log_started_at ON migration_log(started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_migration_log_paths ON migration_log(old_path, new_path);
     CREATE INDEX IF NOT EXISTS idx_migration_log_state ON migration_log(state);
+    CREATE INDEX IF NOT EXISTS idx_migration_log_state_started ON migration_log(state, started_at);
   `);
 
   createSessionsFtsTable(db, 'sessions_fts', { ifNotExists: true });
