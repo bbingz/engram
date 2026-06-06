@@ -132,6 +132,56 @@ final class OrchestratorTests: XCTestCase {
         }
     }
 
+    func testDryRunPreviewsGeminiSlugAndObservedIflowDirsWithoutSideEffects() async throws {
+        let (src, _) = try makeProjectFixture(name: "WebSite_Gemini")
+        let dst = tempRoot.appendingPathComponent("mac_Book_Pro_Debug").path
+
+        let geminiOld = tempRoot.appendingPathComponent(".gemini/tmp/custom-old/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: geminiOld, withIntermediateDirectories: true)
+        try """
+        {"sessionId":"gemini-dry-run","projectHash":"custom-old","startTime":"2026-06-06T00:00:00.000Z","messages":[]}
+        """.write(to: geminiOld.appendingPathComponent("session.json"), atomically: true, encoding: .utf8)
+        let projectsJson = tempRoot.appendingPathComponent(".gemini/projects.json")
+        try """
+        {"projects":{"\(src)":"custom-old"}}
+        """.write(to: projectsJson, atomically: true, encoding: .utf8)
+        let geminiOldDir = tempRoot.appendingPathComponent(".gemini/tmp/custom-old", isDirectory: true)
+        let geminiNewDir = tempRoot.appendingPathComponent(".gemini/tmp/\(SessionSources.encodeGemini(dst))", isDirectory: true)
+
+        let iflowRoot = tempRoot.appendingPathComponent(".iflow/projects", isDirectory: true)
+        let iflowOld = iflowRoot.appendingPathComponent("-Users-bing-Code-observed", isDirectory: true)
+        try FileManager.default.createDirectory(at: iflowOld, withIntermediateDirectories: true)
+        try """
+        {"cwd":"\(src)","text":"working on \(src)/main.py"}
+        """.write(to: iflowOld.appendingPathComponent("session-drift.jsonl"), atomically: true, encoding: .utf8)
+        let iflowNew = iflowRoot.appendingPathComponent(SessionSources.encodeIflow(dst), isDirectory: true)
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst, dryRun: true)
+        )
+
+        XCTAssertEqual(result.state, .dryRun)
+        XCTAssertTrue(result.renamedDirs.contains {
+            $0.sourceId == .geminiCli && $0.oldDir == geminiOldDir.path && $0.newDir == geminiNewDir.path
+        })
+        XCTAssertTrue(result.renamedDirs.contains {
+            $0.sourceId == .iflow && $0.oldDir == iflowOld.path && $0.newDir == iflowNew.path
+        })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: geminiOldDir.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: geminiNewDir.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: iflowOld.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: iflowNew.path))
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM migration_log") ?? -1,
+                0
+            )
+        }
+    }
+
     // MARK: - happy path
 
     func testHappyPathRenamesClaudeCodeDirPatchesJsonlAndCommits() async throws {

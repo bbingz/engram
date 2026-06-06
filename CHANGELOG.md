@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Project move Gemini/iFlow dry-run parity tests (2026-06-06, Codex)
+
+Closed a plan-review gap in the already-landed Gemini/iFlow project-move
+compatibility work.
+
+- **Coverage**: added TypeScript and Swift dry-run regression tests proving
+  custom Gemini `projects.json` old slugs and iFlow directories discovered from
+  structured `cwd` records are reported in `renamedDirs` without moving source,
+  destination, Gemini, or iFlow directories.
+- **Plan**: added the reviewed Superpowers implementation plan at
+  `docs/superpowers/plans/2026-06-06-project-move-gemini-iflow.md`; OpenCode
+  SQLite directory rewrites remain a separate PR scope.
+- **Verification**: targeted TS and Swift dry-run tests passed against the
+  current implementation, confirming this PR only closes acceptance coverage.
+
 ### Project move covers Codex rollout summaries (2026-06-06, Codex)
 
 Closed the remaining Codex project-move compatibility gap found by checking
