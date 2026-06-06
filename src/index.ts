@@ -10,6 +10,7 @@ import {
 import { createMCPDeps } from './core/bootstrap.js';
 import {
   createDaemonClientFromSettings,
+  DaemonClientError,
   shouldFallbackToDirect,
   shouldFallbackToDirectForTool,
 } from './core/daemon-client.js';
@@ -25,6 +26,7 @@ import { startWatcher } from './core/watcher.js';
 import { exportTool, handleExport } from './tools/export.js';
 import { handleFileActivity } from './tools/file_activity.js';
 import {
+  generateSummaryStatusFromHttpError,
   generateSummaryTool,
   handleGenerateSummary,
 } from './tools/generate_summary.js';
@@ -427,13 +429,28 @@ toolRegistry.set('generate_summary', async (a) => {
   } catch (err) {
     if (!shouldFallbackToDirect(err, strictSingleWriter)) {
       // Application-level rejection (e.g., "Session not found", "no API key"):
-      // surface to caller as an MCP error, not a thrown exception, to match
-      // the direct-path behavior.
+      // surface deterministic business statuses as structured non-error
+      // results. Unknown daemon failures remain MCP errors.
       const msg = err instanceof Error ? err.message : String(err);
+      const statusResult =
+        err instanceof DaemonClientError
+          ? generateSummaryStatusFromHttpError(
+              err.status,
+              err.body,
+              params.sessionId,
+            )
+          : null;
+      if (statusResult) {
+        return {
+          _early: true,
+          ...statusResult,
+        };
+      }
       return {
         _early: true,
         content: [{ type: 'text' as const, text: msg }],
         isError: true,
+        structuredContent: { error: { message: msg } },
       };
     }
     log.warn(

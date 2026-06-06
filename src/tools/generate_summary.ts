@@ -24,6 +24,71 @@ export const generateSummaryTool = {
   },
 };
 
+type GenerateSummaryStatus =
+  | 'not_found'
+  | 'not_configured'
+  | 'unsupported_source'
+  | 'empty'
+  | 'empty_response';
+
+function statusResult(
+  status: GenerateSummaryStatus,
+  sessionId: string,
+  message: string,
+) {
+  return {
+    content: [{ type: 'text' as const, text: message }],
+    structuredContent: { status, sessionId, message },
+  };
+}
+
+function errorResult(message: string) {
+  return {
+    content: [{ type: 'text' as const, text: message }],
+    isError: true,
+    structuredContent: { error: { message } },
+  };
+}
+
+function errorMessageFromBody(body: unknown): string | null {
+  if (
+    typeof body === 'object' &&
+    body !== null &&
+    'error' in body &&
+    typeof (body as { error?: unknown }).error === 'string'
+  ) {
+    return (body as { error: string }).error;
+  }
+  return null;
+}
+
+export function generateSummaryStatusFromHttpError(
+  httpStatus: number,
+  body: unknown,
+  sessionId: string,
+) {
+  const message = errorMessageFromBody(body);
+  if (!message) return null;
+
+  if (httpStatus === 404 && /^Session not found:/i.test(message)) {
+    return statusResult('not_found', sessionId, message);
+  }
+  if (/API key not configured/i.test(message)) {
+    return statusResult('not_configured', sessionId, message);
+  }
+  if (/^No adapter (available )?for source:/i.test(message)) {
+    return statusResult('unsupported_source', sessionId, message);
+  }
+  if (/^No messages (found )?in session$/i.test(message)) {
+    return statusResult('empty', sessionId, message);
+  }
+  if (/^Empty response from AI$/i.test(message)) {
+    return statusResult('empty_response', sessionId, message);
+  }
+
+  return null;
+}
+
 export async function handleGenerateSummary(
   db: Database,
   params: {
@@ -37,41 +102,32 @@ export async function handleGenerateSummary(
   // Get session info from DB
   const session = db.getSession(sessionId);
   if (!session) {
-    return {
-      content: [
-        { type: 'text' as const, text: `Session not found: ${sessionId}` },
-      ],
-      isError: true,
-    };
+    return statusResult(
+      'not_found',
+      sessionId,
+      `Session not found: ${sessionId}`,
+    );
   }
 
   // Get settings for AI configuration
   const settings = readFileSettings();
 
   if (!settings.aiApiKey) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: 'API key not configured. Please set aiApiKey in Settings.',
-        },
-      ],
-      isError: true,
-    };
+    return statusResult(
+      'not_configured',
+      sessionId,
+      'API key not configured. Please set aiApiKey in Settings.',
+    );
   }
 
   // Get adapter to read messages
   const adapter = getAdapter(session.source);
   if (!adapter) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `No adapter available for source: ${session.source}`,
-        },
-      ],
-      isError: true,
-    };
+    return statusResult(
+      'unsupported_source',
+      sessionId,
+      `No adapter available for source: ${session.source}`,
+    );
   }
 
   // Read messages from session file with a bounded sliding window so a
@@ -86,24 +142,11 @@ export async function handleGenerateSummary(
     messages = loaded.messages;
     totalSeen = loaded.totalSeen;
   } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Failed to read session messages: ${error}`,
-        },
-      ],
-      isError: true,
-    };
+    return errorResult(`Failed to read session messages: ${error}`);
   }
 
   if (messages.length === 0) {
-    return {
-      content: [
-        { type: 'text' as const, text: 'No messages found in session' },
-      ],
-      isError: true,
-    };
+    return statusResult('empty', sessionId, 'No messages found in session');
   }
 
   // Generate summary
@@ -114,15 +157,11 @@ export async function handleGenerateSummary(
     });
 
     if (!summary) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: 'Failed to generate summary: empty response from AI',
-          },
-        ],
-        isError: true,
-      };
+      return statusResult(
+        'empty_response',
+        sessionId,
+        'Failed to generate summary: empty response from AI',
+      );
     }
 
     // Persist the true message count (totalSeen), not the bounded sample size.
@@ -139,14 +178,6 @@ export async function handleGenerateSummary(
   } catch (error) {
     opts?.log?.error('generate_summary failed', { sessionId }, error);
     const errorMessage = error instanceof Error ? error.message : String(error);
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Failed to generate summary: ${errorMessage}`,
-        },
-      ],
-      isError: true,
-    };
+    return errorResult(`Failed to generate summary: ${errorMessage}`);
   }
 }

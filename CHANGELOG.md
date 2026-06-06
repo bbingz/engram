@@ -7,6 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### TypeScript generate_summary MCP status semantics (2026-06-06, Codex)
+
+Closed the still-current `generate_summary` `isError` misuse finding.
+
+- **Fix**: deterministic business outcomes now return structured status
+  results without MCP `isError`: `not_found`, `not_configured`,
+  `unsupported_source`, `empty`, and `empty_response`.
+- **Fix**: direct handler exceptions and unknown daemon failures still return
+  `isError: true`, now with `structuredContent.error.message`.
+- **Fix**: daemon-routed `/api/summary` business rejections are mapped back to
+  the same non-error MCP status shape, keeping the direct and single-writer
+  paths aligned.
+- **Verification**: RED `tests/tools/generate_summary.test.ts` failed on the
+  old implementation because business statuses returned `isError: true` and
+  had no structured status. GREEN targeted tool, daemon contract, and summary
+  web tests passed 91 tests; Biome and `npm run typecheck:test` passed.
+
 ### TypeScript database statement wrapper without Proxy (2026-06-06, Codex)
 
 Closed a still-current P1 performance/observability finding in the TypeScript
