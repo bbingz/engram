@@ -7,6 +7,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### TypeScript empty-reindex session fact preservation (2026-06-06, Codex)
+
+Closed a TS/Swift parity gap in session snapshot persistence.
+
+- **Fix**: the TypeScript snapshot merge path now preserves an existing `cwd`
+  when a newer parse returns an empty cwd, and preserves the existing message
+  count breakdown when a newer parse returns zero total messages over a row
+  that already has messages.
+- **Defense in depth**: the lower-level `sessions` table conflict updates for
+  both legacy `upsertSession` and authoritative snapshot upsert now apply the
+  same preservation rule, so direct database writes cannot clobber known-good
+  session facts. Direct authoritative upsert also preserves the existing
+  `quality_score` under the same empty-reindex predicate, keeping the derived
+  score consistent with the preserved counts.
+- **Regression coverage**: added RED/GREEN tests for `mergeSessionSnapshot`,
+  legacy `Database.upsertSession`, and direct
+  `Database.upsertAuthoritativeSnapshot`, including the direct-upsert
+  `quality_score` consistency case raised during subagent review.
+- **Verification**: `npx vitest run tests/core/session-merge.test.ts
+  tests/core/db.test.ts` failed on the old behavior and passed after the fix;
+  `npx vitest run tests/core/session-writer.test.ts
+  tests/core/session-merge.test.ts tests/core/db.test.ts` passed 69 tests;
+  `npx biome check src/core/session-merge.ts src/core/db/session-repo.ts
+  tests/core/session-merge.test.ts tests/core/db.test.ts` passed.
+
 ### Claude Code project-dir long-path encoding parity (2026-06-06, Codex)
 
 Closed the remaining known Claude Code/Qoder project-move encoding gap.

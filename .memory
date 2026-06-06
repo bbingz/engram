@@ -1,5 +1,36 @@
 # Engram Local Memory
 
+## 2026-06-06 — TypeScript empty-reindex session fact preservation (Codex)
+
+Codex closed a TS/Swift parity gap where an empty or degraded re-parse could
+erase known-good session facts in the TypeScript reference layer.
+
+Change:
+- `src/core/session-merge.ts` now preserves the existing `cwd` when a newer
+  authoritative snapshot has an empty cwd.
+- The same merge path preserves the existing message-count breakdown when the
+  incoming snapshot reports zero total messages and the current snapshot already
+  has messages.
+- `src/core/db/session-repo.ts` applies the same preservation rule in both
+  `upsertSession` and `upsertAuthoritativeSnapshot` conflict updates, so direct
+  database writes cannot clobber those known-good facts.
+- Direct authoritative upsert also preserves the existing `quality_score` under
+  the same empty-reindex predicate, keeping the derived score aligned with the
+  preserved counts.
+
+Verification:
+- RED: `npx vitest run tests/core/session-merge.test.ts tests/core/db.test.ts`
+  failed against the old behavior with three expected cwd/count preservation
+  failures.
+- GREEN: the same command passed 57 tests after the fix.
+- Broader check: `npx vitest run tests/core/session-writer.test.ts
+  tests/core/session-merge.test.ts tests/core/db.test.ts` passed 69 tests.
+- Lint: `npx biome check src/core/session-merge.ts
+  src/core/db/session-repo.ts tests/core/session-merge.test.ts
+  tests/core/db.test.ts` passed.
+- Subagent review found the direct-upsert `quality_score` inconsistency; Codex
+  added a RED assertion and fixed it before commit.
+
 ## 2026-06-06 — Claude Code/Qoder project-dir encoding parity (Codex)
 
 Codex closed the remaining known project-move compatibility gap for Claude

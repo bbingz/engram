@@ -97,6 +97,40 @@ describe('mergeSessionSnapshot', () => {
     expect(result.merged.summary).toBe('old summary');
   });
 
+  it('preserves cwd and message counts when a newer parse is empty', () => {
+    const result = mergeSessionSnapshot(
+      makeSnapshot({
+        syncVersion: 1,
+        snapshotHash: 'hash-1',
+        cwd: '/repo/engram',
+        messageCount: 5,
+        userMessageCount: 2,
+        assistantMessageCount: 2,
+        toolMessageCount: 1,
+        systemMessageCount: 0,
+      }),
+      makeSnapshot({
+        syncVersion: 2,
+        snapshotHash: 'hash-2',
+        cwd: '',
+        messageCount: 0,
+        userMessageCount: 0,
+        assistantMessageCount: 0,
+        toolMessageCount: 0,
+        systemMessageCount: 0,
+      }),
+    );
+
+    expect(result.action).toBe('merge');
+    expect(result.merged.cwd).toBe('/repo/engram');
+    expect(result.merged.messageCount).toBe(5);
+    expect(result.merged.userMessageCount).toBe(2);
+    expect(result.merged.assistantMessageCount).toBe(2);
+    expect(result.merged.toolMessageCount).toBe(1);
+    expect(result.merged.systemMessageCount).toBe(0);
+    expect(result.changeSet.flags.has('embedding_text_changed')).toBe(false);
+  });
+
   it('accepts equal syncVersion with different snapshot hash as a content refresh', () => {
     const result = mergeSessionSnapshot(
       makeSnapshot({ syncVersion: 2, snapshotHash: 'hash-a', summary: 'old' }),

@@ -20,11 +20,29 @@ function coalesceSnapshot(
   current: AuthoritativeSessionSnapshot,
   incoming: AuthoritativeSessionSnapshot,
 ): AuthoritativeSessionSnapshot {
+  const preserveMessageCounts =
+    incoming.messageCount === 0 && current.messageCount > 0;
   return {
     ...incoming,
     endTime: incoming.endTime ?? current.endTime,
+    cwd: incoming.cwd === '' ? current.cwd : incoming.cwd,
     project: incoming.project ?? current.project,
     model: incoming.model ?? current.model,
+    messageCount: preserveMessageCounts
+      ? current.messageCount
+      : incoming.messageCount,
+    userMessageCount: preserveMessageCounts
+      ? current.userMessageCount
+      : incoming.userMessageCount,
+    assistantMessageCount: preserveMessageCounts
+      ? current.assistantMessageCount
+      : incoming.assistantMessageCount,
+    toolMessageCount: preserveMessageCounts
+      ? current.toolMessageCount
+      : incoming.toolMessageCount,
+    systemMessageCount: preserveMessageCounts
+      ? current.systemMessageCount
+      : incoming.systemMessageCount,
     summary: incoming.summary ?? current.summary,
     summaryMessageCount:
       incoming.summaryMessageCount ?? current.summaryMessageCount,

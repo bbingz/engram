@@ -201,15 +201,33 @@ export function upsertSession(
       @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin, @authoritativeNode, @sourceLocator, 0, '')
     ON CONFLICT(id) DO UPDATE SET
       source = excluded.source,
-      cwd = excluded.cwd,
+      cwd = CASE
+        WHEN excluded.cwd IS NULL OR excluded.cwd = '' THEN sessions.cwd
+        ELSE excluded.cwd
+      END,
       project = excluded.project,
       model = excluded.model,
       end_time = excluded.end_time,
-      message_count = excluded.message_count,
-      user_message_count = excluded.user_message_count,
-      assistant_message_count = excluded.assistant_message_count,
-      tool_message_count = excluded.tool_message_count,
-      system_message_count = excluded.system_message_count,
+      message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.message_count
+        ELSE excluded.message_count
+      END,
+      user_message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.user_message_count
+        ELSE excluded.user_message_count
+      END,
+      assistant_message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.assistant_message_count
+        ELSE excluded.assistant_message_count
+      END,
+      tool_message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.tool_message_count
+        ELSE excluded.tool_message_count
+      END,
+      system_message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.system_message_count
+        ELSE excluded.system_message_count
+      END,
       summary = excluded.summary,
       file_path = CASE WHEN sessions.file_path = '' AND excluded.file_path != '' THEN excluded.file_path ELSE sessions.file_path END,
       size_bytes = excluded.size_bytes,
@@ -585,14 +603,32 @@ export function upsertAuthoritativeSnapshot(
       source = excluded.source,
       start_time = excluded.start_time,
       end_time = excluded.end_time,
-      cwd = excluded.cwd,
+      cwd = CASE
+        WHEN excluded.cwd IS NULL OR excluded.cwd = '' THEN sessions.cwd
+        ELSE excluded.cwd
+      END,
       project = COALESCE(excluded.project, sessions.project),
       model = COALESCE(excluded.model, sessions.model),
-      message_count = excluded.message_count,
-      user_message_count = excluded.user_message_count,
-      assistant_message_count = excluded.assistant_message_count,
-      tool_message_count = excluded.tool_message_count,
-      system_message_count = excluded.system_message_count,
+      message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.message_count
+        ELSE excluded.message_count
+      END,
+      user_message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.user_message_count
+        ELSE excluded.user_message_count
+      END,
+      assistant_message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.assistant_message_count
+        ELSE excluded.assistant_message_count
+      END,
+      tool_message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.tool_message_count
+        ELSE excluded.tool_message_count
+      END,
+      system_message_count = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.system_message_count
+        ELSE excluded.system_message_count
+      END,
       summary = COALESCE(excluded.summary, sessions.summary),
       summary_message_count = COALESCE(excluded.summary_message_count, sessions.summary_message_count),
       size_bytes = excluded.size_bytes,
@@ -610,7 +646,10 @@ export function upsertAuthoritativeSnapshot(
       snapshot_hash = excluded.snapshot_hash,
       tier = excluded.tier,
       agent_role = excluded.agent_role,
-      quality_score = excluded.quality_score
+      quality_score = CASE
+        WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.quality_score
+        ELSE excluded.quality_score
+      END
   `).run({
     id: snapshot.id,
     source: snapshot.source,
