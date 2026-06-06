@@ -1,5 +1,28 @@
 # Engram Local Memory
 
+## 2026-06-06 — Gemini CLI adapter large sidecar/projects guard (Codex)
+
+Codex closed the remaining TypeScript Gemini CLI large-JSON read gap from the
+review backlog.
+
+Change:
+- `GeminiCliAdapter` now reads JSON through a size-aware helper for
+  `.engram.json` sidecars and `.gemini/projects.json`.
+- The helper applies the existing 10 MiB adapter cap before `readFile` and
+  `JSON.parse`.
+- Oversized sidecars are treated as absent so session metadata still loads but
+  parent/originator hints are ignored.
+- Oversized `projects.json` files resolve to an empty project map rather than
+  loading an unbounded file into memory.
+
+Verification:
+- RED: `npx vitest run tests/adapters/gemini-cli.test.ts` failed because the
+  old adapter accepted an 11 MiB sidecar originator and an 11 MiB
+  `projects.json` mapping.
+- GREEN: the same command passed 10 tests after the fix.
+- `npx biome check src/adapters/gemini-cli.ts
+  tests/adapters/gemini-cli.test.ts` passed.
+
 ## 2026-06-06 — Claude/Qoder grouped-dir reconcile for historical project moves (Codex)
 
 Codex added startup repair for already-orphaned Claude Code/Qoder grouped
