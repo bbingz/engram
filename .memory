@@ -1,5 +1,24 @@
 # Engram Local Memory
 
+## 2026-06-06 — CodeQL workflow Node 24 action cleanup (Codex)
+
+Codex closed the remaining CodeQL workflow Node 20 deprecation annotations
+seen on PR #54.
+
+Change:
+- `.github/workflows/codeql.yml` now uses `actions/checkout@v6`,
+  `actions/setup-node@v6`, and `github/codeql-action/init@v4` /
+  `github/codeql-action/analyze@v4`.
+- The Swift CodeQL job still sets up Node 24 explicitly and keeps
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"`.
+
+Verification:
+- `rg -n "actions/checkout@v4|actions/setup-node@v4|codeql-action/(init|analyze)@v3" .github/workflows/codeql.yml`
+  returned no matches.
+- `ruby -e "require 'yaml'; YAML.load_file('.github/workflows/codeql.yml'); puts 'yaml ok'"`
+  printed `yaml ok`.
+- `actionlint .github/workflows/codeql.yml` passed.
+
 ## 2026-06-06 — Codex project-move compatibility verification (Codex)
 
 Codex verified the Codex project-move surface after the Claude/Qoder directory

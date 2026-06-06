@@ -7,6 +7,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### CodeQL workflow Node 24 action cleanup (2026-06-06, Codex)
+
+Closed the remaining CodeQL workflow Node 20 deprecation annotations.
+
+- **Fix**: upgraded the CodeQL workflow from `actions/checkout@v4`,
+  `actions/setup-node@v4`, and `github/codeql-action/*@v3` to the current
+  `@v6` / CodeQL `@v4` actions while keeping explicit Node 24 setup for the
+  Swift CodeQL job.
+- **Verification**: `rg` found no remaining old CodeQL workflow action
+  references; Ruby parsed `.github/workflows/codeql.yml`; `actionlint
+  .github/workflows/codeql.yml` passed.
+
 ### Codex project-move compatibility verification (2026-06-06, Codex)
 
 Verified the Codex project-move surface after the Claude/Qoder directory
