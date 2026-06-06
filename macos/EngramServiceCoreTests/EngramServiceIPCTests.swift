@@ -1910,6 +1910,12 @@ final class EngramServiceIPCTests: XCTestCase {
                 sql: "SELECT hidden_at FROM sessions WHERE id = 's2'"
             )
             XCTAssertNotNil(s2?["hidden_at"] as String?)
+
+            let localHidden = try String.fetchOne(
+                db,
+                sql: "SELECT hidden_at FROM session_local_state WHERE session_id = 's1'"
+            )
+            XCTAssertNil(localHidden)
         }
 
         try await client.setFavorite(sessionId: "s1", favorite: false)
@@ -1919,6 +1925,64 @@ final class EngramServiceIPCTests: XCTestCase {
                 sql: "SELECT COUNT(*) FROM favorites WHERE session_id = 's1'"
             )
             XCTAssertEqual(favorite, 0)
+        }
+    }
+
+    func testSetSessionHiddenMirrorsLocalState() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        try await client.setSessionHidden(sessionId: "s1", hidden: true)
+
+        try await queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT s.hidden_at AS session_hidden_at, ls.hidden_at AS local_hidden_at
+                    FROM sessions s
+                    LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                    WHERE s.id = 's1'
+                """
+            )
+            let sessionHiddenAt = row?["session_hidden_at"] as String?
+            let localHiddenAt = row?["local_hidden_at"] as String?
+            XCTAssertNotNil(sessionHiddenAt)
+            XCTAssertEqual(localHiddenAt, sessionHiddenAt)
+        }
+    }
+
+    func testSetSessionHiddenRejectsMissingSession() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        do {
+            try await client.setSessionHidden(sessionId: "missing-session", hidden: true)
+            XCTFail("Expected missing session to fail")
+        } catch let error as EngramServiceError {
+            guard case .commandFailed(let name, let message, _, let details) = error else {
+                return XCTFail("Expected commandFailed, got \(error)")
+            }
+            XCTAssertEqual(name, "SessionNotFound")
+            XCTAssertEqual(message, "session-not-found")
+            XCTAssertEqual(details?["session_id"], .string("missing-session"))
         }
     }
 
@@ -2390,6 +2454,8 @@ private func seedSearchFixture(at path: String) throws {
             );
             CREATE TABLE session_local_state (
               session_id TEXT PRIMARY KEY,
+              hidden_at TEXT,
+              custom_name TEXT,
               local_readable_path TEXT
             );
             CREATE TABLE migration_log (

@@ -1,5 +1,42 @@
 # Engram Local Memory
 
+## 2026-06-06 — Swift hide_session not-found and local-state parity (Codex)
+
+Codex closed the remaining Swift-side `hide_session` silent-success gap.
+
+Change:
+- `EngramServiceCommandHandler.setSessionHidden` now uses the affected-row
+  count from the `sessions.hidden_at` update.
+- Missing session ids return a structured `EngramServiceError.commandFailed`
+  with name `SessionNotFound`, message `session-not-found`, retry policy
+  `never`, and the requested `session_id` in details.
+- Successful hide/unhide operations mirror the actual `sessions.hidden_at`
+  value into `session_local_state.hidden_at`.
+- The command guards minimal and older databases by creating
+  `session_local_state` when absent and adding missing `hidden_at`,
+  `custom_name`, or `local_readable_path` columns before the mirror write.
+- Swift MCP already routes `hide_session` through the service socket; its
+  executable contract now verifies service `SessionNotFound` is propagated as
+  an MCP error result.
+
+Verification:
+- RED: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramServiceCore -destination 'platform=macOS'
+  CODE_SIGNING_ALLOWED=NO -derivedDataPath
+  /tmp/engram-dd-hide-session-red
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testSetSessionHiddenRejectsMissingSession`
+  failed before the service fix with `Expected missing session to fail`.
+- GREEN targeted service tests passed 3 tests:
+  `testSetSessionHiddenRejectsMissingSession`,
+  `testSetSessionHiddenMirrorsLocalState`, and
+  `testAppSessionMetadataMutationsAreOwnedByServiceWriterGate`.
+- GREEN targeted MCP tests passed 2 tests:
+  `testHideSessionRoutesThroughServiceSocket` and
+  `testHideSessionPropagatesServiceNotFound`.
+- Full `EngramServiceCore` passed 129 tests.
+- Full `EngramMCPTests` passed 75 tests.
+- `git diff --check` passed.
+
 ## 2026-06-06 — Gemini CLI adapter large sidecar/projects guard (Codex)
 
 Codex closed the remaining TypeScript Gemini CLI large-JSON read gap from the
