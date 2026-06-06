@@ -1,5 +1,30 @@
 # Engram Local Memory
 
+## 2026-06-06 — TypeScript migration_log state/start-time index parity (Codex)
+
+Codex closed a still-current TS/Swift schema parity gap from the review
+backlog.
+
+Change:
+- `src/core/db/migration.ts` now creates
+  `idx_migration_log_state_started` on `migration_log(state, started_at)`.
+- This matches the Swift schema in
+  `macos/EngramCoreWrite/Database/EngramMigrations.swift`, including its
+  repair migration for existing databases.
+- The index supports pending/stale migration scans that filter by state and
+  inspect start time, instead of relying on separate single-column indexes.
+
+Verification:
+- RED: `npm test -- tests/core/db-migration.test.ts` failed with
+  `expected [ Array(54) ] to include 'idx_migration_log_state_started'`.
+- GREEN: the same command passed 16 tests after the migration fix.
+- Old-DB smoke: precreated a complete `migration_log` table without the
+  compound index, opened it through `Database`, and observed
+  `CREATE INDEX idx_migration_log_state_started ON migration_log(state,
+  started_at)` in `sqlite_master`.
+- Fixture determinism: regenerated `test-fixtures/test-index.sqlite` and
+  inspected it to confirm the same index exists in the committed fixture DB.
+
 ## 2026-06-06 — Swift export directory parity with TypeScript (Codex)
 
 Codex closed the remaining Swift-side export directory drift from the review

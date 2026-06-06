@@ -404,6 +404,20 @@ describe('Database migration', () => {
     db.close();
   });
 
+  it('creates the migration_log state/start-time index for pending scans', () => {
+    const dbPath = makeTmpDb();
+    const db = new Database(dbPath);
+    const indexes = db.raw
+      .prepare("SELECT name FROM sqlite_master WHERE type='index'")
+      .all() as { name: string }[];
+
+    expect(indexes.map((i) => i.name)).toContain(
+      'idx_migration_log_state_started',
+    );
+
+    db.close();
+  });
+
   it('creates consistent metrics schema and retention index', () => {
     const dbPath = makeTmpDb();
     const db = new Database(dbPath);
