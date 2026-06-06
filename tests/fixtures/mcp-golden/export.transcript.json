@@ -2,11 +2,11 @@
   "content": [
     {
       "type": "text",
-      "text": "{\n  \"outputPath\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/export-home/codex-exports/codex-mcp-tran-2026-01-15.json\",\n  \"format\": \"json\",\n  \"messageCount\": 3\n}"
+      "text": "{\n  \"outputPath\": \"/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/export-home/.engram/exports/codex-mcp-tran-2026-01-15.json\",\n  \"format\": \"json\",\n  \"messageCount\": 3\n}"
     }
   ],
   "structuredContent": {
-    "outputPath": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/export-home/codex-exports/codex-mcp-tran-2026-01-15.json",
+    "outputPath": "/Users/bing/-Code-/engram/tests/fixtures/mcp-runtime/export-home/.engram/exports/codex-mcp-tran-2026-01-15.json",
     "format": "json",
     "messageCount": 3
   }

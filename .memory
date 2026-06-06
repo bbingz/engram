@@ -1,5 +1,44 @@
 # Engram Local Memory
 
+## 2026-06-06 — Swift export directory parity with TypeScript (Codex)
+
+Codex closed the remaining Swift-side export directory drift from the review
+backlog.
+
+Change:
+- `TranscriptExportService.outputDirectory(in:)` now writes exports under
+  `~/.engram/exports`, matching `src/tools/export.ts`.
+- Swift MCP `tools/list` now advertises `~/.engram/exports/` for `export`.
+- MCP executable golden output paths and service/MCP fail-closed tests were
+  updated to the same directory.
+- Existing symlink defenses now assert the new `.engram/exports` directory and
+  the final leaf output path.
+
+Review:
+- Subagent implementation review returned APPROVED with no blocking findings.
+
+Verification:
+- RED: targeted service IPC export tests failed against the old implementation
+  because the service returned `~/codex-exports/...` while tests expected
+  `~/.engram/exports/...`.
+- GREEN service: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramServiceCore -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -derivedDataPath /tmp/engram-dd-export-dir-green-service-2
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionWritesThroughServiceCommand
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionFilenameFallsBackWhenStartTimeIsEmpty
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionUsesRequestedHomeInsteadOfServiceHome
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionRejectsExportsDirectorySymlink
+  -only-testing:EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionRejectsLeafOutputSymlink`
+  passed 5 tests.
+- GREEN MCP: `xcodebuild test -project macos/Engram.xcodeproj -scheme
+  EngramMCPTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -derivedDataPath /tmp/engram-dd-export-dir-green-mcp-2
+  -only-testing:EngramMCPTests/EngramMCPExecutableTests/testExportMatchesGolden
+  -only-testing:EngramMCPTests/EngramMCPExecutableTests/testExportDescriptionAdvertisesEngramExportsDirectory
+  -only-testing:EngramMCPTests/ServiceUnavailableMutatingToolTests/testExportFailsClosedWithoutServiceSocket`
+  passed 3 tests.
+- `git diff --check` passed.
+
 ## 2026-06-06 — Swift hide_session not-found and local-state parity (Codex)
 
 Codex closed the remaining Swift-side `hide_session` silent-success gap.

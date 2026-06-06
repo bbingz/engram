@@ -207,7 +207,9 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: temp) }
         let socketPath = temp.appendingPathComponent("missing-service.sock").path
         let exportHome = temp.appendingPathComponent("home", isDirectory: true)
-        let exportDir = exportHome.appendingPathComponent("codex-exports", isDirectory: true)
+        let exportDir = exportHome
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent("exports", isDirectory: true)
 
         let result = try callTool(
             name: "export",

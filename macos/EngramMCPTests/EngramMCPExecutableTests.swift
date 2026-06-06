@@ -94,6 +94,24 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(search["description"]?.stringValue?.localizedCaseInsensitiveContains("semantic") ?? true)
     }
 
+    func testExportDescriptionAdvertisesEngramExportsDirectory() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"],
+              let export = tools.first(where: { $0["name"]?.stringValue == "export" })
+        else {
+            XCTFail("Expected export tool in tools/list")
+            return
+        }
+        let description = export["description"]?.stringValue ?? ""
+        XCTAssertTrue(description.contains("~/.engram/exports/"), description)
+        XCTAssertFalse(description.contains("~/codex-exports"), description)
+    }
+
     func testMCPDatabaseRetriesTransientMissingFTSTables() throws {
         let source = try String(contentsOfFile: sourcePath("EngramMCP/Core/MCPDatabase.swift"), encoding: .utf8)
 
@@ -982,7 +1000,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(atPath: homeDir) }
         let canonicalHomeDir = fixturePath("mcp-runtime/export-home")
-        let exportDir = "\(homeDir)/codex-exports"
+        let exportDir = "\(homeDir)/.engram/exports"
         try? FileManager.default.removeItem(atPath: exportDir)
         let service = try makeReachableServiceSocketServer(exportHomeDir: homeDir)
         try service.start()
@@ -1747,7 +1765,7 @@ final class EngramMCPExecutableTests: XCTestCase {
                 let homeDir = exportHomeDir ?? self.fixturePath("mcp-runtime/export-home")
                 return try request.success(
                     .object([
-                        "outputPath": .string("\(homeDir)/codex-exports/codex-mcp-tran-2026-01-15.json"),
+                        "outputPath": .string("\(homeDir)/.engram/exports/codex-mcp-tran-2026-01-15.json"),
                         "format": .string("json"),
                         "messageCount": .int(3),
                     ])
