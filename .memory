@@ -1,5 +1,57 @@
 # Engram Local Memory
 
+## 2026-06-06 — Claude/Qoder grouped-dir reconcile for historical project moves (Codex)
+
+Codex added startup repair for already-orphaned Claude Code/Qoder grouped
+project directories left behind by earlier runs that used the incomplete
+directory encoder.
+
+Change:
+- Swift startup maintenance calls `GroupedDirReconcile.run(roots:
+  SessionSources.roots())` after insight reconciliation and before file-path
+  backfill. It emits a `db_maintenance` event with scanned/planned/applied,
+  collision, ambiguous, and issue counts when there is work or a warning.
+- The reconcile scanner is intentionally scoped to `.claude/projects` and
+  `.qoder/projects`. It extracts structured `cwd` values from JSON/JSONL
+  session files and computes the corrected Claude/Qoder directory name.
+- Repair uses no-overwrite copy/delete semantics rather than blind rename, so
+  existing target directories become collisions and the source directory is
+  left in place.
+- Safety guards skip child symlinks, nested symlink evidence, ambiguous
+  directories, missing roots, already-correct directories, target collisions,
+  and session files above the 50 MiB structured-cwd read cap.
+- A TypeScript reference helper in `src/core/project-move/grouped-dir-reconcile.ts`
+  mirrors the same behavior for parity tests and future migrations.
+
+Review:
+- Plan review initially returned CHANGES_REQUESTED for no-overwrite races,
+  symlink coverage, startup ordering, Qoder parity, and wording mismatches.
+  The plan/spec were patched before implementation.
+- Implementation review initially returned CHANGES_REQUESTED because the new
+  scanner did not apply the existing 50 MiB structured-cwd read cap. Codex
+  added Swift/TS cap tests and implementation; the follow-up review returned
+  PASS.
+
+Verification:
+- RED oversized-file tests failed before the cap fix in both TS and Swift.
+- `npx vitest run tests/core/project-move/grouped-dir-reconcile.test.ts -t
+  "skips oversized files"` passed.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/SessionSourcesTests/testGroupedDirReconcileSkipsOversizedFiles
+  CODE_SIGNING_ALLOWED=NO` passed.
+- `npx biome check src/core/project-move/grouped-dir-reconcile.ts
+  tests/core/project-move/grouped-dir-reconcile.test.ts` passed.
+- `npx vitest run tests/core/project-move/grouped-dir-reconcile.test.ts
+  tests/core/project-move/encode-cc.test.ts
+  tests/core/project-move/orchestrator.integration.test.ts` passed 49 tests.
+- `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS' -only-testing:EngramCoreTests/SessionSourcesTests
+  -only-testing:EngramCoreTests/StartupBackfillTests
+  -only-testing:EngramCoreTests/OrchestratorTests CODE_SIGNING_ALLOWED=NO`
+  passed 78 tests.
+- `git diff --check` passed.
+
 ## 2026-06-06 — CodeQL workflow Node 24 action cleanup (Codex)
 
 Codex closed the remaining CodeQL workflow Node 20 deprecation annotations

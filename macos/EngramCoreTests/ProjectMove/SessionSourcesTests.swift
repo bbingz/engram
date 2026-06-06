@@ -425,4 +425,218 @@ final class SessionSourcesTests: XCTestCase {
             []
         )
     }
+
+    // MARK: - GroupedDirReconcile
+
+    func testGroupedDirReconcileAppliesMisencodedClaudeDirectory() throws {
+        let cwd = "/Users/bing/-Code-/CCTV_Admin"
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let stale = root.appendingPathComponent("-Users-bing--Code--CCTV_Admin", isDirectory: true)
+        let target = root.appendingPathComponent("-Users-bing--Code--CCTV-Admin", isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: stale)
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)])
+
+        XCTAssertEqual(result.scannedDirs, 1)
+        XCTAssertEqual(result.plannedRenames, 1)
+        XCTAssertEqual(result.appliedRenames, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("session.jsonl").path))
+    }
+
+    func testGroupedDirReconcileAppliesMisencodedQoderDirectory() throws {
+        let cwd = "/Users/bing/-Code-/Service_Asset"
+        let root = try groupedReconcileRoot(id: .qoder)
+        let stale = root.appendingPathComponent("-Users-bing--Code--Service_Asset", isDirectory: true)
+        let target = root.appendingPathComponent("-Users-bing--Code--Service-Asset", isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: stale)
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .qoder, path: root.path)])
+
+        XCTAssertEqual(result.plannedRenames, 1)
+        XCTAssertEqual(result.appliedRenames, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("session.jsonl").path))
+    }
+
+    func testGroupedDirReconcileDryRunDoesNotRenameDirectory() throws {
+        let cwd = "/Users/bing/-Code-/my proj"
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let stale = root.appendingPathComponent("-Users-bing--Code--my proj", isDirectory: true)
+        let target = root.appendingPathComponent("-Users-bing--Code--my-proj", isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: stale)
+
+        let result = GroupedDirReconcile.run(
+            roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)],
+            dryRun: true
+        )
+
+        XCTAssertEqual(result.plannedRenames, 1)
+        XCTAssertEqual(result.appliedRenames, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    func testGroupedDirReconcileSkipsTargetCollision() throws {
+        let cwd = "/Users/bing/-Code-/CCTV_Admin"
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let stale = root.appendingPathComponent("-Users-bing--Code--CCTV_Admin", isDirectory: true)
+        let target = root.appendingPathComponent("-Users-bing--Code--CCTV-Admin", isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: stale)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)])
+
+        XCTAssertEqual(result.collisions, 1)
+        XCTAssertEqual(result.appliedRenames, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    func testGroupedDirReconcileCountsCollisionWhenTargetAppearsAfterDryRunPlanning() throws {
+        let cwd = "/Users/bing/-Code-/CCTV_Admin"
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let stale = root.appendingPathComponent("-Users-bing--Code--CCTV_Admin", isDirectory: true)
+        let target = root.appendingPathComponent("-Users-bing--Code--CCTV-Admin", isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: stale)
+
+        let dryRun = GroupedDirReconcile.run(
+            roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)],
+            dryRun: true
+        )
+        XCTAssertEqual(dryRun.plannedRenames, 1)
+
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)])
+
+        XCTAssertEqual(result.collisions, 1)
+        XCTAssertEqual(result.appliedRenames, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    func testGroupedDirReconcileSkipsAmbiguousDirectory() throws {
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let stale = root.appendingPathComponent("-Users-bing--Code--mixed", isDirectory: true)
+        try writeGroupedReconcileSession(
+            lines: [
+                #"{"cwd":"/Users/bing/-Code-/CCTV_Admin"}"#,
+                #"{"payload":{"cwd":"/Users/bing/-Code-/Service_Asset"}}"#,
+            ],
+            under: stale
+        )
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)])
+
+        XCTAssertEqual(result.ambiguous, 1)
+        XCTAssertEqual(result.plannedRenames, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    func testGroupedDirReconcileSkipsAlreadyCorrectDirectory() throws {
+        let cwd = "/Users/bing/-Code-/CCTV_Admin"
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let correct = root.appendingPathComponent(ClaudeCodeProjectDir.encode(cwd), isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: correct)
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)])
+
+        XCTAssertEqual(result.scannedDirs, 1)
+        XCTAssertEqual(result.plannedRenames, 0)
+        XCTAssertEqual(result.appliedRenames, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: correct.path))
+    }
+
+    func testGroupedDirReconcileSkipsImmediateChildSymlink() throws {
+        let cwd = "/Users/bing/-Code-/CCTV_Admin"
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let real = tmpRoot.appendingPathComponent("real-child", isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: real)
+        do {
+            try FileManager.default.createSymbolicLink(
+                at: root.appendingPathComponent("-Users-bing--Code--CCTV_Admin"),
+                withDestinationURL: real
+            )
+        } catch {
+            throw XCTSkip("symlink permission denied")
+        }
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)])
+
+        XCTAssertEqual(result.scannedDirs, 0)
+        XCTAssertEqual(result.plannedRenames, 0)
+    }
+
+    func testGroupedDirReconcileDoesNotUseNestedSymlinkForCwdEvidence() throws {
+        let cwd = "/Users/bing/-Code-/CCTV_Admin"
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let stale = root.appendingPathComponent("-Users-bing--Code--CCTV_Admin", isDirectory: true)
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        let real = tmpRoot.appendingPathComponent("real-nested", isDirectory: true)
+        try writeGroupedReconcileSession(cwd: cwd, under: real)
+        do {
+            try FileManager.default.createSymbolicLink(
+                at: stale.appendingPathComponent("nested"),
+                withDestinationURL: real
+            )
+        } catch {
+            throw XCTSkip("symlink permission denied")
+        }
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)])
+
+        XCTAssertEqual(result.scannedDirs, 1)
+        XCTAssertEqual(result.plannedRenames, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    func testGroupedDirReconcileSkipsOversizedFiles() throws {
+        let cwd = "/Users/bing/-Code-/CCTV_Admin"
+        let root = try groupedReconcileRoot(id: .claudeCode)
+        let stale = root.appendingPathComponent("-Users-bing--Code--CCTV_Admin", isDirectory: true)
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        let session = stale.appendingPathComponent("session.jsonl")
+        try #"{"cwd":"\#(cwd)"}"#
+            .appending("\n")
+            .write(to: session, atomically: true, encoding: .utf8)
+        let handle = try FileHandle(forWritingTo: session)
+        try handle.truncate(atOffset: 50 * 1024 * 1024 + 1)
+        try handle.close()
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: root.path)])
+
+        XCTAssertEqual(result.issues, 1)
+        XCTAssertEqual(result.plannedRenames, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    func testGroupedDirReconcileMissingRootIsNoop() {
+        let missing = tmpRoot.appendingPathComponent("missing", isDirectory: true)
+
+        let result = GroupedDirReconcile.run(roots: [groupedReconcileSourceRoot(id: .claudeCode, path: missing.path)])
+
+        XCTAssertEqual(result, GroupedDirReconcileResult())
+    }
+
+    private func groupedReconcileRoot(id: SourceId) throws -> URL {
+        let root = tmpRoot.appendingPathComponent("grouped-\(id.rawValue)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func groupedReconcileSourceRoot(id: SourceId, path: String) -> SourceRoot {
+        SourceRoot(id: id, path: path, encodeProjectDir: { cwd in ClaudeCodeProjectDir.encode(cwd) })
+    }
+
+    private func writeGroupedReconcileSession(cwd: String, under dir: URL) throws {
+        try writeGroupedReconcileSession(lines: [#"{"cwd":"\#(cwd)"}"#], under: dir)
+    }
+
+    private func writeGroupedReconcileSession(lines: [String], under dir: URL) throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try (lines.joined(separator: "\n") + "\n").write(
+            to: dir.appendingPathComponent("session.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
 }

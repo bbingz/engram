@@ -459,6 +459,7 @@ final class StartupBackfillTests: XCTestCase {
                 "optimizeFts",
                 "vacuumIfNeeded",
                 "reconcileInsights",
+                "reconcileGroupedSourceDirs",
                 "backfillFilePaths",
                 "downgradeSubagentTiers",
                 "backfillParentLinks",
@@ -486,6 +487,18 @@ final class StartupBackfillTests: XCTestCase {
                         "action": .string("reconcile_insights"),
                         "resetEmbedding": .int(6),
                         "orphanedVector": .int(7)
+                    ]
+                ),
+                StartupBackfillEvent(
+                    event: "db_maintenance",
+                    payload: [
+                        "action": .string("reconcile_grouped_dirs"),
+                        "scanned": .int(30),
+                        "planned": .int(31),
+                        "applied": .int(32),
+                        "collisions": .int(33),
+                        "ambiguous": .int(34),
+                        "issues": .int(35)
                     ]
                 ),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("file_paths"), "count": .int(8)]),
@@ -1070,6 +1083,18 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
     func reconcileInsights() throws -> StartupInsightReconcileResult {
         callOrder.append("reconcileInsights")
         return StartupInsightReconcileResult(resetEmbedding: 6, orphanedVector: 7)
+    }
+
+    func reconcileGroupedSourceDirs() throws -> GroupedDirReconcileResult {
+        callOrder.append("reconcileGroupedSourceDirs")
+        return GroupedDirReconcileResult(
+            scannedDirs: 30,
+            plannedRenames: 31,
+            appliedRenames: 32,
+            collisions: 33,
+            ambiguous: 34,
+            issues: 35
+        )
     }
 
     func backfillFilePaths() throws -> Int {

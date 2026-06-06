@@ -7,6 +7,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Claude/Qoder grouped-dir reconcile for historical project moves (2026-06-06, Codex)
+
+Added startup repair for already-orphaned Claude Code/Qoder grouped project
+directories left behind by the previous incomplete directory encoder.
+
+- **Fix**: Swift startup maintenance now scans only `.claude/projects` and
+  `.qoder/projects`, extracts structured `cwd` values from JSON/JSONL session
+  files, computes the corrected Claude/Qoder directory name, and repairs a
+  stale grouped directory with no-overwrite copy/delete semantics.
+- **Parity**: added the same reconcile helper to the TypeScript reference
+  implementation for future cross-runtime comparisons.
+- **Safety**: the repair skips child symlinks, nested symlink evidence,
+  ambiguous directories, missing roots, already-correct directories, target
+  collisions, and session files above the 50 MiB structured-cwd read cap.
+- **Review**: subagent plan review initially requested stronger no-overwrite,
+  symlink, startup-order, and Qoder parity coverage; subagent implementation
+  review then requested the 50 MiB scan cap. Both review gates passed after
+  the fixes.
+- **Verification**: `npx vitest run
+  tests/core/project-move/grouped-dir-reconcile.test.ts
+  tests/core/project-move/encode-cc.test.ts
+  tests/core/project-move/orchestrator.integration.test.ts` passed 49 tests;
+  `npx biome check src/core/project-move/grouped-dir-reconcile.ts
+  tests/core/project-move/grouped-dir-reconcile.test.ts` passed; selected Swift
+  `SessionSourcesTests`, `StartupBackfillTests`, and `OrchestratorTests`
+  passed 78 tests; `git diff --check` passed.
+
 ### CodeQL workflow Node 24 action cleanup (2026-06-06, Codex)
 
 Closed the remaining CodeQL workflow Node 20 deprecation annotations.
