@@ -394,6 +394,10 @@ final class EngramServiceIPCTests: XCTestCase {
             testSource.contains("FileManager.default.homeDirectoryForCurrentUser"),
             "project migration pipeline error test must not create paths under the real HOME"
         )
+        XCTAssertTrue(testSource.contains("let missingSrc ="))
+        XCTAssertTrue(testSource.contains("let missingDst ="))
+        XCTAssertTrue(testSource.contains("defer { try? FileManager.default.removeItem(at: missingSrc) }"))
+        XCTAssertTrue(testSource.contains("defer { try? FileManager.default.removeItem(at: missingDst) }"))
     }
 
     func testUnixSocketServiceServerLifecycleUsesTrackedSendableState() throws {
@@ -2237,11 +2241,15 @@ final class EngramServiceIPCTests: XCTestCase {
 
         // 1b. In-home but absent src reaches the pipeline and surfaces a real
         //     OrchestratorError (not UnsupportedNativeCommand, not confinement).
+        let missingSrc = home.appendingPathComponent(".engram-test-missing-src-\(UUID().uuidString)")
+        let missingDst = home.appendingPathComponent(".engram-test-missing-dst-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: missingSrc) }
+        defer { try? FileManager.default.removeItem(at: missingDst) }
         do {
             _ = try await client.projectMove(
                 EngramServiceProjectMoveRequest(
-                    src: home.appendingPathComponent(".engram-test-missing-src-\(UUID().uuidString)").path,
-                    dst: home.appendingPathComponent(".engram-test-missing-dst-\(UUID().uuidString)").path,
+                    src: missingSrc.path,
+                    dst: missingDst.path,
                     dryRun: false,
                     force: false,
                     auditNote: "fixture",

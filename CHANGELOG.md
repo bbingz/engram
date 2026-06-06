@@ -7,6 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Swift service IPC project-move test cleanup (2026-06-06, Codex)
+
+Closed a still-current Round 5 test-isolation finding.
+
+- **Fix**: `EngramServiceIPCTests.testProjectMigrationCommandsSurfacePipelineErrors`
+  now stores the scoped-home missing project paths in local URL values and
+  registers `defer` cleanup for both paths before exercising the native
+  project-move pipeline.
+- **Why**: the test already runs under a scoped HOME, but assertion failures or
+  partial pipeline execution could still leave `.engram-test-missing-*`
+  artifacts in that scoped home. The cleanup keeps the test hermetic even on
+  failure paths.
+- **Verification**: RED source-text guard failed because the missing-path locals
+  and cleanup defers were absent; after the fix, targeted
+  `EngramServiceCoreTests/EngramServiceIPCTests` checks for the source guard and
+  real IPC pipeline error path passed 2 tests.
+
 ### TypeScript migration_log state/start-time index parity (2026-06-06, Codex)
 
 Closed a still-current TS/Swift schema parity gap from the review backlog.

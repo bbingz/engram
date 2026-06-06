@@ -1,5 +1,28 @@
 # Engram Local Memory
 
+## 2026-06-06 — Swift service IPC project-move test cleanup (Codex)
+
+Codex closed a still-current Round 5 test-isolation finding.
+
+Change:
+- `macos/EngramServiceCoreTests/EngramServiceIPCTests.swift` now binds the
+  scoped-home missing project-move source and destination paths to local URL
+  values.
+- The test registers `defer` cleanup for both missing paths before invoking the
+  native project-move pipeline.
+- The existing source-text guard now also asserts those locals and cleanup
+  defers remain in place.
+
+Verification:
+- RED: targeted `xcodebuild test` for
+  `EngramServiceCoreTests/EngramServiceIPCTests/testProjectMigrationPipelineErrorTestUsesScopedHome`
+  failed with four `XCTAssertTrue failed` assertions for the absent locals and
+  cleanup defers.
+- GREEN: targeted `xcodebuild test` for
+  `testProjectMigrationPipelineErrorTestUsesScopedHome` and
+  `testProjectMigrationCommandsSurfacePipelineErrors` passed 2 tests after the
+  fix.
+
 ## 2026-06-06 — TypeScript migration_log state/start-time index parity (Codex)
 
 Codex closed a still-current TS/Swift schema parity gap from the review
