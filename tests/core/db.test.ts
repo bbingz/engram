@@ -441,6 +441,41 @@ describe('Database', () => {
     const stmt = db.raw.prepare('SELECT 1 AS value');
 
     expect(stmt.get).toBe(stmt.get);
+    expect(Object.hasOwn(stmt, 'get')).toBe(true);
+    expect(Object.hasOwn(stmt, 'run')).toBe(true);
+    expect(Object.hasOwn(stmt, 'all')).toBe(true);
+  });
+
+  it('keeps statement chain methods instrumented', () => {
+    const histogram = vi.fn();
+    db.setMetrics({
+      histogram,
+    } as any);
+
+    const stmt = db.raw.prepare('SELECT 1 AS value').pluck();
+
+    expect(stmt.get()).toBe(1);
+    expect(histogram).toHaveBeenCalledWith('db.query_ms', expect.any(Number), {
+      method: 'get',
+    });
+  });
+
+  it.each([
+    ['expand', () => db.raw.prepare('SELECT 1 AS value').expand()],
+    ['raw', () => db.raw.prepare('SELECT 1 AS value').raw()],
+    ['safeIntegers', () => db.raw.prepare('SELECT 1 AS value').safeIntegers()],
+    ['bind', () => db.raw.prepare('SELECT ? AS value').bind(1)],
+  ])('keeps %s chain calls instrumented', (_name, prepareStatement) => {
+    const histogram = vi.fn();
+    db.setMetrics({
+      histogram,
+    } as any);
+
+    prepareStatement().get();
+
+    expect(histogram).toHaveBeenCalledWith('db.query_ms', expect.any(Number), {
+      method: 'get',
+    });
   });
 
   it('adds authoritative snapshot columns to sessions', () => {

@@ -7,6 +7,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### TypeScript database statement wrapper without Proxy (2026-06-06, Codex)
+
+Closed a still-current P1 performance/observability finding in the TypeScript
+reference database facade.
+
+- **Fix**: `Database.wrapStatement` no longer returns a `Proxy`. It now creates
+  one pre-bound wrapper object per prepared statement, with stable own
+  `run/get/all/iterate` methods and chain methods (`pluck`, `expand`, `raw`,
+  `bind`, `safeIntegers`) that return the wrapper instead of the raw statement.
+- **Why**: the Proxy path still allocated/bound dynamically through a get trap
+  and chain methods such as `pluck()` returned the original statement, bypassing
+  query metrics on subsequent `get/all/run` calls.
+- **Verification**: RED `tests/core/db.test.ts` checks failed because the
+  instrumented methods were not own pre-bound wrappers and `pluck().get()` did
+  not record `db.query_ms`. After the fix, targeted RED tests passed, full
+  `tests/core/db.test.ts` passed 55 tests, `npm run typecheck:test` passed, and
+  `git diff --check` passed.
+
 ### Swift service IPC project-move test cleanup (2026-06-06, Codex)
 
 Closed a still-current Round 5 test-isolation finding.

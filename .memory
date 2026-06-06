@@ -1,5 +1,33 @@
 # Engram Local Memory
 
+## 2026-06-06 — TypeScript database statement wrapper without Proxy (Codex)
+
+Codex closed a still-current P1 TypeScript database instrumentation finding.
+
+Change:
+- `src/core/db/database.ts` replaces the `Proxy`-based prepared-statement
+  instrumentation with a pre-bound wrapper object.
+- The wrapper exposes stable own `run`, `get`, `all`, and `iterate` methods
+  that record `db.query_ms`.
+- Statement chain methods (`pluck`, `expand`, `raw`, `bind`, `safeIntegers`)
+  call the underlying statement and return the wrapper, so chained calls keep
+  metrics instrumentation instead of falling back to the raw statement.
+
+Verification:
+- RED: `npx vitest run tests/core/db.test.ts -t "instrumented statement"`
+  failed because `get/run/all` were not own pre-bound wrappers.
+- RED: `npx vitest run tests/core/db.test.ts -t "chain methods"` failed
+  because `pluck().get()` recorded no histogram calls.
+- GREEN: targeted RED tests passed after the fix.
+- GREEN: `npx vitest run tests/core/db.test.ts` passed 55 tests.
+- GREEN: `npm run typecheck:test` passed.
+- GREEN: `git diff --check` passed.
+
+Residual risk:
+- This intentionally keeps instrumentation scoped to `Database.setMetrics()`
+  prepared statements. Existing direct use of `db.raw` before metrics setup is
+  unchanged.
+
 ## 2026-06-06 — Swift service IPC project-move test cleanup (Codex)
 
 Codex closed a still-current Round 5 test-isolation finding.
