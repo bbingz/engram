@@ -1,5 +1,35 @@
 # Engram Local Memory
 
+## 2026-06-06 — TypeScript generate_summary MCP status semantics (Codex)
+
+Codex closed the still-current `generate_summary` MCP `isError` misuse
+finding.
+
+Change:
+- `src/tools/generate_summary.ts` now returns structured non-error status
+  results for deterministic business outcomes:
+  `not_found`, `not_configured`, `unsupported_source`, `empty`, and
+  `empty_response`.
+- Real execution failures, including transcript read failures and AI client
+  exceptions, still return `isError: true`, now with
+  `structuredContent.error.message`.
+- `src/index.ts` maps daemon-routed `/api/summary` business rejections back to
+  the same non-error status shape instead of reporting them as MCP errors.
+- `tests/tools/generate_summary.test.ts` covers direct handler status results,
+  retained error behavior, and daemon HTTP error mapping.
+
+Verification:
+- RED: `npx vitest run tests/tools/generate_summary.test.ts` failed 8 tests on
+  the old implementation because business statuses returned `isError: true`,
+  read errors lacked `structuredContent`, and the daemon mapper did not exist.
+- GREEN: `npx vitest run tests/tools/generate_summary.test.ts` passed 8 tests.
+- GREEN: `npx vitest run tests/tools/generate_summary.test.ts
+  tests/web/daemon-http-contract.test.ts tests/web/server.test.ts` passed 91
+  tests.
+- GREEN: `npx biome check --write src/tools/generate_summary.ts src/index.ts
+  tests/tools/generate_summary.test.ts` passed with no fixes.
+- GREEN: `npm run typecheck:test` passed.
+
 ## 2026-06-06 — TypeScript database statement wrapper without Proxy (Codex)
 
 Codex closed a still-current P1 TypeScript database instrumentation finding.
