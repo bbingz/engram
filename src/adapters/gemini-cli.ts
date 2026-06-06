@@ -32,6 +32,11 @@ interface GeminiMessage {
 
 const MAX_SESSION_JSON_BYTES = 10 * 1024 * 1024;
 
+interface ProjectsCache {
+  signature: string;
+  map: Map<string, string>;
+}
+
 // Sidecars may write the originator in either Codex's "Claude Code" form or
 // the plugin's "claude-code" slug. Normalize (lowercase, strip spaces/dashes)
 // so the dispatched-role classification works regardless of which form the
@@ -66,7 +71,7 @@ export class GeminiCliAdapter implements SessionAdapter {
   readonly name = 'gemini-cli' as const;
   private tmpRoot: string;
   private projectsFile: string;
-  private projectsCache: Map<string, string> | null = null;
+  private projectsCache: ProjectsCache | null = null;
 
   constructor(tmpRoot?: string, projectsFile?: string) {
     this.tmpRoot = tmpRoot ?? join(homedir(), '.gemini', 'tmp');
@@ -214,22 +219,34 @@ export class GeminiCliAdapter implements SessionAdapter {
   }
 
   private async loadProjects(): Promise<Map<string, string>> {
-    if (this.projectsCache) return this.projectsCache;
+    let signature = 'missing';
     try {
-      const obj = await readJsonFileIfSmall<Record<string, unknown>>(
-        this.projectsFile,
-      );
-      if (!obj) {
-        this.projectsCache = new Map();
-        return this.projectsCache;
+      const fileStat = await stat(this.projectsFile);
+      signature = `${fileStat.size}:${fileStat.mtimeMs}:${fileStat.ctimeMs}`;
+      if (this.projectsCache?.signature === signature) {
+        return this.projectsCache.map;
       }
+      if (fileStat.size > MAX_SESSION_JSON_BYTES) {
+        const map = new Map<string, string>();
+        this.projectsCache = { signature, map };
+        return map;
+      }
+
+      const obj = JSON.parse(
+        await readFile(this.projectsFile, 'utf8'),
+      ) as Record<string, unknown>;
       // 支持 {"projects": {...}} 和直接 {...} 两种格式
       const projects = (obj.projects ?? obj) as Record<string, string>;
-      this.projectsCache = new Map(Object.entries(projects));
+      const map = new Map(Object.entries(projects));
+      this.projectsCache = { signature, map };
     } catch {
-      this.projectsCache = new Map();
+      if (this.projectsCache?.signature === signature) {
+        return this.projectsCache.map;
+      }
+      const map = new Map<string, string>();
+      this.projectsCache = { signature, map };
     }
-    return this.projectsCache;
+    return this.projectsCache.map;
   }
 
   async isAccessible(locator: string): Promise<boolean> {
