@@ -24,7 +24,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Database } from '../../../src/core/db.js';
 import { encodeCC } from '../../../src/core/project-move/encode-cc.js';
 import { runProjectMove } from '../../../src/core/project-move/orchestrator.js';
-import { encodeIflow } from '../../../src/core/project-move/sources.js';
+import {
+  encodeGemini,
+  encodeIflow,
+} from '../../../src/core/project-move/sources.js';
 
 describe('runProjectMove — orchestrator integration', () => {
   let tmp: string;
@@ -499,6 +502,71 @@ describe('runProjectMove — orchestrator integration', () => {
       occurrences: 1,
     });
     expect(db.listMigrations()).toEqual([]); // no log row
+  });
+
+  it('dry-run previews custom Gemini slug and observed iFlow dirs without side effects', async () => {
+    const projects = join(tmp, 'projects');
+    const driftSrc = join(projects, 'WebSite_Gemini');
+    const driftDst = join(projects, 'mac_Book_Pro_Debug');
+    mkdirSync(driftSrc);
+    writeFileSync(join(driftSrc, 'main.py'), 'print("hi")');
+
+    const geminiOld = join(home, '.gemini', 'tmp', 'custom-old');
+    const geminiNew = join(home, '.gemini', 'tmp', encodeGemini(driftDst));
+    mkdirSync(join(geminiOld, 'chats'), { recursive: true });
+    writeFileSync(
+      join(geminiOld, 'chats', 'session.json'),
+      JSON.stringify({
+        sessionId: 'gemini-dry-run',
+        projectHash: 'custom-old',
+        startTime: '2026-06-06T00:00:00.000Z',
+        messages: [],
+      }),
+    );
+    writeFileSync(
+      join(home, '.gemini', 'projects.json'),
+      JSON.stringify({ projects: { [driftSrc]: 'custom-old' } }),
+    );
+
+    const iflowRoot = join(home, '.iflow', 'projects');
+    mkdirSync(iflowRoot, { recursive: true });
+    const iflowOld = join(iflowRoot, '-Users-bing-Code-observed');
+    const iflowNew = join(iflowRoot, encodeIflow(driftDst));
+    mkdirSync(iflowOld);
+    writeFileSync(
+      join(iflowOld, 'session-drift.jsonl'),
+      `{"cwd":"${driftSrc}","text":"working on ${driftSrc}/main.py"}\n`,
+    );
+
+    const result = await runProjectMove(db, {
+      src: driftSrc,
+      dst: driftDst,
+      home,
+      dryRun: true,
+    });
+
+    expect(result.state).toBe('dry-run');
+    expect(result.renamedDirs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceId: 'gemini-cli',
+          oldDir: geminiOld,
+          newDir: geminiNew,
+        }),
+        expect.objectContaining({
+          sourceId: 'iflow',
+          oldDir: iflowOld,
+          newDir: iflowNew,
+        }),
+      ]),
+    );
+    expect(existsSync(driftSrc)).toBe(true);
+    expect(existsSync(driftDst)).toBe(false);
+    expect(existsSync(geminiOld)).toBe(true);
+    expect(existsSync(geminiNew)).toBe(false);
+    expect(existsSync(iflowOld)).toBe(true);
+    expect(existsSync(iflowNew)).toBe(false);
+    expect(db.listMigrations()).toEqual([]);
   });
 
   it('throws on src === dst', async () => {
