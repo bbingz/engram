@@ -1069,7 +1069,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(response.format, "json")
         XCTAssertEqual(response.messageCount, 2)
-        XCTAssertEqual(response.outputPath, exportHome.appendingPathComponent("codex-exports/antigravity-legacy-s1-2026-04-23.json").path)
+        XCTAssertEqual(response.outputPath, exportHome.appendingPathComponent(".engram/exports/antigravity-legacy-s1-2026-04-23.json").path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: response.outputPath))
         let exported = try String(contentsOfFile: response.outputPath, encoding: .utf8)
         XCTAssertTrue(exported.contains("hello"), exported)
@@ -1221,7 +1221,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(
             response.outputPath,
-            exportHome.appendingPathComponent("codex-exports/antigravity-legacy-no-start-time-undated.md").path
+            exportHome.appendingPathComponent(".engram/exports/antigravity-legacy-no-start-time-undated.md").path
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: response.outputPath))
     }
@@ -1378,7 +1378,11 @@ final class EngramServiceIPCTests: XCTestCase {
         )
 
         XCTAssertTrue(response.outputPath.hasPrefix(clientHome.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: serviceHome.appendingPathComponent("codex-exports").path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: serviceHome.appendingPathComponent(".engram/exports").path
+            )
+        )
     }
 
     func testExportSessionRejectsOutputHomeOutsideServiceHome() async throws {
@@ -1417,7 +1421,7 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
-    func testExportSessionRejectsCodexExportsSymlink() async throws {
+    func testExportSessionRejectsExportsDirectorySymlink() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
@@ -1431,10 +1435,11 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let serviceHome = paths.runtime.appendingPathComponent("service-home", isDirectory: true)
         let outside = paths.runtime.appendingPathComponent("outside", isDirectory: true)
-        try FileManager.default.createDirectory(at: serviceHome, withIntermediateDirectories: true)
+        let engramDir = serviceHome.appendingPathComponent(".engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: engramDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(
-            at: serviceHome.appendingPathComponent("codex-exports"),
+            at: engramDir.appendingPathComponent("exports", isDirectory: true),
             withDestinationURL: outside
         )
         let homeScope = ServiceCoreTestHomeScope(home: serviceHome)
@@ -1453,7 +1458,7 @@ final class EngramServiceIPCTests: XCTestCase {
             _ = try await client.exportSession(
                 EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: serviceHome.path, actor: "test")
             )
-            XCTFail("Expected invalidRequest for symlinked codex-exports")
+            XCTFail("Expected invalidRequest for symlinked export directory")
         } catch let error as EngramServiceError {
             XCTAssertEqual(error, .invalidRequest(message: "output_home must not traverse symlinks"))
         }
@@ -1473,7 +1478,9 @@ final class EngramServiceIPCTests: XCTestCase {
         }
 
         let serviceHome = paths.runtime.appendingPathComponent("service-home", isDirectory: true)
-        let outputDir = serviceHome.appendingPathComponent("codex-exports", isDirectory: true)
+        let outputDir = serviceHome
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent("exports", isDirectory: true)
         let outside = paths.runtime.appendingPathComponent("outside", isDirectory: true)
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)

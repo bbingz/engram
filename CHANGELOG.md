@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Swift export directory parity with TypeScript (2026-06-06, Codex)
+
+Closed the remaining Swift-side export directory drift from the review backlog.
+
+- **Fix**: Swift service exports now write to `~/.engram/exports`, matching the
+  TypeScript MCP export tool, instead of the legacy `~/codex-exports`
+  directory.
+- **MCP parity**: Swift MCP `tools/list` now advertises `~/.engram/exports/`,
+  and the executable golden fixture expects service export paths under the
+  same directory.
+- **Safety**: existing export symlink defenses still cover the new
+  `.engram/exports` directory and the final leaf output path.
+- **Review**: subagent implementation review returned APPROVED with no
+  blocking findings.
+- **Verification**: RED service IPC path tests failed against the old
+  `~/codex-exports` implementation; targeted `EngramServiceCore` export tests
+  passed 5 tests; targeted `EngramMCPTests` export tests passed 3 tests;
+  `git diff --check` passed.
+
 ### Swift hide_session not-found and local-state parity (2026-06-06, Codex)
 
 Closed the remaining Swift-side `hide_session` silent-success gap.

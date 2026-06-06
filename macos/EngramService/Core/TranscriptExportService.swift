@@ -92,7 +92,10 @@ enum TranscriptExportService {
 
     private static func outputDirectory(in home: String) throws -> URL {
         let homeURL = URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL
-        let outputDir = homeURL.appendingPathComponent("codex-exports", isDirectory: true).standardizedFileURL
+        let outputDir = homeURL
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent("exports", isDirectory: true)
+            .standardizedFileURL
         guard outputDir.path.hasPrefix(homeURL.path + "/") else {
             throw EngramServiceError.invalidRequest(message: "output_home must be within HOME")
         }

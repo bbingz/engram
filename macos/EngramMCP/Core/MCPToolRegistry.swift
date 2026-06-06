@@ -420,7 +420,7 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "export",
-            description: "将单个会话导出为 Markdown 或 JSON 文件，保存到 ~/codex-exports/ 目录。",
+            description: "将单个会话导出为 Markdown 或 JSON 文件，保存到 ~/.engram/exports/ 目录。",
             inputSchema: .object([
                 "type": .string("object"),
                 "required": .array([.string("id")]),
