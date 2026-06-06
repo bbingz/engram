@@ -4,6 +4,15 @@
 
 **Goal:** Add a collision-safe startup reconcile that repairs historical Claude Code/Qoder project directories left under obsolete encoded names.
 
+**Status:** Completed and merged to `main` as part of the 2026-06-06
+remediation sequence. Current implementation evidence lives in
+`macos/EngramCoreWrite/ProjectMove/Sources.swift`,
+`macos/EngramCoreWrite/Indexing/StartupBackfills.swift`,
+`src/core/project-move/grouped-dir-reconcile.ts`, and the matching Swift/Vitest
+tests listed below. Durable closeout is recorded in `.memory` and
+`CHANGELOG.md` under "Claude/Qoder grouped-dir reconcile for historical project
+moves".
+
 **Architecture:** Add a focused planner/applier that scans grouped source roots, derives target basenames from structured `cwd` values, and repairs only unambiguous directories whose corrected target does not already exist. Wire the Swift product into startup maintenance; mirror the planner in TypeScript as the reference implementation.
 
 **Tech Stack:** Swift `EngramCoreWrite` + XCTest, TypeScript Node fs/promises + Vitest.
@@ -40,7 +49,7 @@
 - Modify: `macos/EngramCoreWrite/ProjectMove/Sources.swift`
 - Test: `macos/EngramCoreTests/ProjectMove/SessionSourcesTests.swift`
 
-- [ ] **Step 1: Write failing Swift tests**
+- [x] **Step 1: Write failing Swift tests**
 
 Add tests for these behaviors:
 
@@ -62,7 +71,7 @@ misencoded case, use `cwd = "/Users/bing/-Code-/CCTV_Admin"` and buggy
 basename `-Users-bing--Code--CCTV_Admin`; expect target
 `-Users-bing--Code--CCTV-Admin`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -74,7 +83,7 @@ Expected: fail to compile because `GroupedDirReconcile` does not exist. In the
 actual branch, use `-only-testing:EngramCoreTests/SessionSourcesTests` because
 the tests live in the existing compiled source-root test class.
 
-- [ ] **Step 3: Implement minimal Swift planner/applier**
+- [x] **Step 3: Implement minimal Swift planner/applier**
 
 Create:
 
@@ -122,7 +131,7 @@ Implementation requirements:
     planner/apply split if implemented. The expected result is collision + no
     source deletion.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run the same source-root test command.
 Expected: all new tests pass and the output must show non-zero executed tests.
@@ -134,7 +143,7 @@ Expected: all new tests pass and the output must show non-zero executed tests.
 - Modify: `macos/EngramCoreWrite/Indexing/StartupComposition.swift`
 - Modify: `macos/EngramCoreTests/StartupBackfillTests.swift`
 
-- [ ] **Step 1: Write failing startup tests**
+- [x] **Step 1: Write failing startup tests**
 
 Add a `RecordingStartupDatabase.reconcileGroupedSourceDirs()` method to the
 test double and assert `runStartupMaintenanceAndParents` calls it before
@@ -162,7 +171,7 @@ XCTAssertTrue(events.contains {
 })
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -173,7 +182,7 @@ xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destina
 Expected: compile failure because the protocol method is missing, or assertion
 failure because the call/event is absent.
 
-- [ ] **Step 3: Wire startup database**
+- [x] **Step 3: Wire startup database**
 
 Add `func reconcileGroupedSourceDirs() throws -> GroupedDirReconcileResult` to
 `StartupBackfillDatabase`. Implement it in `WriterStartupBackfillDatabase` by
@@ -187,7 +196,7 @@ Call it in `runStartupMaintenanceAndParents` after `reconcileInsights()` and
 before `backfillFilePaths()`. Emit
 `db_maintenance/action=reconcile_grouped_dirs` when any count is non-zero.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run the same `StartupBackfillTests` command.
 Expected: pass.
@@ -198,7 +207,7 @@ Expected: pass.
 - Create: `src/core/project-move/grouped-dir-reconcile.ts`
 - Create: `tests/core/project-move/grouped-dir-reconcile.test.ts`
 
-- [ ] **Step 1: Write failing Vitest tests**
+- [x] **Step 1: Write failing Vitest tests**
 
 Mirror Swift behavior:
 
@@ -215,7 +224,7 @@ it('does not use nested symlinks for cwd evidence')
 it('returns zero counts for missing roots')
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -225,7 +234,7 @@ npx vitest run tests/core/project-move/grouped-dir-reconcile.test.ts
 
 Expected: fail because the module does not exist.
 
-- [ ] **Step 3: Implement TypeScript planner/applier**
+- [x] **Step 3: Implement TypeScript planner/applier**
 
 Export:
 
@@ -250,7 +259,7 @@ Use `getSourceRoots()` by default, include only `claude-code` and `qoder`, use
 collisions, and apply with the same no-overwrite copy/delete strategy as Swift
 only when not dry-run.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run the same Vitest command.
 Expected: pass.
@@ -261,7 +270,7 @@ Expected: pass.
 - Modify: `.memory`
 - Modify: `CHANGELOG.md`
 
-- [ ] **Step 1: Run focused checks**
+- [x] **Step 1: Run focused checks**
 
 ```bash
 npx vitest run tests/core/project-move/grouped-dir-reconcile.test.ts tests/core/project-move/encode-cc.test.ts tests/core/project-move/orchestrator.integration.test.ts
@@ -270,19 +279,19 @@ npx biome check src/core/project-move/grouped-dir-reconcile.ts tests/core/projec
 git diff --check
 ```
 
-- [ ] **Step 2: Request subagent review**
+- [x] **Step 2: Request subagent review**
 
 Ask a read-only reviewer to inspect the diff against this plan, focusing on
 collision safety including apply-time races, structured-cwd proof, symlink
 behavior at every traversed level, Qoder parity, and startup blast radius. Fix
 any Critical or Important finding before proceeding.
 
-- [ ] **Step 3: Update durable handoff**
+- [x] **Step 3: Update durable handoff**
 
 Append a concise English entry to `.memory` and a reverse-chronological
 `CHANGELOG.md` entry with verification commands and residual risks.
 
-- [ ] **Step 4: Commit and push**
+- [x] **Step 4: Commit and push**
 
 ```bash
 git add macos/EngramCoreWrite/ProjectMove/Sources.swift \
