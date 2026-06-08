@@ -16,21 +16,6 @@ final class ViewMainThreadReadTests: XCTestCase {
         try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    func testTimelineViewReadsOffMainThread() throws {
-        let s = try source("macos/Engram/Views/TimelineView.swift")
-        XCTAssertTrue(s.contains("Task.detached"), "TimelineView reads must run off the main thread (ui-1)")
-        XCTAssertFalse(
-            s.contains("sessions = (try? db.listSessionsChronologically("),
-            "TimelineView must not read sessions synchronously on the main thread"
-        )
-    }
-
-    func testFavoritesViewReadsOffMainThread() throws {
-        let s = try source("macos/Engram/Views/FavoritesView.swift")
-        XCTAssertTrue(s.contains("Task.detached"), "FavoritesView must load favorites off the main thread (ui-5)")
-        XCTAssertFalse(s.contains(".task { sessions = (try? db.listFavorites()) ?? [] }"))
-    }
-
     func testAboutSettingsSectionReadsOffMainThread() throws {
         let s = try source("macos/Engram/Views/Settings/AboutSettingsSection.swift")
         XCTAssertTrue(s.contains("Task.detached"), "AboutSettingsSection must stat + count off the main thread (ui-6)")

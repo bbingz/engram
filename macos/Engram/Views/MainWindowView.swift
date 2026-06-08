@@ -25,6 +25,17 @@ struct MainWindowView: View {
         .navigationTitle("")
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: openPalette) {
+                    Label("Command Palette", systemImage: "command")
+                }
+                .labelStyle(.iconOnly)
+                .keyboardShortcut("k", modifiers: .command)
+                .accessibilityIdentifier("command_palette_button")
+                .help("Command Palette")
+            }
+        }
         .onChange(of: selectedScreen) { _, _ in
             // Clear session detail when navigating to a different page
             pendingNavigationId = nil
@@ -100,6 +111,10 @@ struct MainWindowView: View {
         case .settings:
             SettingsView()
         }
+    }
+
+    private func openPalette() {
+        showPalette = true
     }
 
     private func navigateToSession(id: String) {

@@ -1,5 +1,5 @@
 // macos/Engram/Components/SharedPickers.swift
-// Shared views extracted from SessionListView — used by TimelineView, FavoritesView, etc.
+// Shared picker controls used by current session and timeline pages.
 import SwiftUI
 
 struct MultiSelectPicker: View {

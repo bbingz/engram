@@ -529,4 +529,4 @@ struct SearchPageView: View {
     }
 }
 
-// SearchResult and EmbeddingStatus are defined in SearchView.swift (shared with Popover)
+// SearchResult and EmbeddingStatus are defined in SearchSupport.swift.

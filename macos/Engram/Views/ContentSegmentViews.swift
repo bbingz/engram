@@ -81,10 +81,14 @@ struct SegmentedMessageView: View {
     private static func parseAndCache(_ content: String) -> [ContentSegment] {
         if let cached = cachedSegments(for: content) { return cached }
         let parsed = ContentSegmentParser.parse(content)
-        let entry = SegmentCacheEntry(segments: parsed)
+        cacheSegments(parsed, for: content)
+        return parsed
+    }
+
+    private static func cacheSegments(_ segments: [ContentSegment], for content: String) {
+        let entry = SegmentCacheEntry(segments: segments)
         // Cost ≈ UTF-16 byte length of the source string.
         Self.segmentCache.setObject(entry, forKey: NSString(string: content), cost: content.utf16.count * 2)
-        return parsed
     }
 
     private var displaySegments: [ContentSegment] {
@@ -125,9 +129,10 @@ struct SegmentedMessageView: View {
             parsedSegments = []
             let contentToParse = content
             let parsed = await Task.detached(priority: .userInitiated) {
-                Self.parseAndCache(contentToParse)
+                ContentSegmentParser.parse(contentToParse)
             }.value
             guard !Task.isCancelled else { return }
+            Self.cacheSegments(parsed, for: contentToParse)
             parsedContent = contentToParse
             parsedSegments = parsed
         }
