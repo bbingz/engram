@@ -1,7 +1,7 @@
 // macos/Engram/Core/ContentSegmentParser.swift
 import Foundation
 
-enum ContentSegment: Identifiable {
+enum ContentSegment: Identifiable, Sendable {
     case text(String)
     case codeBlock(language: String, code: String)
     case heading(level: Int, text: String)

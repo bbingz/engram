@@ -54,7 +54,7 @@ enum SourceColors {
     }
 }
 
-// MARK: - Shared source display info (used by SessionListView, PopoverView, TimelineView)
+// MARK: - Shared source display info
 
 enum SourceDisplay {
     static func label(for source: String) -> String {
