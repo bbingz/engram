@@ -183,7 +183,7 @@ function makeOpenCodeDb(dbPath: string): void {
       );
       INSERT INTO message VALUES (
         'msg_002', 'ses_test001', 1770000010000, 1770000010000,
-        '{"role":"assistant","time":{"created":1770000010000,"completed":1770000015000}}'
+        '{"role":"assistant","time":{"created":1770000010000,"completed":1770000015000},"tokens":{"input":123,"output":45,"reasoning":5,"cache":{"read":67,"write":8}}}'
       );
       INSERT INTO part VALUES (
         'part_002', 'msg_002', 1770000010000, 1770000010000,

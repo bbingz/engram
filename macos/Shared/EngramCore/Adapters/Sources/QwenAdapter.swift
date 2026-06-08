@@ -128,32 +128,95 @@ final class QwenAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let messages = try JSONLAdapterSupport.windowedMessages(
-            locator: locator,
-            options: options,
-            limits: limits,
-            transform: Self.message(from:)
-        )
-        return JSONLAdapterSupport.stream(messages)
+        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+        if let failure { throw failure }
+        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(Self.messages(from: objects), options: options))
     }
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
     }
 
-    private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
+    private static func messages(from objects: [JSONLAdapterSupport.JSONObject]) -> [NormalizedMessage] {
+        var pendingTelemetryUsage: TokenUsage?
+        return objects.compactMap { object in
+            if let telemetryUsage = telemetryUsage(from: object) {
+                pendingTelemetryUsage = telemetryUsage
+                return nil
+            }
+            let message = message(from: object, telemetryUsage: pendingTelemetryUsage)
+            if message?.role == .assistant {
+                pendingTelemetryUsage = nil
+            }
+            return message
+        }
+    }
+
+    private static func message(
+        from object: JSONLAdapterSupport.JSONObject,
+        telemetryUsage: TokenUsage? = nil
+    ) -> NormalizedMessage? {
         guard let type = JSONLAdapterSupport.string(object["type"]),
               type == "user" || type == "assistant"
         else {
             return nil
         }
+        let metadataUsage = usage(from: JSONLAdapterSupport.object(object["usageMetadata"]))
         return NormalizedMessage(
             role: type == "assistant" ? .assistant : .user,
             content: extractContent(JSONLAdapterSupport.object(object["message"])),
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: nil,
-            usage: nil
+            usage: type == "assistant" ? (metadataUsage ?? telemetryUsage) : nil
         )
+    }
+
+    private static func telemetryUsage(from object: JSONLAdapterSupport.JSONObject) -> TokenUsage? {
+        guard JSONLAdapterSupport.string(object["type"]) == "system",
+              JSONLAdapterSupport.string(object["subtype"]) == "ui_telemetry",
+              let payload = JSONLAdapterSupport.object(object["systemPayload"]),
+              let uiEvent = JSONLAdapterSupport.object(payload["uiEvent"]),
+              JSONLAdapterSupport.string(uiEvent["event.name"]) == "qwen-code.api_response"
+        else {
+            return nil
+        }
+        let usage = TokenUsage(
+            inputTokens: int(uiEvent["input_token_count"]),
+            outputTokens: int(uiEvent["output_token_count"]),
+            cacheReadTokens: int(uiEvent["cached_content_token_count"]),
+            cacheCreationTokens: 0
+        )
+        guard usage.inputTokens > 0
+            || usage.outputTokens > 0
+            || (usage.cacheReadTokens ?? 0) > 0
+        else {
+            return nil
+        }
+        return usage
+    }
+
+    private static func usage(from metadata: JSONLAdapterSupport.JSONObject?) -> TokenUsage? {
+        guard let metadata else { return nil }
+        let usage = TokenUsage(
+            inputTokens: int(metadata["promptTokenCount"]),
+            outputTokens: int(metadata["candidatesTokenCount"]),
+            cacheReadTokens: int(metadata["cachedContentTokenCount"]),
+            cacheCreationTokens: 0
+        )
+        guard usage.inputTokens > 0
+            || usage.outputTokens > 0
+            || (usage.cacheReadTokens ?? 0) > 0
+        else {
+            return nil
+        }
+        return usage
+    }
+
+    private static func int(_ value: Any?) -> Int {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? String { return Int(value) ?? 0 }
+        return 0
     }
 
     private static func isSystemInjection(_ text: String) -> Bool {

@@ -8,6 +8,7 @@ import type {
   SessionAdapter,
   SessionInfo,
   StreamMessagesOptions,
+  TokenUsage,
 } from './types.js';
 
 interface UiMessage {
@@ -104,21 +105,35 @@ export class ClineAdapter implements SessionAdapter {
     const offset = opts.offset ?? 0;
     const limit = opts.limit ?? Infinity;
     const msgs = await this.loadMessages(filePath);
-    const display = msgs.filter(
-      (m) =>
-        m.say === 'task' ||
-        m.say === 'user_feedback' ||
-        (m.say === 'text' && !m.partial),
-    );
+    let pendingUsage: TokenUsage | undefined;
+    let count = 0;
     let yielded = 0;
-    for (let i = offset; i < display.length && yielded < limit; i++) {
-      const m = display[i];
+    for (const m of msgs) {
+      if (yielded >= limit) break;
+      if (m.say === 'api_req_started') {
+        pendingUsage = this.apiRequestUsage(m);
+        continue;
+      }
+      if (
+        m.say !== 'task' &&
+        m.say !== 'user_feedback' &&
+        !(m.say === 'text' && !m.partial)
+      )
+        continue;
       const role: 'user' | 'assistant' =
         m.say === 'task' || m.say === 'user_feedback' ? 'user' : 'assistant';
+      const usage = role === 'assistant' ? pendingUsage : undefined;
+      if (role === 'assistant') pendingUsage = undefined;
+      if (count < offset) {
+        count++;
+        continue;
+      }
+      count++;
       yield {
         role,
         content: m.text ?? '',
         timestamp: new Date(m.ts).toISOString(),
+        usage,
       };
       yielded++;
     }
@@ -152,6 +167,32 @@ export class ClineAdapter implements SessionAdapter {
       }
     }
     return '';
+  }
+
+  private apiRequestUsage(message: UiMessage): TokenUsage | undefined {
+    if (!message.text) return undefined;
+    try {
+      const parsed = JSON.parse(message.text) as {
+        tokensIn?: unknown;
+        tokensOut?: unknown;
+      };
+      const usage = {
+        inputTokens: this.int(parsed.tokensIn),
+        outputTokens: this.int(parsed.tokensOut),
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      };
+      if (usage.inputTokens === 0 && usage.outputTokens === 0) return undefined;
+      return usage;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private int(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.trunc(value)
+      : 0;
   }
 
   async isAccessible(locator: string): Promise<boolean> {

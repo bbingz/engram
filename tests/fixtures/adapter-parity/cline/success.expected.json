@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "b80b3356",
+  "generatedAtCommit": "88f86631",
   "inputPath": "cline/input/tasks/1770000000000/ui_messages.json",
   "insightFields": {
     "firstUserSummary": "帮我写单元测试",
@@ -18,7 +18,13 @@
     {
       "content": "好的，我来帮你写单元测试。",
       "role": "assistant",
-      "timestamp": "2026-02-02T02:40:05.000Z"
+      "timestamp": "2026-02-02T02:40:05.000Z",
+      "usage": {
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+        "inputTokens": 100,
+        "outputTokens": 0
+      }
     },
     {
       "content": "谢谢",
@@ -70,7 +76,7 @@
   "usageTotals": {
     "cacheCreationTokens": 0,
     "cacheReadTokens": 0,
-    "inputTokens": 0,
+    "inputTokens": 100,
     "outputTokens": 0
   }
 }

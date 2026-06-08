@@ -42,6 +42,18 @@ describe('ClineAdapter', () => {
     expect(messages.some((m) => m.role === 'assistant')).toBe(true);
     expect(messages[0].content).toBe('帮我写单元测试');
   });
+
+  it('streamMessages attaches api request token usage to the assistant reply', async () => {
+    const messages = [];
+    for await (const msg of adapter.streamMessages(FIXTURE_FILE))
+      messages.push(msg);
+    expect(messages.find((m) => m.role === 'assistant')?.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
+  });
 });
 
 describe('ClineAdapter cwd with parentheses (R5-32)', () => {
