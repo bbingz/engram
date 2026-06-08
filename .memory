@@ -1,5 +1,25 @@
 # Engram Local Memory
 
+## 2026-06-08 - Broad product-direction PR stack closeout
+
+- Goal closeout completed for the split product-direction stack.
+- Merged PRs:
+  - #70 `feat(resume): add session action entrypoints` -> `cb6a0959`.
+  - #71 `refactor(ui): remove legacy search surfaces` -> `9925f31d`.
+  - #72 `chore(release): record split handoff` -> `cc71258e`.
+- Local `main` and `origin/main` are synchronized at `cc71258e`.
+- Verification gates observed before merge:
+  - #70: GitHub lint, TypeScript, dead-code, security-audit, fixture-check,
+    swift-unit, ui-test-smoke, CodeQL TypeScript, and CodeQL Swift passed.
+  - #71: local app build, focused `AppSearchServiceCutoverScanTests`, and
+    `git diff --check` passed; GitHub CI including CodeQL Swift passed.
+  - #72: local script tests and `git diff --check` passed; GitHub CI including
+    CodeQL Swift passed.
+- The full pre-split backup remains at
+  `codex/split-backup-20260608-usage-archive` commit `9e9811d6`.
+- Open PRs left after this closeout are outside this goal: #66 docs closeout
+  and Dependabot update PRs.
+
 ## 2026-06-08 - Split broad product-direction patch into stacked PR branches
 
 - Full pre-split state is preserved at branch

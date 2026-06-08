@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Close broad product-direction PR stack (2026-06-08, Codex)
+
+Completed the split-stack closeout for the broad product-direction work.
+
+- Merged #70 `feat(resume): add session action entrypoints` at `cb6a0959`.
+- Rebased, verified, and merged #71
+  `refactor(ui): remove legacy search surfaces` at `9925f31d`.
+- Rebased, verified, and merged #72
+  `chore(release): record split handoff` at `cc71258e`.
+- Local `main` is synchronized with `origin/main` at `cc71258e`; the full
+  pre-split backup remains on `codex/split-backup-20260608-usage-archive`
+  at `9e9811d6`.
+- Remaining open PRs are outside this product-direction split closeout:
+  #66 docs-plan-closeout and Dependabot update PRs.
+
 ### Split broad product-direction work into stacked PRs (2026-06-08, Codex)
 
 Prepared the previously broad local product-direction patch as a reviewable
