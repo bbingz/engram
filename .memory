@@ -1,5 +1,20 @@
 # Engram Local Memory
 
+## 2026-06-08 - Split broad product-direction patch into stacked PR branches
+
+- Full pre-split state is preserved at branch
+  `codex/split-backup-20260608-usage-archive`, commit `9e9811d6`.
+- Split branches were created under
+  `~/.config/superpowers/worktrees/engram/` from clean `origin/main`, then
+  stacked in dependency order: UI-test signing, adapter robustness, usage/source
+  health, resume/session actions, search cleanup, and release handoff.
+- Do not copy the broad `project.pbxproj` wholesale into later work; regenerate
+  it with `xcodegen generate --spec macos/project.yml` after applying the
+  branch-specific file set.
+- The earlier `EngramUITests` blocker is stale: after admin authorization and
+  UI-test target signing via `macos/project.yml`, full UI tests passed on this
+  host.
+
 ## 2026-06-06 — Project move Gemini/iFlow dry-run parity tests (Codex)
 
 Codex reconciled the Gemini/iFlow project-move compatibility line after PR #64

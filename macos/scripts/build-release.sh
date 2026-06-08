@@ -57,13 +57,27 @@ if [[ -z "$MARKETING_VERSION" ]]; then
   echo "ERROR: could not read MARKETING_VERSION from project.yml" >&2
   exit 1
 fi
-# Auto build number: prefer git commit count, fall back to a UTC timestamp.
+# Auto build number:
+# - ENGRAM_BUILD_NUMBER is authoritative for CI/release automation.
+# - Clean git checkouts use commit count for stable official release builds.
+# - Dirty local checkouts use a UTC timestamp so repeated local deploys are
+#   distinguishable even before the work is committed.
 BUILD_NUMBER="${ENGRAM_BUILD_NUMBER:-}"
 if [[ -z "$BUILD_NUMBER" ]]; then
-  BUILD_NUMBER="$(git -C "$MACOS_DIR" rev-list --count HEAD 2>/dev/null || true)"
+  WORKTREE_DIRTY=1
+  UNTRACKED_FILES="$(git -C "$MACOS_DIR" ls-files --others --exclude-standard 2>/dev/null || true)"
+  if git -C "$MACOS_DIR" diff --quiet --ignore-submodules -- \
+    && git -C "$MACOS_DIR" diff --cached --quiet --ignore-submodules -- \
+    && [[ -z "$UNTRACKED_FILES" ]]; then
+    WORKTREE_DIRTY=0
+  fi
+
+  if [[ "$WORKTREE_DIRTY" -eq 0 ]]; then
+    BUILD_NUMBER="$(git -C "$MACOS_DIR" rev-list --count HEAD 2>/dev/null || true)"
+  fi
 fi
 if [[ -z "$BUILD_NUMBER" ]]; then
-  BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
+  BUILD_NUMBER="$(date -u +%Y%m%d%H%M%S)"
 fi
 # Reject the default placeholder build number — releases must carry a real one.
 if [[ "$BUILD_NUMBER" == "1" || "$BUILD_NUMBER" == "0" || -z "$BUILD_NUMBER" ]]; then

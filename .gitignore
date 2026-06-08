@@ -40,6 +40,7 @@ tests/fixtures/antigravity/cache/*.jsonl
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 .claude/settings.local.json
+.claude/*.js
 
 # Accidentally-committed brainstorm artifacts
 .superpowers/
