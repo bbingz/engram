@@ -4,7 +4,7 @@
 
 **Goal:** Make project_move migrate Gemini CLI and iFlow grouped project directories using observed on-disk metadata instead of only theoretical source-path encoding.
 
-**Status (2026-06-06):** Plan reviewed by a subagent before implementation. Current `main` already contained the Gemini slug/projects.json and observed iFlow directory production behavior; this branch closes the plan-review gaps by adding explicit dry-run parity tests and recording the scope. OpenCode SQLite remains intentionally separate.
+**Status (2026-06-06):** Completed and merged to `main` as PR #65 (`88f86631`). Plan review ran before implementation, code review approved the final diff, and GitHub CI completed green. Current `main` already contained the Gemini slug/projects.json and observed iFlow directory production behavior; PR #65 closed the plan-review gaps by adding explicit dry-run parity tests and recording the scope. OpenCode SQLite compatibility is already covered separately on `main`.
 
 **Architecture:** Keep this PR focused on two grouped-source fixes. Gemini CLI uses a slug under `~/.gemini/tmp/<slug>` and `~/.gemini/projects.json`; iFlow can contain historical grouped dirs whose basename differs from `encodeIflow(src)`, so the orchestrator must identify old grouped dirs from structured `cwd` records before falling back to encoded names. OpenCode SQLite directory rewrites are intentionally excluded for a separate PR.
 
@@ -48,11 +48,18 @@
 
 ## Task 3: Closeout
 
-- [ ] Run TS focused tests:
+- [x] Run TS focused tests:
   `npx vitest run tests/core/project-move/sources.test.ts tests/core/project-move/gemini-projects-json.test.ts tests/core/project-move/orchestrator.integration.test.ts tests/core/project-move/review.test.ts tests/tools/project-mcp.test.ts`.
-- [ ] Run Swift focused tests:
+- [x] Run Swift focused tests:
   `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destination 'platform=macOS' -only-testing:EngramCoreTests/SessionSourcesTests -only-testing:EngramCoreTests/GeminiProjectsJSONTests -only-testing:EngramCoreTests/OrchestratorTests CODE_SIGNING_ALLOWED=NO`.
-- [ ] Run `npm run typecheck:test`, `npx biome check` on touched TS files, and `git diff --check`.
-- [ ] Update `CHANGELOG.md` and `.memory` with exact verification evidence and residual OpenCode follow-up.
-- [ ] Request subagent code review before PR.
-- [ ] Push branch, open PR, wait for CI, then merge when green.
+- [x] Run `npm run typecheck:test`, `npx biome check` on touched TS files, and `git diff --check`.
+- [x] Update `CHANGELOG.md` and `.memory` with exact verification evidence and residual OpenCode follow-up.
+- [x] Request subagent code review before PR.
+- [x] Push branch, open PR, wait for CI, then merge when green.
+
+Closeout evidence:
+
+- PR: https://github.com/bbingz/engram/pull/65
+- Merge commit: `88f86631ac49ff32b7810236a5c8b7509cb6a753`
+- Local checks before PR: focused TypeScript project-move suite, focused Swift `EngramCoreTests` project-move suite, `npm run typecheck:test`, `npx biome check`, and `git diff --check`.
+- Remote checks: `CodeQL`, `CodeQL TypeScript`, `CodeQL Swift`, `lint`, `dead-code`, `security-audit`, `typescript`, `swift-unit`, `fixture-check`, and `ui-test-smoke` succeeded; `ui-test-full` was skipped by workflow policy.
