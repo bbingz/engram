@@ -452,9 +452,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
         let limit = max(1, min(request.limit, 100))
         return try await read { db in
-            if CJKText.containsCJK(query) {
-                // Escape LIKE wildcards so a literal "%"/"_" in the query is
-                // matched verbatim instead of acting as a wildcard.
+            if CJKText.containsCJK(query) || query.count < 3 {
+                // CJK uses LIKE because FTS5 trigram MATCH is unreliable for
+                // CJK. Two-character Latin abbreviations ("AI", "PR", "UI")
+                // also need LIKE because the trigram tokenizer can't MATCH
+                // terms shorter than three characters. Escape wildcards so a
+                // literal "%"/"_" in the query is matched verbatim.
                 let pattern = "%\(CJKText.escapeLikePattern(query))%"
                 var parts = ["""
                     SELECT s.*, f.content AS snippet
@@ -483,10 +486,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 )
             }
 
-            guard query.count >= 3 else {
-                return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: warning)
-            }
-
+            let termMatches = CJKText.ftsMatchTerms(query)
+            let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
             var parts = ["""
                 SELECT s.*, (
                     SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
@@ -495,24 +496,33 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     ORDER BY rank
                     LIMIT 1
                 ) AS snippet
-                FROM sessions_fts f
-                JOIN sessions s ON s.id = f.session_id
-                WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
             """]
-            // Two `query` binds: the snippet() subquery in the SELECT list and
-            // the main MATCH each reference the FTS query. snippet() is invalid
-            // alongside GROUP BY, so it runs in a correlated subquery that picks
-            // the best-ranked FTS row per session; the outer query keeps the
-            // existing GROUP BY/ORDER BY (sessions_fts is not 1:1 with sessions).
-            let match = CJKText.ftsMatchQuery(query)
-            var args: [DatabaseValueConvertible] = [match, match]
+            // Search at session granularity: every query token must exist
+            // somewhere in the session, not necessarily in the same FTS row.
+            // snippet() highlights the best row for the first token because no
+            // single row may contain every token.
+            var args: [DatabaseValueConvertible] = [snippetMatch]
+            for termMatch in termMatches {
+                parts.append("""
+                    AND EXISTS (
+                        SELECT 1 FROM sessions_fts
+                        WHERE sessions_fts MATCH ? AND session_id = s.id
+                    )
+                """)
+                args.append(termMatch)
+            }
             appendSearchFilters(for: request, to: &parts, args: &args)
             parts.append("""
-                GROUP BY s.id
-                ORDER BY MIN(rank)
+                ORDER BY (
+                    SELECT MIN(rank) FROM sessions_fts
+                    WHERE sessions_fts MATCH ? AND session_id = s.id
+                ), s.start_time DESC
                 LIMIT ?
             """)
+            args.append(snippetMatch)
             args.append(limit)
             let rows = try Row.fetchAll(
                 db,
@@ -544,11 +554,46 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 GROUP BY source
                 ORDER BY source
             """)
+            let searchableCounts = try sourceSearchableCounts(db)
+            let failedIndexJobCounts = try sourceFailedIndexJobCounts(db)
+            let tokenCounts = try sourceTokenCounts(db)
+            let costedCounts = try sourceCostedCounts(db)
+            let latestUsage = try sourceLatestUsage(db)
             return rows.map { row in
-                EngramServiceSourceInfo(
-                    name: row["source"],
-                    sessionCount: row["session_count"],
-                    latestIndexed: row["latest_indexed"] as String?
+                let source: String = row["source"]
+                let sessionCount: Int = row["session_count"]
+                let searchable = searchableCounts[source] ?? 0
+                let failed = failedIndexJobCounts[source] ?? 0
+                let tokenized = tokenCounts[source] ?? 0
+                let coverage = sessionCount > 0
+                    ? min(100, max(0, Int((Double(searchable) / Double(sessionCount) * 100).rounded())))
+                    : 0
+                let tokenCoverage = sessionCount > 0
+                    ? min(100, max(0, Int((Double(tokenized) / Double(sessionCount) * 100).rounded())))
+                    : 0
+                let usage = latestUsage[source]
+                return EngramServiceSourceInfo(
+                    name: source,
+                    sessionCount: sessionCount,
+                    latestIndexed: row["latest_indexed"] as String?,
+                    searchableSessionCount: searchable,
+                    searchCoveragePercent: coverage,
+                    failedIndexJobCount: failed,
+                    tokenSessionCount: tokenized,
+                    tokenCoveragePercent: tokenCoverage,
+                    costedSessionCount: costedCounts[source] ?? 0,
+                    latestUsageMetric: usage?.metric,
+                    latestUsageValue: usage?.value,
+                    latestUsageUnit: usage?.unit,
+                    latestUsageLimitValue: usage?.limitValue,
+                    latestUsageResetAt: usage?.resetAt,
+                    latestUsageStatus: usage?.status,
+                    healthStatus: sourceHealthStatus(
+                        sessionCount: sessionCount,
+                        searchableSessionCount: searchable,
+                        failedIndexJobCount: failed,
+                        latestUsageStatus: usage?.status
+                    )
                 )
             }
         }
@@ -602,11 +647,15 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     func resumeCommand(_ request: EngramServiceResumeCommandRequest) async throws -> EngramServiceResumeCommandResponse {
         // Extract Sendable scalars inside the read block — a GRDB Row is not
         // Sendable and cannot cross the blocking-read queue hop.
-        let session = try await read { db -> (id: String, source: String, cwd: String)? in
+        let session = try await read {
+            db -> (id: String, source: String, cwd: String, filePath: String, excerptLines: [String], metadataLines: [String])? in
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                    SELECT id, source, cwd
+                    SELECT
+                      id, source, cwd, file_path, project, model, message_count,
+                      user_message_count, assistant_message_count, tool_message_count,
+                      generated_title, summary
                     FROM sessions
                     WHERE id = ?
                 """,
@@ -614,7 +663,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             ) else {
                 return nil
             }
-            return (id: row["id"], source: row["source"], cwd: (row["cwd"] as String?) ?? "")
+            let sessionId: String = row["id"]
+            let excerpts = try Self.resumeContextExcerpts(db: db, sessionId: sessionId)
+            return (
+                id: sessionId,
+                source: row["source"],
+                cwd: (row["cwd"] as String?) ?? "",
+                filePath: (row["file_path"] as String?) ?? "",
+                excerptLines: excerpts,
+                metadataLines: Self.resumeMetadataContextLines(row: row)
+            )
         }
 
         guard let session else {
@@ -627,6 +685,22 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let sessionId: String = session.id
         let source: String = session.source
         let cwd: String = session.cwd
+        var contextLines = session.excerptLines
+        if contextLines.isEmpty {
+            contextLines = await Self.resumeTranscriptContextLines(
+                filePath: session.filePath,
+                source: source
+            )
+        }
+        if contextLines.isEmpty {
+            contextLines = session.metadataLines
+        }
+        let contextPrimer = Self.resumeContextPrimer(
+            sessionId: sessionId,
+            source: source,
+            cwd: cwd,
+            contextLines: contextLines
+        )
         switch source {
         case "claude-code":
             return resumeCLICommand(
@@ -634,6 +708,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 tool: "claude",
                 sessionId: sessionId,
                 cwd: cwd,
+                contextPrimer: contextPrimer,
                 installHint: "Install: npm install -g @anthropic-ai/claude-code"
             )
         case "codex":
@@ -642,6 +717,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 tool: "codex",
                 sessionId: sessionId,
                 cwd: cwd,
+                contextPrimer: contextPrimer,
                 installHint: "Install: npm install -g @openai/codex"
             )
         case "gemini-cli":
@@ -650,6 +726,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 tool: "gemini",
                 sessionId: sessionId,
                 cwd: cwd,
+                contextPrimer: contextPrimer,
                 installHint: "Install: npm install -g @google/gemini-cli"
             )
         case "cursor":
@@ -657,14 +734,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 tool: "cursor",
                 command: "open",
                 args: ["-a", "Cursor", cwd],
-                cwd: cwd
+                cwd: cwd,
+                contextPrimer: contextPrimer
             )
         default:
             return EngramServiceResumeCommandResponse(
                 tool: source,
                 command: "open",
                 args: [cwd],
-                cwd: cwd
+                cwd: cwd,
+                contextPrimer: contextPrimer
             )
         }
     }
@@ -752,6 +831,181 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return count > 0
     }
 
+    private func tableColumnNames(_ table: String, db: GRDB.Database) throws -> Set<String> {
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(\(table))")
+        return Set(rows.map { $0["name"] as String })
+    }
+
+    private func sourceSearchableCounts(_ db: GRDB.Database) throws -> [String: Int] {
+        guard try tableExists("sessions_fts", db: db) else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT s.source AS source, COUNT(DISTINCT f.session_id) AS count
+            FROM sessions_fts f
+            JOIN sessions s ON s.id = f.session_id
+            WHERE s.hidden_at IS NULL
+            GROUP BY s.source
+        """)
+        return sourceCountDictionary(rows)
+    }
+
+    private func sourceFailedIndexJobCounts(_ db: GRDB.Database) throws -> [String: Int] {
+        guard try tableExists("session_index_jobs", db: db) else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT s.source AS source, COUNT(*) AS count
+            FROM session_index_jobs j
+            JOIN sessions s ON s.id = j.session_id
+            WHERE s.hidden_at IS NULL
+              AND j.status IN ('failed_retryable', 'failed_terminal', 'failed')
+            GROUP BY s.source
+        """)
+        return sourceCountDictionary(rows)
+    }
+
+    private func sourceTokenCounts(_ db: GRDB.Database) throws -> [String: Int] {
+        guard try tableExists("session_costs", db: db) else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT s.source AS source, COUNT(DISTINCT c.session_id) AS count
+            FROM session_costs c
+            JOIN sessions s ON s.id = c.session_id
+            WHERE s.hidden_at IS NULL
+              AND (
+                COALESCE(c.input_tokens, 0)
+                + COALESCE(c.output_tokens, 0)
+                + COALESCE(c.cache_read_tokens, 0)
+                + COALESCE(c.cache_creation_tokens, 0)
+              ) > 0
+            GROUP BY s.source
+        """)
+        return sourceCountDictionary(rows)
+    }
+
+    private func sourceCostedCounts(_ db: GRDB.Database) throws -> [String: Int] {
+        guard try tableExists("session_costs", db: db) else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT s.source AS source, COUNT(DISTINCT c.session_id) AS count
+            FROM session_costs c
+            JOIN sessions s ON s.id = c.session_id
+            WHERE s.hidden_at IS NULL
+              AND COALESCE(c.cost_usd, 0) > 0
+            GROUP BY s.source
+        """)
+        return sourceCountDictionary(rows)
+    }
+
+    private struct LatestSourceUsage {
+        var metric: String
+        var value: Double
+        var unit: String?
+        var limitValue: Double?
+        var resetAt: String?
+        var status: String
+    }
+
+    private func sourceLatestUsage(_ db: GRDB.Database) throws -> [String: LatestSourceUsage] {
+        guard try tableExists("usage_snapshots", db: db) else { return [:] }
+        let columns = try tableColumnNames("usage_snapshots", db: db)
+        let statusExpression = columns.contains("status") ? "u.status" : "NULL"
+        let normalizedStatusExpression = "LOWER(TRIM(COALESCE(\(statusExpression), '')))"
+        let limitExpression = columns.contains("limit_value") ? "u.limit_value" : "NULL"
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT u.source AS source,
+                   u.metric AS metric,
+                   u.value AS value,
+                   u.unit AS unit,
+                   u.reset_at AS reset_at,
+                   \(limitExpression) AS limit_value,
+                   \(statusExpression) AS status
+            FROM usage_snapshots u
+            JOIN (
+                SELECT source, MAX(collected_at) AS collected_at
+                FROM usage_snapshots
+                GROUP BY source
+            ) latest
+              ON latest.source = u.source
+             AND latest.collected_at = u.collected_at
+            ORDER BY u.source,
+                     CASE
+                       WHEN \(normalizedStatusExpression) = 'critical' THEN 0
+                       WHEN \(normalizedStatusExpression) = 'attention' THEN 1
+                       WHEN LOWER(u.metric) LIKE '%pressure%' THEN 2
+                       WHEN LOWER(u.metric) LIKE '%used%'
+                         OR LOWER(u.metric) LIKE '%usage%'
+                         OR LOWER(u.metric) LIKE '%remaining%' THEN 2
+                       WHEN LOWER(u.metric) LIKE '5h%token%share%' THEN 3
+                       WHEN LOWER(u.metric) LIKE '7d%token%share%' THEN 4
+                       WHEN LOWER(u.metric) LIKE '%cost%share%' THEN 5
+                       ELSE 6
+                     END,
+                     u.metric
+        """)
+        var result: [String: LatestSourceUsage] = [:]
+        for row in rows {
+            let source: String = row["source"]
+            guard result[source] == nil else { continue }
+            result[source] = LatestSourceUsage(
+                metric: row["metric"],
+                value: row["value"],
+                unit: row["unit"] as String?,
+                limitValue: row["limit_value"] as Double?,
+                resetAt: row["reset_at"] as String?,
+                status: sourceUsageStatus(
+                    explicitStatus: row["status"] as String?,
+                    metric: row["metric"],
+                    value: row["value"],
+                    unit: row["unit"] as String?
+                )
+            )
+        }
+        return result
+    }
+
+    private func sourceCountDictionary(_ rows: [Row]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: rows.map { row in
+            (row["source"] as String, row["count"] as Int)
+        })
+    }
+
+    private func sourceHealthStatus(
+        sessionCount: Int,
+        searchableSessionCount: Int,
+        failedIndexJobCount: Int,
+        latestUsageStatus: String?
+    ) -> String {
+        if sessionCount == 0 { return "empty" }
+        if latestUsageStatus == "critical" { return "critical" }
+        if failedIndexJobCount > 0 { return "attention" }
+        if latestUsageStatus == "attention" { return "attention" }
+        if searchableSessionCount < sessionCount { return "partial" }
+        return "healthy"
+    }
+
+    private func sourceUsageStatus(explicitStatus: String?, metric: String, value: Double, unit: String?) -> String {
+        if let explicitStatus {
+            let normalizedStatus = explicitStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["critical", "attention", "ok", "observed"].contains(normalizedStatus) {
+                return normalizedStatus
+            }
+        }
+        guard isPercentUnit(unit) else { return "observed" }
+        let normalizedMetric = metric.lowercased()
+        let pressure: Double?
+        if normalizedMetric.contains("remaining") {
+            pressure = 100 - value
+        } else if normalizedMetric.contains("used") || normalizedMetric.contains("usage") {
+            pressure = value
+        } else {
+            pressure = nil
+        }
+        guard let pressure else { return "observed" }
+        if pressure >= 90 { return "critical" }
+        if pressure >= 70 { return "attention" }
+        return "observed"
+    }
+
+    private func isPercentUnit(_ unit: String?) -> Bool {
+        unit == nil || unit == "%"
+    }
+
     private func appendSearchFilters(
         for request: EngramServiceSearchRequest,
         to parts: inout [String],
@@ -835,10 +1089,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         tool: String,
         sessionId: String,
         cwd: String,
+        contextPrimer: String?,
         installHint: String
     ) -> EngramServiceResumeCommandResponse {
         guard let path = commandLocator(tool) else {
             return EngramServiceResumeCommandResponse(
+                contextPrimer: contextPrimer,
                 error: "\(source) CLI not found",
                 hint: installHint
             )
@@ -847,8 +1103,128 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             tool: tool,
             command: path,
             args: ["--resume", sessionId],
-            cwd: cwd
+            cwd: cwd,
+            contextPrimer: contextPrimer
         )
+    }
+
+    private static func resumeContextExcerpts(db: GRDB.Database, sessionId: String) throws -> [String] {
+        guard try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'sessions_fts'"
+        ) ?? 0 > 0 else {
+            return []
+        }
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT content FROM (
+                    SELECT rowid, content
+                    FROM (
+                        SELECT rowid, content
+                        FROM sessions_fts
+                        WHERE session_id = ?
+                        ORDER BY rowid
+                        LIMIT 1
+                    )
+                    UNION
+                    SELECT rowid, content
+                    FROM (
+                        SELECT rowid, content
+                        FROM sessions_fts
+                        WHERE session_id = ?
+                        ORDER BY rowid DESC
+                        LIMIT 5
+                    )
+                )
+                ORDER BY rowid
+            """,
+            arguments: [sessionId, sessionId]
+        )
+        return rows.compactMap { row in
+            let redacted = TranscriptExportService.redactSensitiveContent((row["content"] as String?) ?? "")
+            return sanitizedResumeContextExcerpt(redacted)
+        }
+    }
+
+    private static func resumeContextPrimer(
+        sessionId: String,
+        source: String,
+        cwd: String,
+        contextLines: [String]
+    ) -> String? {
+        guard !contextLines.isEmpty else { return nil }
+        var lines = [
+            "Resume context from Engram archive:",
+            "Session: \(sessionId)",
+            "Source: \(source)",
+            "CWD: \(cwd)",
+            "",
+            "Archived context:"
+        ]
+        lines.append(contentsOf: contextLines.map { "- \($0)" })
+        return String(lines.joined(separator: "\n").prefix(4_000))
+    }
+
+    private static func resumeTranscriptContextLines(filePath: String, source: String) async -> [String] {
+        let trimmedPath = filePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else { return [] }
+        guard let messages = try? await ServiceTranscriptReader.readMessages(filePath: trimmedPath, source: source) else {
+            return []
+        }
+        return resumeTranscriptPrimerMessages(messages).compactMap { message in
+            let redacted = TranscriptExportService.redactSensitiveContent(message.content)
+            guard let content = sanitizedResumeContextExcerpt(redacted) else { return nil }
+            let role = message.role == "user" ? "User" : "Assistant"
+            return "\(role): \(content)"
+        }
+    }
+
+    private static func resumeTranscriptPrimerMessages(
+        _ messages: [ServiceTranscriptMessage],
+        limit: Int = 6
+    ) -> [ServiceTranscriptMessage] {
+        guard limit > 0 else { return [] }
+        guard messages.count > limit else { return Array(messages.prefix(limit)) }
+        if limit == 1 {
+            return [messages[0]]
+        }
+        return [messages[0]] + Array(messages.suffix(limit - 1))
+    }
+
+    private static func resumeMetadataContextLines(row: Row) -> [String] {
+        var lines: [String] = []
+        if let title = sanitizedResumeContextExcerpt(row["generated_title"] as String?) {
+            lines.append("Title: \(title)")
+        }
+        if let summary = sanitizedResumeContextExcerpt(row["summary"] as String?) {
+            lines.append("Summary: \(summary)")
+        }
+        if let project = sanitizedResumeContextExcerpt(row["project"] as String?) {
+            lines.append("Project: \(project)")
+        }
+        if let model = sanitizedResumeContextExcerpt(row["model"] as String?) {
+            lines.append("Model: \(model)")
+        }
+        let messageCount: Int = row["message_count"]
+        let userMessageCount: Int = row["user_message_count"]
+        let assistantMessageCount: Int = row["assistant_message_count"]
+        let toolMessageCount: Int = row["tool_message_count"]
+        if messageCount > 0 || userMessageCount > 0 || assistantMessageCount > 0 || toolMessageCount > 0 {
+            lines.append(
+                "Messages: \(messageCount) total, \(userMessageCount) user, \(assistantMessageCount) assistant, \(toolMessageCount) tool"
+            )
+        }
+        return lines
+    }
+
+    private static func sanitizedResumeContextExcerpt(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let collapsed = value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collapsed.isEmpty else { return nil }
+        return String(collapsed.prefix(500))
     }
 
     nonisolated private static func defaultCommandLocator(_ name: String) -> String? {

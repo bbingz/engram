@@ -589,6 +589,36 @@ final class StartupBackfillTests: XCTestCase {
         XCTAssertTrue(events.contains(StartupBackfillEvent(event: "backfill_inline", payload: ["type": .string("costs")])))
     }
 
+    func testBackfillCostsComputesKnownModelZeroCostRows() throws {
+        try writer.write { db in
+            try insertSession(db, id: "cost-backfill", source: "claude-code", tier: "normal")
+            try db.execute(
+                sql: "UPDATE sessions SET model = 'claude-sonnet-4-6' WHERE id = 'cost-backfill'"
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO session_costs(
+                  session_id, model, input_tokens, output_tokens, cache_read_tokens,
+                  cache_creation_tokens, cost_usd, computed_at
+                ) VALUES ('cost-backfill', 'claude-sonnet-4-6', 1000000, 100000, 500000, 10000, 0, '2026-01-01T00:00:00.000Z')
+                """
+            )
+
+            let changed = try StartupBackfills.backfillCosts(db)
+
+            XCTAssertEqual(changed, 1)
+            XCTAssertEqual(
+                try XCTUnwrap(Double.fetchOne(db, sql: "SELECT cost_usd FROM session_costs WHERE session_id = 'cost-backfill'")),
+                4.6875,
+                accuracy: 0.000_001
+            )
+            XCTAssertNotEqual(
+                try String.fetchOne(db, sql: "SELECT computed_at FROM session_costs WHERE session_id = 'cost-backfill'"),
+                "2026-01-01T00:00:00.000Z"
+            )
+        }
+    }
+
     func testBackfillFilePathsUpdatesSessionsAndLocalStateIgnoringSyncLocators() throws {
         try writer.write { db in
             try insertSession(db, id: "local", source: "codex", filePath: "", sourceLocator: "/tmp/local.jsonl")

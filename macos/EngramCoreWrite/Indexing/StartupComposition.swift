@@ -3,6 +3,30 @@ import GRDB
 import EngramCoreRead
 import os
 
+public enum UsageParserBackfillPolicy {
+    public static let metadataKey = "usage_parser_version"
+    public static let currentVersion = "4"
+
+    public static func needsBackfill(_ db: GRDB.Database) throws -> Bool {
+        let stored = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [metadataKey]
+        )
+        return stored != currentVersion
+    }
+
+    public static func markComplete(_ db: GRDB.Database) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [metadataKey, currentVersion]
+        )
+    }
+}
+
 /// Production conformers that wire the unit-tested `StartupBackfills` static
 /// functions into a real `EngramDatabaseWriter` so the composition root
 /// (`EngramServiceRunner`) can run the initial scan once on startup.
@@ -44,9 +68,11 @@ public final class WriterStartupIndexing: StartupIndexing {
     /// separate Swift count-backfill pass.
     public func backfillCounts() async throws -> Int { 0 }
 
-    /// Cost computation has no Swift provider; zero-cost rows are seeded during
-    /// indexing. No separate backfill pass.
-    public func backfillCosts() async throws -> Int { 0 }
+    /// Cost rows are written directly by the indexer upsert; this pass only
+    /// re-prices legacy zero-cost rows that already have token usage.
+    public func backfillCosts() async throws -> Int {
+        try writer.write { db in try StartupBackfills.backfillCosts(db) }
+    }
 }
 
 // MARK: - Database maintenance

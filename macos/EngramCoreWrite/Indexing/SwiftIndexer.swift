@@ -158,12 +158,27 @@ public final class SwiftIndexer {
         var toolCount = 0
         var firstUserMessages: [String] = []
         var toolCallCounts: [String: Int] = [:]
+        var tokenUsage: TokenUsage?
+
+        mutating func addUsage(_ usage: TokenUsage) {
+            let current = tokenUsage ?? TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
+            tokenUsage = TokenUsage(
+                inputTokens: current.inputTokens + usage.inputTokens,
+                outputTokens: current.outputTokens + usage.outputTokens,
+                cacheReadTokens: (current.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0),
+                cacheCreationTokens: (current.cacheCreationTokens ?? 0) + (usage.cacheCreationTokens ?? 0)
+            )
+        }
     }
 
     private func streamStats(adapter: any SessionAdapter, locator: String) async throws -> SessionStreamStats {
         var stats = SessionStreamStats()
         let stream = try await adapter.streamMessages(locator: locator, options: StreamMessagesOptions())
         for try await message in stream {
+            if let usage = message.usage {
+                stats.addUsage(usage)
+            }
+
             for call in message.toolCalls ?? [] {
                 guard !call.name.isEmpty else { continue }
                 stats.toolCallCounts[call.name, default: 0] += 1
@@ -240,7 +255,8 @@ public final class SwiftIndexer {
             tier: tier,
             agentRole: info.agentRole,
             parentSessionId: info.parentSessionId,
-            toolCallCounts: stats.toolCallCounts
+            toolCallCounts: stats.toolCallCounts,
+            tokenUsage: stats.tokenUsage
         )
     }
 

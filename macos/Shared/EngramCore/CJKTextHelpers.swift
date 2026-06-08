@@ -38,11 +38,14 @@ public enum CJKText {
     /// matched literally instead of parsed as query syntax (which throws). Tokens
     /// are space-joined, preserving multi-word implicit-AND semantics.
     public static func ftsMatchQuery(_ raw: String) -> String {
-        let tokens = raw.split(whereSeparator: { $0.isWhitespace })
+        let tokens = ftsMatchTerms(raw)
         guard !tokens.isEmpty else { return "\"\"" }
-        return tokens
+        return tokens.joined(separator: " ")
+    }
+
+    public static func ftsMatchTerms(_ raw: String) -> [String] {
+        raw.split(whereSeparator: { $0.isWhitespace })
             .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-            .joined(separator: " ")
     }
 
     /// Build a match-centered, `<mark>`-highlighted preview for the CJK/LIKE

@@ -98,4 +98,225 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
         XCTAssertEqual(dirInfo.st_mode & 0o077, 0)
         XCTAssertEqual(fileInfo.st_mode & 0o077, 0)
     }
+
+    func testUsageTokenLimitSettingsWritesServiceReaderShape() {
+        let settings = UsageTokenLimitSettings(
+            codexFiveHourTokens: 1300,
+            codexWeeklyTokens: 9000,
+            claudeFiveHourTokens: 750,
+            claudeWeeklyTokens: nil
+        )
+
+        let object = settings.settingsObject()
+
+        let codex = object["codex"]
+        XCTAssertEqual(codex?["fiveHourTokens"], 1300)
+        XCTAssertEqual(codex?["weeklyTokens"], 9000)
+
+        let claude = object["claude-code"]
+        XCTAssertEqual(claude?["fiveHourTokens"], 750)
+        XCTAssertNil(claude?["weeklyTokens"])
+    }
+
+    func testUsageTokenLimitSettingsOmitsEmptySources() {
+        let settings = UsageTokenLimitSettings(
+            codexFiveHourTokens: 0,
+            codexWeeklyTokens: nil,
+            claudeFiveHourTokens: -1,
+            claudeWeeklyTokens: 0
+        )
+
+        XCTAssertTrue(settings.settingsObject().isEmpty)
+    }
+
+    func testUsageTokenLimitSettingsPreservesUnknownSourcesWhenSavingVisibleFields() {
+        let settings = UsageTokenLimitSettings(sourceLimits: [
+            "codex": UsageTokenLimitSettings.Limit(fiveHourTokens: 1300, weeklyTokens: nil),
+            "claude-code": UsageTokenLimitSettings.Limit(fiveHourTokens: 750, weeklyTokens: nil),
+            "opencode": UsageTokenLimitSettings.Limit(fiveHourTokens: 2400, weeklyTokens: nil),
+        ])
+
+        let object = settings.settingsObject(preservingUnknownFrom: [
+            "opencode": [
+                "fiveHourTokens": 2200.0,
+                "weeklyTokens": -1.0,
+            ],
+            "gemini-cli": [
+                "weeklyTokens": 5000.0,
+            ],
+            "codex": [
+                "fiveHourTokens": 1.0,
+                "weeklyTokens": 2.0,
+            ],
+            "invalid": [
+                "fiveHourTokens": 0.0,
+            ],
+        ])
+
+        XCTAssertEqual(object["codex"]?["fiveHourTokens"], 1300)
+        XCTAssertNil(object["codex"]?["weeklyTokens"])
+        XCTAssertEqual(object["claude-code"]?["fiveHourTokens"], 750)
+
+        XCTAssertEqual(object["opencode"]?["fiveHourTokens"], 2400)
+        XCTAssertNil(object["opencode"]?["weeklyTokens"])
+        XCTAssertEqual(object["gemini-cli"]?["weeklyTokens"], 5000)
+        XCTAssertNil(object["invalid"])
+    }
+
+    func testUsageTokenLimitRowsClearVisibleSourceWhilePreservingHiddenSources() {
+        let rows = [
+            UsageTokenLimitEditableRow(id: "codex", name: "Codex", fiveHourTokens: 0, weeklyTokens: 0),
+            UsageTokenLimitEditableRow(id: "claude-code", name: "Claude Code", fiveHourTokens: 750, weeklyTokens: 0),
+        ]
+
+        let object = UsageTokenLimitEditableRow.settingsObject(
+            from: rows,
+            preservingUnknownFrom: [
+                "codex": [
+                    "fiveHourTokens": 1300.0,
+                ],
+                "custom-ai": [
+                    "weeklyTokens": 5000.0,
+                ],
+            ]
+        )
+
+        XCTAssertNil(object["codex"])
+        XCTAssertEqual(object["claude-code"]?["fiveHourTokens"], 750)
+        XCTAssertEqual(object["custom-ai"]?["weeklyTokens"], 5000)
+    }
+
+    func testUsageTokenLimitRowsCanExcludeDeletedCustomSources() {
+        let rows = [
+            UsageTokenLimitEditableRow(id: "codex", name: "Codex", fiveHourTokens: 1300, weeklyTokens: 0),
+        ]
+
+        let object = UsageTokenLimitEditableRow.settingsObject(
+            from: rows,
+            preservingUnknownFrom: [
+                "custom-ai": [
+                    "weeklyTokens": 5000.0,
+                ],
+                "hidden-ai": [
+                    "fiveHourTokens": 700.0,
+                ],
+            ],
+            excludingSourceIDs: [" Custom-AI "]
+        )
+
+        XCTAssertEqual(object["codex"]?["fiveHourTokens"], 1300)
+        XCTAssertNil(object["custom-ai"])
+        XCTAssertEqual(object["hidden-ai"]?["fiveHourTokens"], 700)
+    }
+
+    func testUsageTokenLimitSettingsReadsAndWritesArbitrarySourceLimits() {
+        let parsed = UsageTokenLimitSettings(settingsObject: [
+            "codex": [
+                "fiveHourTokens": 1300.0,
+            ],
+            "opencode": [
+                "fiveHourTokens": 2200.0,
+            ],
+            "copilot": [
+                "weeklyTokens": 7000.0,
+            ],
+            "gemini-cli": [
+                "fiveHourTokens": 0.0,
+                "weeklyTokens": 5000.0,
+            ],
+        ])
+
+        XCTAssertEqual(parsed.limit(for: "codex")?.fiveHourTokens, 1300)
+        XCTAssertEqual(parsed.limit(for: "opencode")?.fiveHourTokens, 2200)
+        XCTAssertEqual(parsed.limit(for: "copilot")?.weeklyTokens, 7000)
+        XCTAssertNil(parsed.limit(for: "gemini-cli")?.fiveHourTokens)
+        XCTAssertEqual(parsed.limit(for: "gemini-cli")?.weeklyTokens, 5000)
+
+        let object = parsed.settingsObject()
+        XCTAssertEqual(object["opencode"]?["fiveHourTokens"], 2200)
+        XCTAssertEqual(object["copilot"]?["weeklyTokens"], 7000)
+        XCTAssertEqual(object["gemini-cli"]?["weeklyTokens"], 5000)
+    }
+
+    func testUsageTokenLimitRowsLoadUnknownSourcesFromSettings() {
+        let settings = UsageTokenLimitSettings(settingsObject: [
+            "codex": [
+                "fiveHourTokens": 1300.0,
+            ],
+            "custom-ai": [
+                "weeklyTokens": 5000.0,
+            ],
+        ])
+
+        let rows = UsageTokenLimitEditableRow.rows(for: settings)
+
+        XCTAssertEqual(rows.first { $0.id == "codex" }?.fiveHourTokens, 1300)
+        XCTAssertEqual(rows.first { $0.id == "custom-ai" }?.name, "custom-ai")
+        XCTAssertEqual(rows.first { $0.id == "custom-ai" }?.weeklyTokens, 5000)
+        XCTAssertEqual(rows.last?.id, "custom-ai")
+    }
+
+    func testUsageTokenLimitSettingsNormalizesSourceKeys() {
+        let parsed = UsageTokenLimitSettings(settingsObject: [
+            " Codex ": [
+                "fiveHourTokens": 1300.0,
+            ],
+            "CLAUDE-CODE": [
+                "weeklyTokens": 9000.0,
+            ],
+        ])
+
+        XCTAssertEqual(parsed.limit(for: "codex")?.fiveHourTokens, 1300)
+        XCTAssertEqual(parsed.limit(for: "claude-code")?.weeklyTokens, 9000)
+        XCTAssertEqual(parsed.limit(for: " Codex ")?.fiveHourTokens, 1300)
+        XCTAssertEqual(parsed.limit(for: "CLAUDE-CODE")?.weeklyTokens, 9000)
+        XCTAssertEqual(Set(parsed.settingsObject().keys), ["codex", "claude-code"])
+
+        let direct = UsageTokenLimitSettings(sourceLimits: [
+            " Codex ": UsageTokenLimitSettings.Limit(fiveHourTokens: 1400, weeklyTokens: nil),
+        ])
+
+        XCTAssertEqual(direct.limit(for: "codex")?.fiveHourTokens, 1400)
+        XCTAssertEqual(direct.limit(for: " Codex ")?.fiveHourTokens, 1400)
+        XCTAssertEqual(Set(direct.settingsObject().keys), ["codex"])
+    }
+
+    func testUsageTokenLimitSettingsReadsServiceReaderShape() {
+        let parsed = UsageTokenLimitSettings(settingsObject: [
+            "codex": [
+                "fiveHourTokens": 1300.0,
+                "weeklyTokens": 9000.0
+            ],
+            "claude-code": [
+                "fiveHourTokens": 750.0
+            ]
+        ])
+
+        XCTAssertEqual(parsed.codexFiveHourTokens, 1300)
+        XCTAssertEqual(parsed.codexWeeklyTokens, 9000)
+        XCTAssertEqual(parsed.claudeFiveHourTokens, 750)
+        XCTAssertNil(parsed.claudeWeeklyTokens)
+    }
+
+    func testUsageTokenLimitRowsAppendCustomSourceOnceWithNormalizedID() {
+        let rows = UsageTokenLimitEditableRow.appendingCustomSource(
+            " Pi ",
+            to: UsageTokenLimitEditableRow.defaultRows
+        )
+        let duplicateRows = UsageTokenLimitEditableRow.appendingCustomSource("PI", to: rows)
+
+        XCTAssertEqual(rows.last?.id, "pi")
+        XCTAssertEqual(rows.last?.name, "pi")
+        XCTAssertEqual(duplicateRows.filter { $0.id == "pi" }.count, 1)
+    }
+
+    func testUsageTokenLimitRowsDistinguishDefaultAndCustomSources() {
+        let rows = UsageTokenLimitEditableRow.appendingCustomSource(
+            "commandcode",
+            to: UsageTokenLimitEditableRow.defaultRows
+        )
+
+        XCTAssertEqual(rows.first { $0.id == "codex" }?.isDefaultSource, true)
+        XCTAssertEqual(rows.first { $0.id == "commandcode" }?.isDefaultSource, false)
+    }
 }

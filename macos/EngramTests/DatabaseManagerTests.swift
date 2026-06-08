@@ -119,6 +119,62 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testListSessionsDefaultsToLastAccessedTimeWhenPresent() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "created-newer",
+            startTime: "2026-05-09T12:00:00Z"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "accessed-newer",
+            startTime: "2026-05-08T12:00:00Z"
+        )
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET last_accessed_at = ? WHERE id = ?",
+                arguments: ["2026-05-10T12:00:00Z", "accessed-newer"]
+            )
+        }
+
+        let sessions = try db.listSessions()
+
+        XCTAssertEqual(sessions.map(\.id), ["accessed-newer", "created-newer"])
+        XCTAssertEqual(sessions.first?.lastAccessedAt, "2026-05-10T12:00:00Z")
+        XCTAssertEqual(sessions.first?.accessCount, 0)
+    }
+
+    func testAccessedSortFallsBackToCreatedSortWithoutAccessMetadataColumns() {
+        XCTAssertEqual(
+            SessionSort.accessedDesc.orderSQL(hasAccessMetadata: false),
+            SessionSort.createdDesc.rawValue
+        )
+        XCTAssertEqual(
+            SessionSort.accessedAsc.orderSQL(hasAccessMetadata: false),
+            SessionSort.createdAsc.rawValue
+        )
+        XCTAssertEqual(
+            SessionSort.updatedDesc.orderSQL(hasAccessMetadata: false),
+            SessionSort.updatedDesc.rawValue
+        )
+    }
+
+    @MainActor
+    func testListGroupsAccessedSortFallsBackOnLegacySchema() throws {
+        db = nil
+        cleanupTempDatabase(at: dbPath)
+        try createLegacySessionsTableWithoutAccessMetadata(at: dbPath)
+        db = DatabaseManager(path: dbPath)
+        try db.open()
+
+        let groups = try db.listGroups(by: .project, sort: .accessedDesc)
+
+        XCTAssertEqual(groups.map(\.key), ["newer", "older"])
+        XCTAssertEqual(groups.map(\.lastUpdated), ["2026-05-10T12:00:00Z", "2026-05-09T12:00:00Z"])
+    }
+
+    @MainActor
     func testListSessionsWithSourceFilter() throws {
         try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
         try insertTestSession(at: dbPath, id: "s2", source: "cursor")
@@ -354,6 +410,19 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(results.first?.id, "s1")
     }
 
+    @MainActor
+    func testSearchMatchesTermsAcrossMessagesWithinSameSession() throws {
+        try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
+        try insertTestSession(at: dbPath, id: "s2", source: "claude-code")
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "alpha planning note")
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "beta verifier note")
+        try insertFTSContent(at: dbPath, sessionId: "s2", content: "alpha only note")
+
+        let results = try db.search(query: "alpha beta")
+
+        XCTAssertEqual(results.map(\.id), ["s1"])
+    }
+
     // quality_score (already computed at index time) must decode into the GUI
     // read model. Session uses an explicit CodingKeys enum, so qualityScore must
     // be a listed key or it silently stays nil.
@@ -391,6 +460,56 @@ final class DatabaseManagerTests: XCTestCase {
         let snippet = try XCTUnwrap(hits.first?.snippet)
         XCTAssertTrue(snippet.contains("<mark>needle</mark>"), "got: \(snippet.prefix(80))")
         XCTAssertLessThan(snippet.count, filler.count)
+    }
+
+    @MainActor
+    func testSearchWithSnippetsMatchesTermsAcrossMessagesWithinSameSession() throws {
+        try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
+        try insertTestSession(at: dbPath, id: "s2", source: "claude-code")
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "alpha planning note")
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "beta verifier note")
+        try insertFTSContent(at: dbPath, sessionId: "s2", content: "alpha only note")
+
+        let hits = try db.searchWithSnippets(query: "alpha beta", limit: 10)
+
+        XCTAssertEqual(hits.map(\.session.id), ["s1"])
+        let snippet = try XCTUnwrap(hits.first?.snippet)
+        XCTAssertTrue(snippet.contains("<mark>alpha</mark>") || snippet.contains("<mark>beta</mark>"), "got: \(snippet)")
+    }
+
+    @MainActor
+    func testSearchShortLatinAbbreviationUsesLiteralFallback() throws {
+        try insertTestSession(at: dbPath, id: "s-ai", source: "codex")
+        try insertTestSession(at: dbPath, id: "s-other", source: "codex")
+        try insertFTSContent(at: dbPath, sessionId: "s-ai", content: "Ship the AI usage monitor before release")
+        try insertFTSContent(at: dbPath, sessionId: "s-other", content: "Ship the quota monitor before release")
+
+        let results = try db.search(query: "AI")
+
+        XCTAssertEqual(results.map(\.id), ["s-ai"])
+    }
+
+    @MainActor
+    func testSearchWithSnippetsShortLatinAbbreviationHighlightsLiteralFallback() throws {
+        try insertTestSession(at: dbPath, id: "s-ui", source: "codex")
+        try insertFTSContent(at: dbPath, sessionId: "s-ui", content: "Polish the UI quota warning")
+
+        let hits = try db.searchWithSnippets(query: "UI", limit: 10)
+
+        XCTAssertEqual(hits.map(\.session.id), ["s-ui"])
+        XCTAssertTrue(hits.first?.snippet.contains("<mark>UI</mark>") ?? false, "got: \(hits.first?.snippet ?? "")")
+    }
+
+    @MainActor
+    func testSearchShortLatinFallbackEscapesLikeWildcards() throws {
+        try insertTestSession(at: dbPath, id: "literal", source: "codex")
+        try insertTestSession(at: dbPath, id: "wildcard", source: "codex")
+        try insertFTSContent(at: dbPath, sessionId: "literal", content: "Exact A_ marker")
+        try insertFTSContent(at: dbPath, sessionId: "wildcard", content: "Exact AI marker")
+
+        let results = try db.search(query: "A_")
+
+        XCTAssertEqual(results.map(\.id), ["literal"])
     }
 
     @MainActor
@@ -792,5 +911,49 @@ final class DatabaseManagerTests: XCTestCase {
                 ) VALUES (?, 'claude-code', ?, NULL, ?, 'engram', 1, '/tmp/test.jsonl', 0, datetime('now'), 'normal')
             """, arguments: [id, startTime, cwd])
         }
+    }
+}
+
+private func createLegacySessionsTableWithoutAccessMetadata(at path: String) throws {
+    var configuration = Configuration()
+    configuration.prepareDatabase { db in
+        try db.execute(sql: "PRAGMA journal_mode = DELETE")
+    }
+    let queue = try DatabaseQueue(path: path, configuration: configuration)
+    try queue.write { db in
+        try db.execute(sql: "PRAGMA journal_mode = DELETE")
+        try db.execute(sql: """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                cwd TEXT NOT NULL DEFAULT '',
+                project TEXT,
+                model TEXT,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0,
+                tool_message_count INTEGER NOT NULL DEFAULT 0,
+                system_message_count INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                file_path TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                agent_role TEXT,
+                parent_session_id TEXT,
+                suggested_parent_id TEXT,
+                hidden_at TEXT,
+                custom_name TEXT,
+                tier TEXT,
+                generated_title TEXT,
+                quality_score INTEGER
+            );
+            INSERT INTO sessions (
+                id, source, start_time, cwd, project, file_path
+            ) VALUES
+                ('older', 'codex', '2026-05-09T12:00:00Z', '/tmp/older', 'older', '/tmp/older.jsonl'),
+                ('newer', 'codex', '2026-05-10T12:00:00Z', '/tmp/newer', 'newer', '/tmp/newer.jsonl');
+        """)
     }
 }

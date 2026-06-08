@@ -26,6 +26,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
     public var agentRole: String?
     public var parentSessionId: String?
     public var toolCallCounts: [String: Int]
+    public var tokenUsage: TokenUsage?
 
     public init(
         id: String,
@@ -52,7 +53,8 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         tier: SessionTier? = nil,
         agentRole: String? = nil,
         parentSessionId: String? = nil,
-        toolCallCounts: [String: Int] = [:]
+        toolCallCounts: [String: Int] = [:],
+        tokenUsage: TokenUsage? = nil
     ) {
         self.id = id
         self.source = source
@@ -79,6 +81,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         self.agentRole = agentRole
         self.parentSessionId = parentSessionId
         self.toolCallCounts = toolCallCounts
+        self.tokenUsage = tokenUsage
     }
 }
 

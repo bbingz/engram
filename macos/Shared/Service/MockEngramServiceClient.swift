@@ -26,6 +26,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
     let dismissSuggestionResult: Result<Void, Error>
     let triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
+    let refreshUsageResult: Result<EngramServiceRefreshUsageResponse, Error>
     let regenerateAllTitlesResult: Result<EngramServiceRegenerateTitlesResponse, Error>
     let projectMigrationsResult: Result<EngramServiceProjectMigrationsResponse, Error>
     let projectCwdsResult: Result<EngramServiceProjectCwdsResponse, Error>
@@ -35,6 +36,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let setFavoriteResult: Result<Void, Error>
     let setSessionHiddenResult: Result<Void, Error>
     let renameSessionResult: Result<Void, Error>
+    let recordSessionAccessResult: Result<Void, Error>
     let hideEmptySessionsResult: Result<EngramServiceHideEmptySessionsResponse, Error>
     let exportSessionResult: Result<EngramServiceExportSessionResponse, Error>
     private let eventStream: AsyncThrowingStream<EngramServiceEvent, Error>
@@ -66,6 +68,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         clearParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         confirmSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         triggerSync: EngramServiceTriggerSyncResponse = EngramServiceTriggerSyncResponse(results: []),
+        refreshUsage: EngramServiceRefreshUsageResponse = EngramServiceRefreshUsageResponse(snapshotCount: 0, sources: []),
         regenerateAllTitles: EngramServiceRegenerateTitlesResponse = EngramServiceRegenerateTitlesResponse(
             status: "started",
             total: 0,
@@ -106,6 +109,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.confirmSuggestionResult = .success(confirmSuggestion)
         self.dismissSuggestionResult = .success(())
         self.triggerSyncResult = .success(triggerSync)
+        self.refreshUsageResult = .success(refreshUsage)
         self.regenerateAllTitlesResult = .success(regenerateAllTitles)
         self.projectMigrationsResult = .success(projectMigrations)
         self.projectCwdsResult = .success(projectCwds)
@@ -115,6 +119,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.setFavoriteResult = .success(())
         self.setSessionHiddenResult = .success(())
         self.renameSessionResult = .success(())
+        self.recordSessionAccessResult = .success(())
         self.hideEmptySessionsResult = .success(hideEmptySessions)
         self.exportSessionResult = .success(exportSession)
         self.eventStream = events
@@ -192,6 +197,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         try triggerSyncResult.get()
     }
 
+    func refreshUsage() async throws -> EngramServiceRefreshUsageResponse {
+        try refreshUsageResult.get()
+    }
+
     func regenerateAllTitles() async throws -> EngramServiceRegenerateTitlesResponse {
         try regenerateAllTitlesResult.get()
     }
@@ -226,6 +235,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func renameSession(sessionId: String, name: String?) async throws {
         _ = try renameSessionResult.get()
+    }
+
+    func recordSessionAccess(sessionId: String) async throws {
+        _ = try recordSessionAccessResult.get()
     }
 
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse {

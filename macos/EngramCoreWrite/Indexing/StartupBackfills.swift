@@ -459,6 +459,56 @@ public enum StartupBackfills {
         return rows.count
     }
 
+    public static func backfillCosts(_ db: Database) throws -> Int {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT c.session_id,
+                   COALESCE(NULLIF(c.model, ''), NULLIF(s.model, '')) AS model,
+                   COALESCE(c.input_tokens, 0) AS input_tokens,
+                   COALESCE(c.output_tokens, 0) AS output_tokens,
+                   COALESCE(c.cache_read_tokens, 0) AS cache_read_tokens,
+                   COALESCE(c.cache_creation_tokens, 0) AS cache_creation_tokens
+            FROM session_costs c
+            LEFT JOIN sessions s ON s.id = c.session_id
+            WHERE COALESCE(c.cost_usd, 0) = 0
+              AND (
+                COALESCE(c.input_tokens, 0) > 0
+                OR COALESCE(c.output_tokens, 0) > 0
+                OR COALESCE(c.cache_read_tokens, 0) > 0
+                OR COALESCE(c.cache_creation_tokens, 0) > 0
+              )
+            """
+        )
+        guard !rows.isEmpty else { return 0 }
+
+        var changed = 0
+        for row in rows {
+            let model: String? = row["model"]
+            let usage = TokenUsage(
+                inputTokens: row["input_tokens"],
+                outputTokens: row["output_tokens"],
+                cacheReadTokens: row["cache_read_tokens"],
+                cacheCreationTokens: row["cache_creation_tokens"]
+            )
+            let costUSD = SessionCostPricing.computeCost(model: model, usage: usage)
+            guard costUSD > 0 else { continue }
+
+            try db.execute(
+                sql: """
+                UPDATE session_costs
+                SET model = NULLIF(?, ''),
+                    cost_usd = ?,
+                    computed_at = datetime('now')
+                WHERE session_id = ?
+                """,
+                arguments: [model ?? "", costUSD, row["session_id"]]
+            )
+            changed += 1
+        }
+        return changed
+    }
+
     public static func deduplicateFilePaths(_ db: Database) throws -> Int {
         let duplicateMappingSQL = """
             WITH keepers AS (

@@ -23,6 +23,7 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse
     func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse
+    func refreshUsage() async throws -> EngramServiceRefreshUsageResponse
     func regenerateAllTitles() async throws -> EngramServiceRegenerateTitlesResponse
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse
     func projectCwds(project: String) async throws -> EngramServiceProjectCwdsResponse
@@ -32,6 +33,7 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func setFavorite(sessionId: String, favorite: Bool) async throws
     func setSessionHidden(sessionId: String, hidden: Bool) async throws
     func renameSession(sessionId: String, name: String?) async throws
+    func recordSessionAccess(sessionId: String) async throws
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse
     func exportSession(_ request: EngramServiceExportSessionRequest) async throws -> EngramServiceExportSessionResponse
     func events() -> AsyncThrowingStream<EngramServiceEvent, Error>

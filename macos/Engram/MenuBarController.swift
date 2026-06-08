@@ -14,6 +14,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let db: DatabaseManager
     private let serviceStatusStore: EngramServiceStatusStore
     private let serviceClient: EngramServiceClient
+    private let usagePressureNotifier = UsagePressureNotifier()
     private var clickTimer: Timer?
     private var badgeTimer: Timer?
     // Rate-limit the live-session FS scan: the 10s timer AND every
@@ -74,13 +75,15 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // OBS-O2: reflect degraded/error service status in the menu bar.
         self.updateStatusIndicator()
         self.observeServiceStatus()
+        usagePressureNotifier.observe(summary: serviceStatusStore.usagePressureSummary)
+        self.observeUsagePressure()
 
         // Poll live sessions every 10s for badge update
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateBadge() }
         }
 
-        // Listen for settings open requests from PopoverView/ContentView gear button
+        // Listen for settings open requests from popover and window controls.
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings),
             name: .openSettings, object: nil
@@ -336,6 +339,20 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
     }
 
+    private func observeUsagePressure() {
+        withObservationTracking {
+            _ = serviceStatusStore.usageData
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.updateStatusIndicator()
+                if let self {
+                    usagePressureNotifier.observe(summary: serviceStatusStore.usagePressureSummary)
+                }
+                self?.observeUsagePressure()
+            }
+        }
+    }
+
     private func updateStatusIndicator() {
         guard let btn = statusItem.button else { return }
         switch serviceStatusStore.status {
@@ -346,6 +363,17 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             btn.image = warn
             btn.toolTip = message
         default:
+            if let usage = serviceStatusStore.usagePressureSummary {
+                let symbolName = usage.severity == .critical ? "exclamationmark.triangle.fill" : "gauge.with.dots.needle.67percent"
+                let warn = NSImage(systemSymbolName: symbolName,
+                                   accessibilityDescription: usage.message)
+                    ?? NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                               accessibilityDescription: usage.message)
+                warn?.size = NSSize(width: 17, height: 15)
+                btn.image = warn
+                btn.toolTip = usage.message
+                return
+            }
             let img = NSImage(named: "MenuBarIcon")
                 ?? NSImage(systemSymbolName: "brain.head.profile",
                            accessibilityDescription: "Engram")

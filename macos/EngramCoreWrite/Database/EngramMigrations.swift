@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 enum EngramMigrations {
-    private static let auxSchemaVersion = "2"
+    private static let auxSchemaVersion = "3"
 
     static func createOrUpdateBaseSchema(_ db: GRDB.Database) throws {
         try db.execute(sql: """
@@ -35,6 +35,8 @@ enum EngramMigrations {
               tier TEXT,
               generated_title TEXT,
               quality_score INTEGER DEFAULT 0,
+              last_accessed_at TEXT,
+              access_count INTEGER NOT NULL DEFAULT 0,
               parent_session_id TEXT,
               suggested_parent_id TEXT,
               link_source TEXT,
@@ -55,6 +57,7 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
             CREATE INDEX IF NOT EXISTS idx_sessions_agent_role ON sessions(agent_role);
             CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier);
+            CREATE INDEX IF NOT EXISTS idx_sessions_last_accessed ON sessions(last_accessed_at, access_count);
             CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC);
             CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
             CREATE INDEX IF NOT EXISTS idx_sessions_orphan_status ON sessions(orphan_status);
@@ -157,6 +160,8 @@ enum EngramMigrations {
               value REAL NOT NULL,
               unit TEXT DEFAULT '%',
               reset_at TEXT,
+              limit_value REAL,
+              status TEXT,
               collected_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_usage_latest ON usage_snapshots(source, metric, collected_at DESC);
@@ -376,6 +381,7 @@ enum EngramMigrations {
         try migrateAIAuditLogToV2(db)
         try migrateGitReposToV2(db)
         try migrateSessionCostsToV2(db)
+        try migrateUsageSnapshotsToV3(db)
         try migrateInsightsToV2(db)
         try db.execute(
             sql: """
@@ -420,6 +426,8 @@ enum EngramMigrations {
             ("tier", "TEXT"),
             ("generated_title", "TEXT"),
             ("quality_score", "INTEGER DEFAULT 0"),
+            ("last_accessed_at", "TEXT"),
+            ("access_count", "INTEGER NOT NULL DEFAULT 0"),
             ("parent_session_id", "TEXT"),
             ("suggested_parent_id", "TEXT"),
             ("link_source", "TEXT"),
@@ -904,6 +912,17 @@ enum EngramMigrations {
         """)
         try replaceTable(db, old: "insights", replacement: "__engram_insights_v2")
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_insights_wing ON insights(wing)")
+    }
+
+    private static func migrateUsageSnapshotsToV3(_ db: GRDB.Database) throws {
+        guard try tableExists(db, "usage_snapshots") else { return }
+        let columns = try tableColumns(db, "usage_snapshots")
+        if columns["limit_value"] == nil {
+            try db.execute(sql: "ALTER TABLE usage_snapshots ADD COLUMN limit_value REAL")
+        }
+        if columns["status"] == nil {
+            try db.execute(sql: "ALTER TABLE usage_snapshots ADD COLUMN status TEXT")
+        }
     }
 
     private struct ColumnInfo {
