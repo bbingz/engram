@@ -1,8 +1,50 @@
 import Foundation
 
+struct TodayResumeClipboardItem: Equatable {
+    let text: String
+    let message: String
+}
+
 enum TodayResumeCommand {
     static func copyableCommand(from response: EngramServiceResumeCommandResponse) throws -> String {
         try EngramCLIResumeCommand.render(response: response, json: false)
+    }
+
+    static func copyableClipboardItem(from response: EngramServiceResumeCommandResponse) throws -> TodayResumeClipboardItem {
+        if isUnavailable(response),
+           let primer = contextPrimer(from: response) {
+            return TodayResumeClipboardItem(
+                text: primer,
+                message: String(localized: "Context primer copied")
+            )
+        }
+
+        do {
+            return TodayResumeClipboardItem(
+                text: try copyableCommand(from: response),
+                message: String(localized: "Resume command copied")
+            )
+        } catch {
+            guard let primer = contextPrimer(from: response) else {
+                throw error
+            }
+            return TodayResumeClipboardItem(
+                text: primer,
+                message: String(localized: "Context primer copied")
+            )
+        }
+    }
+
+    private static func isUnavailable(_ response: EngramServiceResumeCommandResponse) -> Bool {
+        if response.error?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return true
+        }
+        return response.command?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+    }
+
+    private static func contextPrimer(from response: EngramServiceResumeCommandResponse) -> String? {
+        let primer = response.contextPrimer?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return primer?.isEmpty == false ? primer : nil
     }
 }
 

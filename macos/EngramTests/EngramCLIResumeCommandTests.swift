@@ -65,6 +65,57 @@ final class EngramCLIResumeCommandTests: XCTestCase {
         )
     }
 
+    func testTerminalLauncherAvailableTerminalTypesFiltersUnavailableThirdPartyApps() {
+        let terminals = TerminalLauncher.availableTerminalTypes(
+            bundleIdentifierIsInstalled: { $0 == "com.apple.Terminal" },
+            applicationPathExists: { _ in false }
+        )
+
+        XCTAssertEqual(terminals, [.terminal])
+    }
+
+    func testTerminalLauncherAvailableTerminalTypesIncludesInstalledThirdPartyApps() {
+        let terminals = TerminalLauncher.availableTerminalTypes(
+            bundleIdentifierIsInstalled: { $0 == "com.apple.Terminal" || $0 == "com.mitchellh.ghostty" },
+            applicationPathExists: { _ in false }
+        )
+
+        XCTAssertEqual(terminals, [.terminal, .ghostty])
+    }
+
+    func testTerminalLauncherAvailableTerminalTypesIncludesWarpWhenInstalled() {
+        let terminals = TerminalLauncher.availableTerminalTypes(
+            bundleIdentifierIsInstalled: { $0 == "dev.warp.Warp-Stable" },
+            applicationPathExists: { _ in false }
+        )
+
+        XCTAssertEqual(terminals, [.warp])
+    }
+
+    func testTerminalLauncherWarpTabConfigUsesTerminalPane() {
+        let toml = TerminalLauncher.warpTabConfigTOML(
+            configName: "engram-resume-test",
+            command: "'/usr/local/bin/codex' resume 'abc123'",
+            directory: "/Users/test/project"
+        )
+
+        XCTAssertTrue(toml.contains(#"name = "engram-resume-test""#))
+        XCTAssertTrue(toml.contains(#"type = "terminal""#))
+        XCTAssertTrue(toml.contains(#"directory = "/Users/test/project""#))
+        XCTAssertTrue(toml.contains(#"commands = ["'/usr/local/bin/codex' resume 'abc123'"]"#))
+    }
+
+    func testTerminalLauncherWarpTabConfigEscapesTomlStrings() {
+        let toml = TerminalLauncher.warpTabConfigTOML(
+            configName: "engram-resume-escape",
+            command: "echo \"hi\" && printf 'a\\b\nc\td\r'",
+            directory: #"/tmp/dir "quote"\slash"#
+        )
+
+        XCTAssertTrue(toml.contains(#"directory = "/tmp/dir \"quote\"\\slash""#))
+        XCTAssertTrue(toml.contains(#"commands = ["echo \"hi\" && printf 'a\\b\nc\td\r'"]"#))
+    }
+
     func testRenderJSONReturnsServicePayload() throws {
         let response = EngramServiceResumeCommandResponse(
             tool: "codex",
@@ -81,5 +132,78 @@ final class EngramCLIResumeCommandTests: XCTestCase {
         )
         XCTAssertEqual(decoded.command, "codex")
         XCTAssertEqual(decoded.cwd, "/repo")
+    }
+
+    func testRenderOptionsJSONReturnsErrorPayloadWithContextPrimer() async throws {
+        let client = MockEngramServiceClient(resumeCommand: EngramServiceResumeCommandResponse(
+            contextPrimer: """
+            Resume context from Engram archive:
+            - recover from archived transcript
+            """,
+            error: "Resume command unavailable",
+            hint: "Install codex"
+        ))
+        let options = EngramCLIResumeOptions(sessionId: "session-1", socketPath: "/tmp/engram.sock", json: true)
+
+        let rendered = try await EngramCLIResumeCommand.render(options: options, client: client)
+        let decoded = try JSONDecoder().decode(
+            EngramServiceResumeCommandResponse.self,
+            from: Data(rendered.utf8)
+        )
+
+        XCTAssertEqual(decoded.error, "Resume command unavailable")
+        XCTAssertEqual(decoded.hint, "Install codex")
+        XCTAssertEqual(decoded.contextPrimer, """
+        Resume context from Engram archive:
+        - recover from archived transcript
+        """)
+    }
+
+    func testRenderShellCommandAppendsContextPrimerAsComments() throws {
+        let response = EngramServiceResumeCommandResponse(
+            tool: "codex",
+            command: "codex",
+            args: ["--resume", "session-1"],
+            cwd: "/repo",
+            contextPrimer: """
+            Resume context from Engram archive:
+            - keep database migrations reversible
+            - avoid shell metacharacter expansion: $(touch /tmp/pwned)
+            """
+        )
+
+        let rendered = try EngramCLIResumeCommand.render(response: response, json: false)
+
+        XCTAssertEqual(rendered, """
+        cd /repo && codex --resume session-1
+
+        # Engram context primer:
+        # Resume context from Engram archive:
+        # - keep database migrations reversible
+        # - avoid shell metacharacter expansion: $(touch /tmp/pwned)
+        """)
+    }
+
+    func testRenderOptionsNonJSONReturnsContextPrimerWhenResumeCommandErrors() async throws {
+        let client = MockEngramServiceClient(resumeCommand: EngramServiceResumeCommandResponse(
+            contextPrimer: """
+            Resume context from Engram archive:
+            - recover decisions from the persisted transcript
+            """,
+            error: "Resume command unavailable",
+            hint: "Install codex"
+        ))
+        let options = EngramCLIResumeOptions(sessionId: "session-1", socketPath: "/tmp/engram.sock", json: false)
+
+        let rendered = try await EngramCLIResumeCommand.render(options: options, client: client)
+
+        XCTAssertEqual(rendered, """
+        # Engram resume command unavailable: Resume command unavailable
+        # Install codex
+        #
+        # Engram context primer:
+        # Resume context from Engram archive:
+        # - recover decisions from the persisted transcript
+        """)
     }
 }

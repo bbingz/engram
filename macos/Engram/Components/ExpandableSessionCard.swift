@@ -27,6 +27,10 @@ struct ExpandableSessionCard: View {
     var includeHiddenChildren = false
     var onTap: (() -> Void)? = nil
     var onChildTap: ((Session) -> Void)? = nil
+    var onResume: ((Session) -> Void)? = nil
+    var onCopyResumeCommand: ((Session) -> Void)? = nil
+    var onHandoff: ((Session) -> Void)? = nil
+    var onReplay: ((Session) -> Void)? = nil
     var onConfirmSuggestion: ((Session) -> Void)? = nil
     var onDismissSuggestion: ((Session) -> Void)? = nil
 
@@ -109,6 +113,20 @@ struct ExpandableSessionCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    Button("Resume...") {
+                        onResume?(session)
+                    }
+                    Button("Copy Resume Command") {
+                        onCopyResumeCommand?(session)
+                    }
+                    Button("Handoff") {
+                        onHandoff?(session)
+                    }
+                    Button("Replay") {
+                        onReplay?(session)
+                    }
+                }
             }
 
             // Expanded children
@@ -128,7 +146,11 @@ struct ExpandableSessionCard: View {
                             CompactChildRow(
                                 session: child,
                                 isConfirmed: true,
-                                onTap: { onChildTap?(child) }
+                                onTap: { onChildTap?(child) },
+                                onResume: { onResume?(child) },
+                                onCopyResumeCommand: { onCopyResumeCommand?(child) },
+                                onHandoff: { onHandoff?(child) },
+                                onReplay: { onReplay?(child) }
                             )
                         }
 
@@ -152,6 +174,10 @@ struct ExpandableSessionCard: View {
                                 session: child,
                                 isConfirmed: false,
                                 onTap: { onChildTap?(child) },
+                                onResume: { onResume?(child) },
+                                onCopyResumeCommand: { onCopyResumeCommand?(child) },
+                                onHandoff: { onHandoff?(child) },
+                                onReplay: { onReplay?(child) },
                                 onConfirm: { onConfirmSuggestion?(child) },
                                 onDismiss: { onDismissSuggestion?(child) }
                             )
@@ -266,6 +292,10 @@ struct CompactChildRow: View {
     let session: Session
     let isConfirmed: Bool
     var onTap: (() -> Void)? = nil
+    var onResume: (() -> Void)? = nil
+    var onCopyResumeCommand: (() -> Void)? = nil
+    var onHandoff: (() -> Void)? = nil
+    var onReplay: (() -> Void)? = nil
     var onConfirm: (() -> Void)? = nil
     var onDismiss: (() -> Void)? = nil
 
@@ -309,5 +339,19 @@ struct CompactChildRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
         .onTapGesture { onTap?() }
+        .contextMenu {
+            Button("Resume...") {
+                onResume?()
+            }
+            Button("Copy Resume Command") {
+                onCopyResumeCommand?()
+            }
+            Button("Handoff") {
+                onHandoff?()
+            }
+            Button("Replay") {
+                onReplay?()
+            }
+        }
     }
 }

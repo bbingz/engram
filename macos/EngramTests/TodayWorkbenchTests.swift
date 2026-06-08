@@ -18,6 +18,53 @@ final class TodayWorkbenchTests: XCTestCase {
         )
     }
 
+    func testCopyableResumeCommandIncludesContextPrimer() throws {
+        let response = EngramServiceResumeCommandResponse(
+            tool: "codex",
+            command: "codex",
+            args: ["--resume", "session-1"],
+            cwd: "/repo",
+            contextPrimer: "Resume context from Engram archive"
+        )
+
+        let command = try TodayResumeCommand.copyableCommand(from: response)
+
+        XCTAssertTrue(command.contains("# Engram context primer:"))
+        XCTAssertTrue(command.contains("# Resume context from Engram archive"))
+    }
+
+    func testClipboardItemFallsBackToContextPrimerWhenResumeCommandErrors() throws {
+        let response = EngramServiceResumeCommandResponse(
+            contextPrimer: """
+            Resume context from Engram archive:
+            - restore the current migration plan
+            """,
+            error: "codex CLI not found",
+            hint: "Install Codex"
+        )
+
+        let item = try TodayResumeCommand.copyableClipboardItem(from: response)
+
+        XCTAssertEqual(item.text, """
+        Resume context from Engram archive:
+        - restore the current migration plan
+        """)
+        XCTAssertEqual(item.message, "Context primer copied")
+    }
+
+    func testResumeClipboardSuccessMessagesAreInStringCatalog() throws {
+        let catalogURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Engram/Resources/Localizable.xcstrings")
+        let data = try Data(contentsOf: catalogURL)
+        let catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let strings = try XCTUnwrap(catalog["strings"] as? [String: Any])
+
+        XCTAssertNotNil(strings["Resume command copied"])
+        XCTAssertNotNil(strings["Context primer copied"])
+    }
+
     func testHandledFollowUpsPersistAsAStableSessionIdSet() {
         let suiteName = "TodayWorkbenchTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

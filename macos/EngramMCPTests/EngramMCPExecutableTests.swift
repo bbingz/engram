@@ -5,6 +5,45 @@ import Network
 import XCTest
 
 final class EngramMCPExecutableTests: XCTestCase {
+    func testExecutableResumeJSONRoutesToServiceInsteadOfStartingMCPStdio() throws {
+        let server = try MockServiceSocketServer { request in
+            XCTAssertEqual(request.command, "resumeCommand")
+            let payload = try request.decodePayload([String: TestJSONValue].self)
+            XCTAssertEqual(payload["sessionId"]?.stringValue, "session-1")
+            return try request.success(
+                .object([
+                    "tool": .null,
+                    "command": .null,
+                    "args": .array([]),
+                    "cwd": .null,
+                    "contextPrimer": .string("""
+                    Resume context from Engram archive:
+                    - recover from archived transcript
+                    """),
+                    "error": .string("Resume command unavailable"),
+                    "hint": .string("Install codex"),
+                ])
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let result = try runExecutable(
+            arguments: ["resume", "session-1", "--json", "--socket", server.socketPath],
+            environment: ["TZ": "UTC"]
+        )
+
+        XCTAssertEqual(result.exitStatus, 0, result.stderr)
+        XCTAssertEqual(result.stderr, "")
+        let decoded = try JSONDecoder().decode(TestJSONValue.self, from: Data(result.stdout.utf8))
+        XCTAssertEqual(decoded["error"]?.stringValue, "Resume command unavailable")
+        XCTAssertEqual(decoded["hint"]?.stringValue, "Install codex")
+        XCTAssertEqual(decoded["contextPrimer"]?.stringValue, """
+        Resume context from Engram archive:
+        - recover from archived transcript
+        """)
+    }
+
     func testToolsListHasTemplateFloor() throws {
         let capture = try rpc(
             """
@@ -1481,6 +1520,46 @@ final class EngramMCPExecutableTests: XCTestCase {
             .bundleURL
             .deletingLastPathComponent()
             .appendingPathComponent("EngramMCP")
+    }
+
+    private struct ProcessCapture {
+        let stdout: String
+        let stderr: String
+        let exitStatus: Int32
+    }
+
+    private func runExecutable(
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval = 5,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> ProcessCapture {
+        let process = Process()
+        process.executableURL = executableURL()
+        process.arguments = arguments
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(environment) { _, new in new }
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        try process.run()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+            XCTFail("EngramMCP did not exit within \(timeout)s", file: file, line: line)
+        }
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return ProcessCapture(stdout: stdout, stderr: stderr, exitStatus: process.terminationStatus)
     }
 
     private func seedGetContextEnvironmentFixture(_ dbURL: URL) throws {
