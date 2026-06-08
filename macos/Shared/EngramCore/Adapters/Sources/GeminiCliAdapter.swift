@@ -221,8 +221,32 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
             content: content,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: nil,
-            usage: nil
+            usage: type == "user" ? nil : usage(from: JSONLAdapterSupport.object(object["tokens"]))
         )
+    }
+
+    private static func usage(from tokens: Phase4AdapterSupport.JSONObject?) -> TokenUsage? {
+        guard let tokens else { return nil }
+        let input = int(tokens["input"])
+        let cached = int(tokens["cached"])
+        let output = int(tokens["output"]) + int(tokens["thoughts"]) + int(tokens["tool"])
+        let usage = TokenUsage(
+            inputTokens: max(input - cached, 0),
+            outputTokens: output,
+            cacheReadTokens: cached,
+            cacheCreationTokens: 0
+        )
+        guard usage.inputTokens > 0
+            || usage.outputTokens > 0
+            || (usage.cacheReadTokens ?? 0) > 0
+        else {
+            return nil
+        }
+        return usage
+    }
+
+    private static func int(_ value: Any?) -> Int {
+        Int(Phase4AdapterSupport.int64(value) ?? 0)
     }
 
     private static func extractText(_ content: Any?) -> String {

@@ -146,7 +146,9 @@ final class CursorAdapter: SessionAdapter, Sendable {
                     content: visible.content,
                     timestamp: timestamp,
                     toolCalls: nil,
-                    usage: nil
+                    usage: visible.role == .assistant
+                        ? Self.usage(from: JSONLAdapterSupport.object(bubble["tokenCount"]))
+                        : nil
                 )
             }
             return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
@@ -234,5 +236,21 @@ final class CursorAdapter: SessionAdapter, Sendable {
             return nil
         }
         return (role, content)
+    }
+
+    private static func usage(from tokenCount: Phase4AdapterSupport.JSONObject?) -> TokenUsage? {
+        guard let tokenCount else { return nil }
+        let usage = TokenUsage(
+            inputTokens: int(tokenCount["inputTokens"]),
+            outputTokens: int(tokenCount["outputTokens"]),
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0
+        )
+        guard usage.inputTokens > 0 || usage.outputTokens > 0 else { return nil }
+        return usage
+    }
+
+    private static func int(_ value: Any?) -> Int {
+        Int(Phase4AdapterSupport.int64(value) ?? 0)
     }
 }

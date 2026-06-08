@@ -2,6 +2,7 @@ import Foundation
 
 final class CopilotAdapter: SessionAdapter, Sendable {
     let source: SourceName = .copilot
+    private static let maxCheckpointBodyLength = 4_000
     private let sessionRoot: URL
     private let limits: ParserLimits
 
@@ -27,12 +28,23 @@ final class CopilotAdapter: SessionAdapter, Sendable {
             let eventsURL = sessionURL.appendingPathComponent("events.jsonl")
             if JSONLAdapterSupport.fileExists(eventsURL.path) {
                 locators.append(eventsURL.path)
+                continue
+            }
+            let checkpointIndexURL = sessionURL
+                .appendingPathComponent("checkpoints", isDirectory: true)
+                .appendingPathComponent("index.md")
+            if Self.hasCheckpointEntries(checkpointIndexURL) {
+                locators.append(checkpointIndexURL.path)
             }
         }
         return locators.sorted()
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        if Self.isCheckpointIndex(locator) {
+            return parseCheckpointSessionInfo(locator: locator)
+        }
+
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
             if let failure { return .failure(failure) }
@@ -120,6 +132,26 @@ final class CopilotAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        if Self.isCheckpointIndex(locator) {
+            let checkpointIndexURL = URL(fileURLWithPath: locator)
+            let messages = Self.checkpointEntries(checkpointIndexURL).map { entry in
+                NormalizedMessage(
+                    role: .system,
+                    content: Self.checkpointMessageContent(entry, checkpointIndexURL: checkpointIndexURL),
+                    timestamp: nil
+                )
+            }
+            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        }
+
+        if options.limit == nil {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+            if let failure { throw failure }
+            return JSONLAdapterSupport.stream(
+                JSONLAdapterSupport.applyWindow(Self.messages(from: objects), options: options)
+            )
+        }
+
         let messages = try JSONLAdapterSupport.windowedMessages(
             locator: locator,
             options: options,
@@ -131,6 +163,48 @@ final class CopilotAdapter: SessionAdapter, Sendable {
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
+    }
+
+    private func parseCheckpointSessionInfo(locator: String) -> AdapterParseResult<NormalizedSessionInfo> {
+        let checkpointIndexURL = URL(fileURLWithPath: locator)
+        let sessionDirectory = checkpointIndexURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workspace = Self.readWorkspace(sessionDirectory.appendingPathComponent("workspace.yaml"))
+        let entries = Self.checkpointEntries(checkpointIndexURL)
+        guard !entries.isEmpty else {
+            return .failure(.malformedJSON)
+        }
+
+        let sessionId = workspace["id"] ?? sessionDirectory.lastPathComponent
+        return .success(
+            NormalizedSessionInfo(
+                id: sessionId,
+                source: .copilot,
+                startTime: workspace["created_at"] ?? "",
+                endTime: workspace["updated_at"],
+                cwd: workspace["cwd"] ?? "",
+                project: nil,
+                model: nil,
+                messageCount: entries.count,
+                userMessageCount: 0,
+                assistantMessageCount: 0,
+                toolMessageCount: 0,
+                systemMessageCount: entries.count,
+                summary: entries.first?.title,
+                filePath: locator,
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                indexedAt: nil,
+                agentRole: nil,
+                originator: nil,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: nil,
+                suggestedParentId: nil
+            )
+        )
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
@@ -147,6 +221,141 @@ final class CopilotAdapter: SessionAdapter, Sendable {
             toolCalls: nil,
             usage: nil
         )
+    }
+
+    private static func messages(from objects: [JSONLAdapterSupport.JSONObject]) -> [NormalizedMessage] {
+        var messages = objects.compactMap(Self.message(from:))
+        guard let usage = shutdownUsage(from: objects),
+              let index = messages.lastIndex(where: { $0.role == .assistant })
+        else {
+            return messages
+        }
+        messages[index].usage = usage
+        return messages
+    }
+
+    private static func shutdownUsage(from objects: [JSONLAdapterSupport.JSONObject]) -> TokenUsage? {
+        var total = TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
+
+        for object in objects {
+            guard JSONLAdapterSupport.string(object["type"]) == "session.shutdown",
+                  let data = JSONLAdapterSupport.object(object["data"]),
+                  let modelMetrics = JSONLAdapterSupport.object(data["modelMetrics"])
+            else {
+                continue
+            }
+
+            for metricValue in modelMetrics.values {
+                guard let metric = JSONLAdapterSupport.object(metricValue),
+                      let usage = JSONLAdapterSupport.object(metric["usage"])
+                else {
+                    continue
+                }
+                total.inputTokens += int(usage["inputTokens"])
+                total.outputTokens += int(usage["outputTokens"])
+                total.cacheReadTokens = (total.cacheReadTokens ?? 0) + int(usage["cacheReadTokens"])
+                total.cacheCreationTokens = (total.cacheCreationTokens ?? 0) + int(usage["cacheWriteTokens"])
+            }
+        }
+
+        guard total.inputTokens > 0
+            || total.outputTokens > 0
+            || (total.cacheReadTokens ?? 0) > 0
+            || (total.cacheCreationTokens ?? 0) > 0
+        else {
+            return nil
+        }
+        return total
+    }
+
+    private static func int(_ value: Any?) -> Int {
+        switch value {
+        case let value as Int:
+            return value
+        case let value as Int64:
+            return Int(value)
+        case let value as Double:
+            return Int(value)
+        case let value as String:
+            return Int(value) ?? 0
+        default:
+            return 0
+        }
+    }
+
+    private struct CheckpointEntry: Equatable {
+        let number: Int
+        let title: String
+        let fileName: String?
+    }
+
+    private static func isCheckpointIndex(_ locator: String) -> Bool {
+        let url = URL(fileURLWithPath: locator)
+        return url.lastPathComponent == "index.md"
+            && url.deletingLastPathComponent().lastPathComponent == "checkpoints"
+    }
+
+    private static func hasCheckpointEntries(_ url: URL) -> Bool {
+        !checkpointEntries(url).isEmpty
+    }
+
+    private static func checkpointEntries(_ url: URL) -> [CheckpointEntry] {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            return []
+        }
+
+        return content
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line -> CheckpointEntry? in
+                let columns = line
+                    .split(separator: "|", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                guard columns.count >= 4,
+                      let number = Int(columns[1]),
+                      !columns[2].isEmpty
+                else {
+                    return nil
+                }
+                return CheckpointEntry(
+                    number: number,
+                    title: columns[2],
+                    fileName: columns[3].isEmpty ? nil : columns[3]
+                )
+            }
+    }
+
+    private static func checkpointMessageContent(
+        _ entry: CheckpointEntry,
+        checkpointIndexURL: URL
+    ) -> String {
+        let title = "Checkpoint \(entry.number): \(entry.title)"
+        guard let body = checkpointBody(entry, checkpointIndexURL: checkpointIndexURL) else {
+            return title
+        }
+        return "\(title)\n\n\(body)"
+    }
+
+    private static func checkpointBody(
+        _ entry: CheckpointEntry,
+        checkpointIndexURL: URL
+    ) -> String? {
+        guard let fileName = entry.fileName,
+              fileName == URL(fileURLWithPath: fileName).lastPathComponent,
+              fileName.hasSuffix(".md")
+        else {
+            return nil
+        }
+        let bodyURL = checkpointIndexURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(fileName)
+        guard let content = try? String(contentsOf: bodyURL, encoding: .utf8) else {
+            return nil
+        }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        return String(trimmed.prefix(maxCheckpointBodyLength))
     }
 
     private static func readWorkspace(_ url: URL) -> [String: String] {

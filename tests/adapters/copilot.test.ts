@@ -50,6 +50,115 @@ describe('CopilotAdapter', () => {
     expect(messages[0].role).toBe('user');
   });
 
+  it('attaches shutdown model metrics to the last assistant message', async () => {
+    const tmpRoot = join(tmpdir(), `engram-copilot-usage-${Date.now()}`);
+    const sessionDir = join(tmpRoot, 'session-with-usage');
+    const eventsPath = join(sessionDir, 'events.jsonl');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, 'workspace.yaml'),
+      [
+        'id: session-with-usage',
+        'cwd: /tmp/copilot-usage-project',
+        'created_at: 2026-01-01T00:00:00Z',
+        'updated_at: 2026-01-01T00:05:00Z',
+      ].join('\n'),
+    );
+    writeFileSync(
+      eventsPath,
+      [
+        '{"type":"user.message","timestamp":"2026-01-01T00:01:00Z","data":{"content":"Check usage"}}',
+        '{"type":"assistant.message","timestamp":"2026-01-01T00:02:00Z","data":{"content":"Usage checked."}}',
+        '{"type":"session.shutdown","timestamp":"2026-01-01T00:05:00Z","data":{"modelMetrics":{"gpt-5.4":{"usage":{"inputTokens":1200,"outputTokens":80,"cacheReadTokens":900,"cacheWriteTokens":40}}}}}',
+        '',
+      ].join('\n'),
+    );
+
+    try {
+      const a = new CopilotAdapter(tmpRoot);
+      const messages = [];
+      for await (const msg of a.streamMessages(eventsPath)) {
+        messages.push(msg);
+      }
+
+      expect(messages.map((msg) => msg.role)).toEqual(['user', 'assistant']);
+      expect(messages[0].usage).toBeUndefined();
+      expect(messages[1].usage).toEqual({
+        inputTokens: 1200,
+        outputTokens: 80,
+        cacheReadTokens: 900,
+        cacheCreationTokens: 40,
+      });
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to checkpoint index when events are missing', async () => {
+    const tmpRoot = join(tmpdir(), `engram-copilot-checkpoint-${Date.now()}`);
+    const sessionDir = join(tmpRoot, 'session-no-events');
+    const checkpointsDir = join(sessionDir, 'checkpoints');
+    const indexPath = join(checkpointsDir, 'index.md');
+    mkdirSync(checkpointsDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, 'workspace.yaml'),
+      [
+        'id: session-no-events',
+        'cwd: /tmp/copilot-project',
+        'created_at: 2026-06-01T10:00:00.000Z',
+        'updated_at: 2026-06-01T10:05:00.000Z',
+      ].join('\n'),
+    );
+    writeFileSync(
+      indexPath,
+      [
+        '# Checkpoint History',
+        '',
+        '| # | Title | File |',
+        '|---|-------|------|',
+        '| 1 | Initial production deploy audit | 001-initial-production-deploy.md |',
+        '| 2 | Follow-up verifier and rollback notes | 002-follow-up-verifier.md |',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(checkpointsDir, '001-initial-production-deploy.md'),
+      '<overview>\nProduction deploy reached smoke-test phase.\n</overview>\n',
+    );
+    writeFileSync(
+      join(checkpointsDir, '002-follow-up-verifier.md'),
+      '<work_done>\nRollback notes were captured.\n</work_done>\n',
+    );
+
+    try {
+      const a = new CopilotAdapter(tmpRoot);
+      const locators = [];
+      for await (const locator of a.listSessionFiles()) {
+        locators.push(locator);
+      }
+      expect(locators).toEqual([indexPath]);
+
+      const info = await a.parseSessionInfo(indexPath);
+      expect(info?.id).toBe('session-no-events');
+      expect(info?.cwd).toBe('/tmp/copilot-project');
+      expect(info?.messageCount).toBe(2);
+      expect(info?.systemMessageCount).toBe(2);
+      expect(info?.summary).toBe('Initial production deploy audit');
+
+      const messages = [];
+      for await (const msg of a.streamMessages(indexPath)) {
+        messages.push(msg);
+      }
+      expect(messages.map((msg) => msg.role)).toEqual(['system', 'system']);
+      expect(messages.map((msg) => msg.content)).toEqual([
+        'Checkpoint 1: Initial production deploy audit\n\n<overview>\nProduction deploy reached smoke-test phase.\n</overview>',
+        'Checkpoint 2: Follow-up verifier and rollback notes\n\n<work_done>\nRollback notes were captured.\n</work_done>',
+      ]);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   describe('YAML quoted values', () => {
     const tmpRoot = join(tmpdir(), `engram-copilot-yaml-${Date.now()}`);
     const sessionDir = join(tmpRoot, 'session-quoted');

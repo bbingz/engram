@@ -11,6 +11,7 @@ import type {
   SessionAdapter,
   SessionInfo,
   StreamMessagesOptions,
+  TokenUsage,
 } from './types.js';
 
 export class CodexAdapter implements SessionAdapter {
@@ -162,11 +163,41 @@ export class CodexAdapter implements SessionAdapter {
     const limit = opts.limit ?? Infinity;
     let count = 0;
     let yielded = 0;
+    let pending: Message | null = null;
+    let pendingUsageCameFromTokenCount = false;
+    let pendingUsage: TokenUsage | undefined;
+
+    const flushPending = (): Message | null => {
+      if (!pending) return null;
+      const msg = pending;
+      pending = null;
+      pendingUsageCameFromTokenCount = false;
+      if (count < offset) {
+        count++;
+        return null;
+      }
+      count++;
+      yielded++;
+      return msg;
+    };
 
     for await (const line of this.readLines(filePath)) {
-      if (yielded >= limit) break;
       const obj = this.parseLine(line);
       if (!obj) continue;
+
+      const eventUsage = this.tokenCountUsage(obj);
+      if (eventUsage) {
+        if (pending && pending.role !== 'user') {
+          if (pendingUsageCameFromTokenCount || !pending.usage) {
+            pending.usage = this.mergeUsage(pending.usage, eventUsage);
+            pendingUsageCameFromTokenCount = true;
+          }
+        } else {
+          pendingUsage = this.mergeUsage(pendingUsage, eventUsage);
+        }
+        continue;
+      }
+
       if (obj.type !== 'response_item') continue;
 
       const payload = obj.payload as Record<string, unknown>;
@@ -220,13 +251,22 @@ export class CodexAdapter implements SessionAdapter {
 
       if (!msg) continue;
 
-      if (count < offset) {
-        count++;
-        continue;
+      const ready = flushPending();
+      if (ready) {
+        yield ready;
+        if (yielded >= limit) break;
       }
-      count++;
-      yield msg;
-      yielded++;
+      if (msg.role !== 'user' && pendingUsage) {
+        msg.usage ??= pendingUsage;
+        pendingUsage = undefined;
+      }
+      pending = msg;
+      pendingUsageCameFromTokenCount = false;
+    }
+
+    if (yielded < limit) {
+      const ready = flushPending();
+      if (ready) yield ready;
     }
   }
 
@@ -252,6 +292,54 @@ export class CodexAdapter implements SessionAdapter {
     } catch {
       return null;
     }
+  }
+
+  private tokenCountUsage(
+    obj: Record<string, unknown>,
+  ): TokenUsage | undefined {
+    if (obj.type !== 'event_msg') return undefined;
+    const payload = obj.payload;
+    if (!payload || typeof payload !== 'object') return undefined;
+    const payloadRecord = payload as Record<string, unknown>;
+    if (payloadRecord.type !== 'token_count') return undefined;
+    const info = payloadRecord.info;
+    if (!info || typeof info !== 'object') return undefined;
+    const usage = (info as Record<string, unknown>).last_token_usage;
+    if (!usage || typeof usage !== 'object') return undefined;
+    const usageRecord = usage as Record<string, unknown>;
+    const inputTokens = this.int(usageRecord.input_tokens);
+    const cachedInputTokens = this.int(usageRecord.cached_input_tokens);
+    const outputTokens = this.int(usageRecord.output_tokens);
+    const tokenUsage = {
+      inputTokens: Math.max(inputTokens - cachedInputTokens, 0),
+      outputTokens,
+      cacheReadTokens: cachedInputTokens,
+      cacheCreationTokens: 0,
+    };
+    if (
+      tokenUsage.inputTokens <= 0 &&
+      tokenUsage.outputTokens <= 0 &&
+      tokenUsage.cacheReadTokens <= 0 &&
+      tokenUsage.cacheCreationTokens <= 0
+    ) {
+      return undefined;
+    }
+    return tokenUsage;
+  }
+
+  private mergeUsage(lhs: TokenUsage | undefined, rhs: TokenUsage): TokenUsage {
+    if (!lhs) return rhs;
+    return {
+      inputTokens: lhs.inputTokens + rhs.inputTokens,
+      outputTokens: lhs.outputTokens + rhs.outputTokens,
+      cacheReadTokens: (lhs.cacheReadTokens ?? 0) + (rhs.cacheReadTokens ?? 0),
+      cacheCreationTokens:
+        (lhs.cacheCreationTokens ?? 0) + (rhs.cacheCreationTokens ?? 0),
+    };
+  }
+
+  private int(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
   }
 
   private isSystemInjection(text: string): boolean {

@@ -1,7 +1,7 @@
 {
   "failure": null,
   "fileToolCounts": {},
-  "generatedAtCommit": "b80b3356",
+  "generatedAtCommit": "88f86631",
   "inputPath": "kimi/input/sessions/ws-001/sess-001/context.jsonl",
   "insightFields": {
     "firstUserSummary": "帮我排查内存泄漏",

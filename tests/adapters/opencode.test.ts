@@ -47,7 +47,7 @@ beforeAll(() => {
     );
     INSERT INTO message VALUES (
       'msg_002', 'ses_test001', 1770000010000, 1770000010000,
-      '{"role":"assistant","time":{"created":1770000010000,"completed":1770000015000}}'
+      '{"role":"assistant","time":{"created":1770000010000,"completed":1770000015000},"tokens":{"input":123,"output":45,"reasoning":5,"cache":{"read":67,"write":8}}}'
     );
     INSERT INTO part VALUES (
       'part_002', 'msg_002', 1770000010000, 1770000010000,
@@ -98,6 +98,49 @@ describe('OpenCodeAdapter', () => {
     for await (const msg of adapter.streamMessages(files[0]))
       messages.push(msg);
     expect(messages.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('streamMessages attaches assistant token usage including reasoning tokens', async () => {
+    const files: string[] = [];
+    for await (const f of adapter.listSessionFiles()) files.push(f);
+    const messages = [];
+    for await (const msg of adapter.streamMessages(files[0]))
+      messages.push(msg);
+    expect(messages.at(-1)?.usage).toEqual({
+      inputTokens: 123,
+      outputTokens: 50,
+      cacheReadTokens: 67,
+      cacheCreationTokens: 8,
+    });
+  });
+
+  it('streamMessages normalizes text part type case and whitespace', async () => {
+    const { mkdtempSync, copyFileSync, rmSync: rm } = require('node:fs');
+    const { tmpdir } = require('node:os');
+    const base = mkdtempSync(join(tmpdir(), 'engram-oc-type-'));
+    const driftDb = join(base, 'opencode.db');
+    copyFileSync(FIXTURE_DB, driftDb);
+    const db = new Database(driftDb);
+    try {
+      db.prepare('UPDATE part SET data = ? WHERE id = ?').run(
+        '{"type":" Text ","text":"帮我实现登录功能"}',
+        'part_001',
+      );
+    } finally {
+      db.close();
+    }
+
+    try {
+      const driftAdapter = new OpenCodeAdapter(driftDb);
+      const files: string[] = [];
+      for await (const f of driftAdapter.listSessionFiles()) files.push(f);
+      const messages = [];
+      for await (const msg of driftAdapter.streamMessages(files[0]))
+        messages.push(msg);
+      expect(messages[0]?.content).toBe('帮我实现登录功能');
+    } finally {
+      rm(base, { recursive: true, force: true });
+    }
   });
 
   it('sizeBytes reflects the session payload, not the whole shared SQLite file', async () => {

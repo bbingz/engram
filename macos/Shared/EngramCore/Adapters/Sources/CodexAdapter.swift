@@ -354,11 +354,10 @@ final class CodexAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let messages = try JSONLAdapterSupport.windowedMessages(
+        let messages = try Self.messages(
             locator: locator,
             options: options,
-            limits: limits,
-            transform: Self.message(from:)
+            limits: limits
         )
         return JSONLAdapterSupport.stream(messages)
     }
@@ -373,6 +372,88 @@ final class CodexAdapter: SessionAdapter, Sendable {
             root,
             root.deletingLastPathComponent().appendingPathComponent("archived_sessions", isDirectory: true)
         ]
+    }
+
+    private static func messages(
+        locator: String,
+        options: StreamMessagesOptions,
+        limits: ParserLimits
+    ) throws -> [NormalizedMessage] {
+        let cappedLimit = options.limit.map { max($0, 0) } ?? Int.max
+        guard cappedLimit > 0 else { return [] }
+        let offset = max(options.offset ?? 0, 0)
+
+        return try autoreleasepool {
+            let (url, before) = try JSONLAdapterSupport.prepareFile(locator: locator, limits: limits)
+            let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
+            var parsedObjects = 0
+            var skipped = 0
+            var messages: [NormalizedMessage] = []
+            var pendingMessage: NormalizedMessage?
+            var pendingUsageCameFromTokenCount = false
+            var pendingUsage: TokenUsage?
+
+            func appendWindowed(_ message: NormalizedMessage) -> Bool {
+                if skipped < offset {
+                    skipped += 1
+                    return false
+                }
+                messages.append(message)
+                return messages.count >= cappedLimit
+            }
+
+            func flushPendingMessage() -> Bool {
+                guard let message = pendingMessage else { return false }
+                pendingMessage = nil
+                pendingUsageCameFromTokenCount = false
+                return appendWindowed(message)
+            }
+
+            for line in try reader.readLines() {
+                guard let object = JSONLAdapterSupport.parseObject(line) else { continue }
+                parsedObjects += 1
+                if options.limit == nil, parsedObjects > limits.maxMessages {
+                    throw ParserFailure.messageLimitExceeded
+                }
+
+                if let tokenUsage = tokenCountUsage(from: object) {
+                    if var message = pendingMessage, message.role != .user {
+                        if pendingUsageCameFromTokenCount || message.usage == nil {
+                            message.usage = mergeUsage(message.usage, tokenUsage)
+                            pendingUsageCameFromTokenCount = true
+                            pendingMessage = message
+                        }
+                    } else {
+                        pendingUsage = mergeUsage(pendingUsage, tokenUsage)
+                    }
+                    continue
+                }
+
+                guard var message = message(from: object) else { continue }
+                if flushPendingMessage() { break }
+                if message.role != .user, let usage = pendingUsage {
+                    if message.usage == nil {
+                        message.usage = usage
+                    }
+                    pendingUsage = nil
+                }
+                pendingMessage = message
+                pendingUsageCameFromTokenCount = false
+            }
+
+            if messages.count < cappedLimit {
+                _ = flushPendingMessage()
+            }
+
+            if let failure = reader.failures.first { throw failure }
+            if options.limit == nil {
+                let after = try limits.fileIdentity(for: url)
+                guard limits.isSameFileIdentity(before, after) else {
+                    throw ParserFailure.fileModifiedDuringParse
+                }
+            }
+            return messages
+        }
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
@@ -425,6 +506,51 @@ final class CodexAdapter: SessionAdapter, Sendable {
         default:
             return nil
         }
+    }
+
+    private static func tokenCountUsage(from object: JSONLAdapterSupport.JSONObject) -> TokenUsage? {
+        guard JSONLAdapterSupport.string(object["type"]) == "event_msg",
+              let payload = JSONLAdapterSupport.object(object["payload"]),
+              JSONLAdapterSupport.string(payload["type"]) == "token_count",
+              let info = JSONLAdapterSupport.object(payload["info"]),
+              let usage = JSONLAdapterSupport.object(info["last_token_usage"])
+        else {
+            return nil
+        }
+
+        let inputTokens = int(usage["input_tokens"])
+        let cachedInputTokens = int(usage["cached_input_tokens"])
+        let outputTokens = int(usage["output_tokens"])
+        let tokenUsage = TokenUsage(
+            inputTokens: max(inputTokens - cachedInputTokens, 0),
+            outputTokens: outputTokens,
+            cacheReadTokens: cachedInputTokens,
+            cacheCreationTokens: 0
+        )
+        guard tokenUsage.inputTokens > 0
+            || tokenUsage.outputTokens > 0
+            || (tokenUsage.cacheReadTokens ?? 0) > 0
+            || (tokenUsage.cacheCreationTokens ?? 0) > 0
+        else {
+            return nil
+        }
+        return tokenUsage
+    }
+
+    private static func mergeUsage(_ lhs: TokenUsage?, _ rhs: TokenUsage) -> TokenUsage {
+        guard let lhs else { return rhs }
+        return TokenUsage(
+            inputTokens: lhs.inputTokens + rhs.inputTokens,
+            outputTokens: lhs.outputTokens + rhs.outputTokens,
+            cacheReadTokens: (lhs.cacheReadTokens ?? 0) + (rhs.cacheReadTokens ?? 0),
+            cacheCreationTokens: (lhs.cacheCreationTokens ?? 0) + (rhs.cacheCreationTokens ?? 0)
+        )
+    }
+
+    private static func int(_ value: Any?) -> Int {
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        return 0
     }
 
     private static func isSystemInjection(_ text: String) -> Bool {

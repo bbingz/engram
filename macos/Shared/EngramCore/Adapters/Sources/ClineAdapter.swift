@@ -97,13 +97,40 @@ final class ClineAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let messages = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
-            .compactMap(Self.message(from:))
+        let objects = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
+        let messages = Self.messages(from: objects)
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
     }
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
+    }
+
+    private static func messages(from objects: [Phase4AdapterSupport.JSONObject]) -> [NormalizedMessage] {
+        var messages: [NormalizedMessage] = []
+        var pendingUsage = TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
+        var hasPendingUsage = false
+
+        for object in objects {
+            if let usage = apiRequestUsage(from: object) {
+                pendingUsage.inputTokens += usage.inputTokens
+                pendingUsage.outputTokens += usage.outputTokens
+                pendingUsage.cacheReadTokens = (pendingUsage.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0)
+                pendingUsage.cacheCreationTokens = (pendingUsage.cacheCreationTokens ?? 0) + (usage.cacheCreationTokens ?? 0)
+                hasPendingUsage = true
+                continue
+            }
+
+            guard var message = message(from: object) else { continue }
+            if message.role == .assistant, hasPendingUsage {
+                message.usage = pendingUsage
+                pendingUsage = TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
+                hasPendingUsage = false
+            }
+            messages.append(message)
+        }
+
+        return messages
     }
 
     private static func message(from object: Phase4AdapterSupport.JSONObject) -> NormalizedMessage? {
@@ -118,6 +145,26 @@ final class ClineAdapter: SessionAdapter, Sendable {
             timestamp: Phase4AdapterSupport.isoFromMilliseconds(timestamp),
             toolCalls: nil,
             usage: nil
+        )
+    }
+
+    private static func apiRequestUsage(from object: Phase4AdapterSupport.JSONObject) -> TokenUsage? {
+        guard JSONLAdapterSupport.string(object["say"]) == "api_req_started",
+              let text = JSONLAdapterSupport.string(object["text"]),
+              let payload = Phase4AdapterSupport.jsonObject(from: text)
+        else {
+            return nil
+        }
+
+        let inputTokens = Int(Phase4AdapterSupport.int64(payload["tokensIn"]) ?? 0)
+        let outputTokens = Int(Phase4AdapterSupport.int64(payload["tokensOut"]) ?? 0)
+        guard inputTokens > 0 || outputTokens > 0 else { return nil }
+
+        return TokenUsage(
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0
         )
     }
 

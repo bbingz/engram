@@ -91,6 +91,78 @@ describe('CodexAdapter', () => {
     expect(assistant?.usage?.outputTokens).toBe(30);
   });
 
+  it('maps token_count event usage onto the previous assistant message', async () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-token-count-${Date.now()}`);
+    const path = join(tmpRoot, 'rollout-token-count.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    const lines = [
+      JSON.stringify({
+        timestamp: '2026-06-01T10:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: 'token-count',
+          timestamp: '2026-06-01T10:00:00.000Z',
+          cwd: '/tmp/codex-usage',
+          originator: 'codex',
+          model_provider: 'openai',
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-01T10:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Track Codex usage' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-01T10:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Codex usage tracked.' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-01T10:00:03.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: {
+              input_tokens: 1000,
+              cached_input_tokens: 400,
+              output_tokens: 25,
+              reasoning_output_tokens: 5,
+              total_tokens: 1025,
+            },
+          },
+        },
+      }),
+    ].join('\n');
+    writeFileSync(path, `${lines}\n`);
+
+    try {
+      const messages = [];
+      for await (const msg of adapter.streamMessages(path)) {
+        messages.push(msg);
+      }
+
+      expect(messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+      expect(messages[0].usage).toBeUndefined();
+      expect(messages[1].usage).toEqual({
+        inputTokens: 600,
+        outputTokens: 25,
+        cacheReadTokens: 400,
+        cacheCreationTokens: 0,
+      });
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('streamMessages respects offset and limit', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(FIXTURE, {

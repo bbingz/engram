@@ -159,7 +159,7 @@ final class IflowAdapter: SessionAdapter, Sendable {
             content: extractContent(message?["content"]),
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: nil,
-            usage: nil
+            usage: type == "assistant" ? usage(from: JSONLAdapterSupport.object(message?["usage"])) : nil
         )
     }
 
@@ -182,5 +182,24 @@ final class IflowAdapter: SessionAdapter, Sendable {
             return text
         }
         return ""
+    }
+
+    private static func usage(from usage: JSONLAdapterSupport.JSONObject?) -> TokenUsage? {
+        guard let usage else { return nil }
+        let tokenUsage = TokenUsage(
+            inputTokens: int(usage["input_tokens"]),
+            outputTokens: int(usage["output_tokens"])
+        )
+        guard tokenUsage.inputTokens > 0 || tokenUsage.outputTokens > 0 else {
+            return nil
+        }
+        return tokenUsage
+    }
+
+    private static func int(_ value: Any?) -> Int {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? String { return Int(value) ?? 0 }
+        return 0
     }
 }

@@ -233,7 +233,7 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
             let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
             let rows = try database.query(
                 """
-                SELECT m.data AS mdata, p.data AS pdata, m.time_created
+                SELECT m.id AS mid, m.data AS mdata, p.data AS pdata, m.time_created
                 FROM message m
                 JOIN part p ON p.message_id = m.id
                 WHERE m.session_id = ?
@@ -241,7 +241,7 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
                 """,
                 bindings: [locatorParts.sessionId]
             )
-            let messages = rows.compactMap(Self.message(from:))
+            let messages = Self.messages(from: rows)
             return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
         } catch let failure as ParserFailure {
             throw failure
@@ -301,8 +301,16 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
         return Int64(raw ?? "") ?? 0
     }
 
+    private struct MessagePart {
+        let messageId: String
+        let role: NormalizedMessageRole
+        let content: String
+        let timestamp: String?
+        let usage: TokenUsage?
+    }
+
     // Returns the role of a message+part row only when it yields a non-empty
-    // text part, matching message(from:) so parseSessionInfo counts agree with
+    // text part, matching messagePart(from:) so parseSessionInfo counts agree with
     // the streamed transcript.
     private static func contentfulRole(from row: [String: String?]) -> String? {
         guard let rawMessage = row["mdata"] ?? nil,
@@ -311,7 +319,7 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
               let partData = Phase4AdapterSupport.jsonObject(from: rawPart),
               let role = JSONLAdapterSupport.string(messageData["role"]),
               role == "user" || role == "assistant",
-              JSONLAdapterSupport.string(partData["type"]) == "text"
+              isTextPart(partData)
         else {
             return nil
         }
@@ -323,14 +331,40 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
         return role
     }
 
-    private static func message(from row: [String: String?]) -> NormalizedMessage? {
-        guard let rawMessage = row["mdata"] ?? nil,
+    private static func messages(from rows: [[String: String?]]) -> [NormalizedMessage] {
+        var messages: [NormalizedMessage] = []
+        var indexByMessageId: [String: Int] = [:]
+
+        for row in rows {
+            guard let part = messagePart(from: row) else { continue }
+            if let index = indexByMessageId[part.messageId] {
+                messages[index].content += "\n\(part.content)"
+            } else {
+                indexByMessageId[part.messageId] = messages.count
+                messages.append(
+                    NormalizedMessage(
+                        role: part.role,
+                        content: part.content,
+                        timestamp: part.timestamp,
+                        toolCalls: nil,
+                        usage: part.usage
+                    )
+                )
+            }
+        }
+
+        return messages
+    }
+
+    private static func messagePart(from row: [String: String?]) -> MessagePart? {
+        guard let messageId = row["mid"] ?? nil,
+              let rawMessage = row["mdata"] ?? nil,
               let rawPart = row["pdata"] ?? nil,
               let messageData = Phase4AdapterSupport.jsonObject(from: rawMessage),
               let partData = Phase4AdapterSupport.jsonObject(from: rawPart),
               let role = JSONLAdapterSupport.string(messageData["role"]),
               role == "user" || role == "assistant",
-              JSONLAdapterSupport.string(partData["type"]) == "text"
+              isTextPart(partData)
         else {
             return nil
         }
@@ -343,12 +377,44 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
 
         let timestamp = Phase4AdapterSupport.double(row["time_created"] ?? nil)
             .map { Phase4AdapterSupport.isoFromMilliseconds($0) }
-        return NormalizedMessage(
+        return MessagePart(
+            messageId: messageId,
             role: role == "user" ? .user : .assistant,
             content: content,
             timestamp: timestamp,
-            toolCalls: nil,
-            usage: nil
+            usage: role == "assistant" ? usage(from: JSONLAdapterSupport.object(messageData["tokens"])) : nil
         )
+    }
+
+    private static func usage(from tokens: Phase4AdapterSupport.JSONObject?) -> TokenUsage? {
+        guard let tokens else { return nil }
+        let cache = JSONLAdapterSupport.object(tokens["cache"])
+        let usage = TokenUsage(
+            inputTokens: int(tokens["input"]),
+            outputTokens: int(tokens["output"]) + int(tokens["reasoning"]),
+            cacheReadTokens: int(cache?["read"]),
+            cacheCreationTokens: int(cache?["write"])
+        )
+        guard usage.inputTokens > 0
+            || usage.outputTokens > 0
+            || (usage.cacheReadTokens ?? 0) > 0
+            || (usage.cacheCreationTokens ?? 0) > 0
+        else {
+            return nil
+        }
+        return usage
+    }
+
+    private static func int(_ value: Any?) -> Int {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? String { return Int(value) ?? 0 }
+        return 0
+    }
+
+    private static func isTextPart(_ partData: Phase4AdapterSupport.JSONObject) -> Bool {
+        JSONLAdapterSupport.string(partData["type"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "text"
     }
 }

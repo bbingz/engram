@@ -9,6 +9,7 @@ import type {
   SessionAdapter,
   SessionInfo,
   StreamMessagesOptions,
+  TokenUsage,
 } from './types.js';
 
 interface SessionRow {
@@ -34,6 +35,15 @@ interface MessageData {
   role: 'user' | 'assistant';
   time?: { created?: number; completed?: number };
   content?: Array<{ type: string; value?: string; text?: string }>;
+  tokens?: {
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: {
+      read?: number;
+      write?: number;
+    };
+  };
 }
 
 export class OpenCodeAdapter implements SessionAdapter {
@@ -225,7 +235,7 @@ export class OpenCodeAdapter implements SessionAdapter {
         }
 
         if (mdata.role !== 'user' && mdata.role !== 'assistant') continue;
-        if (pdata.type !== 'text') continue;
+        if (this.normalizedPartType(pdata.type) !== 'text') continue;
         const content = pdata.text || pdata.value || '';
         if (!content.trim()) continue;
 
@@ -239,6 +249,8 @@ export class OpenCodeAdapter implements SessionAdapter {
           role: mdata.role,
           content,
           timestamp: new Date(row.time_created).toISOString(),
+          usage:
+            mdata.role === 'assistant' ? this.usage(mdata.tokens) : undefined,
         };
         yielded++;
       }
@@ -265,5 +277,38 @@ export class OpenCodeAdapter implements SessionAdapter {
     } finally {
       db?.close();
     }
+  }
+
+  private usage(tokens: MessageData['tokens']): TokenUsage | undefined {
+    if (!tokens) return undefined;
+    const inputTokens = this.int(tokens.input);
+    const outputTokens = this.int(tokens.output) + this.int(tokens.reasoning);
+    const cacheReadTokens = this.int(tokens.cache?.read);
+    const cacheCreationTokens = this.int(tokens.cache?.write);
+
+    if (
+      inputTokens === 0 &&
+      outputTokens === 0 &&
+      cacheReadTokens === 0 &&
+      cacheCreationTokens === 0
+    )
+      return undefined;
+
+    return {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+    };
+  }
+
+  private int(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.trunc(value)
+      : 0;
+  }
+
+  private normalizedPartType(value: unknown): string {
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
   }
 }
