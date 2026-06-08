@@ -303,6 +303,9 @@ targets:
       TEST_TARGET_NAME: Engram
       GENERATE_INFOPLIST_FILE: YES
       INFOPLIST_KEY_NSPrincipalClass: ScreenshotTestObserver
+      DEVELOPMENT_TEAM: J25GS8J4XM
+      CODE_SIGN_STYLE: Automatic
+      CODE_SIGN_IDENTITY: "Apple Development"
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
