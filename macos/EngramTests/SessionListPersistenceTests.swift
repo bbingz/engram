@@ -7,7 +7,8 @@ final class SessionListPersistenceTests: XCTestCase {
     func testSortKeyRoundTrips() {
         let cases: [(String, Bool)] = [
             ("source", true), ("displayTitle", false),
-            ("messageCount", true), ("sizeBytes", false), ("startTime", true)
+            ("messageCount", true), ("sizeBytes", false),
+            ("startTime", true), ("accessSortTime", false)
         ]
         for (key, asc) in cases {
             let comparator = SessionListView.comparator(forKey: key, ascending: asc)
@@ -16,8 +17,8 @@ final class SessionListPersistenceTests: XCTestCase {
         }
     }
 
-    func testUnknownSortKeyFallsBackToStartTime() {
+    func testUnknownSortKeyFallsBackToAccessSortTime() {
         let comparator = SessionListView.comparator(forKey: "bogus", ascending: false)
-        XCTAssertEqual(SessionListView.sortKey(for: comparator), "startTime")
+        XCTAssertEqual(SessionListView.sortKey(for: comparator), "accessSortTime")
     }
 }

@@ -454,6 +454,9 @@
     "Resume command copied" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已复制恢复命令" } } }
     },
+    "Context primer copied" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已复制上下文提示" } } }
+    },
     "Running" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行中" } } }
     },

@@ -13,6 +13,10 @@ struct SessionTableView: View {
     var onDelete: ((String) -> Void)?
     var onRename: ((Session) -> Void)?
     var onFilterProject: ((String) -> Void)?
+    var onResume: ((Session) -> Void)?
+    var onCopyResumeCommand: ((Session) -> Void)?
+    var onHandoff: ((Session) -> Void)?
+    var onReplay: ((Session) -> Void)?
 
     var body: some View {
         Table(of: Session.self, selection: $selectedSessionId, sortOrder: $sortOrder) {
@@ -94,6 +98,19 @@ struct SessionTableView: View {
                         }
                         Button("Reveal Session Log") {
                             NSWorkspace.shared.selectFile(session.effectiveFilePath, inFileViewerRootedAtPath: "")
+                        }
+                        Divider()
+                        Button("Resume...") {
+                            onResume?(session)
+                        }
+                        Button("Copy Resume Command") {
+                            onCopyResumeCommand?(session)
+                        }
+                        Button("Handoff") {
+                            onHandoff?(session)
+                        }
+                        Button("Replay") {
+                            onReplay?(session)
                         }
                         Divider()
                         Button("Copy Session ID") {

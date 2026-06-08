@@ -6,7 +6,41 @@ enum TerminalType: String, CaseIterable, Identifiable {
     case terminal = "Terminal"
     case iterm = "iTerm2"
     case ghostty = "Ghostty"
+    case warp = "Warp"
+
     var id: String { rawValue }
+
+    var bundleIdentifiers: [String] {
+        switch self {
+        case .terminal:
+            return ["com.apple.Terminal"]
+        case .iterm:
+            return ["com.googlecode.iterm2"]
+        case .ghostty:
+            return ["com.mitchellh.ghostty"]
+        case .warp:
+            return ["dev.warp.Warp-Stable", "dev.warp.Warp"]
+        }
+    }
+
+    var applicationPaths: [String] {
+        switch self {
+        case .terminal:
+            return [
+                "/System/Applications/Utilities/Terminal.app",
+                "/Applications/Utilities/Terminal.app",
+            ]
+        case .iterm:
+            return [
+                "/Applications/iTerm.app",
+                "/Applications/iTerm2.app",
+            ]
+        case .ghostty:
+            return ["/Applications/Ghostty.app"]
+        case .warp:
+            return ["/Applications/Warp.app"]
+        }
+    }
 }
 
 struct TerminalLauncher {
@@ -31,6 +65,98 @@ struct TerminalLauncher {
 
     static func appleScriptCommandLine(command: String, args: [String], cwd: String) -> String {
         escapeForAppleScript(shellCommandLine(command: command, args: args, cwd: cwd))
+    }
+
+    static func warpTabConfigTOML(configName: String, command: String, directory: String) -> String {
+        """
+        name = "\(tomlEscape(configName))"
+
+        [[panes]]
+        id = "main"
+        type = "terminal"
+        directory = "\(tomlEscape(directory))"
+        commands = ["\(tomlEscape(command))"]
+        """
+    }
+
+    static func availableTerminalTypes(
+        bundleIdentifierIsInstalled: (String) -> Bool = { bundleIdentifier in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
+        },
+        applicationPathExists: (String) -> Bool = { path in
+            FileManager.default.fileExists(atPath: path)
+        }
+    ) -> [TerminalType] {
+        let installed = TerminalType.allCases.filter { terminal in
+            terminal.bundleIdentifiers.contains(where: bundleIdentifierIsInstalled)
+                || terminal.applicationPaths.contains(where: applicationPathExists)
+        }
+        return installed.isEmpty ? [.terminal] : installed
+    }
+
+    private static func tomlEscape(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
+    }
+
+    private static func launchInWarp(shellCommand: String, cwd: String) throws {
+        let tabConfigDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".warp/tab_configs")
+        try FileManager.default.createDirectory(at: tabConfigDir, withIntermediateDirectories: true)
+
+        let configName = "engram-resume-\(UUID().uuidString.prefix(8).lowercased())"
+        let configFile = tabConfigDir.appendingPathComponent("\(configName).toml")
+        let directory = cwd.isEmpty ? FileManager.default.homeDirectoryForCurrentUser.path : cwd
+        let toml = warpTabConfigTOML(
+            configName: configName,
+            command: shellCommand,
+            directory: directory
+        )
+        try toml.write(to: configFile, atomically: true, encoding: .utf8)
+
+        guard let url = URL(string: "warp://tab_config/\(configName)") else {
+            throw NSError(
+                domain: "TerminalLauncher",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to build Warp tab config URL"]
+            )
+        }
+
+        let warpIsRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == "dev.warp.Warp-Stable" || $0.bundleIdentifier == "dev.warp.Warp"
+        }
+        if warpIsRunning {
+            NSWorkspace.shared.open(url)
+        } else {
+            if let appURL = warpApplicationURL() {
+                let configuration = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, _ in
+                    NSWorkspace.shared.open(url)
+                }
+            } else {
+                NSWorkspace.shared.open(url)
+            }
+        }
+
+        Task.detached {
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            try? FileManager.default.removeItem(at: configFile)
+        }
+    }
+
+    private static func warpApplicationURL() -> URL? {
+        for bundleIdentifier in TerminalType.warp.bundleIdentifiers {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+                return url
+            }
+        }
+        for path in TerminalType.warp.applicationPaths where FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
     }
 
     static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) {
@@ -74,6 +200,14 @@ struct TerminalLauncher {
                 activate
             end tell
             """
+        case .warp:
+            do {
+                try launchInWarp(shellCommand: shellCmd, cwd: cwd)
+            } catch {
+                let errMsg = "[TerminalLauncher] Warp launch error: \(error)\n"
+                try? errMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
+            }
+            return
         }
         // Log the script for debugging
         let logMsg = "[TerminalLauncher] Executing script:\n\(script)\n"

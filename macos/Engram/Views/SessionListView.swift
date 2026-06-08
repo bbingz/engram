@@ -12,7 +12,7 @@ struct SessionListView: View {
     @AppStorage("agentFilterMode") private var agentFilterMode: Int = 2  // 0=all, 1=agents, 2=hide
     // Persisted table sort + project filter so they survive app restarts.
     @AppStorage("sessionsSelectedProject") private var persistedProject: String = ""
-    @AppStorage("sessionsSortKey") private var persistedSortKey: String = "startTime"
+    @AppStorage("sessionsSortKey") private var persistedSortKey: String = "accessSortTime"
     @AppStorage("sessionsSortAscending") private var persistedSortAscending: Bool = false
 
     // MARK: - Local state
@@ -21,7 +21,7 @@ struct SessionListView: View {
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
     @State private var sortOrder: [KeyPathComparator<Session>] = [
-        .init(\.startTime, order: .reverse)
+        .init(\.accessSortTime, order: .reverse)
     ]
     @State private var selectedProject: String?
     @State private var favoriteIds: Set<String> = []
@@ -29,6 +29,9 @@ struct SessionListView: View {
     @State private var showingTrash = false
     @State private var renameTarget: Session?
     @State private var renameText: String = ""
+    @State private var resumeTarget: Session?
+    @State private var replayTarget: Session?
+    @State private var actionMessage: String?
     @State private var refreshTrigger = UUID()
     @State private var filterTask: Task<Void, Never>?
     @State private var isChurning = false
@@ -104,7 +107,8 @@ struct SessionListView: View {
         case "displayTitle": return .init(\.displayTitle, order: order)
         case "messageCount": return .init(\.messageCount, order: order)
         case "sizeBytes":    return .init(\.sizeBytes, order: order)
-        default:             return .init(\.startTime, order: order)
+        case "startTime":    return .init(\.startTime, order: order)
+        default:             return .init(\.accessSortTime, order: order)
         }
     }
 
@@ -114,7 +118,8 @@ struct SessionListView: View {
         if kp == \Session.displayTitle { return "displayTitle" }
         if kp == \Session.messageCount { return "messageCount" }
         if kp == \Session.sizeBytes { return "sizeBytes" }
-        return "startTime"
+        if kp == \Session.startTime { return "startTime" }
+        return "accessSortTime"
     }
 
     /// Recompute filtered sessions and derived counts from current state
@@ -187,6 +192,7 @@ struct SessionListView: View {
         .onChange(of: selectedSessionId) { _, newId in
             if let newId, let session = sessions.first(where: { $0.id == newId }) {
                 lastSelectedSession = session
+                recordSelectedSessionAccess(sessionId: newId)
             }
         }
         .onChange(of: selectedSourcesStr) { _, _ in updateFilteredSessions() }
@@ -212,6 +218,22 @@ struct SessionListView: View {
             renameAlertContent
         } message: {
             Text("Displayed as: note | original title. Leave empty to clear.")
+        }
+        .sheet(item: $resumeTarget) { session in
+            ResumeDialog(session: session)
+        }
+        .sheet(item: $replayTarget) { session in
+            SessionReplayView(sessionId: session.id)
+        }
+        .alert("Session Action", isPresented: Binding(
+            get: { actionMessage != nil },
+            set: { if !$0 { actionMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            if let actionMessage {
+                Text(actionMessage)
+            }
         }
     }
 
@@ -276,7 +298,11 @@ struct SessionListView: View {
                     onToggleFavorite: { id, isFav in toggleFavorite(id: id, current: isFav) },
                     onDelete: { id in deleteSession(id) },
                     onRename: { session in renameTarget = session; renameText = session.customName ?? session.summary ?? "" },
-                    onFilterProject: { project in selectedProject = project }
+                    onFilterProject: { project in selectedProject = project },
+                    onResume: { session in resumeTarget = session },
+                    onCopyResumeCommand: { session in copyResumeCommand(session) },
+                    onHandoff: { session in performHandoff(session) },
+                    onReplay: { session in replayTarget = session }
                 )
                 .id(columnRevision)
             } else {
@@ -290,6 +316,10 @@ struct SessionListView: View {
                                 suggestedChildCount: suggestedCounts[session.id] ?? 0,
                                 onTap: { selectSession(session) },
                                 onChildTap: { child in selectSession(child) },
+                                onResume: { session in resumeTarget = session },
+                                onCopyResumeCommand: { session in copyResumeCommand(session) },
+                                onHandoff: { session in performHandoff(session) },
+                                onReplay: { session in replayTarget = session },
                                 onConfirmSuggestion: { child in confirmSuggestion(child) },
                                 onDismissSuggestion: { child in dismissSuggestion(child) }
                             )
@@ -484,6 +514,41 @@ struct SessionListView: View {
         }
     }
 
+    private func copyResumeCommand(_ session: Session) {
+        Task {
+            do {
+                let response = try await serviceClient.resumeCommand(sessionId: session.id)
+                let item = try TodayResumeCommand.copyableClipboardItem(from: response)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(item.text, forType: .string)
+                actionMessage = item.message
+            } catch {
+                EngramLogger.error("SessionListView copy resume command failed", module: .ui, error: error)
+                actionMessage = String(localized: "Failed to copy resume command")
+            }
+        }
+    }
+
+    private func performHandoff(_ session: Session) {
+        Task {
+            do {
+                let response = try await serviceClient.handoff(
+                    EngramServiceHandoffRequest(
+                        cwd: session.cwd,
+                        sessionId: session.id,
+                        format: "markdown"
+                    )
+                )
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(response.brief, forType: .string)
+                actionMessage = "Handoff copied! (\(response.sessionCount) sessions)"
+            } catch {
+                EngramLogger.error("SessionListView handoff failed", module: .ui, error: error)
+                actionMessage = "Handoff failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func handleDeepLink(_ session: Session?) {
         guard let session else { return }
         // Clear filters so the session is visible
@@ -501,6 +566,16 @@ struct SessionListView: View {
 
     private func selectSession(_ session: Session) {
         selectedSessionId = session.id
+    }
+
+    private func recordSelectedSessionAccess(sessionId: String) {
+        Task {
+            do {
+                try await serviceClient.recordSessionAccess(sessionId: sessionId)
+            } catch {
+                EngramLogger.error("SessionListView access bump failed", module: .ui, error: error)
+            }
+        }
     }
 
     private func confirmSuggestion(_ child: Session) {

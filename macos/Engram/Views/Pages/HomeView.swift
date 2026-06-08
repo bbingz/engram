@@ -317,10 +317,10 @@ struct HomeView: View {
             defer { copyingSessionId = nil }
             do {
                 let response = try await serviceClient.resumeCommand(sessionId: session.id)
-                let command = try TodayResumeCommand.copyableCommand(from: response)
+                let item = try TodayResumeCommand.copyableClipboardItem(from: response)
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(command, forType: .string)
-                alertMessage = String(localized: "Resume command copied")
+                NSPasteboard.general.setString(item.text, forType: .string)
+                alertMessage = item.message
             } catch {
                 EngramLogger.error("HomeView copy resume command failed", module: .ui, error: error)
                 alertMessage = String(localized: "Failed to copy resume command")

@@ -76,7 +76,14 @@ enum EngramCLIResumeCommand {
         client: any EngramServiceClientProtocol
     ) async throws -> String {
         let response = try await client.resumeCommand(sessionId: options.sessionId)
+        if options.json {
+            return try render(response: response, json: true)
+        }
         if let error = response.error, !error.isEmpty {
+            if let primer = response.contextPrimer?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !primer.isEmpty {
+                return renderUnavailableContextPrimer(error: error, hint: response.hint, primer: primer)
+            }
             let suffix = response.hint?.isEmpty == false ? " \(response.hint!)" : ""
             throw EngramCLIResumeError.unavailable(error + suffix)
         }
@@ -91,15 +98,30 @@ enum EngramCLIResumeCommand {
             return String(decoding: data, as: UTF8.self)
         }
         guard let command = response.command, !command.isEmpty else {
+            if let primer = response.contextPrimer?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !primer.isEmpty {
+                return renderUnavailableContextPrimer(
+                    error: "Session has no resumable command",
+                    hint: response.hint,
+                    primer: primer
+                )
+            }
             throw EngramCLIResumeError.unavailable("Session has no resumable command")
         }
         let commandLine = ([command] + response.args)
             .map(shellEscaped)
             .joined(separator: " ")
+        let rendered: String
         if let cwd = response.cwd, !cwd.isEmpty {
-            return "cd \(shellEscaped(cwd)) && \(commandLine)"
+            rendered = "cd \(shellEscaped(cwd)) && \(commandLine)"
+        } else {
+            rendered = commandLine
         }
-        return commandLine
+        guard let primer = response.contextPrimer?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !primer.isEmpty else {
+            return rendered
+        }
+        return rendered + "\n\n# Engram context primer:\n" + shellCommentBlock(primer)
     }
 
     static func shellEscaped(_ value: String) -> String {
@@ -107,5 +129,29 @@ enum EngramCLIResumeCommand {
             return value
         }
         return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func shellCommentBlock(_ value: String) -> String {
+        value
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                line.isEmpty ? "#" : "# \(line)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private static func renderUnavailableContextPrimer(
+        error: String,
+        hint: String?,
+        primer: String
+    ) -> String {
+        var lines = ["# Engram resume command unavailable: \(error)"]
+        if let hint = hint?.trimmingCharacters(in: .whitespacesAndNewlines), !hint.isEmpty {
+            lines.append("# \(hint)")
+        }
+        lines.append("#")
+        lines.append("# Engram context primer:")
+        lines.append(shellCommentBlock(primer))
+        return lines.joined(separator: "\n")
     }
 }
