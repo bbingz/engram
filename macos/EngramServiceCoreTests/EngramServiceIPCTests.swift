@@ -63,6 +63,29 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(ids.contains("s1"), "already-titled session must be excluded")
     }
 
+    func testRecordSessionAccessUpdatesAccessColumnsThroughWriteGate() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        try await client.recordSessionAccess(sessionId: "s1")
+        try await client.recordSessionAccess(sessionId: "s1")
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let row = try await queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT access_count, last_accessed_at FROM sessions WHERE id = 's1'")
+        }
+        XCTAssertEqual(row?["access_count"] as Int?, 2)
+        XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
+    }
+
     func testGenerateTitlesForContextsHonorsCancellationBeforeWork() async throws {
         let contexts = [
             EngramServiceCommandHandler.AIContext(
@@ -318,7 +341,10 @@ final class EngramServiceIPCTests: XCTestCase {
     func testRunnerStartupScanUsesRecentActiveAdapters() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
 
-        XCTAssertTrue(source.contains("let startupAdapters = SessionAdapterFactory.recentActiveAdapters()"))
+        XCTAssertTrue(source.contains("let defaultAdapters = SessionAdapterFactory.defaultAdapters()"))
+        XCTAssertTrue(source.contains("let startupAdapters = usageParserBackfillNeeded"))
+        XCTAssertTrue(source.contains("? defaultAdapters"))
+        XCTAssertTrue(source.contains(": SessionAdapterFactory.recentActiveAdapters()"))
         XCTAssertTrue(source.contains("indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters)"))
         XCTAssertTrue(source.contains("adapters: startupAdapters"))
     }
@@ -357,6 +383,15 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanIndex")"#))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanBackfills")"#))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanOrphans")"#))
+    }
+
+    func testRunnerInitialScanFullBackfillsWhenUsageParserVersionChanges() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillCheck")"#))
+        XCTAssertTrue(source.contains("UsageParserBackfillPolicy.needsBackfill"))
+        XCTAssertTrue(source.contains("? defaultAdapters"))
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillMark")"#))
+        XCTAssertTrue(source.contains("UsageParserBackfillPolicy.markComplete"))
     }
 
     func testRunnerObservabilityRetentionLogsZeroRowCompletion() throws {
@@ -772,7 +807,14 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let sources = try await client.sources()
         XCTAssertEqual(sources, [
-            EngramServiceSourceInfo(name: "codex", sessionCount: 2, latestIndexed: "2026-04-23T02:00:00Z")
+            EngramServiceSourceInfo(
+                name: "codex",
+                sessionCount: 2,
+                latestIndexed: "2026-04-23T02:00:00Z",
+                searchableSessionCount: 2,
+                searchCoveragePercent: 100,
+                healthStatus: "healthy"
+            )
         ])
 
         let embedding = try await client.embeddingStatus()
@@ -780,6 +822,179 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(embedding.embeddedCount, 1)
         XCTAssertEqual(embedding.totalSessions, 2)
         XCTAssertEqual(embedding.progress, 50)
+    }
+
+    func testSQLiteReadProviderSourcesExposeArchiveHealthFacts() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session_index_jobs (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  job_kind TEXT NOT NULL,
+                  target_sync_version INTEGER NOT NULL,
+                  status TEXT NOT NULL,
+                  retry_count INTEGER NOT NULL DEFAULT 0,
+                  last_error TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE session_costs (
+                  session_id TEXT PRIMARY KEY,
+                  model TEXT,
+                  input_tokens INTEGER DEFAULT 0,
+                  output_tokens INTEGER DEFAULT 0,
+                  cache_read_tokens INTEGER DEFAULT 0,
+                  cache_creation_tokens INTEGER DEFAULT 0,
+                  cost_usd REAL DEFAULT 0,
+                  computed_at TEXT
+                );
+                CREATE TABLE usage_snapshots (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  source TEXT NOT NULL,
+                  metric TEXT NOT NULL,
+                  value REAL NOT NULL,
+                  unit TEXT DEFAULT '%',
+                  reset_at TEXT,
+                  limit_value REAL,
+                  status TEXT,
+                  collected_at TEXT NOT NULL
+                );
+                INSERT INTO session_index_jobs(
+                  id, session_id, job_kind, target_sync_version, status, retry_count, last_error
+                ) VALUES (
+                  's2:1:hash:fts', 's2', 'fts', 1, 'failed_retryable', 1, 'malformed JSON'
+                );
+                INSERT INTO session_costs(
+                  session_id, model, input_tokens, output_tokens,
+                  cache_read_tokens, cache_creation_tokens, cost_usd, computed_at
+                ) VALUES (
+                  's1', 'gpt-5.4', 120, 30, 0, 0, 0.12, '2026-04-23T02:10:00Z'
+                );
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes, indexed_at
+                ) VALUES (
+                  's3', 'opencode', '2026-04-23T02:30:00Z', '/tmp/engram', 'engram',
+                  'opencode-model', 2, 1, 1, '/tmp/s3.jsonl', 44, '2026-04-23T02:30:00Z'
+                );
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s3', 'opencode text');
+                INSERT INTO usage_snapshots(source, metric, value, unit, reset_at, limit_value, status, collected_at)
+                VALUES
+                  ('codex', '5h window used', 64.5, '%', '2026-04-23T07:00:00Z', NULL, NULL, '2026-04-23T02:00:00Z'),
+                  ('codex', '5h window used', 71.0, '%', '2026-04-23T07:00:00Z', NULL, NULL, '2026-04-23T02:05:00Z'),
+                  ('codex', 'weekly quota pressure', 91.0, '%', '2026-04-30T00:00:00Z', 100.0, 'critical', '2026-04-23T02:06:00Z'),
+                  ('codex', '5h token share', 36.1, '%', NULL, NULL, NULL, '2026-04-23T02:05:00Z'),
+                  ('opencode', '5h token share', 55.0, '%', NULL, NULL, NULL, '2026-04-23T02:05:00Z'),
+                  ('opencode', '5h token pressure', 12.0, '%', '2026-04-23T07:00:00Z', 100.0, 'ok', '2026-04-23T02:05:00Z'),
+                  ('opencode', '7d cost share', 91.0, '%', NULL, NULL, NULL, '2026-04-23T02:05:00Z');
+                """)
+        }
+
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let sources = try await provider.sources()
+        let codex = sources.first { $0.name == "codex" }
+        XCTAssertEqual(codex?.sessionCount, 2)
+        XCTAssertEqual(codex?.searchableSessionCount, 2)
+        XCTAssertEqual(codex?.searchCoveragePercent, 100)
+        XCTAssertEqual(codex?.failedIndexJobCount, 1)
+        XCTAssertEqual(codex?.tokenSessionCount, 1)
+        XCTAssertEqual(codex?.tokenCoveragePercent, 50)
+        XCTAssertEqual(codex?.costedSessionCount, 1)
+        XCTAssertEqual(codex?.latestUsageMetric, "weekly quota pressure")
+        XCTAssertEqual(codex?.latestUsageValue, 91.0)
+        XCTAssertEqual(codex?.latestUsageUnit, "%")
+        XCTAssertEqual(codex?.latestUsageLimitValue, 100.0)
+        XCTAssertEqual(codex?.latestUsageResetAt, "2026-04-30T00:00:00Z")
+        XCTAssertEqual(codex?.latestUsageStatus, "critical")
+        XCTAssertEqual(codex?.healthStatus, "critical")
+
+        let opencode = sources.first { $0.name == "opencode" }
+        XCTAssertEqual(opencode?.tokenCoveragePercent, 0)
+        XCTAssertEqual(opencode?.latestUsageMetric, "5h token pressure")
+        XCTAssertEqual(opencode?.latestUsageValue, 12.0)
+        XCTAssertEqual(opencode?.latestUsageUnit, "%")
+        XCTAssertEqual(opencode?.latestUsageLimitValue, 100.0)
+        XCTAssertEqual(opencode?.latestUsageResetAt, "2026-04-23T07:00:00Z")
+        XCTAssertEqual(opencode?.latestUsageStatus, "ok")
+        XCTAssertEqual(opencode?.healthStatus, "healthy")
+    }
+
+    func testSQLiteReadProviderSourcesInferCriticalUsageForLegacyRemainingPercentWithoutUnit() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE usage_snapshots (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  source TEXT NOT NULL,
+                  metric TEXT NOT NULL,
+                  value REAL NOT NULL,
+                  unit TEXT,
+                  reset_at TEXT,
+                  limit_value REAL,
+                  status TEXT,
+                  collected_at TEXT NOT NULL
+                );
+                INSERT INTO usage_snapshots(source, metric, value, unit, reset_at, limit_value, status, collected_at)
+                VALUES (
+                  'codex', 'weekly remaining', 4.0, NULL, '2026-06-08T00:00:00Z',
+                  NULL, NULL, '2026-06-07T10:00:00Z'
+                );
+                """)
+        }
+
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let codex = try await provider.sources().first { $0.name == "codex" }
+
+        XCTAssertEqual(codex?.latestUsageMetric, "weekly remaining")
+        XCTAssertNil(codex?.latestUsageUnit)
+        XCTAssertEqual(codex?.latestUsageStatus, "critical")
+        XCTAssertEqual(codex?.healthStatus, "critical")
+    }
+
+    func testSQLiteReadProviderSourcesPrioritizeNormalizedExplicitUsageStatus() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE usage_snapshots (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  source TEXT NOT NULL,
+                  metric TEXT NOT NULL,
+                  value REAL NOT NULL,
+                  unit TEXT,
+                  reset_at TEXT,
+                  limit_value REAL,
+                  status TEXT,
+                  collected_at TEXT NOT NULL
+                );
+                INSERT INTO usage_snapshots(source, metric, value, unit, reset_at, limit_value, status, collected_at)
+                VALUES
+                  (
+                    'codex', '7d cost share', 8.0, '%', NULL,
+                    NULL, ' Critical ', '2026-06-07T10:00:00Z'
+                  ),
+                  (
+                    'codex', '5h token pressure', 72.0, '%', '2026-06-07T15:00:00Z',
+                    100.0, 'attention', '2026-06-07T10:00:00Z'
+                  );
+                """)
+        }
+
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let codex = try await provider.sources().first { $0.name == "codex" }
+
+        XCTAssertEqual(codex?.latestUsageMetric, "7d cost share")
+        XCTAssertEqual(codex?.latestUsageStatus, "critical")
+        XCTAssertEqual(codex?.healthStatus, "critical")
     }
 
     func testSearchSemanticModeDegradesToKeywordWithWarning() async throws {
@@ -912,6 +1127,56 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testSQLiteReadProviderSearchMatchesTermsAcrossMessagesWithinSameSession() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts")
+            try db.execute(sql: """
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'alpha planning note');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'beta verifier note');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s2', 'alpha only note');
+                """)
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(query: "alpha beta", mode: "keyword", limit: 10)
+        )
+
+        XCTAssertEqual(search.items.map(\.id), ["s1"])
+        let snippet = try XCTUnwrap(search.items.first?.snippet)
+        XCTAssertTrue(
+            snippet.contains("<mark>alpha</mark>") || snippet.contains("<mark>beta</mark>"),
+            "expected a highlighted snippet from one matching message, got: \(snippet)"
+        )
+    }
+
+    func testSQLiteReadProviderShortLatinSearchReturnsLiteralMatches() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions_fts SET content = ? WHERE session_id = 's1'",
+                arguments: ["Ship the AI usage monitor before the release"]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(
+            EngramServiceSearchRequest(query: "AI", mode: "keyword", limit: 10)
+        )
+
+        XCTAssertEqual(search.items.map(\.id), ["s1"])
+        let snippet = try XCTUnwrap(search.items.first?.snippet)
+        XCTAssertTrue(
+            snippet.localizedCaseInsensitiveContains("<mark>AI</mark>"),
+            "expected highlighted short Latin match, got: \(snippet)"
+        )
+    }
+
     // CJK search uses LIKE (FTS5 trigram MATCH is unreliable for CJK), so FTS5
     // snippet() can't run; the windowed `<mark>` highlight is built in Swift
     // (cjkHighlightedSnippet). Without it CJK users got the transcript from
@@ -996,7 +1261,14 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let first = try await provider.sources()
         XCTAssertEqual(first, [
-            EngramServiceSourceInfo(name: "codex", sessionCount: 2, latestIndexed: "2026-04-23T02:00:00Z")
+            EngramServiceSourceInfo(
+                name: "codex",
+                sessionCount: 2,
+                latestIndexed: "2026-04-23T02:00:00Z",
+                searchableSessionCount: 2,
+                searchCoveragePercent: 100,
+                healthStatus: "healthy"
+            )
         ])
 
         let second = try await provider.sources()
@@ -1033,6 +1305,270 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(resume.command, "/usr/local/bin/codex")
         XCTAssertEqual(resume.args, ["--resume", "s1"])
         XCTAssertEqual(resume.cwd, "/tmp/engram")
+        XCTAssertEqual(resume.contextPrimer, """
+        Resume context from Engram archive:
+        Session: s1
+        Source: codex
+        CWD: /tmp/engram
+
+        Archived context:
+        - hello from swift service
+        """)
+        XCTAssertNil(resume.error)
+    }
+
+    func testSQLiteReadProviderBuildsResumePrimerFromMetadataWhenFtsIsMissing() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(
+                databasePath: paths.database.path,
+                commandLocator: { command in
+                    command == "codex" ? "/usr/local/bin/codex" : nil
+                }
+            )
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let resume = try await client.resumeCommand(sessionId: "s1")
+
+        XCTAssertEqual(resume.tool, "codex")
+        XCTAssertEqual(resume.command, "/usr/local/bin/codex")
+        XCTAssertEqual(resume.args, ["--resume", "s1"])
+        XCTAssertEqual(resume.cwd, "/tmp/engram")
+        XCTAssertEqual(resume.contextPrimer, """
+        Resume context from Engram archive:
+        Session: s1
+        Source: codex
+        CWD: /tmp/engram
+
+        Archived context:
+        - Title: Generated Title
+        - Project: engram
+        - Model: gpt-5.4
+        - Messages: 2 total, 1 user, 1 assistant, 0 tool
+        """)
+        XCTAssertNil(resume.error)
+    }
+
+    func testSQLiteReadProviderRedactsFtsResumePrimerExcerpts() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions_fts SET content = ? WHERE session_id = 's1'",
+                arguments: ["Restore deployment with api_key=abcdef1234567890 before retry"]
+            )
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(
+                databasePath: paths.database.path,
+                commandLocator: { command in
+                    command == "codex" ? "/usr/local/bin/codex" : nil
+                }
+            )
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let resume = try await client.resumeCommand(sessionId: "s1")
+
+        XCTAssertEqual(resume.contextPrimer, """
+        Resume context from Engram archive:
+        Session: s1
+        Source: codex
+        CWD: /tmp/engram
+
+        Archived context:
+        - Restore deployment with [REDACTED] before retry
+        """)
+        XCTAssertFalse(resume.contextPrimer?.contains("abcdef1234567890") ?? true)
+        XCTAssertNil(resume.error)
+    }
+
+    func testSQLiteReadProviderBuildsResumePrimerFromRawTranscriptWhenFtsIsMissing() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
+        try """
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please restore the checkout state with api_key=abcdef1234567890"}]}}
+        {"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"I found the last edited file: Sources.swift"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'",
+                arguments: [transcript.path]
+            )
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(
+                databasePath: paths.database.path,
+                commandLocator: { command in
+                    command == "codex" ? "/usr/local/bin/codex" : nil
+                }
+            )
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let resume = try await client.resumeCommand(sessionId: "s1")
+
+        XCTAssertEqual(resume.tool, "codex")
+        XCTAssertEqual(resume.command, "/usr/local/bin/codex")
+        XCTAssertEqual(resume.args, ["--resume", "s1"])
+        XCTAssertEqual(resume.cwd, "/tmp/engram")
+        XCTAssertEqual(resume.contextPrimer, """
+        Resume context from Engram archive:
+        Session: s1
+        Source: codex
+        CWD: /tmp/engram
+
+        Archived context:
+        - User: Please restore the checkout state with [REDACTED]
+        - Assistant: I found the last edited file: Sources.swift
+        """)
+        XCTAssertNil(resume.error)
+    }
+
+    func testSQLiteReadProviderRawTranscriptPrimerKeepsOpeningPromptAndRecentMessages() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
+        try """
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Initial goal: stabilize resume context after a crash"}]}}
+        {"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"Early filler 1"}]}}
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Early filler 2"}]}}
+        {"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"Early filler 3"}]}}
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Recent decision: prefer transcript archive over metadata"}]}}
+        {"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"Recent file: EngramServiceReadProvider.swift"}]}}
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Current verifier: run IPC resume tests"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET file_path = ? WHERE id = 's1'",
+                arguments: [transcript.path]
+            )
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(
+                databasePath: paths.database.path,
+                commandLocator: { command in
+                    command == "codex" ? "/usr/local/bin/codex" : nil
+                }
+            )
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let resume = try await client.resumeCommand(sessionId: "s1")
+
+        XCTAssertEqual(resume.contextPrimer, """
+        Resume context from Engram archive:
+        Session: s1
+        Source: codex
+        CWD: /tmp/engram
+
+        Archived context:
+        - User: Initial goal: stabilize resume context after a crash
+        - User: Early filler 2
+        - Assistant: Early filler 3
+        - User: Recent decision: prefer transcript archive over metadata
+        - Assistant: Recent file: EngramServiceReadProvider.swift
+        - User: Current verifier: run IPC resume tests
+        """)
+        XCTAssertFalse(resume.contextPrimer?.contains("Early filler 1") ?? true)
+        XCTAssertNil(resume.error)
+    }
+
+    func testSQLiteReadProviderFtsPrimerKeepsOpeningPromptAndRecentMessages() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+            for excerpt in [
+                "Initial goal: stabilize resume context after a crash",
+                "Early filler 1",
+                "Early filler 2",
+                "Early filler 3",
+                "Recent decision: prefer FTS archive over metadata",
+                "Recent file: EngramServiceReadProvider.swift",
+                "Current verifier: run IPC resume tests"
+            ] {
+                try db.execute(
+                    sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s1', ?)",
+                    arguments: [excerpt]
+                )
+            }
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(
+                databasePath: paths.database.path,
+                commandLocator: { command in
+                    command == "codex" ? "/usr/local/bin/codex" : nil
+                }
+            )
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let resume = try await client.resumeCommand(sessionId: "s1")
+
+        XCTAssertEqual(resume.contextPrimer, """
+        Resume context from Engram archive:
+        Session: s1
+        Source: codex
+        CWD: /tmp/engram
+
+        Archived context:
+        - Initial goal: stabilize resume context after a crash
+        - Early filler 2
+        - Early filler 3
+        - Recent decision: prefer FTS archive over metadata
+        - Recent file: EngramServiceReadProvider.swift
+        - Current verifier: run IPC resume tests
+        """)
+        XCTAssertFalse(resume.contextPrimer?.contains("Early filler 1") ?? true)
         XCTAssertNil(resume.error)
     }
 
@@ -2459,6 +2995,8 @@ private func seedSearchFixture(at path: String) throws {
               origin TEXT,
               summary_message_count INTEGER,
               quality_score INTEGER,
+              last_accessed_at TEXT,
+              access_count INTEGER NOT NULL DEFAULT 0,
               generated_title TEXT,
               parent_session_id TEXT,
               suggested_parent_id TEXT,

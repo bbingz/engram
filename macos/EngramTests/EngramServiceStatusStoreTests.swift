@@ -71,7 +71,232 @@ final class EngramServiceStatusStoreTests: XCTestCase {
         XCTAssertEqual(store.usageData[0].metric, "requests")
         XCTAssertEqual(store.usageData[0].value, 40)
         XCTAssertEqual(store.usageData[0].limit, 100)
+        XCTAssertEqual(store.usageData[0].resetAt, "2026-04-24T00:00:00Z")
         XCTAssertEqual(store.usageData[0].status, "ok")
+    }
+
+    func testUsagePressureSummaryPrefersCriticalUsage() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":"codex","metric":"5h window used","value":72,"unit":"%","resetAt":"2026-06-07T10:00:00Z","status":"attention"},
+            {"source":"claude-code","metric":"weekly remaining","value":4,"unit":"%","resetAt":"2026-06-08T00:00:00Z","status":"critical"}
+          ]
+        }
+        """))
+
+        XCTAssertEqual(store.usagePressureSummary?.severity, .critical)
+        XCTAssertEqual(
+            store.usagePressureSummary?.message,
+            "Usage critical: Claude Code weekly remaining 4% (96% used) · resets 2026-06-08 00:00 UTC"
+        )
+    }
+
+    func testUsagePressureSummaryClarifiesLegacyRemainingPercentWithoutUnit() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":"claude-code","metric":"weekly remaining","value":4,"resetAt":"2026-06-08T00:00:00Z","status":"critical"}
+          ]
+        }
+        """))
+
+        XCTAssertEqual(
+            store.usagePressureSummary?.message,
+            "Usage critical: Claude Code weekly remaining 4% (96% used) · resets 2026-06-08 00:00 UTC"
+        )
+    }
+
+    func testUsagePressureSummaryNormalizesStatusCaseAndWhitespace() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":"claude-code","metric":"weekly remaining","value":4,"unit":"%","resetAt":"2026-06-08T00:00:00Z","status":" Critical "}
+          ]
+        }
+        """))
+
+        XCTAssertEqual(store.usagePressureSummary?.severity, .critical)
+        XCTAssertEqual(
+            store.usagePressureSummary?.message,
+            "Usage critical: Claude Code weekly remaining 4% (96% used) · resets 2026-06-08 00:00 UTC"
+        )
+    }
+
+    func testUsagePressureSummaryNormalizesSourceLabelCaseAndWhitespace() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":" CODEX ","metric":"5h token pressure","value":92,"unit":"%","limit":100,"resetAt":"2026-06-07T10:00:00Z","status":"critical"}
+          ]
+        }
+        """))
+
+        XCTAssertEqual(
+            store.usagePressureSummary?.message,
+            "Usage critical: Codex 5h token pressure 92.0/100.0% · resets 2026-06-07 10:00 UTC"
+        )
+    }
+
+    func testUsagePressureSummaryPreservesExplicitLimit() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":"codex","metric":"weekly token pressure","value":91,"unit":"%","limit":100,"resetAt":"2026-06-08T00:00:00Z","status":"critical"}
+          ]
+        }
+        """))
+
+        XCTAssertEqual(store.usagePressureSummary?.severity, .critical)
+        XCTAssertEqual(
+            store.usagePressureSummary?.message,
+            "Usage critical: Codex weekly token pressure 91.0/100.0% · resets 2026-06-08 00:00 UTC"
+        )
+    }
+
+    func testUsagePressureSummaryIdentityIsStableAcrossDisplayMessageChanges() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":" Codex ","metric":"5H TOKEN PRESSURE","value":78,"unit":"%","limit":100,"resetAt":"2026-06-07T10:00:00Z","status":"attention"}
+          ]
+        }
+        """))
+        let first = store.usagePressureSummary
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":"codex","metric":"5h token pressure","value":78,"unit":"%","limit":100,"resetAt":"2026-06-07T11:00:00Z","status":"attention"}
+          ]
+        }
+        """))
+
+        XCTAssertEqual(first?.identity, "codex:5h token pressure")
+        XCTAssertEqual(store.usagePressureSummary?.identity, first?.identity)
+        XCTAssertNotEqual(store.usagePressureSummary?.message, first?.message)
+    }
+
+    func testUsagePressureSummaryPrefersWorstPressureWithinSameSeverity() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":"codex","metric":"weekly token pressure","value":78,"unit":"%","limit":100,"resetAt":"2026-06-08T00:00:00Z","status":"attention"},
+            {"source":"opencode","metric":"5h token pressure","value":92,"unit":"%","limit":100,"resetAt":"2026-06-07T10:00:00Z","status":"attention"}
+          ]
+        }
+        """))
+
+        XCTAssertEqual(store.usagePressureSummary?.severity, .attention)
+        XCTAssertEqual(
+            store.usagePressureSummary?.message,
+            "Usage attention: OpenCode 5h token pressure 92.0/100.0% · resets 2026-06-07 10:00 UTC"
+        )
+    }
+
+    func testUsagePressureSummaryIgnoresObservedUsage() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":"claude-code","metric":"7d token total","value":993395073,"unit":"tokens","status":"observed"}
+          ]
+        }
+        """))
+
+        XCTAssertNil(store.usagePressureSummary)
+    }
+
+    func testAppliesRefreshUsageResponsePressureImmediately() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(EngramServiceRefreshUsageResponse(
+            snapshotCount: 8,
+            sources: ["codex", "opencode"],
+            pressure: [
+                EngramServiceUsageItem(
+                    source: "codex",
+                    metric: "5h token pressure",
+                    value: 92,
+                    unit: "%",
+                    limit: 100,
+                    resetAt: "2026-06-07T10:00:00Z",
+                    status: "critical"
+                )
+            ]
+        ))
+
+        XCTAssertEqual(store.usageData.map(\.source), ["codex"])
+        XCTAssertEqual(store.usagePressureSummary?.severity, .critical)
+        XCTAssertEqual(
+            store.usagePressureSummary?.message,
+            "Usage critical: Codex 5h token pressure 92.0/100.0% · resets 2026-06-07 10:00 UTC"
+        )
+        XCTAssertNotNil(store.lastEventAt)
+    }
+
+    func testRefreshUsageResponseReplacesOnlyRefreshedSourcePressure() throws {
+        let store = EngramServiceStatusStore()
+
+        store.apply(try decode("""
+        {
+          "event": "usage",
+          "usage": [
+            {"source":"codex","metric":"5h token pressure","value":92,"unit":"%","limit":100,"resetAt":"2026-06-07T10:00:00Z","status":"critical"},
+            {"source":"opencode","metric":"weekly token pressure","value":88,"unit":"%","limit":100,"resetAt":"2026-06-08T00:00:00Z","status":"attention"},
+            {"source":"codex","metric":"7d token total","value":1200,"unit":"tokens","status":"observed"}
+          ]
+        }
+        """))
+
+        store.apply(EngramServiceRefreshUsageResponse(
+            snapshotCount: 3,
+            sources: [" CODEX "],
+            pressure: [
+                EngramServiceUsageItem(
+                    source: "codex",
+                    metric: "5h token pressure",
+                    value: 72,
+                    unit: "%",
+                    limit: 100,
+                    resetAt: "2026-06-07T11:00:00Z",
+                    status: "attention"
+                )
+            ]
+        ))
+
+        XCTAssertEqual(
+            store.usageData.map { "\($0.source):\($0.metric):\($0.value)" },
+            [
+                "opencode:weekly token pressure:88.0",
+                "codex:7d token total:1200.0",
+                "codex:5h token pressure:72.0",
+            ]
+        )
     }
 
     func testWebReadyMapsEndpointHealth() throws {

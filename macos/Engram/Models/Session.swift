@@ -29,6 +29,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let parentSessionId: String?
     let suggestedParentId: String?
     let linkSource: String?
+    var lastAccessedAt: String? = nil
+    var accessCount: Int = 0
     /// 0–100 engagement/quality score computed at index time. Already stored and
     /// consumed by the MCP path for ranking; decoded into the read model here.
     /// Optional + defaulted so a missing column decodes to nil and the memberwise
@@ -56,6 +58,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case parentSessionId  = "parent_session_id"
         case suggestedParentId = "suggested_parent_id"
         case linkSource       = "link_source"
+        case lastAccessedAt   = "last_accessed_at"
+        case accessCount      = "access_count"
         case qualityScore     = "quality_score"
     }
 
@@ -92,6 +96,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     }
     var displayDate: String        { String(startTime.prefix(10)) }
     var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }
+    var accessSortTime: String     { lastAccessedAt ?? startTime }
     var isSubAgent: Bool           { agentRole != nil }
     var hasParent: Bool { parentSessionId != nil }
     var hasSuggestedParent: Bool { suggestedParentId != nil && parentSessionId == nil }
@@ -113,6 +118,40 @@ struct Session: FetchableRecord, Decodable, Identifiable {
 extension Session: Hashable {
     static func == (lhs: Session, rhs: Session) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+extension Session {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        source = try c.decode(String.self, forKey: .source)
+        startTime = try c.decode(String.self, forKey: .startTime)
+        endTime = try c.decodeIfPresent(String.self, forKey: .endTime)
+        cwd = try c.decode(String.self, forKey: .cwd)
+        project = try c.decodeIfPresent(String.self, forKey: .project)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        messageCount = try c.decode(Int.self, forKey: .messageCount)
+        userMessageCount = try c.decode(Int.self, forKey: .userMessageCount)
+        assistantMessageCount = try c.decode(Int.self, forKey: .assistantMessageCount)
+        systemMessageCount = try c.decode(Int.self, forKey: .systemMessageCount)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary)
+        filePath = try c.decode(String.self, forKey: .filePath)
+        sourceLocator = try c.decodeIfPresent(String.self, forKey: .sourceLocator)
+        sizeBytes = try c.decode(Int.self, forKey: .sizeBytes)
+        indexedAt = try c.decode(String.self, forKey: .indexedAt)
+        agentRole = try c.decodeIfPresent(String.self, forKey: .agentRole)
+        hiddenAt = try c.decodeIfPresent(String.self, forKey: .hiddenAt)
+        customName = try c.decodeIfPresent(String.self, forKey: .customName)
+        tier = try c.decodeIfPresent(String.self, forKey: .tier)
+        toolMessageCount = try c.decode(Int.self, forKey: .toolMessageCount)
+        generatedTitle = try c.decodeIfPresent(String.self, forKey: .generatedTitle)
+        parentSessionId = try c.decodeIfPresent(String.self, forKey: .parentSessionId)
+        suggestedParentId = try c.decodeIfPresent(String.self, forKey: .suggestedParentId)
+        linkSource = try c.decodeIfPresent(String.self, forKey: .linkSource)
+        lastAccessedAt = try c.decodeIfPresent(String.self, forKey: .lastAccessedAt)
+        accessCount = try c.decodeIfPresent(Int.self, forKey: .accessCount) ?? 0
+        qualityScore = try c.decodeIfPresent(Int.self, forKey: .qualityScore)
+    }
 }
 
 // MARK: - Favorite (managed by Swift app — NOT in Node.js schema)

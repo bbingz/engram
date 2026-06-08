@@ -36,8 +36,15 @@ final class MigrationRunnerTests: XCTestCase {
             try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'index'")
         }
         XCTAssertTrue(sessionIndexes.contains("idx_sessions_project"))
+        XCTAssertTrue(sessionIndexes.contains("idx_sessions_last_accessed"))
         XCTAssertTrue(sessionIndexes.contains("idx_metrics_ts"))
         XCTAssertTrue(sessionIndexes.contains("idx_migration_log_state_started"))
+
+        let sessionColumns = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('sessions') ORDER BY cid")
+        }
+        XCTAssertTrue(sessionColumns.contains("last_accessed_at"))
+        XCTAssertTrue(sessionColumns.contains("access_count"))
 
         let metricsSql = try writer.read { db in
             try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'metrics'")
@@ -249,13 +256,17 @@ final class MigrationRunnerTests: XCTestCase {
             try db.execute(sql: "INSERT INTO session_costs(session_id, computed_at) VALUES ('legacy-2', NULL)")
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT computed_at FROM session_costs WHERE session_id = 'legacy-2'"))
 
+            XCTAssertNotNil(try Int.fetchOne(db, sql: "SELECT 1 FROM pragma_table_info('usage_snapshots') WHERE name = 'limit_value'"))
+            XCTAssertNotNil(try Int.fetchOne(db, sql: "SELECT 1 FROM pragma_table_info('usage_snapshots') WHERE name = 'status'"))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT metric FROM usage_snapshots WHERE source = 'codex'"), "5h token share")
+
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT content FROM insights WHERE id = 'active'"), "keep")
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT content FROM insights WHERE id = 'deleted'"))
             XCTAssertNil(try Int.fetchOne(db, sql: "SELECT 1 FROM pragma_table_info('insights') WHERE name = 'deleted_at'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT content FROM insights_fts WHERE insight_id = 'deleted'"))
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'swift_aux_schema_version'"),
-                "2"
+                "3"
             )
         }
     }
@@ -434,6 +445,18 @@ final class MigrationRunnerTests: XCTestCase {
             );
             INSERT INTO session_costs(session_id, model, computed_at)
             VALUES ('legacy-1', 'gpt', '2026-01-01T00:00:00.000Z');
+
+            CREATE TABLE usage_snapshots (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              source TEXT NOT NULL,
+              metric TEXT NOT NULL,
+              value REAL NOT NULL,
+              unit TEXT DEFAULT '%',
+              reset_at TEXT,
+              collected_at TEXT NOT NULL
+            );
+            INSERT INTO usage_snapshots(source, metric, value, unit, reset_at, collected_at)
+            VALUES ('codex', '5h token share', 42.5, '%', NULL, '2026-01-01T00:00:00.000Z');
 
             CREATE TABLE insights (
               id TEXT PRIMARY KEY,

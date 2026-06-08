@@ -129,7 +129,11 @@ public enum EngramServiceRunner {
         // serialized with incoming commands. This also drains the FTS backlog
         // (via IndexJobRunner) so search content is actually written.
         let initialScanTask = Task {
-            await Self.runInitialScan(gate: gate, statusMonitor: statusMonitor)
+            await Self.runInitialScan(
+                gate: gate,
+                statusMonitor: statusMonitor,
+                tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) }
+            )
             // First product caller of observability retention. Restart-cadence
             // prune is adequate (the legacy metrics writer is dormant, so this
             // is largely a one-time backlog cleanup of unbounded tables).
@@ -137,7 +141,11 @@ public enum EngramServiceRunner {
         }
 
         let indexingTask = Task {
-            await Self.runIndexingLoop(gate: gate, statusMonitor: statusMonitor)
+            await Self.runIndexingLoop(
+                gate: gate,
+                statusMonitor: statusMonitor,
+                tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) }
+            )
         }
 
         // Best-effort startup TRUNCATE: PASSIVE never shrinks the WAL file on
@@ -274,7 +282,11 @@ public enum EngramServiceRunner {
         }
     }
 
-    private static func runIndexingLoop(gate: ServiceWriterGate, statusMonitor: ServiceStatusMonitor) async {
+    private static func runIndexingLoop(
+        gate: ServiceWriterGate,
+        statusMonitor: ServiceStatusMonitor,
+        tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits]
+    ) async {
         let intervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
 
         while !Task.isCancelled {
@@ -327,6 +339,7 @@ public enum EngramServiceRunner {
                     todayParents: scan.todayParents
                 ))
                 await statusMonitor.recordScanSuccess()
+                await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
             } catch is CancellationError {
                 break
             } catch {
@@ -340,13 +353,25 @@ public enum EngramServiceRunner {
     /// V2 composition root: runs the startup scan once, draining the FTS
     /// backlog. Builds real conformers over the unit-tested static funcs and
     /// runs through the gate so writes serialize with command dispatch.
-    private static func runInitialScan(gate: ServiceWriterGate, statusMonitor: ServiceStatusMonitor) async {
-        let startupAdapters = SessionAdapterFactory.recentActiveAdapters()
+    private static func runInitialScan(
+        gate: ServiceWriterGate,
+        statusMonitor: ServiceStatusMonitor,
+        tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits]
+    ) async {
         let defaultAdapters = SessionAdapterFactory.defaultAdapters()
         let emitBackfill: (StartupBackfillEvent) -> Void = { event in
             Self.emit(StartupBackfillEventEnvelope(event: event))
         }
         do {
+            let usageParserBackfillNeeded = try await gate.performWriteCommand(name: "usageParserBackfillCheck") { writer in
+                try writer.read { db in
+                    try UsageParserBackfillPolicy.needsBackfill(db)
+                }
+            }.value
+            let startupAdapters = usageParserBackfillNeeded
+                ? defaultAdapters
+                : SessionAdapterFactory.recentActiveAdapters()
+
             // Phase 1 — structural backfills, split into THREE gated write
             // commands so the single write gate is RELEASED between them and
             // user write commands (project move, save_insight, manual link) can
@@ -391,12 +416,15 @@ public enum EngramServiceRunner {
                 if drained.value { break }
             }
 
-            // Phase 3 — start the usage collector (cheap); its own gated command.
-            _ = try await gate.performWriteCommand(name: "initialUsage") { writer in
-                WriterStartupUsageCollector(
-                    writer: writer,
-                    emit: { snapshots in Self.emit(ServiceUsageEvent(snapshots: snapshots)) }
-                ).start()
+            // Phase 3 — usage collection is cheap, but still gets its own gated
+            // command so startup maintenance does not hold the writer gate longer.
+            await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
+            if usageParserBackfillNeeded {
+                _ = try await gate.performWriteCommand(name: "usageParserBackfillMark") { writer in
+                    try writer.write { db in
+                        try UsageParserBackfillPolicy.markComplete(db)
+                    }
+                }
             }
 
             ServiceLogger.notice("initial startup scan complete", category: .runner)
@@ -407,6 +435,62 @@ public enum EngramServiceRunner {
             ServiceLogger.error("initial startup scan failed", category: .runner, error: error)
             emit(ServiceIndexErrorEvent(error: error.localizedDescription))
             await statusMonitor.recordScanFailure(error.localizedDescription)
+        }
+    }
+
+    @discardableResult
+    static func collectUsage(
+        gate: ServiceWriterGate,
+        now: @escaping @Sendable () -> Date = { Date() },
+        tokenLimits: [String: StartupUsageTokenLimits] = [:],
+        emit: @escaping ([StartupUsageSnapshot]) -> Void = { snapshots in
+            Self.emitUsageSnapshots(snapshots)
+        }
+    ) async throws -> [StartupUsageSnapshot] {
+        try await collectUsageResult(
+            gate: gate,
+            now: now,
+            tokenLimits: tokenLimits,
+            emit: emit
+        ).value
+    }
+
+    @discardableResult
+    static func collectUsageResult(
+        gate: ServiceWriterGate,
+        now: @escaping @Sendable () -> Date = { Date() },
+        tokenLimits: [String: StartupUsageTokenLimits] = [:],
+        emit: @escaping ([StartupUsageSnapshot]) -> Void = { snapshots in
+            Self.emitUsageSnapshots(snapshots)
+        }
+    ) async throws -> ServiceWriterGateResult<[StartupUsageSnapshot]> {
+        let result = try await gate.performWriteCommand(name: "usageCollect") { writer in
+            try WriterStartupUsageCollector(
+                writer: writer,
+                now: now,
+                tokenLimits: tokenLimits
+            ).collect()
+        }
+        if !result.value.isEmpty {
+            emit(result.value)
+        }
+        return result
+    }
+
+    static func emitUsageSnapshots(_ snapshots: [StartupUsageSnapshot]) {
+        Self.emit(ServiceUsageEvent(snapshots: snapshots))
+    }
+
+    private static func collectUsageBestEffort(
+        gate: ServiceWriterGate,
+        tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits]
+    ) async {
+        do {
+            try await collectUsage(gate: gate, tokenLimits: tokenLimitsProvider())
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.warn("usage collection failed: \(error.localizedDescription)", category: .runner)
         }
     }
 
@@ -484,6 +568,76 @@ public enum EngramServiceRunner {
         return false
     }
 
+    /// Reads explicit per-source token limits for local pressure snapshots.
+    /// Env JSON wins for tests/dev; otherwise `~/.engram/settings.json` may
+    /// contain `usageTokenLimits`.
+    static func readUsageTokenLimits(
+        environment: [String: String],
+        settingsURL: URL = defaultEngramSettingsURL()
+    ) -> [String: StartupUsageTokenLimits] {
+        if let envValue = environment["ENGRAM_USAGE_TOKEN_LIMITS"],
+           let limits = parseUsageTokenLimitsJSON(envValue) {
+            return limits
+        }
+        guard let data = try? Data(contentsOf: settingsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let limitsObject = object["usageTokenLimits"] as? [String: Any]
+        else {
+            return [:]
+        }
+        return parseUsageTokenLimitsObject(limitsObject)
+    }
+
+    private static func defaultEngramSettingsURL() -> URL {
+        FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent(".engram", isDirectory: true)
+            .appendingPathComponent("settings.json")
+    }
+
+    private static func parseUsageTokenLimitsJSON(_ value: String) -> [String: StartupUsageTokenLimits]? {
+        guard let data = value.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return parseUsageTokenLimitsObject(object)
+    }
+
+    private static func parseUsageTokenLimitsObject(_ object: [String: Any]) -> [String: StartupUsageTokenLimits] {
+        object.reduce(into: [:]) { result, pair in
+            let source = normalizedUsageSourceKey(pair.key)
+            guard !source.isEmpty else { return }
+            guard let sourceObject = pair.value as? [String: Any] else { return }
+            let fiveHour = positiveDouble(sourceObject["fiveHourTokens"])
+            let weekly = positiveDouble(sourceObject["weeklyTokens"])
+            guard fiveHour != nil || weekly != nil else { return }
+            result[source] = StartupUsageTokenLimits(fiveHourTokens: fiveHour, weeklyTokens: weekly)
+        }
+    }
+
+    private static func normalizedUsageSourceKey(_ source: String) -> String {
+        source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func positiveDouble(_ value: Any?) -> Double? {
+        let number: Double?
+        switch value {
+        case let value as Double:
+            number = value
+        case let value as Int:
+            number = Double(value)
+        case let value as NSNumber:
+            number = value.doubleValue
+        default:
+            number = nil
+        }
+        guard let number, number.isFinite, number > 0 else {
+            return nil
+        }
+        return number
+    }
+
     /// Generates a per-launch bearer token and writes it to
     /// `<runtimeDirectory>/webui.token` with mode 0600. Returns nil on failure
     /// (the web UI then refuses to start, failing closed).
@@ -546,11 +700,14 @@ private struct ServiceIndexErrorEvent: Encodable {
     let error: String
 }
 
-private struct ServiceUsageEvent: Encodable {
+struct ServiceUsageEvent: Encodable {
     struct Item: Encodable {
         let source: String
         let metric: String
         let value: Double
+        let unit: String?
+        let limit: Double?
+        let resetAt: String?
         let status: String?
     }
 
@@ -559,7 +716,15 @@ private struct ServiceUsageEvent: Encodable {
 
     init(snapshots: [StartupUsageSnapshot]) {
         self.usage = snapshots.map {
-            Item(source: $0.source, metric: $0.metric, value: $0.value, status: $0.status)
+            Item(
+                source: $0.source,
+                metric: $0.metric,
+                value: $0.value,
+                unit: $0.unit,
+                limit: $0.limit,
+                resetAt: $0.resetAt,
+                status: $0.status
+            )
         }
     }
 }

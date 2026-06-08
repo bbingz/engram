@@ -175,6 +175,9 @@ private struct SettingsCardGroupBoxStyle: GroupBoxStyle {
 }
 
 private struct AdvancedSettingsSection: View {
+    @Environment(EngramServiceClient.self) private var serviceClient
+    @Environment(EngramServiceStatusStore.self) private var serviceStatusStore
+
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
 
@@ -191,7 +194,11 @@ private struct AdvancedSettingsSection: View {
     @State private var monthlyCostBudget = 0.0
     @State private var longSessionMinutes = 180
     @State private var notifyOnCostThreshold = true
+    @State private var notifyOnUsagePressure = true
     @State private var notifyOnLongSession = true
+    @State private var usageLimitRows = UsageTokenLimitEditableRow.defaultRows
+    @State private var customUsageSourceID = ""
+    @State private var removedUsageLimitSourceIDs: Set<String> = []
     @State private var logLevel = "info"
     @State private var logRetentionDays = 7
     @State private var aiAuditEnabled = true
@@ -200,6 +207,7 @@ private struct AdvancedSettingsSection: View {
     @State private var aiAuditLogBodies = false
     @State private var devMode = false
     @State private var isLoadingSettings = false
+    @State private var refreshUsageTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -328,8 +336,41 @@ private struct AdvancedSettingsSection: View {
                     }
                     Toggle("Notify on cost threshold", isOn: $notifyOnCostThreshold)
                         .onChange(of: notifyOnCostThreshold) { saveAdvancedSettings() }
+                    Toggle("Notify on usage pressure", isOn: $notifyOnUsagePressure)
+                        .onChange(of: notifyOnUsagePressure) { saveAdvancedSettings() }
                     Toggle("Notify on long session", isOn: $notifyOnLongSession)
                         .onChange(of: notifyOnLongSession) { saveAdvancedSettings() }
+                }
+                .padding(.vertical, 4)
+            }
+
+            GroupBox("Usage Limits") {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach($usageLimitRows) { $row in
+                        UsageTokenLimitRow(
+                            source: row.name,
+                            fiveHourTokens: $row.fiveHourTokens,
+                            weeklyTokens: $row.weeklyTokens,
+                            canRemove: !row.isDefaultSource,
+                            onChange: { saveAdvancedSettings(refreshUsage: true) },
+                            onRemove: { removeUsageLimitRow(id: row.id) }
+                        )
+                    }
+                    HStack(spacing: 8) {
+                        TextField("source id", text: $customUsageSourceID)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 180)
+                            .onSubmit(addUsageLimitRow)
+                        Button(action: addUsageLimitRow) {
+                            Image(systemName: "plus.circle")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(UsageTokenLimitEditableRow.normalizedSourceID(customUsageSourceID).isEmpty)
+                        .help("Add source")
+                    }
+                    Text("Leave a limit at 0 to disable pressure alerts for that window.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
                 .padding(.vertical, 4)
             }
@@ -418,8 +459,14 @@ private struct AdvancedSettingsSection: View {
             if let v = monitor["monthlyCostBudget"] as? Double { monthlyCostBudget = v }
             if let v = monitor["longSessionMinutes"] as? Int { longSessionMinutes = v }
             if let v = monitor["notifyOnCostThreshold"] as? Bool { notifyOnCostThreshold = v }
+            if let v = monitor["notifyOnUsagePressure"] as? Bool { notifyOnUsagePressure = v }
             if let v = monitor["notifyOnLongSession"] as? Bool { notifyOnLongSession = v }
         }
+        if let usageLimitsObject = settings["usageTokenLimits"] as? [String: Any] {
+            let limits = UsageTokenLimitSettings(settingsObject: usageLimitsObject)
+            usageLimitRows = UsageTokenLimitEditableRow.rows(for: limits)
+        }
+        removedUsageLimitSourceIDs.removeAll()
         if let observability = settings["observability"] as? [String: Any] {
             if let v = observability["logLevel"] as? String { logLevel = v }
             if let v = observability["logRetentionDays"] as? Int { logRetentionDays = v }
@@ -433,7 +480,7 @@ private struct AdvancedSettingsSection: View {
         if let v = settings["devMode"] as? Bool { devMode = v }
     }
 
-    private func saveAdvancedSettings() {
+    private func saveAdvancedSettings(refreshUsage: Bool = false) {
         guard !isLoadingSettings else { return }
         mutateEngramSettings { settings in
             if httpHost == "127.0.0.1" {
@@ -468,10 +515,21 @@ private struct AdvancedSettingsSection: View {
                 "dailyCostBudget": dailyCostBudget,
                 "longSessionMinutes": longSessionMinutes,
                 "notifyOnCostThreshold": notifyOnCostThreshold,
+                "notifyOnUsagePressure": notifyOnUsagePressure,
                 "notifyOnLongSession": notifyOnLongSession,
             ]
             if monthlyCostBudget > 0 { monitor["monthlyCostBudget"] = monthlyCostBudget }
             settings["monitor"] = monitor
+            let usageTokenLimits = UsageTokenLimitEditableRow.settingsObject(
+                from: usageLimitRows,
+                preservingUnknownFrom: settings["usageTokenLimits"] as? [String: Any],
+                excludingSourceIDs: removedUsageLimitSourceIDs
+            )
+            if usageTokenLimits.isEmpty {
+                settings.removeValue(forKey: "usageTokenLimits")
+            } else {
+                settings["usageTokenLimits"] = usageTokenLimits
+            }
             settings["observability"] = [
                 "logLevel": logLevel,
                 "logRetentionDays": logRetentionDays,
@@ -483,6 +541,200 @@ private struct AdvancedSettingsSection: View {
                 "logBodies": aiAuditLogBodies,
             ]
             settings["devMode"] = devMode
+        }
+        if refreshUsage {
+            scheduleUsageRefresh()
+        }
+    }
+
+    private func addUsageLimitRow() {
+        let normalizedID = UsageTokenLimitEditableRow.normalizedSourceID(customUsageSourceID)
+        let updated = UsageTokenLimitEditableRow.appendingCustomSource(
+            customUsageSourceID,
+            to: usageLimitRows
+        )
+        guard updated != usageLimitRows else { return }
+        usageLimitRows = updated
+        removedUsageLimitSourceIDs.remove(normalizedID)
+        customUsageSourceID = ""
+    }
+
+    private func removeUsageLimitRow(id: String) {
+        let normalizedID = UsageTokenLimitEditableRow.normalizedSourceID(id)
+        guard !UsageTokenLimitEditableRow.isDefaultSourceID(normalizedID) else { return }
+        usageLimitRows.removeAll { $0.id == normalizedID }
+        removedUsageLimitSourceIDs.insert(normalizedID)
+        saveAdvancedSettings(refreshUsage: true)
+    }
+
+    private func scheduleUsageRefresh() {
+        refreshUsageTask?.cancel()
+        refreshUsageTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+                try Task.checkCancellation()
+                let response = try await serviceClient.refreshUsage()
+                serviceStatusStore.apply(response)
+            } catch is CancellationError {
+            } catch {
+                // Best effort: the service's periodic indexing loop will refresh later.
+            }
+        }
+    }
+}
+
+struct UsageTokenLimitEditableRow: Identifiable, Equatable {
+    let id: String
+    let name: String
+    var fiveHourTokens: Double
+    var weeklyTokens: Double
+
+    static let defaultRows: [UsageTokenLimitEditableRow] = [
+        UsageTokenLimitEditableRow(id: "codex", name: "Codex"),
+        UsageTokenLimitEditableRow(id: "claude-code", name: "Claude Code"),
+        UsageTokenLimitEditableRow(id: "opencode", name: "OpenCode"),
+        UsageTokenLimitEditableRow(id: "copilot", name: "Copilot"),
+        UsageTokenLimitEditableRow(id: "gemini-cli", name: "Gemini CLI"),
+        UsageTokenLimitEditableRow(id: "iflow", name: "Iflow"),
+        UsageTokenLimitEditableRow(id: "qwen", name: "Qwen"),
+        UsageTokenLimitEditableRow(id: "qoder", name: "Qoder"),
+        UsageTokenLimitEditableRow(id: "kimi", name: "Kimi"),
+        UsageTokenLimitEditableRow(id: "cline", name: "Cline"),
+    ]
+
+    var isDefaultSource: Bool {
+        Self.isDefaultSourceID(id)
+    }
+
+    init(id: String, name: String, fiveHourTokens: Double = 0, weeklyTokens: Double = 0) {
+        self.id = id
+        self.name = name
+        self.fiveHourTokens = fiveHourTokens
+        self.weeklyTokens = weeklyTokens
+    }
+
+    static func rows(for settings: UsageTokenLimitSettings) -> [UsageTokenLimitEditableRow] {
+        let defaultIDs = Set(defaultRows.map(\.id))
+        let configuredRows = defaultRows.map { row in
+            row.with(limit: settings.limit(for: row.id))
+        }
+        let extraRows = settings.sourceIDs
+            .filter { !defaultIDs.contains($0) }
+            .map { sourceID in
+                UsageTokenLimitEditableRow(
+                    id: sourceID,
+                    name: displayName(for: sourceID)
+                ).with(limit: settings.limit(for: sourceID))
+            }
+        return configuredRows + extraRows
+    }
+
+    static func appendingCustomSource(
+        _ rawSourceID: String,
+        to rows: [UsageTokenLimitEditableRow]
+    ) -> [UsageTokenLimitEditableRow] {
+        let sourceID = normalizedSourceID(rawSourceID)
+        guard !sourceID.isEmpty else { return rows }
+        guard !rows.contains(where: { $0.id == sourceID }) else { return rows }
+        return rows + [UsageTokenLimitEditableRow(id: sourceID, name: displayName(for: sourceID))]
+    }
+
+    static func settings(from rows: [UsageTokenLimitEditableRow]) -> UsageTokenLimitSettings {
+        UsageTokenLimitSettings(
+            sourceLimits: rows.reduce(into: [:]) { result, row in
+                result[row.id] = UsageTokenLimitSettings.Limit(
+                    fiveHourTokens: row.fiveHourTokens,
+                    weeklyTokens: row.weeklyTokens
+                )
+            }
+        )
+    }
+
+    static func settingsObject(
+        from rows: [UsageTokenLimitEditableRow],
+        preservingUnknownFrom existingObject: [String: Any]?,
+        excludingSourceIDs: Set<String> = []
+    ) -> [String: [String: Double]] {
+        let representedIDs = Set(rows.map { normalizedSourceID($0.id) }.filter { !$0.isEmpty })
+        let excludedIDs = Set(excludingSourceIDs.map { normalizedSourceID($0) }.filter { !$0.isEmpty })
+        var object = UsageTokenLimitSettings(settingsObject: existingObject ?? [:]).settingsObject()
+            .filter { !representedIDs.contains($0.key) && !excludedIDs.contains($0.key) }
+
+        settings(from: rows).settingsObject().forEach { sourceID, source in
+            object[sourceID] = source
+        }
+        return object
+    }
+
+    private func with(limit: UsageTokenLimitSettings.Limit?) -> UsageTokenLimitEditableRow {
+        UsageTokenLimitEditableRow(
+            id: id,
+            name: name,
+            fiveHourTokens: limit?.fiveHourTokens ?? 0,
+            weeklyTokens: limit?.weeklyTokens ?? 0
+        )
+    }
+
+    static func normalizedSourceID(_ sourceID: String) -> String {
+        sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    static func isDefaultSourceID(_ sourceID: String) -> Bool {
+        let normalizedID = normalizedSourceID(sourceID)
+        return defaultRows.contains { $0.id == normalizedID }
+    }
+
+    private static func displayName(for sourceID: String) -> String {
+        switch sourceID {
+        case "codex": return "Codex"
+        case "claude-code": return "Claude Code"
+        case "opencode": return "OpenCode"
+        case "copilot": return "Copilot"
+        case "gemini-cli": return "Gemini CLI"
+        case "iflow": return "Iflow"
+        case "qwen": return "Qwen"
+        case "qoder": return "Qoder"
+        case "kimi": return "Kimi"
+        case "cline": return "Cline"
+        default: return sourceID
+        }
+    }
+}
+
+private struct UsageTokenLimitRow: View {
+    let source: String
+    @Binding var fiveHourTokens: Double
+    @Binding var weeklyTokens: Double
+    let canRemove: Bool
+    let onChange: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(source)
+                .frame(width: 92, alignment: .leading)
+            Spacer(minLength: 8)
+            TextField("0", value: $fiveHourTokens, format: .number)
+                .frame(width: 88)
+                .multilineTextAlignment(.trailing)
+                .onChange(of: fiveHourTokens) { onChange() }
+            Text("5h")
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .leading)
+            TextField("0", value: $weeklyTokens, format: .number)
+                .frame(width: 88)
+                .multilineTextAlignment(.trailing)
+                .onChange(of: weeklyTokens) { onChange() }
+            Text("weekly")
+                .foregroundStyle(.secondary)
+                .frame(width: 52, alignment: .leading)
+            Button(action: onRemove) {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.plain)
+            .disabled(!canRemove)
+            .opacity(canRemove ? 1 : 0)
+            .help("Remove source")
         }
     }
 }

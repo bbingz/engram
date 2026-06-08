@@ -448,6 +448,25 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(count, 2, "must count only actually-written rows, not attempts")
     }
 
+    func testSwiftIndexerAggregatesStreamedTokenUsageIntoSnapshot() async throws {
+        let adapter = StubInfoAdapter(
+            count: 1,
+            usageMessages: [
+                TokenUsage(inputTokens: 10, outputTokens: 3, cacheReadTokens: 5, cacheCreationTokens: 1),
+                TokenUsage(inputTokens: 20, outputTokens: 7, cacheReadTokens: 2, cacheCreationTokens: 4),
+            ]
+        )
+        let indexer = SwiftIndexer(sink: HalfFailUpsertSink(), adapters: [adapter])
+
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(
+            snapshots.first?.tokenUsage,
+            TokenUsage(inputTokens: 30, outputTokens: 10, cacheReadTokens: 7, cacheCreationTokens: 5)
+        )
+    }
+
     func testIndexStatusThrowsOnMissingSchema() throws {
         // Fresh DB without migration → no sessions table.
         let bareDB = FileManager.default.temporaryDirectory
@@ -620,8 +639,12 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
 private final class StubInfoAdapter: SessionAdapter {
     let source: SourceName = .codex
     let count: Int
+    let usageMessages: [TokenUsage]
 
-    init(count: Int) { self.count = count }
+    init(count: Int, usageMessages: [TokenUsage] = []) {
+        self.count = count
+        self.usageMessages = usageMessages
+    }
 
     func detect() async -> Bool { true }
     func listSessionLocators() async throws -> [String] { (0..<count).map { "/tmp/loc-\($0).jsonl" } }
@@ -649,9 +672,16 @@ private final class StubInfoAdapter: SessionAdapter {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.yield(NormalizedMessage(role: .user, content: "hi"))
-            continuation.yield(NormalizedMessage(role: .assistant, content: "hello"))
+        let usageMessages = self.usageMessages
+        return AsyncThrowingStream { continuation in
+            if usageMessages.isEmpty {
+                continuation.yield(NormalizedMessage(role: .user, content: "hi"))
+                continuation.yield(NormalizedMessage(role: .assistant, content: "hello"))
+            } else {
+                for usage in usageMessages {
+                    continuation.yield(NormalizedMessage(role: .assistant, content: "usage-bearing message", usage: usage))
+                }
+            }
             continuation.finish()
         }
     }

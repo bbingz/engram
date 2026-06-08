@@ -95,7 +95,16 @@ final class IndexerParityTests: XCTestCase {
 
     func testSessionSnapshotWriterPersistsSnapshotCostsAndJobsThenNoops() throws {
         try writer.write { db in
-            let snapshot = makeSnapshot(id: "sess-1", tier: .normal)
+            let snapshot = makeSnapshot(
+                id: "sess-1",
+                tier: .normal,
+                tokenUsage: TokenUsage(
+                    inputTokens: 120,
+                    outputTokens: 30,
+                    cacheReadTokens: 40,
+                    cacheCreationTokens: 10
+                )
+            )
             let writer = SessionSnapshotWriter(db: db)
             let first = try writer.writeAuthoritativeSnapshot(snapshot)
             let second = try writer.writeAuthoritativeSnapshot(snapshot)
@@ -104,10 +113,47 @@ final class IndexerParityTests: XCTestCase {
             XCTAssertEqual(second.action, .noop)
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT summary FROM sessions WHERE id = 'sess-1'"), "hello")
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_costs WHERE session_id = 'sess-1'"), 1)
+            let costRow = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+                FROM session_costs
+                WHERE session_id = 'sess-1'
+                """
+            )
+            XCTAssertEqual(costRow?["input_tokens"] as Int?, 120)
+            XCTAssertEqual(costRow?["output_tokens"] as Int?, 30)
+            XCTAssertEqual(costRow?["cache_read_tokens"] as Int?, 40)
+            XCTAssertEqual(costRow?["cache_creation_tokens"] as Int?, 10)
+            XCTAssertEqual(costRow?["cost_usd"] as Double?, 0)
             XCTAssertEqual(
                 try String.fetchAll(db, sql: "SELECT job_kind FROM session_index_jobs WHERE session_id = 'sess-1' ORDER BY job_kind"),
                 ["embedding", "fts"]
             )
+        }
+    }
+
+    func testSessionSnapshotWriterComputesKnownModelCost() throws {
+        try writer.write { db in
+            let snapshot = makeSnapshot(
+                id: "costed-claude",
+                model: "claude-sonnet-4-6",
+                tokenUsage: TokenUsage(
+                    inputTokens: 1_000_000,
+                    outputTokens: 100_000,
+                    cacheReadTokens: 500_000,
+                    cacheCreationTokens: 10_000
+                )
+            )
+            _ = try SessionSnapshotWriter(db: db).writeAuthoritativeSnapshot(snapshot)
+
+            let cost = try XCTUnwrap(Double.fetchOne(
+                db,
+                sql: "SELECT cost_usd FROM session_costs WHERE session_id = ?",
+                arguments: [snapshot.id]
+            ))
+
+            XCTAssertEqual(cost, 4.6875, accuracy: 0.000_001)
         }
     }
 
@@ -359,6 +405,80 @@ final class IndexerParityTests: XCTestCase {
                 "claude-opus"
             )
         }
+    }
+
+    func testSessionSnapshotWriterBackfillsNoopTokenUsageCosts() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "noop-usage-backfill"))
+
+            let initialCostRow = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+                FROM session_costs
+                WHERE session_id = 'noop-usage-backfill'
+                """
+            )
+            XCTAssertEqual(initialCostRow?["input_tokens"] as Int?, 0)
+            XCTAssertEqual(initialCostRow?["output_tokens"] as Int?, 0)
+            XCTAssertEqual(initialCostRow?["cache_read_tokens"] as Int?, 0)
+            XCTAssertEqual(initialCostRow?["cache_creation_tokens"] as Int?, 0)
+
+            let update = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "noop-usage-backfill",
+                    tokenUsage: TokenUsage(
+                        inputTokens: 123,
+                        outputTokens: 45,
+                        cacheReadTokens: 6,
+                        cacheCreationTokens: 7
+                    )
+                )
+            )
+
+            XCTAssertEqual(update.action, .noop)
+            let backfilledCostRow = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+                FROM session_costs
+                WHERE session_id = 'noop-usage-backfill'
+                """
+            )
+            XCTAssertEqual(backfilledCostRow?["input_tokens"] as Int?, 123)
+            XCTAssertEqual(backfilledCostRow?["output_tokens"] as Int?, 45)
+            XCTAssertEqual(backfilledCostRow?["cache_read_tokens"] as Int?, 6)
+            XCTAssertEqual(backfilledCostRow?["cache_creation_tokens"] as Int?, 7)
+        }
+    }
+
+    func testUsageParserBackfillPolicyNeedsBackfillUntilCurrentVersionRecorded() throws {
+        try writer.write { db in
+            XCTAssertTrue(try UsageParserBackfillPolicy.needsBackfill(db))
+
+            try db.execute(
+                sql: "INSERT INTO metadata(key, value) VALUES (?, ?)",
+                arguments: [UsageParserBackfillPolicy.metadataKey, "1"]
+            )
+            XCTAssertTrue(try UsageParserBackfillPolicy.needsBackfill(db))
+
+            try UsageParserBackfillPolicy.markComplete(db)
+
+            XCTAssertFalse(try UsageParserBackfillPolicy.needsBackfill(db))
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT value FROM metadata WHERE key = ?",
+                    arguments: [UsageParserBackfillPolicy.metadataKey]
+                ),
+                UsageParserBackfillPolicy.currentVersion
+            )
+        }
+    }
+
+    func testUsageParserBackfillPolicyVersionCoversOpenCodeReasoningUsage() {
+        XCTAssertEqual(UsageParserBackfillPolicy.currentVersion, "4")
     }
 
     func testSessionSnapshotWriterDoesNotRewriteUnchangedNoopCostRows() throws {
@@ -836,7 +956,8 @@ final class IndexerParityTests: XCTestCase {
         tier: SessionTier = .normal,
         toolCallCounts: [String: Int] = [:],
         model: String? = "openai",
-        parentSessionId: String? = nil
+        parentSessionId: String? = nil,
+        tokenUsage: TokenUsage? = nil
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
             id: id,
@@ -863,7 +984,8 @@ final class IndexerParityTests: XCTestCase {
             tier: tier,
             agentRole: nil,
             parentSessionId: parentSessionId,
-            toolCallCounts: toolCallCounts
+            toolCallCounts: toolCallCounts,
+            tokenUsage: tokenUsage
         )
     }
 

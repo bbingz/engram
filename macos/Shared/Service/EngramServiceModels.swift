@@ -109,6 +109,7 @@ struct EngramServiceUsageItem: Codable, Equatable, Identifiable, Sendable {
     let source: String
     let metric: String
     let value: Double
+    let unit: String?
     let limit: Double?
     let resetAt: String?
     let status: String?
@@ -467,6 +468,94 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     let name: String
     let sessionCount: Int
     let latestIndexed: String?
+    let searchableSessionCount: Int
+    let searchCoveragePercent: Int
+    let failedIndexJobCount: Int
+    let tokenSessionCount: Int
+    let tokenCoveragePercent: Int
+    let costedSessionCount: Int
+    let latestUsageMetric: String?
+    let latestUsageValue: Double?
+    let latestUsageUnit: String?
+    let latestUsageLimitValue: Double?
+    let latestUsageResetAt: String?
+    let latestUsageStatus: String?
+    let healthStatus: String
+
+    init(
+        name: String,
+        sessionCount: Int,
+        latestIndexed: String?,
+        searchableSessionCount: Int = 0,
+        searchCoveragePercent: Int = 0,
+        failedIndexJobCount: Int = 0,
+        tokenSessionCount: Int = 0,
+        tokenCoveragePercent: Int = 0,
+        costedSessionCount: Int = 0,
+        latestUsageMetric: String? = nil,
+        latestUsageValue: Double? = nil,
+        latestUsageUnit: String? = nil,
+        latestUsageLimitValue: Double? = nil,
+        latestUsageResetAt: String? = nil,
+        latestUsageStatus: String? = nil,
+        healthStatus: String = "unknown"
+    ) {
+        self.name = name
+        self.sessionCount = sessionCount
+        self.latestIndexed = latestIndexed
+        self.searchableSessionCount = searchableSessionCount
+        self.searchCoveragePercent = searchCoveragePercent
+        self.failedIndexJobCount = failedIndexJobCount
+        self.tokenSessionCount = tokenSessionCount
+        self.tokenCoveragePercent = tokenCoveragePercent
+        self.costedSessionCount = costedSessionCount
+        self.latestUsageMetric = latestUsageMetric
+        self.latestUsageValue = latestUsageValue
+        self.latestUsageUnit = latestUsageUnit
+        self.latestUsageLimitValue = latestUsageLimitValue
+        self.latestUsageResetAt = latestUsageResetAt
+        self.latestUsageStatus = latestUsageStatus
+        self.healthStatus = healthStatus
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case sessionCount
+        case latestIndexed
+        case searchableSessionCount
+        case searchCoveragePercent
+        case failedIndexJobCount
+        case tokenSessionCount
+        case tokenCoveragePercent
+        case costedSessionCount
+        case latestUsageMetric
+        case latestUsageValue
+        case latestUsageUnit
+        case latestUsageLimitValue
+        case latestUsageResetAt
+        case latestUsageStatus
+        case healthStatus
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        sessionCount = try container.decode(Int.self, forKey: .sessionCount)
+        latestIndexed = try container.decodeIfPresent(String.self, forKey: .latestIndexed)
+        searchableSessionCount = try container.decodeIfPresent(Int.self, forKey: .searchableSessionCount) ?? 0
+        searchCoveragePercent = try container.decodeIfPresent(Int.self, forKey: .searchCoveragePercent) ?? 0
+        failedIndexJobCount = try container.decodeIfPresent(Int.self, forKey: .failedIndexJobCount) ?? 0
+        tokenSessionCount = try container.decodeIfPresent(Int.self, forKey: .tokenSessionCount) ?? 0
+        tokenCoveragePercent = try container.decodeIfPresent(Int.self, forKey: .tokenCoveragePercent) ?? 0
+        costedSessionCount = try container.decodeIfPresent(Int.self, forKey: .costedSessionCount) ?? 0
+        latestUsageMetric = try container.decodeIfPresent(String.self, forKey: .latestUsageMetric)
+        latestUsageValue = try container.decodeIfPresent(Double.self, forKey: .latestUsageValue)
+        latestUsageUnit = try container.decodeIfPresent(String.self, forKey: .latestUsageUnit)
+        latestUsageLimitValue = try container.decodeIfPresent(Double.self, forKey: .latestUsageLimitValue)
+        latestUsageResetAt = try container.decodeIfPresent(String.self, forKey: .latestUsageResetAt)
+        latestUsageStatus = try container.decodeIfPresent(String.self, forKey: .latestUsageStatus)
+        healthStatus = try container.decodeIfPresent(String.self, forKey: .healthStatus) ?? "unknown"
+    }
 }
 
 struct EngramServiceSkillInfo: Codable, Equatable, Identifiable, Sendable {
@@ -637,6 +726,10 @@ struct EngramServiceRenameSessionRequest: Codable, Equatable, Sendable {
     let name: String?
 }
 
+struct EngramServiceSessionAccessRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+}
+
 struct EngramServiceHideEmptySessionsResponse: Codable, Equatable, Sendable {
     let hiddenCount: Int
 }
@@ -689,6 +782,7 @@ struct EngramServiceResumeCommandResponse: Codable, Equatable, Sendable {
     let command: String?
     let args: [String]
     let cwd: String?
+    let contextPrimer: String?
     let error: String?
     let hint: String?
 
@@ -697,6 +791,7 @@ struct EngramServiceResumeCommandResponse: Codable, Equatable, Sendable {
         command: String? = nil,
         args: [String] = [],
         cwd: String? = nil,
+        contextPrimer: String? = nil,
         error: String? = nil,
         hint: String? = nil
     ) {
@@ -704,6 +799,7 @@ struct EngramServiceResumeCommandResponse: Codable, Equatable, Sendable {
         self.command = command
         self.args = args
         self.cwd = cwd
+        self.contextPrimer = contextPrimer
         self.error = error
         self.hint = hint
     }
@@ -746,6 +842,35 @@ struct EngramServiceTriggerSyncResponse: Codable, Equatable, Sendable {
     }
 
     let results: [ResultItem]
+}
+
+struct EngramServiceRefreshUsageResponse: Codable, Equatable, Sendable {
+    let snapshotCount: Int
+    let sources: [String]
+    let pressure: [EngramServiceUsageItem]
+
+    init(
+        snapshotCount: Int,
+        sources: [String],
+        pressure: [EngramServiceUsageItem] = []
+    ) {
+        self.snapshotCount = snapshotCount
+        self.sources = sources
+        self.pressure = pressure
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case snapshotCount
+        case sources
+        case pressure
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        snapshotCount = try container.decode(Int.self, forKey: .snapshotCount)
+        sources = try container.decode([String].self, forKey: .sources)
+        pressure = try container.decodeIfPresent([EngramServiceUsageItem].self, forKey: .pressure) ?? []
+    }
 }
 
 struct EngramServiceRegenerateTitlesResponse: Codable, Equatable, Sendable {

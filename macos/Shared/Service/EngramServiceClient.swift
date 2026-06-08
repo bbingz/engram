@@ -120,6 +120,10 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("triggerSync", payload: request)
     }
 
+    func refreshUsage() async throws -> EngramServiceRefreshUsageResponse {
+        try await command("refreshUsage")
+    }
+
     func regenerateAllTitles() async throws -> EngramServiceRegenerateTitlesResponse {
         try await command("regenerateAllTitles")
     }
@@ -170,6 +174,13 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         let _: EmptyServiceResult = try await command(
             "renameSession",
             payload: EngramServiceRenameSessionRequest(sessionId: sessionId, name: name)
+        )
+    }
+
+    func recordSessionAccess(sessionId: String) async throws {
+        let _: EmptyServiceResult = try await command(
+            "recordSessionAccess",
+            payload: EngramServiceSessionAccessRequest(sessionId: sessionId)
         )
     }
 

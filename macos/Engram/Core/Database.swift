@@ -8,6 +8,8 @@ enum DatabaseError: Error {
 }
 
 enum SessionSort: String, Sendable {
+    case accessedDesc = "COALESCE(last_accessed_at, start_time) DESC, start_time DESC"
+    case accessedAsc  = "COALESCE(last_accessed_at, start_time) ASC, start_time ASC"
     case createdDesc = "start_time DESC"
     case createdAsc  = "start_time ASC"
     case updatedDesc = "COALESCE(end_time, start_time) DESC"
@@ -15,7 +17,7 @@ enum SessionSort: String, Sendable {
 
     var usesActivityTime: Bool {
         switch self {
-        case .updatedDesc, .updatedAsc:
+        case .accessedDesc, .accessedAsc, .updatedDesc, .updatedAsc:
             true
         case .createdDesc, .createdAsc:
             false
@@ -24,15 +26,34 @@ enum SessionSort: String, Sendable {
 
     var isDescending: Bool {
         switch self {
-        case .createdDesc, .updatedDesc:
+        case .accessedDesc, .createdDesc, .updatedDesc:
             true
-        case .createdAsc, .updatedAsc:
+        case .accessedAsc, .createdAsc, .updatedAsc:
             false
         }
     }
 
     var timelineTimestampSQL: String {
-        usesActivityTime ? "COALESCE(end_time, start_time)" : "start_time"
+        switch self {
+        case .accessedDesc, .accessedAsc:
+            "COALESCE(last_accessed_at, end_time, start_time)"
+        case .updatedDesc, .updatedAsc:
+            "COALESCE(end_time, start_time)"
+        case .createdDesc, .createdAsc:
+            "start_time"
+        }
+    }
+
+    func orderSQL(hasAccessMetadata: Bool) -> String {
+        if hasAccessMetadata { return rawValue }
+        switch self {
+        case .accessedDesc:
+            return Self.createdDesc.rawValue
+        case .accessedAsc:
+            return Self.createdAsc.rawValue
+        default:
+            return rawValue
+        }
     }
 }
 
@@ -142,6 +163,11 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    private static func hasSessionAccessMetadata(in db: GRDB.Database) throws -> Bool {
+        let names = try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('sessions')")
+        return names.contains("last_accessed_at") && names.contains("access_count")
+    }
+
     func listSessions(
         sources: Set<String> = [],   // empty = all
         projects: Set<String> = [],  // empty = all
@@ -149,7 +175,7 @@ final class DatabaseManager: @unchecked Sendable {
         includeHidden: Bool = false,
         subAgent: Bool? = nil,       // nil=all, true=only sub-agents, false=hide sub-agents
         topLevelOnly: Bool = false,
-        sort: SessionSort = .createdDesc,
+        sort: SessionSort = .accessedDesc,
         limit: Int = 200,
         offset: Int = 0
     ) throws -> [Session] {
@@ -166,7 +192,8 @@ final class DatabaseManager: @unchecked Sendable {
                 subAgent: subAgent,
                 topLevelOnly: topLevelOnly
             )
-            parts.append("ORDER BY \(sort.rawValue) LIMIT ? OFFSET ?")
+            let orderSQL = sort.orderSQL(hasAccessMetadata: try Self.hasSessionAccessMetadata(in: db))
+            parts.append("ORDER BY \(orderSQL) LIMIT ? OFFSET ?")
             args.append(limit); args.append(offset)
             return try Session.fetchAll(db, sql: parts.joined(separator: " "),
                                         arguments: StatementArguments(args))
@@ -370,9 +397,11 @@ final class DatabaseManager: @unchecked Sendable {
     ) throws -> [Session] {
         guard query.count >= 2 else { return [] }
 
-        // CJK: use LIKE fallback (trigram MATCH broken for CJK)
-        if CJKText.containsCJK(query) {
-            // Escape LIKE wildcards so literal "%"/"_" match verbatim.
+        // CJK uses LIKE because trigram MATCH is unreliable for CJK/Hangul.
+        // Two-character Latin abbreviations ("AI", "PR", "UI") also need LIKE
+        // because the trigram tokenizer cannot MATCH terms shorter than three
+        // characters. Escape wildcards so literal "%"/"_" match verbatim.
+        if CJKText.containsCJK(query) || query.count < 3 {
             let pattern = "%\(CJKText.escapeLikePattern(query))%"
             return try readInBackground { db in
                 var parts = ["""
@@ -403,14 +432,24 @@ final class DatabaseManager: @unchecked Sendable {
         // ASCII/Latin: use fast FTS MATCH
         guard query.count >= 3 else { return [] }
         return try readInBackground { db in
+            let termMatches = CJKText.ftsMatchTerms(query)
+            let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
             var parts = ["""
                 SELECT s.*
-                FROM sessions_fts f
-                JOIN sessions s ON s.id = f.session_id
-                WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
             """]
-            var args: [DatabaseValueConvertible] = [CJKText.ftsMatchQuery(query)]
+            var args: [DatabaseValueConvertible] = []
+            for termMatch in termMatches {
+                parts.append("""
+                    AND EXISTS (
+                        SELECT 1 FROM sessions_fts
+                        WHERE sessions_fts MATCH ? AND session_id = s.id
+                    )
+                """)
+                args.append(termMatch)
+            }
             Self.appendSearchFilters(
                 to: &parts,
                 args: &args,
@@ -419,10 +458,13 @@ final class DatabaseManager: @unchecked Sendable {
                 since: since
             )
             parts.append("""
-                GROUP BY s.id
-                ORDER BY MIN(rank)
+                ORDER BY (
+                    SELECT MIN(rank) FROM sessions_fts
+                    WHERE sessions_fts MATCH ? AND session_id = s.id
+                ), s.start_time DESC
                 LIMIT ?
             """)
+            args.append(snippetMatch)
             args.append(limit)
             return try Session.fetchAll(
                 db,
@@ -445,7 +487,7 @@ final class DatabaseManager: @unchecked Sendable {
     ) throws -> [(session: Session, snippet: String)] {
         guard query.count >= 2 else { return [] }
 
-        if CJKText.containsCJK(query) {
+        if CJKText.containsCJK(query) || query.count < 3 {
             let pattern = "%\(CJKText.escapeLikePattern(query))%"
             return try readInBackground { db in
                 var parts = ["""
@@ -469,6 +511,8 @@ final class DatabaseManager: @unchecked Sendable {
 
         guard query.count >= 3 else { return [] }
         return try readInBackground { db in
+            let termMatches = CJKText.ftsMatchTerms(query)
+            let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
             var parts = ["""
                 SELECT s.*, (
                     SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
@@ -477,17 +521,31 @@ final class DatabaseManager: @unchecked Sendable {
                     ORDER BY rank
                     LIMIT 1
                 ) AS snippet
-                FROM sessions_fts f
-                JOIN sessions s ON s.id = f.session_id
-                WHERE sessions_fts MATCH ? AND s.hidden_at IS NULL
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
                   AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
             """]
-            // Two binds: the snippet() subquery and the main MATCH. Escape the raw
-            // query so FTS5 special characters don't throw a syntax error.
-            let match = CJKText.ftsMatchQuery(query)
-            var args: [DatabaseValueConvertible] = [match, match]
+            // Search at session granularity: every query token must exist
+            // somewhere in the session, not necessarily in the same FTS row.
+            var args: [DatabaseValueConvertible] = [snippetMatch]
+            for termMatch in termMatches {
+                parts.append("""
+                    AND EXISTS (
+                        SELECT 1 FROM sessions_fts
+                        WHERE sessions_fts MATCH ? AND session_id = s.id
+                    )
+                """)
+                args.append(termMatch)
+            }
             Self.appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
-            parts.append("GROUP BY s.id ORDER BY MIN(rank) LIMIT ?")
+            parts.append("""
+                ORDER BY (
+                    SELECT MIN(rank) FROM sessions_fts
+                    WHERE sessions_fts MATCH ? AND session_id = s.id
+                ), s.start_time DESC
+                LIMIT ?
+            """)
+            args.append(snippetMatch)
             args.append(limit)
             let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
             return try rows.map { row in
@@ -643,9 +701,14 @@ final class DatabaseManager: @unchecked Sendable {
     ) throws -> [(key: String, count: Int, lastUpdated: String)] {
         try readInBackground { db in
             let groupColumn = mode == .project ? "project" : "source"
+            let hasAccessMetadata = try Self.hasSessionAccessMetadata(in: db)
 
             // Pick aggregate expression + order matching the sort
             let (aggExpr, orderDir): (String, String) = switch sort {
+            case .accessedDesc:
+                (hasAccessMetadata ? "MAX(COALESCE(last_accessed_at, start_time))" : "MAX(start_time)", "DESC")
+            case .accessedAsc:
+                (hasAccessMetadata ? "MIN(COALESCE(last_accessed_at, start_time))" : "MIN(start_time)", "ASC")
             case .createdDesc: ("MAX(start_time)", "DESC")
             case .createdAsc:  ("MIN(start_time)", "ASC")
             case .updatedDesc: ("MAX(COALESCE(end_time, start_time))", "DESC")

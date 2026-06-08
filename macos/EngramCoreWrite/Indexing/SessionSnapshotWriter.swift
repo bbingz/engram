@@ -7,6 +7,51 @@ public enum SessionSnapshotWriterError: Error, Equatable {
     case conflictingSnapshotHash(String)
 }
 
+internal struct SessionModelPrice {
+    let input: Double
+    let output: Double
+    let cacheRead: Double
+    let cacheWrite: Double
+}
+
+internal enum SessionCostPricing {
+    private static let pricing: [String: SessionModelPrice] = [
+        "claude-opus-4-6": SessionModelPrice(input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75),
+        "claude-sonnet-4-6": SessionModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75),
+        "claude-sonnet-4-5": SessionModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75),
+        "claude-haiku-4-5": SessionModelPrice(input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1),
+        "gpt-4o": SessionModelPrice(input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 2.5),
+        "gpt-4o-mini": SessionModelPrice(input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0.15),
+        "gpt-4.1": SessionModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 2),
+        "o3-mini": SessionModelPrice(input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.1),
+        "o4-mini": SessionModelPrice(input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.1),
+        "gemini-2.0-flash": SessionModelPrice(input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0.1),
+        "gemini-2.5-pro": SessionModelPrice(input: 1.25, output: 10, cacheRead: 0.31, cacheWrite: 1.25)
+    ]
+
+    static func price(for model: String?) -> SessionModelPrice? {
+        guard let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty else {
+            return nil
+        }
+        if let exact = pricing[model] {
+            return exact
+        }
+        return pricing.keys
+            .sorted { $0.count > $1.count }
+            .first { model.hasPrefix($0) }
+            .flatMap { pricing[$0] }
+    }
+
+    static func computeCost(model: String?, usage: TokenUsage) -> Double {
+        guard let price = price(for: model) else { return 0 }
+        let million = 1_000_000.0
+        return (Double(usage.inputTokens) / million) * price.input
+            + (Double(usage.outputTokens) / million) * price.output
+            + (Double(usage.cacheReadTokens ?? 0) / million) * price.cacheRead
+            + (Double(usage.cacheCreationTokens ?? 0) / million) * price.cacheWrite
+    }
+}
+
 public final class SessionSnapshotWriter {
     private let db: Database
 
@@ -18,7 +63,7 @@ public final class SessionSnapshotWriter {
         let current = try currentSnapshot(id: snapshot.id)
         let merge = try mergeSessionSnapshot(current: current, incoming: snapshot)
         guard merge.action == .merge else {
-            try upsertZeroCostRowIfNeededForNoop(snapshot)
+            try upsertCostRowIfNeededForNoop(snapshot)
             if !snapshot.toolCallCounts.isEmpty {
                 try replaceSessionToolsIfDifferent(snapshot)
             }
@@ -37,7 +82,7 @@ public final class SessionSnapshotWriter {
         try db.inSavepoint {
             try upsert(merge.snapshot)
             try clearRecoveredOrphanStatus(sessionId: snapshot.id)
-            try upsertZeroCostRow(merge.snapshot)
+            try upsertCostRow(merge.snapshot)
             try replaceSessionTools(merge.snapshot)
 
             if shouldDeleteIndexArtifacts(current: current, merged: merge.snapshot) {
@@ -96,6 +141,7 @@ public final class SessionSnapshotWriter {
             merged.tier = preservedTier
             merged.agentRole = preservedRole
             merged.indexedAt = incoming.indexedAt
+            merged.tokenUsage = incoming.tokenUsage
 
             var flags: Set<ChangeFlag> = [.localStateChanged]
             if currentTier == .skip, incomingTier != .skip {
@@ -110,6 +156,7 @@ public final class SessionSnapshotWriter {
             var merged = current
             merged.sizeBytes = incoming.sizeBytes
             merged.indexedAt = incoming.indexedAt
+            merged.tokenUsage = incoming.tokenUsage
             return (.merge, merged, SessionChangeSet(flags: [.syncPayloadChanged]))
         }
         var merged = incoming
@@ -362,7 +409,12 @@ public final class SessionSnapshotWriter {
         return base.isEmpty ? snapshot.id : base
     }
 
-    private func upsertZeroCostRow(_ snapshot: AuthoritativeSessionSnapshot) throws {
+    private func upsertCostRow(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        if let usage = snapshot.tokenUsage {
+            try upsertTokenCostRow(snapshot, usage: usage)
+            return
+        }
+
         try db.execute(
             sql: """
             INSERT INTO session_costs(
@@ -381,20 +433,63 @@ public final class SessionSnapshotWriter {
         )
     }
 
-    private func upsertZeroCostRowIfNeededForNoop(_ snapshot: AuthoritativeSessionSnapshot) throws {
+    private func upsertTokenCostRow(_ snapshot: AuthoritativeSessionSnapshot, usage: TokenUsage) throws {
+        let costUSD = SessionCostPricing.computeCost(model: snapshot.model, usage: usage)
+        try db.execute(
+            sql: """
+            INSERT INTO session_costs(
+              session_id, model, input_tokens, output_tokens, cache_read_tokens,
+              cache_creation_tokens, cost_usd, computed_at
+            ) VALUES (?, NULLIF(?, ''), ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(session_id) DO UPDATE SET
+              model = COALESCE(excluded.model, session_costs.model),
+              input_tokens = excluded.input_tokens,
+              output_tokens = excluded.output_tokens,
+              cache_read_tokens = excluded.cache_read_tokens,
+              cache_creation_tokens = excluded.cache_creation_tokens,
+              cost_usd = excluded.cost_usd,
+              computed_at = CASE
+                WHEN (excluded.model IS NOT NULL AND session_costs.model IS NOT excluded.model)
+                  OR session_costs.input_tokens IS NOT excluded.input_tokens
+                  OR session_costs.output_tokens IS NOT excluded.output_tokens
+                  OR session_costs.cache_read_tokens IS NOT excluded.cache_read_tokens
+                  OR session_costs.cache_creation_tokens IS NOT excluded.cache_creation_tokens
+                  OR session_costs.cost_usd IS NOT excluded.cost_usd
+                THEN excluded.computed_at
+                ELSE session_costs.computed_at
+              END
+            """,
+            arguments: [
+                snapshot.id,
+                snapshot.model ?? "",
+                usage.inputTokens,
+                usage.outputTokens,
+                usage.cacheReadTokens ?? 0,
+                usage.cacheCreationTokens ?? 0,
+                costUSD
+            ]
+        )
+    }
+
+    private func upsertCostRowIfNeededForNoop(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        if snapshot.tokenUsage != nil {
+            try upsertCostRow(snapshot)
+            return
+        }
+
         guard let row = try Row.fetchOne(
             db,
             sql: "SELECT model FROM session_costs WHERE session_id = ?",
             arguments: [snapshot.id]
         ) else {
-            try upsertZeroCostRow(snapshot)
+            try upsertCostRow(snapshot)
             return
         }
         let existingModel: String? = row["model"]
         guard let incomingModel = snapshot.model, !incomingModel.isEmpty, existingModel != incomingModel else {
             return
         }
-        try upsertZeroCostRow(snapshot)
+        try upsertCostRow(snapshot)
     }
 
     private func replaceSessionToolsIfDifferent(_ snapshot: AuthoritativeSessionSnapshot) throws {

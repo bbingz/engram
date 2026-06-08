@@ -38,7 +38,9 @@ final class SessionModelTests: XCTestCase {
         customName: String? = nil,
         tier: String? = "normal",
         toolMessageCount: Int = 0,
-        generatedTitle: String? = nil
+        generatedTitle: String? = nil,
+        lastAccessedAt: String? = nil,
+        accessCount: Int = 0
     ) -> Session {
         // Decode from a dictionary since Session conforms to Decodable
         let dict: [String: Any?] = [
@@ -64,6 +66,8 @@ final class SessionModelTests: XCTestCase {
             "tier": tier,
             "tool_message_count": toolMessageCount,
             "generated_title": generatedTitle,
+            "last_accessed_at": lastAccessedAt,
+            "access_count": accessCount,
         ]
         // Filter out nil values for proper JSON encoding
         var cleaned: [String: Any] = [:]
@@ -126,6 +130,49 @@ final class SessionModelTests: XCTestCase {
     func testEffectiveFilePathBothEmpty() throws {
         let session = makeSession(filePath: "", sourceLocator: nil)
         XCTAssertEqual(session.effectiveFilePath, "")
+    }
+
+    func testAccessSortTimeFallsBackToStartTime() throws {
+        let session = makeSession(
+            startTime: "2026-03-20T10:00:00Z",
+            lastAccessedAt: nil
+        )
+        XCTAssertEqual(session.accessSortTime, "2026-03-20T10:00:00Z")
+    }
+
+    func testAccessSortTimePrefersLastAccessedAt() throws {
+        let session = makeSession(
+            startTime: "2026-03-20T10:00:00Z",
+            lastAccessedAt: "2026-03-21T12:00:00Z",
+            accessCount: 3
+        )
+        XCTAssertEqual(session.accessSortTime, "2026-03-21T12:00:00Z")
+        XCTAssertEqual(session.accessCount, 3)
+    }
+
+    func testDecodeDefaultsMissingAccessMetadata() throws {
+        let data = """
+        {
+          "id": "legacy",
+          "source": "codex",
+          "start_time": "2026-03-20T10:00:00Z",
+          "cwd": "/tmp",
+          "message_count": 1,
+          "user_message_count": 1,
+          "assistant_message_count": 0,
+          "system_message_count": 0,
+          "file_path": "/tmp/legacy.jsonl",
+          "size_bytes": 1,
+          "indexed_at": "2026-03-20T10:00:00Z",
+          "tool_message_count": 0
+        }
+        """.data(using: .utf8)!
+
+        let session = try JSONDecoder().decode(Session.self, from: data)
+
+        XCTAssertNil(session.lastAccessedAt)
+        XCTAssertEqual(session.accessCount, 0)
+        XCTAssertEqual(session.accessSortTime, "2026-03-20T10:00:00Z")
     }
 
     // MARK: - formattedSize tests

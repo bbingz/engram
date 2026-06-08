@@ -140,6 +140,124 @@ func mutateEngramSettings(_ transform: (inout [String: Any]) -> Void) {
     }
 }
 
+struct UsageTokenLimitSettings: Equatable {
+    struct Limit: Equatable {
+        var fiveHourTokens: Double?
+        var weeklyTokens: Double?
+    }
+
+    private var sourceLimits: [String: Limit]
+
+    var sourceIDs: [String] {
+        sourceLimits.keys.sorted()
+    }
+
+    var codexFiveHourTokens: Double? { limit(for: "codex")?.fiveHourTokens }
+    var codexWeeklyTokens: Double? { limit(for: "codex")?.weeklyTokens }
+    var claudeFiveHourTokens: Double? { limit(for: "claude-code")?.fiveHourTokens }
+    var claudeWeeklyTokens: Double? { limit(for: "claude-code")?.weeklyTokens }
+
+    init(
+        codexFiveHourTokens: Double? = nil,
+        codexWeeklyTokens: Double? = nil,
+        claudeFiveHourTokens: Double? = nil,
+        claudeWeeklyTokens: Double? = nil
+    ) {
+        self.init(sourceLimits: [
+            "codex": Limit(
+                fiveHourTokens: Self.positive(codexFiveHourTokens),
+                weeklyTokens: Self.positive(codexWeeklyTokens)
+            ),
+            "claude-code": Limit(
+                fiveHourTokens: Self.positive(claudeFiveHourTokens),
+                weeklyTokens: Self.positive(claudeWeeklyTokens)
+            ),
+        ])
+    }
+
+    init(sourceLimits: [String: Limit]) {
+        self.sourceLimits = sourceLimits.reduce(into: [:]) { result, pair in
+            let sourceID = Self.normalizedSourceID(pair.key)
+            guard !sourceID.isEmpty else { return }
+            let limit = Limit(
+                fiveHourTokens: Self.positive(pair.value.fiveHourTokens),
+                weeklyTokens: Self.positive(pair.value.weeklyTokens)
+            )
+            guard limit.fiveHourTokens != nil || limit.weeklyTokens != nil else { return }
+            result[sourceID] = limit
+        }
+    }
+
+    init(settingsObject: [String: Any]) {
+        sourceLimits = Self.sanitizedSources(from: settingsObject)
+    }
+
+    func limit(for sourceID: String) -> Limit? {
+        sourceLimits[Self.normalizedSourceID(sourceID)]
+    }
+
+    func settingsObject() -> [String: [String: Double]] {
+        sourceLimits.reduce(into: [:]) { result, pair in
+            if let source = sourceObject(limit: pair.value) {
+                result[pair.key] = source
+            }
+        }
+    }
+
+    func settingsObject(preservingUnknownFrom existingObject: [String: Any]?) -> [String: [String: Double]] {
+        var object: [String: [String: Double]] = [:]
+        if let existingObject {
+            object = Self.sanitizedSources(from: existingObject).reduce(into: [:]) { result, pair in
+                if let source = UsageTokenLimitSettings(sourceLimits: [pair.key: pair.value]).settingsObject()[pair.key] {
+                    result[pair.key] = source
+                }
+            }
+        }
+        settingsObject().forEach { sourceID, source in
+            object[sourceID] = source
+        }
+        return object
+    }
+
+    private func sourceObject(limit: Limit) -> [String: Double]? {
+        var source: [String: Double] = [:]
+        if let fiveHourTokens = limit.fiveHourTokens { source["fiveHourTokens"] = fiveHourTokens }
+        if let weeklyTokens = limit.weeklyTokens { source["weeklyTokens"] = weeklyTokens }
+        return source.isEmpty ? nil : source
+    }
+
+    private static func sanitizedSources(from object: [String: Any]) -> [String: Limit] {
+        object.reduce(into: [:]) { result, pair in
+            let sourceID = normalizedSourceID(pair.key)
+            guard !sourceID.isEmpty else { return }
+            guard let sourceObject = pair.value as? [String: Any] else { return }
+            let limit = Limit(
+                fiveHourTokens: number(sourceObject["fiveHourTokens"]),
+                weeklyTokens: number(sourceObject["weeklyTokens"])
+            )
+            if limit.fiveHourTokens != nil || limit.weeklyTokens != nil {
+                result[sourceID] = limit
+            }
+        }
+    }
+
+    private static func normalizedSourceID(_ sourceID: String) -> String {
+        sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let double = value as? Double { return positive(double) }
+        if let int = value as? Int { return positive(Double(int)) }
+        if let number = value as? NSNumber { return positive(number.doubleValue) }
+        return nil
+    }
+
+    private static func positive(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
+    }
+}
+
 // MARK: - One-time scrub of deprecated settings keys
 
 /// Settings keys + Keychain accounts kept around for users upgrading from a

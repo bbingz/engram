@@ -8,15 +8,28 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private let writerGate: ServiceWriterGate
     private let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
+    private let usageNow: @Sendable () -> Date
+    private let usageTokenLimitsProvider: @Sendable () -> [String: StartupUsageTokenLimits]
+    private let usageEmitter: @Sendable ([StartupUsageSnapshot]) -> Void
 
     init(
         writerGate: ServiceWriterGate,
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
-        statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor()
+        statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor(),
+        usageNow: @escaping @Sendable () -> Date = { Date() },
+        usageTokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits] = {
+            EngramServiceRunner.readUsageTokenLimits(environment: ProcessInfo.processInfo.environment)
+        },
+        usageEmitter: @escaping @Sendable ([StartupUsageSnapshot]) -> Void = { snapshots in
+            EngramServiceRunner.emitUsageSnapshots(snapshots)
+        }
     ) {
         self.writerGate = writerGate
         self.readProvider = readProvider
         self.statusMonitor = statusMonitor
+        self.usageNow = usageNow
+        self.usageTokenLimitsProvider = usageTokenLimitsProvider
+        self.usageEmitter = usageEmitter
     }
 
     func handle(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
@@ -189,6 +202,28 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(Self.triggerSync(payload))
                 )
+            case "refreshUsage":
+                let result = try await EngramServiceRunner.collectUsageResult(
+                    gate: writerGate,
+                    now: usageNow,
+                    tokenLimits: usageTokenLimitsProvider(),
+                    emit: usageEmitter
+                )
+                let sources = Array(Set(result.value.map(\.source))).sorted()
+                let pressure = result.value
+                    .filter(Self.isUsagePressureAlert)
+                    .map(Self.serviceUsageItem)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(
+                        EngramServiceRefreshUsageResponse(
+                            snapshotCount: result.value.count,
+                            sources: sources,
+                            pressure: pressure
+                        )
+                    ),
+                    databaseGeneration: result.databaseGeneration
+                )
             case "regenerateAllTitles":
                 let result = try await Self.regenerateAllTitles(writerGate: writerGate)
                 return .success(
@@ -260,6 +295,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 let payload = try decodePayload(EngramServiceRenameSessionRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
                     try Self.renameSession(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "recordSessionAccess":
+                let payload = try decodePayload(EngramServiceSessionAccessRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.recordSessionAccess(payload, writer: writer)
                 }
                 return .success(
                     requestId: request.requestId,
@@ -380,6 +425,27 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
     private static func encode<T: Encodable>(_ value: T) throws -> Data {
         try JSONEncoder().encode(value)
+    }
+
+    private static func isUsagePressureAlert(_ snapshot: StartupUsageSnapshot) -> Bool {
+        switch snapshot.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "attention", "critical":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func serviceUsageItem(_ snapshot: StartupUsageSnapshot) -> EngramServiceUsageItem {
+        EngramServiceUsageItem(
+            source: snapshot.source,
+            metric: snapshot.metric,
+            value: snapshot.value,
+            unit: snapshot.unit,
+            limit: snapshot.limit,
+            resetAt: snapshot.resetAt,
+            status: snapshot.status
+        )
     }
 
     private static func errorEnvelope(_ error: EngramServiceError) -> EngramServiceErrorEnvelope {
@@ -582,6 +648,32 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 sql: "UPDATE sessions SET custom_name = ? WHERE id = ?",
                 arguments: [(normalizedName?.isEmpty == true ? nil : normalizedName), request.sessionId]
             )
+        }
+        return EmptyEncodableResult()
+    }
+
+    private static func recordSessionAccess(
+        _ request: EngramServiceSessionAccessRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EmptyEncodableResult {
+        try writer.write { db in
+            let changed = try db.executeAndCountChanges(
+                sql: """
+                    UPDATE sessions
+                    SET last_accessed_at = datetime('now'),
+                        access_count = COALESCE(access_count, 0) + 1
+                    WHERE id = ?
+                """,
+                arguments: [request.sessionId]
+            )
+            guard changed > 0 else {
+                throw EngramServiceError.commandFailed(
+                    name: "SessionNotFound",
+                    message: "session-not-found",
+                    retryPolicy: "never",
+                    details: ["session_id": .string(request.sessionId)]
+                )
+            }
         }
         return EmptyEncodableResult()
     }

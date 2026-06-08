@@ -297,7 +297,7 @@ private func jsonValue(_ value: Int?) -> Any {
     value ?? NSNull()
 }
 
-private struct ServiceTranscriptMessage: Sendable {
+struct ServiceTranscriptMessage: Sendable {
     let role: String
     let content: String
     let timestamp: String?
@@ -314,7 +314,7 @@ private struct ServiceTranscriptMessage: Sendable {
     }
 }
 
-private enum ServiceTranscriptReader {
+enum ServiceTranscriptReader {
     static func readMessages(filePath: String, source: String) async throws -> [ServiceTranscriptMessage] {
         if source == "gemini-cli" {
             try TranscriptSizeGuard.validateFullJSONTranscript(

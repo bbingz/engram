@@ -98,6 +98,8 @@ final class EngramServiceClientTests: XCTestCase {
             case "triggerSync":
                 XCTAssertEqual(try Self.payload(request.payload, as: EngramServiceTriggerSyncRequest.self), EngramServiceTriggerSyncRequest(peer: "laptop"))
                 return .success(requestId: request.requestId, result: #"{"results":[{"peer":"laptop","ok":true,"pulled":2,"pushed":1}]}"#.data(using: .utf8)!)
+            case "refreshUsage":
+                return .success(requestId: request.requestId, result: #"{"snapshotCount":6,"sources":["codex"]}"#.data(using: .utf8)!)
             case "regenerateAllTitles":
                 return .success(requestId: request.requestId, result: #"{"status":"started","total":4,"message":"Regenerating titles for 4 sessions in background"}"#.data(using: .utf8)!)
             case "projectMigrations":
@@ -133,6 +135,7 @@ final class EngramServiceClientTests: XCTestCase {
         let confirmSuggestion = try await client.confirmSuggestion(sessionId: "s1")
         try await client.dismissSuggestion(sessionId: "s1", suggestedParentId: "parent-1")
         let sync = try await client.triggerSync(EngramServiceTriggerSyncRequest(peer: "laptop"))
+        let usage = try await client.refreshUsage()
         let regenerateTitles = try await client.regenerateAllTitles()
         let migrations = try await client.projectMigrations(EngramServiceProjectMigrationsRequest(state: "committed", limit: 5))
         let cwds = try await client.projectCwds(project: "engram")
@@ -151,6 +154,8 @@ final class EngramServiceClientTests: XCTestCase {
         XCTAssertEqual(summary.summary, "Short summary")
         XCTAssertTrue(confirmSuggestion.ok)
         XCTAssertEqual(sync.results.first?.pulled, 2)
+        XCTAssertEqual(usage.snapshotCount, 6)
+        XCTAssertEqual(usage.sources, ["codex"])
         XCTAssertEqual(regenerateTitles.total, 4)
         XCTAssertEqual(migrations.migrations.first?.id, "mig-1")
         XCTAssertEqual(cwds.cwds, ["/tmp/engram"])
