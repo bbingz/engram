@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Split broad product-direction work into stacked PRs (2026-06-08, Codex)
+
+Prepared the previously broad local product-direction patch as a reviewable
+stack of draft PR branches. The stack preserves the verified behavior while
+separating UI-test signing, adapter robustness, usage/source health, resume
+actions, search cleanup, and release handoff into independent review layers.
+
+- Backed up the full original dirty state on
+  `codex/split-backup-20260608-usage-archive` at commit `9e9811d6`.
+- Split implementation branches from clean `origin/main` using worktrees under
+  `~/.config/superpowers/worktrees/engram/`.
+- Used XcodeGen as the source of truth for project-file changes; generated
+  `macos/Engram.xcodeproj/project.pbxproj` per split branch instead of copying
+  the broad generated project file.
+- Full UI automation was unblocked by configuring the UI-test target signing in
+  `macos/project.yml`; full `EngramUITests` passed on this host after the
+  signing fix.
+
+
 ### Project move Gemini/iFlow dry-run parity tests (2026-06-06, Codex)
 
 Closed a plan-review gap in the already-landed Gemini/iFlow project-move

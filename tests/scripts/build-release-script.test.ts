@@ -175,4 +175,19 @@ describe('macOS release build script: no silent non-notarizable fallback', () =>
   it('invokes release-verify.sh on the exported app', () => {
     expect(script).toContain('release-verify.sh');
   });
+
+  it('does not reuse the git commit count for dirty local release builds', () => {
+    expect(script).toContain(
+      'git -C "$MACOS_DIR" diff --quiet --ignore-submodules --',
+    );
+    expect(script).toContain(
+      'git -C "$MACOS_DIR" ls-files --others --exclude-standard',
+    );
+    expect(script).toContain('WORKTREE_DIRTY=1');
+    expect(script).toContain('if [[ "$WORKTREE_DIRTY" -eq 0 ]]');
+  });
+
+  it('uses a second-resolution UTC timestamp when a unique local build number is needed', () => {
+    expect(script).toContain('date -u +%Y%m%d%H%M%S');
+  });
 });

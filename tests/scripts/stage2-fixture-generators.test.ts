@@ -128,6 +128,19 @@ describe('stage2 Node parity fixture generators', () => {
       expect(fixture.nodeVersion).toMatch(/^v\d+\./);
       expect(fixture.generatedAtCommit).toBeTruthy();
     }
+
+    const openCodeFixture = JSON.parse(
+      readFileSync(
+        join(fixtureRoot, 'opencode', 'success.expected.json'),
+        'utf8',
+      ),
+    );
+    expect(openCodeFixture.usageTotals).toMatchObject({
+      cacheCreationTokens: 8,
+      cacheReadTokens: 67,
+      inputTokens: 123,
+      outputTokens: 50,
+    });
   }, 60_000);
 
   it('keeps Antigravity CLI, Command Code, and Qoder in adapter parity coverage', () => {
