@@ -237,6 +237,14 @@ public enum MigrationLogStore {
 
         try db.inSavepoint {
             let oldVariants = ProjectPathVariants.variants(oldPath)
+            let sourceLocatorMatch = pathMatch("source_locator")
+            let filePathMatch = pathMatch("file_path")
+            let cwdMatch = pathMatch("cwd")
+            let localReadablePathMatch = pathMatch("local_readable_path")
+            let sourceLocatorRewrite = rewrite("source_locator")
+            let filePathRewrite = rewrite("file_path")
+            let cwdRewrite = rewrite("cwd")
+            let localReadablePathRewrite = rewrite("local_readable_path")
             let pathArgs: StatementArguments = [
                 "old0": oldVariants[0],
                 "old1": oldVariants[1],
@@ -246,14 +254,15 @@ public enum MigrationLogStore {
             // 1a. Collect affected session ids BEFORE the UPDATE — Phase 3 undo
             // needs the authoritative list, not a prefix-reverse guess. Stored
             // in migration_log.detail.
+            let affectedSessionsSQL: String = """
+                SELECT id FROM sessions
+                 WHERE \(sourceLocatorMatch)
+                    OR \(filePathMatch)
+                    OR \(cwdMatch)
+                """
             let affectedRows = try Row.fetchAll(
                 db,
-                sql: """
-                SELECT id FROM sessions
-                 WHERE \(pathMatch("source_locator"))
-                    OR \(pathMatch("file_path"))
-                    OR \(pathMatch("cwd"))
-                """,
+                sql: affectedSessionsSQL,
                 arguments: pathArgs
             )
             let affectedSessionIds = affectedRows.compactMap { $0["id"] as String? }
@@ -262,27 +271,29 @@ public enum MigrationLogStore {
             // orphan_* flags here (filesystem is the only truth — detectOrphans
             // decides orphan state based on actual isAccessible, not on path
             // rewrites).
-            try db.execute(
-                sql: """
+            let updateSessionsSQL: String = """
                 UPDATE sessions
-                   SET source_locator = \(rewrite("source_locator")),
-                       file_path      = \(rewrite("file_path")),
-                       cwd            = \(rewrite("cwd"))
-                 WHERE \(pathMatch("source_locator"))
-                    OR \(pathMatch("file_path"))
-                    OR \(pathMatch("cwd"))
-                """,
+                   SET source_locator = \(sourceLocatorRewrite),
+                       file_path      = \(filePathRewrite),
+                       cwd            = \(cwdRewrite)
+                 WHERE \(sourceLocatorMatch)
+                    OR \(filePathMatch)
+                    OR \(cwdMatch)
+                """
+            try db.execute(
+                sql: updateSessionsSQL,
                 arguments: pathArgs
             )
             sessionsUpdated = db.changesCount
 
             // 2. Rewrite session_local_state.local_readable_path (UI read-priority field).
-            try db.execute(
-                sql: """
+            let updateLocalStateSQL: String = """
                 UPDATE session_local_state
-                   SET local_readable_path = \(rewrite("local_readable_path"))
-                 WHERE \(pathMatch("local_readable_path"))
-                """,
+                   SET local_readable_path = \(localReadablePathRewrite)
+                 WHERE \(localReadablePathMatch)
+                """
+            try db.execute(
+                sql: updateLocalStateSQL,
                 arguments: pathArgs
             )
             localStateUpdated = db.changesCount
@@ -428,9 +439,10 @@ public enum MigrationLogStore {
         (0..<3)
             .map { idx in
                 let old = ":old\(idx)"
-                return """
+                let branch: String = """
                 (\(col) = \(old) OR (LENGTH(\(col)) > LENGTH(\(old)) AND SUBSTR(\(col), 1, LENGTH(\(old)) + 1) = \(old) || '/'))
                 """
+                return branch
             }
             .joined(separator: " OR ")
     }
@@ -441,20 +453,22 @@ public enum MigrationLogStore {
         let branches = (0..<3)
             .map { idx in
                 let old = ":old\(idx)"
-                return """
+                let branch: String = """
                   WHEN \(col) = \(old) THEN :new
                   WHEN LENGTH(\(col)) > LENGTH(\(old))
                        AND SUBSTR(\(col), 1, LENGTH(\(old)) + 1) = \(old) || '/'
                     THEN :new || SUBSTR(\(col), LENGTH(\(old)) + 1)
                 """
+                return branch
             }
             .joined(separator: "\n")
-        return """
+        let sql: String = """
         CASE
         \(branches)
           ELSE \(col)
         END
         """
+        return sql
     }
 
     private static func jsonString(from object: Any) throws -> String {

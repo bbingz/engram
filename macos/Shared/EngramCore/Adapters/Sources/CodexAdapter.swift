@@ -60,16 +60,26 @@ enum JSONLAdapterSupport {
             let (url, before) = try prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
             var objects: [JSONObject] = []
+            var exceededMessageLimit = false
 
             for line in try reader.readLines() {
                 guard let object = parseObject(line) else { continue }
-                guard objects.count < limits.maxMessages else { continue }
+                guard objects.count < limits.maxMessages else {
+                    exceededMessageLimit = true
+                    continue
+                }
                 objects.append(object)
             }
 
             let after = try limits.fileIdentity(for: url)
             guard limits.isSameFileIdentity(before, after) else {
                 return (objects, .fileModifiedDuringParse)
+            }
+            if let failure = reader.failures.first {
+                return (objects, failure)
+            }
+            if exceededMessageLimit {
+                return (objects, .messageLimitExceeded)
             }
 
             return (objects, nil)
