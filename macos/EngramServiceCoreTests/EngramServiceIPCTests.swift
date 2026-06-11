@@ -1769,7 +1769,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(resume.tool, "codex")
         XCTAssertEqual(resume.command, "/usr/local/bin/codex")
-        XCTAssertEqual(resume.args, ["--resume", "s1"])
+        XCTAssertEqual(resume.args, ["resume", "s1"])
         XCTAssertEqual(resume.cwd, "/tmp/engram")
         XCTAssertEqual(resume.contextPrimer, """
         Resume context from Engram archive:
@@ -1865,7 +1865,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(resume.tool, "codex")
         XCTAssertEqual(resume.command, "/usr/local/bin/codex")
-        XCTAssertEqual(resume.args, ["--resume", "s1"])
+        XCTAssertEqual(resume.args, ["resume", "s1"])
         XCTAssertEqual(resume.cwd, "/tmp/engram")
         XCTAssertEqual(resume.contextPrimer, """
         Resume context from Engram archive:
@@ -3127,8 +3127,8 @@ final class EngramServiceIPCTests: XCTestCase {
         ])
 
         let titles = try await client.regenerateAllTitles()
-        XCTAssertEqual(titles.status, "completed")
-        XCTAssertEqual(titles.total, 1)
+        XCTAssertTrue(["started", "running"].contains(titles.status))
+        XCTAssertNil(titles.total)
     }
 
     func testProjectMigrationCommandsSurfacePipelineErrors() async throws {

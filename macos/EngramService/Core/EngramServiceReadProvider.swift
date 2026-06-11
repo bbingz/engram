@@ -498,7 +498,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             for (index, termMatch) in termMatches.enumerated() {
                 let alias = "m\(index)"
                 let snippetSQL = index == 0
-                    ? ", snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32) AS snippet"
+                    ? ", MIN(content) AS snippet"
                     : ""
                 ctes.append("""
                     \(alias) AS (
@@ -517,7 +517,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 ctes.append("""
                     m0 AS (
                         SELECT session_id, MIN(rank) AS rank,
-                               snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32) AS snippet
+                               MIN(content) AS snippet
                         FROM sessions_fts
                         WHERE sessions_fts MATCH ?
                         GROUP BY session_id
@@ -546,7 +546,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 arguments: StatementArguments(args)
             )
             return EngramServiceSearchResponse(
-                items: rows.map { item(from: $0) },
+                items: rows.map { item(from: $0, query: query) },
                 searchModes: ["keyword"],
                 warning: warning
             )

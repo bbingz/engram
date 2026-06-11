@@ -79,6 +79,11 @@ enum MCPTranscriptReader {
             pageSize: effectivePageSize
         )
 
+        let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+        if guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
+        }
+
         if let adapterPage = try await readPageWithAdapterRegistry(
             filePath: filePath,
             source: source,
@@ -89,7 +94,9 @@ enum MCPTranscriptReader {
             return adapterPage
         }
 
-        try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
+        if !guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
+        }
 
         switch source {
         case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
@@ -120,11 +127,18 @@ enum MCPTranscriptReader {
     }
 
     static func readMessages(filePath: String, source: String) async throws -> [MCPTranscriptMessage] {
+        let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+        if guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
+        }
+
         if let adapterMessages = try await readWithAdapterRegistry(filePath: filePath, source: source) {
             return adapterMessages
         }
 
-        try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
+        if !guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
+        }
 
         switch source {
         case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
@@ -139,6 +153,15 @@ enum MCPTranscriptReader {
             return visibleMessages(parseGeminiFormat(filePath: filePath), source: source)
         default:
             return []
+        }
+    }
+
+    private static func requiresFullJSONTranscriptGuard(source: String) -> Bool {
+        switch source {
+        case "gemini-cli", "cline", "cursor", "vscode":
+            return true
+        default:
+            return false
         }
     }
 
