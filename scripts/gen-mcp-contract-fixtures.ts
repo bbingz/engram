@@ -485,6 +485,7 @@ const codexAdapter = new CodexAdapter();
 type MCPResponse = {
   content: Array<{ type: string; text: string }>;
   structuredContent?: unknown;
+  metadata?: Record<string, unknown>;
   isError?: boolean;
 };
 

@@ -8,11 +8,13 @@ final class SearchModeTests: XCTestCase {
         XCTAssertEqual(SearchMode.availableModes(embeddingAvailable: false), [.keyword])
     }
 
-    // When embeddings become available the richer modes return.
-    func testRicherModesWhenEmbeddingsAvailable() {
+    // The current Swift service search path is keyword-only even if old
+    // embedding rows exist in the database, so the UI must not advertise richer
+    // modes until a real vector query path ships.
+    func testKeywordOnlyEvenWhenLegacyEmbeddingRowsExist() {
         XCTAssertEqual(
             SearchMode.availableModes(embeddingAvailable: true),
-            [.hybrid, .keyword, .semantic]
+            [.keyword]
         )
     }
 }

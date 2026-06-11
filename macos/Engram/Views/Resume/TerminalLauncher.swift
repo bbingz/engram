@@ -44,6 +44,29 @@ enum TerminalType: String, CaseIterable, Identifiable {
 }
 
 struct TerminalLauncher {
+    enum LaunchError: LocalizedError {
+        case appleScriptUnavailable
+        case appleScriptError(String)
+        case ghosttyBinaryUnavailable(String)
+        case processRunFailed(String)
+        case warpLaunchFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .appleScriptUnavailable:
+                return "Could not prepare terminal launch script."
+            case .appleScriptError(let details):
+                return "Terminal launch failed: \(details)"
+            case .ghosttyBinaryUnavailable(let path):
+                return "Ghostty executable was not found at \(path)."
+            case .processRunFailed(let details):
+                return "Terminal process launch failed: \(details)"
+            case .warpLaunchFailed(let details):
+                return "Warp launch failed: \(details)"
+            }
+        }
+    }
+
     /// Escape a string for safe interpolation into AppleScript double-quoted strings.
     /// Internal visibility — used by RepoDetailView and other callers that build AppleScript.
     static func escapeForAppleScript(_ s: String) -> String {
@@ -77,6 +100,10 @@ struct TerminalLauncher {
         directory = "\(tomlEscape(directory))"
         commands = ["\(tomlEscape(command))"]
         """
+    }
+
+    static func ghosttyArguments(for shellCommand: String) -> [String] {
+        ["-e", "/bin/zsh", "-lc", shellCommand]
     }
 
     static func availableTerminalTypes(
@@ -129,7 +156,13 @@ struct TerminalLauncher {
             $0.bundleIdentifier == "dev.warp.Warp-Stable" || $0.bundleIdentifier == "dev.warp.Warp"
         }
         if warpIsRunning {
-            NSWorkspace.shared.open(url)
+            guard NSWorkspace.shared.open(url) else {
+                throw NSError(
+                    domain: "TerminalLauncher",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Warp rejected the tab config URL"]
+                )
+            }
         } else {
             if let appURL = warpApplicationURL() {
                 let configuration = NSWorkspace.OpenConfiguration()
@@ -137,7 +170,13 @@ struct TerminalLauncher {
                     NSWorkspace.shared.open(url)
                 }
             } else {
-                NSWorkspace.shared.open(url)
+                guard NSWorkspace.shared.open(url) else {
+                    throw NSError(
+                        domain: "TerminalLauncher",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "No app handled the Warp tab config URL"]
+                    )
+                }
             }
         }
 
@@ -159,7 +198,7 @@ struct TerminalLauncher {
         return nil
     }
 
-    static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) {
+    static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) -> Result<Void, LaunchError> {
         let shellCmd = shellCommandLine(command: command, args: args, cwd: cwd)
         // Reuse the single AppleScript-escaping helper instead of duplicating
         // the escapeForAppleScript(shellCommandLine(...)) chain inline.
@@ -190,38 +229,41 @@ struct TerminalLauncher {
                 try? logMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: ghosttyBin)
-                process.arguments = ["-e", shellCmd]
-                try? process.run()
-                return
+                process.arguments = ghosttyArguments(for: shellCmd)
+                do {
+                    try process.run()
+                    return .success(())
+                } catch {
+                    return .failure(.processRunFailed(error.localizedDescription))
+                }
             }
-            // Fallback: just activate via AppleScript if binary not found
-            script = """
-            tell application "Ghostty"
-                activate
-            end tell
-            """
+            return .failure(.ghosttyBinaryUnavailable(ghosttyBin))
         case .warp:
             do {
                 try launchInWarp(shellCommand: shellCmd, cwd: cwd)
+                return .success(())
             } catch {
                 let errMsg = "[TerminalLauncher] Warp launch error: \(error)\n"
                 try? errMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
+                return .failure(.warpLaunchFailed(error.localizedDescription))
             }
-            return
         }
         // Log the script for debugging
         let logMsg = "[TerminalLauncher] Executing script:\n\(script)\n"
         try? logMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
 
-        if let appleScript = NSAppleScript(source: script) {
-            var error: NSDictionary?
-            appleScript.executeAndReturnError(&error)
-            if let error {
-                let errMsg = "[TerminalLauncher] AppleScript error: \(error)\n"
-                if let data = errMsg.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/engram-terminal.log") {
-                    fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-                }
-            }
+        guard let appleScript = NSAppleScript(source: script) else {
+            return .failure(.appleScriptUnavailable)
         }
+        var error: NSDictionary?
+        appleScript.executeAndReturnError(&error)
+        if let error {
+            let errMsg = "[TerminalLauncher] AppleScript error: \(error)\n"
+            if let data = errMsg.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/engram-terminal.log") {
+                fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+            }
+            return .failure(.appleScriptError(error.description))
+        }
+        return .success(())
     }
 }

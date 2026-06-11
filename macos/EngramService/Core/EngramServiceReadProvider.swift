@@ -488,41 +488,57 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
             let termMatches = CJKText.ftsMatchTerms(query)
             let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
-            var parts = ["""
-                SELECT s.*, (
-                    SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
-                    FROM sessions_fts
-                    WHERE sessions_fts MATCH ? AND session_id = s.id
-                    ORDER BY rank
-                    LIMIT 1
-                ) AS snippet
-                FROM sessions s
-                WHERE s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-            """]
             // Search at session granularity: every query token must exist
             // somewhere in the session, not necessarily in the same FTS row.
-            // snippet() highlights the best row for the first token because no
-            // single row may contain every token.
-            var args: [DatabaseValueConvertible] = [snippetMatch]
-            for termMatch in termMatches {
-                parts.append("""
-                    AND EXISTS (
-                        SELECT 1 FROM sessions_fts
-                        WHERE sessions_fts MATCH ? AND session_id = s.id
+            // Drive from FTS MATCH results first, then join sessions. This
+            // avoids re-running a MATCH probe once per sessions row.
+            var ctes: [String] = []
+            var joins: [String] = []
+            var args: [DatabaseValueConvertible] = []
+            for (index, termMatch) in termMatches.enumerated() {
+                let alias = "m\(index)"
+                let snippetSQL = index == 0
+                    ? ", MIN(content) AS snippet"
+                    : ""
+                ctes.append("""
+                    \(alias) AS (
+                        SELECT session_id, MIN(rank) AS rank\(snippetSQL)
+                        FROM sessions_fts
+                        WHERE sessions_fts MATCH ?
+                        GROUP BY session_id
                     )
                 """)
                 args.append(termMatch)
+                if index > 0 {
+                    joins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
+                }
             }
+            if ctes.isEmpty {
+                ctes.append("""
+                    m0 AS (
+                        SELECT session_id, MIN(rank) AS rank,
+                               MIN(content) AS snippet
+                        FROM sessions_fts
+                        WHERE sessions_fts MATCH ?
+                        GROUP BY session_id
+                    )
+                """)
+                args.append(snippetMatch)
+            }
+            var parts = ["""
+                WITH \(ctes.joined(separator: ", "))
+                SELECT s.*, m0.snippet AS snippet
+                FROM m0
+                \(joins.joined(separator: " "))
+                JOIN sessions s ON s.id = m0.session_id
+                WHERE s.hidden_at IS NULL
+                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+            """]
             appendSearchFilters(for: request, to: &parts, args: &args)
             parts.append("""
-                ORDER BY (
-                    SELECT MIN(rank) FROM sessions_fts
-                    WHERE sessions_fts MATCH ? AND session_id = s.id
-                ), s.start_time DESC
+                ORDER BY m0.rank, s.start_time DESC
                 LIMIT ?
             """)
-            args.append(snippetMatch)
             args.append(limit)
             let rows = try Row.fetchAll(
                 db,
@@ -530,7 +546,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 arguments: StatementArguments(args)
             )
             return EngramServiceSearchResponse(
-                items: rows.map { item(from: $0) },
+                items: rows.map { item(from: $0, query: query) },
                 searchModes: ["keyword"],
                 warning: warning
             )
@@ -612,7 +628,49 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse {
-        try await fileSystemProvider.replayTimeline(request)
+        let limit = max(1, min(request.limit ?? 500, 2_000))
+        let timeline = try await read { db -> (source: String?, rows: [ReplayFTSRow], total: Int) in
+            let source = try String.fetchOne(
+                db,
+                sql: "SELECT source FROM sessions WHERE id = ?",
+                arguments: [request.sessionId]
+            )
+            guard source != nil, try tableExists("sessions_fts", db: db) else {
+                return (source, [], 0)
+            }
+            let total = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = ?",
+                arguments: [request.sessionId]
+            ) ?? 0
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT rowid, content
+                    FROM sessions_fts
+                    WHERE session_id = ?
+                    ORDER BY rowid
+                    LIMIT ?
+                """,
+                arguments: [request.sessionId, limit]
+            ).map {
+                ReplayFTSRow(
+                    rowid: ($0["rowid"] as Int64?) ?? 0,
+                    content: ($0["content"] as String?) ?? ""
+                )
+            }
+            return (source, rows, total)
+        }
+        let entries = Self.replayEntries(from: timeline.rows, source: timeline.source, limit: limit)
+        return EngramServiceReplayTimelineResponse(
+            sessionId: request.sessionId,
+            source: timeline.source,
+            entries: entries,
+            totalEntries: timeline.total,
+            hasMore: timeline.total > entries.count,
+            offset: 0,
+            limit: limit
+        )
     }
 
     func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
@@ -730,6 +788,21 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 installHint: "Install: npm install -g @google/gemini-cli"
             )
         case "cursor":
+            return Self.openBasedResumeCommand(source: source, cwd: cwd, contextPrimer: contextPrimer)
+        default:
+            return Self.openBasedResumeCommand(source: source, cwd: cwd, contextPrimer: contextPrimer)
+        }
+    }
+
+    static func openBasedResumeCommand(
+        source: String,
+        cwd: String,
+        contextPrimer: String?
+    ) -> EngramServiceResumeCommandResponse {
+        guard !cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return emptyCwdResumeResponse(contextPrimer: contextPrimer)
+        }
+        if source == "cursor" {
             return EngramServiceResumeCommandResponse(
                 tool: "cursor",
                 command: "open",
@@ -737,15 +810,23 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 cwd: cwd,
                 contextPrimer: contextPrimer
             )
-        default:
-            return EngramServiceResumeCommandResponse(
-                tool: source,
-                command: "open",
-                args: [cwd],
-                cwd: cwd,
-                contextPrimer: contextPrimer
-            )
         }
+        return EngramServiceResumeCommandResponse(
+            tool: source,
+            command: "open",
+            args: [cwd],
+            cwd: cwd,
+            contextPrimer: contextPrimer
+        )
+    }
+
+    private static func emptyCwdResumeResponse(contextPrimer: String?) -> EngramServiceResumeCommandResponse {
+        EngramServiceResumeCommandResponse(
+            cwd: "",
+            contextPrimer: contextPrimer,
+            error: "No working directory recorded for this session",
+            hint: "Open the transcript from Engram and copy the resume context manually."
+        )
     }
 
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse {
@@ -807,6 +888,50 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 cwds: rows.compactMap { $0["cwd"] as String? }
             )
         }
+    }
+
+    struct ReplayFTSRow: Sendable {
+        let rowid: Int64
+        let content: String
+    }
+
+    static func replayEntries(
+        from rows: [ReplayFTSRow],
+        source: String?,
+        limit: Int
+    ) -> [EngramServiceReplayTimelineEntry] {
+        rows.prefix(max(0, limit)).enumerated().map { index, row in
+            let parsed = replayRoleAndPreview(row.content)
+            return EngramServiceReplayTimelineEntry(
+                index: index,
+                role: parsed.role,
+                type: parsed.type,
+                preview: parsed.preview,
+                timestamp: nil,
+                toolName: nil,
+                tokens: nil,
+                durationToNextMs: nil
+            )
+        }
+    }
+
+    private static func replayRoleAndPreview(_ content: String) -> (role: String, type: String, preview: String) {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        for (prefix, role) in [("User:", "user"), ("Assistant:", "assistant"), ("Tool:", "tool")] {
+            if trimmed.lowercased().hasPrefix(prefix.lowercased()) {
+                let preview = String(trimmed.dropFirst(prefix.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (role, role, boundedReplayPreview(preview))
+            }
+        }
+        return ("unknown", "message", boundedReplayPreview(trimmed))
+    }
+
+    private static func boundedReplayPreview(_ value: String) -> String {
+        let collapsed = value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(collapsed.prefix(2_000))
     }
 
     private func read<T: Sendable>(_ block: @escaping @Sendable (GRDB.Database) throws -> T) async throws -> T {
@@ -1032,14 +1157,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     static let maxSnippetLength = 600
 
     private func item(from row: Row, query: String? = nil) -> EngramServiceSearchResponse.Item {
-        // The Latin/MATCH path already returns an FTS5 snippet() with <mark>
-        // tags. The CJK/LIKE path returns full `f.content` (snippet() needs a
-        // MATCH query), so when a query is supplied we build the match-centered
-        // highlight here in Swift; otherwise the raw content is used as-is.
+        // MATCH/LIKE paths return matched content; when a query is supplied,
+        // build the match-centered highlight here in Swift.
         let rawSnippet = row["snippet"] as String?
         let snippetText: String?
         if let query, let content = rawSnippet,
-           let windowed = CJKText.cjkHighlightedSnippet(content: content, query: query) {
+           let windowed = Self.highlightedSnippet(content: content, query: query) {
             snippetText = windowed
         } else {
             snippetText = rawSnippet
@@ -1077,6 +1200,18 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         )
     }
 
+    private static func highlightedSnippet(content: String, query: String) -> String? {
+        if let exact = CJKText.cjkHighlightedSnippet(content: content, query: query) {
+            return exact
+        }
+        for term in query.split(whereSeparator: { $0.isWhitespace }) {
+            if let match = CJKText.cjkHighlightedSnippet(content: content, query: String(term)) {
+                return match
+            }
+        }
+        return nil
+    }
+
     static func truncateSnippet(_ snippet: String?) -> String? {
         guard let snippet else { return nil }
         guard snippet.count > maxSnippetLength else { return snippet }
@@ -1102,10 +1237,21 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return EngramServiceResumeCommandResponse(
             tool: tool,
             command: path,
-            args: ["--resume", sessionId],
+            args: Self.resumeArguments(tool: tool, sessionId: sessionId),
             cwd: cwd,
             contextPrimer: contextPrimer
         )
+    }
+
+    static func resumeArguments(tool: String, sessionId: String) -> [String] {
+        switch tool {
+        case "codex":
+            return ["resume", sessionId]
+        case "gemini":
+            return ["--resume", sessionId]
+        default:
+            return ["--resume", sessionId]
+        }
     }
 
     private static func resumeContextExcerpts(db: GRDB.Database, sessionId: String) throws -> [String] {
@@ -1229,10 +1375,19 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     nonisolated private static func defaultCommandLocator(_ name: String) -> String? {
         let environment = ProcessInfo.processInfo.environment
-        let searchPaths = (environment["PATH"] ?? "")
+        var seen = Set<String>()
+        let searchPaths = ((environment["PATH"] ?? "")
             .split(separator: ":")
             .map(String.init)
-            .filter { !$0.isEmpty }
+            + [
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/opt/homebrew/sbin",
+                "/usr/local/sbin",
+            ])
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
         for directory in searchPaths {
             let path = URL(fileURLWithPath: directory, isDirectory: true)
                 .appendingPathComponent(name)

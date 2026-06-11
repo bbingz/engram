@@ -229,7 +229,10 @@ final class KimiAdapter: SessionAdapter, Sendable {
                       let payload = JSONLAdapterSupport.object(message?["payload"]),
                       let usage = usage(from: JSONLAdapterSupport.object(payload["token_usage"]))
             {
-                turns[turns.count - 1].usage = usage
+                turns[turns.count - 1].usage = accumulatedUsage(
+                    turns[turns.count - 1].usage,
+                    usage
+                )
             }
         }
         return turns
@@ -275,6 +278,16 @@ final class KimiAdapter: SessionAdapter, Sendable {
             return nil
         }
         return usage
+    }
+
+    private static func accumulatedUsage(_ current: TokenUsage?, _ next: TokenUsage) -> TokenUsage {
+        guard let current else { return next }
+        return TokenUsage(
+            inputTokens: current.inputTokens + next.inputTokens,
+            outputTokens: current.outputTokens + next.outputTokens,
+            cacheReadTokens: (current.cacheReadTokens ?? 0) + (next.cacheReadTokens ?? 0),
+            cacheCreationTokens: (current.cacheCreationTokens ?? 0) + (next.cacheCreationTokens ?? 0)
+        )
     }
 
     private static func int(_ value: Any?) -> Int {

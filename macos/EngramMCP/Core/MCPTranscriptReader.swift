@@ -19,6 +19,8 @@ struct MCPTranscriptPage {
 }
 
 private struct MCPTranscriptPageBuilder {
+    private static let maxMessageContentCharacters = 8_192
+
     private let currentPage: Int
     private let pageSize: Int
     private let offset: Int
@@ -33,7 +35,7 @@ private struct MCPTranscriptPageBuilder {
 
     mutating func append(_ message: MCPTranscriptMessage) {
         if totalMessages >= offset && messages.count < pageSize {
-            messages.append(message)
+            messages.append(Self.capped(message))
         }
         totalMessages += 1
     }
@@ -44,6 +46,19 @@ private struct MCPTranscriptPageBuilder {
             totalMessages: totalMessages,
             currentPage: currentPage,
             pageSize: pageSize
+        )
+    }
+
+    private static func capped(_ message: MCPTranscriptMessage) -> MCPTranscriptMessage {
+        guard message.content.count > maxMessageContentCharacters else {
+            return message
+        }
+        let omitted = message.content.count - maxMessageContentCharacters
+        return MCPTranscriptMessage(
+            role: message.role,
+            content: String(message.content.prefix(maxMessageContentCharacters))
+                + "\n[truncated \(omitted) characters]",
+            timestamp: message.timestamp
         )
     }
 }
@@ -64,14 +79,12 @@ enum MCPTranscriptReader {
             pageSize: effectivePageSize
         )
 
-        if source == "gemini-cli" {
-            try TranscriptSizeGuard.validateFullJSONTranscript(
-                filePath: filePath,
-                source: source
-            )
+        let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+        if guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
-        if let adapterPage = await readPageWithAdapterRegistry(
+        if let adapterPage = try await readPageWithAdapterRegistry(
             filePath: filePath,
             source: source,
             currentPage: currentPage,
@@ -79,6 +92,10 @@ enum MCPTranscriptReader {
             roles: roleFilter
         ) {
             return adapterPage
+        }
+
+        if !guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
         switch source {
@@ -110,15 +127,17 @@ enum MCPTranscriptReader {
     }
 
     static func readMessages(filePath: String, source: String) async throws -> [MCPTranscriptMessage] {
-        if source == "gemini-cli" {
-            try TranscriptSizeGuard.validateFullJSONTranscript(
-                filePath: filePath,
-                source: source
-            )
+        let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+        if guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
-        if let adapterMessages = await readWithAdapterRegistry(filePath: filePath, source: source) {
+        if let adapterMessages = try await readWithAdapterRegistry(filePath: filePath, source: source) {
             return adapterMessages
+        }
+
+        if !guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
         switch source {
@@ -134,6 +153,15 @@ enum MCPTranscriptReader {
             return visibleMessages(parseGeminiFormat(filePath: filePath), source: source)
         default:
             return []
+        }
+    }
+
+    private static func requiresFullJSONTranscriptGuard(source: String) -> Bool {
+        switch source {
+        case "gemini-cli", "cline", "cursor", "vscode":
+            return true
+        default:
+            return false
         }
     }
 
@@ -160,7 +188,7 @@ enum MCPTranscriptReader {
     // instead of bridging back to sync with a DispatchSemaphore. Blocking a
     // cooperative-pool thread on a semaphore can starve/deadlock the pool when
     // several reads run concurrently.
-    private static func readWithAdapterRegistry(filePath: String, source: String) async -> [MCPTranscriptMessage]? {
+    private static func readWithAdapterRegistry(filePath: String, source: String) async throws -> [MCPTranscriptMessage]? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
@@ -188,6 +216,8 @@ enum MCPTranscriptReader {
                 )
             }
             return messages
+        } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
+            throw failure
         } catch {
             return nil
         }
@@ -199,7 +229,7 @@ enum MCPTranscriptReader {
         currentPage: Int,
         pageSize: Int,
         roles: [String]?
-    ) async -> MCPTranscriptPage? {
+    ) async throws -> MCPTranscriptPage? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
@@ -224,8 +254,19 @@ enum MCPTranscriptReader {
                 appendIfVisible(transcriptMessage, to: &builder, source: source, roles: roles)
             }
             return builder.build()
+        } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
+            throw failure
         } catch {
             return nil
+        }
+    }
+
+    private static func isFallbackUnsafeParserFailure(_ failure: ParserFailure) -> Bool {
+        switch failure {
+        case .fileTooLarge, .messageLimitExceeded, .lineTooLarge, .invalidUtf8, .deeplyNestedRecord:
+            return true
+        default:
+            return false
         }
     }
 

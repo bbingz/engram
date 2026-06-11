@@ -96,7 +96,10 @@ secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
 - Schema changes: add idempotent Swift migrations and focused Swift tests. Keep
   fixture/dev TypeScript tests updated only where retained tooling depends on
   them.
-- FTS: trigram tokenizer on `sessions_fts`. Version bump in `FTS_VERSION` forces full re-index.
+- FTS: trigram tokenizer on `sessions_fts`. Product full re-index is governed
+  by `macos/EngramCoreWrite/Database/FTSRebuildPolicy.swift`
+  `expectedVersion`; `src/core/db/fts-rebuild-policy.ts` is retained only for
+  TypeScript reference tooling.
 
 ### Process Lifecycle
 - Product runtime: `Engram.app` launches `EngramService`; MCP clients spawn
@@ -109,12 +112,15 @@ secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
   tests that intentionally exercise `src/index.ts`.
 
 ### Session Tiering
-4 tiers in `src/core/session-tier.ts`: `skip` / `lite` / `normal` / `premium`.
-- skip = DB only (noise, preamble, agent subprocesses)
-- lite = +FTS indexing
-- normal = +embedding
-- premium = +auto-summary
-UI noise filter uses `buildTierFilter()` / `isTierHidden()`. Swift filters via `tier != 'skip'`.
+Product tiering is computed in
+`macos/Shared/EngramCore/Indexing/SessionTier.swift`; the TypeScript
+`src/core/session-tier.ts` file is a reference/parity mirror only.
+
+4 product tiers: `skip` / `lite` / `normal` / `premium`.
+- `skip`: hidden/noise tier; index artifacts are removed and keyword search excludes it.
+- `lite`: FTS only.
+- `normal` / `premium`: FTS plus embedding job eligibility when embedding text changes.
+UI/read-path filters hide `skip` sessions consistently; `lite` remains visible in list surfaces but is intentionally excluded from keyword search.
 
 ### Local Semantic Search
 NOTE: the hybrid/semantic search below describes the TypeScript REFERENCE design.
@@ -150,7 +156,10 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
   2. **Layer 1b (originator)**: Codex `session_meta.originator === "Claude Code"` → auto `agentRole: 'dispatched'`. Deterministic.
   3. **Layer 1c (sidecar)**: Gemini plugin writes `{sessionId}.engram.json` sidecar with `parentSessionId`. Deterministic.
   4. **Layer 2 (heuristic)**: Dispatch pattern matching + temporal/cwd scoring. Advisory → `suggested_parent_id`.
-  5. **Layer 3 (manual)**: HTTP API endpoints at `POST/DELETE /api/sessions/:id/link`, `POST /api/sessions/:id/confirm-suggestion`, `DELETE /api/sessions/:id/suggestion`.
+  5. **Layer 3 (manual)**: Swift service IPC commands. App callers use
+     `EngramServiceClient.setParentSession`, `confirmSuggestion`, and
+     `dismissSuggestion`; service handling lives in
+     `EngramServiceCommandHandler`.
 - Orphan trigger: `trg_sessions_parent_cascade` nullifies children on parent deletion + resets tier for re-evaluation.
 - Tier lifecycle: subagent sessions always stay `skip` (accessed through parent, not independently); unlinked children get tier reset to NULL for re-evaluation. `downgradeSubagentTiers()` on daemon startup fixes any incorrectly upgraded sessions.
 - Dispatch-pattern sessions without a parent get `agent_role = COALESCE(agent_role, 'dispatched')` → `tier = 'skip'`.
@@ -202,7 +211,9 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - **Imports**: Use `node:` prefix for Node.js builtins (`node:fs`, `node:path`, etc.)
 - **Constants**: UPPER_SNAKE_CASE (`WATCHED_SOURCES`, `NOISE_FILTER_SQL`)
 - **Error handling**: Adapters silently skip failures; DB errors propagate; tools return `isError: true`
-- **Tests**: Vitest with real fixtures in `tests/fixtures/<adapter>/`. No mocking — real file I/O.
+- **Tests**: Vitest with real fixtures in `tests/fixtures/<adapter>/` for parser/DB
+  behavior. Focused module mocks are acceptable for external service boundaries
+  and failure injection when real file I/O would not exercise the contract.
 - **Comments**: Chinese comments are intentional, keep them as-is
 - **Swift DB reads**: Use `nonisolated` + `readInBackground` for all DatabaseManager read methods. Views call via `Task.detached { ... }.value` (see PopoverView.loadData as pattern).
 
@@ -219,10 +230,11 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - SQLite DB: `~/.engram/index.sqlite` (WAL mode)
 - Settings: `~/.engram/settings.json`
 - Session sources: `~/.claude/projects/`, `~/.codex/sessions/`, `~/.gemini/`, etc.
-- `SessionAdapterFactory.defaultAdapters()` registers 17 source adapters, but
-  Windsurf and Antigravity are constructed with `enableLiveSync: false` and
-  ingest zero sessions. So ~15 sources actually ingest today; "17 sources" is
-  the adapter count, not the live-ingesting count.
+- `SessionAdapterFactory.defaultAdapters()` registers 17 source adapters. Windsurf
+  and Antigravity are constructed with `enableLiveSync: false`, so live gRPC sync is disabled for both. Windsurf is cache-only (`~/.engram/cache/windsurf`);
+  Antigravity still reads Antigravity CLI brain transcripts and any legacy cache
+  already present. "17 sources" is the adapter count, not a live-gRPC source
+  count.
 
 ## What NOT To Do
 

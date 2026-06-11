@@ -172,6 +172,7 @@ final class IflowAdapter: SessionAdapter, Sendable {
     private static func extractContent(_ content: Any?) -> String {
         if let string = content as? String { return string }
         guard let content = JSONLAdapterSupport.array(content) else { return "" }
+        var parts: [String] = []
         for item in content {
             guard let object = JSONLAdapterSupport.object(item),
                   JSONLAdapterSupport.string(object["type"]) == "text",
@@ -179,9 +180,9 @@ final class IflowAdapter: SessionAdapter, Sendable {
             else {
                 continue
             }
-            return text
+            if !text.isEmpty { parts.append(text) }
         }
-        return ""
+        return parts.joined(separator: "\n\n")
     }
 
     private static func usage(from usage: JSONLAdapterSupport.JSONObject?) -> TokenUsage? {

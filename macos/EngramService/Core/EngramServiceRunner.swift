@@ -297,27 +297,41 @@ public enum EngramServiceRunner {
             }
 
             do {
-                let result = try await gate.performWriteCommand(name: "indexRecent") { writer in
-                    let scan = try await writer.indexRecentSessions()
-                    // Run parent-link / dispatch detection on the freshly indexed
-                    // sessions so agent children created mid-run are grouped under
-                    // their parent (and skip-tiered) without waiting for a restart.
-                    if scan.indexed > 0 {
+                let scan = try await gate.performWriteCommand(name: "indexRecent") { writer in
+                    try await writer.indexRecentSessions()
+                }.value
+                // Run parent-link / dispatch detection on the freshly indexed
+                // sessions so agent children created mid-run are grouped under
+                // their parent (and skip-tiered) without waiting for a restart.
+                if scan.indexed > 0 {
+                    _ = try await gate.performWriteCommand(name: "periodicParentBackfills") { writer in
                         try writer.runPeriodicParentBackfills()
                     }
-                    // Drain any FTS jobs enqueued by this scan so search content
-                    // is written (V1). Embedding jobs are marked not_applicable.
-                    let jobSummary = try await IndexJobRunner(writer: writer).runRecoverableJobs()
-                    let repoCandidates = try writer.read { db in
+                }
+                // Drain any FTS jobs enqueued by this scan so search content is
+                // written, but release the single write gate between batches.
+                var jobs = StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0)
+                while !Task.isCancelled {
+                    let drain = try await gate.performWriteCommand(name: "periodicFtsDrain") { writer in
+                        try await IndexJobRunner(writer: writer).runRecoverableJobsOnce()
+                    }.value
+                    jobs.completed += drain.result.completed
+                    jobs.notApplicable += drain.result.notApplicable
+                    if drain.drained { break }
+                }
+                let status = try await gate.performWriteCommand(name: "periodicIndexStatus") { writer in
+                    try writer.indexStatus()
+                }.value
+                let repoCandidates = try await gate.performWriteCommand(name: "periodicRepoCandidates") { writer in
+                    try writer.read { db in
                         try RepoDiscovery.sessionCwdCounts(db)
                     }
-                    return (scan: scan, jobs: jobSummary, repoCandidates: repoCandidates)
-                }
+                }.value
                 // Refresh git_repos from session cwds (replaces removed Node
                 // git-probe.ts; populates the otherwise-dormant Repos page).
                 // Git probes can be slow or wedged, so they run outside the
                 // serialized service write gate; only the final upsert is gated.
-                let repoEntries = RepoDiscovery.probeRepositories(result.value.repoCandidates)
+                let repoEntries = RepoDiscovery.probeRepositories(repoCandidates)
                 let repos = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
                     try writer.write { db in
                         try RepoDiscovery.upsert(
@@ -327,16 +341,14 @@ public enum EngramServiceRunner {
                         )
                     }
                 }
-                let scan = result.value.scan
-                let jobs = result.value.jobs
                 ServiceLogger.notice(
-                    "index scan completed: indexed=\(scan.indexed) total=\(scan.total) todayParents=\(scan.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(repos.value)",
+                    "index scan completed: indexed=\(scan.indexed) total=\(status.total) todayParents=\(status.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(repos.value)",
                     category: .runner
                 )
                 emit(ServiceIndexEvent(
                     indexed: scan.indexed,
-                    total: scan.total,
-                    todayParents: scan.todayParents
+                    total: status.total,
+                    todayParents: status.todayParents
                 ))
                 await statusMonitor.recordScanSuccess()
                 await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
@@ -362,29 +374,49 @@ public enum EngramServiceRunner {
         let emitBackfill: (StartupBackfillEvent) -> Void = { event in
             Self.emit(StartupBackfillEventEnvelope(event: event))
         }
-        do {
-            let usageParserBackfillNeeded = try await gate.performWriteCommand(name: "usageParserBackfillCheck") { writer in
+        var failedPhaseCount = 0
+
+        let usageParserBackfillCheck = await runInitialScanPhase(
+            name: "usageParserBackfillCheck",
+            statusMonitor: statusMonitor
+        ) {
+            try await gate.performWriteCommand(name: "usageParserBackfillCheck") { writer in
                 try writer.read { db in
                     try UsageParserBackfillPolicy.needsBackfill(db)
                 }
             }.value
-            let startupAdapters = usageParserBackfillNeeded
-                ? defaultAdapters
-                : SessionAdapterFactory.recentActiveAdapters()
+        }
+        if usageParserBackfillCheck.cancelled { return }
+        if usageParserBackfillCheck.failed { failedPhaseCount += 1 }
+        let usageParserBackfillNeeded = usageParserBackfillCheck.value ?? false
+        let startupAdapters = defaultAdapters
 
-            // Phase 1 — structural backfills, split into THREE gated write
-            // commands so the single write gate is RELEASED between them and
-            // user write commands (project move, save_insight, manual link) can
-            // interleave instead of waiting out the whole multi-minute scan. The
-            // heavy re-index and the per-row orphan scan previously held the gate
-            // for the entire run, so any user write queued in that window timed
-            // out with WriterBusy.
-            let indexed = try await gate.performWriteCommand(name: "initialScanIndex") { writer in
+        // Phase 1 — structural backfills, split into THREE gated write
+        // commands so the single write gate is RELEASED between them and
+        // user write commands (project move, save_insight, manual link) can
+        // interleave instead of waiting out the whole multi-minute scan. The
+        // heavy re-index and the per-row orphan scan previously held the gate
+        // for the entire run, so any user write queued in that window timed
+        // out with WriterBusy.
+        let indexedPhase = await runInitialScanPhase(
+            name: "initialScanIndex",
+            statusMonitor: statusMonitor
+        ) {
+            try await gate.performWriteCommand(name: "initialScanIndex") { writer in
                 try await StartupBackfills.runStartupIndex(
                     indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters)
                 )
             }.value
-            _ = try await gate.performWriteCommand(name: "initialScanBackfills") { writer in
+        }
+        if indexedPhase.cancelled { return }
+        if indexedPhase.failed { failedPhaseCount += 1 }
+        let indexed = indexedPhase.value ?? 0
+
+        let backfillsPhase = await runInitialScanPhase(
+            name: "initialScanBackfills",
+            statusMonitor: statusMonitor
+        ) {
+            try await gate.performWriteCommand(name: "initialScanBackfills") { writer in
                 try await StartupBackfills.runStartupMaintenanceAndParents(
                     indexed: indexed,
                     emit: emitBackfill,
@@ -393,7 +425,15 @@ public enum EngramServiceRunner {
                     database: WriterStartupBackfillDatabase(writer: writer)
                 )
             }
-            _ = try await gate.performWriteCommand(name: "initialScanOrphans") { writer in
+        }
+        if backfillsPhase.cancelled { return }
+        if backfillsPhase.failed { failedPhaseCount += 1 }
+
+        let orphanPhase = await runInitialScanPhase(
+            name: "initialScanOrphans",
+            statusMonitor: statusMonitor
+        ) {
+            try await gate.performWriteCommand(name: "initialScanOrphans") { writer in
                 try await StartupBackfills.runStartupOrphanScan(
                     emit: emitBackfill,
                     log: OSLogStartupBackfillLogging(),
@@ -402,40 +442,112 @@ public enum EngramServiceRunner {
                     adapters: startupAdapters
                 )
             }
+        }
+        if orphanPhase.cancelled { return }
+        if orphanPhase.failed { failedPhaseCount += 1 }
 
-            // Phase 2 — drain the FTS backlog one batch per gated command, so a
-            // large (100k+) drain releases the single write gate BETWEEN batches
-            // and user write commands can interleave instead of failing with
-            // WriterBusy after the gate is held for the whole scan.
-            while !Task.isCancelled {
-                let drained = try await gate.performWriteCommand(name: "initialFtsDrain") { writer in
+        // Phase 2 — drain the FTS backlog one batch per gated command, so a
+        // large (100k+) drain releases the single write gate BETWEEN batches
+        // and user write commands can interleave instead of failing with
+        // WriterBusy after the gate is held for the whole scan.
+        while !Task.isCancelled {
+            let drainPhase = await runInitialScanPhase(
+                name: "initialFtsDrain",
+                statusMonitor: statusMonitor
+            ) {
+                try await gate.performWriteCommand(name: "initialFtsDrain") { writer in
                     try await IndexJobRunner(writer: writer, adapters: defaultAdapters)
                         .runRecoverableJobsOnce()
                         .drained
-                }
-                if drained.value { break }
+                }.value
             }
+            if drainPhase.cancelled { return }
+            if drainPhase.failed {
+                failedPhaseCount += 1
+                break
+            }
+            if drainPhase.value ?? true { break }
+        }
 
-            // Phase 3 — usage collection is cheap, but still gets its own gated
-            // command so startup maintenance does not hold the writer gate longer.
-            await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
-            if usageParserBackfillNeeded {
-                _ = try await gate.performWriteCommand(name: "usageParserBackfillMark") { writer in
+        // Phase 3 — usage collection is cheap, but still gets its own gated
+        // command so startup maintenance does not hold the writer gate longer.
+        await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
+        if usageParserBackfillNeeded {
+            let markPhase = await runInitialScanPhase(
+                name: "usageParserBackfillMark",
+                statusMonitor: statusMonitor
+            ) {
+                try await gate.performWriteCommand(name: "usageParserBackfillMark") { writer in
                     try writer.write { db in
                         try UsageParserBackfillPolicy.markComplete(db)
                     }
                 }
             }
+            if markPhase.cancelled { return }
+            if markPhase.failed { failedPhaseCount += 1 }
+        }
 
+        if failedPhaseCount == 0 {
             ServiceLogger.notice("initial startup scan complete", category: .runner)
             await statusMonitor.recordScanSuccess()
-        } catch is CancellationError {
-            return
-        } catch {
-            ServiceLogger.error("initial startup scan failed", category: .runner, error: error)
-            emit(ServiceIndexErrorEvent(error: error.localizedDescription))
-            await statusMonitor.recordScanFailure(error.localizedDescription)
+        } else {
+            ServiceLogger.warn(
+                "initial startup scan complete with \(failedPhaseCount) failed phase(s)",
+                category: .runner
+            )
         }
+    }
+
+    private struct InitialScanPhaseOutcome<Value> {
+        var value: Value?
+        var failed: Bool
+        var cancelled: Bool
+    }
+
+    private static func runInitialScanPhase<Value>(
+        name: String,
+        statusMonitor: ServiceStatusMonitor,
+        maxWriterBusyRetries: Int = 3,
+        operation: () async throws -> Value
+    ) async -> InitialScanPhaseOutcome<Value> {
+        var writerBusyRetries = 0
+        while !Task.isCancelled {
+            do {
+                let value = try await operation()
+                return InitialScanPhaseOutcome(value: value, failed: false, cancelled: false)
+            } catch is CancellationError {
+                return InitialScanPhaseOutcome(value: nil, failed: false, cancelled: true)
+            } catch {
+                if isWriterBusy(error), writerBusyRetries < maxWriterBusyRetries {
+                    writerBusyRetries += 1
+                    ServiceLogger.warn(
+                        "retrying startup phase \(name) after writerBusy (attempt \(writerBusyRetries)/\(maxWriterBusyRetries))",
+                        category: .runner
+                    )
+                    let delayNanoseconds = UInt64(writerBusyRetries) * 2_000_000_000
+                    do {
+                        try await Task.sleep(nanoseconds: delayNanoseconds)
+                    } catch {
+                        return InitialScanPhaseOutcome(value: nil, failed: false, cancelled: true)
+                    }
+                    continue
+                }
+
+                let message = "\(name): \(error.localizedDescription)"
+                ServiceLogger.error("startup phase failed: \(message)", category: .runner, error: error)
+                emit(ServiceIndexErrorEvent(error: message))
+                await statusMonitor.recordScanFailure(message)
+                return InitialScanPhaseOutcome(value: nil, failed: true, cancelled: false)
+            }
+        }
+        return InitialScanPhaseOutcome(value: nil, failed: false, cancelled: true)
+    }
+
+    private static func isWriterBusy(_ error: Error) -> Bool {
+        if case EngramServiceError.writerBusy = error {
+            return true
+        }
+        return false
     }
 
     @discardableResult

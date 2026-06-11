@@ -6,6 +6,27 @@ import XCTest
 /// `traces`/`metrics` tables. These tests assert the reader is well-formed:
 /// it filters to Engram's subsystems and surfaces error-level entries it emits.
 final class OSLogReaderTests: XCTestCase {
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func source(_ relativePath: String) throws -> String {
+        try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    func testOSLogReaderUsesSystemScopeAndCountsErrorLevelEntries() throws {
+        let source = try source("macos/Engram/Core/OSLogReader.swift")
+
+        XCTAssertTrue(source.contains("OSLogStore(scope: .system)"))
+        XCTAssertTrue(source.contains("OSLogStore(scope: .currentProcessIdentifier)"))
+        XCTAssertTrue(source.contains("case .error: return \"error\""))
+        XCTAssertTrue(source.contains("case .fault: return \"error\""))
+        XCTAssertFalse(source.contains("case .error: return \"warn\""))
+    }
+
     func testRecentLogsCapturesEmittedEngramErrorMessageText() throws {
         let token = "OSLOGREADERTEST-\(UUID().uuidString)"
         EngramLogger.error(token, module: .ui)

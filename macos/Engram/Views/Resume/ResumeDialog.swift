@@ -129,13 +129,17 @@ struct ResumeDialog: View {
                     .keyboardShortcut(.cancelAction)
                 if let info = resumeResult {
                     Button("Resume") {
-                        TerminalLauncher.launch(
+                        switch TerminalLauncher.launch(
                             command: info.command,
                             args: info.args,
                             cwd: info.cwd,
                             terminal: selectedTerminal
-                        )
-                        dismiss()
+                        ) {
+                        case .success:
+                            dismiss()
+                        case .failure(let error):
+                            errorMessage = error.localizedDescription
+                        }
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)

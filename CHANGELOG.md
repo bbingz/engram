@@ -7,6 +7,78 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Codex completed full audit remediation (2026-06-10, Codex)
+
+Closed the full local remediation scope from `CODE-REVIEW-2026-06-10.md`.
+
+- Closed all 88 confirmed findings: 26 high, 50 medium, and 12 low.
+- Adjudicated and closed all 47 additional low-severity notes; true notes were
+  fixed or resolved by deleting the unused code path they described.
+- Recorded the item-by-item ledger and verifier evidence in
+  `docs/superpowers/plans/2026-06-10-audit-complete-remediation.md`.
+- Built and locally deployed `macos/build/EngramExport/Engram.app` to
+  `/Applications/Engram.app` as version `0.1.0`, build `20260610144819`.
+- Final checks included `git diff --check`, focused Swift regression tests,
+  `Engram` and `EngramServiceCore` builds, `macos/scripts/build-release.sh
+  --local-only`, `macos/scripts/deploy-local.sh
+  macos/build/EngramExport/Engram.app`, and deep strict codesign verification
+  of the installed app.
+- Residual risk: full all-schemes testing remains blocked by the known
+  duplicate-GRDB test-host fatal on selected runtime tests; the CommandPalette
+  UI runtime assertion is still blocked by Xcode beta accessibility automation
+  aborting the app on this host.
+
+### Codex remediation for high-risk audit findings (2026-06-10, Codex)
+
+Implemented and locally deployed a focused remediation slice from
+`CODE-REVIEW-2026-06-10.md`.
+
+- Fixed resume/launch failures: Codex resume now uses the `resume` subcommand,
+  CLI discovery includes common shell binary paths, Ghostty executes composite
+  commands through `zsh -lc`, and the app carries Apple Events permission
+  metadata.
+- Fixed high-risk runtime/read-path issues: IPC frame deadlines honor long
+  request timeouts, SQLite replay timeline reads real FTS-backed rows, Latin
+  keyword search is driven from FTS matches, and startup scanning covers all
+  adapters.
+- Fixed AI/title and timestamp regressions: title regeneration includes existing
+  generated titles, keyless Ollama/custom title providers are accepted,
+  unsupported summary protocol options were removed from UI, AI summaries are
+  preserved across equivalent reindexing, and shared timestamp parsing now
+  covers fractional ISO and SQLite-style dates.
+- Fixed supporting data/UI defects: Kimi token usage accumulates across status
+  updates, project-move compensation only reverses completed physical moves,
+  same-slug Gemini moves update `projects.json`, Sessions/Timeline suggested
+  buttons call the service, and OSLog reading uses system scope with proper
+  error-level mapping.
+- Verification: targeted Swift tests passed for the changed surfaces;
+  `macos/scripts/build-release.sh --local-only` produced and verified
+  `macos/build/EngramExport/Engram.app`; `macos/scripts/deploy-local.sh` installed
+  `/Applications/Engram.app` build `20260610065205`, whose version, helpers,
+  Apple Events entitlement, and deep codesign verification were confirmed.
+- Residual risk: this does not close all 88 confirmed audit findings. A full
+  `EngramServiceCore` scheme test run was stopped after about 5m18s of repeated
+  Xcode beta CoreDevice/CoreSimulator launch warnings with no explicit test
+  failure observed.
+
+### Multi-expert audit completed (2026-06-10, Claude)
+
+Fresh full-repo read-only audit by 11 parallel domain experts + adversarial
+verification (272 subagents over two passes; security dimension excluded by
+user request). Full report: `CODE-REVIEW-2026-06-10.md`. No code changed.
+
+- 88 confirmed findings (26 high / 50 medium / 12 low, 0 critical), 9 refuted,
+  1 disputed, 8 unverified carryovers, 47 low-severity notes.
+- Hotspots: `macos/EngramService/Core`, `macos/EngramCoreWrite/Indexing`,
+  `macos/Engram/Views`.
+- Top systemic themes: per-view ad-hoc timestamp parsing; 30s IPC frame
+  deadline vs long-running commands; `sessions_fts.session_id` UNINDEXED full
+  scans; AI generation pipeline inert in default config; resume/launch surface
+  broken end-to-end; ingestion durability gaps (2-day rescan window, whole-file
+  drops, poison-job starvation); docs promising unimplemented features
+  (redaction, Windsurf); tests that cannot fail (source-string asserts,
+  tautological smoke, TS-generated fixture DB).
+
 ### Close broad product-direction PR stack (2026-06-08, Codex)
 
 Completed the split-stack closeout for the broad product-direction work.

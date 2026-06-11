@@ -2,7 +2,7 @@
 
 > Current product runtime is Swift `EngramMCP`; TypeScript tool definitions are retained as development/reference material.
 >
-> **Total tools: 26** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
+> **Total tools: 28** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
 
 ---
 
@@ -198,6 +198,37 @@ Save an important insight, decision, or lesson learned for future retrieval. Use
 | importance | number | no | Importance level 0-5. Default 5 |
 
 **Notes:** Performs semantic deduplication: warns if a similar insight already exists (cosine similarity > 85%). Saves both as a vector embedding (for semantic search) and as text (for FTS keyword search). If no embedding provider is configured, saves as text-only with a warning. Importance is clamped to 0-5 range by schema validation.
+
+---
+
+## delete_insight
+
+Delete a saved insight by id. Normal calls are routed through EngramService; dry-run only validates input.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| id | string | **yes** | Insight id to delete |
+| dry_run | boolean | no | Validate and show intent without deleting. Default `false` |
+
+**Notes:** With `dry_run: true`, returns the normalized id and `deleted: false` without mutating data. Empty ids are rejected.
+
+---
+
+## hide_session
+
+Hide or unhide a session by id. Normal calls are routed through EngramService; dry-run only validates input.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| session_id | string | **yes** | Session id to hide or unhide |
+| hidden | boolean | no | `true` hides the session; `false` restores it. Default `true` |
+| dry_run | boolean | no | Validate and show intent without changing the session. Default `false` |
+
+**Notes:** Returns `session_id`, the requested `hidden` state, and whether the call was a dry-run.
 
 ---
 

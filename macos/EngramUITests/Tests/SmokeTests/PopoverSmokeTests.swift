@@ -19,6 +19,5 @@ final class PopoverSmokeTests: XCTestCase {
         popover.waitForLoad()
         XCTAssertTrue(popover.statsGrid.waitForExistence(timeout: 5),
                       "Popover stats grid should be visible")
-        ScreenshotCapture.capture(name: "popover_stats", app: app, screen: "popover", test: #function)
     }
 }

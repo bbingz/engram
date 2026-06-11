@@ -9,8 +9,9 @@
 // Protocol:
 //   - Lock file: ~/.engram/.project-move.lock
 //   - Contents:  JSON { pid, startedAt, migrationId }
-//   - Stale detection: if owning pid is gone (kill -0 → ESRCH), is a zombie,
-//     or is older than the TTL, break.
+//   - Stale detection: break only if owning pid is gone (kill -0 → ESRCH),
+//     is a zombie, or the lock file is unreadable. A live holder remains busy
+//     even when it has run longer than the TTL.
 //
 // Atomicity: open(O_CREAT | O_EXCL) ensures only one process can claim
 // the path. Round 4 (Codex blocker #2a) closed a TOCTOU race where two
@@ -69,6 +70,8 @@ public enum MigrationLock {
         now: Date = Date(),
         staleTTL: TimeInterval = 3_600
     ) throws {
+        _ = now
+        _ = staleTTL
         let directory = (lockPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(
             atPath: directory,
@@ -89,11 +92,10 @@ public enum MigrationLock {
             case .acquired:
                 return
             case .alreadyExists:
-                let existing = readHolder(lockPath: lockPath)
-                if let existing,
-                   isProcessAlive(pid: existing.pid),
-                   !isExpired(existing, now: now, staleTTL: staleTTL) {
-                    throw LockBusyError(holder: existing)
+                if let existing = readHolder(lockPath: lockPath) {
+                    if isProcessAlive(pid: existing.pid) {
+                        throw LockBusyError(holder: existing)
+                    }
                 }
                 // Stale (or corrupt) lock — unlink and retry. Ignore ENOENT
                 // since another process may have already broken it.
@@ -183,15 +185,6 @@ public enum MigrationLock {
         return errno == EPERM
     }
 
-    private static func isExpired(_ holder: LockHolder, now: Date, staleTTL: TimeInterval) -> Bool {
-        guard holder.pid != getpid(),
-              staleTTL > 0,
-              let startedAt = parseISO8601(holder.startedAt) else {
-            return false
-        }
-        return now.timeIntervalSince(startedAt) > staleTTL
-    }
-
     private static func isZombie(pid: Int32) -> Bool {
         var mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, Int32(pid)]
         var info = kinfo_proc()
@@ -209,12 +202,4 @@ public enum MigrationLock {
         return formatter.string(from: date)
     }
 
-    private static func parseISO8601(_ value: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) {
-            return date
-        }
-        return ISO8601DateFormatter().date(from: value)
-    }
 }

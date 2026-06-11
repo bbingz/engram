@@ -59,6 +59,22 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testSearchPageFallbackSearchReadsOffMainThread() throws {
+        let s = try source("macos/Engram/Views/Pages/SearchPageView.swift")
+        let fallbackStart = try XCTUnwrap(s.range(of: "// Fallback to local FTS"))
+        let fallbackEnd = try XCTUnwrap(s.range(of: "EngramLogger.error(\"SearchPage fallback search failed\"", options: [], range: fallbackStart.lowerBound..<s.endIndex))
+        let fallback = String(s[fallbackStart.lowerBound..<fallbackEnd.lowerBound])
+
+        XCTAssertTrue(
+            fallback.contains("let localResults = try await Task.detached"),
+            "SearchPageView offline fallback must run the heavy local FTS read off the main actor"
+        )
+        XCTAssertFalse(
+            fallback.contains("let localResults = try db.searchWithSnippets"),
+            "SearchPageView offline fallback must not synchronously scan the local DB on the main actor"
+        )
+    }
+
     func testCommandPaletteDebouncesAndOwnsSearchTask() throws {
         let s = try source("macos/Engram/Views/CommandPaletteView.swift")
         XCTAssertTrue(s.contains("@State private var searchTask: Task<Void, Never>?"))
@@ -89,12 +105,47 @@ final class ViewMainThreadReadTests: XCTestCase {
 
     func testFilterChangesUseCancellingTaskId() throws {
         let timeline = try source("macos/Engram/Views/Pages/TimelinePageView.swift")
-        XCTAssertTrue(timeline.contains(".task(id: sortMode)"), "TimelinePageView must use a cancelling .task(id:) (ui-7)")
+        XCTAssertTrue(timeline.contains(".task(id:"), "TimelinePageView must use a cancelling .task(id:) (ui-7)")
         XCTAssertFalse(timeline.contains("Task { await loadData() } }"))
 
         let sessions = try source("macos/Engram/Views/Pages/SessionsPageView.swift")
         XCTAssertTrue(sessions.contains(".task(id:"), "SessionsPageView must use a cancelling .task(id:) (ui-7)")
         XCTAssertFalse(sessions.contains(".onChange(of: timeFilter) { _, _ in Task { await loadData() } }"))
+    }
+
+    func testVisiblePagesReloadWhenServiceSessionCountChanges() throws {
+        let pagePaths = [
+            "macos/Engram/Views/Pages/HomeView.swift",
+            "macos/Engram/Views/Pages/SessionsPageView.swift",
+            "macos/Engram/Views/Pages/TimelinePageView.swift",
+            "macos/Engram/Views/Pages/ActivityView.swift",
+            "macos/Engram/Views/Pages/ProjectsView.swift",
+        ]
+
+        for path in pagePaths {
+            let page = try source(path)
+            XCTAssertTrue(page.contains("@Environment(EngramServiceStatusStore.self)"))
+            XCTAssertTrue(
+                page.contains("serviceStatusStore.totalSessions"),
+                "\(path) must reload visible data when live service indexing changes the session count"
+            )
+            XCTAssertTrue(page.contains(".task(id:"))
+        }
+    }
+
+    func testTimelineAndSessionsPagesWireSuggestedChildActions() throws {
+        let pages = [
+            try source("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            try source("macos/Engram/Views/Pages/SessionsPageView.swift"),
+        ]
+
+        for page in pages {
+            XCTAssertTrue(page.contains("@Environment(EngramServiceClient.self)"))
+            XCTAssertTrue(page.contains("onConfirmSuggestion: { child in confirmSuggestion(child) }"))
+            XCTAssertTrue(page.contains("onDismissSuggestion: { child in dismissSuggestion(child) }"))
+            XCTAssertTrue(page.contains("serviceClient.confirmSuggestion(sessionId: child.id)"))
+            XCTAssertTrue(page.contains("serviceClient.dismissSuggestion("))
+        }
     }
 
     func testTimelinePageReusesDateFormatters() throws {
@@ -133,18 +184,6 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
-    func testSessionListIgnoresSupersededLoads() throws {
-        let s = try source("macos/Engram/Views/SessionListView.swift")
-        XCTAssertTrue(
-            s.contains("@State private var loadGeneration = 0"),
-            "SessionListView must track the latest load generation"
-        )
-        XCTAssertTrue(
-            s.contains("guard loadGeneration == generation else { return }"),
-            "a slower initial load must not overwrite a newer filtered load"
-        )
-    }
-
     func testLogStreamReloadsCancelSupersededWork() throws {
         let s = try source("macos/Engram/Views/Observability/LogStreamView.swift")
         XCTAssertTrue(s.contains("@State private var reloadTask: Task<Void, Never>?"))
@@ -163,6 +202,14 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertFalse(
             s.contains("ForEach(segments)"),
             "SegmentedMessageView must not synchronously parse markdown segments from body"
+        )
+        XCTAssertTrue(
+            s.contains("ForEach(Array(displaySegments.enumerated()), id: \\.offset)"),
+            "SegmentedMessageView must use positional IDs so repeated segments do not collide in SwiftUI"
+        )
+        XCTAssertFalse(
+            s.contains("ForEach(displaySegments)"),
+            "Content-derived ContentSegment.id collides for repeated horizontal rules and repeated content"
         )
     }
 
@@ -204,12 +251,111 @@ final class ViewMainThreadReadTests: XCTestCase {
         let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
         XCTAssertTrue(ai.contains("@State private var isLoadingSettings = false"))
         XCTAssertTrue(ai.contains("guard !isLoadingSettings else { return }"))
-        XCTAssertTrue(ai.contains("defer { isLoadingSettings = false }"))
+        XCTAssertFalse(
+            ai.contains("defer { isLoadingSettings = false }"),
+            "AI settings must keep the loading guard active through the post-load SwiftUI onChange pass"
+        )
+        XCTAssertTrue(ai.contains("Task { @MainActor in"))
+        XCTAssertTrue(ai.contains("await Task.yield()"))
+
+        let advanced = try source("macos/Engram/Views/SettingsView.swift")
+        XCTAssertFalse(
+            advanced.contains("defer { isLoadingSettings = false }"),
+            "Advanced settings must keep the loading guard active through the post-load SwiftUI onChange pass"
+        )
+        XCTAssertTrue(advanced.contains("Task { @MainActor in"))
+        XCTAssertTrue(advanced.contains("await Task.yield()"))
+
+        let network = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
+        XCTAssertFalse(
+            network.contains("defer { isLoadingSettings = false }"),
+            "Network/MCP settings must keep the loading guard active through the post-load SwiftUI onChange pass"
+        )
+        XCTAssertTrue(network.contains("Task { @MainActor in"))
+        XCTAssertTrue(network.contains("await Task.yield()"))
 
         let sources = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
-        XCTAssertTrue(sources.contains("@State private var isLoading = false"))
-        XCTAssertTrue(sources.contains("guard !isLoading else { return }"))
-        XCTAssertTrue(sources.contains("defer { isLoading = false }"))
+        XCTAssertFalse(
+            sources.contains("TextField(def.defaultPath"),
+            "Data source adapter paths are informational; editable fields imply a service override that does not exist"
+        )
+        XCTAssertFalse(sources.contains("UserDefaults.standard.string(forKey: def.key)"))
+        XCTAssertFalse(sources.contains("UserDefaults.standard.set(value, forKey: def.key)"))
+        XCTAssertFalse(sources.contains("private func savePath"))
+    }
+
+    func testIndexJobSelectionPrioritizesPendingJobsAheadOfRetryableBacklog() throws {
+        let runner = try source("macos/EngramCoreWrite/Indexing/IndexJobRunner.swift")
+        XCTAssertTrue(
+            runner.contains("CASE status WHEN 'pending' THEN 0 ELSE 1 END"),
+            "pending jobs must be selected before failed_retryable jobs so old retry backlogs cannot starve fresh work"
+        )
+        XCTAssertTrue(
+            runner.contains("retry_count,\n              created_at"),
+            "retryable jobs should be ordered by retry_count before age"
+        )
+        XCTAssertFalse(
+            runner.contains("ORDER BY CASE job_kind WHEN 'fts' THEN 0 ELSE 1 END, created_at, id"),
+            "created_at-only ordering lets old retryable FTS rows monopolize the batch"
+        )
+    }
+
+    func testSkipTierBackfillsRemoveRecoverableIndexArtifacts() throws {
+        let s = try source("macos/EngramCoreWrite/Indexing/StartupBackfills.swift")
+        XCTAssertTrue(
+            s.contains("private static func deleteRecoverableIndexArtifactsForSkippedSession"),
+            "skip-tier backfills should share the same FTS/job cleanup helper"
+        )
+        XCTAssertTrue(s.contains("DELETE FROM sessions_fts"))
+        XCTAssertTrue(s.contains("DELETE FROM session_index_jobs"))
+        XCTAssertTrue(s.contains("status IN ('pending', 'failed_retryable')"))
+        XCTAssertTrue(
+            s.contains("try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)"),
+            "single-session backfills that set tier='skip' must remove recoverable jobs for that session"
+        )
+        XCTAssertTrue(
+            s.contains("try deleteRecoverableIndexArtifactsForSkippedSessions(db, whereClause: \"agent_role = 'subagent'\")"),
+            "batch subagent downgrade must remove recoverable jobs for all skipped subagents"
+        )
+    }
+
+    func testPolycliBackfillLeavesGeminiCliForSuggestedParentScoring() throws {
+        let s = try source("macos/EngramCoreWrite/Indexing/StartupBackfills.swift")
+        let start = try XCTUnwrap(s.range(of: "public static func backfillPolycliProviderParents"))
+        let end = try XCTUnwrap(s.range(of: "private static func scoredPolycliHosts"))
+        let body = String(s[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("let source: String = candidate[\"source\"]"))
+        XCTAssertTrue(
+            body.contains("if source == \"gemini-cli\" {\n                        continue\n                    }\n                    try markChecked"),
+            "polycli detection must not stamp ordinary gemini-cli rows checked before suggested-parent scoring runs"
+        )
+    }
+
+    func testIndexJobRunnerMarksSkipTierFtsJobsNotApplicable() throws {
+        let s = try source("macos/EngramCoreWrite/Indexing/IndexJobRunner.swift")
+        XCTAssertTrue(s.contains("let tier: String?"))
+        XCTAssertTrue(s.contains("s.tier AS tier"))
+        XCTAssertTrue(
+            s.contains("contentSource.tier == SessionTier.skip.rawValue"),
+            "recoverable FTS jobs for skip-tier sessions must not rebuild searchable content"
+        )
+        XCTAssertTrue(s.contains("try Self.markNotApplicable(db, id: job.id)"))
+    }
+
+    func testAISettingsRefreshesRuntimeSecretBridgeAfterKeychainWrites() throws {
+        let s = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+        XCTAssertTrue(s.contains("private func refreshRuntimeAISecrets()"))
+        XCTAssertTrue(s.contains("EngramServiceLauncher.writeRuntimeAISecrets("))
+        XCTAssertTrue(s.contains("keychainReader: KeychainHelper.get"))
+        XCTAssertTrue(
+            s.contains("refreshRuntimeAISecrets()\n        mutateEngramSettings { settings in"),
+            "AI settings saves must update the service-readable runtime secret bridge before writing the @keychain marker"
+        )
+        XCTAssertTrue(
+            s.contains("refreshRuntimeAISecrets()\n        mutateEngramSettings { settings in\n            settings[\"titleProvider\"]"),
+            "Title settings saves must update the service-readable runtime secret bridge before writing the @keychain marker"
+        )
     }
 
     func testDatabaseManagerIsNotGlobalMainActorIsolated() throws {

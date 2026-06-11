@@ -23,6 +23,23 @@ const raw = db.raw;
 // Switch to DELETE journal mode for single-file determinism
 raw.pragma('journal_mode = DELETE');
 
+// Keep dev fixture schema aligned with the Swift-owned product schema. The
+// legacy TS migration does not create vector-memory tables unless vector-store
+// code runs, but the Swift manifest treats this text table as a base table.
+raw.exec(`
+  CREATE TABLE IF NOT EXISTS memory_insights (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    wing TEXT,
+    room TEXT,
+    source_session_id TEXT,
+    importance INTEGER DEFAULT 5,
+    model TEXT NOT NULL DEFAULT 'unknown',
+    created_at TEXT DEFAULT (datetime('now')),
+    deleted_at TEXT
+  );
+`);
+
 // ─── Session seed data ───────────────────────────────────────────────
 const insertSession = raw.prepare(`
   INSERT INTO sessions (

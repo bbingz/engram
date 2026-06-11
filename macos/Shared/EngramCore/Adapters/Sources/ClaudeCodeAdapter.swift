@@ -4,6 +4,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     let source: SourceName = .claudeCode
     private let projectsRoot: URL
     private let limits: ParserLimits
+    private let sourceHintCache = ClaudeCodeSourceHintCache()
     private static let sourceHintScanByteLimit = 1024 * 1024
     private static let sourceHintMaxLineBytes = 512 * 1024
     private static let sourceHintLineLimit = 64
@@ -67,7 +68,11 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                     continue
                 }
             }
-            if Self.detectSourceHint(locator: locator) == source {
+            let signature = Self.sourceHintSignature(locator: locator, fileManager: fileManager)
+            let detected = await sourceHintCache.source(for: locator, signature: signature) {
+                Self.detectSourceHint(locator: locator)
+            }
+            if detected == source {
                 locators.append(locator)
             }
         }
@@ -236,6 +241,20 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     private static func detectSourceHint(locator: String) -> SourceName {
         if hasLobsterAIPathComponent(locator) { return .lobsterai }
         return detectSource(model: firstModelHint(locator: locator) ?? "")
+    }
+
+    private static func sourceHintSignature(
+        locator: String,
+        fileManager: FileManager
+    ) -> ClaudeCodeSourceHintCache.Signature? {
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: locator)
+            let modifiedAt = attributes[.modificationDate] as? Date ?? .distantPast
+            let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            return ClaudeCodeSourceHintCache.Signature(modifiedAt: modifiedAt, size: size)
+        } catch {
+            return nil
+        }
     }
 
     private static func firstModelHint(locator: String) -> String? {
@@ -517,20 +536,61 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     }
 }
 
+private actor ClaudeCodeSourceHintCache {
+    struct Signature: Equatable, Sendable {
+        let modifiedAt: Date
+        let size: Int64
+    }
+
+    private struct Entry: Sendable {
+        let signature: Signature
+        let source: SourceName
+    }
+
+    private var entries: [String: Entry] = [:]
+
+    func source(
+        for locator: String,
+        signature: Signature?,
+        resolve: @Sendable () -> SourceName
+    ) -> SourceName {
+        if let signature,
+           let entry = entries[locator],
+           entry.signature == signature {
+            return entry.source
+        }
+
+        let source = resolve()
+        if let signature {
+            entries[locator] = Entry(signature: signature, source: source)
+        } else {
+            entries.removeValue(forKey: locator)
+        }
+        return source
+    }
+}
+
 final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName
     private let base: ClaudeCodeAdapter
 
-    init(
+    init(source: SourceName, base: ClaudeCodeAdapter) {
+        precondition(source == .minimax || source == .lobsterai)
+        self.source = source
+        self.base = base
+    }
+
+    convenience init(
         source: SourceName,
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
             .path,
         limits: ParserLimits = .default
     ) {
-        precondition(source == .minimax || source == .lobsterai)
-        self.source = source
-        self.base = ClaudeCodeAdapter(projectsRoot: projectsRoot, limits: limits)
+        self.init(
+            source: source,
+            base: ClaudeCodeAdapter(projectsRoot: projectsRoot, limits: limits)
+        )
     }
 
     func detect() async -> Bool {

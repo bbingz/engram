@@ -48,4 +48,43 @@ final class SchemaCompatibilityTests: XCTestCase {
         XCTAssertTrue(SchemaManifest.requiredMetadataKeys.isSubset(of: snapshot.metadataKeys))
         XCTAssertFalse(snapshot.tableNames.contains("vec_sessions"))
     }
+
+    func testUITestFixtureCoversSwiftSchemaManifest() throws {
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("test-fixtures/test-index.sqlite")
+        let tableNames = Set(try sqliteLines(
+            database: fixture,
+            sql: "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+        ))
+        let metadataKeys = Set(try sqliteLines(
+            database: fixture,
+            sql: "SELECT key FROM metadata"
+        ))
+
+        let missing = SchemaManifest.baseTables.subtracting(tableNames)
+        XCTAssertTrue(missing.isEmpty, "UI fixture missing Swift-owned tables: \(missing.sorted())")
+        XCTAssertTrue(SchemaManifest.requiredMetadataKeys.isSubset(of: metadataKeys))
+    }
+
+    private func sqliteLines(database: URL, sql: String) throws -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [database.path, sql]
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        let error = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(process.terminationStatus, 0, error)
+        return (String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+            .split(separator: "\n")
+            .map(String.init)
+    }
 }

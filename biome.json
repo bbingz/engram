@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**", "tests/**", "scripts/*.ts", "!tests/fixtures"]
+    "includes": ["src/**", "tests/**", "scripts/**", "!tests/fixtures"]
   },
   "formatter": {
     "enabled": true,
@@ -34,7 +34,7 @@
   },
   "overrides": [
     {
-      "includes": ["tests/**", "scripts/*.ts"],
+      "includes": ["tests/**", "scripts/**"],
       "linter": {
         "rules": {
           "suspicious": {

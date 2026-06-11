@@ -204,12 +204,25 @@ struct PopoverView: View {
         // All DB work (including sourceStats + the stats-derived health summary)
         // runs in the detached block so nothing blocks the main thread on return.
         let result: (Int, Int, [Session], Int64, Int, Int, String) = await Task.detached {
-            let counts = (try? db.readInBackground { d in
-                try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT source) FROM sessions WHERE hidden_at IS NULL")
-            }) ?? 0
-            let projectCount = (try? db.readInBackground { d in
-                try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT project) FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL")
-            }) ?? 0
+            func logged<T>(_ label: String, fallback: T, _ body: () throws -> T) -> T {
+                do {
+                    return try body()
+                } catch {
+                    EngramLogger.error("PopoverView \(label) load failed", module: .ui, error: error)
+                    return fallback
+                }
+            }
+
+            let counts: Int = logged("source count", fallback: 0) {
+                try db.readInBackground { d in
+                    try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT source) FROM sessions WHERE hidden_at IS NULL") ?? 0
+                }
+            }
+            let projectCount: Int = logged("project count", fallback: 0) {
+                try db.readInBackground { d in
+                    try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT project) FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL") ?? 0
+                }
+            }
             // Build tier-based filter from settings
             let noiseFilter = PopoverView.readNoiseFilter()
             var noiseConditions = ["hidden_at IS NULL"]
@@ -223,27 +236,35 @@ struct PopoverView: View {
             }
             let whereClause = noiseConditions.joined(separator: " AND ")
 
-            let sessions = (try? db.readInBackground { d in
-                try Session.fetchAll(d, sql: """
-                    SELECT * FROM sessions
-                    WHERE \(whereClause)
-                    ORDER BY start_time DESC LIMIT 30
-                """)
-            }) ?? []
-            let size = Int64((try? FileManager.default.attributesOfItem(atPath: db.path)[.size] as? Int) ?? 0)
+            let sessions: [Session] = logged("recent sessions", fallback: []) {
+                try db.readInBackground { d in
+                    try Session.fetchAll(d, sql: """
+                        SELECT * FROM sessions
+                        WHERE \(whereClause)
+                        ORDER BY start_time DESC LIMIT 30
+                    """)
+                }
+            }
+            let size: Int64 = logged("database size", fallback: 0) {
+                let size = try FileManager.default.attributesOfItem(atPath: db.path)[.size]
+                if let size = size as? Int64 { return size }
+                if let size = size as? Int { return Int64(size) }
+                if let size = size as? NSNumber { return size.int64Value }
+                return 0
+            }
 
             // Health summary (off main thread)
-            let stats = (try? db.sourceStats()) ?? []
+            let stats = logged("source stats", fallback: []) {
+                try db.sourceStats()
+            }
             let now = Date()
             let oneDaySec: TimeInterval = 86400
-            let fmt = ISO8601DateFormatter()
-            fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let active = stats.filter { s in
-                guard !s.latestIndexed.isEmpty, let d = fmt.date(from: s.latestIndexed) else { return false }
+                guard !s.latestIndexed.isEmpty, let d = EngramTimestampParser.date(from: s.latestIndexed) else { return false }
                 return now.timeIntervalSince(d) < oneDaySec
             }.count
             let latest = stats.compactMap { s -> Date? in
-                s.latestIndexed.isEmpty ? nil : fmt.date(from: s.latestIndexed)
+                s.latestIndexed.isEmpty ? nil : EngramTimestampParser.date(from: s.latestIndexed)
             }.max()
             let agoLabel: String
             if let latest {
@@ -279,12 +300,6 @@ struct PopoverView: View {
         }
     }
 
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
     private static let dateOnlyFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
@@ -299,14 +314,13 @@ struct PopoverView: View {
 
     private func groupedByDate(_ sessions: [Session]) -> [DateGroup] {
         let cal = Calendar.current
-        let iso = Self.isoFormatter
         var groups: [(String, [Session])] = []
         var currentKey = ""
         var currentGroup: [Session] = []
         for s in sessions {
             let dateStr = String(s.startTime.prefix(10))
             let key: String
-            if let date = iso.date(from: s.startTime) ?? Self.dateOnlyFormatter.date(from: dateStr) {
+            if let date = EngramTimestampParser.date(from: s.startTime) ?? Self.dateOnlyFormatter.date(from: dateStr) {
                 if cal.isDateInToday(date) { key = "TODAY" }
                 else if cal.isDateInYesterday(date) { key = "YESTERDAY" }
                 else { key = dateStr }
@@ -331,7 +345,7 @@ struct PopoverView: View {
     }
 
     private func relativeTime(_ ts: String) -> String {
-        guard let d = Self.isoFormatter.date(from: ts) else { return "" }
+        guard let d = EngramTimestampParser.date(from: ts) else { return "" }
         let secs = -d.timeIntervalSinceNow
         if secs < 60 { return "now" }
         if secs < 3600 { return "\(Int(secs / 60))m" }

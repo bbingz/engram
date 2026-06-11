@@ -92,6 +92,25 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         }
     }
 
+    func testAppSearchSurfacesRequestKeywordModeOnly() throws {
+        let files = [
+            "macos/Engram/Views/Pages/SearchPageView.swift",
+            "macos/Engram/Views/CommandPaletteView.swift",
+        ]
+
+        for relativePath in files {
+            let text = try source(relativePath)
+            XCTAssertFalse(
+                text.contains("mode: \"hybrid\""),
+                "\(relativePath) must not request hybrid search while the Swift service search path is keyword-only"
+            )
+            XCTAssertFalse(
+                text.contains("mode: \"semantic\""),
+                "\(relativePath) must not request semantic search while the Swift service search path is keyword-only"
+            )
+        }
+    }
+
     func testSearchPageDoesNotAdvertiseUnavailableSemanticModes() throws {
         let searchPage = try source("macos/Engram/Views/Pages/SearchPageView.swift")
 
@@ -143,7 +162,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         let serviceClient = try source("macos/Shared/Service/EngramServiceClient.swift")
         let serviceModels = try source("macos/Shared/Service/EngramServiceModels.swift")
         let serviceHandler = try source("macos/EngramService/Core/EngramServiceCommandHandler.swift")
-        let sessionList = try source("macos/Engram/Views/SessionListView.swift")
 
         XCTAssertTrue(
             serviceProtocol.contains("func recordSessionAccess(sessionId: String) async throws"),
@@ -160,14 +178,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         XCTAssertTrue(
             serviceHandler.contains("case \"recordSessionAccess\""),
             "The service handler must route access bumps through the single writer gate"
-        )
-        XCTAssertTrue(
-            sessionList.contains("recordSelectedSessionAccess(sessionId: newId)"),
-            "Selecting a session should record access through the service layer"
-        )
-        XCTAssertFalse(
-            sessionList.contains("UPDATE sessions SET last_accessed_at"),
-            "SessionListView must not write access metadata directly"
         )
     }
 
@@ -396,6 +406,18 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             collector.contains("AND TRIM(s.source) <> ''"),
             "Usage collector should still reject empty source keys while aggregating all real sources"
         )
+        XCTAssertTrue(
+            collector.contains("COALESCE(NULLIF(s.end_time, ''), NULLIF(s.indexed_at, ''), s.start_time) >= ?"),
+            "Usage pressure should include long-running sessions that overlap the window instead of filtering only by start_time"
+        )
+        XCTAssertTrue(
+            collector.contains("MIN(CASE WHEN s.start_time < ? THEN ? ELSE s.start_time END) AS earliest_start_time"),
+            "Reset labels should be based on the window-clamped start for overlapping long-running sessions"
+        )
+        XCTAssertFalse(
+            collector.contains("WHERE s.start_time >= ?"),
+            "Start-time-only attribution drops all-day sessions from 5h pressure after their start time ages out"
+        )
     }
 
     func testPopoverStatusLabelsServiceInsteadOfMcpWhenUsingServiceStatus() throws {
@@ -411,6 +433,18 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         XCTAssertFalse(
             popover.contains("popover_status_mcp"),
             "Popover accessibility id should not imply an MCP helper health check"
+        )
+    }
+
+    func testPopoverDataLoadLogsReadFailures() throws {
+        let popover = try source("macos/Engram/Views/PopoverView.swift")
+        XCTAssertTrue(
+            popover.contains("EngramLogger.error(\"PopoverView"),
+            "Popover data reads should log failures instead of silently rendering zero/empty fallback state"
+        )
+        XCTAssertFalse(
+            popover.contains("(try? db."),
+            "Popover DB reads should use explicit do/catch logging, not try? defaults"
         )
     }
 
@@ -588,88 +622,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
-    func testSessionTableRowsExposeResumeCopyHandoffAndReplayActions() throws {
-        let table = try source("macos/Engram/Views/SessionList/SessionTableView.swift")
-        XCTAssertTrue(
-            table.contains("var onResume: ((Session) -> Void)?"),
-            "SessionTableView should expose a row-scoped resume callback"
-        )
-        XCTAssertTrue(
-            table.contains("var onCopyResumeCommand: ((Session) -> Void)?"),
-            "SessionTableView should expose a row-scoped copy-resume callback"
-        )
-        XCTAssertTrue(
-            table.contains("var onHandoff: ((Session) -> Void)?"),
-            "SessionTableView should expose a row-scoped handoff callback"
-        )
-        XCTAssertTrue(
-            table.contains("var onReplay: ((Session) -> Void)?"),
-            "SessionTableView should expose a row-scoped replay callback"
-        )
-        XCTAssertTrue(
-            table.contains("Button(\"Resume...\")"),
-            "Session row context menus should let users resume directly from the main session table"
-        )
-        XCTAssertTrue(
-            table.contains("Button(\"Copy Resume Command\")"),
-            "Session row context menus should let users copy the rendered resume command from the main session table"
-        )
-        XCTAssertTrue(
-            table.contains("Button(\"Handoff\")"),
-            "Session row context menus should let users copy a handoff brief directly from the main session table"
-        )
-        XCTAssertTrue(
-            table.contains("Button(\"Replay\")"),
-            "Session row context menus should let users open replay directly from the main session table"
-        )
-
-        let sessionList = try source("macos/Engram/Views/SessionListView.swift")
-        XCTAssertTrue(
-            sessionList.contains("@State private var resumeTarget: Session?"),
-            "SessionListView should own table-triggered resume sheet state"
-        )
-        XCTAssertTrue(
-            sessionList.contains("@State private var replayTarget: Session?"),
-            "SessionListView should own table-triggered replay sheet state"
-        )
-        XCTAssertTrue(
-            sessionList.contains("onResume: { session in resumeTarget = session }"),
-            "SessionListView should wire table row resume into the resume sheet"
-        )
-        XCTAssertTrue(
-            sessionList.contains("onCopyResumeCommand: { session in copyResumeCommand(session) }"),
-            "SessionListView should wire table row copy action into service-backed command rendering"
-        )
-        XCTAssertTrue(
-            sessionList.contains("onHandoff: { session in performHandoff(session) }"),
-            "SessionListView should wire table row handoff into service-backed handoff rendering"
-        )
-        XCTAssertTrue(
-            sessionList.contains("onReplay: { session in replayTarget = session }"),
-            "SessionListView should wire table row replay into the replay sheet"
-        )
-        XCTAssertTrue(
-            sessionList.contains("ResumeDialog(session: session)"),
-            "SessionListView should present ResumeDialog for the selected table row"
-        )
-        XCTAssertTrue(
-            sessionList.contains("SessionReplayView(sessionId: session.id)"),
-            "SessionListView should present SessionReplayView for the selected table row"
-        )
-        XCTAssertTrue(
-            sessionList.contains("TodayResumeCommand.copyableClipboardItem(from: response)"),
-            "SessionListView should use the shared shell-safe resume clipboard renderer"
-        )
-        XCTAssertTrue(
-            sessionList.contains("private func performHandoff(_ session: Session)"),
-            "SessionListView should keep table/card handoff behavior in one shared action"
-        )
-        XCTAssertTrue(
-            sessionList.contains("EngramServiceHandoffRequest("),
-            "SessionListView handoff should use the service-backed handoff command"
-        )
-    }
-
     func testExpandableSessionCardsExposeResumeCopyHandoffAndReplayActions() throws {
         let card = try source("macos/Engram/Components/ExpandableSessionCard.swift")
         XCTAssertTrue(
@@ -719,24 +671,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         XCTAssertTrue(
             card.contains("onReplay: { onReplay?(child) }"),
             "Confirmed/suggested child rows should forward replay for the child session"
-        )
-
-        let sessionList = try source("macos/Engram/Views/SessionListView.swift")
-        XCTAssertTrue(
-            sessionList.contains("onResume: { session in resumeTarget = session }"),
-            "SessionListView should wire grouped-card resume into the shared resume sheet"
-        )
-        XCTAssertTrue(
-            sessionList.contains("onCopyResumeCommand: { session in copyResumeCommand(session) }"),
-            "SessionListView should wire grouped-card copy into the shared service-backed renderer"
-        )
-        XCTAssertTrue(
-            sessionList.contains("onHandoff: { session in performHandoff(session) }"),
-            "SessionListView should wire grouped-card handoff into the shared service-backed renderer"
-        )
-        XCTAssertTrue(
-            sessionList.contains("onReplay: { session in replayTarget = session }"),
-            "SessionListView should wire grouped-card replay into the shared replay sheet"
         )
     }
 
@@ -925,6 +859,48 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    func testGeneralSettingsDoesNotExposeLegacyNodeRollbackControls() throws {
+        let generalSettings = try source("macos/Engram/Views/Settings/GeneralSettingsSection.swift")
+
+        for forbidden in [
+            "Legacy Node rollback settings",
+            "Legacy HTTP Port",
+            "Legacy Node.js Path",
+            "@AppStorage(\"httpPort\")",
+            "@AppStorage(\"nodejsPath\")",
+        ] {
+            XCTAssertFalse(
+                generalSettings.contains(forbidden),
+                "General settings must not expose dead legacy Node rollback controls: \(forbidden)"
+            )
+        }
+        XCTAssertTrue(
+            generalSettings.contains("webUIURL"),
+            "General settings should keep live Swift service Web UI discovery"
+        )
+        XCTAssertTrue(
+            generalSettings.contains("mcpEndpointText"),
+            "General settings should keep live Swift service MCP endpoint discovery"
+        )
+    }
+
+    func testCascadeAdapterDocsDoNotClaimDisabledLiveSyncMeansZeroIngest() throws {
+        let claude = try source("CLAUDE.md")
+
+        XCTAssertFalse(
+            claude.contains("ingest zero sessions"),
+            "Antigravity and Windsurf can still ingest existing caches, and Antigravity also reads CLI brain transcripts."
+        )
+        XCTAssertTrue(
+            claude.contains("live gRPC sync is disabled"),
+            "Docs should name that only the live sync path is disabled."
+        )
+        XCTAssertTrue(
+            claude.contains("cache-only") && claude.contains("Antigravity CLI brain"),
+            "Docs should describe the remaining cache/CLI ingestion behavior."
+        )
+    }
+
     func testMcpToolDescriptionsDoNotPromiseUnavailableCapabilities() throws {
         let registry = try source("macos/EngramMCP/Core/MCPToolRegistry.swift")
         XCTAssertFalse(
@@ -945,6 +921,79 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    func testMcpModeDoesNotKeepUnusedLiveSessionScannerCompiled() throws {
+        let scannerURL = repoRoot.appendingPathComponent("macos/EngramMCP/Core/MCPLiveSessionScanner.swift")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: scannerURL.path),
+            "live_sessions returns an explicit MCP-mode unavailable result, so the unused filesystem scanner should not stay compiled"
+        )
+    }
+
+    func testStartupMigrationCleanupUsesProjectMoveStoreImplementation() throws {
+        let startupBackfills = try source("macos/EngramCoreWrite/Indexing/StartupBackfills.swift")
+
+        XCTAssertTrue(
+            startupBackfills.contains("MigrationLogStore.cleanupStaleMigrations(db)"),
+            "Startup migration cleanup should use the project-move store implementation instead of a drift-prone duplicate SQL statement."
+        )
+        XCTAssertFalse(
+            startupBackfills.contains("stale_after_crash: non-terminal for over 24 hours"),
+            "StartupBackfills must not keep its own hardcoded stale-migration cleanup message."
+        )
+        XCTAssertFalse(
+            startupBackfills.contains("started_at <= datetime('now', '-86400 seconds')"),
+            "StartupBackfills must not keep a second hardcoded stale threshold."
+        )
+    }
+
+    func testUnusedSwiftWatcherPathIsRemovedFromProductAndTests() throws {
+        for relativePath in [
+            "macos/EngramCoreWrite/Indexing/SessionWatcher.swift",
+            "macos/EngramCoreWrite/Indexing/NonWatchableSourceRescanner.swift",
+            "macos/Shared/EngramCore/Indexing/WatchPathRules.swift",
+            "macos/EngramCoreTests/WatcherSemanticsTests.swift",
+        ] {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent(relativePath).path),
+                "\(relativePath) is unused by the Swift product runtime and should not stay compiled or scan-tested"
+            )
+        }
+
+        let migrationLogStore = try source("macos/EngramCoreWrite/ProjectMove/MigrationLogStore.swift")
+        XCTAssertFalse(
+            migrationLogStore.contains("hasPendingMigrationFor"),
+            "Swift project-move code must not keep a watcher guard when no Swift watcher is wired into the product runtime"
+        )
+
+        let indexer = try source("macos/EngramCoreWrite/Indexing/EngramDatabaseIndexer.swift")
+        XCTAssertFalse(
+            indexer.contains("FSEvents watcher is not wired into the runtime"),
+            "Indexer comments should describe the live periodic scan path instead of documenting a removed watcher"
+        )
+    }
+
+    func testUnreachableLegacySessionListViewIsRemoved() throws {
+        for relativePath in [
+            "macos/Engram/Views/SessionListView.swift",
+            "macos/Engram/Views/SessionList/SessionTableView.swift",
+            "macos/Engram/Views/SessionList/ProjectSearchField.swift",
+            "macos/Engram/Views/SessionList/ColumnVisibilityStore.swift",
+            "macos/Engram/Views/SessionList/AgentFilterBar.swift",
+            "macos/EngramTests/SessionListPersistenceTests.swift",
+        ] {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent(relativePath).path),
+                "\(relativePath) belongs to the unreachable pre-SessionsPageView session list surface and should not stay compiled"
+            )
+        }
+
+        let mainWindow = try source("macos/Engram/Views/MainWindowView.swift")
+        XCTAssertTrue(
+            mainWindow.contains("SessionsPageView()"),
+            "MainWindowView should keep routing the Sessions screen to the reachable SessionsPageView"
+        )
+    }
+
     func testMcpInsightsOutputDescribesComputedSuggestionsConservatively() throws {
         let insights = try source("macos/EngramMCP/Core/MCPInsightsTool.swift")
         XCTAssertFalse(
@@ -958,6 +1007,97 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         XCTAssertTrue(
             insights.contains("Model concentration:"),
             "Output should include computed spend-distribution suggestions when thresholds are met"
+        )
+    }
+
+    func testParentLinkValidationRejectsDepthTwoChainsInServiceAndBackfill() throws {
+        let service = try source("macos/EngramService/Core/EngramServiceCommandHandler.swift")
+        let backfills = try source("macos/EngramCoreWrite/Indexing/StartupBackfills.swift")
+
+        for (name, text) in [
+            ("EngramServiceCommandHandler", service),
+            ("StartupBackfills", backfills),
+        ] {
+            XCTAssertTrue(
+                text.contains("SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?"),
+                "\(name) must check whether the session being linked already has children"
+            )
+            XCTAssertTrue(
+                text.contains("arguments: [sessionId]"),
+                "\(name) child-count query must be keyed by the child candidate, not the parent candidate"
+            )
+        }
+
+        XCTAssertTrue(
+            service.contains("if childCount > 0") && service.contains("return \"depth-exceeded\""),
+            "Manual service links must reject depth-two chains with the existing depth-exceeded response"
+        )
+        XCTAssertTrue(
+            backfills.contains("return childCount == 0"),
+            "Startup parent backfills must skip links that would create depth-two chains"
+        )
+    }
+
+    func testPolycliHostScoringSqlDoesNotDefeatCwdNormalization() throws {
+        let backfills = try source("macos/EngramCoreWrite/Indexing/StartupBackfills.swift")
+        let start = try XCTUnwrap(backfills.range(of: "private static func scoredPolycliHosts("))
+        let end = try XCTUnwrap(backfills.range(of: "public static func backfillSuggestedParents", range: start.lowerBound..<backfills.endIndex))
+        let scoredPolycliHosts = String(backfills[start.lowerBound..<end.lowerBound])
+
+        XCTAssertFalse(
+            scoredPolycliHosts.contains("AND cwd = ?"),
+            "scoredPolycliHosts must not prefilter hosts with exact cwd equality before normalized scoring"
+        )
+        XCTAssertTrue(
+            scoredPolycliHosts.contains("rtrim(cwd, '/') = rtrim(?, '/')"),
+            "scoredPolycliHosts SQL should admit trailing-slash cwd variants for the existing normalized scorer"
+        )
+    }
+
+    func testProjectMoveRollbackRestoresPatchedFilesFromBackups() throws {
+        let orchestrator = try source("macos/EngramCoreWrite/ProjectMove/Orchestrator.swift")
+        let compensateStart = try XCTUnwrap(orchestrator.range(of: "private func compensate("))
+        let compensateEnd = try XCTUnwrap(orchestrator.range(of: "private struct PatchOutcome", range: compensateStart.lowerBound..<orchestrator.endIndex))
+        let compensate = String(orchestrator[compensateStart.lowerBound..<compensateEnd.lowerBound])
+
+        XCTAssertTrue(orchestrator.contains("public let backupPath: String?"))
+        XCTAssertTrue(orchestrator.contains("let backupPath = try backupPatchInput(file: file, backupRoot: patchBackupRoot)"))
+        XCTAssertTrue(orchestrator.contains("ManifestEntry(path: r.file, occurrences: r.count, backupPath: r.backupPath)"))
+        XCTAssertTrue(
+            compensate.contains("if let backupPath = entry.backupPath") &&
+                compensate.contains("try restorePatchBackup(backupPath: backupPath, targetPath: entry.path)"),
+            "rollback must restore the exact pre-patch bytes when a patch backup is available"
+        )
+        XCTAssertTrue(
+            compensate.contains("_ = try JsonlPatch.patchFile("),
+            "rollback should keep the old reverse-patch fallback only for legacy manifest entries without backups"
+        )
+    }
+
+    func testProjectUndoPreflightRunsInsideProjectMoveLock() throws {
+        let handler = try source("macos/EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift")
+        let undoStart = try XCTUnwrap(handler.range(of: "static func projectUndo("))
+        let batchStart = try XCTUnwrap(handler.range(of: "static func projectMoveBatch(", range: undoStart.lowerBound..<handler.endIndex))
+        let projectUndo = String(handler[undoStart.lowerBound..<batchStart.lowerBound])
+        let orchestrator = try source("macos/EngramCoreWrite/ProjectMove/Orchestrator.swift")
+
+        XCTAssertTrue(
+            projectUndo.contains("ProjectMoveOrchestrator.runUndo("),
+            "projectUndo should delegate undo preflight and reverse move to the orchestrator so both run under one project-move lock"
+        )
+        XCTAssertFalse(
+            projectUndo.contains("UndoMigration.prepareReverseRequest"),
+            "projectUndo must not run undo preflight before the orchestrator acquires the migration lock"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("MigrationLock.acquire") &&
+                orchestrator.contains("UndoMigration.prepareReverseRequest") &&
+                orchestrator.range(of: "MigrationLock.acquire")!.lowerBound < orchestrator.range(of: "UndoMigration.prepareReverseRequest")!.lowerBound,
+            "ProjectMoveOrchestrator.runUndo must acquire the migration lock before reading migration_log/session state"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("lockAlreadyHeld: true"),
+            "The reverse move should reuse the already-held undo lock instead of reacquiring it after preflight"
         )
     }
 

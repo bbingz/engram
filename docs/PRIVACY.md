@@ -14,8 +14,8 @@ Engram is a local-first AI session aggregator. Your data stays on your machine.
 
 Engram reads session files created by AI coding tools on your local machine:
 
-| Source | Path | Access |
-|--------|------|--------|
+| Source | Path | Indexing access |
+|--------|------|-----------------|
 | Claude Code | `~/.claude/projects/` | Read-only |
 | Codex CLI | `~/.codex/sessions/` | Read-only |
 | Gemini CLI | `~/.gemini/tmp/` | Read-only |
@@ -24,7 +24,7 @@ Engram reads session files created by AI coding tools on your local machine:
 | Cline | `~/.cline/data/tasks/` | Read-only |
 | Copilot | `~/.copilot/session-state/<uuid>/events.jsonl` | Read-only |
 | OpenCode | `~/.local/share/opencode/opencode.db` | Read-only |
-| Windsurf | `~/.codeium/windsurf/` | Read-only |
+| Windsurf | Existing Engram cache under `~/.engram/cache/windsurf` (live gRPC sync disabled) | Read-only |
 | Kimi | `~/.kimi/sessions/` | Read-only |
 | Qwen | `~/.qwen/projects/` | Read-only |
 | Qoder | `~/.qoder/projects/` | Read-only |
@@ -32,7 +32,11 @@ Engram reads session files created by AI coding tools on your local machine:
 | Antigravity | `~/.gemini/antigravity-cli/brain/` and legacy `~/.gemini/antigravity/` cache data | Read-only |
 | Command Code | `~/.commandcode/projects/` | Read-only |
 
-Engram never modifies your AI tool session files.
+Indexing and normal browsing are read-only. Explicit project migration commands
+(`project_move`, `project_archive`, `project_undo`, and `project_move_batch`)
+can move project directories, rewrite project path strings inside supported AI
+session files, update Gemini project registry data, and record migration state.
+Those commands run only when invoked by the user or an MCP client.
 
 ## What Engram Stores
 

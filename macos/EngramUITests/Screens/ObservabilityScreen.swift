@@ -34,7 +34,7 @@ struct ObservabilityScreen {
         let tab = app.element(id: tabId)
         XCTAssertTrue(tab.waitForExistence(timeout: 5),
                       "Observability tab '\(tabName)' not found")
-        tab.tap()
+        tab.click()
     }
 
     // MARK: - Waits

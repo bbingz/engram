@@ -143,6 +143,48 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'codex-1'"), "skip")
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'codex-2'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'codex-2'"))
+            XCTAssertNotNil(
+                try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'codex-2'"),
+                "Ordinary Codex sessions must be marked inspected so the startup backfill candidate set drains."
+            )
+        }
+    }
+
+    func testBackfillCodexOriginatorDrainsLargeOrdinaryBatchBeforeClaudeOriginatedRows() throws {
+        let nativeCodexFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-native-originator-\(UUID().uuidString).jsonl")
+        let claudeCodexFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-claude-originator-\(UUID().uuidString).jsonl")
+        try #"{"type":"session_meta","payload":{"id":"codex-native","originator":"Codex CLI"}}"#
+            .appending("\n")
+            .write(to: nativeCodexFile, atomically: true, encoding: .utf8)
+        try #"{"type":"session_meta","payload":{"id":"codex-claude","originator":"Claude Code"}}"#
+            .appending("\n")
+            .write(to: claudeCodexFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: nativeCodexFile) }
+        defer { try? FileManager.default.removeItem(at: claudeCodexFile) }
+
+        try writer.write { db in
+            for index in 0..<501 {
+                try insertSession(
+                    db,
+                    id: "native-\(index)",
+                    source: "codex",
+                    filePath: nativeCodexFile.path
+                )
+            }
+            try insertSession(db, id: "claude-late", source: "codex", filePath: claudeCodexFile.path)
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexOriginator(db), 1)
+
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'claude-late'"),
+                "dispatched"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'claude-late'"),
+                "skip"
+            )
         }
     }
 
@@ -175,15 +217,18 @@ final class StartupBackfillTests: XCTestCase {
 
             let result = try StartupBackfills.backfillPolycliProviderParents(db)
 
-            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, linked: 2))
+            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, linked: 0, suggested: 2))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-ping'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'opencode-ping'"))
             XCTAssertEqual(
-                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-ping'"),
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'qwen-ping'"),
                 "host-codex"
             )
             XCTAssertEqual(
-                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'opencode-ping'"),
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'opencode-ping'"),
                 "host-codex"
             )
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'qwen-ping'"))
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'qwen-ping'"), "dispatched")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'opencode-ping'"), "skip")
         }
@@ -241,17 +286,20 @@ final class StartupBackfillTests: XCTestCase {
 
             let result = try StartupBackfills.backfillPolycliProviderParents(db)
 
-            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 4, classified: 4, linked: 3))
+            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 4, classified: 4, linked: 0, suggested: 3))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-review'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-stage-facts'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-concurrent'"))
             XCTAssertEqual(
-                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-review'"),
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'qwen-review'"),
                 "host-codex"
             )
             XCTAssertEqual(
-                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-stage-facts'"),
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'qwen-stage-facts'"),
                 "host-codex"
             )
             XCTAssertEqual(
-                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-concurrent'"),
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'qwen-concurrent'"),
                 "host-codex"
             )
             XCTAssertNil(
@@ -327,7 +375,7 @@ final class StartupBackfillTests: XCTestCase {
             let first = try StartupBackfills.backfillPolycliProviderParents(db)
             let second = try StartupBackfills.backfillPolycliProviderParents(db)
 
-            XCTAssertEqual(first, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, linked: 1))
+            XCTAssertEqual(first, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, linked: 0, suggested: 1))
             XCTAssertEqual(second, StartupBackfills.ProviderParentResult(checked: 0, classified: 0, linked: 0))
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'qwen-linked'"))
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'kimi-unlinked'"))
@@ -512,7 +560,8 @@ final class StartupBackfillTests: XCTestCase {
                         "type": .string("polycli_provider_parents"),
                         "checked": .int(26),
                         "classified": .int(27),
-                        "linked": .int(28)
+                        "linked": .int(28),
+                        "suggested": .int(29)
                     ]
                 ),
                 StartupBackfillEvent(
@@ -1155,7 +1204,7 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
 
     func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult {
         callOrder.append("backfillPolycliProviderParents")
-        return StartupBackfills.ProviderParentResult(checked: 26, classified: 27, linked: 28)
+        return StartupBackfills.ProviderParentResult(checked: 26, classified: 27, linked: 28, suggested: 29)
     }
 
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult {

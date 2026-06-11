@@ -210,30 +210,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func startServiceStatusObservation() {
         serviceStatusTask?.cancel()
         serviceStatusTask = Task.detached { [serviceClient, serviceStatusStore] in
-            do {
-                let status = try await serviceClient.status()
-                await MainActor.run {
-                    serviceStatusStore.apply(status)
-                }
-            } catch {
-                await MainActor.run {
-                    serviceStatusStore.apply(.error(message: error.localizedDescription))
-                }
-                return
-            }
+            await Self.observeServiceStatus(client: serviceClient, store: serviceStatusStore)
+        }
+    }
 
-            do {
-                for try await event in serviceClient.events() {
-                    await MainActor.run {
-                        Self.applyServiceEvent(event, to: serviceStatusStore)
-                    }
-                }
-            } catch is CancellationError {
-                return
-            } catch {
+    nonisolated static func observeServiceStatus(
+        client serviceClient: any EngramServiceClientProtocol,
+        store serviceStatusStore: EngramServiceStatusStore
+    ) async {
+        do {
+            let status = try await serviceClient.status()
+            await MainActor.run {
+                serviceStatusStore.apply(status)
+            }
+        } catch {
+            await MainActor.run {
+                serviceStatusStore.apply(.degraded(message: error.localizedDescription))
+            }
+        }
+
+        do {
+            for try await event in serviceClient.events() {
                 await MainActor.run {
-                    serviceStatusStore.apply(.degraded(message: error.localizedDescription))
+                    Self.applyServiceEvent(event, to: serviceStatusStore)
                 }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            await MainActor.run {
+                serviceStatusStore.apply(.degraded(message: error.localizedDescription))
             }
         }
     }

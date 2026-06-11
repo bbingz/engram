@@ -236,19 +236,13 @@ export async function captureNodeBaseline(
     let db: Database | undefined;
     const coldAppLaunchToDaemonReadyMs = await measureMs(() => {
       db = new Database(temp.tempDbPath);
-      db
-        .raw
-        .prepare('SELECT count(*) AS count FROM sessions')
-        .get();
+      db.raw.prepare('SELECT count(*) AS count FROM sessions').get();
     });
     db?.close();
 
     const coldDbOpenMs = await measureMs(() => {
       const coldDb = new Database(temp.tempDbPath);
-      coldDb
-        .raw
-        .prepare('SELECT count(*) AS count FROM sqlite_master')
-        .get();
+      coldDb.raw.prepare('SELECT count(*) AS count FROM sqlite_master').get();
       coldDb.close();
     });
 
@@ -260,8 +254,7 @@ export async function captureNodeBaseline(
       for (let i = 0; i < iterations; i += 1) {
         indexingTimes.push(
           await measureMs(() => {
-            measuredDb
-              .raw
+            measuredDb.raw
               .prepare('SELECT count(*) AS count FROM session_index_jobs')
               .get();
           }),
@@ -296,7 +289,11 @@ export async function captureNodeBaseline(
       capturedAt: new Date().toISOString(),
       captureMode: 'node-direct-tools-v1',
       gitCommit: runOptional('git', ['rev-parse', 'HEAD'], options.repoRoot),
-      macOSVersion: runOptional('sw_vers', ['-productVersion'], options.repoRoot),
+      macOSVersion: runOptional(
+        'sw_vers',
+        ['-productVersion'],
+        options.repoRoot,
+      ),
       cpuArchitecture: process.arch,
       nodeVersion: process.version,
       fixtureDbPath: repoRelative(options.repoRoot, options.fixtureDbPath),
@@ -377,7 +374,9 @@ export function writeBaselineFile(
   if (opts.forceBaselineUpdate && !opts.reason) {
     throw new Error('--reason is required with --force-baseline-update');
   }
-  const toWrite = opts.reason ? { ...baseline, updateReason: opts.reason } : baseline;
+  const toWrite = opts.reason
+    ? { ...baseline, updateReason: opts.reason }
+    : baseline;
   const errors = validateBaseline(toWrite);
   if (errors.length > 0) {
     throw new Error(`baseline is invalid:\n${errors.join('\n')}`);
@@ -471,7 +470,9 @@ export function parseBaselineArgs(argv: string[]): ParsedBaselineArgs {
 }
 
 function loadBaseline(filePath: string): BaselineCapture {
-  const baseline = JSON.parse(readFileSync(filePath, 'utf8')) as BaselineCapture;
+  const baseline = JSON.parse(
+    readFileSync(filePath, 'utf8'),
+  ) as BaselineCapture;
   const errors = validateBaseline(baseline);
   if (errors.length > 0) {
     throw new Error(`baseline is invalid: ${filePath}\n${errors.join('\n')}`);

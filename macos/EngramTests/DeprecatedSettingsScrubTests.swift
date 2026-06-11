@@ -3,6 +3,63 @@ import XCTest
 @testable import Engram
 
 final class DeprecatedSettingsScrubTests: XCTestCase {
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func source(_ relativePath: String) throws -> String {
+        try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    func testAISettingsOnlyAdvertisesImplementedSummaryProtocol() throws {
+        let source = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+        let pickerStart = try XCTUnwrap(source.range(of: #"Picker("Protocol""#))
+        let pickerEnd = try XCTUnwrap(source.range(of: #".pickerStyle(.segmented)"#, range: pickerStart.lowerBound..<source.endIndex))
+        let picker = String(source[pickerStart.lowerBound..<pickerEnd.lowerBound])
+
+        XCTAssertTrue(picker.contains(#"Text("OpenAI Compatible").tag("openai")"#))
+        XCTAssertFalse(picker.contains(#".tag("anthropic")"#))
+        XCTAssertFalse(picker.contains(#".tag("gemini")"#))
+        XCTAssertTrue(source.contains(#"aiProtocol = v == "openai" ? v : "openai""#))
+    }
+
+    func testTitleSettingsPreserveStoredApiKeyWhenSwitchingToOllama() throws {
+        let source = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+        let start = try XCTUnwrap(source.range(of: "private func saveTitleSettings()"))
+        let end = try XCTUnwrap(source.range(of: "private func loadAISettings()", range: start.lowerBound..<source.endIndex))
+        let saveTitleSettings = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(
+            saveTitleSettings.contains("TitleAPIKeyPersistenceAction.decide"),
+            "Title key persistence should be an explicit decision so Ollama provider changes preserve existing cloud API keys"
+        )
+        XCTAssertFalse(
+            saveTitleSettings.contains("KeychainHelper.delete(\"titleApiKey\")"),
+            "Switching to Ollama must not delete the stored titleApiKey; only clearing a non-Ollama key should delete it"
+        )
+    }
+
+    func testTitleAPIKeyPersistenceDecisionPreservesOllamaKeys() {
+        XCTAssertEqual(
+            TitleAPIKeyPersistenceAction.decide(provider: "ollama", apiKey: ""),
+            .preserveExisting
+        )
+        XCTAssertEqual(
+            TitleAPIKeyPersistenceAction.decide(provider: "ollama", apiKey: "stored-cloud-key"),
+            .preserveExisting
+        )
+        XCTAssertEqual(
+            TitleAPIKeyPersistenceAction.decide(provider: "openai", apiKey: ""),
+            .deleteExisting
+        )
+        XCTAssertEqual(
+            TitleAPIKeyPersistenceAction.decide(provider: "custom", apiKey: " custom-key "),
+            .write("custom-key")
+        )
+    }
 
     func testScrubRemovesVikingDictAndReportsChange() {
         var settings: [String: Any] = [

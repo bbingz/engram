@@ -27,7 +27,8 @@ public enum FTSRebuildPolicy {
             arguments: [rebuildVersionKey]
         )
         let rebuildTableMissing = try !tableExists(db, rebuildTable)
-        if pending != expectedVersion || rebuildTableMissing {
+        let startedRebuild = pending != expectedVersion || rebuildTableMissing
+        if startedRebuild {
             try db.execute(sql: "DROP TABLE IF EXISTS \(rebuildTable)")
             try createFtsTable(db, named: rebuildTable)
         }
@@ -47,7 +48,7 @@ public enum FTSRebuildPolicy {
         // Keep the live FTS table serving search while the runner builds the
         // replacement table. Re-open the already-completed FTS jobs so unchanged
         // sessions are replayed into `sessions_fts_rebuild`.
-        if try tableExists(db, "session_index_jobs") {
+        if startedRebuild, try tableExists(db, "session_index_jobs") {
             try db.execute(sql: """
                 UPDATE session_index_jobs
                 SET status = 'pending', retry_count = 0, last_error = NULL,

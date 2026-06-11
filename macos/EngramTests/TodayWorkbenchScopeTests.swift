@@ -97,6 +97,19 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         XCTAssertTrue(TodayFollowUps.isEligible(s, handledIds: [], now: now))
     }
 
+    func testFollowUpSearchPushesRecencyWindowIntoDatabaseQuery() throws {
+        let s = try source("macos/Engram/Views/Pages/HomeView.swift")
+        let start = try XCTUnwrap(s.range(of: "private func loadTodayFollowUps"))
+        let end = try XCTUnwrap(s.range(of: "/// Scoping rules for the Today \"Follow-ups\" panel."))
+        let loader = String(s[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(loader.contains("now.addingTimeInterval(-TodayFollowUps.recencyWindow)"))
+        XCTAssertTrue(
+            loader.contains("db.searchWithSnippets(query: query, limit: limit, since: since"),
+            "Today follow-up search must push the 72h window into SQL instead of scanning history-wide FTS"
+        )
+    }
+
     // MARK: - Relative time dual parsing (finding #3)
 
     func testRelativeTimeParsesWholeSecondTimestamp() {
@@ -196,6 +209,14 @@ final class TodayWorkbenchScopeTests: XCTestCase {
             s.contains("isFavorite = (try? db.isFavorite(sessionId: session.id)) ?? false"),
             "isFavorite must not be read synchronously on the main actor"
         )
+        XCTAssertTrue(
+            s.contains("favoriteLoadSessionId = session.id"),
+            "favorite state must reset and tag each per-session load"
+        )
+        XCTAssertTrue(
+            s.contains("if favoriteLoadSessionId == sessionId"),
+            "stale favorite loads from a previous session must not overwrite the current detail view"
+        )
     }
 
     // MARK: - Transcript paging (perf/transcript-paging)
@@ -229,6 +250,12 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         XCTAssertEqual(SessionDetailView.nextFindMatchIndex(current: -1, direction: 1, count: 10), 0)
         XCTAssertEqual(SessionDetailView.nextFindMatchIndex(current: -1, direction: -1, count: 10), 9)
         XCTAssertNil(SessionDetailView.nextFindMatchIndex(current: 0, direction: 1, count: 0))
+    }
+
+    func testDisplayedFindMatchIndexClampsStaleIndex() {
+        XCTAssertEqual(SessionDetailView.displayedFindMatchIndex(current: 50, count: 10), 9)
+        XCTAssertEqual(SessionDetailView.displayedFindMatchIndex(current: -1, count: 10), 0)
+        XCTAssertNil(SessionDetailView.displayedFindMatchIndex(current: 0, count: 0))
     }
 
     func testHasMoreAfterLoadReflectsFilledPage() {
@@ -279,5 +306,18 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         XCTAssertEqual(AIGenerationSettings.read(from: [:]), AIGenerationSettings())
         // A mistyped value also falls back to the default rather than crashing.
         XCTAssertEqual(AIGenerationSettings.read(from: ["summaryMaxTokens": "oops"]).maxTokens, 200)
+    }
+
+    func testAISettingsDoesNotExposeUnimplementedAutoGenerationToggles() throws {
+        let s = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+
+        XCTAssertFalse(s.contains("Auto-generate summaries"))
+        XCTAssertFalse(s.contains("Auto-generate titles"))
+        XCTAssertFalse(s.contains("\"autoSummary\""))
+        XCTAssertFalse(s.contains("\"autoSummaryCooldown\""))
+        XCTAssertFalse(s.contains("\"autoSummaryMinMessages\""))
+        XCTAssertFalse(s.contains("\"autoSummaryRefresh\""))
+        XCTAssertFalse(s.contains("\"autoSummaryRefreshThreshold\""))
+        XCTAssertFalse(s.contains("\"titleAutoGenerate\""))
     }
 }

@@ -66,6 +66,7 @@ struct CommandPaletteView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .focused($isFocused)
+                    .accessibilityIdentifier("commandPalette_search")
                     .onSubmit { executeSelected() }
                     .onChange(of: query) { _, newValue in
                         selectedIndex = 0
@@ -200,7 +201,7 @@ struct CommandPaletteView: View {
             }
             do {
                 let response = try await serviceClient.search(
-                    EngramServiceSearchRequest(query: q, mode: "hybrid", limit: 10)
+                    EngramServiceSearchRequest(query: q, mode: "keyword", limit: 10)
                 )
                 guard !Task.isCancelled else { return }
                 sessionResults = response.items.map { item in

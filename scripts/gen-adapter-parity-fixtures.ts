@@ -489,7 +489,7 @@ export async function generateAdapterParityFixtures(
     const tools = flattenToolCalls(messages);
     const derived = derivedFields(
       source,
-      sessionInfo as Record<string, unknown>,
+      sessionInfo as unknown as Record<string, unknown>,
       messages,
       tools,
     );

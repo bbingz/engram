@@ -112,6 +112,21 @@ final class JsonlPatchTests: XCTestCase {
         XCTAssertEqual(r.text, "\"/proj/子目录\"")
     }
 
+    func testDecomposedOldPathMatchesPrecomposedContent() throws {
+        let oldNFC = "/tmp/CaféProject"
+        let oldNFD = oldNFC.decomposedStringWithCanonicalMapping
+        XCTAssertFalse(oldNFC.utf8.elementsEqual(oldNFD.utf8))
+
+        let result = try JsonlPatch.patchBuffer(
+            Data("\"\(oldNFC)/session\"".utf8),
+            oldPath: oldNFD,
+            newPath: "/tmp/Renamed"
+        )
+
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(String(data: result.data, encoding: .utf8), "\"/tmp/Renamed/session\"")
+    }
+
     func testFourByteEmojiPassesThroughUnchanged() throws {
         let input = Data("\"/a/foo/sparkle-✨\"".utf8)
         let r = try JsonlPatch.patchBuffer(input, oldPath: "/a/foo", newPath: "/a/bar")

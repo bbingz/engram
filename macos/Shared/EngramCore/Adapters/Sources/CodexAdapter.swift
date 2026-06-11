@@ -55,29 +55,36 @@ enum JSONLAdapterSupport {
         return (url, identity)
     }
 
-    static func readObjects(locator: String, limits: ParserLimits) throws -> ([JSONObject], ParserFailure?) {
+    static func readObjects(
+        locator: String,
+        limits: ParserLimits,
+        reportFailures: Bool = false
+    ) throws -> ([JSONObject], ParserFailure?) {
         try autoreleasepool {
             let (url, before) = try prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
             var objects: [JSONObject] = []
+            var exceededMessageLimit = false
 
             for line in try reader.readLines() {
                 guard let object = parseObject(line) else { continue }
-                objects.append(object)
-                if objects.count > limits.maxMessages {
-                    return (objects, .messageLimitExceeded)
+                guard objects.count < limits.maxMessages else {
+                    exceededMessageLimit = true
+                    continue
                 }
-            }
-
-            if let failure = reader.failures.first {
-                return (objects, failure)
+                objects.append(object)
             }
 
             let after = try limits.fileIdentity(for: url)
             guard limits.isSameFileIdentity(before, after) else {
                 return (objects, .fileModifiedDuringParse)
             }
-
+            if reportFailures, let failure = reader.failures.first {
+                return (objects, failure)
+            }
+            if reportFailures, exceededMessageLimit {
+                return (objects, .messageLimitExceeded)
+            }
             return (objects, nil)
         }
     }
@@ -180,7 +187,7 @@ enum JSONLAdapterSupport {
         transform: (JSONObject) -> NormalizedMessage?
     ) throws -> [NormalizedMessage] {
         guard let limit = options.limit else {
-            let (objects, failure) = try readObjects(locator: locator, limits: limits)
+            let (objects, failure) = try readObjects(locator: locator, limits: limits, reportFailures: true)
             if let failure { throw failure }
             return applyWindow(objects.compactMap(transform), options: options)
         }
@@ -596,12 +603,17 @@ final class CodexAdapter: SessionAdapter, Sendable {
 
     private static func extractText(_ content: [Any]?) -> String {
         guard let content else { return "" }
+        var parts: [String] = []
         for item in content {
             guard let object = JSONLAdapterSupport.object(item) else { continue }
-            if let text = JSONLAdapterSupport.string(object["text"]) { return text }
-            if let inputText = JSONLAdapterSupport.string(object["input_text"]) { return inputText }
-            if let outputText = JSONLAdapterSupport.string(object["output_text"]) { return outputText }
+            if let text = JSONLAdapterSupport.string(object["text"]), !text.isEmpty {
+                parts.append(text)
+            } else if let inputText = JSONLAdapterSupport.string(object["input_text"]), !inputText.isEmpty {
+                parts.append(inputText)
+            } else if let outputText = JSONLAdapterSupport.string(object["output_text"]), !outputText.isEmpty {
+                parts.append(outputText)
+            }
         }
-        return ""
+        return parts.joined(separator: "\n\n")
     }
 }

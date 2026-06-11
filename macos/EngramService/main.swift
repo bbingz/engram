@@ -1,9 +1,11 @@
 import Foundation
+import Dispatch
 import EngramServiceCore
 
-Task {
+let serviceTask = Task {
     do {
         try await EngramServiceRunner.run()
+        exit(0)
     } catch {
         // writerBusy means another EngramService instance already owns the
         // single-writer lock (and therefore the socket). Exiting is intentional
@@ -28,4 +30,35 @@ Task {
     }
 }
 
-dispatchMain()
+let signalSources = installTerminationSignalHandlers(serviceTask: serviceTask)
+withExtendedLifetime(signalSources) {
+    dispatchMain()
+}
+
+private func installTerminationSignalHandlers(serviceTask: Task<Void, Never>) -> [DispatchSourceSignal] {
+    signal(SIGTERM, SIG_IGN)
+    signal(SIGINT, SIG_IGN)
+
+    let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    configureTerminationSignalSource(termSource, signalNumber: SIGTERM, serviceTask: serviceTask)
+
+    let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    configureTerminationSignalSource(intSource, signalNumber: SIGINT, serviceTask: serviceTask)
+
+    return [termSource, intSource]
+}
+
+private func configureTerminationSignalSource(
+    _ source: DispatchSourceSignal,
+    signalNumber: Int32,
+    serviceTask: Task<Void, Never>
+) {
+    source.setEventHandler {
+        ServiceLogger.notice(
+            "EngramService received termination signal \(signalNumber); beginning graceful shutdown",
+            category: .runner
+        )
+        serviceTask.cancel()
+    }
+    source.resume()
+}

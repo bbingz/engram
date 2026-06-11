@@ -5,6 +5,8 @@ import EngramCoreWrite
 import Security
 
 final class EngramServiceCommandHandler: @unchecked Sendable {
+    private static let titleRegenerationCoordinator = ServiceTitleRegenerationCoordinator()
+
     private let writerGate: ServiceWriterGate
     private let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
@@ -228,8 +230,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 let result = try await Self.regenerateAllTitles(writerGate: writerGate)
                 return .success(
                     requestId: request.requestId,
-                    result: try Self.encode(result.value),
-                    databaseGeneration: result.databaseGeneration
+                    result: try Self.encode(result)
                 )
             case "projectMove":
                 let payload = try decodePayload(EngramServiceProjectMoveRequest.self, from: request)
@@ -554,7 +555,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     UPDATE sessions
                     SET parent_session_id = NULL,
                         link_source = 'manual',
-                        link_checked_at = datetime('now')
+                        link_checked_at = datetime('now'),
+                        tier = CASE
+                            WHEN agent_role = 'subagent' THEN 'skip'
+                            ELSE NULL
+                        END
                     WHERE id = ?
                 """,
                 arguments: [request.sessionId]
@@ -777,6 +782,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         if let existingParent = parent["parent_session_id"] as String?, !existingParent.isEmpty {
             return "depth-exceeded"
         }
+        let childCount = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ? LIMIT 1",
+            arguments: [sessionId]
+        ) ?? 0
+        if childCount > 0 {
+            return "depth-exceeded"
+        }
         return "ok"
     }
 
@@ -818,7 +831,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         _ request: EngramServiceHandoffRequest,
         databasePath: String
     ) throws -> EngramServiceHandoffResponse {
-        let queue = try DatabaseQueue(path: databasePath, configuration: SQLiteConnectionPolicy.readerConfiguration())
+        let queue = try DatabaseQueue(path: databasePath, configuration: ServiceSQLiteConnectionPolicy.readerConfiguration())
         let normalizedCwd = trimTrailingSlash(request.cwd)
         let projectName = URL(fileURLWithPath: normalizedCwd, isDirectory: true).lastPathComponent
 
@@ -1067,38 +1080,62 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
     private static func regenerateAllTitles(
         writerGate: ServiceWriterGate
-    ) async throws -> ServiceWriterGateResult<EngramServiceRegenerateTitlesResponse> {
-        let contexts = try readTitleContexts(databasePath: writerGate.databasePath)
-        let settings = ServiceAISettings.read()
-        let titleConfig = settings.titleConfig
-        ServiceLogger.notice(
-            "regenerateAllTitles started total=\(contexts.count) mode=\(titleConfig == nil ? "native" : "ai")",
-            category: .ai
+    ) async throws -> EngramServiceRegenerateTitlesResponse {
+        let started = await titleRegenerationCoordinator.start {
+            await regenerateAllTitlesInBackground(writerGate: writerGate)
+        }
+        if started {
+            return EngramServiceRegenerateTitlesResponse(
+                status: "started",
+                total: nil,
+                message: "Regenerating titles in background"
+            )
+        }
+        return EngramServiceRegenerateTitlesResponse(
+            status: "running",
+            total: nil,
+            message: "Title regeneration is already running"
         )
-        let generatedTitles = try await generateTitlesForContexts(
-            contexts: contexts,
-            titleConfig: titleConfig,
-            progress: { completed, total in
-                if completed == total || completed % 10 == 0 {
-                    ServiceLogger.notice(
-                        "regenerateAllTitles progress completed=\(completed) total=\(total)",
-                        category: .ai
-                    )
+    }
+
+    private static func regenerateAllTitlesInBackground(writerGate: ServiceWriterGate) async {
+        do {
+            let contexts = try readTitleContexts(databasePath: writerGate.databasePath)
+            let settings = ServiceAISettings.read()
+            let titleConfig = settings.titleConfig
+            ServiceLogger.notice(
+                "regenerateAllTitles started total=\(contexts.count) mode=\(titleConfig == nil ? "native" : "ai")",
+                category: .ai
+            )
+            let generatedTitles = try await generateTitlesForContexts(
+                contexts: contexts,
+                titleConfig: titleConfig,
+                progress: { completed, total in
+                    if completed == total || completed % 10 == 0 {
+                        ServiceLogger.notice(
+                            "regenerateAllTitles progress completed=\(completed) total=\(total)",
+                            category: .ai
+                        )
+                    }
                 }
-            }
-        )
-        try Task.checkCancellation()
-        return try await writerGate.performWriteCommand(name: "regenerateAllTitles") { writer in
-            try writer.write { db in
-                for item in generatedTitles {
-                    try db.execute(
-                        sql: "UPDATE sessions SET generated_title = ? WHERE id = ?",
-                        arguments: [item.title, item.id]
-                    )
+            )
+            try Task.checkCancellation()
+            _ = try await writerGate.performWriteCommand(name: "regenerateAllTitles") { writer in
+                try writer.write { db in
+                    for item in generatedTitles {
+                        try db.execute(
+                            sql: "UPDATE sessions SET generated_title = ? WHERE id = ?",
+                            arguments: [item.title, item.id]
+                        )
+                    }
                 }
+                ServiceLogger.notice("regenerateAllTitles completed total=\(generatedTitles.count)", category: .ai)
+                return generatedTitles.count
             }
-            ServiceLogger.notice("regenerateAllTitles completed total=\(generatedTitles.count)", category: .ai)
-            return EngramServiceRegenerateTitlesResponse(status: "completed", total: generatedTitles.count, message: nil)
+        } catch is CancellationError {
+            ServiceLogger.notice("regenerateAllTitles cancelled", category: .ai)
+        } catch {
+            ServiceLogger.error("regenerateAllTitles failed", category: .ai, error: error)
         }
     }
 
@@ -1496,8 +1533,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 sql: """
                     SELECT id, source, project, cwd, generated_title, custom_name, summary, message_count, start_time
                     FROM sessions
-                    WHERE (generated_title IS NULL OR TRIM(generated_title) = '')
-                      AND COALESCE(tier, 'normal') != 'skip'
+                    WHERE COALESCE(tier, 'normal') != 'skip'
                     ORDER BY start_time DESC
                 """
             )
@@ -1508,7 +1544,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private static func readOnlyPool(path: String) throws -> DatabasePool {
         // Use the hardened reader policy (busy_timeout, cache_size, WAL/FK guards)
         // shared with the main service read pool, not a bare Configuration.
-        try DatabasePool(path: path, configuration: SQLiteConnectionPolicy.readerConfiguration())
+        try DatabasePool(path: path, configuration: ServiceSQLiteConnectionPolicy.readerConfiguration())
     }
 
     static func aiContext(from row: Row, db: Database) throws -> AIContext {
@@ -1673,6 +1709,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             var summaryMaxSentences: Int = 3
             var summaryStyle: String = ""
             var summaryPrompt: String = ""
+            var summarySampleFirst: Int = 20
+            var summarySampleLast: Int = 30
+            var summaryTruncateChars: Int = 500
         }
 
         let summaryConfig: ChatConfig?
@@ -1689,12 +1728,13 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             else {
                 return ServiceAISettings(summaryConfig: nil, titleConfig: nil)
             }
-            // Keep the parameter for compatibility, but never use process
-            // environment variables as a secret fallback.
-            _ = environment
+            let runtimeSecrets = RuntimeAISecretReader.read(environment: environment)
+            let secretReader: KeychainReader = { account in
+                runtimeSecrets[account] ?? keychainReader(account)
+            }
             return ServiceAISettings(
-                summaryConfig: summaryConfig(from: object, keychainReader: keychainReader),
-                titleConfig: titleConfig(from: object, keychainReader: keychainReader)
+                summaryConfig: summaryConfig(from: object, keychainReader: secretReader),
+                titleConfig: titleConfig(from: object, keychainReader: secretReader)
             )
         }
 
@@ -1718,7 +1758,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 summaryLanguage: string(object["summaryLanguage"]) ?? "中文",
                 summaryMaxSentences: int(object["summaryMaxSentences"]) ?? 3,
                 summaryStyle: string(object["summaryStyle"]) ?? "",
-                summaryPrompt: string(object["summaryPrompt"]) ?? ""
+                summaryPrompt: string(object["summaryPrompt"]) ?? "",
+                summarySampleFirst: int(object["summarySampleFirst"]) ?? 20,
+                summarySampleLast: int(object["summarySampleLast"]) ?? 30,
+                summaryTruncateChars: int(object["summaryTruncateChars"]) ?? 500
             )
         }
 
@@ -1727,11 +1770,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             keychainReader: KeychainReader
         ) -> ChatConfig? {
             let provider = string(object["titleProvider"]) ?? "ollama"
-            guard provider != "ollama" else { return nil }
-            guard let apiKey = apiKey(from: object["titleApiKey"], account: "titleApiKey", keychainReader: keychainReader) else {
+            guard provider == "ollama" || provider == "custom" || provider == "openai" else {
                 return nil
             }
-            let baseURL = string(object["titleBaseUrl"]) ?? string(object["titleBaseURL"]) ?? "https://api.openai.com"
+            let defaultBaseURL = provider == "ollama" ? "http://localhost:11434" : "https://api.openai.com"
+            let baseURL = string(object["titleBaseUrl"]) ?? string(object["titleBaseURL"]) ?? defaultBaseURL
+            let apiKey = provider == "ollama"
+                ? ""
+                : apiKey(from: object["titleApiKey"], account: "titleApiKey", keychainReader: keychainReader) ?? ""
             return ChatConfig(
                 provider: provider,
                 baseURL: baseURL,
@@ -1767,6 +1813,30 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 let status = SecItemCopyMatching(query as CFDictionary, &result)
                 guard status == errSecSuccess, let data = result as? Data else { return nil }
                 return String(data: data, encoding: .utf8)
+            }
+        }
+
+        private enum RuntimeAISecretReader {
+            private static let pathEnvironmentKey = "ENGRAM_RUNTIME_AI_SECRETS_PATH"
+            private static let allowedAccounts: Set<String> = ["aiApiKey", "titleApiKey"]
+
+            static func read(environment: [String: String]) -> [String: String] {
+                guard let path = environment[pathEnvironmentKey],
+                      !path.isEmpty,
+                      let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    return [:]
+                }
+                return object.reduce(into: [:]) { result, pair in
+                    guard allowedAccounts.contains(pair.key),
+                          let value = pair.value as? String,
+                          !value.isEmpty
+                    else {
+                        return
+                    }
+                    result[pair.key] = value
+                }
             }
         }
 
@@ -1821,6 +1891,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     enum ServiceAIClient {
+        private static let aiChatTimeoutSeconds: TimeInterval = 25
+
         static let defaultSummaryTemplate = """
         请用不超过 {{maxSentences}} 句话，以 {{language}} 总结以下 AI 编程对话的核心内容。
         总结应包括：1) 主要讨论的问题或任务 2) 达成的结论、解决方案或关键成果
@@ -1850,7 +1922,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
 
         static func summarize(context: AIContext, config: ServiceAISettings.ChatConfig) async throws -> String {
-            let source = boundedTranscript(context)
+            let source = boundedTranscript(context, config: config)
             let system = renderSummaryPrompt(
                 language: config.summaryLanguage,
                 maxSentences: config.summaryMaxSentences,
@@ -1887,9 +1959,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             let url = try chatCompletionsURL(baseURL: config.baseURL)
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 45
+            request.timeoutInterval = aiChatTimeoutSeconds
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+            if !config.apiKey.isEmpty {
+                request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+            }
             var body: [String: Any] = [
                 "model": config.model,
                 "messages": messages,
@@ -1995,12 +2069,52 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             return "\(parsed.scheme ?? "https")://\(host)\(parsed.path)"
         }
 
-        private static func boundedTranscript(_ context: AIContext, limit: Int = 12_000) -> String {
-            let text = context.transcript.isEmpty ? context.nativeSummary : context.transcript
+        static func boundedTranscript(
+            _ context: AIContext,
+            config: ServiceAISettings.ChatConfig? = nil,
+            limit: Int = 12_000
+        ) -> String {
+            var text = context.transcript.isEmpty ? context.nativeSummary : context.transcript
+            if let config {
+                text = sampledTranscript(
+                    text,
+                    sampleFirst: config.summarySampleFirst,
+                    sampleLast: config.summarySampleLast,
+                    truncateChars: config.summaryTruncateChars
+                )
+            }
             if text.count <= limit { return text }
             let head = text.prefix(limit / 2)
             let tail = text.suffix(limit / 2)
             return "\(head)\n\n...[truncated]...\n\n\(tail)"
+        }
+
+        private static func sampledTranscript(
+            _ text: String,
+            sampleFirst: Int,
+            sampleLast: Int,
+            truncateChars: Int
+        ) -> String {
+            let firstCount = max(0, sampleFirst)
+            let lastCount = max(0, sampleLast)
+            guard firstCount + lastCount > 0 else { return text }
+
+            let lineLimit = max(1, truncateChars)
+            let lines = text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { line in
+                    let value = String(line)
+                    return value.count > lineLimit ? String(value.prefix(lineLimit)) : value
+                }
+            guard lines.count > firstCount + lastCount else {
+                return lines.joined(separator: "\n")
+            }
+
+            let omitted = lines.count - firstCount - lastCount
+            var sampled = Array(lines.prefix(firstCount))
+            sampled.append("...[\(omitted) messages omitted]...")
+            sampled.append(contentsOf: lines.suffix(lastCount))
+            return sampled.joined(separator: "\n")
         }
 
         private static func cleanTitle(_ raw: String) -> String {
@@ -2017,11 +2131,56 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 }
 
+private actor ServiceTitleRegenerationCoordinator {
+    private var running = false
+
+    func start(_ operation: @escaping @Sendable () async -> Void) -> Bool {
+        guard !running else { return false }
+        running = true
+        Task {
+            await operation()
+            finish()
+        }
+        return true
+    }
+
+    private func finish() {
+        running = false
+    }
+}
+
 private struct WriteIntentAck: Encodable, Sendable {
     let ok: Bool
 }
 
 private struct EmptyEncodableResult: Encodable, Sendable {}
+
+private enum ServiceSQLiteConnectionPolicy {
+    static func readerConfiguration() -> Configuration {
+        var configuration = Configuration()
+        configuration.readonly = true
+        configuration.prepareDatabase { db in
+            try applyCommonPragmas(db)
+            let timeout = try Int.fetchOne(db, sql: "PRAGMA busy_timeout") ?? 0
+            guard timeout >= SQLiteConnectionPolicy.minimumBusyTimeoutMilliseconds else {
+                throw SQLiteConnectionPolicyError.busyTimeoutTooLow(timeout)
+            }
+            let journalMode = (try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? "").lowercased()
+            guard journalMode == "wal" else {
+                throw SQLiteConnectionPolicyError.journalModeNotWAL(journalMode)
+            }
+        }
+        return configuration
+    }
+
+    private static func applyCommonPragmas(_ db: GRDB.Database) throws {
+        try db.execute(sql: "PRAGMA busy_timeout = \(SQLiteConnectionPolicy.busyTimeoutMilliseconds)")
+        try db.execute(sql: "PRAGMA foreign_keys = ON")
+        try db.execute(sql: "PRAGMA synchronous = NORMAL")
+        try db.execute(sql: "PRAGMA wal_autocheckpoint = \(SQLiteConnectionPolicy.walAutocheckpointPages)")
+        try db.execute(sql: "PRAGMA cache_size = -\(SQLiteConnectionPolicy.cacheSizeKiB)")
+    }
+}
 
 private extension GRDB.Database {
     func executeAndCountChanges(sql: String, arguments: StatementArguments = StatementArguments()) throws -> Int {

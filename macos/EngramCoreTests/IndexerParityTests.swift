@@ -863,6 +863,22 @@ final class IndexerParityTests: XCTestCase {
                 pendingJobIds,
                 ["hash-change:1:h2:embedding", "hash-change:1:h2:fts"]
             )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM session_index_jobs WHERE session_id = 'hash-change' AND job_kind = 'fts'"
+                ),
+                1,
+                "new snapshot hashes must prune superseded FTS jobs for the same session"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM session_index_jobs WHERE session_id = 'hash-change' AND job_kind = 'embedding'"
+                ),
+                1,
+                "new snapshot hashes must prune superseded embedding jobs for the same session"
+            )
         }
     }
 

@@ -35,6 +35,21 @@ final class ServiceEventRoutingTests: XCTestCase {
         )
     }
 
+    func testServiceStatusObservationKeepsEventPumpAfterInitialStatusFailure() async throws {
+        let store = EngramServiceStatusStore()
+        let client = MockEngramServiceClient(
+            statusResult: .failure(EngramServiceError.serviceUnavailable(message: "starting")),
+            events: AsyncThrowingStream { continuation in
+                continuation.yield(EngramServiceEvent(event: "indexed", total: 9, todayParents: 1))
+                continuation.finish()
+            }
+        )
+
+        await AppDelegate.observeServiceStatus(client: client, store: store)
+
+        XCTAssertEqual(store.status, .running(total: 9, todayParents: 1))
+    }
+
     func testIndexErrorEventSurfacesAsDegraded() throws {
         let store = EngramServiceStatusStore()
         store.status = .running(total: 100, todayParents: 3)
@@ -75,6 +90,16 @@ final class ServiceEventRoutingTests: XCTestCase {
         AppDelegate.applyServiceEvent(try decode(#"{"event":"indexed","total":42,"todayParents":1}"#), to: store)
         XCTAssertEqual(store.status, .running(total: 42, todayParents: 1))
         XCTAssertTrue(store.isRunning)
+    }
+
+    func testStartingEventClearsDegradedWithoutWarning() throws {
+        let store = EngramServiceStatusStore()
+        store.status = .degraded(message: "Service starting")
+
+        AppDelegate.applyServiceEvent(try decode(#"{"event":"starting"}"#), to: store)
+
+        XCTAssertEqual(store.status, .starting)
+        XCTAssertFalse(store.isRunning)
     }
 
     func testNonIndexEventsPassThroughUnchanged() throws {

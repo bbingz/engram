@@ -18,9 +18,13 @@ public actor ServiceWriterGate {
     private let writer: EngramDatabaseWriter
     private let writeSemaphore = ServiceAsyncSemaphore(value: 1)
     private var databaseGeneration = 0
+    private var longRunningWriteInProgress = false
     // Upper bound a queued write may wait for the gate before giving up. Sized
     // well above any legitimate single write (which complete in ms) so it only
-    // trips when a holder is genuinely wedged. 0 disables the timeout.
+    // trips when a normal holder is genuinely wedged. Project migration commands
+    // can legitimately hold the gate for minutes; queued writes wait unbounded
+    // behind those holders instead of surfacing false writerBusy errors. 0
+    // disables the timeout.
     private let queueTimeoutNanoseconds: UInt64?
 
     public init(
@@ -68,14 +72,18 @@ public actor ServiceWriterGate {
         name: String,
         operation: @Sendable (EngramDatabaseWriter) async throws -> Value
     ) async throws -> ServiceWriterGateResult<Value> {
-        try await writeSemaphore.wait(timeoutNanoseconds: queueTimeoutNanoseconds)
+        let timeout = longRunningWriteInProgress ? nil : queueTimeoutNanoseconds
+        try await writeSemaphore.wait(timeoutNanoseconds: timeout)
+        longRunningWriteInProgress = Self.isLongRunningWriteCommand(name)
         do {
             try Task.checkCancellation()
             let value = try await operation(writer)
             databaseGeneration += 1
+            longRunningWriteInProgress = false
             await writeSemaphore.signal()
             return ServiceWriterGateResult(value: value, databaseGeneration: databaseGeneration)
         } catch {
+            longRunningWriteInProgress = false
             await writeSemaphore.signal()
             throw error
         }
@@ -145,6 +153,15 @@ public actor ServiceWriterGate {
             throw EngramServiceError.writerBusy(message: "Another EngramService writer owns the lock")
         }
         return fd
+    }
+
+    private static func isLongRunningWriteCommand(_ name: String) -> Bool {
+        switch name {
+        case "projectMove", "projectArchive", "projectUndo", "projectMoveBatch":
+            return true
+        default:
+            return false
+        }
     }
 }
 

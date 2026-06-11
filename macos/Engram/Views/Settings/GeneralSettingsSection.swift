@@ -5,8 +5,6 @@ struct GeneralSettingsSection: View {
     @AppStorage("appLanguage") var appLanguage: String = AppLanguage.system.rawValue
     @AppStorage("contentFontSize") var contentFontSize: Double = 14
     @AppStorage("showDockIcon") var showDockIcon: Bool = false
-    @AppStorage("httpPort") var httpPort: Int = 3456
-    @AppStorage("nodejsPath") var nodejsPath: String = "/usr/local/bin/node"
 
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
 
@@ -60,20 +58,6 @@ struct GeneralSettingsSection: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Divider()
-                    Text("Legacy Node rollback settings")
-                        .font(.caption.bold())
-                    Text("Kept for Stage 3 rollback and compatibility only. New setup should use the Swift service and bundled Swift stdio MCP helper.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Text("Legacy HTTP Port")
-                        Spacer()
-                        TextField("3456", value: $httpPort, format: .number)
-                            .frame(width: 80)
-                            .multilineTextAlignment(.trailing)
-                    }
                     HStack {
                         Text("Web UI")
                         Spacer()
@@ -96,12 +80,6 @@ struct GeneralSettingsSection: View {
                                 .foregroundStyle(.secondary)
                                 .font(.caption)
                         }
-                    }
-                    HStack {
-                        Text("Legacy Node.js Path")
-                        Spacer()
-                        TextField("/usr/local/bin/node", text: $nodejsPath)
-                            .frame(width: 260)
                     }
                 }
                 .padding(.vertical, 4)

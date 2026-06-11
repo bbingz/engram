@@ -19,21 +19,26 @@ enum TestLaunchConfig {
 
     private class BundleAnchor {}
 
+    static let localizationArguments = [
+        "-AppleLanguages", "(en)",
+        "-AppleLocale", "en_US",
+    ]
+
     func configure(_ app: XCUIApplication) {
         app.launchArguments += [
             "--test-mode",
             "--fixture-db", Self.fixtureDBPath,
             "--mock-daemon",
             "--fixed-date", "2026-01-15T10:00:00Z",
-        ]
+        ] + Self.localizationArguments
 
         switch self {
         case .mainWindow:
-            app.launchArguments += ["--window-size", "1280x800"]
+            app.launchArguments += ["--window-size", "1024x681", "--appearance", "light"]
         case .popover:
             app.launchArguments += ["--popover-standalone"]
         case .darkMode:
-            app.launchArguments += ["--window-size", "1280x800", "--appearance", "dark"]
+            app.launchArguments += ["--window-size", "1024x681", "--appearance", "dark"]
         }
     }
 }

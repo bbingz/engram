@@ -32,7 +32,12 @@ struct SyntaxHighlighter {
 
     // MARK: - Cache
 
-    private static let cache = NSCache<NSString, CachedHighlight>()
+    private static let cache: NSCache<NSString, CachedHighlight> = {
+        let cache = NSCache<NSString, CachedHighlight>()
+        cache.countLimit = 500
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
 
     // MARK: - Entry Point
 
@@ -44,21 +49,21 @@ struct SyntaxHighlighter {
         let lines = code.components(separatedBy: "\n")
         guard lines.count <= 200 else { return AttributedString(code) }
 
-        // Cache key
-        let cacheKey = NSString(string: "\(language):\(code.utf8.count):\(code.prefix(100))")
+        let normalizedLanguage = language.lowercased()
+        let cacheKey = NSString(string: "\(normalizedLanguage.utf8.count):\(normalizedLanguage):\(code)")
         if let cached = cache.object(forKey: cacheKey) {
             return cached.value
         }
 
-        let rules = tokenRules(for: language.lowercased())
+        let rules = tokenRules(for: normalizedLanguage)
         guard !rules.isEmpty else {
             let plain = AttributedString(code)
-            cache.setObject(CachedHighlight(plain), forKey: cacheKey)
+            cache.setObject(CachedHighlight(plain), forKey: cacheKey, cost: code.utf16.count * 2)
             return plain
         }
 
         let result = applyRules(rules, to: code)
-        cache.setObject(CachedHighlight(result), forKey: cacheKey)
+        cache.setObject(CachedHighlight(result), forKey: cacheKey, cost: code.utf16.count * 2)
         return result
     }
 

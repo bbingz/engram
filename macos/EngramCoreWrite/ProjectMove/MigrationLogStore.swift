@@ -236,18 +236,33 @@ public enum MigrationLogStore {
         var aliasCreated = false
 
         try db.inSavepoint {
-            let pathArgs: StatementArguments = ["old": oldPath, "new": newPath]
+            let oldVariants = ProjectPathVariants.variants(oldPath)
+            let sourceLocatorMatch = pathMatch("source_locator")
+            let filePathMatch = pathMatch("file_path")
+            let cwdMatch = pathMatch("cwd")
+            let localReadablePathMatch = pathMatch("local_readable_path")
+            let sourceLocatorRewrite = rewrite("source_locator")
+            let filePathRewrite = rewrite("file_path")
+            let cwdRewrite = rewrite("cwd")
+            let localReadablePathRewrite = rewrite("local_readable_path")
+            let pathArgs: StatementArguments = [
+                "old0": oldVariants[0],
+                "old1": oldVariants[1],
+                "old2": oldVariants[2],
+                "new": newPath,
+            ]
             // 1a. Collect affected session ids BEFORE the UPDATE — Phase 3 undo
             // needs the authoritative list, not a prefix-reverse guess. Stored
             // in migration_log.detail.
+            let affectedSessionsSQL: String = """
+                SELECT id FROM sessions
+                 WHERE \(sourceLocatorMatch)
+                    OR \(filePathMatch)
+                    OR \(cwdMatch)
+                """
             let affectedRows = try Row.fetchAll(
                 db,
-                sql: """
-                SELECT id FROM sessions
-                 WHERE \(pathMatch("source_locator"))
-                    OR \(pathMatch("file_path"))
-                    OR \(pathMatch("cwd"))
-                """,
+                sql: affectedSessionsSQL,
                 arguments: pathArgs
             )
             let affectedSessionIds = affectedRows.compactMap { $0["id"] as String? }
@@ -256,27 +271,29 @@ public enum MigrationLogStore {
             // orphan_* flags here (filesystem is the only truth — detectOrphans
             // decides orphan state based on actual isAccessible, not on path
             // rewrites).
-            try db.execute(
-                sql: """
+            let updateSessionsSQL: String = """
                 UPDATE sessions
-                   SET source_locator = \(rewrite("source_locator")),
-                       file_path      = \(rewrite("file_path")),
-                       cwd            = \(rewrite("cwd"))
-                 WHERE \(pathMatch("source_locator"))
-                    OR \(pathMatch("file_path"))
-                    OR \(pathMatch("cwd"))
-                """,
+                   SET source_locator = \(sourceLocatorRewrite),
+                       file_path      = \(filePathRewrite),
+                       cwd            = \(cwdRewrite)
+                 WHERE \(sourceLocatorMatch)
+                    OR \(filePathMatch)
+                    OR \(cwdMatch)
+                """
+            try db.execute(
+                sql: updateSessionsSQL,
                 arguments: pathArgs
             )
             sessionsUpdated = db.changesCount
 
             // 2. Rewrite session_local_state.local_readable_path (UI read-priority field).
-            try db.execute(
-                sql: """
+            let updateLocalStateSQL: String = """
                 UPDATE session_local_state
-                   SET local_readable_path = \(rewrite("local_readable_path"))
-                 WHERE \(pathMatch("local_readable_path"))
-                """,
+                   SET local_readable_path = \(localReadablePathRewrite)
+                 WHERE \(localReadablePathMatch)
+                """
+            try db.execute(
+                sql: updateLocalStateSQL,
                 arguments: pathArgs
             )
             localStateUpdated = db.changesCount
@@ -342,36 +359,6 @@ public enum MigrationLogStore {
             localStateUpdated: localStateUpdated,
             aliasCreated: aliasCreated
         )
-    }
-
-    /// Watcher guard: true if any non-terminal migration covers this path.
-    /// Non-terminal = `fs_pending` / `fs_done`. Path "covers" iff equal OR
-    /// startsWith `<column>/`. Substr prefix match avoids LIKE wildcards in
-    /// paths containing `_` or `%`.
-    public static func hasPendingMigrationFor(
-        _ db: GRDB.Database,
-        path: String,
-        ttlSeconds: Int = 60 * 60
-    ) throws -> Bool {
-        guard !path.isEmpty else { return false }
-        let cutoff = "-\(ttlSeconds) seconds"
-        let row = try Row.fetchOne(
-            db,
-            sql: """
-            SELECT 1 FROM migration_log
-             WHERE state IN ('fs_pending', 'fs_done')
-               AND started_at > datetime('now', ?)
-               AND (
-                    ? = old_path
-                 OR (length(?) > length(old_path) AND substr(?, 1, length(old_path) + 1) = old_path || '/')
-                 OR ? = new_path
-                 OR (length(?) > length(new_path) AND substr(?, 1, length(new_path) + 1) = new_path || '/')
-               )
-             LIMIT 1
-            """,
-            arguments: [cutoff, path, path, path, path, path, path]
-        )
-        return row != nil
     }
 
     /// Convert migrations stuck in fs_pending/fs_done beyond the stale threshold
@@ -447,23 +434,41 @@ public enum MigrationLogStore {
     }
 
     /// Path-match SQL fragment using substr boundary check. Caller binds
-    /// `:old` once per execute; LIKE wildcards (`_`/`%`) are not interpreted.
+    /// `:old0...:old2`; LIKE wildcards (`_`/`%`) are not interpreted.
     private static func pathMatch(_ col: String) -> String {
-        "(\(col) = :old OR (LENGTH(\(col)) > LENGTH(:old) AND SUBSTR(\(col), 1, LENGTH(:old) + 1) = :old || '/'))"
+        (0..<3)
+            .map { idx in
+                let old = ":old\(idx)"
+                let branch: String = """
+                (\(col) = \(old) OR (LENGTH(\(col)) > LENGTH(\(old)) AND SUBSTR(\(col), 1, LENGTH(\(old)) + 1) = \(old) || '/'))
+                """
+                return branch
+            }
+            .joined(separator: " OR ")
     }
 
     /// Path-rewrite CASE expression using the same boundary check. Caller binds
-    /// `:old` and `:new`.
+    /// `:old0...:old2` and `:new`.
     private static func rewrite(_ col: String) -> String {
-        """
+        let branches = (0..<3)
+            .map { idx in
+                let old = ":old\(idx)"
+                let branch: String = """
+                  WHEN \(col) = \(old) THEN :new
+                  WHEN LENGTH(\(col)) > LENGTH(\(old))
+                       AND SUBSTR(\(col), 1, LENGTH(\(old)) + 1) = \(old) || '/'
+                    THEN :new || SUBSTR(\(col), LENGTH(\(old)) + 1)
+                """
+                return branch
+            }
+            .joined(separator: "\n")
+        let sql: String = """
         CASE
-          WHEN \(col) = :old THEN :new
-          WHEN LENGTH(\(col)) > LENGTH(:old)
-               AND SUBSTR(\(col), 1, LENGTH(:old) + 1) = :old || '/'
-            THEN :new || SUBSTR(\(col), LENGTH(:old) + 1)
+        \(branches)
           ELSE \(col)
         END
         """
+        return sql
     }
 
     private static func jsonString(from object: Any) throws -> String {

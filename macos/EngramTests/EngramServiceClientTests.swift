@@ -215,6 +215,54 @@ final class EngramServiceClientTests: XCTestCase {
         XCTAssertTrue(sent.allSatisfy { ($0.timeout ?? 0) >= 300 }, "migration commands need more than the 30s default timeout")
     }
 
+    func testRegenerateAllTitlesUsesExtendedTimeout() async throws {
+        let transport = RecordingServiceTransport { request in
+            XCTAssertEqual(request.command, "regenerateAllTitles")
+            return .success(
+                requestId: request.requestId,
+                result: #"{"status":"completed","total":4}"#.data(using: .utf8)!
+            )
+        }
+        let client = EngramServiceClient(transport: transport)
+
+        _ = try await client.regenerateAllTitles()
+
+        let sent = await transport.sent
+        XCTAssertEqual(sent.map(\.command), ["regenerateAllTitles"])
+        XCTAssertTrue(
+            sent.allSatisfy { ($0.timeout ?? 0) >= 300 },
+            "bulk title regeneration can exceed the default 30s command timeout"
+        )
+    }
+
+    func testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline() async throws {
+        let transport = RecordingServiceTransport { request in
+            switch request.command {
+            case "generateSummary":
+                return .success(requestId: request.requestId, result: #"{"summary":"Short summary"}"#.data(using: .utf8)!)
+            case "linkSessions":
+                return .success(requestId: request.requestId, result: #"{"created":0,"skipped":0,"errors":[],"targetDir":"/tmp/engram","projectNames":[],"truncated":false}"#.data(using: .utf8)!)
+            default:
+                XCTFail("Unexpected command \(request.command)")
+                return .success(requestId: request.requestId, result: Data("{}".utf8))
+            }
+        }
+        let client = EngramServiceClient(transport: transport)
+
+        _ = try await client.generateSummary(EngramServiceGenerateSummaryRequest(sessionId: "s1"))
+        _ = try await client.linkSessions(EngramServiceLinkSessionsRequest(targetDir: "/tmp/engram", actor: "mcp"))
+
+        let sent = await transport.sent
+        XCTAssertEqual(sent.map(\.command), ["generateSummary", "linkSessions"])
+        XCTAssertTrue(
+            sent.allSatisfy { timeout in
+                guard let value = timeout.timeout else { return false }
+                return value > 2 && value < 30
+            },
+            "long synchronous commands need explicit timeouts below the 30s IPC frame deadline"
+        )
+    }
+
     func testConcurrentRequestsResolveAgainstMatchingRequestIds() async throws {
         let transport = RecordingServiceTransport { request in
             if request.command == "search" {

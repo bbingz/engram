@@ -24,6 +24,8 @@
 	<string>public.app-category.developer-tools</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Engram opens resume commands in Terminal or iTerm when you choose those terminal targets.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

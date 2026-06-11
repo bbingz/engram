@@ -40,8 +40,11 @@ class ScreenshotCapture {
             }
         }
 
-        // Use app screenshot (captures the app window)
-        let screenshot = app.screenshot()
+        let popoverContent = app.element(id: "popover_container")
+        let mainContent = app.element(id: "main_window_content")
+        let window = app.windows.firstMatch
+        let screenshotTarget = popoverContent.exists ? popoverContent : (mainContent.exists ? mainContent : window)
+        let screenshot = screenshotTarget.exists ? screenshotTarget.screenshot() : app.screenshot()
         let filePath = "\(outputDir)/\(name).png"
         do {
             try screenshot.pngRepresentation.write(to: URL(fileURLWithPath: filePath))

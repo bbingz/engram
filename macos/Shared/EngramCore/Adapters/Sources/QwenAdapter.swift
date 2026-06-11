@@ -227,6 +227,7 @@ final class QwenAdapter: SessionAdapter, Sendable {
 
     private static func extractContent(_ message: JSONLAdapterSupport.JSONObject?) -> String {
         guard let parts = JSONLAdapterSupport.array(message?["parts"]) else { return "" }
+        var textParts: [String] = []
         for part in parts {
             guard let object = JSONLAdapterSupport.object(part),
                   let text = JSONLAdapterSupport.string(object["text"]),
@@ -234,8 +235,8 @@ final class QwenAdapter: SessionAdapter, Sendable {
             else {
                 continue
             }
-            return text
+            textParts.append(text)
         }
-        return ""
+        return textParts.joined(separator: "\n\n")
     }
 }

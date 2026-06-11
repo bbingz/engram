@@ -181,12 +181,12 @@ public final class WriterStartupUsageCollector: StartupUsageCollecting {
 
     private func usageAggregates(_ db: Database, since: String) throws -> [UsageAggregate] {
         var arguments = StatementArguments()
-        arguments += [since]
+        arguments += [since, since, since]
         let rows = try Row.fetchAll(
             db,
             sql: """
             SELECT LOWER(TRIM(s.source)) AS source,
-                   MIN(s.start_time) AS earliest_start_time,
+                   MIN(CASE WHEN s.start_time < ? THEN ? ELSE s.start_time END) AS earliest_start_time,
                    SUM(c.cost_usd) AS cost_usd,
                    SUM(
                      COALESCE(c.input_tokens, 0)
@@ -196,7 +196,7 @@ public final class WriterStartupUsageCollector: StartupUsageCollecting {
                    ) AS tokens
             FROM session_costs c
             JOIN sessions s ON s.id = c.session_id
-            WHERE s.start_time >= ?
+            WHERE COALESCE(NULLIF(s.end_time, ''), NULLIF(s.indexed_at, ''), s.start_time) >= ?
               AND s.hidden_at IS NULL
               AND TRIM(s.source) <> ''
             GROUP BY LOWER(TRIM(s.source))

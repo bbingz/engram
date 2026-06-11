@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ActivityView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @State private var dailyActivity: [(date: String, count: Int)] = []
     @State private var hourlyActivity: [Int] = Array(repeating: 0, count: 24)
     @State private var sourceDist: [(source: String, count: Int)] = []
@@ -44,7 +45,7 @@ struct ActivityView: View {
             .padding(24)
         }
         .accessibilityIdentifier("activity_container")
-        .task { await loadData() }
+        .task(id: serviceStatusStore.totalSessions) { await loadData() }
     }
 
     private func loadData() async {

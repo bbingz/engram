@@ -18,23 +18,20 @@ final class CursorAdapter: SessionAdapter, Sendable {
     }
 
     func listSessionLocators() async throws -> [String] {
-        do {
-            let database = try Phase4SQLiteDatabase(path: dbPath)
-            let rows = try database.query(
-                "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"
-            )
-            return rows.compactMap { row in
-                guard let value = row["value"] ?? nil,
-                      let data = Phase4AdapterSupport.jsonObject(from: value),
-                      let composerId = JSONLAdapterSupport.string(data["composerId"]),
-                      !composerId.isEmpty
-                else {
-                    return nil
-                }
-                return "\(dbPath)?composer=\(composerId)"
+        guard JSONLAdapterSupport.fileExists(dbPath) else { return [] }
+        let database = try Phase4SQLiteDatabase(path: dbPath)
+        let rows = try database.query(
+            "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"
+        )
+        return rows.compactMap { row in
+            guard let value = row["value"] ?? nil,
+                  let data = Phase4AdapterSupport.jsonObject(from: value),
+                  let composerId = JSONLAdapterSupport.string(data["composerId"]),
+                  !composerId.isEmpty
+            else {
+                return nil
             }
-        } catch {
-            return []
+            return "\(dbPath)?composer=\(composerId)"
         }
     }
 
@@ -63,7 +60,11 @@ final class CursorAdapter: SessionAdapter, Sendable {
             let visibleBubbles = bubbleResult.bubbles.compactMap(Self.visibleBubble)
             let userCount = visibleBubbles.filter { $0.role == .user }.count
             let assistantCount = visibleBubbles.filter { $0.role == .assistant }.count
-            let createdAt = Phase4AdapterSupport.double(composerData["createdAt"]) ?? 0
+            let firstBubbleTimestamp = Self.firstVisibleBubbleTimestamp(bubbleResult.bubbles)
+            let createdAt = Phase4AdapterSupport.double(composerData["createdAt"]) ??
+                firstBubbleTimestamp ??
+                Phase4AdapterSupport.double(composerData["lastUpdatedAt"]) ??
+                0
             let lastUpdatedAt = Phase4AdapterSupport.double(composerData["lastUpdatedAt"]) ?? createdAt
             let summary = JSONLAdapterSupport.string(
                 JSONLAdapterSupport.object(composerData["latestConversationSummary"])?["summary"]
@@ -236,6 +237,17 @@ final class CursorAdapter: SessionAdapter, Sendable {
             return nil
         }
         return (role, content)
+    }
+
+    private static func firstVisibleBubbleTimestamp(_ bubbles: [Phase4AdapterSupport.JSONObject]) -> Double? {
+        for bubble in bubbles where visibleBubble(bubble) != nil {
+            if let timestamp = Phase4AdapterSupport.double(
+                JSONLAdapterSupport.object(bubble["timingInfo"])?["clientStartTime"]
+            ) {
+                return timestamp
+            }
+        }
+        return nil
     }
 
     private static func usage(from tokenCount: Phase4AdapterSupport.JSONObject?) -> TokenUsage? {

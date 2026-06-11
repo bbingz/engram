@@ -25,6 +25,7 @@ struct MainWindowView: View {
         .navigationTitle("")
         .navigationSplitViewStyle(.balanced)
         .background(Theme.background)
+        .accessibilityIdentifier("main_window_content")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button(action: openPalette) {

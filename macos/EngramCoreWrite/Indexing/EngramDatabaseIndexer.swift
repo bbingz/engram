@@ -54,28 +54,68 @@ private final class EngramDatabaseIndexingSink: IndexingWriteSink {
             try SessionBatchUpsert(db: db).upsertBatch(snapshots, reason: reason)
         }
     }
+
+    func knownIndexedFileStates(source: SourceName, locators: [String]) throws -> [String: KnownIndexedFileState] {
+        guard !locators.isEmpty else { return [:] }
+        return try writer.read { db in
+            try Self.knownIndexedFileStates(db, source: source, locators: locators)
+        }
+    }
+
+    private static func knownIndexedFileStates(
+        _ db: Database,
+        source: SourceName,
+        locators: [String]
+    ) throws -> [String: KnownIndexedFileState] {
+        var states: [String: KnownIndexedFileState] = [:]
+        for batch in stride(from: 0, to: locators.count, by: 500) {
+            let slice = Array(locators[batch..<Swift.min(batch + 500, locators.count)])
+            let placeholders = Array(repeating: "?", count: slice.count).joined(separator: ",")
+            var arguments: StatementArguments = [source.rawValue]
+            for locator in slice {
+                arguments += [locator]
+            }
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT COALESCE(source_locator, file_path) AS locator, size_bytes, indexed_at
+                FROM sessions
+                WHERE source = ?
+                  AND COALESCE(source_locator, file_path) IN (\(placeholders))
+                """,
+                arguments: arguments
+            )
+            for row in rows {
+                let locator = row["locator"] as String? ?? ""
+                guard !locator.isEmpty else { continue }
+                if let size = row["size_bytes"] as Int64? {
+                    states[locator] = KnownIndexedFileState(sizeBytes: size, indexedAt: row["indexed_at"])
+                }
+            }
+        }
+        return states
+    }
 }
 
 public extension EngramDatabaseWriter {
     func indexRecentSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.recentActiveAdapters()
     ) async throws -> EngramDatabaseIndexResult {
-        try await indexSessions(adapters: adapters, runParentBackfills: false)
+        try await indexSessions(adapters: adapters, runParentBackfills: false, skipUnchangedFileLocators: true)
     }
 
     func indexAllSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters()
     ) async throws -> EngramDatabaseIndexResult {
-        try await indexSessions(adapters: adapters, runParentBackfills: true)
+        try await indexSessions(adapters: adapters, runParentBackfills: true, skipUnchangedFileLocators: false)
     }
 
     /// Run the deterministic parent-link backfills after a periodic scan so
     /// agent/dispatched child sessions created mid-run are grouped under their
     /// parent (and skip-tiered) without waiting for a service restart. The
     /// periodic `indexRecentSessions` path indexes with `runParentBackfills:
-    /// false`, and the FSEvents watcher is not wired into the runtime, so
-    /// without this the only live path leaves new children top-level until the
-    /// next restart.
+    /// false`, so without this the periodic scan leaves new children top-level
+    /// until the next restart.
     func runPeriodicParentBackfills() throws {
         try write { db in
             _ = try StartupBackfills.backfillParentLinks(db)
@@ -87,11 +127,13 @@ public extension EngramDatabaseWriter {
 
     private func indexSessions(
         adapters: [any SessionAdapter],
-        runParentBackfills: Bool
+        runParentBackfills: Bool,
+        skipUnchangedFileLocators: Bool
     ) async throws -> EngramDatabaseIndexResult {
         let indexer = SwiftIndexer(
             sink: EngramDatabaseIndexingSink(writer: self),
-            adapters: adapters
+            adapters: adapters,
+            skipUnchangedFileLocators: skipUnchangedFileLocators
         )
         let indexed = try await indexer.indexAll()
 

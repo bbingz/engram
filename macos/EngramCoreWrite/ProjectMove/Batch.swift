@@ -234,14 +234,16 @@ public enum Batch {
                 do {
                     let suggestion = try Archive.suggestTarget(
                         src: src,
-                        options: ArchiveOptions(forceCategory: op.archiveTo)
+                        options: ArchiveOptions(skipProbe: doc.defaults.dryRun, forceCategory: op.archiveTo)
                     )
                     dst = suggestion.dst
-                    // SafeMoveDir requires the dst's parent to exist.
-                    try FileManager.default.createDirectory(
-                        atPath: (dst as NSString).deletingLastPathComponent,
-                        withIntermediateDirectories: true
-                    )
+                    if !doc.defaults.dryRun {
+                        // SafeMoveDir requires the dst's parent to exist.
+                        try FileManager.default.createDirectory(
+                            atPath: (dst as NSString).deletingLastPathComponent,
+                            withIntermediateDirectories: true
+                        )
+                    }
                 } catch {
                     result.failed.append(
                         BatchOperationFailure(operation: op, error: errorText(error))

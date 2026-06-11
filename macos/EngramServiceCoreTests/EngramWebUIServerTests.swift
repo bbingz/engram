@@ -46,6 +46,18 @@ final class EngramWebUIServerTests: XCTestCase {
         )
     }
 
+    func testWebUISessionListFiltersNoiseRowsLikeAppTopLevelLists() throws {
+        let source = try serviceCoreSource("EngramWebUIServer.swift")
+        let start = try XCTUnwrap(source.range(of: "private func readSessions(limit: Int)"))
+        let end = try XCTUnwrap(source.range(of: "private func readSession(id: String)", options: [], range: start.lowerBound..<source.endIndex))
+        let query = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(query.contains("COALESCE(s.tier, 'normal') NOT IN ('skip', 'lite')"))
+        XCTAssertTrue(query.contains("s.parent_session_id IS NULL"))
+        XCTAssertTrue(query.contains("s.suggested_parent_id IS NULL"))
+        XCTAssertTrue(query.contains("s.orphan_status IS NULL"))
+    }
+
     private func makeMinimalDatabase() throws -> String {
         let path = NSTemporaryDirectory() + "engram-webui-\(UUID().uuidString).sqlite"
         let queue = try DatabaseQueue(path: path)

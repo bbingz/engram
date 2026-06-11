@@ -52,6 +52,20 @@ final class ContentSegmentAndGitRepoTests: XCTestCase {
         XCTAssertEqual(Set(ids).count, ids.count, "distinct segments produced colliding ids: \(ids)")
     }
 
+    // MARK: - SyntaxHighlighter cache
+
+    func testSyntaxHighlighterCacheDistinguishesSameLengthBlocksWithSharedPrefix() {
+        let sharedPrefix = String(repeating: "a", count: 100)
+        let first = sharedPrefix + "X"
+        let second = sharedPrefix + "Y"
+
+        let firstHighlighted = SyntaxHighlighter.highlight(first, language: "swift")
+        let secondHighlighted = SyntaxHighlighter.highlight(second, language: "swift")
+
+        XCTAssertEqual(String(firstHighlighted.characters), first)
+        XCTAssertEqual(String(secondHighlighted.characters), second)
+    }
+
     // MARK: - GitRepo.isActive
 
     private func repo(lastCommitAt: String?) -> GitRepo {

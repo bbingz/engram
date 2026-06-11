@@ -60,7 +60,9 @@ struct PathExistsIndicator: View {
     }
 
     init(path: String) {
-        self.exists = FileManager.default.fileExists(atPath: path)
+        self.exists = FileManager.default.fileExists(
+            atPath: (path as NSString).expandingTildeInPath
+        )
     }
 
     var body: some View {
@@ -75,45 +77,18 @@ struct PathExistsIndicator: View {
 
 struct DataSourceRow: View {
     let def: DataSourceDef
-    @State private var path: String = ""
-    @State private var exists: Bool? = nil
-    @State private var isLoading = false
 
     var body: some View {
         HStack(spacing: 8) {
             Text(verbatim: def.name)
                 .frame(width: 90, alignment: .leading)
-            TextField(def.defaultPath, text: $path)
+            Text(verbatim: def.defaultPath)
                 .font(.caption)
-                .textFieldStyle(.roundedBorder)
-                .onChange(of: path) { _, newValue in
-                    savePath(newValue)
-                    checkExists(newValue)
-                }
-            if let exists {
-                PathExistsIndicator(exists: exists)
-            }
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            PathExistsIndicator(path: def.defaultPath)
         }
-        .onAppear {
-            isLoading = true
-            defer { isLoading = false }
-            path = UserDefaults.standard.string(forKey: def.key) ?? def.defaultPath
-            checkExists(path)
-        }
-    }
-
-    private func savePath(_ value: String) {
-        guard !isLoading else { return }
-        if value == def.defaultPath {
-            UserDefaults.standard.removeObject(forKey: def.key)
-        } else {
-            UserDefaults.standard.set(value, forKey: def.key)
-        }
-    }
-
-    private func checkExists(_ rawPath: String) {
-        let expanded = (rawPath as NSString).expandingTildeInPath
-        exists = FileManager.default.fileExists(atPath: expanded)
     }
 }
 

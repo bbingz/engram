@@ -30,6 +30,8 @@ actor ServiceStatusMonitor {
             if age > staleAfter {
                 return .degraded(message: "Last successful index scan is stale (\(Int(age))s old)")
             }
+        } else {
+            return .starting
         }
 
         return .running(total: indexStatus.total, todayParents: indexStatus.todayParents)

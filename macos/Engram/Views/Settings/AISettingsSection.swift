@@ -34,19 +34,11 @@ struct AISettingsSection: View {
     @State private var summaryTruncateChars: Int = 500
     @State private var showAdvancedGeneration: Bool = false
 
-    // Auto-summary
-    @State private var autoSummary: Bool = false
-    @State private var autoSummaryCooldown: Int = 5
-    @State private var autoSummaryMinMessages: Int = 4
-    @State private var autoSummaryRefresh: Bool = false
-    @State private var autoSummaryRefreshThreshold: Int = 20
-
     // Title generation
     @State private var titleProvider: String = "ollama"
     @State private var titleBaseURL: String = ""
     @State private var titleModel: String = "qwen2.5:3b"
     @State private var titleApiKey: String = ""
-    @State private var titleAutoGenerate: Bool = false
     @State private var titleTestStatus: TitleConnectionStatus = .idle
     @State private var titleRegenerateStatus: TitleRegenerationStatus = .idle
     @State private var isLoadingSettings = false
@@ -59,9 +51,7 @@ struct AISettingsSection: View {
             GroupBox("Provider") {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Protocol", selection: $aiProtocol) {
-                        Text("OpenAI").tag("openai")
-                        Text("Anthropic").tag("anthropic")
-                        Text("Gemini").tag("gemini")
+                        Text("OpenAI Compatible").tag("openai")
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: aiProtocol) { saveAISettings() }
@@ -208,27 +198,6 @@ struct AISettingsSection: View {
                 .padding(.vertical, 4)
             }
 
-            // Auto Summary
-            GroupBox("Auto Summary") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Auto-generate summaries", isOn: $autoSummary)
-                        .onChange(of: autoSummary) { saveAISettings() }
-                    if autoSummary {
-                        Stepper("Cooldown: \(autoSummaryCooldown) min", value: $autoSummaryCooldown, in: 1...30)
-                            .onChange(of: autoSummaryCooldown) { saveAISettings() }
-                        Stepper("Min messages: \(autoSummaryMinMessages)", value: $autoSummaryMinMessages, in: 1...50)
-                            .onChange(of: autoSummaryMinMessages) { saveAISettings() }
-                        Toggle("Periodically refresh", isOn: $autoSummaryRefresh)
-                            .onChange(of: autoSummaryRefresh) { saveAISettings() }
-                        if autoSummaryRefresh {
-                            Stepper("Refresh after \(autoSummaryRefreshThreshold) new messages",
-                                    value: $autoSummaryRefreshThreshold, in: 5...100, step: 5)
-                                .onChange(of: autoSummaryRefreshThreshold) { saveAISettings() }
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
             // Title Generation
             GroupBox("Title Generation") {
                 VStack(alignment: .leading, spacing: 10) {
@@ -269,9 +238,6 @@ struct AISettingsSection: View {
                                 .onChange(of: titleApiKey) { saveTitleSettings() }
                         }
                     }
-
-                    Toggle("Auto-generate titles", isOn: $titleAutoGenerate)
-                        .onChange(of: titleAutoGenerate) { saveTitleSettings() }
 
                     HStack(spacing: 8) {
                         Button("Test Connection") {
@@ -343,11 +309,16 @@ struct AISettingsSection: View {
     // MARK: - Helpers
 
     private func defaultBaseURL(for proto: String) -> String {
-        switch proto {
-        case "anthropic": return "Default: https://api.anthropic.com"
-        case "gemini": return "Default: https://generativelanguage.googleapis.com"
-        default: return "Default: https://api.openai.com"
-        }
+        "Default: https://api.openai.com"
+    }
+
+    private func refreshRuntimeAISecrets() {
+        EngramServiceLauncher.writeRuntimeAISecrets(
+            toPath: EngramServiceLauncher.runtimeAISecretsPath(
+                forSocketPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+            ),
+            keychainReader: KeychainHelper.get
+        )
     }
 
     private func saveAISettings() {
@@ -365,6 +336,7 @@ struct AISettingsSection: View {
             KeychainHelper.delete("aiApiKey")
             mutateEngramSettings { $0.removeValue(forKey: "aiApiKey") }
         }
+        refreshRuntimeAISecrets()
         mutateEngramSettings { settings in
             settings["aiProtocol"] = aiProtocol
             if !aiBaseURL.isEmpty { settings["aiBaseURL"] = aiBaseURL } else { settings.removeValue(forKey: "aiBaseURL") }
@@ -390,28 +362,30 @@ struct AISettingsSection: View {
                 truncateChars: summaryTruncateChars
             ).write(into: &settings)
 
-            settings["autoSummary"] = autoSummary
-            settings["autoSummaryCooldown"] = autoSummaryCooldown
-            settings["autoSummaryMinMessages"] = autoSummaryMinMessages
-            settings["autoSummaryRefresh"] = autoSummaryRefresh
-            settings["autoSummaryRefreshThreshold"] = autoSummaryRefreshThreshold
         }
+    }
+
+    private func deleteTitleAPIKey() {
+        KeychainHelper.delete("titleApiKey")
+        mutateEngramSettings { $0.removeValue(forKey: "titleApiKey") }
     }
 
     private func saveTitleSettings() {
         guard !isLoadingSettings else { return }
-        // Try Keychain first; fall back to plaintext JSON for ad-hoc builds
-        if titleProvider != "ollama" && !titleApiKey.isEmpty {
+        switch TitleAPIKeyPersistenceAction.decide(provider: titleProvider, apiKey: titleApiKey) {
+        case .write(let titleApiKey):
             let saved = KeychainHelper.set("titleApiKey", value: titleApiKey)
             if saved {
                 mutateEngramSettings { $0["titleApiKey"] = "@keychain" }
             } else {
                 mutateEngramSettings { $0["titleApiKey"] = titleApiKey }
             }
-        } else {
-            KeychainHelper.delete("titleApiKey")
-            mutateEngramSettings { $0.removeValue(forKey: "titleApiKey") }
+        case .deleteExisting:
+            deleteTitleAPIKey()
+        case .preserveExisting:
+            break
         }
+        refreshRuntimeAISecrets()
         mutateEngramSettings { settings in
             settings["titleProvider"] = titleProvider
             if !titleBaseURL.isEmpty {
@@ -423,16 +397,17 @@ struct AISettingsSection: View {
             }
             settings["titleModel"] = normalizeOpenAICompatibleModel(titleModel, baseURL: titleBaseURL)
             // titleApiKey handled above via Keychain
-            settings["titleAutoGenerate"] = titleAutoGenerate
         }
     }
 
     private func loadAISettings() {
         guard let settings = readEngramSettings() else { return }
         isLoadingSettings = true
-        defer { isLoadingSettings = false }
+        defer { clearLoadingSettingsAfterViewUpdate() }
 
-        if let v = settings["aiProtocol"] as? String { aiProtocol = v }
+        if let v = settings["aiProtocol"] as? String {
+            aiProtocol = v == "openai" ? v : "openai"
+        }
         if let v = settings["aiBaseURL"] as? String { aiBaseURL = v }
         aiApiKey = KeychainHelper.get("aiApiKey")
             ?? { let v = settings["aiApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
@@ -456,19 +431,19 @@ struct AISettingsSection: View {
         summaryTruncateChars = gen.truncateChars
         showAdvancedGeneration = summarySampleFirst != 20 || summarySampleLast != 30 || summaryTruncateChars != 500
 
-        if let v = settings["autoSummary"] as? Bool { autoSummary = v }
-        if let v = settings["autoSummaryCooldown"] as? Int { autoSummaryCooldown = v }
-        if let v = settings["autoSummaryMinMessages"] as? Int { autoSummaryMinMessages = v }
-        if let v = settings["autoSummaryRefresh"] as? Bool { autoSummaryRefresh = v }
-        if let v = settings["autoSummaryRefreshThreshold"] as? Int { autoSummaryRefreshThreshold = v }
-
         if let v = settings["titleProvider"] as? String { titleProvider = v }
         if let v = settings["titleBaseUrl"] as? String { titleBaseURL = v }
         else if let v = settings["titleBaseURL"] as? String { titleBaseURL = v }
         if let v = settings["titleModel"] as? String { titleModel = normalizeOpenAICompatibleModel(v, baseURL: titleBaseURL) }
         titleApiKey = KeychainHelper.get("titleApiKey")
             ?? { let v = settings["titleApiKey"] as? String; return v == "@keychain" ? nil : v }() ?? ""
-        if let v = settings["titleAutoGenerate"] as? Bool { titleAutoGenerate = v }
+    }
+
+    private func clearLoadingSettingsAfterViewUpdate() {
+        Task { @MainActor in
+            await Task.yield()
+            isLoadingSettings = false
+        }
     }
 
     private func appendAPIPath(_ path: String, to baseURL: String) -> String {
@@ -492,6 +467,21 @@ struct AISettingsSection: View {
             )
         }
         return trimmed
+    }
+}
+
+enum TitleAPIKeyPersistenceAction: Equatable {
+    case write(String)
+    case deleteExisting
+    case preserveExisting
+
+    static func decide(provider: String, apiKey: String) -> TitleAPIKeyPersistenceAction {
+        let normalizedProvider = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedProvider == "ollama" {
+            return .preserveExisting
+        }
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedKey.isEmpty ? .deleteExisting : .write(trimmedKey)
     }
 }
 

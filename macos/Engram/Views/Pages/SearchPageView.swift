@@ -67,9 +67,7 @@ struct SearchPageView: View {
     }
 
     private var emptySearchMessage: String {
-        embeddingStatus?.available == true
-            ? "Search sessions by keyword, semantic meaning, or both"
-            : "Search sessions by keyword"
+        "Search sessions by keyword"
     }
 
     private var hasClearableFilters: Bool {
@@ -431,13 +429,20 @@ struct SearchPageView: View {
         } catch {
             // Fallback to local FTS
             do {
-                let localResults = try db.searchWithSnippets(
-                    query: query,
-                    limit: 30,
-                    sources: selectedSourceFilter.map { Set([$0]) } ?? [],
-                    projects: selectedProjectFilter.map { Set([$0]) } ?? [],
-                    since: selectedTimeFilter.sinceString()
-                )
+                let db = self.db
+                let fallbackQuery = query
+                let fallbackSources = selectedSourceFilter.map { Set([$0]) } ?? []
+                let fallbackProjects = selectedProjectFilter.map { Set([$0]) } ?? []
+                let fallbackSince = selectedTimeFilter.sinceString()
+                let localResults = try await Task.detached {
+                    try db.searchWithSnippets(
+                        query: fallbackQuery,
+                        limit: 30,
+                        sources: fallbackSources,
+                        projects: fallbackProjects,
+                        since: fallbackSince
+                    )
+                }.value
                 guard !Task.isCancelled else { return }
                 searchModes = ["keyword (offline)"]
                 warning = nil

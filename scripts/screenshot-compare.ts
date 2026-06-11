@@ -188,8 +188,8 @@ function rgbaToGrayscale(
   rgba: Buffer,
   width: number,
   height: number,
-): number[] {
-  const gray: number[] = new Array(width * height);
+): Uint8ClampedArray {
+  const gray = new Uint8ClampedArray(width * height);
   for (let i = 0; i < width * height; i++) {
     const r = rgba[i * 4];
     const g = rgba[i * 4 + 1];
@@ -519,11 +519,26 @@ async function main() {
 
   const failOnSizeMismatch =
     process.env.SCREENSHOT_FAIL_ON_SIZE_MISMATCH !== '0';
+  const failOnNewBaseline = process.env.SCREENSHOT_FAIL_ON_NEW_BASELINE !== '0';
+  if (summary.new > 0 && !failOnNewBaseline) {
+    console.log('New baselines are report-only for this run.');
+  }
   if (summary.size_mismatch > 0 && !failOnSizeMismatch) {
     console.log('Size mismatches are report-only for this run.');
   }
 
-  if (summary.failed > 0 || (failOnSizeMismatch && summary.size_mismatch > 0)) {
+  if (failOnNewBaseline && summary.new > 0) {
+    console.error('New baselines are not allowed in this run.');
+  }
+  if (failOnSizeMismatch && summary.size_mismatch > 0) {
+    console.error('Size mismatches are not allowed in this run.');
+  }
+
+  if (
+    summary.failed > 0 ||
+    (failOnNewBaseline && summary.new > 0) ||
+    (failOnSizeMismatch && summary.size_mismatch > 0)
+  ) {
     process.exit(1);
   }
 }

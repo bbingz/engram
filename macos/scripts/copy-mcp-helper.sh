@@ -29,6 +29,9 @@ if [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTIT
   else
     sign_args+=(--timestamp=none)
   fi
-  codesign "${sign_args[@]}" "$DEST"
+  if ! codesign "${sign_args[@]}" "$DEST"; then
+    echo "[copy-mcp-helper] secure timestamp unavailable; retrying helper signing without timestamp" >&2
+    codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --options runtime --timestamp=none "$DEST"
+  fi
 fi
 echo "[copy-mcp-helper] EngramMCP → $DEST"

@@ -92,9 +92,10 @@ function emitSchema(out: string): void {
     `);
     const metadata = Object.fromEntries(
       (
-        raw
-          .prepare('SELECT key, value FROM metadata ORDER BY key')
-          .all() as { key: string; value: string }[]
+        raw.prepare('SELECT key, value FROM metadata ORDER BY key').all() as {
+          key: string;
+          value: string;
+        }[]
       ).map((row) => [row.key, row.value]),
     );
     const masterRows = raw

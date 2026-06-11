@@ -135,9 +135,11 @@ public struct DirRenamePlan: Equatable, Sendable {
 public struct ManifestEntry: Equatable, Sendable {
     public let path: String
     public let occurrences: Int
-    public init(path: String, occurrences: Int) {
+    public let backupPath: String?
+    public init(path: String, occurrences: Int, backupPath: String? = nil) {
         self.path = path
         self.occurrences = occurrences
+        self.backupPath = backupPath
     }
 }
 
@@ -174,6 +176,8 @@ public enum PipelineState: String, Equatable, Sendable {
 public struct PipelineResult: Equatable, Sendable {
     public let migrationId: String
     public let state: PipelineState
+    public let src: String
+    public let dst: String
     public let moveStrategy: MoveResult.Strategy
     public let ccDirRenamed: Bool
     public let renamedDirs: [DirRenamePlan]
@@ -200,6 +204,10 @@ public struct RunProjectMoveOptions: Sendable {
     public var homeDirectory: URL
     public var lockPath: String?
     public var rolledBackOf: String?
+    /// Internal escape hatch for undo: the undo preflight and reverse move must
+    /// share one project-move lock, so runUndo acquires it before validation
+    /// and then invokes the normal pipeline without reacquiring.
+    public var lockAlreadyHeld: Bool
 
     public init(
         src: String,
@@ -211,7 +219,8 @@ public struct RunProjectMoveOptions: Sendable {
         actor: MigrationLogActor = .cli,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         lockPath: String? = nil,
-        rolledBackOf: String? = nil
+        rolledBackOf: String? = nil,
+        lockAlreadyHeld: Bool = false
     ) {
         self.src = src
         self.dst = dst
@@ -223,12 +232,56 @@ public struct RunProjectMoveOptions: Sendable {
         self.homeDirectory = homeDirectory
         self.lockPath = lockPath
         self.rolledBackOf = rolledBackOf
+        self.lockAlreadyHeld = lockAlreadyHeld
+    }
+}
+
+public struct UndoProjectMoveRunResult: Sendable {
+    public let reverse: ReverseMoveRequest
+    public let pipelineResult: PipelineResult
+
+    public init(reverse: ReverseMoveRequest, pipelineResult: PipelineResult) {
+        self.reverse = reverse
+        self.pipelineResult = pipelineResult
     }
 }
 
 // MARK: - main entry point
 
 public enum ProjectMoveOrchestrator {
+    public static func runUndo(
+        writer: EngramDatabaseWriter,
+        migrationId: String,
+        force: Bool,
+        actor: MigrationLogActor,
+        lockPath requestedLockPath: String? = nil
+    ) async throws -> UndoProjectMoveRunResult {
+        let lockPath = requestedLockPath ?? MigrationLock.defaultLockPath()
+        try MigrationLock.acquire(migrationId: "undo-\(migrationId)", lockPath: lockPath)
+        defer { MigrationLock.release(lockPath: lockPath) }
+
+        let reverse = try UndoMigration.prepareReverseRequest(
+            migrationId: migrationId,
+            log: GRDBMigrationLogReader(writer: writer),
+            sessions: GRDBSessionByIdReader(writer: writer)
+        )
+        let pipelineResult = try await run(
+            writer: writer,
+            options: RunProjectMoveOptions(
+                src: reverse.src,
+                dst: reverse.dst,
+                dryRun: false,
+                force: force,
+                archived: false,
+                auditNote: "undo of \(migrationId)",
+                actor: actor,
+                lockPath: lockPath,
+                rolledBackOf: reverse.originalMigrationId,
+                lockAlreadyHeld: true
+            )
+        )
+        return UndoProjectMoveRunResult(reverse: reverse, pipelineResult: pipelineResult)
+    }
 
     /// Run the full project-move pipeline. Throws on failure with the
     /// original error type preserved (`LockBusyError`, `DirCollisionError`,
@@ -243,7 +296,7 @@ public enum ProjectMoveOrchestrator {
         guard !options.src.isEmpty, !options.dst.isEmpty else {
             throw OrchestratorError.missingPaths(src: options.src, dst: options.dst)
         }
-        let src = canonicalize(options.src)
+        let src = canonicalizeExistingSource(options.src)
         let dst = canonicalize(options.dst)
         if src == dst {
             throw OrchestratorError.sameSourceAndDest(path: src)
@@ -277,14 +330,21 @@ public enum ProjectMoveOrchestrator {
         let lockPath = options.lockPath ?? MigrationLock.defaultLockPath()
 
         // Lock BEFORE startMigration: a LockBusyError must not leave a stale
-        // fs_pending row that blocks the watcher for the TTL window.
-        try MigrationLock.acquire(migrationId: migrationId, lockPath: lockPath)
+        // fs_pending row. Undo may pre-acquire the same lock so its migration-log
+        // preflight and reverse move are atomic with respect to other moves.
+        if !options.lockAlreadyHeld {
+            try MigrationLock.acquire(migrationId: migrationId, lockPath: lockPath)
+        }
         // Release on EVERY exit path — including a throw from the Phase-A write
         // below, which sits outside the do/catch. The original code released
         // only on the success and catch paths, so a Phase-A failure leaked the
         // lock (holding the live service pid) and permanently wedged all future
         // project moves until a service restart.
-        defer { MigrationLock.release(lockPath: lockPath) }
+        defer {
+            if !options.lockAlreadyHeld {
+                MigrationLock.release(lockPath: lockPath)
+            }
+        }
 
         // (SIGINT handler intentionally omitted in the Swift port — Engram
         // services run as launchd helpers without a controlling terminal.
@@ -315,9 +375,15 @@ public enum ProjectMoveOrchestrator {
         var renamedDirs: [DirRenamePlan] = []
         var skippedDirs: [SkippedDirEntry] = []
         var moveStrategy: MoveResult.Strategy = .rename
+        var physicalMoveApplied = false
         var geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?
         var geminiProjectsApplied = false
         var sqlitePatches: [OpenCodeSQLitePatchResult] = []
+        let patchBackupRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-project-move-\(migrationId)-patch-backups", isDirectory: true)
+            .path
+        try FileManager.default.createDirectory(atPath: patchBackupRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: patchBackupRoot) }
 
         do {
             let roots = SessionSources.roots(homeDirectory: options.homeDirectory)
@@ -428,6 +494,7 @@ public enum ProjectMoveOrchestrator {
 
             // Step 1: physical move
             let moveResult = try SafeMoveDir.run(src: src, dst: dst)
+            physicalMoveApplied = true
             moveStrategy = moveResult.strategy
 
             // Step 2: rename per-source dirs (ENOENT = source has no record
@@ -452,9 +519,13 @@ public enum ProjectMoveOrchestrator {
             }
             let ccDirRenamed = renamedDirs.contains { $0.sourceId == .claudeCode }
 
-            // Step 2.5: apply Gemini projects.json rewrite (after the dir rename).
+            // Step 2.5: apply Gemini projects.json rewrite (after the dir
+            // rename). A lossy same-slug move can skip the directory rename as
+            // noop while still needing the registry key rewritten from src to dst.
+            let geminiDirTouched = renamedDirs.contains { $0.sourceId == .geminiCli }
+                || skippedDirs.contains { $0.sourceId == .geminiCli && $0.reason == .noop }
             if let plan = geminiProjectsPlan,
-               renamedDirs.contains(where: { $0.sourceId == .geminiCli }) {
+               plan.oldEntry != nil || geminiDirTouched {
                 try GeminiProjectsJSON.apply(plan: plan)
                 geminiProjectsApplied = true
             }
@@ -475,10 +546,14 @@ public enum ProjectMoveOrchestrator {
                 }
                 let perFile = await runWithConcurrency(items: remapped, limit: patchConcurrency) { file in
                     do {
+                        let backupPath = try backupPatchInput(file: file, backupRoot: patchBackupRoot)
                         let count = try JsonlPatch.patchFile(at: file, oldPath: src, newPath: dst)
-                        return PatchOutcome(file: file, count: count, error: nil)
+                        if count == 0 {
+                            try? FileManager.default.removeItem(atPath: backupPath)
+                        }
+                        return PatchOutcome(file: file, count: count, backupPath: count > 0 ? backupPath : nil, error: nil)
                     } catch {
-                        return PatchOutcome(file: file, count: 0, error: error)
+                        return PatchOutcome(file: file, count: 0, backupPath: nil, error: error)
                     }
                 }
                 var filesPatched = 0
@@ -490,7 +565,7 @@ public enum ProjectMoveOrchestrator {
                 // success at a later index, leaving that file rewritten but
                 // unreverted on rollback (silent corruption).
                 for r in perFile where r.error == nil && r.count > 0 {
-                    manifest.append(ManifestEntry(path: r.file, occurrences: r.count))
+                    manifest.append(ManifestEntry(path: r.file, occurrences: r.count, backupPath: r.backupPath))
                     filesPatched += 1
                     occurrences += r.count
                 }
@@ -582,6 +657,8 @@ public enum ProjectMoveOrchestrator {
             return PipelineResult(
                 migrationId: migrationId,
                 state: .committed,
+                src: src,
+                dst: dst,
                 moveStrategy: moveStrategy,
                 ccDirRenamed: ccDirRenamed,
                 renamedDirs: renamedDirs,
@@ -610,7 +687,8 @@ public enum ProjectMoveOrchestrator {
                     attemptedDst: dst,
                     renamedDirs: renamedDirs,
                     geminiProjectsPlan: geminiProjectsApplied ? geminiProjectsPlan : nil,
-                    sqlitePatches: sqlitePatches
+                    sqlitePatches: sqlitePatches,
+                    physicalMoveApplied: physicalMoveApplied
                 )
             }
             let combined = formatFailureWithCompensation(
@@ -688,7 +766,6 @@ public enum ProjectMoveOrchestrator {
         var manifest: [ManifestEntry] = []
         var totalFilesPatched = 0
         var totalOccurrences = 0
-        let needleData = Data(src.utf8)
         let dryRunReadCap: Int64 = 50 * 1024 * 1024
 
         for root in roots {
@@ -709,7 +786,12 @@ public enum ProjectMoveOrchestrator {
                         continue
                     }
                     let buf = try Data(contentsOf: URL(fileURLWithPath: file))
-                    let fileOccurrences = countOccurrences(of: needleData, in: buf)
+                    let patchResult = try JsonlPatch.patchBufferWithDotQuote(
+                        buf,
+                        oldPath: src,
+                        newPath: dst
+                    )
+                    let fileOccurrences = patchResult.count
                     if fileOccurrences > 0 {
                         manifest.append(ManifestEntry(path: file, occurrences: fileOccurrences))
                         filesPatched += 1
@@ -760,6 +842,8 @@ public enum ProjectMoveOrchestrator {
         return PipelineResult(
             migrationId: "dry-run",
             state: .dryRun,
+            src: src,
+            dst: dst,
             moveStrategy: .rename,
             ccDirRenamed: ccDirRenamed,
             renamedDirs: renamedDirs,
@@ -826,7 +910,8 @@ private func compensate(
     attemptedDst: String,
     renamedDirs: [DirRenamePlan],
     geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?,
-    sqlitePatches: [OpenCodeSQLitePatchResult]
+    sqlitePatches: [OpenCodeSQLitePatchResult],
+    physicalMoveApplied: Bool
 ) -> CompensationReport {
     var report = CompensationReport.empty
 
@@ -850,11 +935,15 @@ private func compensate(
     // 2. Reverse file patches LIFO (last patched first).
     for entry in manifest.reversed() {
         do {
-            _ = try JsonlPatch.patchFile(
-                at: entry.path,
-                oldPath: attemptedDst,
-                newPath: originalSrc
-            )
+            if let backupPath = entry.backupPath {
+                try restorePatchBackup(backupPath: backupPath, targetPath: entry.path)
+            } else {
+                _ = try JsonlPatch.patchFile(
+                    at: entry.path,
+                    oldPath: attemptedDst,
+                    newPath: originalSrc
+                )
+            }
             report.patchReverted += 1
         } catch {
             report.patchFailed.append((entry.path, errorMessage(error)))
@@ -886,13 +975,17 @@ private func compensate(
         }
     }
 
-    // 5. Reverse the physical move.
-    do {
-        _ = try SafeMoveDir.run(src: attemptedDst, dst: originalSrc)
-        report.moveReverted = true
-    } catch {
-        report.moveReverted = false
-        report.moveRevertError = errorMessage(error)
+    // 5. Reverse the physical move only if Step 1 completed. If SafeMoveDir.run
+    // itself failed, attemptedDst may be a pre-existing user directory; moving
+    // it back would corrupt unrelated data.
+    if physicalMoveApplied {
+        do {
+            _ = try SafeMoveDir.run(src: attemptedDst, dst: originalSrc)
+            report.moveReverted = true
+        } catch {
+            report.moveReverted = false
+            report.moveRevertError = errorMessage(error)
+        }
     }
     return report
 }
@@ -934,7 +1027,29 @@ private func formatFailureWithCompensation(
 private struct PatchOutcome: Sendable {
     let file: String
     let count: Int
+    let backupPath: String?
     let error: Error?
+}
+
+private func backupPatchInput(file: String, backupRoot: String) throws -> String {
+    let backupPath = (backupRoot as NSString).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.copyItem(atPath: file, toPath: backupPath)
+    return backupPath
+}
+
+private func restorePatchBackup(backupPath: String, targetPath: String) throws {
+    let targetDir = (targetPath as NSString).deletingLastPathComponent
+    let tempPath = (targetDir as NSString).appendingPathComponent(".engram-restore-\(UUID().uuidString)")
+    try FileManager.default.copyItem(atPath: backupPath, toPath: tempPath)
+    if rename(tempPath, targetPath) != 0 {
+        let code = errno
+        try? FileManager.default.removeItem(atPath: tempPath)
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(code))]
+        )
+    }
 }
 
 private func runWithConcurrency<T: Sendable, R: Sendable>(
@@ -973,6 +1088,16 @@ private func runWithConcurrency<T: Sendable, R: Sendable>(
 
 private func canonicalize(_ raw: String) -> String {
     URL(fileURLWithPath: raw).standardizedFileURL.path
+}
+
+private func canonicalizeExistingSource(_ raw: String) -> String {
+    let path = canonicalize(raw)
+    guard let realPath = realpathSafe(path),
+          path.caseInsensitiveCompare(realPath) == .orderedSame
+    else {
+        return path
+    }
+    return realPath
 }
 
 private func basename(_ p: String) -> String {
@@ -1055,20 +1180,6 @@ private func renameFailureMessage(_ error: Error) -> String {
         return "errno=\(nsError.code) \(nsError.localizedDescription)"
     }
     return errorMessage(error)
-}
-
-private func countOccurrences(of needle: Data, in haystack: Data) -> Int {
-    guard !needle.isEmpty else { return 0 }
-    var cursor = haystack.startIndex
-    var count = 0
-    while cursor < haystack.endIndex {
-        guard let hit = haystack.range(of: needle, in: cursor..<haystack.endIndex) else {
-            break
-        }
-        count += 1
-        cursor = hit.upperBound
-    }
-    return count
 }
 
 private func errorMessage(_ error: Error) -> String {

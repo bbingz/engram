@@ -19,6 +19,7 @@ struct SessionDetailView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
     @State private var isFavorite = false
+    @State private var favoriteLoadSessionId: String?
     @State private var handoffStatus: String? = nil
     @State private var showReplay = false
     @State private var showResume = false
@@ -165,11 +166,14 @@ struct SessionDetailView: View {
                 navPositions: navPositions,
                 partiallyLoaded: hasMoreToLoad,
                 onToggleFavorite: {
+                    let sessionId = session.id
                     Task {
                         let next = !isFavorite
                         do {
-                            try await serviceClient.setFavorite(sessionId: session.id, favorite: next)
-                            isFavorite = next
+                            try await serviceClient.setFavorite(sessionId: sessionId, favorite: next)
+                            if favoriteLoadSessionId == sessionId {
+                                isFavorite = next
+                            }
                         } catch {
                             logger.error("Failed to toggle favorite: \(error.localizedDescription)")
                         }
@@ -210,7 +214,10 @@ struct SessionDetailView: View {
                     searchText: $searchText,
                     isVisible: $showFind,
                     matchCount: matchIndices.count,
-                    currentMatch: max(currentMatchIndex, 0),
+                    currentMatch: Self.displayedFindMatchIndex(
+                        current: currentMatchIndex,
+                        count: matchIndices.count
+                    ) ?? 0,
                     onPrev: { navigateFind(direction: -1) },
                     onNext: { navigateFind(direction: 1) }
                 )
@@ -426,12 +433,18 @@ struct SessionDetailView: View {
             suggestedChildrenSessions = []
             suggestedChildrenSessionCount = 0
             showAgentSessions = false
+            isFavorite = false
+            favoriteLoadSessionId = session.id
             // Read favorite state off the main actor; assign back when it lands.
             let dbRef = db
             let sessionId = session.id
             Task.detached {
                 let fav = (try? dbRef.isFavorite(sessionId: sessionId)) ?? false
-                await MainActor.run { isFavorite = fav }
+                await MainActor.run {
+                    if favoriteLoadSessionId == sessionId {
+                        isFavorite = fav
+                    }
+                }
             }
             await loadInitialTranscript()
             // The detached parse can outlive a session switch; don't let the
@@ -668,6 +681,11 @@ struct SessionDetailView: View {
         nextNavPosition(current: current, direction: direction, count: count)
     }
 
+    static func displayedFindMatchIndex(current: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        return min(max(current, 0), count - 1)
+    }
+
     func navigateFind(direction: Int) {
         guard let next = Self.nextFindMatchIndex(
             current: currentMatchIndex,
@@ -729,7 +747,7 @@ struct SessionDetailView: View {
     }
 
     private func copyLoadedTranscript() {
-        let text = TranscriptText.conversationText(displayIndexed)
+        let text = TranscriptText.conversationText(indexedMessages)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }

@@ -1,15 +1,10 @@
 // macos/Engram/Views/Pages/ProjectsView.swift
 import SwiftUI
 
-private let isoFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
-
 struct ProjectsView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
     @State private var selectedProject: DatabaseManager.ProjectGroup? = nil
     @State private var isLoading = true
@@ -27,7 +22,7 @@ struct ProjectsView: View {
     private var activeCount: Int {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
         return projectGroups.filter { group in
-            guard let date = isoFormatter.date(from: group.lastActive) else { return false }
+            guard let date = EngramTimestampParser.date(from: group.lastActive) else { return false }
             return date > weekAgo
         }.count
     }
@@ -193,7 +188,7 @@ struct ProjectsView: View {
             .padding(24)
         }
         .accessibilityIdentifier("projects_container")
-        .task { await loadData() }
+        .task(id: serviceStatusStore.totalSessions) { await loadData() }
         .sheet(item: Binding(
             get: { renameTarget.map(SheetWrappedString.init) },
             set: { renameTarget = $0?.value }

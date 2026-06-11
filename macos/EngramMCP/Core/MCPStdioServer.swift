@@ -42,11 +42,14 @@ final class MCPStdioServer {
                 guard !trimmed.isEmpty else { continue }
                 guard let requestData = trimmed.data(using: .utf8),
                       let request = try? JSONDecoder().decode(JSONRPCRequest.self, from: requestData) else {
-                    emitError(id: nil, code: -32700, message: "Parse error")
+                    emitError(id: nil, code: -32700, message: "Parse error", includeNullID: true)
                     continue
                 }
                 if request.method == "notifications/cancelled" {
                     await handleCancellation(request)
+                    continue
+                }
+                guard request.id != nil else {
                     continue
                 }
                 if request.method == "tools/call", request.id != nil {
@@ -80,14 +83,18 @@ final class MCPStdioServer {
             return
         }
         let arguments = params["arguments"]?.objectValue ?? [:]
-        await inFlight.start(for: key) { [weak self] in
+        let didStart = await inFlight.start(for: key) { [weak self] in
             guard let self else { return }
             let response = await handleToolCall(name: name, arguments: arguments)
+            guard !Task.isCancelled else { return }
             emit(
                 jsonrpc: "2.0",
                 id: id,
                 result: response
             )
+        }
+        if !didStart {
+            emitError(id: id, code: -32600, message: "Duplicate request id")
         }
     }
 
@@ -123,6 +130,8 @@ final class MCPStdioServer {
             )
         case "notifications/initialized":
             return
+        case "ping":
+            emit(jsonrpc: "2.0", id: request.id, result: .object([]))
         case "tools/list":
             emit(
                 jsonrpc: "2.0",
@@ -214,10 +223,17 @@ final class MCPStdioServer {
         fflush(stdout)
     }
 
-    private func emitError(id: JSONRPCId?, code: Int, message: String) {
+    private func emitError(
+        id: JSONRPCId?,
+        code: Int,
+        message: String,
+        includeNullID: Bool = false
+    ) {
         var entries: [(String, OrderedJSONValue)] = [("jsonrpc", .string("2.0"))]
         if let id {
             entries.append(("id", id.orderedJSONValue))
+        } else if includeNullID {
+            entries.append(("id", .null))
         }
         entries.append((
             "error",
@@ -236,12 +252,14 @@ final class MCPStdioServer {
 private actor MCPInFlightRequests {
     private var tasks: [String: Task<Void, Never>] = [:]
 
-    func start(for key: String, operation: @escaping @Sendable () async -> Void) {
+    func start(for key: String, operation: @escaping @Sendable () async -> Void) -> Bool {
+        guard tasks[key] == nil else { return false }
         let task = Task { [weak self] in
             await operation()
             await self?.remove(key)
         }
         tasks[key] = task
+        return true
     }
 
     func cancel(_ key: String) {

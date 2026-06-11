@@ -43,6 +43,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     init(
         status: EngramServiceStatus = .stopped,
+        statusResult: Result<EngramServiceStatus, Error>? = nil,
         search: EngramServiceSearchResponse = EngramServiceSearchResponse(items: []),
         health: EngramServiceHealthResponse = EngramServiceHealthResponse(ok: true, status: "healthy", message: "mock"),
         liveSessions: EngramServiceLiveSessionsResponse = EngramServiceLiveSessionsResponse(sessions: [], count: 0),
@@ -87,7 +88,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         ),
         events: AsyncThrowingStream<EngramServiceEvent, Error> = AsyncThrowingStream { $0.finish() }
     ) {
-        self.statusResult = .success(status)
+        self.statusResult = statusResult ?? .success(status)
         self.searchResult = .success(search)
         self.healthResult = .success(health)
         self.liveSessionsResult = .success(liveSessions)

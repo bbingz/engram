@@ -2,6 +2,17 @@ import XCTest
 @testable import Engram
 
 final class TranscriptLabelAndCopyTests: XCTestCase {
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func source(_ relativePath: String) throws -> String {
+        try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
     // #4: tool rows surface the concrete tool name instead of "TOOL CALL #N".
     func testToolCallLabelShowsToolName() {
         let label = ColorBarMessageView.displayLabel(
@@ -34,5 +45,17 @@ final class TranscriptLabelAndCopyTests: XCTestCase {
                            messageType: .assistant, typeIndex: 1)
         ]
         XCTAssertEqual(TranscriptText.conversationText(msgs), "> hello\n\nworld")
+    }
+
+    func testCopyEntireConversationUsesAllLoadedRowsNotFilteredDisplayRows() throws {
+        let sessionDetail = try source("macos/Engram/Views/SessionDetailView.swift")
+        XCTAssertTrue(
+            sessionDetail.contains("TranscriptText.conversationText(indexedMessages)"),
+            "Copy Entire Conversation must use all loaded transcript rows, not the current filtered display subset"
+        )
+        XCTAssertFalse(
+            sessionDetail.contains("TranscriptText.conversationText(displayIndexed)"),
+            "Copy Entire Conversation must not copy only the currently visible filtered rows"
+        )
     }
 }

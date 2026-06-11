@@ -6,11 +6,12 @@ protocol ModificationFilteredSessionAdapter: SessionAdapter {
 
 public enum SessionAdapterFactory {
     public static func defaultAdapters() -> [any SessionAdapter] {
-        [
+        let claudeCode = ClaudeCodeAdapter()
+        return [
             CodexAdapter(),
-            ClaudeCodeAdapter(),
-            ClaudeCodeDerivedSourceAdapter(source: .minimax),
-            ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
+            claudeCode,
+            ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
+            ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode),
             GeminiCliAdapter(),
             OpenCodeAdapter(),
             IflowAdapter(),
@@ -51,10 +52,11 @@ public enum SessionAdapterFactory {
 
     public static func recentActiveAdapters(now: Date = Date(), days: Int = 2) -> [any SessionAdapter] {
         let cutoff = now.addingTimeInterval(-Double(max(days, 1)) * 24 * 60 * 60)
+        let claudeCode = ClaudeCodeAdapter()
         let fileBackedAdapters: [any SessionAdapter] = [
-            ClaudeCodeAdapter(),
-            ClaudeCodeDerivedSourceAdapter(source: .minimax),
-            ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
+            claudeCode,
+            ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
+            ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode),
             GeminiCliAdapter(),
             OpenCodeAdapter(),
             IflowAdapter(),

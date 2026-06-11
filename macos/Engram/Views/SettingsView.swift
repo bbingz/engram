@@ -439,7 +439,7 @@ private struct AdvancedSettingsSection: View {
 
     private func loadAdvancedSettings() {
         isLoadingSettings = true
-        defer { isLoadingSettings = false }
+        defer { clearLoadingSettingsAfterViewUpdate() }
         guard let settings = readEngramSettings() else { return }
 
         if let v = settings["httpHost"] as? String { httpHost = v }
@@ -478,6 +478,13 @@ private struct AdvancedSettingsSection: View {
             if let v = audit["logBodies"] as? Bool { aiAuditLogBodies = v }
         }
         if let v = settings["devMode"] as? Bool { devMode = v }
+    }
+
+    private func clearLoadingSettingsAfterViewUpdate() {
+        Task { @MainActor in
+            await Task.yield()
+            isLoadingSettings = false
+        }
     }
 
     private func saveAdvancedSettings(refreshUsage: Bool = false) {

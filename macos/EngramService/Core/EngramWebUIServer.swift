@@ -332,6 +332,10 @@ final class EngramWebUIServer: @unchecked Sendable {
                 FROM sessions s
                 LEFT JOIN session_local_state ls ON ls.session_id = s.id
                 WHERE COALESCE(ls.hidden_at, s.hidden_at) IS NULL
+                  AND COALESCE(s.tier, 'normal') NOT IN ('skip', 'lite')
+                  AND s.parent_session_id IS NULL
+                  AND s.suggested_parent_id IS NULL
+                  AND s.orphan_status IS NULL
                 ORDER BY COALESCE(s.end_time, s.start_time) DESC
                 LIMIT ?
             """, arguments: [limit]).map(WebSession.init(row:))
