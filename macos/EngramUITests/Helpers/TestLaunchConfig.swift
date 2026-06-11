@@ -29,11 +29,11 @@ enum TestLaunchConfig {
 
         switch self {
         case .mainWindow:
-            app.launchArguments += ["--window-size", "1280x800"]
+            app.launchArguments += ["--window-size", "1024x681"]
         case .popover:
             app.launchArguments += ["--popover-standalone"]
         case .darkMode:
-            app.launchArguments += ["--window-size", "1280x800", "--appearance", "dark"]
+            app.launchArguments += ["--window-size", "1024x681", "--appearance", "dark"]
         }
     }
 }

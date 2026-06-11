@@ -76,7 +76,6 @@ final class DarkModeTests: XCTestCase {
 
         let popover = PopoverScreen(app: popoverApp)
         popover.waitForLoad()
-        ScreenshotCapture.capture(name: "popover_stats_dark", app: popoverApp, screen: "popover", test: #function)
 
         popoverApp.terminate()
     }
