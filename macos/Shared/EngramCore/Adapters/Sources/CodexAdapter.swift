@@ -55,7 +55,11 @@ enum JSONLAdapterSupport {
         return (url, identity)
     }
 
-    static func readObjects(locator: String, limits: ParserLimits) throws -> ([JSONObject], ParserFailure?) {
+    static func readObjects(
+        locator: String,
+        limits: ParserLimits,
+        reportFailures: Bool = false
+    ) throws -> ([JSONObject], ParserFailure?) {
         try autoreleasepool {
             let (url, before) = try prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
@@ -75,13 +79,12 @@ enum JSONLAdapterSupport {
             guard limits.isSameFileIdentity(before, after) else {
                 return (objects, .fileModifiedDuringParse)
             }
-            if let failure = reader.failures.first {
+            if reportFailures, let failure = reader.failures.first {
                 return (objects, failure)
             }
-            if exceededMessageLimit {
+            if reportFailures, exceededMessageLimit {
                 return (objects, .messageLimitExceeded)
             }
-
             return (objects, nil)
         }
     }
@@ -184,7 +187,7 @@ enum JSONLAdapterSupport {
         transform: (JSONObject) -> NormalizedMessage?
     ) throws -> [NormalizedMessage] {
         guard let limit = options.limit else {
-            let (objects, failure) = try readObjects(locator: locator, limits: limits)
+            let (objects, failure) = try readObjects(locator: locator, limits: limits, reportFailures: true)
             if let failure { throw failure }
             return applyWindow(objects.compactMap(transform), options: options)
         }
