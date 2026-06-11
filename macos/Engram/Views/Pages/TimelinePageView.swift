@@ -40,6 +40,8 @@ struct TimelinePageView: View {
     }()
 
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @State private var timeline: [(date: String, sessions: [Session])] = []
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
@@ -88,7 +90,9 @@ struct TimelinePageView: View {
                                         },
                                         onChildTap: { child in
                                             NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
-                                        }
+                                        },
+                                        onConfirmSuggestion: { child in confirmSuggestion(child) },
+                                        onDismissSuggestion: { child in dismissSuggestion(child) }
                                     )
                                 }
                             }
@@ -101,7 +105,9 @@ struct TimelinePageView: View {
         .accessibilityIdentifier("timeline_container")
         // .task(id:) cancels the in-flight load when the sort changes, so a
         // slower older load can't land last and show the previous sort's data.
-        .task(id: sortMode) { await loadData() }
+        .task(id: [AnyHashable(sortMode), AnyHashable(serviceStatusStore.totalSessions)]) {
+            await loadData()
+        }
     }
 
     private func loadData() async {
@@ -123,6 +129,33 @@ struct TimelinePageView: View {
             suggestedCounts = data.2
         } catch {
             EngramLogger.error("TimelinePage load failed", module: .ui, error: error)
+        }
+    }
+
+    private func confirmSuggestion(_ child: Session) {
+        Task {
+            do {
+                _ = try await serviceClient.confirmSuggestion(sessionId: child.id)
+                await loadData()
+            } catch {
+                EngramLogger.error("TimelinePage confirm suggestion failed", module: .ui, error: error)
+            }
+        }
+    }
+
+    private func dismissSuggestion(_ child: Session) {
+        Task {
+            do {
+                if let suggestedParentId = child.suggestedParentId {
+                    try await serviceClient.dismissSuggestion(
+                        sessionId: child.id,
+                        suggestedParentId: suggestedParentId
+                    )
+                }
+                await loadData()
+            } catch {
+                EngramLogger.error("TimelinePage dismiss suggestion failed", module: .ui, error: error)
+            }
         }
     }
 

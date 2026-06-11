@@ -45,9 +45,16 @@ struct NetworkSettingsSection: View {
 
     private func loadMcpSettings() {
         isLoadingSettings = true
-        defer { isLoadingSettings = false }
+        defer { clearLoadingSettingsAfterViewUpdate() }
         guard let settings = readEngramSettings() else { return }
         if let strict = settings["mcpStrictSingleWriter"] as? Bool { mcpStrictSingleWriter = strict }
+    }
+
+    private func clearLoadingSettingsAfterViewUpdate() {
+        Task { @MainActor in
+            await Task.yield()
+            isLoadingSettings = false
+        }
     }
 
     private func saveMcpSettings() {

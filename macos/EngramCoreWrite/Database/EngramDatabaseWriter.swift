@@ -10,13 +10,17 @@ public final class EngramDatabaseWriter: Sendable {
         self.path = path
         pool = try DatabasePool(
             path: path,
-            configuration: SQLiteConnectionPolicy.writerConfiguration()
+            configuration: Self.writerConfiguration()
         )
         try SQLiteFileSecurity.secureDatabaseFiles(at: path)
     }
 
     public func write<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
         try pool.write(block)
+    }
+
+    public func writeWithoutTransaction<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
+        try pool.writeWithoutTransaction(block)
     }
 
     public func read<T>(_ block: (GRDB.Database) throws -> T) throws -> T {
@@ -48,5 +52,30 @@ public final class EngramDatabaseWriter: Sendable {
             try EngramMigrationRunner.migrate(db)
         }
         try SQLiteFileSecurity.secureDatabaseFiles(at: path)
+    }
+
+    private static func writerConfiguration() -> Configuration {
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+            try applyCommonPragmas(db)
+            let journalMode = (try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? "").lowercased()
+            guard journalMode == "wal" else {
+                throw SQLiteConnectionPolicyError.journalModeNotWAL(journalMode)
+            }
+        }
+        return configuration
+    }
+
+    private static func applyCommonPragmas(_ db: GRDB.Database) throws {
+        try db.execute(sql: "PRAGMA busy_timeout = \(SQLiteConnectionPolicy.busyTimeoutMilliseconds)")
+        try db.execute(sql: "PRAGMA foreign_keys = ON")
+        try db.execute(sql: "PRAGMA synchronous = NORMAL")
+        try db.execute(sql: "PRAGMA wal_autocheckpoint = \(SQLiteConnectionPolicy.walAutocheckpointPages)")
+        try db.execute(sql: "PRAGMA cache_size = -\(SQLiteConnectionPolicy.cacheSizeKiB)")
+        let timeout = try Int.fetchOne(db, sql: "PRAGMA busy_timeout") ?? 0
+        guard timeout >= SQLiteConnectionPolicy.minimumBusyTimeoutMilliseconds else {
+            throw SQLiteConnectionPolicyError.busyTimeoutTooLow(timeout)
+        }
     }
 }

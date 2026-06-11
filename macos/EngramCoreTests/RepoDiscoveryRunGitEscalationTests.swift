@@ -76,4 +76,35 @@ final class RepoDiscoveryRunGitEscalationTests: XCTestCase {
 
         XCTAssertEqual(output?.trimmingCharacters(in: .whitespacesAndNewlines), "OK")
     }
+
+    func testRunGitBoundsSuccessPathDrainWhenGrandchildKeepsPipeOpen() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rungit-success-drain-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // The parent exits 0 immediately, but the background child inherits the
+        // stdout pipe and keeps it open. runGit must not block the indexing loop
+        // until that child exits.
+        let (bin, work) = try makeFakeGit(
+            root,
+            script: """
+            #!/bin/sh
+            /bin/sleep 5 &
+            echo OK
+            exit 0
+            """
+        )
+
+        let started = Date()
+        let output = RepoDiscovery.runGit(
+            ["status"],
+            cwd: work.path,
+            timeoutSeconds: 1,
+            environment: ["PATH": bin.path]
+        )
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertNil(output)
+        XCTAssertLessThan(elapsed, 3.5, "success-path pipe drain must be bounded")
+    }
 }

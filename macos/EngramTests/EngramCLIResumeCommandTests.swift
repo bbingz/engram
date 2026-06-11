@@ -2,6 +2,17 @@ import XCTest
 @testable import Engram
 
 final class EngramCLIResumeCommandTests: XCTestCase {
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func source(_ relativePath: String) throws -> String {
+        try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
     func testParseResumeSubcommandUsesServiceSocketEnvironment() throws {
         let options = try XCTUnwrap(EngramCLIResumeOptions.parse(
             arguments: ["resume", "session-1", "--json"],
@@ -21,6 +32,15 @@ final class EngramCLIResumeCommandTests: XCTestCase {
 
         XCTAssertEqual(options.sessionId, "session-2")
         XCTAssertFalse(options.json)
+    }
+
+    func testDefaultCLIStdioModeDelegatesToSwiftMCPHelper() throws {
+        let cliMain = try source("macos/EngramCLI/main.swift")
+
+        XCTAssertFalse(cliMain.contains(#"/tmp/engram.sock"#))
+        XCTAssertFalse(cliMain.contains("POST /mcp HTTP/1.1"))
+        XCTAssertTrue(cliMain.contains("EngramMCP"))
+        XCTAssertTrue(cliMain.contains("execv"))
     }
 
     func testRenderShellCommandEscapesCwdAndArgs() throws {
@@ -114,6 +134,34 @@ final class EngramCLIResumeCommandTests: XCTestCase {
 
         XCTAssertTrue(toml.contains(#"directory = "/tmp/dir \"quote\"\\slash""#))
         XCTAssertTrue(toml.contains(#"commands = ["echo \"hi\" && printf 'a\\b\nc\td\r'"]"#))
+    }
+
+    func testTerminalLauncherGhosttyExecsShellForCompositeCommand() {
+        let args = TerminalLauncher.ghosttyArguments(for: "cd '/repo' && codex resume 'session-1'")
+
+        XCTAssertEqual(args, ["-e", "/bin/zsh", "-lc", "cd '/repo' && codex resume 'session-1'"])
+    }
+
+    func testTerminalLauncherReturnsLaunchFailuresInsteadOfSwallowingThem() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+
+        XCTAssertTrue(launcher.contains("enum LaunchError: LocalizedError"))
+        XCTAssertTrue(launcher.contains("static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) -> Result<Void, LaunchError>"))
+        XCTAssertFalse(launcher.contains("try? process.run()"))
+        XCTAssertFalse(launcher.contains("try launchInWarp(shellCommand: shellCmd, cwd: cwd)\n            } catch {\n                let errMsg"))
+        XCTAssertTrue(launcher.contains("return .failure(.appleScriptError("))
+        XCTAssertTrue(launcher.contains("return .failure(.processRunFailed("))
+        XCTAssertTrue(launcher.contains("return .failure(.warpLaunchFailed("))
+    }
+
+    func testResumeDialogKeepsDialogOpenWhenTerminalLaunchFails() throws {
+        let dialog = try source("macos/Engram/Views/Resume/ResumeDialog.swift")
+
+        XCTAssertTrue(dialog.contains("switch TerminalLauncher.launch("))
+        XCTAssertTrue(dialog.contains("case .success:"))
+        XCTAssertTrue(dialog.contains("dismiss()"))
+        XCTAssertTrue(dialog.contains("case .failure(let error):"))
+        XCTAssertTrue(dialog.contains("errorMessage = error.localizedDescription"))
     }
 
     func testRenderJSONReturnsServicePayload() throws {

@@ -6,10 +6,11 @@
 // panels therefore showed a perpetual "all clear" even during a real incident.
 //
 // This reader repoints those panels at the unified system log via
-// `OSLogStore(scope: .currentProcessIdentifier)`, filtered to Engram's two
-// subsystems. It surfaces what the runtime actually emits today. If the store
-// cannot be opened, callers receive `OSLogReaderError.unavailable` so the UI can
-// mark the panel "not available" instead of rendering a false all-clear.
+// `OSLogStore(scope: .system)` when available, filtered to Engram's two
+// subsystems. If system-scope access is denied, it falls back to the current
+// process store; if neither store can be opened, callers receive
+// `OSLogReaderError.unavailable` so the UI can mark the panel "not available"
+// instead of rendering a false all-clear.
 import Foundation
 import OSLog
 
@@ -31,7 +32,7 @@ enum OSLogReader {
         case .debug: return "debug"
         case .info: return "info"
         case .notice: return "info"
-        case .error: return "warn"
+        case .error: return "error"
         case .fault: return "error"
         case .undefined: return "info"
         @unknown default: return "info"
@@ -40,9 +41,13 @@ enum OSLogReader {
 
     private static func makeStore() throws -> OSLogStore {
         do {
-            return try OSLogStore(scope: .currentProcessIdentifier)
+            return try OSLogStore(scope: .system)
         } catch {
-            throw OSLogReaderError.unavailable(error.localizedDescription)
+            do {
+                return try OSLogStore(scope: .currentProcessIdentifier)
+            } catch {
+                throw OSLogReaderError.unavailable(error.localizedDescription)
+            }
         }
     }
 

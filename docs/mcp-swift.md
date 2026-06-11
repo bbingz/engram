@@ -31,7 +31,13 @@ the default product runtime.
 
 ## Switching Claude Code
 
-Edit `~/.claude/mcp.json` (project-scoped lives at `.claude/mcp.json`):
+Use the CLI path when possible:
+
+```bash
+claude mcp add --scope user engram /Applications/Engram.app/Contents/Helpers/EngramMCP
+```
+
+For manual user-scope edits, use `~/.claude/settings.json`:
 
 ```jsonc
 {
@@ -46,7 +52,7 @@ Edit `~/.claude/mcp.json` (project-scoped lives at `.claude/mcp.json`):
 ```
 
 Restart Claude Code. Verify with `/mcp` — the `engram` entry should
-show the 26 tools.
+show the 28 tools.
 
 ## Switching Codex
 

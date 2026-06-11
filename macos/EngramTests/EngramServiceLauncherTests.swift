@@ -68,13 +68,20 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertFalse(arguments.contains { $0.contains("node") || $0.contains("daemon.js") })
     }
 
-    func testLaunchEnvironmentDoesNotExposeKeychainSecrets() {
+    func testLaunchEnvironmentBridgesKeychainSecretsThroughRuntimeFileOnly() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-service-secrets-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let secretsPath = root.appendingPathComponent("ai-secrets.json").path
+
         let environment = EngramServiceLauncher.environment(
             baseEnvironment: [
                 "PATH": "/usr/bin",
                 "ENGRAM_KEYCHAIN_aiApiKey": "inherited-summary-secret",
                 "ENGRAM_KEYCHAIN_titleApiKey": "inherited-title-secret"
             ],
+            runtimeAISecretsPath: secretsPath,
             keychainReader: { account in
                 switch account {
                 case "aiApiKey": return "summary-secret"
@@ -91,6 +98,14 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertFalse(environment.values.contains("inherited-title-secret"))
         XCTAssertFalse(environment.values.contains("summary-secret"))
         XCTAssertFalse(environment.values.contains("title-secret"))
+        XCTAssertEqual(environment["ENGRAM_RUNTIME_AI_SECRETS_PATH"], secretsPath)
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: secretsPath))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+        XCTAssertEqual(object["aiApiKey"], "summary-secret")
+        XCTAssertEqual(object["titleApiKey"], "title-secret")
+        let attrs = try FileManager.default.attributesOfItem(atPath: secretsPath)
+        XCTAssertEqual(attrs[.posixPermissions] as? Int, 0o600)
     }
 
     func testServiceOutputLineBufferWaitsForCompleteJSONLines() throws {
@@ -151,7 +166,8 @@ final class EngramServiceLauncherTests: XCTestCase {
         let executable = try makeSleeperExecutable()
         let launcher = EngramServiceLauncher(
             healthIntervalNanoseconds: 5_000_000,
-            maximumRestartAttempts: 1
+            maximumRestartAttempts: 1,
+            startupGraceNanoseconds: 0
         )
         let config = EngramServiceLaunchConfiguration(
             executablePath: executable.path,
@@ -192,7 +208,8 @@ final class EngramServiceLauncherTests: XCTestCase {
         // the degraded one.
         let launcher = EngramServiceLauncher(
             healthIntervalNanoseconds: 5_000_000,
-            maximumRestartAttempts: 1
+            maximumRestartAttempts: 1,
+            startupGraceNanoseconds: 0
         )
         let config = EngramServiceLaunchConfiguration(
             executablePath: "/tmp/engram-recover-helper",
@@ -216,19 +233,69 @@ final class EngramServiceLauncherTests: XCTestCase {
             }
         )
 
-        // Long enough to span the backoff after budget exhaustion and reach a
-        // successful probe.
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let sawDegraded = await recorder.waitUntil(timeoutNanoseconds: 2_000_000_000) { statuses in
+            statuses.contains { status in
+                if case .degraded = status { return true }
+                return false
+            }
+        }
+        let recovered = await recorder.waitUntil(timeoutNanoseconds: 2_000_000_000) { statuses in
+            statuses.contains { status in
+                if case .running = status { return true }
+                return false
+            }
+        }
         launcher.stopIfOwned()
 
-        XCTAssertTrue(recorder.statuses.contains { status in
+        XCTAssertTrue(sawDegraded, "expected a degraded status after budget exhaustion")
+        XCTAssertTrue(recovered, "monitor must recover to running after the service comes back")
+    }
+
+    @MainActor
+    func testHealthMonitorDoesNotRestartDuringStartupGrace() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-startup-grace-\(UUID().uuidString)")
+        let executable = try makeCountingSleeperExecutable(marker: marker)
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 1,
+            startupGraceNanoseconds: 250_000_000
+        )
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: "/tmp/engram-startup-grace.sock",
+            databasePath: "/tmp/engram-startup-grace.sqlite",
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+
+        try launcher.start(configuration: config)
+        let markerWritten = await waitForFile(at: marker, timeoutNanoseconds: 500_000_000)
+        XCTAssertTrue(markerWritten, "test helper should record its initial launch before health probing starts")
+        launcher.startHealthMonitor(
+            configuration: config,
+            statusProbe: {
+                throw EngramServiceError.serviceUnavailable(message: "socket not ready")
+            },
+            onStatus: { status in
+                recorder.append(status)
+            }
+        )
+
+        let sawStarting = await recorder.waitUntil(timeoutNanoseconds: 120_000_000) { statuses in
+            statuses.contains(.starting)
+        }
+        launcher.stopIfOwned()
+
+        let launches = (try? String(contentsOf: marker, encoding: .utf8))?
+            .split(separator: "\n")
+            .count ?? 0
+        XCTAssertTrue(sawStarting, "startup probe failures should keep reporting starting during grace")
+        XCTAssertEqual(launches, 1, "startup probe failures must not restart a legitimately slow service")
+        XCTAssertFalse(recorder.statuses.contains { status in
             if case .degraded = status { return true }
             return false
-        }, "expected a degraded status after budget exhaustion")
-        XCTAssertTrue(recorder.statuses.contains { status in
-            if case .running = status { return true }
-            return false
-        }, "monitor must recover to running after the service comes back")
+        })
     }
 
     @MainActor
@@ -290,6 +357,20 @@ private final class ServiceStatusRecorder {
     func append(_ status: EngramServiceStatus) {
         statuses.append(status)
     }
+
+    func waitUntil(
+        timeoutNanoseconds: UInt64,
+        predicate: ([EngramServiceStatus]) -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + .nanoseconds(Int(timeoutNanoseconds))
+        while ContinuousClock.now < deadline {
+            if predicate(statuses) {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return predicate(statuses)
+    }
 }
 
 private actor ProbeFailureGate {
@@ -306,6 +387,17 @@ private actor ProbeFailureGate {
     }
 }
 
+private func waitForFile(at url: URL, timeoutNanoseconds: UInt64) async -> Bool {
+    let deadline = ContinuousClock.now + .nanoseconds(Int(timeoutNanoseconds))
+    while ContinuousClock.now < deadline {
+        if FileManager.default.fileExists(atPath: url.path) {
+            return true
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return FileManager.default.fileExists(atPath: url.path)
+}
+
 private func makeSleeperExecutable() throws -> URL {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("engram-service-launcher-\(UUID().uuidString)", isDirectory: true)
@@ -316,6 +408,24 @@ private func makeSleeperExecutable() throws -> URL {
     )
     let executable = directory.appendingPathComponent("sleeper.sh")
     try "#!/bin/sh\nsleep 5\n".write(to: executable, atomically: true, encoding: .utf8)
+    chmod(executable.path, 0o700)
+    return executable
+}
+
+private func makeCountingSleeperExecutable(marker: URL) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("engram-service-counting-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    let executable = directory.appendingPathComponent("counting-sleeper.sh")
+    try """
+    #!/bin/sh
+    printf 'start\\n' >> "\(marker.path)"
+    sleep 5
+    """.write(to: executable, atomically: true, encoding: .utf8)
     chmod(executable.path, 0o700)
     return executable
 }

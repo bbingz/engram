@@ -62,8 +62,8 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
             try Self.setSocketTimeout(fd, seconds: socketTimeout)
 
             let encoded = try JSONEncoder().encode(outboundRequest)
-            try Self.writeFrame(encoded, to: fd)
-            let responseData = try Self.readFrame(from: fd)
+            try Self.writeFrame(encoded, to: fd, requestTimeout: socketTimeout)
+            let responseData = try Self.readFrame(from: fd, requestTimeout: socketTimeout)
             do {
                 return try JSONDecoder().decode(EngramServiceResponseEnvelope.self, from: responseData)
             } catch {
@@ -141,6 +141,7 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
     /// service restart and connect can time out under load.
     private static func isTransientStreamError(_ error: Error) -> Bool {
         if case EngramServiceError.serviceUnavailable = error { return true }
+        if case EngramServiceError.transportClosed = error { return true }
         return false
     }
 
@@ -153,7 +154,7 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
         case .error(let message):
             return EngramServiceEvent(event: "error", message: message)
         case .starting:
-            return EngramServiceEvent(event: "warning", message: "Service starting")
+            return EngramServiceEvent(event: "starting")
         case .stopped:
             return EngramServiceEvent(event: "error", message: "Service stopped")
         }
@@ -230,7 +231,12 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
         }
     }
 
-    static func writeFrame(_ data: Data, to fd: Int32) throws {
+    static func frameDeadline(requestTimeout: TimeInterval?, now: Date = Date()) -> Date {
+        let requested = requestTimeout ?? maximumFrameDurationSeconds
+        return now.addingTimeInterval(max(maximumFrameDurationSeconds, requested))
+    }
+
+    static func writeFrame(_ data: Data, to fd: Int32, requestTimeout: TimeInterval? = nil) throws {
         // Symmetric guard with readFrame: reject oversized payloads before the
         // UInt32 length cast so a too-large frame is a clean error rather than
         // a silently truncated / overflowed length prefix.
@@ -239,17 +245,18 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
                 message: "Service frame length \(data.count) exceeds maximum \(maximumFrameLength)"
             )
         }
-        let deadline = Date().addingTimeInterval(maximumFrameDurationSeconds)
+        let deadline = frameDeadline(requestTimeout: requestTimeout)
         var length = UInt32(data.count).bigEndian
         try withUnsafeBytes(of: &length) { try writeAll($0, to: fd, deadline: deadline) }
         try data.withUnsafeBytes { try writeAll($0, to: fd, deadline: deadline) }
     }
 
-    static func readFrame(from fd: Int32) throws -> Data {
+    static func readFrame(from fd: Int32, requestTimeout: TimeInterval? = nil) throws -> Data {
         // One deadline for the entire frame (length prefix + body), so a peer
         // that trickles bytes can't keep the per-syscall timeout perpetually
-        // satisfied while stalling the whole frame.
-        let deadline = Date().addingTimeInterval(maximumFrameDurationSeconds)
+        // satisfied while stalling the whole frame. Long-running request/response
+        // pairs opt into a longer wall-clock frame budget through requestTimeout.
+        let deadline = frameDeadline(requestTimeout: requestTimeout)
         let lengthData = try readExact(count: 4, from: fd, deadline: deadline)
         let length = lengthData.reduce(UInt32(0)) { partial, byte in
             (partial << 8) | UInt32(byte)

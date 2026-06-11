@@ -1,5 +1,116 @@
 # Engram Local Memory
 
+## 2026-06-10 - Codex completed full audit remediation
+
+- Goal: close every confirmed item from `CODE-REVIEW-2026-06-10.md` and
+  adjudicate the 47 low-severity notes, fixing every note that was true.
+- Result: all 88 confirmed findings are closed in the local remediation ledger
+  (26 high / 50 medium / 12 low), and all 47 low-severity notes were checked
+  and closed. No `OPEN`, `PARTIAL`, or `DEFERRED` ledger item remains outside
+  the legend text.
+- Evidence ledger:
+  `docs/superpowers/plans/2026-06-10-audit-complete-remediation.md`.
+- Deployment: `macos/scripts/build-release.sh --local-only` exported
+  `macos/build/EngramExport/Engram.app`; `macos/scripts/deploy-local.sh
+  macos/build/EngramExport/Engram.app` installed `/Applications/Engram.app`
+  build `20260610144819`, version `0.1.0`.
+- Final verification:
+  - `git diff --check` exited 0.
+  - Focused `Engram`, `EngramServiceCore`, `EngramCoreTests`,
+    `EngramMCPTests`, TS/vitest, release-script, screenshot-compare, and CI
+    workflow tests passed as recorded in the ledger.
+  - Final app-side regression set and service-side IPC regression set exited 0.
+  - `xcodebuild build` for `EngramServiceCore` and `Engram` exited 0.
+  - `codesign --verify --deep --strict --verbose=2 /Applications/Engram.app`
+    exited 0; the installed app is valid on disk and satisfies its Designated
+    Requirement.
+- Residual risk:
+  - Full all-schemes testing was not completed because selected runtime tests
+    still hit the known duplicate-GRDB test-host fatal before behavior
+    assertions.
+  - `EngramUITests/NavigationSmokeTests/testCommandPalette` could not provide a
+    runtime UI assertion on this host because Xcode beta's automation support
+    aborts the app while fetching accessibility snapshots; the source-level
+    tautology/skip removal and CI lane coverage were verified.
+
+## 2026-06-10 - Codex remediation for high-risk audit findings
+
+- Remediated a focused high-risk slice from `CODE-REVIEW-2026-06-10.md` and
+  deployed a verified local build to `/Applications/Engram.app`.
+- Fixed areas:
+  - Resume/launch: Codex now uses the `resume` subcommand, CLI discovery uses
+    common shell binary paths, Ghostty runs composite commands through `zsh -lc`,
+    and the app carries the Apple Events entitlement/usage string.
+  - Runtime/IPC: frame deadlines now honor long request timeouts instead of
+    imposing an unconditional 30s ceiling.
+  - Date parsing/UI metrics: shared `EngramTimestampParser` covers whole,
+    millisecond, microsecond, and SQLite-style timestamps; timeline bucketing and
+    source-health KPIs use it.
+  - AI generation: title regeneration no longer skips existing generated
+    titles, keyless Ollama/custom title providers are accepted, summary protocol
+    UI no longer advertises unsupported Anthropic/Gemini modes, and equivalent
+    reindexing preserves existing AI summaries.
+  - Read paths: Latin keyword search is FTS-driven instead of correlated
+    per-session probes; replay timeline reads SQLite/FTS rows instead of an empty
+    filesystem stub.
+  - Ingestion/project move: startup scans all adapters, Kimi status-update token
+    usage accumulates, project-move compensation only reverses a completed
+    physical move, and same-slug Gemini moves update `projects.json`.
+  - UI/observability: Sessions/Timeline suggested-child buttons call the service;
+    OSLog reading requests system scope and maps `.error` to `error`.
+- Verification:
+  - Targeted Swift tests passed across `EngramServiceCore`, `EngramCoreTests`,
+    and `EngramTests` for the fixes above.
+  - `macos/scripts/build-release.sh --local-only` succeeded and verified
+    Developer ID signing, hardened runtime, secure timestamp, helper structure,
+    and bundle hygiene.
+  - `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app`
+    installed `/Applications/Engram.app` build `20260610065205`; installed
+    codesign verification passed and Apple Events entitlement is present.
+- Residual risk:
+  - Full `EngramServiceCore` scheme test was manually stopped after about 5m18s
+    of repeated Xcode beta CoreDevice/CoreSimulator launch warnings with no
+    explicit test failure observed.
+  - This was a focused remediation pass, not closure of all 88 confirmed audit
+    findings; the remaining medium/low findings and 8 unverified carryovers
+    still need separate adjudication.
+
+## 2026-06-10 - Multi-expert audit (security dimension excluded)
+
+- Full-repo read-only audit: 11 domain experts + adversarial verification
+  (272 subagents, two passes; first pass hit the monthly spend limit and was
+  resumed from the workflow journal).
+- Results: 88 confirmed findings (26 high / 50 medium / 12 low, 0 critical),
+  9 refuted, 1 disputed, 8 UNVERIFIED carryovers (lost to the interruption,
+  e.g. stale SessionCostPricing table -> cost_usd=0 for current models).
+- Report: `CODE-REVIEW-2026-06-10.md`; summary in CHANGELOG.md [Unreleased].
+  Hotspots: EngramService/Core, EngramCoreWrite/Indexing, Engram/Views.
+- Systemic themes: per-view ad-hoc ISO8601 parsing; 30s IPC frame deadline vs
+  long commands; sessions_fts.session_id UNINDEXED full scans; AI generation
+  pipeline inert in default config; resume/launch surface broken end-to-end;
+  tests that cannot fail (source-string asserts, TS-generated fixture DB).
+- STANDING USER PREFERENCE: do NOT include a security/vulnerability expert in
+  multi-agent reviews of this repo (risk-control false triggers); state "no
+  security analysis" in reviewer prompts. No findings fixed as of 2026-06-10.
+
+## 2026-06-10 - Multi-expert audit (security dimension excluded)
+
+- Full-repo read-only audit: 11 domain experts + adversarial verification
+  (272 subagents, two passes; first pass hit the monthly spend limit and was
+  resumed from the workflow journal).
+- Results: 88 confirmed findings (26 high / 50 medium / 12 low, 0 critical),
+  9 refuted, 1 disputed, 8 UNVERIFIED carryovers (lost to the interruption,
+  e.g. stale SessionCostPricing table -> cost_usd=0 for current models).
+- Report: `CODE-REVIEW-2026-06-10.md`; summary in CHANGELOG.md [Unreleased].
+  Hotspots: EngramService/Core, EngramCoreWrite/Indexing, Engram/Views.
+- Systemic themes: per-view ad-hoc ISO8601 parsing; 30s IPC frame deadline vs
+  long commands; sessions_fts.session_id UNINDEXED full scans; AI generation
+  pipeline inert in default config; resume/launch surface broken end-to-end;
+  tests that cannot fail (source-string asserts, TS-generated fixture DB).
+- STANDING USER PREFERENCE: do NOT include a security/vulnerability expert in
+  multi-agent reviews of this repo (risk-control false triggers); state "no
+  security analysis" in reviewer prompts. No findings fixed as of 2026-06-10.
+
 ## 2026-06-08 - Broad product-direction PR stack closeout
 
 - Goal closeout completed for the split product-direction stack.

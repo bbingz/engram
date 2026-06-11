@@ -208,6 +208,32 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertEqual(lobsterLocators, [standardizedPath(lobsterLocator.path)])
     }
 
+    func testClaudeDerivedAdaptersShareBaseAndSourceHintCache() throws {
+        let factory = try source("macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift")
+        let adapter = try source("macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift")
+
+        XCTAssertTrue(
+            factory.contains("let claudeCode = ClaudeCodeAdapter()"),
+            "Default adapter construction should share one Claude base between Claude and derived sources"
+        )
+        XCTAssertTrue(
+            factory.contains("ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode)"),
+            "Minimax derived source should reuse the shared Claude base instead of re-enumerating its own base"
+        )
+        XCTAssertTrue(
+            factory.contains("ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode)"),
+            "LobsterAI derived source should reuse the shared Claude base instead of re-enumerating its own base"
+        )
+        XCTAssertTrue(
+            adapter.contains("sourceHintCache"),
+            "ClaudeCodeAdapter should cache locator source hints so derived sources do not re-read the same heads"
+        )
+        XCTAssertTrue(
+            adapter.contains("init(source: SourceName, base: ClaudeCodeAdapter)"),
+            "Derived adapters should support sharing a ClaudeCodeAdapter base"
+        )
+    }
+
     func testClaudeAdapterKeepsRoutedProviderModelsUnderClaudeCodeSource() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("claude-routed-provider-\(UUID().uuidString)", isDirectory: true)
@@ -839,6 +865,14 @@ final class AdapterParityTests: XCTestCase {
 
     private func standardizedPath(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    }
+
+    private func source(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
     private func claudeFixture(sessionId: String, model: String) -> String {

@@ -28,11 +28,46 @@ final class DatabaseManagerTests: XCTestCase {
     // MARK: - Basic open/close
 
     func testOpenDoesNotCreateServiceOwnedExtensionTables() throws {
-        let tables = try db.readInBackground { db in
+        let queue = try DatabaseQueue(path: dbPath)
+        let tables = try queue.read { db in
             try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
         }
         XCTAssertFalse(tables.contains("favorites"), "App read model must not create favorites")
         XCTAssertFalse(tables.contains("tags"), "App read model must not create tags")
+    }
+
+    func testDatabaseManagerReadsSwiftGatedFixtureSchema() throws {
+        guard let fixturePath = Bundle(for: type(of: self)).path(
+            forResource: "test-index",
+            ofType: "sqlite",
+            inDirectory: "test-fixtures"
+        ) else {
+            return XCTFail("missing test-index.sqlite fixture")
+        }
+        let copiedPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-fixture-read-\(UUID().uuidString).sqlite")
+            .path
+        try FileManager.default.copyItem(atPath: fixturePath, toPath: copiedPath)
+        defer { cleanupTempDatabase(at: copiedPath) }
+
+        let queue = try DatabaseQueue(path: copiedPath)
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+                arguments: ["seed-01", "fixture bridge marker"]
+            )
+        }
+
+        let fixtureDb = DatabaseManager(path: copiedPath)
+        try fixtureDb.open()
+
+        let sessions = try fixtureDb.listSessions(limit: 5)
+        XCTAssertFalse(sessions.isEmpty)
+        let stats = try fixtureDb.sessionListStats()
+        XCTAssertGreaterThan(stats.totalSessions, 0)
+        let search = try fixtureDb.searchWithSnippets(query: "fixture bridge", limit: 1)
+        XCTAssertEqual(search.first?.session.id, "seed-01")
+        XCTAssertTrue(search.first?.snippet.contains("<mark>") ?? false)
     }
 
     func testPathReturnsCorrectPath() throws {
@@ -52,21 +87,14 @@ final class DatabaseManagerTests: XCTestCase {
     // The GUI read pool must apply the shared cache_size (SharedDBConfig), so it
     // cannot drift from SQLiteConnectionPolicy. cache_size is negative (KiB).
     func testReadPoolAppliesSharedCacheSize() throws {
-        let cacheSize = try db.readInBackground { d in
-            try Int.fetchOne(d, sql: "PRAGMA cache_size") ?? 0
-        }
-        XCTAssertEqual(cacheSize, -SharedDBConfig.cacheSizeKiB)
+        XCTAssertEqual(try db.cacheSize(), -SharedDBConfig.cacheSizeKiB)
     }
 
     @MainActor
     func testReadInBackgroundLazilyOpensExistingDatabase() throws {
         let lazyDb = DatabaseManager(path: dbPath)
 
-        let count = try lazyDb.readInBackground { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions")
-        }
-
-        XCTAssertEqual(count, 0)
+        XCTAssertEqual(try lazyDb.sessionListStats().totalSessions, 0)
     }
 
     @MainActor
@@ -242,6 +270,37 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(byCreated.map(\.date), ["2026-05-09", "2026-05-08"])
         XCTAssertEqual(byCreated[0].sessions.map(\.id), ["created-today"])
         XCTAssertEqual(byCreated[1].sessions.map(\.id), ["started-yesterday-active-today"])
+    }
+
+    @MainActor
+    func testSessionTimelineAccessedSortUsesLastAccessedForGrouping() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "started-yesterday-accessed-today",
+            startTime: "2026-05-08T10:00:00Z",
+            endTime: nil
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "created-today",
+            startTime: "2026-05-09T00:30:00Z",
+            endTime: nil
+        )
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET last_accessed_at = ? WHERE id = ?",
+                arguments: ["2026-05-09T12:00:00Z", "started-yesterday-accessed-today"]
+            )
+        }
+
+        let byAccessed = try db.sessionTimeline(days: 10_000, sort: .accessedDesc)
+
+        XCTAssertEqual(byAccessed.map(\.date), ["2026-05-09"])
+        XCTAssertEqual(
+            byAccessed.first?.sessions.map(\.id),
+            ["started-yesterday-accessed-today", "created-today"]
+        )
     }
 
     @MainActor
@@ -865,6 +924,39 @@ final class DatabaseManagerTests: XCTestCase {
         // The local-late session belongs to today's bucket (last index).
         XCTAssertEqual(counts[6], 1, "expected today's local bucket to hold the session; got \(counts)")
         XCTAssertEqual(counts.reduce(0, +), 1, "session must appear in exactly one bucket; got \(counts)")
+    }
+
+    @MainActor
+    func testDailyActivityBucketsByLocalDay() throws {
+        let calendar = Calendar.current
+        let localEarly = calendar.date(
+            bySettingHour: 0, minute: 30, second: 0, of: calendar.startOfDay(for: Date())
+        ) ?? Date()
+        let utc = ISO8601DateFormatter()
+        utc.timeZone = TimeZone(identifier: "UTC")
+        let startTimeUTC = utc.string(from: localEarly)
+        let localDayFormatter = DateFormatter()
+        localDayFormatter.calendar = calendar
+        localDayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        localDayFormatter.timeZone = calendar.timeZone
+        localDayFormatter.dateFormat = "yyyy-MM-dd"
+        let expectedDay = localDayFormatter.string(from: localEarly)
+
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "today-local-early",
+            cwd: "/Users/test/repo",
+            startTime: startTimeUTC
+        )
+
+        let daily = try db.dailyActivity(days: 2)
+        XCTAssertEqual(daily.map(\.date), [expectedDay])
+        XCTAssertEqual(daily.map(\.count), [1])
+
+        let bySource = try db.dailySourceActivity(days: 2)
+        XCTAssertEqual(bySource.map(\.date), [expectedDay])
+        XCTAssertEqual(bySource.first?.segments.map(\.source), ["claude-code"])
+        XCTAssertEqual(bySource.first?.segments.map(\.count), [1])
     }
 
     @MainActor

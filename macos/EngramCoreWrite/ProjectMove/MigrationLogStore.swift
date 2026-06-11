@@ -236,7 +236,13 @@ public enum MigrationLogStore {
         var aliasCreated = false
 
         try db.inSavepoint {
-            let pathArgs: StatementArguments = ["old": oldPath, "new": newPath]
+            let oldVariants = ProjectPathVariants.variants(oldPath)
+            let pathArgs: StatementArguments = [
+                "old0": oldVariants[0],
+                "old1": oldVariants[1],
+                "old2": oldVariants[2],
+                "new": newPath,
+            ]
             // 1a. Collect affected session ids BEFORE the UPDATE — Phase 3 undo
             // needs the authoritative list, not a prefix-reverse guess. Stored
             // in migration_log.detail.
@@ -344,36 +350,6 @@ public enum MigrationLogStore {
         )
     }
 
-    /// Watcher guard: true if any non-terminal migration covers this path.
-    /// Non-terminal = `fs_pending` / `fs_done`. Path "covers" iff equal OR
-    /// startsWith `<column>/`. Substr prefix match avoids LIKE wildcards in
-    /// paths containing `_` or `%`.
-    public static func hasPendingMigrationFor(
-        _ db: GRDB.Database,
-        path: String,
-        ttlSeconds: Int = 60 * 60
-    ) throws -> Bool {
-        guard !path.isEmpty else { return false }
-        let cutoff = "-\(ttlSeconds) seconds"
-        let row = try Row.fetchOne(
-            db,
-            sql: """
-            SELECT 1 FROM migration_log
-             WHERE state IN ('fs_pending', 'fs_done')
-               AND started_at > datetime('now', ?)
-               AND (
-                    ? = old_path
-                 OR (length(?) > length(old_path) AND substr(?, 1, length(old_path) + 1) = old_path || '/')
-                 OR ? = new_path
-                 OR (length(?) > length(new_path) AND substr(?, 1, length(new_path) + 1) = new_path || '/')
-               )
-             LIMIT 1
-            """,
-            arguments: [cutoff, path, path, path, path, path, path]
-        )
-        return row != nil
-    }
-
     /// Convert migrations stuck in fs_pending/fs_done beyond the stale threshold
     /// to `failed`. Runs at daemon/MCP startup so crashed-process remnants
     /// don't accumulate. Returns the number of rows updated.
@@ -447,20 +423,35 @@ public enum MigrationLogStore {
     }
 
     /// Path-match SQL fragment using substr boundary check. Caller binds
-    /// `:old` once per execute; LIKE wildcards (`_`/`%`) are not interpreted.
+    /// `:old0...:old2`; LIKE wildcards (`_`/`%`) are not interpreted.
     private static func pathMatch(_ col: String) -> String {
-        "(\(col) = :old OR (LENGTH(\(col)) > LENGTH(:old) AND SUBSTR(\(col), 1, LENGTH(:old) + 1) = :old || '/'))"
+        (0..<3)
+            .map { idx in
+                let old = ":old\(idx)"
+                return """
+                (\(col) = \(old) OR (LENGTH(\(col)) > LENGTH(\(old)) AND SUBSTR(\(col), 1, LENGTH(\(old)) + 1) = \(old) || '/'))
+                """
+            }
+            .joined(separator: " OR ")
     }
 
     /// Path-rewrite CASE expression using the same boundary check. Caller binds
-    /// `:old` and `:new`.
+    /// `:old0...:old2` and `:new`.
     private static func rewrite(_ col: String) -> String {
-        """
+        let branches = (0..<3)
+            .map { idx in
+                let old = ":old\(idx)"
+                return """
+                  WHEN \(col) = \(old) THEN :new
+                  WHEN LENGTH(\(col)) > LENGTH(\(old))
+                       AND SUBSTR(\(col), 1, LENGTH(\(old)) + 1) = \(old) || '/'
+                    THEN :new || SUBSTR(\(col), LENGTH(\(old)) + 1)
+                """
+            }
+            .joined(separator: "\n")
+        return """
         CASE
-          WHEN \(col) = :old THEN :new
-          WHEN LENGTH(\(col)) > LENGTH(:old)
-               AND SUBSTR(\(col), 1, LENGTH(:old) + 1) = :old || '/'
-            THEN :new || SUBSTR(\(col), LENGTH(:old) + 1)
+        \(branches)
           ELSE \(col)
         END
         """

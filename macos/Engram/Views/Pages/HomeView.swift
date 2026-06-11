@@ -6,15 +6,6 @@ import SwiftUI
 /// Not `private` so the panel-badge contract is unit-testable via @testable.
 let todayPanelRowLimit = 5
 
-private let todayISOFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
-
-/// Fallback ISO-8601 parser for whole-second timestamps (no fractional digits).
-private let todayISOFormatterPlain = ISO8601DateFormatter()
-
 struct HomeView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
@@ -47,7 +38,7 @@ struct HomeView: View {
         }
         .modernScrollIndicators()
         .accessibilityIdentifier("home_container")
-        .task { await loadData() }
+        .task(id: serviceStatusStore.totalSessions) { await loadData() }
         .sheet(item: $resumeSession) { session in
             ResumeDialog(session: session)
         }
@@ -449,8 +440,7 @@ private struct TodaySessionRow: View {
 /// fractional-only formatter.
 enum TodayRelativeTime {
     static func format(_ iso: String, now: Date = Date()) -> String {
-        guard let date = todayISOFormatter.date(from: iso)
-            ?? todayISOFormatterPlain.date(from: iso) else {
+        guard let date = EngramTimestampParser.date(from: iso) else {
             return ""
         }
         let seconds = Int(now.timeIntervalSince(date))
@@ -521,11 +511,9 @@ private func loadTodayFollowUps(
 ) throws -> [Session] {
     var seen = Set<String>()
     var matches: [Session] = []
+    let since = ISO8601DateFormatter().string(from: now.addingTimeInterval(-TodayFollowUps.recencyWindow))
     for query in TodayFollowUps.queries {
-        // searchWithSnippets is unscoped (history-wide, no date filter), so
-        // post-filter every hit to a recent, top-level, unhandled session before
-        // surfacing it as today's follow-up.
-        let results = try db.searchWithSnippets(query: query, limit: limit)
+        let results = try db.searchWithSnippets(query: query, limit: limit, since: since)
         for result in results
         where TodayFollowUps.isEligible(result.session, handledIds: handledIds, now: now)
             && seen.insert(result.session.id).inserted {
@@ -553,8 +541,7 @@ enum TodayFollowUps {
         if handledIds.contains(session.id) { return false }
         // Top-level only: never surface confirmed or suggested children.
         if session.parentSessionId != nil || session.suggestedParentId != nil { return false }
-        guard let started = todayISOFormatter.date(from: session.startTime)
-            ?? todayISOFormatterPlain.date(from: session.startTime) else {
+        guard let started = EngramTimestampParser.date(from: session.startTime) else {
             return false
         }
         // Recent window only (no lower bound, so minor clock skew on a

@@ -14,6 +14,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  XCODEGEN_VERSION: "2.45.4"
 
 jobs:
   typescript:
@@ -45,7 +46,9 @@ jobs:
           cache: 'npm'
 
       - name: Install xcodegen
-        run: brew install xcodegen || true
+        run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

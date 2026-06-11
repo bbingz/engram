@@ -9,9 +9,8 @@ struct AgentsView: View {
 
     private var activeCount: Int {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        let formatter = ISO8601DateFormatter()
         return Set(agentSessions.filter { s in
-            formatter.date(from: s.startTime).map { $0 > weekAgo } ?? false
+            EngramTimestampParser.date(from: s.startTime).map { $0 > weekAgo } ?? false
         }.compactMap(\.agentRole)).count
     }
 

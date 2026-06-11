@@ -2,6 +2,11 @@ import Foundation
 import EngramCoreWrite
 
 extension EngramServiceCommandHandler {
+    private static let projectMovePayloadListLimit = 100
+    private static let projectMovePayloadIssueLimit = 25
+    private static let projectMovePayloadStringLimit = 512
+    private static let projectMovePorcelainLimit = 8 * 1024
+
     static func projectMove(
         _ request: EngramServiceProjectMoveRequest,
         writer: EngramDatabaseWriter
@@ -100,27 +105,14 @@ extension EngramServiceCommandHandler {
             category: .writer
         )
         do {
-            // Pre-flight: validate state + compute the swapped src/dst.
-            let logReader = GRDBMigrationLogReader(writer: writer)
-            let sessionsReader = GRDBSessionByIdReader(writer: writer)
-            let reverse = try UndoMigration.prepareReverseRequest(
-                migrationId: request.migrationId,
-                log: logReader,
-                sessions: sessionsReader
-            )
-            let pipelineResult = try await ProjectMoveOrchestrator.run(
+            let undoResult = try await ProjectMoveOrchestrator.runUndo(
                 writer: writer,
-                options: RunProjectMoveOptions(
-                    src: reverse.src,
-                    dst: reverse.dst,
-                    dryRun: false,
-                    force: request.force,
-                    archived: false,
-                    auditNote: "undo of \(request.migrationId)",
-                    actor: parseActor(request.actor) ?? .mcp,
-                    rolledBackOf: reverse.originalMigrationId
-                )
+                migrationId: request.migrationId,
+                force: request.force,
+                actor: parseActor(request.actor) ?? .mcp
             )
+            let reverse = undoResult.reverse
+            let pipelineResult = undoResult.pipelineResult
             ServiceLogger.notice(
                 "projectUndo finished migrationId=\(pipelineResult.migrationId) rolledBackOf=\(reverse.originalMigrationId) state=\(pipelineResult.state.rawValue)",
                 category: .writer
@@ -183,31 +175,37 @@ extension EngramServiceCommandHandler {
         suggestion: ArchiveSuggestion?
     ) -> EngramServiceProjectMoveResult {
         let review = EngramServiceProjectMoveResult.ReviewBlock(
-            own: result.review.own,
+            own: result.review.own
+                .prefix(Self.projectMovePayloadListLimit)
+                .map { Self.cappedProjectMoveString($0) },
             other: result.review.other
+                .prefix(Self.projectMovePayloadListLimit)
+                .map { Self.cappedProjectMoveString($0) }
         )
-        let manifest = result.manifest.map { entry in
+        let manifest = result.manifest.prefix(Self.projectMovePayloadListLimit).map { entry in
             EngramServiceProjectMoveResult.ManifestEntry(
-                path: entry.path,
+                path: Self.cappedProjectMoveString(entry.path),
                 occurrences: entry.occurrences
             )
         }
         let perSource = result.perSource.map { stats in
             EngramServiceProjectMoveResult.PerSource(
-                id: stats.id,
-                root: stats.root,
+                id: Self.cappedProjectMoveString(stats.id),
+                root: Self.cappedProjectMoveString(stats.root),
                 filesPatched: stats.filesPatched,
                 occurrences: stats.occurrences,
-                issues: stats.issues.isEmpty ? nil : stats.issues.map { issue in
+                issues: stats.issues.isEmpty ? nil : stats.issues
+                    .prefix(Self.projectMovePayloadIssueLimit)
+                    .map { issue in
                     EngramServiceProjectMoveResult.PerSource.WalkIssue(
-                        path: issue.path,
+                        path: Self.cappedProjectMoveString(issue.path),
                         reason: issue.reason.rawValue,
-                        detail: issue.detail
+                        detail: issue.detail.map { Self.cappedProjectMoveString($0) }
                     )
                 }
             )
         }
-        let skipped = result.skippedDirs.map { entry in
+        let skipped = result.skippedDirs.prefix(Self.projectMovePayloadListLimit).map { entry in
             EngramServiceProjectMoveResult.SkippedDir(
                 sourceId: entry.sourceId.rawValue,
                 reason: entry.reason.rawValue,
@@ -217,22 +215,24 @@ extension EngramServiceCommandHandler {
         let archive = suggestion.map { s in
             EngramServiceProjectMoveResult.ArchiveSuggestion(
                 category: s.category.rawValue,
-                dst: s.dst,
-                reason: s.reason
+                dst: Self.cappedProjectMoveString(s.dst),
+                reason: Self.cappedProjectMoveString(s.reason)
             )
         }
         let git = EngramServiceProjectMoveResult.GitStatus(
             isGitRepo: result.git.isGitRepo,
             dirty: result.git.dirty,
             untrackedOnly: result.git.untrackedOnly,
-            porcelain: result.git.porcelain
+            porcelain: Self.cappedProjectMoveString(result.git.porcelain, limit: Self.projectMovePorcelainLimit)
         )
         return EngramServiceProjectMoveResult(
             migrationId: result.migrationId,
             state: result.state.rawValue,
             moveStrategy: result.moveStrategy.rawValue,
             ccDirRenamed: result.ccDirRenamed,
-            renamedDirs: result.renamedDirs.map(\.newDir),
+            renamedDirs: result.renamedDirs
+                .prefix(Self.projectMovePayloadListLimit)
+                .map { Self.cappedProjectMoveString($0.newDir) },
             totalFilesPatched: result.totalFilesPatched,
             totalOccurrences: result.totalOccurrences,
             sessionsUpdated: result.sessionsUpdated,
@@ -246,14 +246,22 @@ extension EngramServiceCommandHandler {
         )
     }
 
+    private static func cappedProjectMoveString(
+        _ value: String,
+        limit: Int = EngramServiceCommandHandler.projectMovePayloadStringLimit
+    ) -> String {
+        guard value.count > limit else { return value }
+        return String(value.prefix(limit)) + "..."
+    }
+
     private static func encodeBatchResult(_ result: BatchResult) -> EngramServiceJSONValue {
         // Keep keys snake_case to mirror Node parity.
         let completed: [EngramServiceJSONValue] = result.completed.map { pr in
             .object([
                 "migration_id": .string(pr.migrationId),
                 "state": .string(pr.state.rawValue),
-                "src": .string(pr.renamedDirs.first?.oldDir ?? ""),
-                "dst": .string(pr.renamedDirs.first?.newDir ?? ""),
+                "src": .string(pr.src),
+                "dst": .string(pr.dst),
                 "files_patched": .number(Double(pr.totalFilesPatched)),
                 "occurrences": .number(Double(pr.totalOccurrences)),
                 "sessions_updated": .number(Double(pr.sessionsUpdated)),

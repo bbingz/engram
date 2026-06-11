@@ -98,7 +98,7 @@ struct SegmentedMessageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(displaySegments) { segment in
+            ForEach(Array(displaySegments.enumerated()), id: \.offset) { _, segment in
                 switch segment {
                 case .text(let text):
                     MarkdownText(text: text, fontSize: fontSize)

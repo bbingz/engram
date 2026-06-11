@@ -27,6 +27,8 @@ struct EngramServiceLaunchConfiguration: Equatable {
 
 @MainActor
 final class EngramServiceLauncher {
+    nonisolated private static let runtimeAISecretsEnvironmentKey = "ENGRAM_RUNTIME_AI_SECRETS_PATH"
+
     typealias StatusProbe = @Sendable () async throws -> EngramServiceStatus
     typealias StatusSink = @MainActor @Sendable (EngramServiceStatus) -> Void
 
@@ -42,14 +44,17 @@ final class EngramServiceLauncher {
     private var stderrPipe: Pipe?
     private var healthTask: Task<Void, Never>?
     private let healthIntervalNanoseconds: UInt64
+    private let startupGraceNanoseconds: UInt64
     private let maximumRestartAttempts: Int
     private var onEvent: EventSink?
 
     init(
         healthIntervalNanoseconds: UInt64 = 5_000_000_000,
-        maximumRestartAttempts: Int = 3
+        maximumRestartAttempts: Int = 3,
+        startupGraceNanoseconds: UInt64 = 30_000_000_000
     ) {
         self.healthIntervalNanoseconds = healthIntervalNanoseconds
+        self.startupGraceNanoseconds = startupGraceNanoseconds
         self.maximumRestartAttempts = maximumRestartAttempts
     }
 
@@ -66,10 +71,65 @@ final class EngramServiceLauncher {
 
     nonisolated static func environment(
         baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        keychainReader _: (String) -> String? = { _ in nil }
+        runtimeAISecretsPath: String? = nil,
+        keychainReader: (String) -> String? = { _ in nil }
     ) -> [String: String] {
-        baseEnvironment.filter { key, _ in
-            !key.hasPrefix("ENGRAM_KEYCHAIN_")
+        var environment = baseEnvironment.filter { key, _ in
+            !key.hasPrefix("ENGRAM_KEYCHAIN_") && key != runtimeAISecretsEnvironmentKey
+        }
+        if let runtimeAISecretsPath,
+           writeRuntimeAISecrets(toPath: runtimeAISecretsPath, keychainReader: keychainReader) {
+            environment[runtimeAISecretsEnvironmentKey] = runtimeAISecretsPath
+        }
+        return environment
+    }
+
+    nonisolated static func runtimeAISecretsPath(forSocketPath socketPath: String) -> String {
+        URL(fileURLWithPath: socketPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("ai-secrets.json")
+            .path
+    }
+
+    @discardableResult
+    nonisolated static func writeRuntimeAISecrets(
+        toPath path: String,
+        keychainReader: (String) -> String?
+    ) -> Bool {
+        var secrets: [String: String] = [:]
+        for account in ["aiApiKey", "titleApiKey"] {
+            if let value = keychainReader(account), !value.isEmpty {
+                secrets[account] = value
+            }
+        }
+
+        let fileManager = FileManager.default
+        if secrets.isEmpty {
+            try? fileManager.removeItem(atPath: path)
+            return false
+        }
+
+        let url = URL(fileURLWithPath: path)
+        do {
+            try fileManager.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let data = try JSONSerialization.data(withJSONObject: secrets, options: [.sortedKeys])
+            if fileManager.fileExists(atPath: path) {
+                try fileManager.removeItem(atPath: path)
+            }
+            guard fileManager.createFile(
+                atPath: path,
+                contents: data,
+                attributes: [.posixPermissions: 0o600]
+            ) else {
+                return false
+            }
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -83,7 +143,11 @@ final class EngramServiceLauncher {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: configuration.executablePath)
         proc.arguments = Self.arguments(for: configuration)
-        proc.environment = Self.environment(baseEnvironment: ProcessInfo.processInfo.environment)
+        proc.environment = Self.environment(
+            baseEnvironment: ProcessInfo.processInfo.environment,
+            runtimeAISecretsPath: Self.runtimeAISecretsPath(forSocketPath: configuration.socketPath),
+            keychainReader: KeychainHelper.get
+        )
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         proc.standardOutput = stdoutPipe
@@ -104,6 +168,7 @@ final class EngramServiceLauncher {
         healthTask?.cancel()
         let interval = healthIntervalNanoseconds
         let maxRestarts = maximumRestartAttempts
+        let startupGrace = startupGraceNanoseconds
         // [weak self] is intentional: `self` retains `healthTask`, so a strong
         // capture would create a retain cycle that keeps the launcher (and its
         // child process) alive past app teardown. The launcher is owned by the
@@ -112,6 +177,7 @@ final class EngramServiceLauncher {
         // correct behavior.
         healthTask = Task { [weak self] in
             var restartAttempts = 0
+            var startupGraceDeadline = Self.startupGraceDeadline(after: startupGrace)
             while !Task.isCancelled {
                 // Exponential backoff once restarts start failing: probing/
                 // restarting a wedged service every `interval` adds load without
@@ -132,10 +198,17 @@ final class EngramServiceLauncher {
                         onStatus(status)
                     }
                     restartAttempts = 0
+                    startupGraceDeadline = nil
                 } catch is CancellationError {
                     return
                 } catch {
                     let message = error.localizedDescription
+                    if Self.isWithinStartupGrace(startupGraceDeadline) {
+                        await MainActor.run {
+                            onStatus(.starting)
+                        }
+                        continue
+                    }
                     if restartAttempts < maxRestarts {
                         restartAttempts += 1
                         guard let self else { return }
@@ -148,6 +221,7 @@ final class EngramServiceLauncher {
                             do {
                                 try self.start(configuration: configuration)
                                 onStatus(.starting)
+                                startupGraceDeadline = Self.startupGraceDeadline(after: startupGrace)
                             } catch {
                                 onStatus(.degraded(message: "EngramService restart failed: \(error.localizedDescription)"))
                             }
@@ -164,6 +238,16 @@ final class EngramServiceLauncher {
                 }
             }
         }
+    }
+
+    nonisolated private static func startupGraceDeadline(after nanoseconds: UInt64) -> ContinuousClock.Instant? {
+        guard nanoseconds > 0 else { return nil }
+        return ContinuousClock.now + .nanoseconds(Int(nanoseconds))
+    }
+
+    nonisolated private static func isWithinStartupGrace(_ deadline: ContinuousClock.Instant?) -> Bool {
+        guard let deadline else { return false }
+        return ContinuousClock.now < deadline
     }
 
     func stopIfOwned() {

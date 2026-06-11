@@ -3,6 +3,8 @@ import SwiftUI
 
 struct SessionsPageView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @AppStorage("sessions.showHidden") private var showHiddenSessions = false
 
     @State private var sessions: [Session] = []
@@ -72,7 +74,9 @@ struct SessionsPageView: View {
                                 },
                                 onChildTap: { child in
                                     NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
-                                }
+                                },
+                                onConfirmSuggestion: { child in confirmSuggestion(child) },
+                                onDismissSuggestion: { child in dismissSuggestion(child) }
                             )
                             .accessibilityIdentifier("sessions_row_\(index)")
                         }
@@ -87,7 +91,12 @@ struct SessionsPageView: View {
         // Single id-keyed task: any filter change cancels the in-flight load and
         // starts a fresh one, so a slower older load can't land last and leave
         // the list showing the previous filter's sessions.
-        .task(id: [AnyHashable(timeFilter), AnyHashable(sourceFilter), AnyHashable(showHiddenSessions)]) {
+        .task(id: [
+            AnyHashable(timeFilter),
+            AnyHashable(sourceFilter),
+            AnyHashable(showHiddenSessions),
+            AnyHashable(serviceStatusStore.totalSessions),
+        ]) {
             await loadData()
         }
     }
@@ -138,6 +147,33 @@ struct SessionsPageView: View {
         } catch {
             EngramLogger.error("SessionsPage load failed", module: .ui, error: error)
             loadError = error.localizedDescription
+        }
+    }
+
+    private func confirmSuggestion(_ child: Session) {
+        Task {
+            do {
+                _ = try await serviceClient.confirmSuggestion(sessionId: child.id)
+                await loadData()
+            } catch {
+                EngramLogger.error("SessionsPage confirm suggestion failed", module: .ui, error: error)
+            }
+        }
+    }
+
+    private func dismissSuggestion(_ child: Session) {
+        Task {
+            do {
+                if let suggestedParentId = child.suggestedParentId {
+                    try await serviceClient.dismissSuggestion(
+                        sessionId: child.id,
+                        suggestedParentId: suggestedParentId
+                    )
+                }
+                await loadData()
+            } catch {
+                EngramLogger.error("SessionsPage dismiss suggestion failed", module: .ui, error: error)
+            }
         }
     }
 

@@ -33,6 +33,31 @@ final class UnixSocketTransportTests: XCTestCase {
         )
     }
 
+    func testEventsStreamRidesOutTransportClosedDuringRestart() async throws {
+        let socketPath = temporarySocketPath()
+        let listener = try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)
+        defer {
+            close(listener)
+            try? FileManager.default.removeItem(atPath: socketPath)
+        }
+
+        Task.detached {
+            let client = accept(listener, nil, nil)
+            if client >= 0 {
+                close(client)
+            }
+        }
+
+        let transport = UnixSocketEngramServiceTransport(socketPath: socketPath)
+        var iterator = transport.events().makeAsyncIterator()
+        let first = try await iterator.next()
+        XCTAssertEqual(
+            first?.event,
+            "warning",
+            "events() must degrade, not terminate, when a restarting service closes the socket"
+        )
+    }
+
     func testSecureRuntimeDirectoryCreatesFreshWith0700() throws {
         let home = temporaryDirectory()
         let runDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory(homeDirectory: home)
@@ -88,6 +113,17 @@ final class UnixSocketTransportTests: XCTestCase {
         }
     }
 
+    func testFrameDeadlineHonorsLongRequestTimeout() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let deadline = UnixSocketEngramServiceTransport.frameDeadline(
+            requestTimeout: 600,
+            now: now
+        )
+
+        XCTAssertEqual(deadline.timeIntervalSince(now), 600, accuracy: 0.001)
+    }
+
     func testRoundTripDecodesTypedStatus() async throws {
         let socketPath = temporarySocketPath()
         let server = try UnixSocketFixtureServer(socketPath: socketPath) { request in
@@ -120,6 +156,25 @@ final class UnixSocketTransportTests: XCTestCase {
         XCTAssertEqual(event?.event, "indexed")
         XCTAssertEqual(event?.total, 12)
         XCTAssertEqual(event?.todayParents, 3)
+        transport.close()
+    }
+
+    func testEventsPreserveStartingStatusInsteadOfWarning() async throws {
+        let socketPath = temporarySocketPath()
+        let server = try UnixSocketFixtureServer(socketPath: socketPath) { request in
+            let status = try JSONEncoder().encode(EngramServiceStatus.starting)
+            return try JSONEncoder().encode(
+                EngramServiceResponseEnvelope.success(requestId: request.requestId, result: status)
+            )
+        }
+        defer { server.stop() }
+
+        let transport = UnixSocketEngramServiceTransport(socketPath: socketPath)
+        var iterator = transport.events().makeAsyncIterator()
+        let event = try await iterator.next()
+
+        XCTAssertEqual(event?.event, "starting")
+        XCTAssertNil(event?.message)
         transport.close()
     }
 

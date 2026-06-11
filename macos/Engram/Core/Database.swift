@@ -601,6 +601,12 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    func cacheSize() throws -> Int {
+        try readInBackground { db in
+            (try Int.fetchOne(db, sql: "PRAGMA cache_size")) ?? 0
+        }
+    }
+
     // MARK: - get_context
     func getContext(cwd: String, limit: Int = 5) throws -> [Session] {
         try readInBackground { db in
@@ -842,10 +848,10 @@ final class DatabaseManager: @unchecked Sendable {
     func dailyActivity(days: Int = 30) throws -> [(date: String, count: Int)] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT DATE(start_time) as day, COUNT(*) as count
+                SELECT date(start_time, 'localtime') as day, COUNT(*) as count
                 FROM sessions
                 WHERE hidden_at IS NULL
-                  AND start_time >= DATE('now', '-\(days) days')
+                  AND date(start_time, 'localtime') >= date('now', 'localtime', '-\(days) days')
                 GROUP BY day ORDER BY day
             """)
             return rows.map { (date: $0["day"] as String, count: $0["count"] as Int) }
@@ -855,10 +861,10 @@ final class DatabaseManager: @unchecked Sendable {
     func dailySourceActivity(days: Int = 30) throws -> [(date: String, segments: [(source: String, count: Int)])] {
         try readInBackground { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT DATE(start_time) as day, source, COUNT(*) as count
+                SELECT date(start_time, 'localtime') as day, source, COUNT(*) as count
                 FROM sessions
                 WHERE hidden_at IS NULL
-                  AND start_time >= DATE('now', '-\(days) days')
+                  AND date(start_time, 'localtime') >= date('now', 'localtime', '-\(days) days')
                 GROUP BY day, source
                 ORDER BY day
             """)
@@ -964,10 +970,19 @@ final class DatabaseManager: @unchecked Sendable {
                 ORDER BY \(sort.rawValue)
             """)
             func timelineTimestamp(_ session: Session) -> String {
-                sort.usesActivityTime ? (session.endTime ?? session.startTime) : session.startTime
+                switch sort {
+                case .accessedDesc, .accessedAsc:
+                    session.lastAccessedAt ?? session.endTime ?? session.startTime
+                case .updatedDesc, .updatedAsc:
+                    session.endTime ?? session.startTime
+                case .createdDesc, .createdAsc:
+                    session.startTime
+                }
             }
 
-            let grouped = Dictionary(grouping: sessions) { String(timelineTimestamp($0).prefix(10)) }
+            let grouped = Dictionary(grouping: sessions) {
+                EngramTimestampParser.localDateKey(from: timelineTimestamp($0))
+            }
             return grouped
                 .sorted { sort.isDescending ? $0.key > $1.key : $0.key < $1.key }
                 .map { group in

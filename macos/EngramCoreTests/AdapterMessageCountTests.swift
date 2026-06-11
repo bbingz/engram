@@ -223,6 +223,38 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.last?.usage, TokenUsage(inputTokens: 321, outputTokens: 65))
     }
 
+    func testIflowCombinesMultipartTextContent() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-Users-test-iflow-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "uuid": "iflow-multipart-1",
+                "sessionId": "iflow-multipart-1",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "text", "text": "first"],
+                        ["type": "text", "text": "second"],
+                    ],
+                ],
+                "cwd": "/tmp/iflow-project",
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("session-multipart.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(projectsRoot: root.appendingPathComponent("projects").path)
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(streamed.map(\.content), ["first\n\nsecond"])
+    }
+
     // MARK: - Kimi
 
     func testKimiAttachesWireTokenUsageToAssistantTurn() async throws {
@@ -255,6 +287,20 @@ final class AdapterMessageCountTests: XCTestCase {
                     ],
                 ],
             ],
+            [
+                "timestamp": 1_700_000_001.5,
+                "message": [
+                    "type": "StatusUpdate",
+                    "payload": [
+                        "token_usage": [
+                            "input_other": 10,
+                            "output": 5,
+                            "input_cache_read": 3,
+                            "input_cache_creation": 2,
+                        ],
+                    ],
+                ],
+            ],
             ["timestamp": 1_700_000_002.0, "message": ["type": "TurnEnd"]],
         ]
         let wireFile = sessionDir.appendingPathComponent("wire.jsonl")
@@ -273,7 +319,7 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertNil(streamed.first?.usage)
         XCTAssertEqual(
             streamed.last?.usage,
-            TokenUsage(inputTokens: 123, outputTokens: 45, cacheReadTokens: 67, cacheCreationTokens: 8)
+            TokenUsage(inputTokens: 133, outputTokens: 50, cacheReadTokens: 70, cacheCreationTokens: 10)
         )
     }
 
@@ -390,6 +436,37 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    func testQwenCombinesMultipartTextContent() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-1/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "assistant",
+                "sessionId": "qwen-multipart-1",
+                "cwd": "/tmp/qwen-project",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "message": [
+                    "role": "model",
+                    "parts": [
+                        ["text": "first"],
+                        ["text": "second"],
+                    ],
+                ],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("qwen-multipart.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(projectsRoot: root.path)
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(streamed.map(\.content), ["first\n\nsecond"])
+    }
+
     // MARK: - Codex
 
     func testCodexAttachesTokenCountEventUsageToPreviousAssistantMessage() async throws {
@@ -456,6 +533,43 @@ final class AdapterMessageCountTests: XCTestCase {
             streamed.last?.usage,
             TokenUsage(inputTokens: 600, outputTokens: 25, cacheReadTokens: 400, cacheCreationTokens: 0)
         )
+    }
+
+    func testCodexCombinesMultipartTextContent() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-multipart.jsonl")
+
+        let lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-multipart-1",
+                    "timestamp": "2026-06-01T10:00:00.000Z",
+                    "cwd": "/tmp/codex-multipart",
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:01.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        ["type": "output_text", "text": "first"],
+                        ["type": "output_text", "text": "second"],
+                    ],
+                ],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(streamed.map(\.content), ["first\n\nsecond"])
     }
 
     // MARK: - Claude Code
@@ -733,6 +847,22 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    func testOpenCodeListingThrowsWhenSQLiteSchemaIsUnreadable() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildEmptySQLiteFile(dbPath: dbPath)
+
+        let adapter = OpenCodeAdapter(dbPath: dbPath)
+
+        do {
+            _ = try await adapter.listSessionLocators()
+            XCTFail("Malformed SQLite-backed sources must surface listing errors instead of appearing empty.")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .sqliteUnreadable)
+        }
+    }
+
     func testCursorAccessibilityReusesSharedDatabaseConnection() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -753,6 +883,22 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    func testCursorListingThrowsWhenSQLiteSchemaIsUnreadable() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildEmptySQLiteFile(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+
+        do {
+            _ = try await adapter.listSessionLocators()
+            XCTFail("Malformed SQLite-backed sources must surface listing errors instead of appearing empty.")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .sqliteUnreadable)
+        }
+    }
+
     func testCursorAttachesAssistantTokenUsage() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -768,6 +914,19 @@ final class AdapterMessageCountTests: XCTestCase {
             streamed.last?.usage,
             TokenUsage(inputTokens: 123, outputTokens: 45, cacheReadTokens: 0, cacheCreationTokens: 0)
         )
+    }
+
+    func testCursorComposerMissingCreatedAtUsesFirstBubbleTimestamp() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorMissingCreatedAtFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_missing_created"))
+
+        XCTAssertEqual(info.startTime, "2023-11-14T22:13:21.000Z")
+        XCTAssertEqual(info.endTime, "2023-11-14T22:13:22.000Z")
     }
 
     /// Minimal OpenCode schema with: 1 user msg (text part), 1 assistant msg
@@ -826,6 +985,14 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    private static func buildEmptySQLiteFile(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        sqlite3_close(db)
+    }
+
     private static func buildCursorFixture(dbPath: String) throws {
         var db: OpaquePointer?
         guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
@@ -867,6 +1034,28 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_usage', '{\"composerId\":\"cmp_usage\"}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_usage:u1', '{\"type\":1,\"text\":\"Track Cursor usage\",\"timingInfo\":{\"clientStartTime\":1700000001000},\"tokenCount\":{\"inputTokens\":77,\"outputTokens\":0}}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_usage:a1', '{\"type\":2,\"text\":\"Cursor usage tracked.\",\"timingInfo\":{\"clientStartTime\":1700000002000},\"tokenCount\":{\"inputTokens\":123,\"outputTokens\":45}}')")
+    }
+
+    private static func buildCursorMissingCreatedAtFixture(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        try exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+        try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_missing_created', '{\"composerId\":\"cmp_missing_created\",\"lastUpdatedAt\":1700000002000}')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_missing_created:u1', '{\"type\":1,\"text\":\"Track Cursor timestamps\",\"timingInfo\":{\"clientStartTime\":1700000001000}}')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_missing_created:a1', '{\"type\":2,\"text\":\"Cursor timestamps tracked.\",\"timingInfo\":{\"clientStartTime\":1700000002000}}')")
     }
 
     // MARK: - Antigravity generic cwd inference

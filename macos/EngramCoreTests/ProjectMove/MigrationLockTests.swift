@@ -128,7 +128,7 @@ final class MigrationLockTests: XCTestCase {
         XCTAssertEqual(holder.migrationId, "fresh")
     }
 
-    func testAcquireBreaksLiveHolderOlderThanTTL() throws {
+    func testAcquireDoesNotBreakLiveHolderOlderThanTTL() throws {
         let lockPath = tmpRoot.appendingPathComponent("ttl.lock").path
         let oldStart = "2026-04-28T00:00:00.000Z"
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-04-28T02:00:00Z"))
@@ -139,12 +139,16 @@ final class MigrationLockTests: XCTestCase {
         )
         try JSONEncoder().encode(liveButOld).write(to: URL(fileURLWithPath: lockPath))
 
-        try MigrationLock.acquire(migrationId: "fresh", lockPath: lockPath, now: now, staleTTL: 60)
-        defer { MigrationLock.release(lockPath: lockPath) }
-
+        XCTAssertThrowsError(
+            try MigrationLock.acquire(migrationId: "fresh", lockPath: lockPath, now: now, staleTTL: 60)
+        ) { error in
+            guard let busy = error as? LockBusyError else {
+                return XCTFail("expected LockBusyError, got \(error)")
+            }
+            XCTAssertEqual(busy.holder.migrationId, "old")
+        }
         let holder = try XCTUnwrap(MigrationLock.read(lockPath: lockPath))
-        XCTAssertEqual(holder.pid, getpid(), "TTL-expired lock must be replaced even when pid is alive")
-        XCTAssertEqual(holder.migrationId, "fresh")
+        XCTAssertEqual(holder.migrationId, "old", "live holder must keep the lock even after the stale TTL")
     }
 
     func testAcquireBreaksZombieHolder() throws {

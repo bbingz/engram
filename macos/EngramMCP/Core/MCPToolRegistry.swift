@@ -1414,11 +1414,16 @@ enum MCPToolError: LocalizedError {
 
 extension OrderedJSONValue {
     static func toolSuccess(_ structured: OrderedJSONValue) -> OrderedJSONValue {
-        .object([
+        let textMirrorLimit = 4_096
+        let prettyText = structured.prettyJSONString()
+        let text = prettyText.count <= textMirrorLimit
+            ? prettyText
+            : "Structured content omitted from text because it exceeds \(textMirrorLimit) characters. Read structuredContent."
+        return .object([
             ("content", .array([
                 .object([
                     ("type", .string("text")),
-                    ("text", .string(structured.prettyJSONString())),
+                    ("text", .string(text)),
                 ]),
             ])),
             ("structuredContent", structured),

@@ -103,21 +103,17 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
 
     func listSessionLocators() async throws -> [String] {
         guard JSONLAdapterSupport.fileExists(dbPath) else { return [] }
-        do {
-            let database = try Phase4SQLiteDatabase(path: dbPath)
-            return try database.query(
-                """
-                SELECT id, directory, title, time_created, time_updated
-                FROM session
-                WHERE time_archived IS NULL
-                ORDER BY time_updated DESC
-                """
-            )
-            .compactMap { row in row["id"] ?? nil }
-            .map { "\(dbPath)::\($0)" }
-        } catch {
-            return []
-        }
+        let database = try Phase4SQLiteDatabase(path: dbPath)
+        return try database.query(
+            """
+            SELECT id, directory, title, time_created, time_updated
+            FROM session
+            WHERE time_archived IS NULL
+            ORDER BY time_updated DESC
+            """
+        )
+        .compactMap { row in row["id"] ?? nil }
+        .map { "\(dbPath)::\($0)" }
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {

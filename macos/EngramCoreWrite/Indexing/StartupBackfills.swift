@@ -119,11 +119,13 @@ public enum StartupBackfills {
         public var checked: Int
         public var classified: Int
         public var linked: Int
+        public var suggested: Int
 
-        public init(checked: Int, classified: Int, linked: Int) {
+        public init(checked: Int, classified: Int, linked: Int, suggested: Int = 0) {
             self.checked = checked
             self.classified = classified
             self.linked = linked
+            self.suggested = suggested
         }
     }
 
@@ -243,9 +245,19 @@ public enum StartupBackfills {
                 emit(StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("dedup"), "removed": .int(deduped)]))
             }
             try database.optimizeFts()
+        } catch {
+            log.warn("db maintenance failed", error: error)
+        }
+
+        do {
             if try database.vacuumIfNeeded(15) {
                 emit(StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("vacuum")]))
             }
+        } catch {
+            log.warn("db vacuum failed", error: error)
+        }
+
+        do {
             let reconciled = try database.reconcileInsights()
             if reconciled.resetEmbedding > 0 || reconciled.orphanedVector > 0 {
                 emit(
@@ -259,6 +271,11 @@ public enum StartupBackfills {
                     )
                 )
             }
+        } catch {
+            log.warn("db insight reconcile failed", error: error)
+        }
+
+        do {
             let grouped = try database.reconcileGroupedSourceDirs()
             if grouped.scannedDirs > 0 || grouped.plannedRenames > 0 || grouped.appliedRenames > 0
                 || grouped.collisions > 0 || grouped.ambiguous > 0 || grouped.issues > 0 {
@@ -278,7 +295,7 @@ public enum StartupBackfills {
                 )
             }
         } catch {
-            log.warn("db maintenance failed", error: error)
+            log.warn("db grouped source dir reconcile failed", error: error)
         }
 
         do {
@@ -308,7 +325,7 @@ public enum StartupBackfills {
                 emit(StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_originator"), "updated": .int(originatorUpdated)]))
             }
             let providerParents = try database.backfillPolycliProviderParents()
-            if providerParents.classified > 0 || providerParents.linked > 0 {
+            if providerParents.classified > 0 || providerParents.linked > 0 || providerParents.suggested > 0 {
                 emit(
                     StartupBackfillEvent(
                         event: "backfill",
@@ -316,7 +333,8 @@ public enum StartupBackfills {
                             "type": .string("polycli_provider_parents"),
                             "checked": .int(providerParents.checked),
                             "classified": .int(providerParents.classified),
-                            "linked": .int(providerParents.linked)
+                            "linked": .int(providerParents.linked),
+                            "suggested": .int(providerParents.suggested)
                         ]
                     )
                 )
@@ -653,16 +671,7 @@ public enum StartupBackfills {
     }
 
     public static func cleanupStaleMigrations(_ db: Database) throws -> Int {
-        try db.executeAndCountChanges(
-            sql: """
-            UPDATE migration_log
-            SET state = 'failed',
-                error = 'stale_after_crash: non-terminal for over 24 hours',
-                finished_at = datetime('now')
-            WHERE state IN ('fs_pending', 'fs_done')
-              AND started_at <= datetime('now', '-86400 seconds')
-            """
-        )
+        try MigrationLogStore.cleanupStaleMigrations(db)
     }
 
     public static func enqueueStaleFtsJobs(_ db: Database) throws -> Int {
@@ -708,13 +717,64 @@ public enum StartupBackfills {
             WHERE agent_role = 'subagent' AND tier != 'skip'
             """
         )
+        try deleteRecoverableIndexArtifactsForSkippedSessions(db, whereClause: "agent_role = 'subagent'")
+        return changed
+    }
+
+    private static func deleteRecoverableIndexArtifactsForSkippedSession(_ db: Database, sessionId: String) throws {
+        try db.execute(
+            sql: "DELETE FROM sessions_fts WHERE session_id = ?",
+            arguments: [sessionId]
+        )
+        if try tableExists(db, "session_embeddings") {
+            try db.execute(
+                sql: "DELETE FROM session_embeddings WHERE session_id = ?",
+                arguments: [sessionId]
+            )
+        }
+        try db.execute(
+            sql: """
+            DELETE FROM session_index_jobs
+            WHERE session_id = ?
+              AND status IN ('pending', 'failed_retryable')
+            """,
+            arguments: [sessionId]
+        )
+    }
+
+    private static func deleteRecoverableIndexArtifactsForSkippedSessions(
+        _ db: Database,
+        whereClause: String
+    ) throws {
         try db.execute(
             sql: """
             DELETE FROM sessions_fts
-            WHERE session_id IN (SELECT id FROM sessions WHERE agent_role = 'subagent')
+            WHERE session_id IN (SELECT id FROM sessions WHERE \(whereClause))
             """
         )
-        return changed
+        if try tableExists(db, "session_embeddings") {
+            try db.execute(
+                sql: """
+                DELETE FROM session_embeddings
+                WHERE session_id IN (SELECT id FROM sessions WHERE \(whereClause))
+                """
+            )
+        }
+        try db.execute(
+            sql: """
+            DELETE FROM session_index_jobs
+            WHERE session_id IN (SELECT id FROM sessions WHERE \(whereClause))
+              AND status IN ('pending', 'failed_retryable')
+            """
+        )
+    }
+
+    private static func tableExists(_ db: Database, _ table: String) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+            arguments: [table]
+        ) ?? false
     }
 
     public static func backfillParentLinks(_ db: Database) throws -> ParentLinkResult {
@@ -792,40 +852,52 @@ public enum StartupBackfills {
     }
 
     public static func backfillCodexOriginator(_ db: Database) throws -> Int {
-        let rows = try Row.fetchAll(
-            db,
-            sql: """
-            SELECT id, file_path FROM sessions
-            WHERE source = 'codex'
-              AND agent_role IS NULL
-              AND parent_session_id IS NULL
-              AND suggested_parent_id IS NULL
-              AND (link_source IS NULL OR link_source != 'manual')
-            LIMIT 500
-            """
-        )
-
         var updated = 0
-        for row in rows {
-            let id: String = row["id"]
-            let filePath: String = row["file_path"]
-            guard let firstLine = readFirstLine(path: filePath, maxBytes: 16_384),
-                  let data = firstLine.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let payload = object["payload"] as? [String: Any],
-                  payload["originator"] as? String == "Claude Code"
-            else {
-                continue
-            }
-            let changes = try db.executeAndCountChanges(
+        while true {
+            let rows = try Row.fetchAll(
+                db,
                 sql: """
-                UPDATE sessions
-                SET agent_role = 'dispatched', tier = 'skip', link_checked_at = NULL
-                WHERE id = ?
-                """,
-                arguments: [id]
+                SELECT id, file_path FROM sessions
+                WHERE source = 'codex'
+                  AND agent_role IS NULL
+                  AND parent_session_id IS NULL
+                  AND suggested_parent_id IS NULL
+                  AND (link_source IS NULL OR link_source != 'manual')
+                  AND link_checked_at IS NULL
+                ORDER BY rowid
+                LIMIT 500
+                """
             )
-            updated += changes
+            guard !rows.isEmpty else { break }
+
+            for row in rows {
+                let id: String = row["id"]
+                let filePath: String = row["file_path"]
+                guard let firstLine = readFirstLine(path: filePath, maxBytes: 16_384),
+                      let data = firstLine.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let payload = object["payload"] as? [String: Any],
+                      payload["originator"] as? String == "Claude Code"
+                else {
+                    try db.execute(
+                        sql: "UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?",
+                        arguments: [id]
+                    )
+                    continue
+                }
+                let changes = try db.executeAndCountChanges(
+                    sql: """
+                    UPDATE sessions
+                    SET agent_role = 'dispatched', tier = 'skip', link_checked_at = NULL
+                    WHERE id = ?
+                    """,
+                    arguments: [id]
+                )
+                if changes > 0 {
+                    try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
+                }
+                updated += changes
+            }
         }
         return updated
     }
@@ -871,13 +943,15 @@ public enum StartupBackfills {
 
         var checked = 0
         var classified = 0
-        var linked = 0
+        let linked = 0
+        var suggested = 0
 
         for candidate in candidates {
             let summary: String? = candidate["summary"]
             let summaryMatches = isPolycliProviderSummary(summary)
 
             let id: String = candidate["id"]
+            let source: String = candidate["source"]
             let agentRole: String? = candidate["agent_role"]
             let childCwd: String = candidate["cwd"]
             let childStartTime: String = candidate["start_time"]
@@ -893,6 +967,9 @@ public enum StartupBackfills {
                       best.score >= 7,
                       try isConcurrentProviderChild(db, childStartTime: childStartTime, parentId: best.parentId)
                 else {
+                    if source == "gemini-cli" {
+                        continue
+                    }
                     try markChecked(db, sessionId: id)
                     continue
                 }
@@ -911,17 +988,18 @@ public enum StartupBackfills {
                 """,
                 arguments: [id]
             )
+            try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
 
             guard let best = scored.first, best.score >= 4 else { continue }
             guard try validateParentLink(db, sessionId: id, parentId: best.parentId) else {
                 continue
             }
 
-            try setParentSession(db, sessionId: id, parentId: best.parentId, linkSource: "path")
-            linked += 1
+            try setSuggestedParent(db, sessionId: id, suggestedParentId: best.parentId)
+            suggested += 1
         }
 
-        return ProviderParentResult(checked: checked, classified: classified, linked: linked)
+        return ProviderParentResult(checked: checked, classified: classified, linked: linked, suggested: suggested)
     }
 
     private static func scoredPolycliHosts(
@@ -942,7 +1020,7 @@ public enum StartupBackfills {
               AND source IN ('codex', 'claude-code', 'claude')
               AND agent_role IS NULL
               AND parent_session_id IS NULL
-              AND cwd = ?
+              AND rtrim(cwd, '/') = rtrim(?, '/')
               AND datetime(start_time) <= datetime(?)
               AND datetime(start_time) >= datetime(?, '-48 hours')
             """,
@@ -1048,6 +1126,7 @@ public enum StartupBackfills {
                     """,
                     arguments: [id]
                 )
+                try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
             }
         }
 
@@ -1064,7 +1143,13 @@ public enum StartupBackfills {
             return false
         }
         let parentSessionId: String? = row["parent_session_id"]
-        return parentSessionId == nil
+        guard parentSessionId == nil else { return false }
+        let childCount = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ? LIMIT 1",
+            arguments: [sessionId]
+        ) ?? 0
+        return childCount == 0
     }
 
     private static func isConcurrentProviderChild(

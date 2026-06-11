@@ -33,21 +33,14 @@ final class NavigationSmokeTests: XCTestCase {
     }
 
     func testCommandPalette() throws {
-        // Command palette may not be implemented — skip gracefully if not found
-        let sidebar = SidebarScreen(app: app)
-        sidebar.waitForLoad()
+        let paletteButton = app.button(id: "command_palette_button")
+        XCTAssertTrue(paletteButton.waitForExistence(timeout: 10),
+                      "Command palette toolbar button should be present before testing Cmd+K")
 
-        // Try Cmd+K which is a common command palette shortcut
         app.typeKey("k", modifierFlags: .command)
 
-        // Look for a command palette element
-        let palette = app.element(id: "commandPalette")
-        let searchField = app.searchFields.firstMatch
-
-        if palette.waitForExistence(timeout: 2) || searchField.waitForExistence(timeout: 2) {
-            XCTAssertTrue(true, "Command palette opened")
-        } else {
-            throw XCTSkip("Command palette not implemented — skipping")
-        }
+        let searchField = app.textFields["commandPalette_search"].firstMatch
+        XCTAssertTrue(searchField.waitForExistence(timeout: 3),
+                      "Cmd+K should open the command palette search field")
     }
 }

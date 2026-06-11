@@ -193,6 +193,7 @@ targets:
         LSApplicationCategoryType: public.app-category.developer-tools
         CFBundleDisplayName: Engram
         NSPrincipalClass: NSApplication
+        NSAppleEventsUsageDescription: "Engram opens resume commands in Terminal or iTerm when you choose those terminal targets."
         # Single-sourced from the MARKETING_VERSION / CURRENT_PROJECT_VERSION build
         # settings above. xcodegen writes these substitution tokens into Info.plist
         # so there is exactly one version source (project.yml).

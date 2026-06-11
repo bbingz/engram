@@ -12,15 +12,18 @@ public final class SwiftIndexer {
     private let sink: any IndexingWriteSink
     private let adapters: [any SessionAdapter]
     private let authoritativeNode: String
+    private let skipUnchangedFileLocators: Bool
 
     public init(
         sink: any IndexingWriteSink,
         adapters: [any SessionAdapter] = [],
-        authoritativeNode: String = "local"
+        authoritativeNode: String = "local",
+        skipUnchangedFileLocators: Bool = false
     ) {
         self.sink = sink
         self.adapters = adapters
         self.authoritativeNode = authoritativeNode
+        self.skipUnchangedFileLocators = skipUnchangedFileLocators
     }
 
     public func indexSnapshots(
@@ -121,8 +124,20 @@ public final class SwiftIndexer {
                 continue
             }
 
+            let knownFileStates = skipUnchangedFileLocators
+                ? (try? sink.knownIndexedFileStates(source: adapter.source, locators: locators))
+                : nil
+
             for locator in locators {
                 try Task.checkCancellation()
+                if let knownFileStates,
+                   let currentFile = Self.directFileState(locator: locator),
+                   let indexed = knownFileStates[locator],
+                   indexed.sizeBytes == currentFile.sizeBytes,
+                   let indexedAt = Self.iso8601.date(from: indexed.indexedAt ?? ""),
+                   currentFile.modifiedAt <= indexedAt {
+                    continue
+                }
                 do {
                     switch try await adapter.parseSessionInfo(locator: locator) {
                     case .failure(let reason):
@@ -150,6 +165,22 @@ public final class SwiftIndexer {
                 }
             }
         }
+    }
+
+    private static func directFileState(locator: String) -> (sizeBytes: Int64, modifiedAt: Date)? {
+        guard !locator.hasPrefix("sync://"),
+              !locator.contains("::"),
+              locator.range(of: "?composer=") == nil
+        else {
+            return nil
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: locator),
+              let size = attributes[.size] as? NSNumber,
+              let modifiedAt = attributes[.modificationDate] as? Date
+        else {
+            return nil
+        }
+        return (size.int64Value, modifiedAt)
     }
 
     private struct SessionStreamStats {

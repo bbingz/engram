@@ -63,14 +63,8 @@ enum JSONLAdapterSupport {
 
             for line in try reader.readLines() {
                 guard let object = parseObject(line) else { continue }
+                guard objects.count < limits.maxMessages else { continue }
                 objects.append(object)
-                if objects.count > limits.maxMessages {
-                    return (objects, .messageLimitExceeded)
-                }
-            }
-
-            if let failure = reader.failures.first {
-                return (objects, failure)
             }
 
             let after = try limits.fileIdentity(for: url)
@@ -596,12 +590,17 @@ final class CodexAdapter: SessionAdapter, Sendable {
 
     private static func extractText(_ content: [Any]?) -> String {
         guard let content else { return "" }
+        var parts: [String] = []
         for item in content {
             guard let object = JSONLAdapterSupport.object(item) else { continue }
-            if let text = JSONLAdapterSupport.string(object["text"]) { return text }
-            if let inputText = JSONLAdapterSupport.string(object["input_text"]) { return inputText }
-            if let outputText = JSONLAdapterSupport.string(object["output_text"]) { return outputText }
+            if let text = JSONLAdapterSupport.string(object["text"]), !text.isEmpty {
+                parts.append(text)
+            } else if let inputText = JSONLAdapterSupport.string(object["input_text"]), !inputText.isEmpty {
+                parts.append(inputText)
+            } else if let outputText = JSONLAdapterSupport.string(object["output_text"]), !outputText.isEmpty {
+                parts.append(outputText)
+            }
         }
-        return ""
+        return parts.joined(separator: "\n\n")
     }
 }

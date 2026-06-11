@@ -122,7 +122,9 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
     }
 
     public func vacuumIfNeeded(_ fragmentationPercent: Int) throws -> Bool {
-        try writer.write { db in try StartupBackfills.vacuumIfNeeded(db, fragmentationPercent: fragmentationPercent) }
+        try writer.writeWithoutTransaction { db in
+            try StartupBackfills.vacuumIfNeeded(db, fragmentationPercent: fragmentationPercent)
+        }
     }
 
     public func reconcileInsights() throws -> StartupInsightReconcileResult {

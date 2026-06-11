@@ -70,9 +70,9 @@ final class MCPDatabase {
         case "project":
             groupExpr = "COALESCE(project, '(unknown)')"
         case "day":
-            groupExpr = "date(start_time, 'localtime')"
+            groupExpr = "COALESCE(date(start_time, 'localtime'), '(unknown)')"
         case "week":
-            groupExpr = "date(start_time, 'localtime', 'weekday 0', '-6 days')"
+            groupExpr = "COALESCE(date(start_time, 'localtime', 'weekday 0', '-6 days'), '(unknown)')"
         default:
             groupExpr = "source"
         }
@@ -106,16 +106,16 @@ final class MCPDatabase {
         }
         let groups = rows.map { row in
             OrderedJSONValue.object([
-                ("key", .string(row["key"])),
-                ("sessionCount", .int(row["sessionCount"])),
-                ("messageCount", .int(row["messageCount"])),
-                ("userMessageCount", .int(row["userMessageCount"])),
-                ("assistantMessageCount", .int(row["assistantMessageCount"])),
-                ("toolMessageCount", .int(row["toolMessageCount"])),
+                ("key", .string(stringValue(row["key"]) ?? "(unknown)")),
+                ("sessionCount", .int(intValue(row["sessionCount"]))),
+                ("messageCount", .int(intValue(row["messageCount"]))),
+                ("userMessageCount", .int(intValue(row["userMessageCount"]))),
+                ("assistantMessageCount", .int(intValue(row["assistantMessageCount"]))),
+                ("toolMessageCount", .int(intValue(row["toolMessageCount"]))),
             ])
         }
         let totalSessions = rows.reduce(0) { partial, row in
-            partial + (row["sessionCount"] as Int)
+            partial + intValue(row["sessionCount"])
         }
 
         return .object([
@@ -142,12 +142,12 @@ final class MCPDatabase {
         if let project {
             let projects = try resolveProjectAliases([project])
             if projects.count == 1, let only = projects.first {
-                conditions.append("project = ?")
-                values.append(only)
+                conditions.append("project LIKE ? ESCAPE '\\'")
+                values.append("%\(escapeLike(only))%")
             } else if !projects.isEmpty {
-                let placeholders = Array(repeating: "?", count: projects.count).joined(separator: ",")
-                conditions.append("project IN (\(placeholders))")
-                values.append(contentsOf: projects)
+                let clauses = projects.map { _ in "project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
+                conditions.append("(\(clauses))")
+                values.append(contentsOf: projects.map { "%\(escapeLike($0))%" })
             }
         }
         if let since {
@@ -158,6 +158,7 @@ final class MCPDatabase {
             conditions.append("start_time <= ?")
             values.append(until)
         }
+        let countValues = values
         values.append(limit)
         values.append(offset)
 
@@ -174,13 +175,21 @@ final class MCPDatabase {
         ORDER BY base.start_time DESC
         """
 
-        let rows = try queue.read { db in
-            try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+        let totalSQL = """
+        SELECT COUNT(*)
+        FROM sessions
+        WHERE \(conditions.joined(separator: " AND "))
+        """
+
+        let (rows, total) = try queue.read { db in
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+            let total = try Int.fetchOne(db, sql: totalSQL, arguments: StatementArguments(countValues)) ?? rows.count
+            return (rows, total)
         }
 
         return .object([
             ("sessions", .array(rows.map(listSessionObject(from:)))),
-            ("total", .int(rows.count)),
+            ("total", .int(total)),
         ])
     }
 
@@ -333,10 +342,10 @@ final class MCPDatabase {
         return .object([
             ("files", .array(rows.map { row in
                 .object([
-                    ("file_path", .string(row["file_path"])),
-                    ("action", .string(row["action"])),
-                    ("total_count", .int(row["total_count"])),
-                    ("session_count", .int(row["session_count"])),
+                    ("file_path", .string(stringValue(row["file_path"]) ?? "")),
+                    ("action", .string(stringValue(row["action"]) ?? "")),
+                    ("total_count", .int(intValue(row["total_count"]))),
+                    ("session_count", .int(intValue(row["session_count"]))),
                 ])
             })),
             ("totalFiles", .int(rows.count)),
@@ -382,10 +391,10 @@ final class MCPDatabase {
             .map { row in
                 OrderedJSONValue.object([
                     ("time", .string(toLocalDateTime(stringValue(row["start_time"])))),
-                    ("source", .string(row["source"])),
+                    ("source", .string(stringValue(row["source"]) ?? "unknown")),
                     ("summary", .string(stringValue(row["summary"]) ?? "（无摘要）")),
-                    ("sessionId", .string(row["id"])),
-                    ("messageCount", .int(row["message_count"])),
+                    ("sessionId", .string(stringValue(row["id"]) ?? "")),
+                    ("messageCount", .int(intValue(row["message_count"]))),
                 ])
             }
             .sorted { lhs, rhs in
@@ -1289,15 +1298,15 @@ private func listSessionObject(from row: Row) -> OrderedJSONValue {
     let startTime = toLocalDateTime(stringValue(row["start_time"]))
     let endTime = toLocalDateTime(stringValue(row["end_time"]))
     let entries: [(String, OrderedJSONValue)] = [
-        ("id", .string(row["id"])),
-        ("source", .string(row["source"])),
+        ("id", .string(stringValue(row["id"]) ?? "")),
+        ("source", .string(stringValue(row["source"]) ?? "unknown")),
         ("startTime", .string(startTime)),
         ("endTime", .string(endTime)),
-        ("cwd", .string(row["cwd"])),
+        ("cwd", .string(stringValue(row["cwd"]) ?? "")),
         ("project", valueOrNull(stringValue(row["project"]))),
         ("model", valueOrNull(stringValue(row["model"]))),
-        ("messageCount", .int(row["message_count"])),
-        ("userMessageCount", .int(row["user_message_count"])),
+        ("messageCount", .int(intValue(row["message_count"]))),
+        ("userMessageCount", .int(intValue(row["user_message_count"]))),
         ("summary", valueOrNull(stringValue(row["summary"]))),
     ]
     return .object(entries)
@@ -1310,12 +1319,12 @@ private func fullSessionObject(from row: Row) -> OrderedJSONValue {
 private func costSummaryObject(from row: Row) -> OrderedJSONValue {
     let entries: [(String, OrderedJSONValue)] = [
         ("key", valueOrNull(stringValue(row["key"]))),
-        ("inputTokens", .int(row["inputTokens"])),
-        ("outputTokens", .int(row["outputTokens"])),
-        ("cacheReadTokens", .int(row["cacheReadTokens"])),
-        ("cacheCreationTokens", .int(row["cacheCreationTokens"])),
+        ("inputTokens", .int(intValue(row["inputTokens"]))),
+        ("outputTokens", .int(intValue(row["outputTokens"]))),
+        ("cacheReadTokens", .int(intValue(row["cacheReadTokens"]))),
+        ("cacheCreationTokens", .int(intValue(row["cacheCreationTokens"]))),
         ("costUsd", .double(doubleValue(row["costUsd"]))),
-        ("sessionCount", .int(row["sessionCount"])),
+        ("sessionCount", .int(intValue(row["sessionCount"]))),
     ]
     return .object(entries)
 }
@@ -1323,7 +1332,7 @@ private func costSummaryObject(from row: Row) -> OrderedJSONValue {
 private func toolAnalyticsObject(from row: Row, groupBy: String) -> OrderedJSONValue {
     var entries: [(String, OrderedJSONValue)] = [
         ("key", valueOrNull(stringValue(row["key"]))),
-        ("callCount", .int(row["callCount"])),
+        ("callCount", .int(intValue(row["callCount"]))),
     ]
     if groupBy == "session" {
         entries.append(("label", valueOrNull(stringValue(row["label"]))))
@@ -1339,24 +1348,24 @@ private func toolAnalyticsObject(from row: Row, groupBy: String) -> OrderedJSONV
 
 private func migrationObject(from row: Row) -> OrderedJSONValue {
     let entries: [(String, OrderedJSONValue)] = [
-        ("id", .string(row["id"])),
-        ("oldPath", .string(row["old_path"])),
-        ("newPath", .string(row["new_path"])),
-        ("oldBasename", .string(row["old_basename"])),
-        ("newBasename", .string(row["new_basename"])),
-        ("state", .string(row["state"])),
-        ("filesPatched", .int(row["files_patched"])),
-        ("occurrences", .int(row["occurrences"])),
-        ("sessionsUpdated", .int(row["sessions_updated"])),
+        ("id", .string(stringValue(row["id"]) ?? "")),
+        ("oldPath", .string(stringValue(row["old_path"]) ?? "")),
+        ("newPath", .string(stringValue(row["new_path"]) ?? "")),
+        ("oldBasename", .string(stringValue(row["old_basename"]) ?? "")),
+        ("newBasename", .string(stringValue(row["new_basename"]) ?? "")),
+        ("state", .string(stringValue(row["state"]) ?? "")),
+        ("filesPatched", .int(intValue(row["files_patched"]))),
+        ("occurrences", .int(intValue(row["occurrences"]))),
+        ("sessionsUpdated", .int(intValue(row["sessions_updated"]))),
         ("aliasCreated", .bool(boolValue(row["alias_created"]))),
         ("ccDirRenamed", .bool(boolValue(row["cc_dir_renamed"]))),
-        ("startedAt", .string(row["started_at"])),
+        ("startedAt", .string(stringValue(row["started_at"]) ?? "")),
         ("finishedAt", valueOrNull(stringValue(row["finished_at"]))),
         ("dryRun", .bool(boolValue(row["dry_run"]))),
         ("rolledBackOf", valueOrNull(stringValue(row["rolled_back_of"]))),
         ("auditNote", valueOrNull(stringValue(row["audit_note"]))),
         ("archived", .bool(boolValue(row["archived"]))),
-        ("actor", .string(row["actor"])),
+        ("actor", .string(stringValue(row["actor"]) ?? "")),
         ("detail", detailJSONValue(from: row["detail"])),
         ("error", valueOrNull(stringValue(row["error"]))),
     ]
@@ -1365,11 +1374,11 @@ private func migrationObject(from row: Row) -> OrderedJSONValue {
 
 private func memoryObject(from row: Row, distance: Double) -> OrderedJSONValue {
     .object([
-        ("id", .string(row["id"])),
-        ("content", .string(row["content"])),
+        ("id", .string(stringValue(row["id"]) ?? "")),
+        ("content", .string(stringValue(row["content"]) ?? "")),
         ("wing", valueOrNull(stringValue(row["wing"]))),
         ("room", valueOrNull(stringValue(row["room"]))),
-        ("importance", .int(row["importance"])),
+        ("importance", .int(intValue(row["importance"]))),
         ("distance", .double(distance)),
     ])
 }
@@ -1809,11 +1818,7 @@ private struct OrderedJSONStringParser {
                 case "t":
                     result.append("\t")
                 case "u":
-                    let hex = try read(length: 4)
-                    guard let scalar = UInt32(hex, radix: 16).flatMap(UnicodeScalar.init) else {
-                        throw ParserError.invalidEscape
-                    }
-                    result.unicodeScalars.append(scalar)
+                    result.append(try parseUnicodeEscape())
                 default:
                     throw ParserError.invalidEscape
                 }
@@ -1822,6 +1827,44 @@ private struct OrderedJSONStringParser {
             }
         }
         throw ParserError.unexpectedEOF
+    }
+
+    private mutating func parseUnicodeEscape() throws -> String {
+        let value = try readUnicodeEscapeValue()
+        if (0xD800...0xDBFF).contains(value) {
+            guard index < text.endIndex, text[index] == "\\" else {
+                throw ParserError.invalidEscape
+            }
+            advance()
+            guard index < text.endIndex, text[index] == "u" else {
+                throw ParserError.invalidEscape
+            }
+            advance()
+            let low = try readUnicodeEscapeValue()
+            guard (0xDC00...0xDFFF).contains(low) else {
+                throw ParserError.invalidEscape
+            }
+            let scalarValue = 0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00)
+            guard let scalar = UnicodeScalar(scalarValue) else {
+                throw ParserError.invalidEscape
+            }
+            return String(Character(scalar))
+        }
+        if (0xDC00...0xDFFF).contains(value) {
+            throw ParserError.invalidEscape
+        }
+        guard let scalar = UnicodeScalar(value) else {
+            throw ParserError.invalidEscape
+        }
+        return String(Character(scalar))
+    }
+
+    private mutating func readUnicodeEscapeValue() throws -> UInt32 {
+        let hex = try read(length: 4)
+        guard let value = UInt32(hex, radix: 16) else {
+            throw ParserError.invalidEscape
+        }
+        return value
     }
 
     private mutating func parseNumber() throws -> OrderedJSONValue {

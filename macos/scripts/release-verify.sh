@@ -14,7 +14,7 @@
 #   - Secure timestamp present
 #
 # Usage:
-#   release-verify.sh /path/to/Engram.app [--adhoc] [--expected-build N]
+#   release-verify.sh /path/to/Engram.app [--adhoc] [--expected-build N] [--expected-short-version X.Y.Z]
 #
 # Exit nonzero on the first failed assertion.
 set -euo pipefail
@@ -24,10 +24,12 @@ shift || true
 
 ADHOC=0
 EXPECTED_BUILD=""
+EXPECTED_SHORT_VERSION=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --adhoc) ADHOC=1 ;;
     --expected-build) shift; EXPECTED_BUILD="${1:-}" ;;
+    --expected-short-version) shift; EXPECTED_SHORT_VERSION="${1:-}" ;;
     *) echo "release-verify: unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -85,6 +87,9 @@ esac
 ok "version short=$SHORT_VERSION build=$BUNDLE_VERSION"
 if [ -n "$EXPECTED_BUILD" ] && [ "$BUNDLE_VERSION" != "$EXPECTED_BUILD" ]; then
   fail "CFBundleVersion '$BUNDLE_VERSION' != expected '$EXPECTED_BUILD'"
+fi
+if [ -n "$EXPECTED_SHORT_VERSION" ] && [ "$SHORT_VERSION" != "$EXPECTED_SHORT_VERSION" ]; then
+  fail "CFBundleShortVersionString '$SHORT_VERSION' != expected '$EXPECTED_SHORT_VERSION'"
 fi
 
 # --- 4. Signature validity (deep + strict) ---

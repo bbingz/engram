@@ -24,12 +24,6 @@ final class UnixSocketServiceServer: Sendable {
     }
 
     func start() throws {
-        // SEC-H1: write a fresh per-launch capability token next to the socket
-        // before we begin accepting connections. Trusted same-user clients read
-        // this 0600 file and attach it to destructive requests.
-        let tokenPath = ServiceCapabilityToken.path(forSocketPath: socketPath)
-        let capabilityToken = try ServiceCapabilityToken.generateAndWrite(toPath: tokenPath)
-
         let descriptor = try state.withLock { state -> Int32? in
             guard state.descriptor < 0 else { return nil }
             let descriptor = try UnixSocketEngramServiceTransport.bindSocket(path: socketPath)
@@ -37,6 +31,26 @@ final class UnixSocketServiceServer: Sendable {
             return descriptor
         }
         guard let descriptor else { return }
+
+        // SEC-H1: write a fresh per-launch capability token next to the socket
+        // before we begin accepting connections. Trusted same-user clients read
+        // this 0600 file and attach it to destructive requests. This happens
+        // only for a newly-bound listener; repeated start() calls on an already
+        // running server must not invalidate the token used by current clients.
+        let tokenPath = ServiceCapabilityToken.path(forSocketPath: socketPath)
+        let capabilityToken: String
+        do {
+            capabilityToken = try ServiceCapabilityToken.generateAndWrite(toPath: tokenPath)
+        } catch {
+            state.withLock { state in
+                if state.descriptor == descriptor {
+                    state.descriptor = -1
+                }
+            }
+            close(descriptor)
+            _ = unlink(socketPath)
+            throw error
+        }
 
         let handler = handler
         let connectionLimiter = connectionLimiter
@@ -52,10 +66,12 @@ final class UnixSocketServiceServer: Sendable {
                     break
                 }
 
-                let client = accept(descriptor, nil, nil)
-                if client < 0 {
+                let client: Int32
+                do {
+                    client = try await Self.acceptClientOffCooperativePool(from: descriptor)
+                } catch let error as AcceptFailure {
                     await connectionLimiter.signal()
-                    let acceptErrno = errno
+                    let acceptErrno = error.code
                     // IPC-H1: do not tear down the listener on transient errors.
                     switch acceptErrno {
                     case EINTR, ECONNABORTED:
@@ -73,6 +89,9 @@ final class UnixSocketServiceServer: Sendable {
                         // whole service on a single failed accept.
                         continue
                     }
+                } catch {
+                    await connectionLimiter.signal()
+                    continue
                 }
                 // SEC-H1: reject peers whose effective uid differs from the
                 // service euid. A Unix socket inherits the directory/inode
@@ -179,6 +198,7 @@ final class UnixSocketServiceServer: Sendable {
             task.cancel()
         }
         if snapshot.descriptor >= 0 {
+            shutdown(snapshot.descriptor, SHUT_RDWR)
             close(snapshot.descriptor)
         }
         _ = unlink(socketPath)
@@ -274,6 +294,19 @@ final class UnixSocketServiceServer: Sendable {
             }
         }
     }
+
+    private static func acceptClientOffCooperativePool(from descriptor: Int32) async throws -> Int32 {
+        try await withCheckedThrowingContinuation { continuation in
+            blockingIOQueue.async {
+                let client = accept(descriptor, nil, nil)
+                if client < 0 {
+                    continuation.resume(throwing: AcceptFailure(code: errno))
+                } else {
+                    continuation.resume(returning: client)
+                }
+            }
+        }
+    }
 }
 
 private struct UnixSocketServerState: Sendable {
@@ -286,6 +319,10 @@ private struct UnixSocketServerStateSnapshot: Sendable {
     var descriptor: Int32
     var acceptTask: Task<Void, Never>?
     var clientTasks: [Task<Void, Never>]
+}
+
+private struct AcceptFailure: Error, Sendable {
+    let code: Int32
 }
 
 private actor ClientTaskStartGate {

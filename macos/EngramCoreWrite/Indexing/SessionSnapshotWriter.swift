@@ -129,7 +129,8 @@ public final class SessionSnapshotWriter {
         }
         if incoming.syncVersion == current.syncVersion,
            incoming.snapshotHash == current.snapshotHash,
-           incoming.sizeBytes == current.sizeBytes {
+           incoming.sizeBytes == current.sizeBytes,
+           incoming.sourceLocator == current.sourceLocator {
             let (preservedRole, preservedTier) = preservedClassification(current: current, incoming: incoming)
             let currentTier = current.tier ?? .normal
             let incomingTier = preservedTier ?? .normal
@@ -315,14 +316,33 @@ public final class SessionSnapshotWriter {
                 WHEN excluded.message_count = 0 AND sessions.message_count > 0 THEN sessions.system_message_count
                 ELSE excluded.system_message_count
               END,
-              summary = COALESCE(excluded.summary, sessions.summary),
-              summary_message_count = COALESCE(excluded.summary_message_count, sessions.summary_message_count),
+              summary = CASE
+                WHEN sessions.summary_message_count IS NOT NULL
+                     AND excluded.summary_message_count IS NOT NULL
+                     AND sessions.summary_message_count >= excluded.summary_message_count
+                     AND sessions.summary IS NOT NULL
+                     AND TRIM(sessions.summary) != ''
+                  THEN sessions.summary
+                ELSE COALESCE(excluded.summary, sessions.summary)
+              END,
+              summary_message_count = CASE
+                WHEN sessions.summary_message_count IS NOT NULL
+                     AND excluded.summary_message_count IS NOT NULL
+                     AND sessions.summary_message_count >= excluded.summary_message_count
+                     AND sessions.summary IS NOT NULL
+                     AND TRIM(sessions.summary) != ''
+                  THEN sessions.summary_message_count
+                ELSE COALESCE(excluded.summary_message_count, sessions.summary_message_count)
+              END,
               size_bytes = excluded.size_bytes,
               indexed_at = excluded.indexed_at,
               origin = excluded.origin,
               authoritative_node = excluded.authoritative_node,
               source_locator = excluded.source_locator,
               file_path = CASE
+                WHEN excluded.source_locator NOT LIKE 'sync://%'
+                     AND (sessions.source_locator IS NULL OR sessions.source_locator != excluded.source_locator)
+                  THEN excluded.source_locator
                 WHEN (sessions.file_path IS NULL OR sessions.file_path = '')
                      AND excluded.source_locator NOT LIKE 'sync://%'
                   THEN excluded.source_locator
@@ -536,6 +556,17 @@ public final class SessionSnapshotWriter {
         jobKinds: [IndexJobKind]
     ) throws {
         for jobKind in jobKinds {
+            let jobId = "\(sessionId):\(targetSyncVersion):\(targetSnapshotHash):\(jobKind.rawValue)"
+            try db.execute(
+                sql: """
+                DELETE FROM session_index_jobs
+                WHERE session_id = ?
+                  AND job_kind = ?
+                  AND id != ?
+                  AND status IN ('pending', 'failed_retryable', 'completed', 'not_applicable')
+                """,
+                arguments: [sessionId, jobKind.rawValue, jobId]
+            )
             try db.execute(
                 sql: """
                 INSERT INTO session_index_jobs (
@@ -548,7 +579,7 @@ public final class SessionSnapshotWriter {
                   updated_at = datetime('now')
                 """,
                 arguments: [
-                    "\(sessionId):\(targetSyncVersion):\(targetSnapshotHash):\(jobKind.rawValue)",
+                    jobId,
                     sessionId,
                     jobKind.rawValue,
                     targetSyncVersion

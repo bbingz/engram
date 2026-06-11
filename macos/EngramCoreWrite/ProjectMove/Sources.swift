@@ -9,6 +9,28 @@ import Darwin
 import Foundation
 import GRDB
 
+enum ProjectPathVariants {
+    static func variants(_ path: String) -> [String] {
+        var variants: [String] = []
+        for value in [
+            path,
+            path.precomposedStringWithCanonicalMapping,
+            path.decomposedStringWithCanonicalMapping,
+        ] {
+            let alreadySeen = variants.contains { existing in
+                existing.utf8.elementsEqual(value.utf8)
+            }
+            if !alreadySeen {
+                variants.append(value)
+            }
+        }
+        while variants.count < 3 {
+            variants.append(variants[0])
+        }
+        return variants
+    }
+}
+
 public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case claudeCode = "claude-code"
     case codex
@@ -175,23 +197,7 @@ public enum OpenCodeSQLiteProjectMove {
     }
 
     private static func pathVariants(_ path: String) -> [String] {
-        var variants: [String] = []
-        for value in [
-            path,
-            path.precomposedStringWithCanonicalMapping,
-            path.decomposedStringWithCanonicalMapping,
-        ] {
-            let alreadySeen = variants.contains { existing in
-                existing.utf8.elementsEqual(value.utf8)
-            }
-            if !alreadySeen {
-                variants.append(value)
-            }
-        }
-        while variants.count < 3 {
-            variants.append(variants[0])
-        }
-        return variants
+        ProjectPathVariants.variants(path)
     }
 
     private static func matchingPrefix(directory: String, variants: [String]) -> String? {

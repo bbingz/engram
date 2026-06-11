@@ -1,6 +1,6 @@
 name: Release Gate
 
-# Tag-gated release verification. Runs on any pushed tag.
+# Tag-gated release verification. Runs on v* tags after release tests pass.
 # We cannot notarize in CI (no Apple secrets), so this lane builds + exports with
 # an ad-hoc identity and runs the IDENTITY-INDEPENDENT checks from
 # macos/scripts/release-verify.sh:
@@ -13,14 +13,73 @@ name: Release Gate
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
 
 permissions:
   contents: read
 
+env:
+  XCODEGEN_VERSION: "2.45.4"
+
 jobs:
+  release-tests:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install xcodegen
+        run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
+          restore-keys: spm-
+
+      - name: Generate Xcode project
+        run: cd macos && xcodegen generate
+
+      - name: Build fixtures and run TypeScript tests
+        run: |
+          npm ci
+          npm run build
+          npm run typecheck:test
+          npm run generate:fixtures
+          npm run test:coverage
+
+      - name: Run Swift release unit tests
+        run: |
+          cd macos
+
+          run_xcode_tests() {
+            local scheme="$1"
+            shift
+            local log="xcodebuild-${scheme}.log"
+            xcodebuild test \
+              -project Engram.xcodeproj \
+              -scheme "$scheme" \
+              -destination 'platform=macOS' \
+              CODE_SIGNING_ALLOWED=NO \
+              "$@" \
+              2>&1 | tee "$log"
+            grep -Fq '** TEST SUCCEEDED **' "$log"
+          }
+
+          run_xcode_tests Engram -skip-testing:EngramUITests
+          run_xcode_tests EngramServiceCore
+          run_xcode_tests EngramMCPTests
+
   release-bundle-gate:
     runs-on: macos-15
+    needs: [release-tests]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -31,12 +90,14 @@ jobs:
           cache: 'npm'
 
       - name: Install xcodegen
-        run: brew install xcodegen || true
+        run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
 
       - uses: actions/cache@v5
         with:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ hashFiles('macos/project.yml') }}
+          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
           restore-keys: spm-
 
       - name: Generate Xcode project
@@ -76,6 +137,8 @@ jobs:
       - name: Run release-verify (ad-hoc, identity-independent checks)
         run: |
           cd macos
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
           ./scripts/release-verify.sh build/EngramExport/Engram.app \
             --adhoc \
-            --expected-build "${{ github.run_number }}"
+            --expected-build "${{ github.run_number }}" \
+            --expected-short-version "$TAG_VERSION"

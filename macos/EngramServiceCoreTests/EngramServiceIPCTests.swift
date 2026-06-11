@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import Darwin
 import Foundation
+import EngramCoreWrite
 @testable import EngramServiceCore
 
 final class EngramServiceIPCTests: XCTestCase {
@@ -36,31 +37,108 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(context.transcript.contains("third message"))
     }
 
-    func testReadTitleContextsExcludesSkipTierAndTitledSessions() throws {
-        let paths = try makeServiceIPCPaths()
-        try seedSearchFixture(at: paths.database.path)
-        let queue = try DatabaseQueue(path: paths.database.path)
-        try queue.write { db in
-            try db.execute(
-                sql: """
-                INSERT INTO sessions (
-                  id, source, start_time, cwd, project, model, message_count,
-                  user_message_count, assistant_message_count, file_path, size_bytes, indexed_at, tier
-                ) VALUES (
-                  'skip-untitled', 'codex', '2026-04-23T05:00:00Z', '/tmp/engram', 'engram',
-                  'gpt-5.4', 2, 1, 1, '/tmp/skip.jsonl', 44, '2026-04-23T05:00:00Z', 'skip'
-                );
-                """
-            )
-        }
+    func testReadTitleContextsRegeneratesTitledNormalSessionsAndExcludesSkipTier() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
+        let start = try XCTUnwrap(source.range(of: "static func readTitleContexts"))
+        let end = try XCTUnwrap(source.range(of: "private static func readOnlyPool"))
+        let body = String(source[start.lowerBound..<end.lowerBound])
 
-        let ids = try EngramServiceCommandHandler
-            .readTitleContexts(databasePath: paths.database.path)
-            .map(\.id)
+        XCTAssertTrue(body.contains("COALESCE(tier, 'normal') != 'skip'"))
+        XCTAssertFalse(
+            body.contains("generated_title IS NULL"),
+            "regenerate-all must not be starved by indexer-derived generated_title values"
+        )
+    }
 
-        XCTAssertTrue(ids.contains("s2"), "untitled normal-tier session should be included")
-        XCTAssertFalse(ids.contains("skip-untitled"), "skip-tier session must be excluded")
-        XCTAssertFalse(ids.contains("s1"), "already-titled session must be excluded")
+    func testSQLiteResumeCommandUsesCodexResumeSubcommand() {
+        XCTAssertEqual(
+            SQLiteEngramServiceReadProvider.resumeArguments(tool: "codex", sessionId: "s1"),
+            ["resume", "s1"]
+        )
+        XCTAssertEqual(
+            SQLiteEngramServiceReadProvider.resumeArguments(tool: "claude", sessionId: "s1"),
+            ["--resume", "s1"]
+        )
+    }
+
+    func testReplayTimelineBuildsEntriesFromFtsRows() {
+        let rows = [
+            SQLiteEngramServiceReadProvider.ReplayFTSRow(rowid: 10, content: "User: inspect the logs"),
+            SQLiteEngramServiceReadProvider.ReplayFTSRow(rowid: 11, content: "Assistant: found the timeout"),
+            SQLiteEngramServiceReadProvider.ReplayFTSRow(rowid: 12, content: "tool output goes here"),
+        ]
+
+        let entries = SQLiteEngramServiceReadProvider.replayEntries(
+            from: rows,
+            source: "codex",
+            limit: 2
+        )
+
+        XCTAssertEqual(entries.map(\.index), [0, 1])
+        XCTAssertEqual(entries.map(\.role), ["user", "assistant"])
+        XCTAssertEqual(entries.map(\.preview), ["inspect the logs", "found the timeout"])
+    }
+
+    func testSQLiteReplayTimelineDoesNotDelegateToEmptyFileSystemStub() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
+        let start = try XCTUnwrap(source.range(of: "func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse", options: [], range: source.range(of: "struct SQLiteEngramServiceReadProvider")!.lowerBound..<source.endIndex))
+        let end = try XCTUnwrap(source.range(of: "func embeddingStatus()", options: [], range: start.lowerBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertFalse(body.contains("fileSystemProvider.replayTimeline"))
+        XCTAssertTrue(body.contains("sessions_fts"))
+    }
+
+    func testServiceSearchDrivesLatinQueriesFromFtsMatches() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
+        let start = try XCTUnwrap(source.range(of: "let termMatches = CJKText.ftsMatchTerms(query)"))
+        let end = try XCTUnwrap(source.range(of: "let rows = try Row.fetchAll", options: [], range: start.lowerBound..<source.endIndex))
+        let latinPath = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(latinPath.contains("WITH"))
+        XCTAssertTrue(latinPath.contains("JOIN sessions s ON s.id ="))
+        XCTAssertFalse(
+            latinPath.contains("AND EXISTS"),
+            "Latin FTS search must not run a correlated MATCH probe for every sessions row"
+        )
+        XCTAssertFalse(
+            latinPath.contains("session_id = s.id"),
+            "Latin FTS search must drive from MATCH results before joining sessions"
+        )
+    }
+
+    func testSnapshotUpsertPreservesGeneratedSummaryForEquivalentReindex() throws {
+        let source = try serviceCoreSource("EngramCoreWrite/Indexing/SessionSnapshotWriter.swift")
+        let start = try XCTUnwrap(source.range(of: "summary = CASE"))
+        let end = try XCTUnwrap(source.range(of: "size_bytes = excluded.size_bytes", options: [], range: start.lowerBound..<source.endIndex))
+        let summaryUpsert = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(summaryUpsert.contains("sessions.summary_message_count >= excluded.summary_message_count"))
+        XCTAssertTrue(summaryUpsert.contains("THEN sessions.summary"))
+        XCTAssertTrue(summaryUpsert.contains("THEN sessions.summary_message_count"))
+        XCTAssertTrue(summaryUpsert.contains("ELSE COALESCE(excluded.summary, sessions.summary)"))
+    }
+
+    func testServiceAIHTTPTimeoutStaysBelowIPCFrameDeadline() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
+        XCTAssertTrue(
+            source.contains("private static let aiChatTimeoutSeconds: TimeInterval = 25"),
+            "AI summary/title requests must fail before the 30s IPC frame deadline so the service cannot write after the client times out"
+        )
+        XCTAssertTrue(source.contains("request.timeoutInterval = aiChatTimeoutSeconds"))
+        XCTAssertFalse(source.contains("request.timeoutInterval = 45"))
+    }
+
+    func testServiceTranscriptFallbackDoesNotBypassAdapterSizeFailures() throws {
+        let source = try serviceCoreSource("EngramService/Core/TranscriptExportService.swift")
+        let start = try XCTUnwrap(source.range(of: "static func readMessages(filePath: String, source: String)"))
+        let end = try XCTUnwrap(source.range(of: "private static func adapterSourceName", options: [], range: start.lowerBound..<source.endIndex))
+        let reader = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(reader.contains("try await readWithAdapterRegistry"))
+        XCTAssertTrue(reader.contains("try TranscriptSizeGuard.validateFullJSONTranscript"))
+        XCTAssertTrue(reader.contains("isFallbackUnsafeParserFailure"))
+        XCTAssertTrue(reader.contains("catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure)"))
     }
 
     func testRecordSessionAccessUpdatesAccessColumnsThroughWriteGate() async throws {
@@ -84,6 +162,22 @@ final class EngramServiceIPCTests: XCTestCase {
         }
         XCTAssertEqual(row?["access_count"] as Int?, 2)
         XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
+    }
+
+    func testSecondUnixSocketServerStartDoesNotRewriteCapabilityToken() throws {
+        let paths = try makeServiceIPCPaths()
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            .success(requestId: request.requestId, result: Data("{}".utf8))
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let tokenPath = ServiceCapabilityToken.path(forSocketPath: paths.socket.path)
+        let firstToken = try String(contentsOfFile: tokenPath, encoding: .utf8)
+        try server.start()
+        let secondToken = try String(contentsOfFile: tokenPath, encoding: .utf8)
+
+        XCTAssertEqual(firstToken, secondToken)
     }
 
     func testGenerateTitlesForContextsHonorsCancellationBeforeWork() async throws {
@@ -214,7 +308,10 @@ final class EngramServiceIPCTests: XCTestCase {
           "aiModel": "gpt-4o-mini",
           "summaryLanguage": "English",
           "summaryMaxSentences": 5,
-          "summaryStyle": "bullet points"
+          "summaryStyle": "bullet points",
+          "summarySampleFirst": 2,
+          "summarySampleLast": 3,
+          "summaryTruncateChars": 40
         }
         """.data(using: .utf8)!.write(to: settingsURL)
 
@@ -226,6 +323,53 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(settings.summaryConfig?.summaryLanguage, "English")
         XCTAssertEqual(settings.summaryConfig?.summaryMaxSentences, 5)
         XCTAssertEqual(settings.summaryConfig?.summaryStyle, "bullet points")
+        XCTAssertEqual(settings.summaryConfig?.summarySampleFirst, 2)
+        XCTAssertEqual(settings.summaryConfig?.summarySampleLast, 3)
+        XCTAssertEqual(settings.summaryConfig?.summaryTruncateChars, 40)
+    }
+
+    func testServiceAIClientSamplesTranscriptFromSummaryTuning() {
+        let context = EngramServiceCommandHandler.AIContext(
+            id: "sample",
+            source: "codex",
+            project: "engram",
+            cwd: "/tmp/engram",
+            messageCount: 5,
+            startTime: "2026-04-23T00:00:00Z",
+            nativeTitle: "Native",
+            nativeSummary: "Native summary",
+            transcript: [
+                "first message has a long tail",
+                "second message",
+                "middle message should be omitted",
+                "fourth message",
+                "fifth message has a long tail"
+            ].joined(separator: "\n")
+        )
+        var config = EngramServiceCommandHandler.ServiceAISettings.ChatConfig(
+            provider: "openai",
+            baseURL: "https://api.openai.com",
+            apiKey: "secret",
+            model: "gpt-4o-mini",
+            maxTokens: 200,
+            temperature: 0.3
+        )
+        config.summarySampleFirst = 1
+        config.summarySampleLast = 2
+        config.summaryTruncateChars = 14
+
+        let transcript = EngramServiceCommandHandler.ServiceAIClient.boundedTranscript(
+            context,
+            config: config,
+            limit: 1_000
+        )
+
+        XCTAssertTrue(transcript.contains("first message"))
+        XCTAssertTrue(transcript.contains("fourth message"))
+        XCTAssertTrue(transcript.contains("fifth message"))
+        XCTAssertTrue(transcript.contains("...[2 messages omitted]..."))
+        XCTAssertFalse(transcript.contains("middle message should be omitted"))
+        XCTAssertFalse(transcript.contains("long tail"))
     }
 
     func testServiceAISettingsResolvesKeychainMarkerWithoutEnvironmentSecretFallback() throws {
@@ -255,6 +399,36 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(resolved.summaryConfig?.apiKey, "direct-secret")
         XCTAssertNil(unresolved.summaryConfig)
+    }
+
+    func testServiceAISettingsResolvesKeychainMarkerFromRuntimeSecretBridge() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-secret-bridge-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try """
+        {
+          "aiProtocol": "openai",
+          "aiApiKey": "@keychain",
+          "titleProvider": "openai",
+          "titleApiKey": "@keychain",
+          "aiModel": "gpt-4o-mini"
+        }
+        """.data(using: .utf8)!.write(to: settingsURL)
+        let bridgeURL = directory.appendingPathComponent("ai-secrets.json")
+        try #"{"aiApiKey":"summary-secret","titleApiKey":"title-secret"}"#
+            .data(using: .utf8)!
+            .write(to: bridgeURL)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            environment: ["ENGRAM_RUNTIME_AI_SECRETS_PATH": bridgeURL.path],
+            keychainReader: { _ in nil }
+        )
+
+        XCTAssertEqual(settings.summaryConfig?.apiKey, "summary-secret")
+        XCTAssertEqual(settings.titleConfig?.apiKey, "title-secret")
     }
 
     func testAIChatURLDoesNotDoubleV1Path() throws {
@@ -288,6 +462,78 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(settings.titleConfig?.apiKey, "secret")
         XCTAssertEqual(settings.titleConfig?.model, "mimo-v2.5-pro")
         XCTAssertEqual(settings.titleConfig?.maxTokens, 120)
+    }
+
+    func testServiceAISettingsAcceptsKeylessOllamaTitleProvider() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-ollama-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try """
+        {
+          "titleProvider": "ollama",
+          "titleBaseURL": "http://localhost:11434",
+          "titleModel": "qwen2.5:3b"
+        }
+        """.data(using: .utf8)!.write(to: settingsURL)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            keychainReader: { _ in nil }
+        )
+
+        XCTAssertEqual(settings.titleConfig?.provider, "ollama")
+        XCTAssertEqual(settings.titleConfig?.baseURL, "http://localhost:11434")
+        XCTAssertEqual(settings.titleConfig?.apiKey, "")
+        XCTAssertEqual(settings.titleConfig?.model, "qwen2.5:3b")
+    }
+
+    func testServiceAISettingsIgnoresStoredTitleApiKeyForOllamaTitleProvider() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-ollama-stored-key-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try """
+        {
+          "titleProvider": "ollama",
+          "titleBaseURL": "http://localhost:11434",
+          "titleApiKey": "@keychain",
+          "titleModel": "qwen2.5:3b"
+        }
+        """.data(using: .utf8)!.write(to: settingsURL)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            keychainReader: { account in account == "titleApiKey" ? "stored-cloud-title-key" : nil }
+        )
+
+        XCTAssertEqual(settings.titleConfig?.provider, "ollama")
+        XCTAssertEqual(settings.titleConfig?.apiKey, "")
+    }
+
+    func testServiceAISettingsAcceptsKeylessCustomTitleProvider() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ai-custom-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try """
+        {
+          "titleProvider": "custom",
+          "titleBaseURL": "http://127.0.0.1:8080",
+          "titleModel": "local-title"
+        }
+        """.data(using: .utf8)!.write(to: settingsURL)
+
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(
+            settingsPath: settingsURL,
+            keychainReader: { _ in nil }
+        )
+
+        XCTAssertEqual(settings.titleConfig?.provider, "custom")
+        XCTAssertEqual(settings.titleConfig?.apiKey, "")
     }
 
     func testServiceAIClientLogsLLMRequestLifecycle() throws {
@@ -326,6 +572,23 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    func testClearParentSessionResetsNonSubagentSkipTier() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func clearParentSession"))
+        let end = try XCTUnwrap(source.range(of: "private static func dismissSuggestion"))
+        let clearSource = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(clearSource.contains("tier = CASE"))
+        XCTAssertTrue(
+            clearSource.contains("WHEN agent_role = 'subagent' THEN 'skip'"),
+            "manual unlink must preserve the skip-tier invariant for true subagents"
+        )
+        XCTAssertTrue(
+            clearSource.contains("ELSE NULL"),
+            "manual unlink must make non-subagent skip-tier children visible for re-evaluation"
+        )
+    }
+
     func testProjectMigrationCommandsEmitServiceLogs() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift")
 
@@ -338,13 +601,52 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("ServiceLogger.error("))
     }
 
-    func testRunnerStartupScanUsesRecentActiveAdapters() throws {
+    func testProjectMoveResultPayloadIsCappedBelowFrameLimit() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func mapPipelineResult"))
+        let end = try XCTUnwrap(source.range(of: "private static func encodeBatchResult", options: [], range: start.lowerBound..<source.endIndex))
+        let mapper = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(source.contains("private static let projectMovePayloadListLimit"))
+        XCTAssertTrue(source.contains("private static let projectMovePayloadStringLimit"))
+        XCTAssertTrue(source.contains("private static func cappedProjectMoveString"))
+        XCTAssertTrue(mapper.contains(".prefix(Self.projectMovePayloadListLimit)"))
+        XCTAssertTrue(mapper.contains("Self.cappedProjectMoveString"))
+        XCTAssertFalse(mapper.contains("own: result.review.own,\n            other: result.review.other"))
+        XCTAssertFalse(mapper.contains("porcelain: result.git.porcelain"))
+    }
+
+    func testProjectMoveCompensationOnlyRevertsCompletedPhysicalMove() throws {
+        let source = try serviceCoreSource("EngramCoreWrite/ProjectMove/Orchestrator.swift")
+
+        XCTAssertTrue(source.contains("var physicalMoveApplied = false"))
+        XCTAssertTrue(source.contains("physicalMoveApplied = true"))
+        XCTAssertTrue(source.contains("physicalMoveApplied: physicalMoveApplied"))
+        XCTAssertTrue(source.contains("if physicalMoveApplied {"))
+        XCTAssertTrue(source.contains("attemptedDst may be a pre-existing user directory"))
+    }
+
+    func testProjectMoveUpdatesGeminiProjectsJsonForSameSlugMove() throws {
+        let source = try serviceCoreSource("EngramCoreWrite/ProjectMove/Orchestrator.swift")
+        let start = try XCTUnwrap(source.range(of: "let geminiDirTouched ="))
+        let end = try XCTUnwrap(source.range(of: "// Step 3: patch JSONL", options: [], range: start.lowerBound..<source.endIndex))
+        let geminiApply = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(geminiApply.contains("skippedDirs.contains"))
+        XCTAssertTrue(geminiApply.contains("$0.sourceId == .geminiCli && $0.reason == .noop"))
+        XCTAssertTrue(geminiApply.contains("plan.oldEntry != nil || geminiDirTouched"))
+        XCTAssertTrue(geminiApply.contains("GeminiProjectsJSON.apply(plan: plan)"))
+    }
+
+    func testRunnerStartupScanUsesAllAdapters() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
 
         XCTAssertTrue(source.contains("let defaultAdapters = SessionAdapterFactory.defaultAdapters()"))
-        XCTAssertTrue(source.contains("let startupAdapters = usageParserBackfillNeeded"))
-        XCTAssertTrue(source.contains("? defaultAdapters"))
-        XCTAssertTrue(source.contains(": SessionAdapterFactory.recentActiveAdapters()"))
+        XCTAssertTrue(source.contains("let startupAdapters = defaultAdapters"))
+        XCTAssertFalse(
+            source.contains(": SessionAdapterFactory.recentActiveAdapters()"),
+            "startup scan must not skip sessions solely because they are older than the recent-active window"
+        )
         XCTAssertTrue(source.contains("indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters)"))
         XCTAssertTrue(source.contains("adapters: startupAdapters"))
     }
@@ -385,11 +687,46 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanOrphans")"#))
     }
 
+    func testServiceMainCancelsRunnerOnTerminationSignals() throws {
+        let source = try serviceCoreSource("EngramService/main.swift")
+
+        XCTAssertTrue(source.contains("signal(SIGTERM, SIG_IGN)"))
+        XCTAssertTrue(source.contains("signal(SIGINT, SIG_IGN)"))
+        XCTAssertTrue(source.contains("DispatchSource.makeSignalSource(signal: SIGTERM"))
+        XCTAssertTrue(source.contains("DispatchSource.makeSignalSource(signal: SIGINT"))
+        XCTAssertTrue(source.contains("serviceTask.cancel()"))
+        XCTAssertTrue(source.contains("exit(0)"), "main must exit after EngramServiceRunner.run returns from graceful cancellation")
+    }
+
+    func testRunnerInitialScanPhasesAreFaultIsolatedAndRetryWriterBusy() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let end = try XCTUnwrap(source.range(of: "@discardableResult", options: [], range: start.lowerBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        for phase in [
+            "usageParserBackfillCheck",
+            "initialScanIndex",
+            "initialScanBackfills",
+            "initialScanOrphans",
+            "initialFtsDrain",
+            "usageParserBackfillMark"
+        ] {
+            XCTAssertTrue(
+                body.contains("runInitialScanPhase(") && body.contains(#"name: "\#(phase)""#),
+                "\(phase) must be isolated so one startup-maintenance failure does not abort the rest of the launch"
+            )
+        }
+        XCTAssertTrue(source.contains("isWriterBusy(error)"))
+        XCTAssertTrue(source.contains("retrying startup phase"))
+        XCTAssertTrue(source.contains("startup phase failed"))
+    }
+
     func testRunnerInitialScanFullBackfillsWhenUsageParserVersionChanges() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillCheck")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.needsBackfill"))
-        XCTAssertTrue(source.contains("? defaultAdapters"))
+        XCTAssertTrue(source.contains("let startupAdapters = defaultAdapters"))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillMark")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.markComplete"))
     }
@@ -416,6 +753,45 @@ final class EngramServiceIPCTests: XCTestCase {
             source.contains("runPeriodicParentBackfills"),
             "the periodic indexing loop must run parent backfills after indexing new sessions"
         )
+    }
+
+    func testRunnerPeriodicScanSplitsWriteGateAcrossPhases() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: #"gate.performWriteCommand(name: "indexRecent")"#))
+        let end = try XCTUnwrap(source.range(of: "RepoDiscovery.probeRepositories", options: [], range: start.lowerBound..<source.endIndex))
+        let periodicBeforeGitProbe = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicParentBackfills")"#))
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicFtsDrain")"#))
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicIndexStatus")"#))
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicRepoCandidates")"#))
+        XCTAssertTrue(periodicBeforeGitProbe.contains("runRecoverableJobsOnce()"))
+        XCTAssertFalse(
+            periodicBeforeGitProbe.contains("runRecoverableJobs()"),
+            "periodic FTS drain must release the write gate between batches"
+        )
+
+        let indexRecentEnd = try XCTUnwrap(
+            source.range(of: #"performWriteCommand(name: "periodicParentBackfills")"#, options: [], range: start.lowerBound..<source.endIndex)
+        )
+        let indexRecentBlock = String(source[start.lowerBound..<indexRecentEnd.lowerBound])
+        XCTAssertFalse(indexRecentBlock.contains("runPeriodicParentBackfills()"))
+        XCTAssertFalse(indexRecentBlock.contains("runRecoverableJobs"))
+        XCTAssertFalse(indexRecentBlock.contains("RepoDiscovery.sessionCwdCounts"))
+    }
+
+    func testRunnerPeriodicScanRefreshesCountsAfterParentBackfills() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: #"performWriteCommand(name: "periodicParentBackfills")"#))
+        let end = try XCTUnwrap(source.range(of: "RepoDiscovery.probeRepositories", options: [], range: start.lowerBound..<source.endIndex))
+        let loop = String(source[start.lowerBound..<end.lowerBound])
+
+        let backfills = try XCTUnwrap(loop.range(of: "runPeriodicParentBackfills()"))
+        let status = try XCTUnwrap(loop.range(of: #"performWriteCommand(name: "periodicIndexStatus")"#))
+        XCTAssertLessThan(backfills.lowerBound, status.lowerBound)
+        XCTAssertTrue(source.contains("total=\\(status.total) todayParents=\\(status.todayParents)"))
+        XCTAssertTrue(source.contains("total: status.total"))
+        XCTAssertTrue(source.contains("todayParents: status.todayParents"))
     }
 
     func testProjectMigrationPipelineErrorTestUsesScopedHome() throws {
@@ -489,6 +865,31 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(
             source.contains("try UnixSocketEngramServiceTransport.writeFrame(try JSONEncoder().encode(response), to: client)"),
             "client tasks must not call blocking writeFrame directly"
+        )
+    }
+
+    func testUnixSocketServiceServerOffloadsAcceptAndWakesItOnStop() throws {
+        // N42: accept() is a POSIX blocking call too. It must not occupy a Swift
+        // cooperative-executor thread, and stop() must actively wake a blocked
+        // accept before closing the listener.
+        let source = try serviceCoreSource("EngramService/IPC/UnixSocketServiceServer.swift")
+
+        XCTAssertTrue(
+            source.contains("acceptClientOffCooperativePool"),
+            "listener accept must hop to the dedicated blocking I/O queue"
+        )
+        guard let loopStart = source.range(of: "let acceptTask = Task.detached") else {
+            return XCTFail("missing accept task")
+        }
+        let acceptLoopPrefix = String(source[loopStart.lowerBound...].prefix(1_200))
+        XCTAssertTrue(acceptLoopPrefix.contains("try await Self.acceptClientOffCooperativePool"))
+        XCTAssertFalse(
+            acceptLoopPrefix.contains("accept(descriptor"),
+            "accept loop must not call blocking accept() directly on the cooperative pool"
+        )
+        XCTAssertTrue(
+            source.contains("shutdown(snapshot.descriptor, SHUT_RDWR)"),
+            "stop() must wake a blocked accept before closing the listener"
         )
     }
 
@@ -688,7 +1089,15 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
         let status = try await client.status()
-        XCTAssertEqual(status, .running(total: 0, todayParents: 0))
+        XCTAssertEqual(status, .starting)
+    }
+
+    func testStatusMonitorReportsStartingUntilFirstSuccessfulScan() async {
+        let monitor = ServiceStatusMonitor(staleAfter: 600)
+
+        let status = await monitor.status(indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7))
+
+        XCTAssertEqual(status, .starting)
     }
 
     func testStatusCommandReportsDegradedAfterIndexFailure() async throws {
@@ -1303,7 +1712,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(resume.tool, "codex")
         XCTAssertEqual(resume.command, "/usr/local/bin/codex")
-        XCTAssertEqual(resume.args, ["--resume", "s1"])
+        XCTAssertEqual(resume.args, ["resume", "s1"])
         XCTAssertEqual(resume.cwd, "/tmp/engram")
         XCTAssertEqual(resume.contextPrimer, """
         Resume context from Engram archive:
@@ -1315,6 +1724,21 @@ final class EngramServiceIPCTests: XCTestCase {
         - hello from swift service
         """)
         XCTAssertNil(resume.error)
+    }
+
+    func testResumeCommandForEmptyCwdReturnsHintInsteadOfOpenEmptyString() {
+        let resume = SQLiteEngramServiceReadProvider.openBasedResumeCommand(
+            source: "cursor",
+            cwd: "",
+            contextPrimer: "Resume context"
+        )
+
+        XCTAssertNil(resume.command)
+        XCTAssertEqual(resume.args, [])
+        XCTAssertEqual(resume.cwd, "")
+        XCTAssertEqual(resume.error, "No working directory recorded for this session")
+        XCTAssertEqual(resume.hint, "Open the transcript from Engram and copy the resume context manually.")
+        XCTAssertEqual(resume.contextPrimer, "Resume context")
     }
 
     func testSQLiteReadProviderBuildsResumePrimerFromMetadataWhenFtsIsMissing() async throws {
@@ -2139,36 +2563,17 @@ final class EngramServiceIPCTests: XCTestCase {
         let confirm = try await client.confirmSuggestion(sessionId: "s2")
         XCTAssertEqual(confirm, EngramServiceLinkResponse(ok: true, error: nil))
 
-        let queue = try DatabaseQueue(path: paths.database.path)
-        try await queue.read { db in
-            let row = try Row.fetchOne(
-                db,
-                sql: "SELECT parent_session_id, suggested_parent_id, link_source FROM sessions WHERE id = 's2'"
-            )
-            XCTAssertEqual(row?["parent_session_id"] as String?, "s1")
-            XCTAssertNil(row?["suggested_parent_id"] as String?)
-            XCTAssertEqual(row?["link_source"] as String?, "manual")
-        }
+        let linkedState = try fixtureLinkState(at: paths.database.path, id: "s2")
+        XCTAssertEqual(linkedState.parentSessionId, "s1")
+        XCTAssertNil(linkedState.suggestedParentId)
+        XCTAssertEqual(linkedState.linkSource, "manual")
 
-        try await queue.write { db in
-            try db.execute(
-                sql: """
-                    UPDATE sessions
-                    SET suggested_parent_id = 's1', parent_session_id = NULL, link_source = NULL
-                    WHERE id = 's2'
-                """
-            )
-        }
+        try resetFixtureSuggestion(at: paths.database.path, id: "s2", suggestedParentId: "s1")
 
         try await client.dismissSuggestion(sessionId: "s2", suggestedParentId: "s1")
-        try await queue.read { db in
-            let row = try Row.fetchOne(
-                db,
-                sql: "SELECT parent_session_id, suggested_parent_id FROM sessions WHERE id = 's2'"
-            )
-            XCTAssertNil(row?["parent_session_id"] as String?)
-            XCTAssertNil(row?["suggested_parent_id"] as String?)
-        }
+        let dismissedState = try fixtureLinkState(at: paths.database.path, id: "s2")
+        XCTAssertNil(dismissedState.parentSessionId)
+        XCTAssertNil(dismissedState.suggestedParentId)
     }
 
     func testManualParentLinkAndUnlinkRoundTripThroughClient() async throws {
@@ -2204,14 +2609,9 @@ final class EngramServiceIPCTests: XCTestCase {
         let unlinked = try await client.clearParentSession(sessionId: "s2")
         XCTAssertEqual(unlinked, EngramServiceLinkResponse(ok: true, error: nil))
 
-        try await queue.read { db in
-            let row = try Row.fetchOne(
-                db,
-                sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = 's2'"
-            )
-            XCTAssertNil(row?["parent_session_id"] as String?)
-            XCTAssertEqual(row?["link_source"] as String?, "manual")
-        }
+        let unlinkedState = try fixtureLinkState(at: paths.database.path, id: "s2")
+        XCTAssertNil(unlinkedState.parentSessionId)
+        XCTAssertEqual(unlinkedState.linkSource, "manual")
     }
 
     func testFileSystemProviderReportsRecentlyModifiedLiveSessions() async throws {
@@ -3066,6 +3466,43 @@ private func seedSearchFixture(at path: String) throws {
               'committed', '2026-04-23T03:00:00Z', '2026-04-23T03:05:00Z', 0, 'fixture', 'app'
             );
         """)
+    }
+}
+
+private func fixtureLinkState(
+    at path: String,
+    id: String
+) throws -> (parentSessionId: String?, suggestedParentId: String?, linkSource: String?) {
+    let queue = try DatabaseQueue(path: path)
+    return try queue.read { db in
+        let row = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT parent_session_id, suggested_parent_id, link_source
+                FROM sessions
+                WHERE id = ?
+            """,
+            arguments: [id]
+        )
+        return (
+            row?["parent_session_id"] as String?,
+            row?["suggested_parent_id"] as String?,
+            row?["link_source"] as String?
+        )
+    }
+}
+
+private func resetFixtureSuggestion(at path: String, id: String, suggestedParentId: String) throws {
+    let queue = try DatabaseQueue(path: path)
+    try queue.write { db in
+        try db.execute(
+            sql: """
+                UPDATE sessions
+                SET suggested_parent_id = ?, parent_session_id = NULL, link_source = NULL
+                WHERE id = ?
+            """,
+            arguments: [suggestedParentId, id]
+        )
     }
 }
 

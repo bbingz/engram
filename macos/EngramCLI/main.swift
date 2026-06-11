@@ -1,14 +1,11 @@
+import Darwin
 import Foundation
-import Network
 
 if let resumeExitCode = runResumeCommandIfRequested() {
     exit(resumeExitCode)
 }
 
-// EngramCLI — stdio bridge to MCPServer via Unix socket HTTP
-// Reads JSON-RPC lines from stdin, sends as HTTP POST /mcp, writes response to stdout.
-
-let socketPath = "/tmp/engram.sock"
+execSwiftMCPHelper()
 
 func runResumeCommandIfRequested() -> Int32? {
     do {
@@ -27,11 +24,11 @@ func runResumeCommandIfRequested() -> Int32? {
             do {
                 let output = try await EngramCLIResumeCommand.render(options: options, client: client)
                 print(output)
-                await client.close()
+                client.close()
             } catch {
                 writeStderr("\(error)\n")
                 exitCode = 1
-                await client.close()
+                client.close()
             }
             semaphore.signal()
         }
@@ -43,126 +40,62 @@ func runResumeCommandIfRequested() -> Int32? {
     }
 }
 
+func execSwiftMCPHelper() -> Never {
+    guard let helperPath = mcpHelperCandidates().first(where: isExecutableFile) else {
+        writeStderr("EngramCLI: EngramMCP helper not found. Use /Applications/Engram.app/Contents/Helpers/EngramMCP for MCP stdio.\n")
+        exit(1)
+    }
+
+    let arguments = [helperPath] + Array(CommandLine.arguments.dropFirst())
+    var cArguments = arguments.map { strdup($0) }
+    cArguments.append(nil)
+    defer {
+        for argument in cArguments where argument != nil {
+            free(argument)
+        }
+    }
+
+    _ = cArguments.withUnsafeMutableBufferPointer { buffer in
+        execv(helperPath, buffer.baseAddress)
+    }
+    writeStderr("EngramCLI: failed to exec EngramMCP at \(helperPath): \(String(cString: strerror(errno)))\n")
+    exit(1)
+}
+
+func mcpHelperCandidates(
+    executablePath: String = CommandLine.arguments.first ?? "",
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> [String] {
+    var candidates: [String] = []
+    if let override = environment["ENGRAM_CLI_MCP_HELPER"], !override.isEmpty {
+        candidates.append(override)
+    }
+
+    let executableURL = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
+    let executableDirectory = executableURL.deletingLastPathComponent()
+    candidates.append(executableDirectory.appendingPathComponent("EngramMCP").path)
+    candidates.append(
+        executableDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Helpers", isDirectory: true)
+            .appendingPathComponent("EngramMCP")
+            .path
+    )
+    candidates.append("/Applications/Engram.app/Contents/Helpers/EngramMCP")
+
+    var seen = Set<String>()
+    return candidates.filter { seen.insert($0).inserted }
+}
+
+func isExecutableFile(_ path: String) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        && !isDirectory.boolValue
+        && FileManager.default.isExecutableFile(atPath: path)
+}
+
 func writeStderr(_ text: String) {
     if let data = text.data(using: .utf8) {
         FileHandle.standardError.write(data)
-    }
-}
-
-// Read one line from stdin
-func readStdinLine() -> String? {
-    var line = ""
-    while let char = readCharacter() {
-        if char == "\n" { return line }
-        line.append(char)
-    }
-    return line.isEmpty ? nil : line
-}
-
-func readCharacter() -> Character? {
-    var byte = UInt8(0)
-    let n = read(STDIN_FILENO, &byte, 1)
-    guard n == 1 else { return nil }
-    return Character(Unicode.Scalar(byte))
-}
-
-// Send one HTTP POST request and receive the response body
-func sendRequest(_ jsonBody: String) -> String? {
-    let bodyData = jsonBody.data(using: .utf8)!
-    let httpRequest = [
-        "POST /mcp HTTP/1.1",
-        "Host: localhost",
-        "Content-Type: application/json",
-        "Content-Length: \(bodyData.count)",
-        "Connection: keep-alive",
-        "",
-        jsonBody
-    ].joined(separator: "\r\n")
-
-    guard let requestData = httpRequest.data(using: .utf8) else { return nil }
-
-    let endpoint = NWEndpoint.unix(path: socketPath)
-    let conn = NWConnection(to: endpoint, using: .tcp)
-
-    var responseBody: String? = nil
-    let sema = DispatchSemaphore(value: 0)
-
-    conn.stateUpdateHandler = { state in
-        switch state {
-        case .ready:
-            // Send request
-            conn.send(content: requestData, completion: .contentProcessed({ error in
-                if error != nil { sema.signal(); return }
-                // Receive response
-                receiveHTTPResponse(conn: conn) { body in
-                    responseBody = body
-                    sema.signal()
-                }
-            }))
-        case .failed, .cancelled:
-            sema.signal()
-        default:
-            break
-        }
-    }
-
-    conn.start(queue: .global())
-    sema.wait()
-    conn.cancel()
-    return responseBody
-}
-
-func receiveHTTPResponse(conn: NWConnection, completion: @escaping (String?) -> Void) {
-    // Accumulate data until we have complete headers + body
-    var accumulated = Data()
-
-    func receiveMore() {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
-            if let data = data { accumulated.append(data) }
-
-            // Try to parse headers
-            let headerSep = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
-            if let sepRange = accumulated.range(of: headerSep) {
-                let headerData = accumulated[..<sepRange.lowerBound]
-                let headerStr = String(data: headerData, encoding: .utf8) ?? ""
-                let bodyStart = sepRange.upperBound
-
-                // Parse Content-Length
-                var contentLength = 0
-                for line in headerStr.components(separatedBy: "\r\n") {
-                    let lower = line.lowercased()
-                    if lower.hasPrefix("content-length:") {
-                        let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                        contentLength = Int(val) ?? 0
-                    }
-                }
-
-                let bodyData = accumulated[bodyStart...]
-                if bodyData.count >= contentLength {
-                    let body = String(data: bodyData.prefix(contentLength), encoding: .utf8)
-                    completion(body)
-                    return
-                }
-            }
-
-            if !isComplete && error == nil {
-                receiveMore()
-            } else {
-                completion(nil)
-            }
-        }
-    }
-
-    receiveMore()
-}
-
-// Main loop: read stdin line by line, forward each as HTTP request, write response to stdout
-while let line = readStdinLine() {
-    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { continue }
-
-    if let response = sendRequest(trimmed) {
-        print(response)
-        fflush(stdout)
     }
 }

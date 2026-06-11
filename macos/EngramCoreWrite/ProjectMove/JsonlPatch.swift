@@ -84,17 +84,11 @@ public enum JsonlPatch {
             throw InvalidUtf8Error(detail: "input bytes are not a valid UTF-8 sequence")
         }
         var totalCount = 0
-        var working = replaceWithTerminator(
-            in: text,
-            needle: oldPath,
-            replacement: newPath,
-            count: &totalCount
-        )
-        let oldNfd = oldPath.decomposedStringWithCanonicalMapping
-        if oldNfd != oldPath {
+        var working = text
+        for variant in ProjectPathVariants.variants(oldPath) where variant != newPath {
             working = replaceWithTerminator(
                 in: working,
-                needle: oldNfd,
+                needle: variant,
                 replacement: newPath,
                 count: &totalCount
             )
@@ -114,25 +108,15 @@ public enum JsonlPatch {
         oldPath: String,
         newPath: String
     ) -> PatchResult {
-        let needle = Data((oldPath + ".\"").utf8)
         let replacement = Data((newPath + ".\"").utf8)
-        if needle == replacement || data.range(of: needle) == nil {
-            return PatchResult(data: data, count: 0)
-        }
-        var output = Data()
-        output.reserveCapacity(data.count)
-        var cursor = data.startIndex
+        var output = data
         var count = 0
-        while cursor <= data.endIndex {
-            if let hit = data.range(of: needle, in: cursor..<data.endIndex) {
-                output.append(data[cursor..<hit.lowerBound])
-                output.append(replacement)
-                cursor = hit.upperBound
-                count += 1
-            } else {
-                output.append(data[cursor..<data.endIndex])
-                break
-            }
+        for variant in ProjectPathVariants.variants(oldPath) where variant != newPath {
+            let needle = Data((variant + ".\"").utf8)
+            guard needle != replacement else { continue }
+            let result = replaceLiteral(output, needle: needle, replacement: replacement)
+            output = result.data
+            count += result.count
         }
         if count == 0 {
             return PatchResult(data: data, count: 0)
@@ -424,6 +408,32 @@ public enum JsonlPatch {
         }
         count += matches.count
         return result
+    }
+
+    private static func replaceLiteral(
+        _ data: Data,
+        needle: Data,
+        replacement: Data
+    ) -> PatchResult {
+        guard !needle.isEmpty, data.range(of: needle) != nil else {
+            return PatchResult(data: data, count: 0)
+        }
+        var output = Data()
+        output.reserveCapacity(data.count)
+        var cursor = data.startIndex
+        var count = 0
+        while cursor <= data.endIndex {
+            if let hit = data.range(of: needle, in: cursor..<data.endIndex) {
+                output.append(data[cursor..<hit.lowerBound])
+                output.append(replacement)
+                cursor = hit.upperBound
+                count += 1
+            } else {
+                output.append(data[cursor..<data.endIndex])
+                break
+            }
+        }
+        return PatchResult(data: output, count: count)
     }
 
     private static func mtimeMs(_ attrs: [FileAttributeKey: Any]) -> Double {

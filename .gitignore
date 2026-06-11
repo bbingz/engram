@@ -35,6 +35,7 @@ tests/fixtures/antigravity/cache/*.jsonl
 .husky/post-commit
 .husky/post-merge
 .husky/pre-push
+!.husky/pre-push
 
 # Claude Code local/runtime artifacts (commit only settings.json)
 .claude/scheduled_tasks.lock

@@ -10,6 +10,9 @@ permissions:
   contents: read
   pull-requests: write
 
+env:
+  XCODEGEN_VERSION: "2.45.4"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -47,6 +50,7 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm audit --audit-level=moderate
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
 
   typescript:
     runs-on: ubuntu-latest
@@ -67,6 +71,22 @@ jobs:
           name: coverage-report
           path: coverage/
 
+  macos-vitest:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/swift-boundary-scripts.test.ts
+
   swift-unit:
     runs-on: macos-15
     timeout-minutes: 25
@@ -85,17 +105,22 @@ jobs:
           key: brew-xcodegen-${{ runner.os }}
 
       - name: Install xcodegen
-        run: brew install xcodegen || true
+        run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
 
       - name: Cache SPM packages
         uses: actions/cache@v5
         with:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ hashFiles('macos/project.yml') }}
+          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
           restore-keys: spm-
 
       - name: Generate Xcode project
-        run: cd macos && xcodegen generate
+        run: |
+          cd macos
+          xcodegen generate
+          git diff --exit-code Engram.xcodeproj/project.pbxproj
 
       - name: Generate test fixtures
         run: |
@@ -170,8 +195,11 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ hashFiles('macos/project.yml') }}
-      - run: brew install xcodegen
+          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
+          restore-keys: spm-
+      - run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
       - run: cd macos && xcodegen generate
       - run: npm run generate:fixtures
       - name: Dismiss macOS setup assistant
@@ -209,7 +237,7 @@ jobs:
           SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           SCREENSHOT_REQUIRE_MANIFEST: "1"
-          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "0"
+          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "1"
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload diff artifacts
         if: failure()
@@ -229,7 +257,7 @@ jobs:
             const reportPath = `${process.env.SCREENSHOTS_DIR}/comparison-report.json`;
             if (!fs.existsSync(reportPath)) return;
             const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-            const failures = report.results.filter(r => r.status === 'failed');
+            const failures = report.results.filter(r => r.status !== 'passed');
             if (failures.length === 0) return;
             let body = `📸 **Screenshot Regression**: ${failures.length} failure(s)\n\n`;
             body += `| Screen | SSIM | Pixel Diff | AI | Status |\n|--------|------|------------|-----|--------|\n`;
@@ -251,7 +279,7 @@ jobs:
 
   ui-test-full:
     runs-on: macos-15
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     timeout-minutes: 20
     needs: [typescript, swift-unit]
     steps:
@@ -269,8 +297,11 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ hashFiles('macos/project.yml') }}
-      - run: brew install xcodegen
+          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
+          restore-keys: spm-
+      - run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
       - run: cd macos && xcodegen generate
       - run: npm run generate:fixtures
       - name: Dismiss macOS setup assistant
@@ -300,7 +331,7 @@ jobs:
         env:
           SCREENSHOTS_DIR: ${{ runner.temp }}/screenshots
           SCREENSHOT_REQUIRE_MANIFEST: "1"
-          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "0"
+          SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "1"
         run: npx tsx scripts/screenshot-compare.ts
       - name: Upload artifacts
         if: failure()

@@ -17,6 +17,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     /// Batch size for draining the backlog (137k+ rows). Each call to
     /// `runRecoverableJobs` drains up to this many; the periodic loop re-invokes.
     public static let drainBatchSize = 200
+    private static let maxFtsRetryCount = 3
 
     private let writer: EngramDatabaseWriter
     private let adaptersBySource: [SourceName: any SessionAdapter]
@@ -38,6 +39,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
 
     private struct SessionContentSource {
         let source: String
+        let tier: String?
         let locator: String
         let summary: String?
     }
@@ -134,8 +136,23 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             try Self.sessionContentSource(db, sessionId: job.sessionId)
         }
 
-        guard let contentSource,
-              let sourceName = SourceName(rawValue: contentSource.source),
+        guard let contentSource else {
+            // No readable session row: FTS content cannot be produced. Mark
+            // not_applicable to stop looping.
+            try writer.write { db in
+                try Self.markNotApplicable(db, id: job.id)
+            }
+            return .notApplicable
+        }
+
+        if contentSource.tier == SessionTier.skip.rawValue {
+            try writer.write { db in
+                try Self.markNotApplicable(db, id: job.id)
+            }
+            return .notApplicable
+        }
+
+        guard let sourceName = SourceName(rawValue: contentSource.source),
               let adapter = adaptersBySource[sourceName],
               !contentSource.locator.isEmpty,
               !contentSource.locator.hasPrefix("sync://")
@@ -172,6 +189,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             )
             try writer.write { db in
                 try Self.markRetryable(db, id: job.id, error: "\(error)")
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db)
             }
             return .retryable
         }
@@ -203,13 +221,14 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator:
             return true
         case .invalidUtf8,
-             .truncatedJSON,
-             .truncatedJSONL,
              .malformedJSON,
+             .messageLimitExceeded,
+             .lineTooLarge:
+            return true
+        case .truncatedJSON,
+             .truncatedJSONL,
              .malformedToolCall,
              .deeplyNestedRecord,
-             .messageLimitExceeded,
-             .lineTooLarge,
              .fileModifiedDuringParse,
              .sqliteUnreadable,
              .grpcUnavailable:
@@ -226,7 +245,12 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             SELECT id, session_id, job_kind
             FROM session_index_jobs
             WHERE status IN ('pending', 'failed_retryable')
-            ORDER BY CASE job_kind WHEN 'fts' THEN 0 ELSE 1 END, created_at, id
+            ORDER BY
+              CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+              CASE job_kind WHEN 'fts' THEN 0 ELSE 1 END,
+              retry_count,
+              created_at,
+              id
             LIMIT ?
             """,
             arguments: [limit]
@@ -242,6 +266,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             sql: """
             SELECT
               s.source AS source,
+              s.tier AS tier,
               s.summary AS summary,
               COALESCE(
                 NULLIF(ls.local_readable_path, ''),
@@ -258,6 +283,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         }
         return SessionContentSource(
             source: row["source"] ?? "",
+            tier: row["tier"],
             locator: row["locator"] ?? "",
             summary: row["summary"]
         )
@@ -289,13 +315,16 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         try db.execute(
             sql: """
             UPDATE session_index_jobs
-            SET status = 'failed_retryable',
+            SET status = CASE
+                    WHEN retry_count + 1 >= ? THEN 'failed_permanent'
+                    ELSE 'failed_retryable'
+                END,
                 retry_count = retry_count + 1,
                 last_error = ?,
                 updated_at = datetime('now')
             WHERE id = ?
             """,
-            arguments: [error, id]
+            arguments: [Self.maxFtsRetryCount, error, id]
         )
     }
 }

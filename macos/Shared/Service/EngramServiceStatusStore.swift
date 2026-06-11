@@ -74,6 +74,8 @@ final class EngramServiceStatusStore {
         lastEventAt = Date()
 
         switch event.event {
+        case "starting":
+            status = .starting
         case "ready", "indexed", "rescan", "sync_complete", "watcher_indexed":
             applyTotals(from: event)
         case "web_ready":

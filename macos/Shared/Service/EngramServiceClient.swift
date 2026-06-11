@@ -6,6 +6,8 @@ import Observation
 @Observable
 final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     private static let migrationCommandTimeout: TimeInterval = 10 * 60
+    private static let bulkAICommandTimeout: TimeInterval = 10 * 60
+    private static let frameBoundCommandTimeout: TimeInterval = 25
 
     @ObservationIgnored
     private let transport: any EngramServiceTransport
@@ -72,7 +74,7 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     }
 
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse {
-        try await command("generateSummary", payload: request)
+        try await command("generateSummary", payload: request, timeout: Self.frameBoundCommandTimeout)
     }
 
     func saveInsight(_ request: EngramServiceSaveInsightRequest) async throws -> EngramServiceJSONValue {
@@ -125,7 +127,7 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     }
 
     func regenerateAllTitles() async throws -> EngramServiceRegenerateTitlesResponse {
-        try await command("regenerateAllTitles")
+        try await command("regenerateAllTitles", timeout: Self.bulkAICommandTimeout)
     }
 
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse {
@@ -153,7 +155,7 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     }
 
     func linkSessions(_ request: EngramServiceLinkSessionsRequest) async throws -> EngramServiceLinkSessionsResponse {
-        try await command("linkSessions", payload: request)
+        try await command("linkSessions", payload: request, timeout: Self.frameBoundCommandTimeout)
     }
 
     func setFavorite(sessionId: String, favorite: Bool) async throws {

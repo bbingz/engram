@@ -7,13 +7,20 @@
 // behavior — including that forbidden Node/dist artifacts are detected.
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
 const verifyScript = resolve(repoRoot, 'macos/scripts/release-verify.sh');
+const releaseWorkflow = resolve(repoRoot, '.github/workflows/release.yml');
 
 let workdir: string;
 
@@ -150,6 +157,37 @@ describe('macOS release-verify bundle hygiene', () => {
       expect(code).not.toBe(0);
       expect(out).toContain("!= expected '200'");
     });
+
+    it('fails when expected short version does not match', () => {
+      const app = buildStubApp({ shortVersion: '0.1.0' });
+      const { code, out } = runVerify(app, [
+        '--expected-short-version',
+        '1.0.3',
+      ]);
+      expect(code).not.toBe(0);
+      expect(out).toContain(
+        "CFBundleShortVersionString '0.1.0' != expected '1.0.3'",
+      );
+    });
+  });
+});
+
+describe('release workflow gate', () => {
+  const workflow = readFileSync(releaseWorkflow, 'utf8');
+
+  it('only runs for semver-style v tags', () => {
+    expect(workflow).toContain("- 'v*'");
+    expect(workflow).not.toContain("- '*'");
+  });
+
+  it('validates the pushed tag against the app short version', () => {
+    expect(workflow).toContain('TAG_VERSION="' + '$' + '{GITHUB_REF_NAME#v}"');
+    expect(workflow).toContain('--expected-short-version "$TAG_VERSION"');
+  });
+
+  it('requires release tests before archive verification', () => {
+    expect(workflow).toContain('release-tests:');
+    expect(workflow).toContain('needs: [release-tests]');
   });
 });
 

@@ -263,7 +263,12 @@ public enum RepoDiscovery {
         // No post-success elapsed recheck: the process exited within the
         // termination-handler timeout, so a slow-but-successful run keeps its
         // output instead of being discarded by a race against the wall clock.
-        ioGroup.wait() // process exited -> both reads have reached EOF
+        // A successful git process can still leave the pipe write end inherited
+        // by a helper/grandchild; bound the drain so repo probing cannot stall
+        // the indexing loop forever.
+        guard ioGroup.wait(timeout: .now() + 1) == .success else {
+            return nil
+        }
         guard process.terminationStatus == 0 else { return nil }
         return String(data: outData, encoding: .utf8)
     }

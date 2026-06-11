@@ -316,16 +316,11 @@ struct ServiceTranscriptMessage: Sendable {
 
 enum ServiceTranscriptReader {
     static func readMessages(filePath: String, source: String) async throws -> [ServiceTranscriptMessage] {
-        if source == "gemini-cli" {
-            try TranscriptSizeGuard.validateFullJSONTranscript(
-                filePath: filePath,
-                source: source
-            )
-        }
-
-        if let adapterMessages = await readWithAdapterRegistry(filePath: filePath, source: source) {
+        if let adapterMessages = try await readWithAdapterRegistry(filePath: filePath, source: source) {
             return adapterMessages
         }
+
+        try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
 
         switch source {
         case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
@@ -356,7 +351,7 @@ enum ServiceTranscriptReader {
     // Async by design: await the adapter stream directly instead of bridging
     // back to sync via DispatchSemaphore. Blocking a cooperative-pool thread on
     // a semaphore can starve/deadlock the pool under concurrent exports.
-    private static func readWithAdapterRegistry(filePath: String, source: String) async -> [ServiceTranscriptMessage]? {
+    private static func readWithAdapterRegistry(filePath: String, source: String) async throws -> [ServiceTranscriptMessage]? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
@@ -384,8 +379,19 @@ enum ServiceTranscriptReader {
                 )
             }
             return messages
+        } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
+            throw failure
         } catch {
             return nil
+        }
+    }
+
+    private static func isFallbackUnsafeParserFailure(_ failure: ParserFailure) -> Bool {
+        switch failure {
+        case .fileTooLarge, .messageLimitExceeded, .lineTooLarge, .invalidUtf8, .deeplyNestedRecord:
+            return true
+        default:
+            return false
         }
     }
 

@@ -9,7 +9,9 @@
 	  No JIT / unsigned-executable-memory / get-task-allow entitlements are declared:
 	  the app and its bundled Helpers (EngramMCP, EngramService) and Frameworks are all
 	  signed with the same Developer ID identity inside one outer seal, so default
-	  library validation is satisfied and no disable-library-validation exception is needed.
-	-->
+		  library validation is satisfied and no disable-library-validation exception is needed.
+		-->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 </dict>
 </plist>

@@ -46,8 +46,8 @@
 | [Codex CLI](https://github.com/openai/codex) | `~/.codex/sessions/` | ✅ 完整支持 |
 | [Claude Code](https://claude.ai/code) | `~/.claude/projects/` | ✅ 完整支持 |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `~/.gemini/tmp/` | ✅ 完整支持 |
-| [Antigravity](https://idx.google.com) | CLI brain `~/.gemini/antigravity-cli/brain/` + legacy gRPC cache | ✅ 完整支持 |
-| [Windsurf](https://codeium.com/windsurf) | gRPC + `~/.codeium/windsurf/` | ✅ 完整支持 |
+| [Antigravity](https://idx.google.com) | CLI brain `~/.gemini/antigravity-cli/brain/` + legacy cache when present | ✅ 完整支持 |
+| [Windsurf](https://codeium.com/windsurf) | `~/.engram/cache/windsurf` cache only; live gRPC sync is disabled | ⚠️ cache-only |
 | [Cursor](https://cursor.sh) | `~/Library/Application Support/Cursor/…/state.vscdb` | ✅ 完整支持 |
 | [VS Code Copilot](https://code.visualstudio.com) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
 | [GitHub Copilot](https://github.com/features/copilot) | `~/.copilot/session-state/<uuid>/events.jsonl` | ✅ 完整支持 |
@@ -56,8 +56,8 @@
 | Qoder | `~/.qoder/projects/` | ✅ 完整支持 |
 | [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | ✅ 完整支持 |
 | [Kimi](https://kimi.moonshot.cn) | `~/.kimi/sessions/` | ✅ 完整支持 |
-| [MiniMax](https://minimax.chat) | `~/.minimax/sessions/` | ✅ 完整支持 |
-| [Lobster AI](https://lobster.ai) | `~/.lobsterai/sessions/` | ✅ 完整支持 |
+| [MiniMax](https://minimax.chat) | Claude Code-derived sessions under `~/.claude/projects/` | ✅ 完整支持 |
+| [Lobster AI](https://lobster.ai) | Claude Code-derived sessions under `~/.claude/projects/` | ✅ 完整支持 |
 | Command Code | `~/.commandcode/projects/` | ✅ 完整支持 |
 | [Cline](https://github.com/cline/cline) | `~/.cline/data/tasks/` | ✅ 完整支持 |
 
@@ -394,7 +394,7 @@ interface SessionAdapter {
 
 - **索引库位置：** `~/.engram/index.sqlite`，存储元数据（会话 ID、时间、路径、摘要）、FTS 全文搜索索引和兼容保留的 embedding 表
 - **原始文件：** 完整消息内容始终从 AI 工具的原始日志文件流式读取，不做额外拷贝
-- **隐私脱敏：** 可在配置中设置正则，匹配内容在建立索引时会被替换为 `[REDACTED]`
+- **隐私脱敏：** 导出和 Web 预览使用内置敏感内容脱敏；索引库按原始本地日志建立 FTS，不支持用户配置的索引时正则替换
 - **数据不离本机：** `EngramService`、`EngramMCP` 和 macOS App 本地运行，不向任何远程服务发送数据（除非使用远程 AI/embedding provider）
 
 ## 开发
