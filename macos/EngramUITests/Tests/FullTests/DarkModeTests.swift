@@ -71,7 +71,7 @@ final class DarkModeTests: XCTestCase {
             "--test-mode", "--fixture-db", TestLaunchConfig.fixtureDBPath,
             "--mock-daemon", "--fixed-date", "2026-01-15T10:00:00Z",
             "--popover-standalone", "--appearance", "dark"
-        ]
+        ] + TestLaunchConfig.localizationArguments
         popoverApp.launch()
 
         let popover = PopoverScreen(app: popoverApp)
