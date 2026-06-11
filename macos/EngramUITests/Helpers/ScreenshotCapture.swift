@@ -40,8 +40,8 @@ class ScreenshotCapture {
             }
         }
 
-        // Use app screenshot (captures the app window)
-        let screenshot = app.screenshot()
+        let window = app.windows.firstMatch
+        let screenshot = window.exists ? window.screenshot() : app.screenshot()
         let filePath = "\(outputDir)/\(name).png"
         do {
             try screenshot.pngRepresentation.write(to: URL(fileURLWithPath: filePath))
