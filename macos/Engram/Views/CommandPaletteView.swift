@@ -164,7 +164,6 @@ struct CommandPaletteView: View {
         }
         .onAppear { isFocused = true }
         .onDisappear { searchTask?.cancel(); searchTask = nil }
-        .accessibilityIdentifier("commandPalette")
         .onKeyPress(.upArrow) {
             if selectedIndex > 0 { selectedIndex -= 1 }
             return .handled

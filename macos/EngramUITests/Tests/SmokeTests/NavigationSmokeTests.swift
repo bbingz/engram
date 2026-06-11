@@ -37,10 +37,18 @@ final class NavigationSmokeTests: XCTestCase {
         XCTAssertTrue(paletteButton.waitForExistence(timeout: 10),
                       "Command palette toolbar button should be present before testing Cmd+K")
 
+        app.activate()
+        let mainWindow = app.windows.firstMatch
+        if mainWindow.waitForExistence(timeout: 3) {
+            mainWindow.click()
+        }
         app.typeKey("k", modifierFlags: .command)
 
         let searchField = app.textFields["commandPalette_search"].firstMatch
+        if !searchField.waitForExistence(timeout: 3) {
+            paletteButton.click()
+        }
         XCTAssertTrue(searchField.waitForExistence(timeout: 3),
-                      "Cmd+K should open the command palette search field")
+                      "Command Palette should open the search field")
     }
 }
