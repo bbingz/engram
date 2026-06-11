@@ -1157,14 +1157,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     static let maxSnippetLength = 600
 
     private func item(from row: Row, query: String? = nil) -> EngramServiceSearchResponse.Item {
-        // The Latin/MATCH path already returns an FTS5 snippet() with <mark>
-        // tags. The CJK/LIKE path returns full `f.content` (snippet() needs a
-        // MATCH query), so when a query is supplied we build the match-centered
-        // highlight here in Swift; otherwise the raw content is used as-is.
+        // MATCH/LIKE paths return matched content; when a query is supplied,
+        // build the match-centered highlight here in Swift.
         let rawSnippet = row["snippet"] as String?
         let snippetText: String?
         if let query, let content = rawSnippet,
-           let windowed = CJKText.cjkHighlightedSnippet(content: content, query: query) {
+           let windowed = Self.highlightedSnippet(content: content, query: query) {
             snippetText = windowed
         } else {
             snippetText = rawSnippet
@@ -1200,6 +1198,18 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             linkSource: row["link_source"] as String?,
             qualityScore: row["quality_score"] as Int?
         )
+    }
+
+    private static func highlightedSnippet(content: String, query: String) -> String? {
+        if let exact = CJKText.cjkHighlightedSnippet(content: content, query: query) {
+            return exact
+        }
+        for term in query.split(whereSeparator: { $0.isWhitespace }) {
+            if let match = CJKText.cjkHighlightedSnippet(content: content, query: String(term)) {
+                return match
+            }
+        }
+        return nil
     }
 
     static func truncateSnippet(_ snippet: String?) -> String? {
