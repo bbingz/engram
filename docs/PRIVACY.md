@@ -51,8 +51,8 @@ Data is local by default. The current Swift service does not implement peer sync
 By default, the macOS app talks to EngramService over a Unix domain socket under `~/.engram/run/engram-service.sock`. The default app runtime does not expose a localhost HTTP API. No external network connections are made unless you explicitly configure:
 
 - **Peer sync compatibility fields**: Older settings may contain peer-sync keys, but the current Swift service returns unsupported for sync commands and the macOS app does not start sync traffic.
-- **AI Summary** (optional): Sends session excerpts to your configured AI provider (OpenAI/Anthropic/Gemini/Ollama) for summary generation.
-- **Title Generation** (optional): Sends session excerpts to your configured AI provider for automatic title generation.
+- **AI Summary** (optional): Sends session excerpts to your configured OpenAI-compatible chat provider when you request summary generation.
+- **Title Generation** (optional): Sends session excerpts to your configured title provider (Ollama, OpenAI, or custom OpenAI-compatible endpoint) when you request title generation.
 - **Embedding compatibility fields**: Older settings may contain Ollama/OpenAI embedding keys, but the current Swift product path does not generate embeddings or enable semantic search from those fields.
 
 ## Optional legacy HTTP tooling

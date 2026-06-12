@@ -12,8 +12,12 @@
   scanning; exports are written under `~/.engram/exports/`; insights are
   text/FTS-first without product-side embeddings.
 - `docs/mcp-swift.md` now documents supported initialize protocol versions
-  `2025-03-26`, `2025-06-18`, and `2025-11-25`, plus the 28-tool stale-helper
-  troubleshooting threshold.
+  `2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`, plus the
+  28-tool stale-helper troubleshooting threshold.
+- README/privacy provider wording now matches the Swift product: summary
+  generation uses an OpenAI-compatible chat provider via `aiApiKey`; title
+  generation uses `titleProvider`/`titleApiKey` and supports Ollama, OpenAI, or
+  a custom OpenAI-compatible endpoint.
 - Corrected `MCPToolRegistry`'s `get_context.task` schema description from
   semantic search to related context lookup. This was documentation/schema text
   only, not a behavior change.

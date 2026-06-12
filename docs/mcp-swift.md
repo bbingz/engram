@@ -122,10 +122,10 @@ Expected: single JSON line with `"serverInfo":{"name":"engram",...}`.
 
 No MCP stdio-loop limitation is currently tracked here.
 
-Protocol version handling supports `"2025-03-26"`, `"2025-06-18"`, and
-`"2025-11-25"`. Unknown newer initialize versions negotiate down to the latest
-supported version instead of failing closed. Tool contract behaviour is covered
-by `macos/EngramMCPTests/`.
+Protocol version handling supports `"2024-11-05"`, `"2025-03-26"`,
+`"2025-06-18"`, and `"2025-11-25"`. Unknown newer initialize versions
+negotiate down to the latest supported version instead of failing closed. Tool
+contract behaviour is covered by `macos/EngramMCPTests/`.
 
 ## Troubleshooting
 

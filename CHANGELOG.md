@@ -18,8 +18,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   session scanning still available, exports under `~/.engram/exports/`, and
   text/FTS-only insight memory.
 - Updated MCP protocol docs for the currently supported initialize versions
-  (`2025-03-26`, `2025-06-18`, `2025-11-25`) and the 28-tool troubleshooting
-  threshold.
+  (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`) and the 28-tool
+  troubleshooting threshold.
+- Corrected README/privacy provider wording: Swift summary generation uses an
+  OpenAI-compatible chat provider via `aiApiKey`; title generation uses
+  `titleProvider`/`titleApiKey` and supports Ollama, OpenAI, or a custom
+  OpenAI-compatible endpoint.
 - Corrected the `get_context.task` MCP schema wording from semantic search to
   related context lookup. No runtime behavior changed.
 
