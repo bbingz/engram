@@ -7,6 +7,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Codex synchronized public docs with the Swift product state (2026-06-12, Codex)
+
+- Updated `README.md`, `docs/mcp-tools.md`, `docs/mcp-swift.md`,
+  `docs/roadmap.md`, and `docs/PRIVACY.md` so GitHub-facing documentation
+  matches the shipped Swift macOS app + Swift MCP helper state.
+- Documented the current surface explicitly: 28 MCP tools, keyword-only Swift
+  search, legacy `semantic`/`hybrid` search requests degraded to keyword with a
+  warning, MCP `live_sessions` intentionally unavailable, app/service IPC live
+  session scanning still available, exports under `~/.engram/exports/`, and
+  text/FTS-only insight memory.
+- Updated MCP protocol docs for the currently supported initialize versions
+  (`2025-03-26`, `2025-06-18`, `2025-11-25`) and the 28-tool troubleshooting
+  threshold.
+- Corrected the `get_context.task` MCP schema wording from semantic search to
+  related context lookup. No runtime behavior changed.
+
 ### Codex fixed EngramService startup crash and high CPU scan (2026-06-12, Codex)
 
 Fixed a new EngramService startup crash loop and the follow-on high-CPU startup

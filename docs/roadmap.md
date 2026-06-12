@@ -25,7 +25,7 @@ dev/reference only.
 | Usage (PR5) | Real probe data flow unconfirmed | **DONE** — startup writes real 7-day usage shares for tracked CLI sources |
 | Search | Semantic search still advertised in MCP | **DONE** — MCP search schema and runtime are keyword-only unless vector support exists |
 | Session links | Manual parent link/unlink missing | **DONE** — service IPC + detail-view affordances support manual link/unlink |
-| Runtime monitor | `live_sessions` returned unavailable | **DONE** — Swift service and MCP scan active local CLI session files |
+| Runtime monitor | `live_sessions` returned unavailable | **DONE** — Swift service/app IPC scan active local CLI session files; MCP mode keeps an explicit unavailable contract |
 | Insights | Cost optimization suggestions not computed | **DONE** — MCP insights derive actionable suggestions from spend distribution |
 | Repo hygiene | `.superpowers/` committed by accident | **DONE** — untracked + gitignored (2026-05-23) |
 
@@ -90,11 +90,12 @@ No open roadmap items as of 2026-05-24.
 
 - **Module:** MCP / runtime monitoring
 - **Status:** done
-- **Acceptance evidence:** Swift service and MCP `live_sessions` scan recent
-  session artifacts with active/idle/recent activity levels; tests cover the
-  service scanner and deterministic MCP empty-home behavior.
+- **Acceptance evidence:** Swift service/app IPC live-session scanning reports
+  recent session artifacts with active/idle/recent activity levels. MCP mode
+  intentionally returns an explicit unavailable result so clients do not mistake
+  the tool for a live monitor.
 - **Related files:** `macos/EngramService/Core/EngramServiceReadProvider.swift`,
-  `macos/EngramMCP/Core/MCPLiveSessionScanner.swift`,
+  `macos/Shared/Service/EngramServiceClient.swift`,
   `macos/EngramMCP/Core/MCPToolRegistry.swift`
 
 ### Cost optimization insights

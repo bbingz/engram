@@ -43,20 +43,20 @@ Read the full conversation content of a single session. Supports pagination for 
 
 ## search
 
-Full-text and semantic search across all session content. Supports Chinese and English.
+Full-text keyword search across all session content. Supports Chinese and English.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| query | string | **yes** | Search keywords (at least 2 characters for semantic, 3 for keyword) |
+| query | string | **yes** | Search keywords (at least 3 characters for keyword search) |
 | source | string | no | Filter by tool source. Same enum as `list_sessions` |
 | project | string | no | Filter by project name |
 | since | string | no | Start time (ISO 8601) |
 | limit | number | no | Max results. Default 10, max 50 |
-| mode | string | no | Search mode. Enum: `hybrid`, `keyword`, `semantic`. Default `hybrid` |
+| mode | string | no | Search mode. Enum: `keyword`. Default `keyword` |
 
-**Notes:** Uses Reciprocal Rank Fusion (RRF) to merge FTS5 keyword results with sqlite-vec semantic results. If the query is a UUID, performs direct session ID lookup. Keyword search requires 3+ characters; semantic search requires 2+ characters and an active embedding provider. When embeddings are unavailable, falls back to keyword-only with a warning. Also searches the insights store and returns matching curated memories in `insightResults`.
+**Notes:** Uses SQLite FTS keyword search. If the query is a UUID, performs direct session ID lookup. Keyword search requires 3+ characters. Legacy clients that pass `semantic`, `hybrid`, or another unsupported mode are accepted for compatibility but receive keyword-only results with a warning. Also searches the insights FTS store and returns matching curated memories in `insightResults`.
 
 ---
 
@@ -69,13 +69,13 @@ Auto-extract relevant historical session context for the current working directo
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | cwd | string | **yes** | Current working directory (absolute path) |
-| task | string | no | Current task description (enables semantic search for relevant sessions) |
+| task | string | no | Current task description (used for related memory/context lookup) |
 | max_tokens | number | no | Token budget. Default 4000 (~16,000 characters) |
 | detail | string | no | Detail level. Enum: `abstract` (~100 tokens, cost+alerts only), `overview` (~2K tokens), `full` (default) |
 | sort_by | string | no | Sort order. Enum: `recency` (default, reverse chronological), `score` (by quality score) |
 | include_environment | boolean | no | Include live environment data (active sessions, today's cost, tool usage, alerts). Default `true` |
 
-**Notes:** Project name is derived from `basename(cwd)`. Respects project aliases. When `task` is provided and embeddings are available, boosts semantically relevant sessions. Includes curated insights (from `save_insight`) when available. The environment section progressively drops lower-priority data (config status, file hotspots, git repos, recent errors) if it exceeds 30% of the token budget. `abstract` mode only shows cost and alerts.
+**Notes:** Project name is derived from `basename(cwd)`. Respects project aliases. When `task` is provided, matching saved insights are pulled with FTS keyword lookup before recent session summaries. Includes curated insights (from `save_insight`) when available. The environment section progressively drops lower-priority data (config status, file hotspots, git repos, recent errors) if it exceeds 30% of the token budget. `abstract` mode only shows cost and alerts.
 
 ---
 
@@ -113,7 +113,7 @@ Get usage statistics: session counts, message counts, grouped by various dimensi
 
 ## export
 
-Export a single session as a Markdown or JSON file, saved to `~/codex-exports/`.
+Export a single session as a Markdown or JSON file, saved to `~/.engram/exports/`.
 
 **Parameters:**
 
@@ -122,7 +122,7 @@ Export a single session as a Markdown or JSON file, saved to `~/codex-exports/`.
 | id | string | **yes** | Session ID |
 | format | string | no | Output format. Enum: `markdown`, `json`. Default `markdown` |
 
-**Notes:** Output filename format: `{source}-{id_prefix}-{date}.{ext}`. Creates the `~/codex-exports/` directory if it doesn't exist. Returns the output file path, format, and message count.
+**Notes:** Output filename format: `{source}-{id_prefix}-{date}.{ext}`. Creates the `~/.engram/exports/` directory if it doesn't exist. Returns the output file path, format, and message count.
 
 ---
 
@@ -180,7 +180,7 @@ Retrieve curated insights and memories from past sessions. Use `save_insight` to
 |------|------|----------|-------------|
 | query | string | **yes** | What to remember (e.g. "user's coding preferences") |
 
-**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance (similarity). When embeddings are available, performs semantic vector search. Falls back to FTS keyword search, then to listing recent insights. If no memories exist, suggests using `save_insight`.
+**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses insight FTS keyword search, then falls back to recent insights. If no memories exist, suggests using `save_insight`.
 
 ---
 
@@ -197,7 +197,7 @@ Save an important insight, decision, or lesson learned for future retrieval. Use
 | room | string | no | Sub-area within the project |
 | importance | number | no | Importance level 0-5. Default 5 |
 
-**Notes:** Performs semantic deduplication: warns if a similar insight already exists (cosine similarity > 85%). Saves both as a vector embedding (for semantic search) and as text (for FTS keyword search). If no embedding provider is configured, saves as text-only with a warning. Importance is clamped to 0-5 range by schema validation.
+**Notes:** Performs normalized text duplicate detection within the insight store, then saves the insight text and FTS row. Current Swift product saves text-only and returns a warning that keyword search is available immediately. Importance is clamped to the 0-5 range by schema validation.
 
 ---
 
@@ -282,7 +282,7 @@ Generate a handoff brief for a project -- summarizes recent sessions to help res
 
 ## live_sessions
 
-List currently active coding sessions detected by file activity.
+Report MCP-mode live session monitoring status.
 
 **Parameters:**
 
@@ -290,7 +290,7 @@ List currently active coding sessions detected by file activity.
 |------|------|----------|-------------|
 | *(none)* | | | This tool takes no parameters |
 
-**Notes:** In MCP server mode, the live session monitor is not available and returns an empty list with a note. Full functionality is available in daemon mode.
+**Notes:** In MCP server mode, this tool intentionally returns an explicit unavailable result with an empty list and note. The macOS app/service IPC path has its own local live-session scanner for UI/service use; that scanner is not exposed through this MCP tool.
 
 ---
 

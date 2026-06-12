@@ -40,20 +40,20 @@ Those commands run only when invoked by the user or an MCP client.
 
 ## What Engram Stores
 
-- **SQLite database**: `~/.engram/index.sqlite` — session metadata, FTS index, and optional vector embeddings
+- **SQLite database**: `~/.engram/index.sqlite` — session metadata, FTS index, and compatibility fields/tables for future vector search
 - **Settings**: `~/.engram/settings.json` — non-sensitive configuration only
 - **API keys**: Stored securely in macOS Keychain (service: `com.engram.app`), not in plaintext files
 
 ## Network Activity
 
-Data is local by default. The current Swift service does not implement peer sync and the macOS app does not trigger it. Network calls are only made by optional, user-configured AI summaries, title generation, and embedding providers.
+Data is local by default. The current Swift service does not implement peer sync, semantic/vector search, or embedding generation, and the macOS app does not trigger peer sync. Network calls are only made by optional, user-configured AI summaries and title generation.
 
 By default, the macOS app talks to EngramService over a Unix domain socket under `~/.engram/run/engram-service.sock`. The default app runtime does not expose a localhost HTTP API. No external network connections are made unless you explicitly configure:
 
 - **Peer sync compatibility fields**: Older settings may contain peer-sync keys, but the current Swift service returns unsupported for sync commands and the macOS app does not start sync traffic.
 - **AI Summary** (optional): Sends session excerpts to your configured AI provider (OpenAI/Anthropic/Gemini/Ollama) for summary generation.
 - **Title Generation** (optional): Sends session excerpts to your configured AI provider for automatic title generation.
-- **Embedding Providers** (optional): Sends message content to Ollama (local or remote) or OpenAI for vector embedding generation used in semantic search.
+- **Embedding compatibility fields**: Older settings may contain Ollama/OpenAI embedding keys, but the current Swift product path does not generate embeddings or enable semantic search from those fields.
 
 ## Optional legacy HTTP tooling
 
@@ -61,7 +61,7 @@ Retained development/reference tooling may still understand older HTTP settings.
 
 ## Third-party Services
 
-Engram does not integrate with any advertising, analytics, or tracking services. The only third-party network calls are those you explicitly configure for AI providers or embedding providers.
+Engram does not integrate with any advertising, analytics, or tracking services. The only third-party network calls in the current Swift product path are those you explicitly configure for AI providers used by summaries or title generation.
 
 ## Data Deletion
 

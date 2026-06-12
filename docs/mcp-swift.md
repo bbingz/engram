@@ -122,10 +122,10 @@ Expected: single JSON line with `"serverInfo":{"name":"engram",...}`.
 
 No MCP stdio-loop limitation is currently tracked here.
 
-Protocol version handling is implemented for the supported `"2025-03-26"`
-version; unsupported initialize versions fail closed with a JSON-RPC
-`Invalid params` error. Tool contract behaviour is covered by
-`macos/EngramMCPTests/`.
+Protocol version handling supports `"2025-03-26"`, `"2025-06-18"`, and
+`"2025-11-25"`. Unknown newer initialize versions negotiate down to the latest
+supported version instead of failing closed. Tool contract behaviour is covered
+by `macos/EngramMCPTests/`.
 
 ## Troubleshooting
 
@@ -135,7 +135,7 @@ version; unsupported initialize versions fail closed with a JSON-RPC
 | `spawn EACCES` from client | Binary not executable | `chmod +x` the Helpers/EngramMCP path |
 | `Transport closed` after deploying a new app build | Client session still holds an old stdio process/config | Use the stable Codex shim above, then restart the client session |
 | Write tool returns service unreachable | EngramService not running or socket missing | Start Engram.app and check Console.app `com.engram.app` logs |
-| Stale tool count (< 26) | Client cached old spec | Restart the client |
+| Stale tool count (< 28) | Client cached old spec | Restart the client |
 
 Logs: helper stderr flows to the client; service logs are in Console.app
 subsystem `com.engram.app`.

@@ -1,5 +1,23 @@
 # Engram Local Memory
 
+## 2026-06-12 - Codex synchronized GitHub-facing docs with Swift product state
+
+- Updated `README.md`, `docs/mcp-tools.md`, `docs/mcp-swift.md`,
+  `docs/roadmap.md`, and `docs/PRIVACY.md` to match the current shipped Swift
+  macOS app plus Swift MCP helper.
+- Current docs now state: active MCP surface has 28 tools; Swift search is
+  keyword-only; legacy `semantic`/`hybrid` search requests are compatibility
+  inputs that degrade to keyword with a warning; MCP `live_sessions` is
+  intentionally unavailable; app/service IPC still has local live-session
+  scanning; exports are written under `~/.engram/exports/`; insights are
+  text/FTS-first without product-side embeddings.
+- `docs/mcp-swift.md` now documents supported initialize protocol versions
+  `2025-03-26`, `2025-06-18`, and `2025-11-25`, plus the 28-tool stale-helper
+  troubleshooting threshold.
+- Corrected `MCPToolRegistry`'s `get_context.task` schema description from
+  semantic search to related context lookup. This was documentation/schema text
+  only, not a behavior change.
+
 ## 2026-06-12 - Codex fixed EngramService startup crash and high CPU scan
 
 - Trigger: live EngramService was repeatedly rescanning at high CPU and crash

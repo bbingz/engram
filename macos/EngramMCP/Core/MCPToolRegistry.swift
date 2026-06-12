@@ -289,7 +289,7 @@ enum MCPToolRegistry {
                     ]),
                     "task": .object([
                         "type": .string("string"),
-                        "description": .string("当前任务描述（可选，用于语义搜索）"),
+                        "description": .string("当前任务描述（可选，用于相关上下文检索）"),
                     ]),
                     "max_tokens": .object([
                         "type": .string("number"),
