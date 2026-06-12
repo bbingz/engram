@@ -2390,11 +2390,10 @@ Durable, non-obvious lessons:
   to those strings does not pollute keyword search.
 - `titleProvider` enum is only `ollama|openai|dashscope|custom` (no
   anthropic/gemini); all non-ollama title providers are OpenAI-compatible, so
-  the service's OpenAI-only `chat()` is correct for titles. By contrast
-  `aiProtocol` (summary) may be anthropic/gemini, but the Swift service only
-  implements the OpenAI chat shape, so those protocols silently fall back to
-  native summaries. That is a known gap, not a regression (pre-PR summary was
-  always native).
+  the service's OpenAI-only `chat()` is correct for titles. For summaries,
+  legacy settings may still contain old provider names, but the current Swift
+  UI/service only enable OpenAI-compatible chat completions; unsupported
+  protocols leave AI summary config nil and fall back to native summaries.
 - The service summary now honors `summaryLanguage` / `summaryMaxSentences` /
   `summaryStyle` / `summaryPrompt` via `ServiceAIClient.renderSummaryPrompt`,
   which mirrors `renderPromptTemplate` in `src/core/ai-client.ts`. Previously
