@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+@testable import EngramCoreWrite
 @testable import EngramServiceCore
 
 final class ObservabilityRetentionTests: XCTestCase {
@@ -19,7 +20,8 @@ final class ObservabilityRetentionTests: XCTestCase {
     }
 
     func testPrunesOldKeepsRecentAndCounts() throws {
-        let queue = try DatabaseQueue(path: tmpPath())
+        let path = tmpPath()
+        let queue = try DatabaseQueue(path: path)
         let now = Date()
         let f = ISO8601DateFormatter()
         let oldZ = f.string(from: now.addingTimeInterval(-100 * 86_400))   // has Z
@@ -39,9 +41,7 @@ final class ObservabilityRetentionTests: XCTestCase {
             try db.execute(sql: "INSERT INTO usage_snapshots (source,metric,value,collected_at) VALUES ('codex','7d cost share',1,?),('codex','7d cost share',2,?)", arguments: [oldZ, recentZ])
         }
 
-        let deleted = try queue.write { db in
-            try ObservabilityRetention.prune(db, now: now)
-        }
+        let deleted = try EngramDatabaseWriter(path: path).pruneObservabilityRetention(now: now)
         XCTAssertEqual(deleted, 5, "one old row per table")
 
         try queue.read { db in
@@ -56,7 +56,9 @@ final class ObservabilityRetentionTests: XCTestCase {
     // The runtime loops prune() in bounded batches (each its own gated write) so
     // the one-time ~661k-row backlog doesn't spike the WAL or hold the gate.
     func testPruneRespectsBatchLimitAndLoopDrains() throws {
-        let queue = try DatabaseQueue(path: tmpPath())
+        let path = tmpPath()
+        let queue = try DatabaseQueue(path: path)
+        let writer = try EngramDatabaseWriter(path: path)
         let now = Date()
         let old = ISO8601DateFormatter().string(from: now.addingTimeInterval(-100 * 86_400))
         try queue.write { db in
@@ -67,13 +69,13 @@ final class ObservabilityRetentionTests: XCTestCase {
         }
 
         // One bounded call deletes at most `limit` rows per table.
-        let first = try queue.write { db in try ObservabilityRetention.prune(db, limit: 2, now: now) }
+        let first = try writer.pruneObservabilityRetention(limit: 2, now: now)
         XCTAssertEqual(first, 2)
 
         // Looping (as runObservabilityRetention does) drains the rest.
         var total = first
         while true {
-            let d = try queue.write { db in try ObservabilityRetention.prune(db, limit: 2, now: now) }
+            let d = try writer.pruneObservabilityRetention(limit: 2, now: now)
             total += d
             if d == 0 { break }
         }
@@ -81,5 +83,28 @@ final class ObservabilityRetentionTests: XCTestCase {
         try queue.read { db in
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM metrics"), 0)
         }
+    }
+
+    func testPruneRunsInsideServiceWriterGateWrite() async throws {
+        let dbPath = tmpPath()
+        let queue = try DatabaseQueue(path: dbPath)
+        let now = Date()
+        let old = ISO8601DateFormatter().string(from: now.addingTimeInterval(-100 * 86_400))
+        try await queue.write { db in
+            try self.makeSchema(db)
+            try db.execute(sql: "INSERT INTO metrics (name,type,value,tags,ts) VALUES ('m','counter',1,NULL,?)", arguments: [old])
+        }
+
+        let runtimeDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("obs-retention-runtime-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: runtimeDir.path)
+        let gate = try ServiceWriterGate(databasePath: dbPath, runtimeDirectory: runtimeDir)
+
+        let deleted = try await gate.performWriteCommand(name: "observabilityRetention") { writer in
+            try writer.pruneObservabilityRetention(limit: 2, now: now)
+        }.value
+
+        XCTAssertEqual(deleted, 1)
     }
 }

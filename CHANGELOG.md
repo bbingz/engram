@@ -7,6 +7,102 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Codex fixed EngramService startup crash and high CPU scan (2026-06-12, Codex)
+
+Fixed a new EngramService startup crash loop and the follow-on high-CPU startup
+scan observed after redeploy.
+
+- Follow-up scalability PR1: added `file_index_state`, a source+locator manifest
+  table for file-level parse status. It records file size, mtime, inode/device,
+  parser schema version, parse status, retry timing, retry count, and last
+  failure kind.
+- Added `FileIndexDecision` and writer APIs so startup/periodic scans can skip
+  unchanged `ok` locators, skip terminal failures until the file changes, and
+  honor backoff for retryable failures such as malformed partial writes.
+- Terminal failure classification is conservative: deterministic oversized /
+  unsupported locator failures are terminal; malformed JSON remains retryable
+  because it can be a write/read race on a partial JSONL line.
+- The follow-up intentionally did not implement append-only offset parsing yet;
+  that remains a separate PR after profiling the single-file parser path.
+- Follow-up verification passed: focused `EngramCoreTests/IndexerParityTests`
+  for file-index decisions, terminal failure caching, retry backoff, startup
+  known-file skipping, and recent-index changed-file behavior; `xcodebuild build`
+  for `EngramServiceCore`; `git diff --check`.
+- Follow-up deployment note: PR1 was initially left undeployed, then shipped
+  together with PR2 in local build `20260612060821`.
+- Follow-up residual risk: broader `SchemaCompatibilityTests` and full
+  `IndexerParityTests` still hit the known duplicate-GRDB XCTest host crash on
+  this machine; focused writer/indexer tests and framework build passed.
+- Follow-up scalability PR2: profiled a live 9.6 MB Codex JSONL transcript and
+  measured about 0.006s file read time, 0.268s JSON parse time, 4,931 parsed
+  records, 3,350 response records, and 0.70s wall time. This made append-only
+  offset parsing a poor immediate target compared with preventing repeated
+  broad scans.
+- Added lazy `file_index_state=ok` backfill when startup all-scan skips a
+  locator because legacy `sessions` state already proves it is known. This lets
+  the manifest cover older libraries without reparsing every historical file.
+- Added regression coverage for the lazy backfill path:
+  `IndexerParityTests.testStartupIndexBackfillsFileIndexStateWhenSkippingKnownSessionLocator`.
+- PR2 verification passed: the new backfill test failed before implementation,
+  then passed with the focused file-index, startup, and recent-index tests;
+  `xcodebuild build` for `EngramServiceCore`; `git diff --check`.
+- PR2 deployed locally: `macos/scripts/build-release.sh --local-only` exported
+  `/Users/bing/-Code-/engram/macos/build/EngramExport/Engram.app` version
+  `0.1.0`, build `20260612060821`, with full Developer ID verification.
+  `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app`
+  installed it to `/Applications/Engram.app`.
+- Live verification after deploy: first startup populated the live manifest
+  (`file_index_state`: `ok=4549`, `retry=22`) and then settled to low CPU.
+  A second app/service restart at `2026-06-12 14:14:25 +0800` verified the
+  cached path: at 15s both `Engram` and `EngramService` were at 0.0% CPU; at
+  about 90s both remained at 0.0% CPU. Logs after the second restart had no
+  `session parse failed`, `session index error`, `Database was not used`,
+  fatal, fault, or error entries, and no new `EngramService*.ips` crash report
+  appeared.
+
+- Root cause: `EngramServiceCore` executed retention SQL using a
+  `GRDB.Database` handle owned by `EngramCoreWrite`, which hit the duplicate
+  GRDB framework/runtime check (`Database was not used on the correct thread`)
+  inside `ObservabilityRetention.prune`.
+- Moved observability retention SQL into `EngramCoreWrite` and exposed
+  `EngramDatabaseWriter.pruneObservabilityRetention(...)`, so the pool owner and
+  SQL execution code use the same framework copy.
+- Updated `EngramServiceRunner.runObservabilityRetention` to call the writer API
+  through `ServiceWriterGate` instead of passing the raw database handle into
+  `EngramServiceCore`.
+- Added regression coverage for pruning through `ServiceWriterGate`, plus kept
+  old/recent row retention and bounded-batch drain behavior covered through the
+  new writer API.
+- Root cause for the high-CPU restart scan: startup `indexAllSessions` skipped
+  unchanged file locators but still reparsed known Codex transcript files that
+  had grown after their last indexed timestamp. A live 8.6 MB Codex JSONL kept
+  startup on the JSONL parser path for minutes after every restart.
+- Changed startup/all indexing to skip known direct file locators entirely;
+  recent/periodic indexing still reparses recently changed locators so active
+  sessions continue to refresh outside the startup all-scan.
+- Added regression coverage for startup skipping unchanged, hot, and known
+  modified locators while preserving recent-index behavior for changed files.
+- Built, deployed, and restarted `/Applications/Engram.app` as version `0.1.0`,
+  build `20260612024348`; Developer ID export verification passed.
+- Verification passed: `git diff --check`;
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -only-testing:EngramServiceCoreTests/ObservabilityRetentionTests -quiet`;
+  focused `EngramCoreTests` startup/recent-index tests;
+  `xcodebuild build -project macos/Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO -quiet`;
+  `macos/scripts/build-release.sh --local-only`; `macos/scripts/deploy-local.sh
+  macos/build/EngramExport/Engram.app`.
+- Live verification after restart: at 10s `EngramService` showed the expected
+  startup CPU spike; by about 90s it was down to 4.0%, and by about 130s it was
+  down to 1.5%. No new `EngramService-*.ips` crash reports appeared, and the
+  final 30s log window had no `session parse failed` or `session index error`
+  entries.
+- Residual risk: the historical malformed/empty Codex JSONL files are still on
+  disk and may log during the first seconds of startup until a separate failed
+  locator cache/tombstone is implemented; they no longer caused sustained CPU in
+  this verification.
+
 ### Codex completed full audit remediation (2026-06-10, Codex)
 
 Closed the full local remediation scope from `CODE-REVIEW-2026-06-10.md`.

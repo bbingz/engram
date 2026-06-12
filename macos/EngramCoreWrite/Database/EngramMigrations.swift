@@ -126,6 +126,27 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_session_index_jobs_status ON session_index_jobs(status);
             CREATE INDEX IF NOT EXISTS idx_session_index_jobs_session_id ON session_index_jobs(session_id);
 
+            CREATE TABLE IF NOT EXISTS file_index_state (
+              source TEXT NOT NULL,
+              locator TEXT NOT NULL,
+              size_bytes INTEGER NOT NULL,
+              mtime_ns INTEGER NOT NULL,
+              inode INTEGER,
+              device INTEGER,
+              parsed_offset INTEGER NOT NULL DEFAULT 0,
+              boundary_hash TEXT,
+              parse_status TEXT NOT NULL CHECK (parse_status IN ('ok', 'terminal', 'retry')),
+              failure_kind TEXT,
+              retry_after INTEGER,
+              retry_count INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT,
+              schema_version INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY (source, locator)
+            );
+            CREATE INDEX IF NOT EXISTS idx_file_index_state_status_retry
+              ON file_index_state(parse_status, retry_after);
+
             CREATE TABLE IF NOT EXISTS migration_log (
               id TEXT PRIMARY KEY,
               old_path TEXT NOT NULL,

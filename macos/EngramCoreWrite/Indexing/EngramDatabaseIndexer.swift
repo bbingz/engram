@@ -62,6 +62,14 @@ private final class EngramDatabaseIndexingSink: IndexingWriteSink {
         }
     }
 
+    func knownFileIndexStates(source: SourceName, locators: [String]) throws -> [String: FileIndexState] {
+        try writer.knownFileIndexStates(source: source, locators: locators)
+    }
+
+    func upsertFileIndexState(_ state: FileIndexState) throws {
+        try writer.upsertFileIndexState(state)
+    }
+
     private static func knownIndexedFileStates(
         _ db: Database,
         source: SourceName,
@@ -98,16 +106,137 @@ private final class EngramDatabaseIndexingSink: IndexingWriteSink {
 }
 
 public extension EngramDatabaseWriter {
+    func knownFileIndexStates(source: SourceName, locators: [String]) throws -> [String: FileIndexState] {
+        guard !locators.isEmpty else { return [:] }
+        return try read { db in
+            var states: [String: FileIndexState] = [:]
+            for batch in stride(from: 0, to: locators.count, by: 500) {
+                let slice = Array(locators[batch..<Swift.min(batch + 500, locators.count)])
+                let placeholders = Array(repeating: "?", count: slice.count).joined(separator: ",")
+                var arguments: StatementArguments = [source.rawValue]
+                for locator in slice {
+                    arguments += [locator]
+                }
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT source, locator, size_bytes, mtime_ns, inode, device,
+                           parsed_offset, boundary_hash, parse_status, failure_kind,
+                           retry_after, retry_count, last_error, schema_version, updated_at
+                    FROM file_index_state
+                    WHERE source = ?
+                      AND locator IN (\(placeholders))
+                    """,
+                    arguments: arguments
+                )
+                for row in rows {
+                    guard let state = Self.fileIndexState(from: row) else { continue }
+                    states[state.locator] = state
+                }
+            }
+            return states
+        }
+    }
+
+    func upsertFileIndexState(_ state: FileIndexState) throws {
+        try write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO file_index_state (
+                  source, locator, size_bytes, mtime_ns, inode, device,
+                  parsed_offset, boundary_hash, parse_status, failure_kind,
+                  retry_after, retry_count, last_error, schema_version, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source, locator) DO UPDATE SET
+                  size_bytes = excluded.size_bytes,
+                  mtime_ns = excluded.mtime_ns,
+                  inode = excluded.inode,
+                  device = excluded.device,
+                  parsed_offset = excluded.parsed_offset,
+                  boundary_hash = excluded.boundary_hash,
+                  parse_status = excluded.parse_status,
+                  failure_kind = excluded.failure_kind,
+                  retry_after = excluded.retry_after,
+                  retry_count = excluded.retry_count,
+                  last_error = excluded.last_error,
+                  schema_version = excluded.schema_version,
+                  updated_at = excluded.updated_at
+                """,
+                arguments: [
+                    state.source.rawValue,
+                    state.locator,
+                    state.sizeBytes,
+                    state.modifiedAtNanos,
+                    state.inode,
+                    state.device,
+                    state.parsedOffset,
+                    state.boundaryHash,
+                    state.parseStatus.rawValue,
+                    state.failureKind?.rawValue,
+                    state.retryAfterEpochSeconds,
+                    state.retryCount,
+                    state.lastError,
+                    state.schemaVersion,
+                    state.updatedAtEpochSeconds
+                ]
+            )
+        }
+    }
+
+    private static func fileIndexState(from row: Row) -> FileIndexState? {
+        guard let sourceRaw = row["source"] as String?,
+              let source = SourceName(rawValue: sourceRaw),
+              let locator = row["locator"] as String?,
+              let sizeBytes = row["size_bytes"] as Int64?,
+              let modifiedAtNanos = row["mtime_ns"] as Int64?,
+              let statusRaw = row["parse_status"] as String?,
+              let parseStatus = FileIndexParseStatus(rawValue: statusRaw),
+              let retryCount = row["retry_count"] as Int?,
+              let schemaVersion = row["schema_version"] as Int?,
+              let updatedAt = row["updated_at"] as Int64?
+        else {
+            return nil
+        }
+        let failureKind = (row["failure_kind"] as String?).flatMap(ParserFailure.init(rawValue:))
+        return FileIndexState(
+            source: source,
+            locator: locator,
+            sizeBytes: sizeBytes,
+            modifiedAtNanos: modifiedAtNanos,
+            inode: row["inode"] as Int64?,
+            device: row["device"] as Int64?,
+            parsedOffset: row["parsed_offset"] as Int64? ?? 0,
+            boundaryHash: row["boundary_hash"],
+            parseStatus: parseStatus,
+            failureKind: failureKind,
+            retryAfterEpochSeconds: row["retry_after"] as Int64?,
+            retryCount: retryCount,
+            lastError: row["last_error"],
+            schemaVersion: schemaVersion,
+            updatedAtEpochSeconds: updatedAt
+        )
+    }
+
     func indexRecentSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.recentActiveAdapters()
     ) async throws -> EngramDatabaseIndexResult {
-        try await indexSessions(adapters: adapters, runParentBackfills: false, skipUnchangedFileLocators: true)
+        try await indexSessions(
+            adapters: adapters,
+            runParentBackfills: false,
+            skipUnchangedFileLocators: true,
+            skipKnownFileLocators: false
+        )
     }
 
     func indexAllSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters()
     ) async throws -> EngramDatabaseIndexResult {
-        try await indexSessions(adapters: adapters, runParentBackfills: true, skipUnchangedFileLocators: false)
+        try await indexSessions(
+            adapters: adapters,
+            runParentBackfills: true,
+            skipUnchangedFileLocators: true,
+            skipKnownFileLocators: true
+        )
     }
 
     /// Run the deterministic parent-link backfills after a periodic scan so
@@ -128,12 +257,14 @@ public extension EngramDatabaseWriter {
     private func indexSessions(
         adapters: [any SessionAdapter],
         runParentBackfills: Bool,
-        skipUnchangedFileLocators: Bool
+        skipUnchangedFileLocators: Bool,
+        skipKnownFileLocators: Bool
     ) async throws -> EngramDatabaseIndexResult {
         let indexer = SwiftIndexer(
             sink: EngramDatabaseIndexingSink(writer: self),
             adapters: adapters,
-            skipUnchangedFileLocators: skipUnchangedFileLocators
+            skipUnchangedFileLocators: skipUnchangedFileLocators,
+            skipKnownFileLocators: skipKnownFileLocators
         )
         let indexed = try await indexer.indexAll()
 

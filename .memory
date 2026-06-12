@@ -1,5 +1,117 @@
 # Engram Local Memory
 
+## 2026-06-12 - Codex fixed EngramService startup crash and high CPU scan
+
+- Trigger: live EngramService was repeatedly rescanning at high CPU and crash
+  reports showed `Database was not used on the correct thread` on
+  `GRDB.DatabasePool.writer`, faulting in observability retention pruning.
+- Follow-up scalability PR1: added `file_index_state` in
+  `EngramMigrations.createOrUpdateBaseSchema`, plus `FileIndexStat`,
+  `FileIndexState`, and `FileIndexDecision` in
+  `EngramCoreWrite/Indexing/IndexingWriteSink.swift`. `EngramDatabaseWriter`
+  now exposes `knownFileIndexStates` and `upsertFileIndexState`.
+- Follow-up behavior: `SwiftIndexer.scanSnapshots` consults file-index state
+  before parsing direct file locators, records terminal parse failures so they
+  are skipped until the file changes, records retryable failures with
+  `retry_after`, and writes success state only after the session batch upsert
+  reports a non-failure result.
+- Failure policy: `lineTooLarge`, `fileTooLarge`, `messageLimitExceeded`, and
+  `unsupportedVirtualLocator` are terminal. `malformedJSON` remains retryable
+  to avoid tombstoning partial JSONL writes.
+- Follow-up tests:
+  `testFileIndexDecisionSkipsTerminalFailureUntilFileChanges`,
+  `testFileIndexDecisionBacksOffMalformedFailureBeforeRetryAfter`,
+  `testFileIndexDecisionSchemaVersionMismatchForcesFull`,
+  `testStartupIndexCachesTerminalParseFailureAndSkipsNextRun`, and
+  `testStartupIndexSkipsRetryFailureBeforeRetryAfter`.
+- Follow-up verification: the focused file-index/startup/recent-index test set
+  exited 0; `xcodebuild build -project macos/Engram.xcodeproj -scheme
+  EngramServiceCore -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -quiet` exited 0; `git diff --check` exited 0.
+- Follow-up deployment note: the `file_index_state` PR1 was initially left
+  undeployed, then shipped together with PR2 in local build `20260612060821`.
+- Follow-up residual risk: broader `SchemaCompatibilityTests` and full
+  `IndexerParityTests` still crash under the known duplicate-GRDB XCTest host
+  issue on this machine. Append-only offset parsing is still deferred.
+- Follow-up scalability PR2 profiling: a live 9.6 MB Codex JSONL transcript
+  took about 0.006s to read and 0.268s to parse with Foundation
+  `JSONSerialization`, producing 4,931 parsed records and 3,350 response
+  records in 0.70s wall time. This does not explain multi-minute CPU by itself,
+  so append-only offset parsing remains deferred until broader scan evidence
+  justifies it.
+- Follow-up scalability PR2 behavior: when startup all-scan skips a direct file
+  locator because legacy `sessions` indexed state already proves the locator is
+  known, `SwiftIndexer` now backfills `file_index_state=ok` for that locator.
+  This migrates old libraries into the new manifest without reparsing every
+  historical file.
+- Follow-up scalability PR2 test:
+  `IndexerParityTests.testStartupIndexBackfillsFileIndexStateWhenSkippingKnownSessionLocator`
+  failed before implementation and passed afterward.
+- Follow-up scalability PR2 verification: focused file-index/startup/recent
+  tests exited 0; `xcodebuild build -project macos/Engram.xcodeproj -scheme
+  EngramServiceCore -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+  -quiet` exited 0; `git diff --check` exited 0.
+- Follow-up scalability PR2 local deploy: `macos/scripts/build-release.sh
+  --local-only` exported
+  `/Users/bing/-Code-/engram/macos/build/EngramExport/Engram.app` version
+  `0.1.0`, build `20260612060821`, with full Developer ID verification.
+  `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app`
+  installed it to `/Applications/Engram.app`.
+- Follow-up scalability PR2 live verification: the first startup populated the
+  live `file_index_state` manifest (`ok=4549`, `retry=22`) and then settled to
+  low CPU. A second app/service restart at `2026-06-12 14:14:25 +0800`
+  verified the cached path: both `Engram` and `EngramService` were 0.0% CPU at
+  15s and remained 0.0% CPU at about 90s. Logs after the second restart had no
+  `session parse failed`, `session index error`, `Database was not used`,
+  fatal, fault, or error entries, and no new `EngramService*.ips` crash report
+  appeared.
+- Root cause: `EngramServiceCore` owned the retention implementation and used a
+  `GRDB.Database` handle produced by `EngramCoreWrite`'s database pool. With
+  duplicate GRDB framework copies loaded, that crossed GRDB runtime ownership
+  checks.
+- Fix: moved `ObservabilityRetention` into `macos/EngramCoreWrite` and added
+  `EngramDatabaseWriter.pruneObservabilityRetention(...)`; changed
+  `EngramServiceRunner.runObservabilityRetention` to call that writer API from
+  inside `ServiceWriterGate.performWriteCommand`.
+- Regression: `ObservabilityRetentionTests.testPruneRunsInsideServiceWriterGateWrite`
+  covers the startup/gated-write path that previously crashed; existing prune
+  count and bounded-batch tests now use the writer API.
+- Follow-on root cause: after the retention crash was fixed and the app was
+  redeployed, startup `indexAllSessions` still reparsed known Codex transcript
+  files that had grown after their stored `indexed_at`. The live Codex JSONL was
+  about 8.6 MB, so every restart spent minutes in `SwiftIndexer.scanSnapshots`
+  -> `CodexAdapter.streamMessages`.
+- Follow-on fix: startup/all indexing now skips known direct file locators, so
+  the all-scan only fills missing historical locators; recent/periodic indexing
+  still handles recently changed files.
+- Follow-on regression tests:
+  `IndexerParityTests.testStartupIndexAllSkipsUnchangedFileLocatorsOnSecondRun`,
+  `testStartupIndexAllDefersKnownHotFileLocators`, and
+  `testStartupIndexAllSkipsKnownModifiedFileLocators`. Existing recent-index
+  tests still cover parsing changed files outside the startup all-scan.
+- Deployment: `macos/scripts/build-release.sh --local-only` produced
+  `macos/build/EngramExport/Engram.app` version `0.1.0`, build
+  `20260612024348`, with full Developer ID verification; `macos/scripts/deploy-local.sh
+  macos/build/EngramExport/Engram.app` installed it to
+  `/Applications/Engram.app` and the app was restarted.
+- Verification:
+  - `git diff --check` exited 0.
+  - `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore
+    -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+    -only-testing:EngramServiceCoreTests/ObservabilityRetentionTests -quiet`
+    exited 0.
+  - Focused `EngramCoreTests` startup/recent-index tests exited 0.
+  - `xcodebuild build -project macos/Engram.xcodeproj -scheme EngramServiceCore
+    -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO -quiet` exited 0.
+  - Final live restart check: at 10s `EngramService` showed the expected startup
+    spike; at about 90s it was 4.0% CPU; at about 130s it was 1.5% CPU. No new
+    `EngramService-*.ips` appeared, and the final 30s log window had no
+    `session parse failed` or `session index error`.
+- Residual risk: full `EngramServiceCore` suite was not rerun after the focused
+  regressions because an earlier full run hung in Xcode test launch. Historical
+  malformed/empty Codex JSONL files remain on disk and can still log during the
+  first seconds of startup until a separate failed-locator cache is added.
+
 ## 2026-06-10 - Codex completed full audit remediation
 
 - Goal: close every confirmed item from `CODE-REVIEW-2026-06-10.md` and

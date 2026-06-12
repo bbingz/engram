@@ -5,6 +5,7 @@ import os
 
 public final class SwiftIndexer {
     private static let writeBatchSize = 100
+    private static let activeFileGraceInterval: TimeInterval = 120
     private static let log = os.Logger(subsystem: "com.engram.service", category: "indexer")
     // Shared formatter — allocating one per indexed session is wasteful.
     private static let iso8601 = ISO8601DateFormatter()
@@ -13,17 +14,20 @@ public final class SwiftIndexer {
     private let adapters: [any SessionAdapter]
     private let authoritativeNode: String
     private let skipUnchangedFileLocators: Bool
+    private let skipKnownFileLocators: Bool
 
     public init(
         sink: any IndexingWriteSink,
         adapters: [any SessionAdapter] = [],
         authoritativeNode: String = "local",
-        skipUnchangedFileLocators: Bool = false
+        skipUnchangedFileLocators: Bool = false,
+        skipKnownFileLocators: Bool = false
     ) {
         self.sink = sink
         self.adapters = adapters
         self.authoritativeNode = authoritativeNode
         self.skipUnchangedFileLocators = skipUnchangedFileLocators
+        self.skipKnownFileLocators = skipKnownFileLocators
     }
 
     public func indexSnapshots(
@@ -38,11 +42,11 @@ public final class SwiftIndexer {
     /// see a truthful "indexed" count.
     @discardableResult
     public func indexAll(sources: Set<SourceName>? = nil) async throws -> Int {
-        var batch: [AuthoritativeSessionSnapshot] = []
+        var batch: [ScannedSnapshot] = []
         var indexed = 0
 
-        for try await snapshot in streamSnapshots(sources: sources) {
-            batch.append(snapshot)
+        for try await scanned in streamScannedSnapshots(sources: sources) {
+            batch.append(scanned)
             if batch.count >= Self.writeBatchSize {
                 indexed += try writeBatchCountingSuccesses(batch)
                 batch.removeAll(keepingCapacity: true)
@@ -61,14 +65,24 @@ public final class SwiftIndexer {
 
     /// Writes one batch and returns the count of rows that did NOT fail.
     /// Logs each per-snapshot failure so a silent fake-success cannot happen.
-    private func writeBatchCountingSuccesses(_ batch: [AuthoritativeSessionSnapshot]) throws -> Int {
-        let result = try sink.upsertBatch(batch, reason: .initialScan)
+    private func writeBatchCountingSuccesses(_ batch: [ScannedSnapshot]) throws -> Int {
+        let snapshots = batch.map(\.snapshot)
+        let statesBySessionId = Dictionary(uniqueKeysWithValues: batch.compactMap { scanned in
+            scanned.fileState.map { (scanned.snapshot.id, $0) }
+        })
+        let result = try sink.upsertBatch(snapshots, reason: .initialScan)
         var failures = 0
-        for item in result.results where item.action == .failure {
-            failures += 1
-            Self.log.error(
-                "session upsert failed: session=\(item.sessionId, privacy: .private) error=\(item.error ?? "unknown", privacy: .private)"
-            )
+        for item in result.results {
+            if item.action == .failure {
+                failures += 1
+                Self.log.error(
+                    "session upsert failed: session=\(item.sessionId, privacy: .private) error=\(item.error ?? "unknown", privacy: .private)"
+                )
+                continue
+            }
+            if let state = statesBySessionId[item.sessionId] {
+                try sink.upsertFileIndexState(state)
+            }
         }
         return batch.count - failures
     }
@@ -87,8 +101,33 @@ public final class SwiftIndexer {
         AsyncThrowingStream { continuation in
             let scanTask = Task {
                 do {
-                    try await scanSnapshots(sources: sources) { snapshot in
-                        continuation.yield(snapshot)
+                    for try await scanned in streamScannedSnapshots(sources: sources) {
+                        continuation.yield(scanned.snapshot)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                scanTask.cancel()
+            }
+        }
+    }
+
+    private struct ScannedSnapshot {
+        var snapshot: AuthoritativeSessionSnapshot
+        var fileState: FileIndexState?
+    }
+
+    private func streamScannedSnapshots(
+        sources: Set<SourceName>? = nil
+    ) -> AsyncThrowingStream<ScannedSnapshot, Error> {
+        AsyncThrowingStream { continuation in
+            let scanTask = Task {
+                do {
+                    try await scanSnapshots(sources: sources) { snapshot, fileState in
+                        continuation.yield(ScannedSnapshot(snapshot: snapshot, fileState: fileState))
                     }
                     continuation.finish()
                 } catch {
@@ -103,7 +142,7 @@ public final class SwiftIndexer {
 
     private func scanSnapshots(
         sources: Set<SourceName>? = nil,
-        yield: (AuthoritativeSessionSnapshot) -> Void
+        yield: (AuthoritativeSessionSnapshot, FileIndexState?) -> Void
     ) async throws {
         for adapter in adapters {
             try Task.checkCancellation()
@@ -127,20 +166,48 @@ public final class SwiftIndexer {
             let knownFileStates = skipUnchangedFileLocators
                 ? (try? sink.knownIndexedFileStates(source: adapter.source, locators: locators))
                 : nil
+            let fileIndexStates = try? sink.knownFileIndexStates(source: adapter.source, locators: locators)
+            let activeFileCutoff = Date().addingTimeInterval(-Self.activeFileGraceInterval)
 
             for locator in locators {
                 try Task.checkCancellation()
-                if let knownFileStates,
-                   let currentFile = Self.directFileState(locator: locator),
-                   let indexed = knownFileStates[locator],
-                   indexed.sizeBytes == currentFile.sizeBytes,
-                   let indexedAt = Self.iso8601.date(from: indexed.indexedAt ?? ""),
-                   currentFile.modifiedAt <= indexedAt {
+                let currentStat = FileIndexStat.directFileStat(locator: locator)
+                if let currentStat,
+                   FileIndexDecision.decide(
+                    stat: currentStat,
+                    state: fileIndexStates?[locator],
+                    now: Date()
+                   ) == .skip {
                     continue
+                }
+                if let knownFileStates,
+                   let currentFile = currentStat?.legacyState,
+                   let indexed = knownFileStates[locator] {
+                    if skipKnownFileLocators {
+                        try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
+                        continue
+                    }
+                    if currentFile.modifiedAt > activeFileCutoff {
+                        try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
+                        continue
+                    }
+                    if indexed.sizeBytes == currentFile.sizeBytes,
+                       let indexedAt = Self.iso8601.date(from: indexed.indexedAt ?? ""),
+                       currentFile.modifiedAt <= indexedAt {
+                        try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
+                        continue
+                    }
                 }
                 do {
                     switch try await adapter.parseSessionInfo(locator: locator) {
                     case .failure(let reason):
+                        try recordFileIndexFailure(
+                            source: adapter.source,
+                            locator: locator,
+                            stat: currentStat,
+                            failure: reason,
+                            previous: fileIndexStates?[locator]
+                        )
                         Self.log.error(
                             "session parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(reason.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
                         )
@@ -151,11 +218,23 @@ public final class SwiftIndexer {
                         }
 
                         let stats = try await streamStats(adapter: adapter, locator: locator)
-                        yield(buildSnapshot(info: info, locator: locator, stats: stats))
+                        let fileState = currentStat.map {
+                            FileIndexState.success(source: adapter.source, locator: locator, stat: $0, now: Date())
+                        }
+                        yield(buildSnapshot(info: info, locator: locator, stats: stats), fileState)
                     }
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
+                    if let failure = error as? ParserFailure {
+                        try recordFileIndexFailure(
+                            source: adapter.source,
+                            locator: locator,
+                            stat: currentStat,
+                            failure: failure,
+                            previous: fileIndexStates?[locator]
+                        )
+                    }
                     // Isolate per-session errors (e.g. transient stream failures)
                     // so a single bad transcript does not abort the whole scan.
                     Self.log.error(
@@ -167,20 +246,35 @@ public final class SwiftIndexer {
         }
     }
 
-    private static func directFileState(locator: String) -> (sizeBytes: Int64, modifiedAt: Date)? {
-        guard !locator.hasPrefix("sync://"),
-              !locator.contains("::"),
-              locator.range(of: "?composer=") == nil
-        else {
-            return nil
-        }
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: locator),
-              let size = attributes[.size] as? NSNumber,
-              let modifiedAt = attributes[.modificationDate] as? Date
-        else {
-            return nil
-        }
-        return (size.int64Value, modifiedAt)
+    private func recordFileIndexFailure(
+        source: SourceName,
+        locator: String,
+        stat: FileIndexStat?,
+        failure: ParserFailure,
+        previous: FileIndexState?
+    ) throws {
+        guard let stat else { return }
+        try sink.upsertFileIndexState(
+            FileIndexState.failure(
+                source: source,
+                locator: locator,
+                stat: stat,
+                failure: failure,
+                previous: previous,
+                now: Date()
+            )
+        )
+    }
+
+    private func recordFileIndexSuccess(
+        source: SourceName,
+        locator: String,
+        stat: FileIndexStat?
+    ) throws {
+        guard let stat else { return }
+        try sink.upsertFileIndexState(
+            FileIndexState.success(source: source, locator: locator, stat: stat, now: Date())
+        )
     }
 
     private struct SessionStreamStats {

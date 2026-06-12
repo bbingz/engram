@@ -264,9 +264,7 @@ public enum EngramServiceRunner {
         do {
             while !Task.isCancelled {
                 let deleted = try await gate.performWriteCommand(name: "observabilityRetention") { writer in
-                    try writer.write { db in
-                        try ObservabilityRetention.prune(db, limit: batchLimit)
-                    }
+                    try writer.pruneObservabilityRetention(limit: batchLimit)
                 }
                 total += deleted.value
                 if deleted.value == 0 { break }

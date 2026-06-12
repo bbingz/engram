@@ -508,6 +508,222 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(sink.batchSizes, [100, 100, 5])
     }
 
+    func testStartupIndexAllSkipsUnchangedFileLocatorsOnSecondRun() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-skip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: locator.path
+        )
+        let adapter = CountingSyntheticFileSessionAdapter(locator: locator.path)
+
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let firstStreamCount = adapter.streamCount
+        let second = try await writer.indexAllSessions(adapters: [adapter])
+
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertEqual(firstStreamCount, 1)
+        XCTAssertEqual(second.indexed, 0)
+        XCTAssertEqual(adapter.streamCount, 1, "unchanged startup index must not reparse message streams")
+    }
+
+    func testStartupIndexAllDefersKnownHotFileLocators() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-hot-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: locator.path
+        )
+        let adapter = CountingSyntheticFileSessionAdapter(locator: locator.path)
+
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        try "hello\nstill writing\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: locator.path)
+        let firstStreamCount = adapter.streamCount
+        let second = try await writer.indexAllSessions(adapters: [adapter])
+
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertEqual(second.indexed, 0)
+        XCTAssertEqual(adapter.streamCount, firstStreamCount, "startup index should defer known files still being written")
+    }
+
+    func testStartupIndexAllSkipsKnownModifiedFileLocators() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-known-modified-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: locator.path
+        )
+        let adapter = CountingSyntheticFileSessionAdapter(locator: locator.path)
+
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        try "hello\nlater change\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: locator.path
+        )
+        let firstStreamCount = adapter.streamCount
+        let second = try await writer.indexAllSessions(adapters: [adapter])
+
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertEqual(second.indexed, 0)
+        XCTAssertEqual(adapter.streamCount, firstStreamCount, "startup all-scan must not reparse known modified locators")
+    }
+
+    func testFileIndexDecisionSkipsTerminalFailureUntilFileChanges() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let stat = FileIndexStat(
+            sizeBytes: 128,
+            modifiedAtNanos: 1_000_000_000,
+            inode: 42,
+            device: 7
+        )
+        let state = FileIndexState.failure(
+            source: .codex,
+            locator: "/tmp/bad.jsonl",
+            stat: stat,
+            failure: .lineTooLarge,
+            previous: nil,
+            now: now
+        )
+
+        XCTAssertEqual(FileIndexDecision.decide(stat: stat, state: state, now: now), .skip)
+        XCTAssertEqual(
+            FileIndexDecision.decide(
+                stat: FileIndexStat(sizeBytes: 256, modifiedAtNanos: stat.modifiedAtNanos, inode: stat.inode, device: stat.device),
+                state: state,
+                now: now
+            ),
+            .full
+        )
+    }
+
+    func testFileIndexDecisionBacksOffMalformedFailureBeforeRetryAfter() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let stat = FileIndexStat(
+            sizeBytes: 128,
+            modifiedAtNanos: 1_000_000_000,
+            inode: 42,
+            device: 7
+        )
+        let state = FileIndexState.failure(
+            source: .codex,
+            locator: "/tmp/partial.jsonl",
+            stat: stat,
+            failure: .malformedJSON,
+            previous: nil,
+            now: now
+        )
+
+        XCTAssertEqual(FileIndexDecision.decide(stat: stat, state: state, now: now), .skip)
+        XCTAssertEqual(
+            FileIndexDecision.decide(stat: stat, state: state, now: now.addingTimeInterval(10 * 60)),
+            .full
+        )
+    }
+
+    func testFileIndexDecisionSchemaVersionMismatchForcesFull() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let stat = FileIndexStat(
+            sizeBytes: 128,
+            modifiedAtNanos: 1_000_000_000,
+            inode: 42,
+            device: 7
+        )
+        var state = FileIndexState.success(source: .codex, locator: "/tmp/ok.jsonl", stat: stat, now: now)
+        state.schemaVersion = FileIndexState.currentSchemaVersion - 1
+
+        XCTAssertEqual(FileIndexDecision.decide(stat: stat, state: state, now: now), .full)
+    }
+
+    func testStartupIndexCachesTerminalParseFailureAndSkipsNextRun() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-terminal-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("bad.jsonl")
+        try "bad\n".write(to: locator, atomically: true, encoding: .utf8)
+        let adapter = FailingFileSessionAdapter(locator: locator.path, failure: .lineTooLarge)
+
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let second = try await writer.indexAllSessions(adapters: [adapter])
+
+        XCTAssertEqual(first.indexed, 0)
+        XCTAssertEqual(second.indexed, 0)
+        XCTAssertEqual(adapter.parseCount, 1, "terminal parse failures must be cached until the file changes")
+    }
+
+    func testStartupIndexSkipsRetryFailureBeforeRetryAfter() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-retry-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("partial.jsonl")
+        try "partial\n".write(to: locator, atomically: true, encoding: .utf8)
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path))
+        let state = FileIndexState.failure(
+            source: .codex,
+            locator: locator.path,
+            stat: stat,
+            failure: .malformedJSON,
+            previous: nil,
+            now: Date()
+        )
+        try writer.upsertFileIndexState(state)
+        let adapter = FailingFileSessionAdapter(locator: locator.path, failure: .malformedJSON)
+
+        let result = try await writer.indexAllSessions(adapters: [adapter])
+
+        XCTAssertEqual(result.indexed, 0)
+        XCTAssertEqual(adapter.parseCount, 0, "retryable parse failures should honor retry_after before reparsing")
+    }
+
+    func testStartupIndexBackfillsFileIndexStateWhenSkippingKnownSessionLocator() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-manifest-backfill-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: locator.path
+        )
+        let size = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path)).sizeBytes
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(id: "legacy-known", sourceLocator: locator.path, sizeBytes: size)
+            )
+        }
+        let adapter = CountingSyntheticFileSessionAdapter(locator: locator.path)
+
+        let result = try await writer.indexAllSessions(adapters: [adapter])
+        let states = try writer.knownFileIndexStates(source: .codex, locators: [locator.path])
+
+        XCTAssertEqual(result.indexed, 0)
+        XCTAssertEqual(adapter.streamCount, 0, "legacy known locators should not be reparsed during startup backfill")
+        XCTAssertEqual(states[locator.path]?.parseStatus, .ok)
+    }
+
     func testRecentModifiedAdapterOnlyIndexesRecentlyTouchedLocators() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("recent-active-\(UUID().uuidString)", isDirectory: true)
@@ -1375,6 +1591,99 @@ private final class SyntheticFileSessionAdapter: SessionAdapter {
         AsyncThrowingStream { continuation in
             continuation.yield(NormalizedMessage(role: .user, content: "hello"))
             continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        FileManager.default.fileExists(atPath: locator)
+    }
+}
+
+private final class CountingSyntheticFileSessionAdapter: SessionAdapter {
+    let source: SourceName = .codex
+    let locator: String
+    var streamCount = 0
+
+    init(locator: String) {
+        self.locator = locator
+    }
+
+    func detect() async -> Bool {
+        true
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        [locator]
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .success(
+            NormalizedSessionInfo(
+                id: "startup-skip",
+                source: source,
+                startTime: "2026-04-24T00:00:00Z",
+                cwd: "/repo",
+                model: "synthetic",
+                messageCount: 2,
+                userMessageCount: 1,
+                assistantMessageCount: 1,
+                toolMessageCount: 0,
+                systemMessageCount: 0,
+                summary: "hello",
+                filePath: locator,
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator)
+            )
+        )
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        streamCount += 1
+        return AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "hello"))
+            continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        FileManager.default.fileExists(atPath: locator)
+    }
+}
+
+private final class FailingFileSessionAdapter: SessionAdapter {
+    let source: SourceName = .codex
+    let locator: String
+    let failure: ParserFailure
+    var parseCount = 0
+
+    init(locator: String, failure: ParserFailure) {
+        self.locator = locator
+        self.failure = failure
+    }
+
+    func detect() async -> Bool {
+        true
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        [locator]
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        parseCount += 1
+        return .failure(failure)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        XCTFail("streamMessages should not be called for parse failures")
+        return AsyncThrowingStream { continuation in
             continuation.finish()
         }
     }
