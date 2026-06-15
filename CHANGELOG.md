@@ -17,15 +17,26 @@ Checkpoint before context compaction. Pick up here.
   `c03da7e5` UI action layer (20 WPs).
 - **Local verified:** app `BUILD SUCCEEDED` (0 errors); **132 non-DB tests pass,
   0 failures** (125 EngramTests + 7 ServiceTelemetryTests, re-run authoritatively).
-- **IN PROGRESS — option 2 (DB tests on a clean machine):** PR #74 CI run
-  `27532646626` ("Tests" workflow). The `swift-unit` job runs
-  `xcodebuild test` for schemes `Engram` (incl. the DB-backed EngramTests
-  blocked locally by the pre-existing GRDB duplicate-linkage crash),
-  `EngramServiceCore`, `EngramMCPTests`; `ui-test-smoke` runs the UI screenshot
-  tests. Was watching via `gh run watch 27532646626`. **TO RESUME:** check
-  `gh pr checks 74` / `gh run view 27532646626` — if `swift-unit` is green the
-  DB-test gate is closed; if red, fix the real failures (not the GRDB env crash,
-  which only affects the author's host).
+- **IN PROGRESS — option 2 (DB tests on a clean machine):** PR #74 CI proved the
+  DB-backed tests blocked locally by the GRDB host crash DO run on the clean
+  macos-15 runner. Latest run `27533077224` `swift-unit`: **10 real failures to
+  FIX NEXT** (all DB-backed, never ran on the author's host). The logger-privacy
+  4 are already fixed (commit `601ddc82`). Remaining:
+  1. `EngramServiceCoreTests/EngramServiceIPCTests.testFormerBridgeCommandsUseNativeServiceBehavior`
+     (2 asserts: got "99" vs "0", "pending-suggestions" vs "hygiene") — the new
+     commands (insights/costs/telemetry/insightDetail/memoryFileContent) shifted
+     a command-list count/ordering the test pins; reconcile the test or the
+     dispatch list.
+  2. `EngramServiceCoreTests/HygieneChecksTests` (8 fail) — clean DB scores 0
+     (expected 100) and expected `EngramServiceHygieneIssue`s come back nil →
+     the **WP14 real-hygiene impl (or its B4 round-2 predicate change) has a
+     runtime SQL/schema bug** the score/issue path swallows to 0. Debug
+     `hygiene(_:databasePath:)` in EngramServiceCommandHandler against the test
+     DB setup (HygieneChecksTests). This is the substantive remaining fix.
+  **TO RESUME:** `gh pr checks 74`; pull failures with
+  `gh run view <run> --job <swift-unit id> --log | grep "error: -\["`; fix; push
+  (re-triggers CI). The other 8 CI jobs (lint/typescript/macos-vitest/etc.) are
+  green.
 - **PENDING — option 3 (release build + deploy + walkthrough):** after CI green,
   run `ENGRAM_BUILD_NUMBER=<ts> macos/scripts/build-release.sh --local-only`,
   then `macos/scripts/deploy-local.sh <exported app>` to replace
