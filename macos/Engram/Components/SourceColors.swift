@@ -52,6 +52,25 @@ enum SourceColors {
         default:              return source
         }
     }
+
+    /// Disambiguated, longer display names for surfaces that need to tell
+    /// similar sources apart (e.g. the Settings source-name table). Falls back
+    /// to `label(for:)` for any source not explicitly disambiguated here.
+    static func longLabel(for source: String) -> String {
+        switch source {
+        case "claude-code":   return "Claude Code"
+        case "codex":         return "Codex"
+        case "opencode":      return "OpenCode"
+        case "copilot":       return "Copilot"
+        case "gemini-cli":    return "Gemini CLI"
+        case "iflow":         return "iFlow"
+        case "qwen":          return "Qwen"
+        case "qoder":         return "Qoder"
+        case "kimi":          return "Kimi"
+        case "cline":         return "Cline"
+        default:              return label(for: source)
+        }
+    }
 }
 
 // MARK: - Shared source display info

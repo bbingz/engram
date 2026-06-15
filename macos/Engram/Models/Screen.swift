@@ -7,6 +7,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
     case search
     // Monitor
     case sessions
+    case favorites
     case timeline
     case activity
     case observability
@@ -31,6 +32,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .home:        return "Today"
         case .search:      return "Search"
         case .sessions:    return "Sessions"
+        case .favorites:   return "Favorites"
         case .timeline:    return "Timeline"
         case .activity:    return "Activity"
         case .observability: return "Observability"
@@ -52,6 +54,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .home:        return String(localized: "Today")
         case .search:      return String(localized: "Search")
         case .sessions:    return String(localized: "Sessions")
+        case .favorites:   return String(localized: "Favorites")
         case .timeline:    return String(localized: "Timeline")
         case .activity:    return String(localized: "Activity")
         case .observability: return String(localized: "Observability")
@@ -73,6 +76,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .home:        return "calendar.badge.clock"
         case .search:      return "magnifyingglass"
         case .sessions:    return "bubble.left.and.bubble.right"
+        case .favorites:   return "star"
         case .timeline:    return "chart.bar.xaxis"
         case .activity:    return "bolt"
         case .observability: return "gauge.open.with.lines.needle.33percent"
@@ -99,7 +103,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         var screens: [Screen] {
             switch self {
             case .overview:  return [.home, .search]
-            case .monitor:   return [.sessions, .timeline, .activity, .observability, .hygiene]
+            case .monitor:   return [.sessions, .favorites, .timeline, .activity, .observability, .hygiene]
             case .workspace: return [.projects, .sourcePulse, .repos, .workGraph]
             case .config:    return [.skills, .agents, .memory, .hooks]
             }

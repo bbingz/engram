@@ -5,17 +5,17 @@ struct MainWindowView: View {
     @State private var selectedScreen: Screen = .home
     @State private var selectedSession: Session? = nil
     @State private var showPalette: Bool = false
-    @State private var paletteItems: [PaletteItem] = []
-    @State private var paletteSelection: Int = 0
     @State private var pendingNavigationId: String? = nil
+    @State private var pendingSearchTerm: String? = nil
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceClient.self) var serviceClient
 
     var body: some View {
         NavigationSplitView {
             SidebarView(selectedScreen: $selectedScreen)
         } detail: {
             if let session = selectedSession {
-                SessionDetailView(session: session, onBack: { selectedSession = nil })
+                SessionDetailView(session: session, onBack: { selectedSession = nil }, searchTerm: pendingSearchTerm)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 detailView
@@ -41,10 +41,12 @@ struct MainWindowView: View {
             // Clear session detail when navigating to a different page
             pendingNavigationId = nil
             selectedSession = nil
+            pendingSearchTerm = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSession)) { notification in
             if let box = notification.object as? SessionBox {
                 pendingNavigationId = nil
+                pendingSearchTerm = box.searchTerm
                 selectedSession = box.session
             }
         }
@@ -63,9 +65,20 @@ struct MainWindowView: View {
                 onSelectSession: { id in
                     navigateToSession(id: id)
                     showPalette = false
+                },
+                onRefreshUsage: {
+                    let client = serviceClient
+                    Task { _ = try? await client.refreshUsage() }
+                    showPalette = false
+                },
+                onRegenerateTitles: {
+                    let client = serviceClient
+                    Task { _ = try? await client.regenerateAllTitles() }
+                    showPalette = false
                 }
             )
             .environment(db)
+            .environment(serviceClient)
             .frame(width: 480, height: 360)
         }
     }
@@ -85,6 +98,8 @@ struct MainWindowView: View {
             SearchPageView()
         case .sessions:
             SessionsPageView()
+        case .favorites:
+            FavoritesPageView()
         case .timeline:
             TimelinePageView()
         case .activity:
@@ -122,6 +137,9 @@ struct MainWindowView: View {
         // Detached so the SQLite lookup runs off the main thread (an unstructured
         // Task started here inherits the MainActor executor).
         pendingNavigationId = id
+        // Palette-driven opens carry no search query; don't leak a stale term
+        // from a prior search-driven open into the find bar.
+        pendingSearchTerm = nil
         let db = self.db
         Task.detached {
             guard let session = try? db.getSession(id: id) else {
