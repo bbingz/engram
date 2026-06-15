@@ -10,18 +10,46 @@ import {
   readSync,
   rmSync,
   truncateSync,
-  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   autoFixDotQuote,
   ConcurrentModificationError,
   patchBuffer,
   patchFile,
 } from '../../../src/core/project-move/jsonl-patch.js';
+
+// Deterministic CAS support for the "mtime changes during patch" test below.
+// When armed for a path, the SECOND+ fs/promises.stat call for it reports a
+// +60s mtime — simulating a concurrent writer between patchFile's initial
+// read-stat and its pre-rename re-stat. Disarmed (armedPath === null) it is a
+// pure pass-through, so every other test exercises the real stat. The previous
+// setup (queueMicrotask + utimesSync) raced patchFile's first stat and was
+// flaky on slow CI runners, where the bump could land before that first stat.
+const statCas = vi.hoisted(() => ({
+  armedPath: null as string | null,
+  calls: 0,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    stat: (async (path: Parameters<typeof actual.stat>[0]) => {
+      const st = await actual.stat(path);
+      if (statCas.armedPath !== null && String(path) === statCas.armedPath) {
+        statCas.calls += 1;
+        if (statCas.calls >= 2) {
+          (st as unknown as { mtimeMs: number }).mtimeMs += 60_000;
+        }
+      }
+      return st;
+    }) as typeof actual.stat,
+  };
+});
 
 const patch = (data: string, oldPath: string, newPath: string) => {
   const buf = Buffer.from(data, 'utf8');
@@ -264,19 +292,18 @@ describe('patchFile — concurrent-write CAS (Gemini blocker #2)', () => {
   it('throws ConcurrentModificationError when mtime changes during patch', async () => {
     const p = join(tmp, 'a.jsonl');
     writeFileSync(p, '"cwd":"/old"');
-    // Schedule an mtime bump on next microtask — patchFile has started
-    // readFile but has not yet re-stat'd before rename.
-    queueMicrotask(() => {
-      const future = new Date(Date.now() + 60_000);
-      try {
-        utimesSync(p, future, future);
-      } catch {
-        /* race is acceptable */
-      }
-    });
-    await expect(patchFile(p, '/old', '/new')).rejects.toThrow(
-      ConcurrentModificationError,
-    );
+    // Deterministically simulate a concurrent writer: patchFile's first stat
+    // captures the real mtime (its `before` snapshot), then the pre-rename
+    // re-stat reports a bumped mtime so the CAS check fires.
+    statCas.armedPath = p;
+    statCas.calls = 0;
+    try {
+      await expect(patchFile(p, '/old', '/new')).rejects.toThrow(
+        ConcurrentModificationError,
+      );
+    } finally {
+      statCas.armedPath = null;
+    }
   });
 
   it('zero replacements: no write attempted, no CAS check needed', async () => {
