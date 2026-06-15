@@ -7,6 +7,188 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### B4 review round 2 (Codex) landed — alignment complete (2026-06-15, Claude+Codex) — branch `ux-flow-alignment`
+
+- **Codex (gpt-5.5) independent adversarial implementation review** found 9
+  MAJOR + 2 MINOR runtime/correctness/SECURITY bugs — a DIFFERENT class than
+  Claude's round-1 (cross-model diversity paid off). All FIXED and verified:
+  - **SECURITY**: WP17's redaction "fix" had flipped ServiceLogger + EngramLogger
+    to `privacy: .public` for ALL messages — leaking project-move src/dst paths,
+    session ids, error text, socket paths to the system log. Reverted to
+    `.private` (readable gated-Observability logs deferred to a sanitized buffer).
+  - `recordSessionAccess` mutated the DB but wasn't in `protectedCommands` →
+    bypassed the capability token. Added.
+  - `costs()` aggregated in UTC while budget dedup/dashboards use local day →
+    wrong today/MTD near midnight in non-UTC zones. Switched to `localtime`.
+  - Menu-bar polled `costs()` every 10s unconditionally + `costs` filled the
+    telemetry ring buffer → gated the poll on a configured budget, excluded
+    `costs` from spans.
+  - Trace span `startedAt` was captured after dispatch (end time) → captured
+    before. Replay `hasMore` was always false (fetch N, test `>N`) → fetch N+1
+    sentinel. `insights()`/`memoryFiles()` returned full content × up to 500 over
+    a 256 KiB IPC frame → detail-on-demand (`insightDetail`/`memoryFileContent`
+    commands, list returns preview only). Insight importance UI `1...10` vs
+    backend `0...5` → `1...5`. `confirmSuggestion` ok:false still swallowed on
+    Sessions/Timeline browse pages (round-1 fixed only AgentsView) → surfaced.
+    ActivityView Top-Files duplicate ForEach id; hygiene counts ignored
+    hidden/confirmed rows → predicates aligned.
+- **Final authoritative gate (re-run by Claude, not just the fix agent):** app
+  `BUILD SUCCEEDED` (0 errors); **125 non-DB EngramTests + 7 ServiceTelemetryTests
+  pass, 0 failures.** DB-backed tests remain blocked only by the pre-existing
+  GRDB duplicate-linkage crash on this host (environmental; CI-runnable).
+- Review artifacts: `.claude/codex-design-review.md`, `.claude/codex-impl-review.md`;
+  full plan in `docs/reviews/alignment-design-2026-06-14.md`; source review in
+  `docs/reviews/ux-flow-review-2026-06-14.md`.
+
+### Stage 1 UI + B4 review round 1 landed (2026-06-15, Claude) — branch `ux-flow-alignment`
+
+- All 20 work-packages implemented via 3 parallel build-gated batches
+  (B1: 8 WPs, B2: 4, B3: 3) on top of the Stage 0 service base + Stage 0.5
+  navigation/tokens/palette. **App + all test targets BUILD GREEN; 119 non-DB
+  unit tests pass (0 failures).** DB-backed tests remain blocked on this host by
+  the pre-existing GRDB duplicate-linkage threading crash (environmental; CI-runnable).
+- Shipped UI: session actions (resume/copy/handoff/replay/hide/rename/export/
+  favorite) on the browse pages; Favorites screen; search→transcript handoff +
+  find-in-page fixes; Memory insights (list/read/save/delete) + full .md viewer;
+  Agents grouping + confirm/dismiss + pending-suggestions inbox + Set-parent;
+  Projects migration history/batch/alias; cost dashboard + budget notifier;
+  Sources cache-only badges; Observability gated behind Developer Tools + real
+  Performance/Traces telemetry; dashboards drill-in; replay using real backfill;
+  hygiene checks + in-app remediation; service restart recovery + FDA onboarding;
+  command-palette action hub. Removed (per human decision) the misleading
+  semantic/hybrid search controls, dead embedding status, no-op Network/Web-
+  security settings, and the non-existent HTTP `/mcp` endpoint row.
+- **B4 review round 1 (Claude, 12-agent adversarial diff review):** found 11 real
+  runtime/wiring bugs a green build hid — all FIXED: success-status banner never
+  cleared (permanent warning), confirm/dismiss discarded `EngramServiceLinkResponse.ok`,
+  insight-save failure invisible behind the sheet, stale `searchFailed` on empty
+  query, always-favorite:true label, TraceExplorer double-reversed spans,
+  regenerate-titles dead count branch, + dead-code/affordance nits.
+- **Test fixes** (changeset regressions, now green): `sessionsForRepo` cwd match
+  was a naive `LIKE 'path%'` that pulled in sibling repos (`/a/app` matched
+  `/a/app-v2`) → fixed to path-boundary anchoring `(cwd = ? OR cwd LIKE ?/% ESCAPE)`
+  with LIKE-metachar escaping; `EngramServiceHookInfo.path` made optional (was a
+  required field → keyNotFound decoding payloads without it); two stale
+  source-scan assertions updated for the intentional behavior changes.
+- Next: B4 review round 2 (Codex independent adversarial pass) in progress.
+
+### Stage 0 service base landed (2026-06-15, Claude) — branch `ux-flow-alignment`
+
+- Additive service-layer foundation that all Stage-1 parallel UI WPs depend on.
+  Build gate GREEN (`Engram` scheme, Debug). No existing signatures broken (new
+  ctor params/DTO fields defaulted).
+- DTOs (`EngramServiceModels.swift`): `EngramServiceMemoryFile.content` (opt),
+  `EngramServiceSourceInfo.liveSyncDisabled` (default false; property + memberwise
+  init + CodingKeys + `init(from:)`), `EngramServiceInsightInfo`,
+  `EngramServiceCostsResponse{totalUsd,perSource,perDay,monthToDateUsd,todayUsd}`,
+  telemetry `ServiceTelemetrySnapshot/ServiceCommandLatency/ServiceSpan`.
+- Client surface (`insights()`/`costs()`/`telemetry()`) added to protocol,
+  `EngramServiceClient` (`command("…")`), and `MockEngramServiceClient`.
+- Read provider: `insights()` (tableExists("insights") guard), `costs()`
+  (per-source + per-day-30d + MTD + today, `WHERE s.hidden_at IS NULL`,
+  tableExists("session_costs") guard), `sources()` now sets `liveSyncDisabled`
+  via new `LiveSyncDisabledSources` helper, and WP05 replay backfill: replay
+  timeline now streams the real per-message adapter records (role incl. .tool,
+  timestamp, tokens, tool name) OUTSIDE the GRDB read{} block, falls back to the
+  FTS rows when the locator is unusable, and never appends the summary phantom.
+- Command handler: `insights`/`costs`/`telemetry` read cases; WP14 real hygiene
+  checks (empty/pending-suggestion/orphan counts → score+issues, error-issue on
+  read failure; `hygiene` is now `internal static func(_:databasePath:)`); WP20
+  telemetry — optional `telemetry: ServiceTelemetryCollector? = nil` ctor param,
+  `handle(_:)` wraps dispatch with ContinuousClock timing → records a span,
+  excluding `status`/`telemetry`.
+- Runner: shared `ServiceTelemetryCollector` injected into the handler; BOTH the
+  initial startup scan and the periodic scan now `recordScan(durationMs:indexed:total:)`.
+- New files: `EngramService/Core/ServiceTelemetryCollector.swift` (actor: span
+  ring cap 200, per-command ~100-sample p50/p95/max/count/errors, scan counters)
+  and `Shared/Service/LiveSyncDisabledSources.swift` (windsurf+antigravity).
+- Tests: `ServiceTelemetryTests` (7, all pass incl. handler-dispatch + IPC
+  round-trip), `HygieneChecksTests` (6, all pass), `ReplayDataTests`
+  (pure-builder + insights), `EngramServiceCostsTests`. 17 runnable tests GREEN.
+- Residual: the costs/insights/replay-e2e tests that construct
+  `SQLiteEngramServiceReadProvider` hit the PRE-EXISTING machine-specific
+  duplicate-GRDB XCTest-host crash (`Statement.swift:126` "Database was not used
+  on the correct thread") — confirmed on clean source via the existing
+  `testSQLiteReadProviderServesSearchSourcesAndEmbeddingStatus`. They compile
+  (TEST BUILD SUCCEEDED) and are CI/other-host runnable. Telemetry handler tests
+  were routed through the default Empty read provider to avoid this trap.
+
+### Claude designed + Codex-reviewed the alignment plan; implementation started (2026-06-14/15, Claude+Codex)
+
+- Design workflow (56 agents, per-WP adversarial critique) turned the 144
+  findings into a **20-work-package** alignment plan:
+  `docs/reviews/alignment-design-2026-06-14.md`. Human decisions: delete
+  misleading dead controls (semantic-search selector, no-op Network/Web
+  settings, dead embedding status), BUILD a real per-dollar cost dashboard
+  (WP19) and bounded in-process Observability telemetry (WP20), gate
+  Observability behind a Developer-Tools flag (WP17).
+- **Codex (gpt-5.5) adversarial design review** confirmed the source
+  assumptions (WP01 closures, WP05 replay data in adapter layer, WP06
+  save/delete backend, WP14 hideEmptySessions + hygiene stub) but caught
+  coordination blockers: the wave table went stale after WP19/WP20 joined the
+  service-file cluster (7 WPs share `EngramServiceModels/ReadProvider/
+  CommandHandler`); WP13 read a `liveSyncDisabled` field owned by a later
+  wave; WP02 `Screen.favorites` collided with WP18's `MainWindowView`
+  ownership; finding-ID mislabels on WP20/WP19/WP13.
+- **Revised execution model** (see doc): Stage 0 = SERIAL service base
+  (all shared-seam additions + build gate) → Stage 0.5 = shared tokens +
+  navigation (Screen/MainWindowView for WP02+WP18) → Stage 1 = PARALLEL
+  file-disjoint UI WPs. Finding labels corrected (WP20→observability-1,
+  WP19 usage-cost-2 PARTIAL, WP13 sources-sync-3 PARTIAL).
+- Codex review artifact: `.claude/codex-design-review.md`. Implementation in
+  progress on branch `ux-flow-alignment`.
+
+### Claude ran a 28-surface UI/UX flow review of the macOS app (2026-06-14, Claude)
+
+- Ran a multi-agent workflow (57 agents) tracing every end-to-end user
+  workflow + 5 cross-cutting dimensions through the SwiftUI app, with an
+  adversarial verify pass per surface. Output: **144 findings** (34 high /
+  53 medium / 57 low) written to
+  `docs/reviews/ux-flow-review-2026-06-14.md`.
+- Systemic finding: the app is a near-complete read-only viewer with almost
+  no action surface. `EngramService`/`EngramMCP` ship a write/action API
+  (`setSessionHidden`, `renameSession`, `setFavorite`, `exportSession`,
+  `saveInsight`/`deleteInsight`, `setParentSession`/`linkSessions`,
+  `recordSessionAccess`, `projectMoveBatch`, `manageProjectAlias`,
+  `get_costs`, `file_activity`) that has **0 callers** in the app views —
+  only MCP agents can drive it. Three patterns: backend-ahead-of-UI,
+  read-only viewers missing their action layer, and view-toggles shipped
+  without their acting half (Show-hidden with no Hide, Favorites star with
+  no list, cost-budget/threshold/Bearer-token controls no consumer reads).
+- First-hand verified (not just agent claims): the 8 write methods have 0
+  app-view callers; `SessionsPageView`/`TimelinePageView` omit the resume
+  closures on `ExpandableSessionCard`; `triggerSync` is a hardcoded
+  "not implemented in the Swift service" stub
+  (`EngramServiceCommandHandler.swift:796-808`).
+- Several sidebar pages are wired as real but are placeholders: Hygiene
+  (Score 0 / "checks not implemented"), Observability Performance/Traces
+  ("not collected"), `health()` constant stub.
+- Next: full alignment design + implementation to close the gaps, both with
+  adversarial review (Claude subagents + Codex). Workflow script kept at
+  `.claude/wf-uxreview.js`.
+
+### Codex rebuilt and redeployed current HEAD locally (2026-06-13, Codex)
+
+- Rebuilt current `main`/`origin/main` (`a9e3f61e`) with
+  `ENGRAM_BUILD_NUMBER=20260613125648 macos/scripts/build-release.sh --local-only`.
+  Developer ID export succeeded at `macos/build/EngramExport/Engram.app` as
+  version `0.1.0`, build `20260613125648`; `release-verify` passed full
+  Developer ID checks.
+- Installed the exported app with
+  `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app`, replacing
+  `/Applications/Engram.app`, then launched it with `open -a`.
+- Live verification after install: `/Applications/Engram.app` reports
+  `CFBundleVersion=20260613125648`; `codesign --verify --deep --strict
+  --verbose=2 /Applications/Engram.app` passed; `Engram` PID `29619` and
+  `EngramService` PID `29628` started from `/Applications/Engram.app` and
+  settled to about 0% CPU after startup; service socket
+  `~/.engram/run/engram-service.sock` exists.
+- MCP smoke verification against the installed helper exited 0, returned
+  `serverInfo.name=engram`, `version=0.1.0`, and listed 28 tools.
+- Recent runtime verifier found no severe `Engram`/`EngramService` log entries
+  matching fatal/fault/error/crash/known indexing failures and no new
+  `Engram*.ips` or `Engram*.crash` reports in `~/Library/Logs/DiagnosticReports`.
+
 ### Codex synchronized public docs with the Swift product state (2026-06-12, Codex)
 
 - Updated `README.md`, `docs/mcp-tools.md`, `docs/mcp-swift.md`,
