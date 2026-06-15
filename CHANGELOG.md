@@ -38,13 +38,36 @@ Checkpoint before context compaction. Pick up here.
      crash); correct by fixture inspection + matches the exact CI-observed values.
   Handler has **no net diff** — only the two test files changed. The Pool-vs-Queue
   hypothesis was wrong (open succeeds; the column was the issue).
-  **TO RESUME:** push `b97be294`; `gh pr checks 74` to confirm swift-unit green.
-  The other 8 CI jobs (lint/typescript/macos-vitest/etc.) were already green.
-- **PENDING — option 3 (release build + deploy + walkthrough):** after CI green,
-  run `ENGRAM_BUILD_NUMBER=<ts> macos/scripts/build-release.sh --local-only`,
-  then `macos/scripts/deploy-local.sh <exported app>` to replace
-  `/Applications/Engram.app` (must `rm -rf` then `cp -R`), `open -a`, and smoke
-  the live flows + service health (pattern: the 2026-06-13 Codex redeploy entry below).
+  **DONE:** pushed `b97be294` + changelog `9adf0f54`; CI run `27534644391`
+  **swift-unit PASS (6m49s)** — all 10 failures fixed on the clean runner.
+  lint/typescript/macos-vitest/security-audit/dead-code/fixture-check all green.
+- **DONE — option 3 (release build + deploy + walkthrough):**
+  `ENGRAM_BUILD_NUMBER=20260615165309 build-release.sh --local-only` produced a
+  **full Developer ID-signed** `Engram.app` (release-verify PASS, not the
+  local-only fallback); `deploy-local.sh` installed it to `/Applications`
+  (CFBundleVersion 20260615165309, was 20260613125648). Bundle hygiene clean (no
+  node/dist), codesign --verify OK, EngramService+EngramMCP helpers bundled.
+  **Walkthrough (live service reads all returned real data during up-windows):**
+  stats=5602 sessions/14 sources · search FTS · get_costs $87,478 breakdown ·
+  get_insights — the alignment work's new costs/insights DTOs function end-to-end.
+- **⚠️ PRE-EXISTING runtime crash surfaced (NOT a regression) — GRDB triple-embed:**
+  `EngramService` **crash-loops** with `SchedulingWatchdog.preconditionValidQueue`
+  SIGTRAP ("Database was not used on the correct thread") from
+  `SQLStatementCursor.next()`. ROOT CAUSE confirmed: GRDB is **statically embedded
+  into all three frameworks** — `nm` shows EngramCoreRead/EngramCoreWrite/
+  EngramServiceCore each carry ~6450 GRDB symbols incl. `SchedulingWatchdog` ×9,
+  and there is **no shared GRDB.framework**. Three GRDB copies → three thread-local
+  watchdog registries → a DB cursor created in one framework's copy and iterated
+  via another's trips a false wrong-thread precondition. Evidence it pre-dates this
+  branch: `macos/project.yml` GRDB linkage is **unchanged vs main** (each target
+  links `package: GRDB, product: GRDB`), and EngramService crash reports exist on
+  **2026-06-14 18:50 and 2026-06-15 11:27** (before this deploy). This is the same
+  "pre-existing GRDB duplicate-linkage threading crash on the author's host" that
+  blocks local DB tests — now also seen at runtime. **FIX DIRECTION (separate
+  workstream, touches build graph on main):** make GRDB a single shared copy — one
+  dynamic GRDB framework (or a single Engram framework owning GRDB) that the others
+  link with `embed: false`, so only ONE SchedulingWatchdog loads. Out of scope for
+  the UX-flow-alignment PR; file/track independently.
 - **Workflow/review scratch (gitignored):** `.claude/wf-*.js` (the review/design/
   batch workflows), `.claude/codex-design-review.md`, `.claude/codex-impl-review.md`.
 - **Deferred (not regressions):** readable gated-Observability logs (sanitized
