@@ -84,7 +84,7 @@
 		268AE76AD9559F8A5820DFB9 /* SessionAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0057C273F6977C308D9D2391 /* SessionAdapter.swift */; };
 		26D855F93E77B0A645747ED6 /* CopilotAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E5782738734957EDB33309D /* CopilotAdapter.swift */; };
 		2777C6EC4A7086F4703CE205 /* AppSearchServiceCutoverScanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF97989227CEE7D2D9CC5AC /* AppSearchServiceCutoverScanTests.swift */; };
-		28302B57A3C158B19A1E105F /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = D313CB009888570E1EC7D5AD /* GRDB */; };
+		28302B57A3C158B19A1E105F /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 23836612C4AC99F5B62FBED7 /* GRDB-dynamic */; };
 		28960FB1E3F282C952D49016 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = EB90AE65D4E6D029849EC141 /* Localizable.xcstrings */; };
 		289DEA40252ED902AC0E0E24 /* TraceExplorerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38D9E5A1C4AA15BD06FEC77 /* TraceExplorerView.swift */; };
 		291EA3B311EC9400DFD8F79D /* QwenAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC7EA7D95CA10EAD73E472D /* QwenAdapter.swift */; };
@@ -127,7 +127,7 @@
 		3EE1AC77E3B439B94DFAF10F /* GeminiProjectsJSONTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F28F1BC190C419DD3255F019 /* GeminiProjectsJSONTests.swift */; };
 		3F730EB6829179690D3D66D1 /* GeminiProjectsJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A851FAB4E1FB6E1A0F01ADE /* GeminiProjectsJSON.swift */; };
 		4132031E3CBB164242A1BD4D /* RetryPolicyCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C153AF78ECD1D26ABC62369 /* RetryPolicyCopy.swift */; };
-		414EF07B25BE0D817B0198BD /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 62E22C903DA30B6F476F63D1 /* GRDB */; };
+		414EF07B25BE0D817B0198BD /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = DEFB3B5829C30FB9336F3F0E /* GRDB-dynamic */; };
 		4190DDFBC399DBF6CE5FC4E5 /* EngramServiceCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F5C71A73606B0BEBE33B3711 /* EngramServiceCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		43A1C7DA164119146F473DB8 /* EngramServiceLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CC45C2693B5E7E26CBD426D /* EngramServiceLauncher.swift */; };
 		43E8E51E93CCD7E0222ABD6D /* EngramCoreWrite.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -140,7 +140,7 @@
 		46B22E80FCC71F53FF8A4A5C /* MCPTranscriptTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72212C1765EA46875DAFAF93 /* MCPTranscriptTools.swift */; };
 		46E01BA4CEE4400791FBAE9E /* SparklineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E739CEB4363175CED46FBCC7 /* SparklineView.swift */; };
 		46EF9B7FD291CD6B50E4FF2D /* SystemMessageClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42221DF48DF9F36A0556900B /* SystemMessageClassifier.swift */; };
-		473D9DF183F886E1431336D8 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 71ABF4FBA8D51F543B8AE6AA /* GRDB */; };
+		473D9DF183F886E1431336D8 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = D9DFD01845BB4FC733E81370 /* GRDB-dynamic */; };
 		482733D64B55EADCF38DE1F8 /* EngramServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C84C0FDF22D13EE6ABD4D54 /* EngramServiceClient.swift */; };
 		482DEBC8C3E42AE12510614C /* ContentSegmentAndGitRepoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 769B51F3186E047A03FD910E /* ContentSegmentAndGitRepoTests.swift */; };
 		493D1B9ABEA637823ED12716 /* MessageTypeClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFE4AC74516EBEE4AED6AE71 /* MessageTypeClassifier.swift */; };
@@ -168,7 +168,7 @@
 		543DAA68759484B288DD28B7 /* EmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ED247967A05A65CC875DA32 /* EmptyState.swift */; };
 		5521A3FCC5F725EBABCC8E92 /* KimiAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 004BA83DE6BCE75C0189EF89 /* KimiAdapter.swift */; };
 		55A1E938C15DB4BE1A88AE36 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B088996486F740E1114B97 /* App.swift */; };
-		569E89934A8FC8C0E1EBA95D /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 84D615E1B412008CCBB59BE0 /* GRDB */; };
+		569E89934A8FC8C0E1EBA95D /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = C58F20DECC1B3054048CBD6E /* GRDB-dynamic */; };
 		56C77E404EAD7E36C4C881DE /* SessionTierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C594594C972135EBA9F7358 /* SessionTierTests.swift */; };
 		58649012DCBBED0E28A065B4 /* QwenAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC7EA7D95CA10EAD73E472D /* QwenAdapter.swift */; };
 		596A33F4AFCE759B65980126 /* ParentDetectionParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A5DF1AD88AF7076D2848BD4 /* ParentDetectionParityTests.swift */; };
@@ -205,7 +205,7 @@
 		68D15AB852ED3029D80BFB28 /* EngramServiceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D0D1CDD7E7E01601AF79105 /* EngramServiceModels.swift */; };
 		68EC378BABBD1E95137543BA /* ViewMainThreadReadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 442BE2FE98EFA8551D11DFE4 /* ViewMainThreadReadTests.swift */; };
 		69272696B3FD6E98D7D8E5C6 /* IflowAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C3EDC9B5E51D7E64F27A70F /* IflowAdapter.swift */; };
-		69411AD069F533FD5C464EA2 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 28E17FFBBCE492F43C972DA8 /* GRDB */; };
+		69411AD069F533FD5C464EA2 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = CE4EDBDC360D4FB11B6608D8 /* GRDB-dynamic */; };
 		6A1792AE062D924C706F9641 /* ClaudeCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D903BD85D36FAC47363151 /* ClaudeCodeAdapter.swift */; };
 		6A27BFF24A943E62286639D8 /* AdapterParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64F4C75BEAFCC55495138AA2 /* AdapterParityTests.swift */; };
 		6A4B8B25908FFC84F6373BF4 /* StreamingJSONLReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB3091CCE258FF10107560A8 /* StreamingJSONLReader.swift */; };
@@ -234,7 +234,7 @@
 		77367829BEE31987036D05ED /* MockEngramServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0696453109985F63C5BE6106 /* MockEngramServiceClient.swift */; };
 		77A47F40DCF191FF53760214 /* NavigationSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10BAB0CB33EC7AA894FCC2CF /* NavigationSmokeTests.swift */; };
 		77DA202E4A150956B1B42D5C /* UnixSocketEngramServiceTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F5883851C4B40F390B6A32 /* UnixSocketEngramServiceTransport.swift */; };
-		78BD6E55333015AFDC4236D3 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 121D75CD9C34B3FDE227D954 /* GRDB */; };
+		78BD6E55333015AFDC4236D3 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 124BA19B29290B1290B9D873 /* GRDB-dynamic */; };
 		79246DD0FAB911E0AE116E01 /* SearchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A6105DDC8DCD0C02DBB2CFB /* SearchScreen.swift */; };
 		7A81E0BBDA524A5E5498CC7C /* CopilotAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E5782738734957EDB33309D /* CopilotAdapter.swift */; };
 		7B655600FB9688F760317095 /* VsCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B771FAB5DA8D579D4BA2FAE5 /* VsCodeAdapter.swift */; };
@@ -249,7 +249,7 @@
 		8007EDFC8AF2BF5FE6B21327 /* MigrationLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBDDA6A9CE816D562C45A31A /* MigrationLogTypes.swift */; };
 		808C980D6973E2094A9D119C /* ArchiveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55298CD49D9344284F290D7D /* ArchiveSheet.swift */; };
 		80AF087E8134222249F118EF /* ContentSegmentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A706DBB6CFE741BD410AFB3E /* ContentSegmentParser.swift */; };
-		8118A0F5B6E307050DFB1368 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 9B58920A31A88F4DF4826A43 /* GRDB */; };
+		8118A0F5B6E307050DFB1368 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 5ECA21BBE2149F21F956D0F2 /* GRDB-dynamic */; };
 		81420BC730F6E83743685AAA /* ExpandableSessionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2363A7466E2F5559010A452 /* ExpandableSessionCard.swift */; };
 		84CA919848FE27F9DC670F7A /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		84FC451B5E95245BD82626DE /* BarChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D04F3C79286C371A9D5E91B /* BarChart.swift */; };
@@ -316,12 +316,12 @@
 		AA949F60693AC77213DD0709 /* Sources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44598B816D303E452EAF5009 /* Sources.swift */; };
 		AAD772B04826F4344896A2FE /* DarkModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385F19B9C0D48C1265DF591F /* DarkModeTests.swift */; };
 		AB0D3162C84E53901AFFC384 /* UsagePressureNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 588D02060B46B65BB11B8BFE /* UsagePressureNotifier.swift */; };
-		AB2B1C9CE3ACE02AEEE9E34B /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 93B0F567D3909D10E29C1F72 /* GRDB */; };
+		AB2B1C9CE3ACE02AEEE9E34B /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = CBDF29785DFFE67D4E31B6B0 /* GRDB-dynamic */; };
 		ACD374C4B3B602CE7A682547 /* MCPProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67732E532A4FF2BA35D84743 /* MCPProtocol.swift */; };
 		AD692C2DAB2B68CED07C0234 /* SessionAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0057C273F6977C308D9D2391 /* SessionAdapter.swift */; };
 		ADE2FEB9B60D117F4275D8D7 /* RepoDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00C8F570084AAEFC269D7D62 /* RepoDiscovery.swift */; };
 		ADE82B8D3031E2E30035A215 /* GeminiCliAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C7F5ECB22E57462D46830A /* GeminiCliAdapter.swift */; };
-		AE02A2E5785D81ED604F0EF1 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 260C286BDC34FED19BE77504 /* GRDB */; };
+		AE02A2E5785D81ED604F0EF1 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 4F67129265E78B1510827D63 /* GRDB-dynamic */; };
 		AE08EF681A838AF78CB67336 /* EngramLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = E21DEF04504C06E927EFC95B /* EngramLogger.swift */; };
 		AE5622CB895B49F833401CFE /* HooksScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0772E092AF8F9ED356B158C /* HooksScreen.swift */; };
 		AEE929ED3D1B3279D381F650 /* SwiftIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A0C9BC1B020EF76BB29740 /* SwiftIndexer.swift */; };
@@ -460,7 +460,7 @@
 		F05D2AECC0364106F4854500 /* EngramServiceCommandHandler+ProjectMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FB575E548BE8BC56AA457E /* EngramServiceCommandHandler+ProjectMigration.swift */; };
 		F2DBC01188AE286A3264B864 /* IndexingEventTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7012F7B41FBCB1E2B95076 /* IndexingEventTypes.swift */; };
 		F33F8806F816F9AD599DFABB /* SourceColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67EE4A65A9D897846E86326E /* SourceColors.swift */; };
-		F380173232EC1FF3BA73F312 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 1F468536D358AA4BE6245557 /* GRDB */; };
+		F380173232EC1FF3BA73F312 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 6F29AB0988313132258C13D9 /* GRDB-dynamic */; };
 		F41C3D5D2D24814996A96908 /* cascade.proto in Resources */ = {isa = PBXBuildFile; fileRef = 40753C4A672675967CBD4EA7 /* cascade.proto */; };
 		F4894261C6A83364B2B94BFD /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32C1C618EFDED8A8F2398A12 /* HomeScreen.swift */; };
 		F4D6E94AB825538A869C1362 /* EngramServiceStatusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE7C13C1E701E692FE1174D5 /* EngramServiceStatusStore.swift */; };
@@ -984,7 +984,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AB2B1C9CE3ACE02AEEE9E34B /* GRDB in Frameworks */,
+				AB2B1C9CE3ACE02AEEE9E34B /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -994,7 +994,7 @@
 			files = (
 				9360E470E6D4542CF14CE6E7 /* EngramServiceCore.framework in Frameworks */,
 				042DE801408C45A3B4578D84 /* EngramCoreWrite.framework in Frameworks */,
-				569E89934A8FC8C0E1EBA95D /* GRDB in Frameworks */,
+				569E89934A8FC8C0E1EBA95D /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1003,7 +1003,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				6BD7F6554DAA1F396FAB6456 /* EngramCoreWrite.framework in Frameworks */,
-				F380173232EC1FF3BA73F312 /* GRDB in Frameworks */,
+				F380173232EC1FF3BA73F312 /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1012,7 +1012,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0701F6D2C7B05A1126C12AEC /* EngramCoreRead.framework in Frameworks */,
-				AE02A2E5785D81ED604F0EF1 /* GRDB in Frameworks */,
+				AE02A2E5785D81ED604F0EF1 /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1020,7 +1020,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				473D9DF183F886E1431336D8 /* GRDB in Frameworks */,
+				473D9DF183F886E1431336D8 /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1028,7 +1028,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				69411AD069F533FD5C464EA2 /* GRDB in Frameworks */,
+				69411AD069F533FD5C464EA2 /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1037,7 +1037,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				84CA919848FE27F9DC670F7A /* EngramCoreWrite.framework in Frameworks */,
-				8118A0F5B6E307050DFB1368 /* GRDB in Frameworks */,
+				8118A0F5B6E307050DFB1368 /* GRDB-dynamic in Frameworks */,
 				C090272F37D8BEF06F4E0396 /* Hummingbird in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1046,7 +1046,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				28302B57A3C158B19A1E105F /* GRDB in Frameworks */,
+				28302B57A3C158B19A1E105F /* GRDB-dynamic in Frameworks */,
 				45B79E7DB6DACCAADE576BD4 /* Hummingbird in Frameworks */,
 				BFD578D90D50FDC3E4549C36 /* AppIntents.framework in Frameworks */,
 			);
@@ -1056,7 +1056,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				78BD6E55333015AFDC4236D3 /* GRDB in Frameworks */,
+				78BD6E55333015AFDC4236D3 /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1066,7 +1066,7 @@
 			files = (
 				4B696B2D9760469A1EF377A6 /* EngramCoreRead.framework in Frameworks */,
 				0ABC80205ECFEA6BC09975F2 /* EngramCoreWrite.framework in Frameworks */,
-				414EF07B25BE0D817B0198BD /* GRDB in Frameworks */,
+				414EF07B25BE0D817B0198BD /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1883,7 +1883,7 @@
 			);
 			name = EngramServiceCore;
 			packageProductDependencies = (
-				9B58920A31A88F4DF4826A43 /* GRDB */,
+				5ECA21BBE2149F21F956D0F2 /* GRDB-dynamic */,
 				9F8B22D6ADE8EF642B0C924C /* Hummingbird */,
 			);
 			productName = EngramServiceCore;
@@ -1906,7 +1906,7 @@
 			);
 			name = EngramServiceCoreTests;
 			packageProductDependencies = (
-				84D615E1B412008CCBB59BE0 /* GRDB */,
+				C58F20DECC1B3054048CBD6E /* GRDB-dynamic */,
 			);
 			productName = EngramServiceCoreTests;
 			productReference = 02F41C55F3176EF9EDB42CD3 /* EngramServiceCoreTests.xctest */;
@@ -1927,7 +1927,7 @@
 			);
 			name = EngramTests;
 			packageProductDependencies = (
-				28E17FFBBCE492F43C972DA8 /* GRDB */,
+				CE4EDBDC360D4FB11B6608D8 /* GRDB-dynamic */,
 			);
 			productName = EngramTests;
 			productReference = B892F91E14654D7810978161 /* EngramTests.xctest */;
@@ -1967,7 +1967,7 @@
 			);
 			name = EngramMCPTests;
 			packageProductDependencies = (
-				71ABF4FBA8D51F543B8AE6AA /* GRDB */,
+				D9DFD01845BB4FC733E81370 /* GRDB-dynamic */,
 			);
 			productName = EngramMCPTests;
 			productReference = D5AF8D31026B732759DB91A3 /* EngramMCPTests.xctest */;
@@ -2009,7 +2009,7 @@
 			);
 			name = EngramCoreTests;
 			packageProductDependencies = (
-				62E22C903DA30B6F476F63D1 /* GRDB */,
+				DEFB3B5829C30FB9336F3F0E /* GRDB-dynamic */,
 			);
 			productName = EngramCoreTests;
 			productReference = B1EDBD167B353A11028F3DD4 /* EngramCoreTests.xctest */;
@@ -2029,7 +2029,7 @@
 			);
 			name = EngramCoreWrite;
 			packageProductDependencies = (
-				260C286BDC34FED19BE77504 /* GRDB */,
+				4F67129265E78B1510827D63 /* GRDB-dynamic */,
 			);
 			productName = EngramCoreWrite;
 			productReference = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */;
@@ -2069,7 +2069,7 @@
 			);
 			name = EngramCoreSchemaTool;
 			packageProductDependencies = (
-				1F468536D358AA4BE6245557 /* GRDB */,
+				6F29AB0988313132258C13D9 /* GRDB-dynamic */,
 			);
 			productName = EngramCoreSchemaTool;
 			productReference = 3462B0B41EFCDFDA7943AB92 /* EngramCoreSchemaTool */;
@@ -2089,7 +2089,7 @@
 			);
 			name = EngramMCP;
 			packageProductDependencies = (
-				121D75CD9C34B3FDE227D954 /* GRDB */,
+				124BA19B29290B1290B9D873 /* GRDB-dynamic */,
 			);
 			productName = EngramMCP;
 			productReference = 798B02BA84EA177C5FE4FCC8 /* EngramMCP */;
@@ -2109,7 +2109,7 @@
 			);
 			name = EngramCoreRead;
 			packageProductDependencies = (
-				93B0F567D3909D10E29C1F72 /* GRDB */,
+				CBDF29785DFFE67D4E31B6B0 /* GRDB-dynamic */,
 			);
 			productName = EngramCoreRead;
 			productReference = D003CBE73276FC27EFD97479 /* EngramCoreRead.framework */;
@@ -2134,7 +2134,7 @@
 			);
 			name = Engram;
 			packageProductDependencies = (
-				D313CB009888570E1EC7D5AD /* GRDB */,
+				23836612C4AC99F5B62FBED7 /* GRDB-dynamic */,
 				91F12205EB58C99D35D3D355 /* Hummingbird */,
 			);
 			productName = Engram;
@@ -3095,7 +3095,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
+					"@executable_path",
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -3204,7 +3204,7 @@
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
+					"@executable_path",
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -3222,7 +3222,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
+					"@executable_path",
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -3489,7 +3489,7 @@
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
+					"@executable_path",
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -3762,65 +3762,65 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		121D75CD9C34B3FDE227D954 /* GRDB */ = {
+		124BA19B29290B1290B9D873 /* GRDB-dynamic */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
+			productName = "GRDB-dynamic";
 		};
-		1F468536D358AA4BE6245557 /* GRDB */ = {
+		23836612C4AC99F5B62FBED7 /* GRDB-dynamic */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
+			productName = "GRDB-dynamic";
 		};
-		260C286BDC34FED19BE77504 /* GRDB */ = {
+		4F67129265E78B1510827D63 /* GRDB-dynamic */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
+			productName = "GRDB-dynamic";
 		};
-		28E17FFBBCE492F43C972DA8 /* GRDB */ = {
+		5ECA21BBE2149F21F956D0F2 /* GRDB-dynamic */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
+			productName = "GRDB-dynamic";
 		};
-		62E22C903DA30B6F476F63D1 /* GRDB */ = {
+		6F29AB0988313132258C13D9 /* GRDB-dynamic */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
-		};
-		71ABF4FBA8D51F543B8AE6AA /* GRDB */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
-		};
-		84D615E1B412008CCBB59BE0 /* GRDB */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
+			productName = "GRDB-dynamic";
 		};
 		91F12205EB58C99D35D3D355 /* Hummingbird */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 355F6E49115EED477FC7FAB2 /* XCRemoteSwiftPackageReference "hummingbird" */;
 			productName = Hummingbird;
 		};
-		93B0F567D3909D10E29C1F72 /* GRDB */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
-		};
-		9B58920A31A88F4DF4826A43 /* GRDB */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
-		};
 		9F8B22D6ADE8EF642B0C924C /* Hummingbird */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 355F6E49115EED477FC7FAB2 /* XCRemoteSwiftPackageReference "hummingbird" */;
 			productName = Hummingbird;
 		};
-		D313CB009888570E1EC7D5AD /* GRDB */ = {
+		C58F20DECC1B3054048CBD6E /* GRDB-dynamic */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
-			productName = GRDB;
+			productName = "GRDB-dynamic";
+		};
+		CBDF29785DFFE67D4E31B6B0 /* GRDB-dynamic */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = "GRDB-dynamic";
+		};
+		CE4EDBDC360D4FB11B6608D8 /* GRDB-dynamic */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = "GRDB-dynamic";
+		};
+		D9DFD01845BB4FC733E81370 /* GRDB-dynamic */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = "GRDB-dynamic";
+		};
+		DEFB3B5829C30FB9336F3F0E /* GRDB-dynamic */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = "GRDB-dynamic";
 		};
 		E481D384DBE06952D6DDFEE5 /* ArgumentParser */ = {
 			isa = XCSwiftPackageProductDependency;

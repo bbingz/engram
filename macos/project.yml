@@ -30,7 +30,7 @@ targets:
       - path: Shared/MCP
     dependencies:
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-read
       SWIFT_VERSION: "5.9"
@@ -48,7 +48,7 @@ targets:
     dependencies:
       - target: EngramCoreRead
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-write
       SWIFT_VERSION: "5.9"
@@ -70,7 +70,7 @@ targets:
       - target: EngramCoreRead
       - target: EngramCoreWrite
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
@@ -86,13 +86,17 @@ targets:
     dependencies:
       - target: EngramCoreWrite
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-schema-tool
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGN_IDENTITY: "-"
+      # Finds the shared GRDB-dynamic framework next to the built executable.
+      LD_RUNPATH_SEARCH_PATHS:
+        - "@executable_path"
+        - "@executable_path/../Frameworks"
 
   EngramServiceCore:
     type: framework
@@ -105,7 +109,7 @@ targets:
     dependencies:
       - target: EngramCoreWrite
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
       - package: Hummingbird
         product: Hummingbird
     settings:
@@ -126,7 +130,7 @@ targets:
       - target: EngramServiceCore
       - target: EngramCoreWrite
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
@@ -160,7 +164,7 @@ targets:
       - path: Engram/Resources/Assets.xcassets
     dependencies:
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
       - package: Hummingbird
         product: Hummingbird
       - sdk: AppIntents.framework
@@ -239,12 +243,19 @@ targets:
       - path: Shared
     dependencies:
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.mcp
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
       SKIP_INSTALL: YES
+      # GRDB is now the shared GRDB-dynamic framework (one copy per process to
+      # avoid the SchedulingWatchdog cross-talk crash). As a bundled helper this
+      # tool finds it in Contents/Frameworks; standalone/test builds find it
+      # next to the executable in BUILT_PRODUCTS_DIR.
+      LD_RUNPATH_SEARCH_PATHS:
+        - "@executable_path"
+        - "@executable_path/../Frameworks"
 
   EngramTests:
     type: bundle.unit-test
@@ -258,7 +269,7 @@ targets:
     dependencies:
       - target: Engram
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
@@ -279,7 +290,7 @@ targets:
     dependencies:
       - target: EngramMCP
       - package: GRDB
-        product: GRDB
+        product: GRDB-dynamic
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
