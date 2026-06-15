@@ -3,6 +3,7 @@ import SwiftUI
 
 struct LiveSessionCard: View {
     let session: EngramServiceLiveSessionInfo
+    var onOpen: (() -> Void)? = nil
 
     @State private var isPulsing = false
     private static let isoFormatter: ISO8601DateFormatter = {
@@ -38,6 +39,16 @@ struct LiveSessionCard: View {
     }
 
     var body: some View {
+        if session.sessionId != nil, let onOpen {
+            Button(action: onOpen) { cardBody }
+                .buttonStyle(.plain)
+                .help("Open session")
+        } else {
+            cardBody
+        }
+    }
+
+    private var cardBody: some View {
         HStack(spacing: 10) {
             // Status dot — pulses only for active
             Circle()

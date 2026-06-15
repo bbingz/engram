@@ -12,7 +12,10 @@ struct LogStreamView: View {
     @State private var logsUnavailable = false
     @State private var reloadTask: Task<Void, Never>? = nil
 
-    private let levels = ["All", "debug", "info", "warn", "error"]
+    // observability-4: no "warn" level — the unified log stores warnings at the
+    // .error type, so a "warn" filter would always return 0 rows. Warnings appear
+    // under "error".
+    private let levels = ["All", "debug", "info", "error"]
     private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -160,7 +163,6 @@ struct LevelBadge: View {
     private var color: Color {
         switch level {
         case "error": return .red
-        case "warn":  return .orange
         case "info":  return .blue
         case "debug": return .gray
         default:      return .gray

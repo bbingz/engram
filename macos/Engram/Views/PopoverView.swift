@@ -4,6 +4,7 @@ import SwiftUI
 struct PopoverView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
+    @Environment(EngramServiceClient.self) var serviceClient
 
     @State private var sourceCount = 0
     @State private var projectCount = 0
@@ -12,23 +13,100 @@ struct PopoverView: View {
     @State private var activeSourceCount: Int = 0
     @State private var totalSourceCount: Int = 0
     @State private var lastIndexedAgo: String = ""
+    @State private var liveSessions: [EngramServiceLiveSessionInfo] = []
+    @State private var hoveredSessionId: String?
+    @State private var refreshTimer: Timer?
+    @State private var refreshTask: Task<Void, Never>?
+
+    private var activeLiveCount: Int {
+        liveSessions.filter { $0.activityLevel == "active" }.count
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             headerSection
+            liveSection
             statsSection
             healthSummary
             Divider()
             timelineSection
-            PopoverUsageSection(usageData: serviceStatusStore.usageData)
-                .padding(.horizontal, 12)
+            usageSection
             footerSection
         }
         .padding(16)
         .frame(width: 400)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("popover_container")
-        .task { await loadData() }
+        .task {
+            await loadData()
+            // Single 10s cadence refreshes both the recent timeline and the
+            // live count while the popover stays open. Track the inner Task so
+            // it can't outlive the view / pile up.
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
+                refreshTask?.cancel()
+                refreshTask = Task { @MainActor in await loadData() }
+            }
+        }
+        .onDisappear {
+            refreshTimer?.invalidate(); refreshTimer = nil
+            refreshTask?.cancel(); refreshTask = nil
+        }
+    }
+
+    // MARK: - Live
+
+    @ViewBuilder
+    private var liveSection: some View {
+        if !liveSessions.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                SectionHeader(
+                    icon: "dot.radiowaves.left.and.right",
+                    title: "Live",
+                    badge: String.localizedStringWithFormat(
+                        String(localized: "%lld active"),
+                        activeLiveCount
+                    )
+                )
+                ForEach(liveSessions) { session in
+                    LiveSessionCard(session: session, onOpen: { openLive(session) })
+                }
+            }
+            .accessibilityIdentifier("popover_liveSection")
+        }
+    }
+
+    // MARK: - Usage
+
+    @ViewBuilder
+    private var usageSection: some View {
+        if serviceStatusStore.usageData.isEmpty {
+            Button {
+                NotificationCenter.default.post(name: .openSettings, object: nil)
+            } label: {
+                Text("No usage data — set token limits in Settings")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .accessibilityIdentifier("popover_usageEmpty")
+        } else {
+            PopoverUsageSection(usageData: serviceStatusStore.usageData)
+                .padding(.horizontal, 12)
+        }
+    }
+
+    private func openLive(_ session: EngramServiceLiveSessionInfo) {
+        guard let id = session.sessionId else { return }
+        let db = self.db
+        Task {
+            let resolved = await Task.detached { () -> Session? in
+                try? db.getSession(id: id)
+            }.value
+            guard let resolved else { return }
+            NotificationCenter.default.post(name: .openWindow, object: SessionBox(resolved))
+        }
     }
 
     // MARK: - Header
@@ -56,22 +134,8 @@ struct PopoverView: View {
                     label: "Service"
                 )
                 .accessibilityIdentifier("popover_status_service")
-                embeddingStatusView
-                    .accessibilityIdentifier("popover_status_embedding")
             }
             .font(.caption2)
-        }
-    }
-
-    private var embeddingStatusView: some View {
-        Group {
-            if serviceStatusStore.embeddingStatus == nil {
-                statusDot(color: .secondary, label: "Embedding", hollow: true)
-            } else if serviceStatusStore.embeddingStatus == "unavailable" {
-                statusDot(color: .red, label: "Embedding")
-            } else {
-                statusDot(color: .green, label: "Embedding")
-            }
         }
     }
 
@@ -133,22 +197,33 @@ struct PopoverView: View {
 
     // MARK: - Timeline
 
+    @ViewBuilder
     private var timelineSection: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                let groups = groupedByDate(recentSessions)
-                ForEach(groups) { group in
-                    Text(group.key)
-                        .font(.caption2).fontWeight(.semibold)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, group.id == groups.first?.id ? 0 : 6)
-                    ForEach(group.sessions) { session in
-                        timelineRow(session)
+        if recentSessions.isEmpty {
+            Text(serviceStatusStore.status == .starting ? "Indexing your sessions…" : "No sessions yet")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .accessibilityIdentifier("popover_recentActivity")
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    let groups = groupedByDate(recentSessions)
+                    ForEach(groups) { group in
+                        Text(group.key)
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, group.id == groups.first?.id ? 0 : 6)
+                        ForEach(group.sessions) { session in
+                            timelineRow(session)
+                        }
                     }
                 }
             }
+            .accessibilityIdentifier("popover_recentActivity")
         }
-        .accessibilityIdentifier("popover_recentActivity")
     }
 
     private func timelineRow(_ session: Session) -> some View {
@@ -173,8 +248,24 @@ struct PopoverView: View {
             Text(relativeTime(session.startTime))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .background(hoveredSessionId == session.id ? Color(.controlBackgroundColor).opacity(0.5) : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
         .contentShape(Rectangle())
+        .help("Open session")
+        .onHover { hovering in
+            hoveredSessionId = hovering ? session.id : (hoveredSessionId == session.id ? nil : hoveredSessionId)
+        }
+        // Single click matches the chevron/hover/.help affordances (and
+        // LiveSessionCard); double click still works for muscle memory.
+        .onTapGesture {
+            NotificationCenter.default.post(name: .openWindow, object: SessionBox(session))
+        }
         .onTapGesture(count: 2) {
             NotificationCenter.default.post(name: .openWindow, object: SessionBox(session))
         }
@@ -285,6 +376,10 @@ struct PopoverView: View {
         activeSourceCount = result.4
         totalSourceCount = result.5
         lastIndexedAgo = result.6
+
+        // Live section — silent-fail like the menu-bar badge so a transient
+        // service hiccup hides the section instead of surfacing an error.
+        liveSessions = (try? await serviceClient.liveSessions().sessions) ?? []
     }
 
     // MARK: - Helpers

@@ -1,4 +1,5 @@
 // macos/Engram/Views/Pages/HooksView.swift
+import AppKit
 import SwiftUI
 
 struct HooksView: View {
@@ -13,7 +14,18 @@ struct HooksView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                HStack {
+                    Spacer()
+                    Button { Task { await loadData() } } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isLoading)
+                    .accessibilityIdentifier("hooks_refresh")
+                }
                 if let error { AlertBanner(message: error) }
+                if isLoading && hooks.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                }
                 if !globalHooks.isEmpty {
                     SectionHeader(icon: "globe", title: "Global Hooks")
                     ForEach(globalHooks) { hook in hookRow(hook) }
@@ -30,6 +42,7 @@ struct HooksView: View {
             .padding(24)
             .accessibilityIdentifier("hooks_list")
         }
+        .refreshable { await loadData() }
         .task { await loadData() }
     }
 
@@ -51,6 +64,23 @@ struct HooksView: View {
         .background(Theme.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .contextMenu {
+            if let path = hook.path, !path.isEmpty {
+                Button { revealInFinder(path) } label: { Label("Reveal in Finder", systemImage: "folder") }
+                Button { openFile(path) } label: { Label("Open Settings File", systemImage: "doc.text") }
+            }
+        }
+    }
+
+    private func revealInFinder(_ path: String) {
+        let expanded = NSString(string: path).expandingTildeInPath
+        NSWorkspace.shared.selectFile(expanded, inFileViewerRootedAtPath: "")
+    }
+
+    private func openFile(_ path: String) {
+        let expanded = NSString(string: path).expandingTildeInPath
+        NSWorkspace.shared.open(URL(fileURLWithPath: expanded))
     }
 
     private func loadData() async {

@@ -181,9 +181,6 @@ private struct AdvancedSettingsSection: View {
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
 
-    @State private var httpHost = "127.0.0.1"
-    @State private var httpAllowCIDR = ""
-    @State private var httpBearerToken = ""
     // Embedding settings state removed — see Embeddings note in body.
     @State private var noiseFilter = "hide-skip"
     @State private var hideUsageSessions = true
@@ -212,42 +209,6 @@ private struct AdvancedSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(icon: "slider.horizontal.3", title: "Advanced")
-
-            GroupBox("Web API & Security") {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("HTTP Host")
-                        Spacer()
-                        TextField("127.0.0.1", text: $httpHost)
-                            .frame(width: 220)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: httpHost) { saveAdvancedSettings() }
-                    }
-                    Text("Keep 127.0.0.1 unless you intentionally expose the legacy HTTP API on your LAN.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    HStack {
-                        Text("Allowed CIDRs")
-                        Spacer()
-                        TextField("10.0.0.0/8, 192.168.0.0/16", text: $httpAllowCIDR)
-                            .frame(width: 260)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: httpAllowCIDR) { saveAdvancedSettings() }
-                    }
-                    HStack {
-                        Text("Bearer Token")
-                        Spacer()
-                        SecureField("Optional", text: $httpBearerToken)
-                            .frame(width: 260)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: httpBearerToken) { saveAdvancedSettings() }
-                    }
-                    Text("Write APIs should use a bearer token when HTTP is reachable beyond localhost.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 4)
-            }
 
             // Embeddings controls removed — duplicate of the (now-removed)
             // AISettingsSection block. No Swift runtime reads these settings
@@ -442,9 +403,6 @@ private struct AdvancedSettingsSection: View {
         defer { clearLoadingSettingsAfterViewUpdate() }
         guard let settings = readEngramSettings() else { return }
 
-        if let v = settings["httpHost"] as? String { httpHost = v }
-        if let v = settings["httpAllowCIDR"] as? [String] { httpAllowCIDR = v.joined(separator: ", ") }
-        if let v = settings["httpBearerToken"] as? String { httpBearerToken = v }
         if let v = settings["noiseFilter"] as? String { noiseFilter = v }
         if let v = settings["hideUsageSessions"] as? Bool { hideUsageSessions = v }
         if let v = settings["hideEmptySessions"] as? Bool { hideEmptySessions = v }
@@ -490,25 +448,12 @@ private struct AdvancedSettingsSection: View {
     private func saveAdvancedSettings(refreshUsage: Bool = false) {
         guard !isLoadingSettings else { return }
         mutateEngramSettings { settings in
-            if httpHost == "127.0.0.1" {
-                settings.removeValue(forKey: "httpHost")
-            } else {
-                settings["httpHost"] = httpHost
-            }
-            let cidrs = httpAllowCIDR
-                .split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            if cidrs.isEmpty {
-                settings.removeValue(forKey: "httpAllowCIDR")
-            } else {
-                settings["httpAllowCIDR"] = cidrs
-            }
-            if httpBearerToken.isEmpty {
-                settings.removeValue(forKey: "httpBearerToken")
-            } else {
-                settings["httpBearerToken"] = httpBearerToken
-            }
+            // No Swift runtime reads these legacy HTTP/security keys; the
+            // EngramWebUIServer hardcodes 127.0.0.1:3457 with a per-launch token.
+            // Scrub any stale persisted values on next save.
+            settings.removeValue(forKey: "httpHost")
+            settings.removeValue(forKey: "httpAllowCIDR")
+            settings.removeValue(forKey: "httpBearerToken")
 
             settings["noiseFilter"] = noiseFilter
             settings["hideUsageSessions"] = hideUsageSessions

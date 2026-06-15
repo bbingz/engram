@@ -240,6 +240,32 @@ final class EngramServiceLauncher {
         }
     }
 
+    /// Single restart sequencing point: stop the running helper (releasing its
+    /// single-writer lock + socket), spawn a fresh process, and re-arm the
+    /// health monitor with a fresh startup grace. Reuses the existing
+    /// stopProcessOnly/start/startHealthMonitor primitives — no new process
+    /// logic. Surfaces `.starting` then `.running` on success, or `.error` if
+    /// `start()` throws (e.g. helper binary missing).
+    func restart(
+        configuration: EngramServiceLaunchConfiguration,
+        statusProbe: @escaping StatusProbe,
+        onStatus: @escaping StatusSink,
+        onEvent: EventSink? = nil
+    ) async {
+        await stopProcessOnly()
+        do {
+            try start(configuration: configuration, onEvent: onEvent)
+            onStatus(.starting)
+            startHealthMonitor(
+                configuration: configuration,
+                statusProbe: statusProbe,
+                onStatus: onStatus
+            )
+        } catch {
+            onStatus(.error(message: error.localizedDescription))
+        }
+    }
+
     nonisolated private static func startupGraceDeadline(after nanoseconds: UInt64) -> ContinuousClock.Instant? {
         guard nanoseconds > 0 else { return nil }
         return ContinuousClock.now + .nanoseconds(Int(nanoseconds))

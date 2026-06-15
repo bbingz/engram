@@ -3,6 +3,14 @@ import SwiftUI
 
 struct SidebarView: View {
     @Binding var selectedScreen: Screen
+    // observability-6: hide the developer-diagnostics nav item unless Developer
+    // Tools are enabled (default off). The Settings toggle that flips this flag
+    // is added by a later Settings WP.
+    @AppStorage("showDeveloperTools") private var showDeveloperTools = false
+
+    private func screens(in section: Screen.Section) -> [Screen] {
+        section.screens.filter { showDeveloperTools || $0 != .observability }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,7 +24,7 @@ struct SidebarView: View {
                             .padding(.top, section == .overview ? 6 : 8)
                             .padding(.bottom, 2)
 
-                        ForEach(section.screens) { screen in
+                        ForEach(screens(in: section)) { screen in
                             SidebarItem(
                                 screen: screen,
                                 isSelected: selectedScreen == screen,

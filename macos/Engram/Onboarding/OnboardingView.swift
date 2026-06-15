@@ -1,7 +1,8 @@
 // macos/Engram/Onboarding/OnboardingView.swift
+import AppKit
 import SwiftUI
 
-/// First-run onboarding: 3-step flow (Welcome -> Sources -> Ready).
+/// First-run onboarding: 4-step flow (Welcome -> Sources -> Full Disk Access -> Ready).
 struct OnboardingView: View {
     @State private var step = 0
     @State private var detectedSources: [SourceCheck] = []
@@ -11,7 +12,7 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             // Step indicators
             HStack(spacing: 6) {
-                ForEach(0..<3) { i in
+                ForEach(0..<4) { i in
                     Capsule()
                         .fill(i <= step ? Theme.accent : Theme.surfaceHighlight)
                         .frame(width: i == step ? 20 : 8, height: 4)
@@ -26,6 +27,7 @@ struct OnboardingView: View {
                 switch step {
                 case 0:  welcomeStep
                 case 1:  sourcesStep
+                case 2:  fullDiskAccessStep
                 default: readyStep
                 }
             }
@@ -122,7 +124,49 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 3: Ready
+    // MARK: - Step 3: Full Disk Access
+
+    private var fullDiskAccessStep: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(Theme.accent)
+
+            Text("Full Disk Access")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Theme.primaryText)
+
+            Text("Some tools (Cursor, VS Code) store data in ~/Library. If those sources are missing later, grant Engram Full Disk Access in System Settings.")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.secondaryText)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+
+            Button(action: openFullDiskAccessSettings) {
+                Text("Open System Settings")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 180, height: 32)
+            }
+            .buttonStyle(.bordered)
+            .padding(.top, 4)
+
+            Button(action: { withAnimation { step = 3 } }) {
+                Text("Continue")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 140, height: 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+        }
+    }
+
+    private func openFullDiskAccessSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFilesAccess") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - Step 4: Ready
 
     private var readyStep: some View {
         let count = detectedSources.filter(\.found).count

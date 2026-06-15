@@ -623,6 +623,62 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    // MARK: - file activity (Top Files; service-owned extension table)
+    // Mirrors MCPDatabase.getFileActivity SQL for the app read path. Guarded by
+    // tableExists so older DBs without session_files return [] instead of throwing.
+    func fileActivity(project: String?, since: String?, limit: Int)
+        throws -> [(filePath: String, action: String, totalCount: Int, sessionCount: Int)] {
+        try readInBackground { db in
+            guard try Self.tableExists("session_files", db: db) else { return [] }
+            var conditions: [String] = []
+            var args: [DatabaseValueConvertible] = []
+            if let project {
+                conditions.append("s.project = ?")
+                args.append(project)
+            }
+            if let since {
+                conditions.append("s.start_time >= ?")
+                args.append(since)
+            }
+            let whereClause = conditions.isEmpty ? "" : "WHERE \(conditions.joined(separator: " AND "))"
+            args.append(limit)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT sf.file_path, sf.action,
+                       SUM(sf.count) AS total_count,
+                       COUNT(DISTINCT sf.session_id) AS session_count
+                FROM session_files sf
+                JOIN sessions s ON s.id = sf.session_id
+                \(whereClause)
+                GROUP BY sf.file_path, sf.action
+                ORDER BY total_count DESC
+                LIMIT ?
+            """, arguments: StatementArguments(args))
+            return rows.map {
+                (filePath: ($0["file_path"] as String?) ?? "",
+                 action: ($0["action"] as String?) ?? "",
+                 totalCount: ($0["total_count"] as Int?) ?? 0,
+                 sessionCount: ($0["session_count"] as Int?) ?? 0)
+            }
+        }
+    }
+
+    // Related sessions for a repo via an anchored cwd-prefix match (cwd LIKE path%),
+    // replacing getContext's unanchored project-substring/cwd-substring over-match.
+    func sessionsForRepo(path: String, limit: Int = 10) throws -> [Session] {
+        // Anchor at a path boundary so "/Users/a/app" matches the repo and its
+        // subdirectories but NOT a sibling like "/Users/a/app-v2". Escape LIKE
+        // metacharacters (\ % _) in the prefix — "_" is common in directory names.
+        let escaped = path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        return try readInBackground { db in
+            try Session.fetchAll(db,
+                sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND (cwd = ? OR cwd LIKE ? ESCAPE '\\') ORDER BY start_time DESC LIMIT ?",
+                arguments: [path, "\(escaped)/%", limit])
+        }
+    }
+
     // MARK: - Favorites (service-owned extension table)
     func listFavorites() throws -> [Session] {
         try readInBackground { db in
@@ -1098,6 +1154,24 @@ final class DatabaseManager: @unchecked Sendable {
                   \(hiddenClause)
                 ORDER BY start_time ASC
             """, arguments: [parentId])
+        }
+    }
+
+    /// Flat inbox of sessions awaiting parent-link review: every top-level
+    /// session carrying a non-null suggested_parent_id. Unlike
+    /// suggestedChildSessions this needs no known parent, so the Agents page can
+    /// surface the Layer-2 heuristic across the whole index in one read.
+    func pendingSuggestionSessions(includeHidden: Bool = false, limit: Int = 200) throws -> [Session] {
+        try readInBackground { db in
+            let hiddenClause = includeHidden ? "" : "AND hidden_at IS NULL"
+            return try Session.fetchAll(db, sql: """
+                SELECT * FROM sessions
+                WHERE suggested_parent_id IS NOT NULL
+                  AND parent_session_id IS NULL
+                  \(hiddenClause)
+                ORDER BY start_time DESC
+                LIMIT ?
+            """, arguments: [limit])
         }
     }
 

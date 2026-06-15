@@ -17,15 +17,43 @@ struct SessionsPageView: View {
     @State private var sourceFilter: String? = nil
     @State private var availableSources: [String] = []
     @State private var isLoading = true
+    @State private var isLoadingMore = false
     @State private var loadError: String? = nil
+    // Session-action sheet targets + transient status banner.
+    @State private var resumeTarget: Session? = nil
+    @State private var replayTarget: Session? = nil
+    @State private var renameTarget: Session? = nil
+    @State private var renameText = ""
+    @State private var actionStatus: String? = nil
 
     private let timeOptions = ["Today", "This Week", "This Month", "All Time"]
+    private static let pageSize = 200
+
+    private var handlers: SessionActionHandlers {
+        SessionActionHandlers(
+            serviceClient: serviceClient,
+            reload: { await loadData() },
+            onStatus: { message in
+                actionStatus = message
+                // Auto-clear so a success banner doesn't linger as a permanent
+                // warning; only clear if nothing replaced it meanwhile.
+                Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    if actionStatus == message { actionStatus = nil }
+                }
+            }
+        )
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let loadError {
                     AlertBanner(message: "Failed to load sessions: \(loadError)")
+                }
+                if let actionStatus {
+                    AlertBanner(message: actionStatus)
+                        .accessibilityIdentifier("sessions_actionStatus")
                 }
                 HStack(spacing: 12) {
                     KPICard(value: "\(totalCount)", label: "Total Sessions")
@@ -58,7 +86,12 @@ struct SessionsPageView: View {
                     }
                 }
 
-                if sessions.isEmpty && !isLoading {
+                if isLoading && sessions.isEmpty {
+                    LazyVStack(spacing: 4) {
+                        ForEach(0..<4, id: \.self) { _ in SkeletonRow() }
+                    }
+                    .accessibilityIdentifier("sessions_skeleton")
+                } else if sessions.isEmpty {
                     EmptyState(icon: "bubble.left.and.bubble.right", title: "No sessions", message: "No sessions match your filters")
                         .accessibilityIdentifier("sessions_emptyState")
                 } else {
@@ -70,15 +103,35 @@ struct SessionsPageView: View {
                                 suggestedChildCount: suggestedCounts[session.id] ?? 0,
                                 includeHiddenChildren: showHiddenSessions,
                                 onTap: {
+                                    handlers.recordAccess(session)
                                     NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
                                 },
                                 onChildTap: { child in
                                     NotificationCenter.default.post(name: .openSession, object: SessionBox(child))
                                 },
+                                onResume: { resumeTarget = $0; handlers.recordAccess($0) },
+                                onCopyResumeCommand: { handlers.copyResumeCommand($0) },
+                                onHandoff: { handlers.handoff($0) },
+                                onReplay: { replayTarget = $0 },
                                 onConfirmSuggestion: { child in confirmSuggestion(child) },
-                                onDismissSuggestion: { child in dismissSuggestion(child) }
+                                onDismissSuggestion: { child in dismissSuggestion(child) },
+                                onHide: { handlers.setHidden($0, hidden: $0.hiddenAt == nil) },
+                                onRename: { beginRename($0) },
+                                onExportMarkdown: { handlers.export($0, format: "markdown") },
+                                onExportJSON: { handlers.export($0, format: "json") },
+                                onToggleFavorite: { handlers.setFavorite($0, favorite: true) },
+                                isHidden: session.hiddenAt != nil
                             )
                             .accessibilityIdentifier("sessions_row_\(index)")
+                            .onAppear {
+                                if index == sessions.count - 1 { loadMoreIfNeeded() }
+                            }
+                        }
+                        if isLoadingMore {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
                         }
                     }
                     .accessibilityIdentifier("sessions_list")
@@ -88,6 +141,21 @@ struct SessionsPageView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessions_container")
+        .sheet(item: $resumeTarget) { ResumeDialog(session: $0) }
+        .sheet(item: $replayTarget) {
+            SessionReplayView(sessionId: $0.id)
+                .frame(minWidth: 600, minHeight: 450)
+        }
+        .sheet(item: $renameTarget) { target in
+            RenameSessionSheet(
+                text: $renameText,
+                onCancel: { renameTarget = nil },
+                onSave: {
+                    handlers.rename(target, to: renameText)
+                    renameTarget = nil
+                }
+            )
+        }
         // Single id-keyed task: any filter change cancels the in-flight load and
         // starts a fresh one, so a slower older load can't land last and leave
         // the list showing the previous filter's sessions.
@@ -117,7 +185,7 @@ struct SessionsPageView: View {
                     subAgent: false,
                     topLevelOnly: true,
                     sort: .updatedDesc,
-                    limit: 200
+                    limit: Self.pageSize
                 )
                 let stats = try db.sessionListStats(
                     sources: sources,
@@ -153,10 +221,15 @@ struct SessionsPageView: View {
     private func confirmSuggestion(_ child: Session) {
         Task {
             do {
-                _ = try await serviceClient.confirmSuggestion(sessionId: child.id)
+                let response = try await serviceClient.confirmSuggestion(sessionId: child.id)
+                guard response.ok else {
+                    actionStatus = response.error ?? "Failed to confirm suggestion"
+                    return
+                }
                 await loadData()
             } catch {
                 EngramLogger.error("SessionsPage confirm suggestion failed", module: .ui, error: error)
+                actionStatus = error.localizedDescription
             }
         }
     }
@@ -173,6 +246,52 @@ struct SessionsPageView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("SessionsPage dismiss suggestion failed", module: .ui, error: error)
+                actionStatus = error.localizedDescription
+            }
+        }
+    }
+
+    private func beginRename(_ session: Session) {
+        renameText = session.customName ?? session.displayTitle
+        renameTarget = session
+    }
+
+    private func loadMoreIfNeeded() {
+        // One page already on screen and more remain; guard against re-entrancy.
+        guard !isLoading, !isLoadingMore else { return }
+        guard sessions.count < totalCount else { return }
+        isLoadingMore = true
+        Task {
+            defer { isLoadingMore = false }
+            do {
+                let db = self.db
+                let sources: Set<String> = sourceFilter.map { [$0] } ?? []
+                let since = sinceDate(for: timeFilter)
+                let includeHidden = showHiddenSessions
+                let offset = sessions.count
+                let more = try await Task.detached {
+                    let loaded = try db.listSessions(
+                        sources: sources,
+                        since: since,
+                        includeHidden: includeHidden,
+                        subAgent: false,
+                        topLevelOnly: true,
+                        sort: .updatedDesc,
+                        limit: Self.pageSize,
+                        offset: offset
+                    )
+                    let parentIds = loaded.map(\.id)
+                    let confirmed = try db.childCount(parentIds: parentIds, includeHidden: includeHidden)
+                    let suggested = try db.suggestedChildCount(parentIds: parentIds, includeHidden: includeHidden)
+                    return (loaded, confirmed, suggested)
+                }.value
+                // De-dup on append in case a reload raced with this page fetch.
+                let existing = Set(sessions.map(\.id))
+                sessions.append(contentsOf: more.0.filter { !existing.contains($0.id) })
+                confirmedCounts.merge(more.1) { _, new in new }
+                suggestedCounts.merge(more.2) { _, new in new }
+            } catch {
+                EngramLogger.error("SessionsPage load-more failed", module: .ui, error: error)
             }
         }
     }
@@ -200,5 +319,31 @@ struct SessionsPageView: View {
         if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
         if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
         return "\(n)"
+    }
+}
+
+// MARK: - Rename sheet (shared by browse pages)
+
+struct RenameSessionSheet: View {
+    @Binding var text: String
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Rename Session")
+                .font(.headline)
+            TextField("Session name", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 320)
+                .onSubmit { onSave() }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { onCancel() }
+                Button("Save") { onSave() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
     }
 }

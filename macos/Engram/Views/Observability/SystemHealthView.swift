@@ -1,4 +1,17 @@
 // macos/Engram/Views/Observability/SystemHealthView.swift
+//
+// observability-5: the Health tab derives its signal entirely from real,
+// app-readable sources — DB pragmas (size, journal mode), the live
+// `EngramServiceStatusStore` (index-scan health), and the unified log's 24h
+// error count via `OSLogReader`. It intentionally does NOT call
+// `EngramServiceReadProvider.health()`, which is a constant stub that returns a
+// hardcoded "healthy" payload with zero app callers; surfacing it would be a
+// false all-clear.
+//
+// observability-2 (deferred): the app's currentProcess `OSLogStore` cannot read
+// `com.engram.service` entries cross-process, so the error count reflects only
+// the app's own `com.engram.app` subsystem. A readable service-side log feed
+// (IPC ring) is a backend change tracked separately.
 import SwiftUI
 import GRDB
 
@@ -47,7 +60,7 @@ struct SystemHealthView: View {
                         label: "Errors logged (com.engram.*)",
                         status: errorCount24h == 0 ? .ok : (errorCount24h > 10 ? .error : .warning)
                     )
-                    Text("\(errorCount24h) error-level entries in the unified log over the last 24h.")
+                    Text("\(errorCount24h) error-level entries in the unified log over the last 24h (includes warning-level entries, which the unified log stores at the error type).")
                         .font(.caption)
                         .foregroundStyle(Theme.secondaryText)
                 } else {

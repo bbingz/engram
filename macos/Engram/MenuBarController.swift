@@ -80,8 +80,14 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         // Poll live sessions every 10s for badge update
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updateBadge() }
+            Task { @MainActor in
+                self?.updateBadge()
+                await self?.checkCostBudget()
+            }
         }
+        // Run an initial budget check at startup so a breach is surfaced without
+        // waiting a full timer tick.
+        Task { @MainActor in await self.checkCostBudget() }
 
         // Listen for settings open requests from popover and window controls.
         NotificationCenter.default.addObserver(
@@ -416,6 +422,26 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 self.statusItem.button?.title = today > 0 ? " \(today)" : ""
             }
         }
+    }
+
+    /// WP19: fetch today's / month-to-date spend and let the notifier raise a
+    /// day-keyed budget-breach notification (at most once per local day).
+    ///
+    /// Gate the poll: when no cost budget is configured or threshold notifying
+    /// is off/monitoring disabled, skip the costs() round-trip entirely so the
+    /// 10s timer doesn't flood telemetry + the DB for nothing.
+    private func checkCostBudget() async {
+        let settings = UsagePressureNotificationSettings.current()
+        guard settings.monitorEnabled,
+              settings.notifyOnCostThreshold,
+              settings.dailyCostBudget > 0 || settings.monthlyCostBudget > 0 else {
+            return
+        }
+        guard let costs = try? await serviceClient.costs() else { return }
+        usagePressureNotifier.observeCosts(
+            todayUsd: costs.todayUsd,
+            monthToDateUsd: costs.monthToDateUsd
+        )
     }
 
     /// Refresh only the today-count portion of the badge without a live-session

@@ -5,6 +5,7 @@ struct GeneralSettingsSection: View {
     @AppStorage("appLanguage") var appLanguage: String = AppLanguage.system.rawValue
     @AppStorage("contentFontSize") var contentFontSize: Double = 14
     @AppStorage("showDockIcon") var showDockIcon: Bool = false
+    @AppStorage("showDeveloperTools") var showDeveloperTools: Bool = false
 
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
 
@@ -68,19 +69,6 @@ struct GeneralSettingsSection: View {
                         }
                         .disabled(webUIURL == nil)
                     }
-                    HStack {
-                        Text("MCP HTTP endpoint")
-                        Spacer()
-                        if let mcpEndpointText {
-                            Text(verbatim: mcpEndpointText)
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        } else {
-                            Text("Swift service MCP endpoint unavailable")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        }
-                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -99,6 +87,10 @@ struct GeneralSettingsSection: View {
                     }
                     Toggle("Show Dock Icon", isOn: $showDockIcon)
                     Text("Keep the app icon visible in the Dock at all times")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Toggle("Show Developer Tools", isOn: $showDeveloperTools)
+                    Text("Reveal the Observability section (internal logs, traces, and health diagnostics).")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -121,14 +113,6 @@ struct GeneralSettingsSection: View {
         case .error(let message):
             Text("Error: \(message)")
         }
-    }
-
-    private var mcpEndpointText: String? {
-        guard let port = serviceStatusStore.endpointPort else {
-            return nil
-        }
-        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
-        return "http://\(host):\(port)/mcp"
     }
 
     private var webUIURL: URL? {

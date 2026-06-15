@@ -23,11 +23,21 @@ class ReplayState {
     var error: String? = nil
 
     private var playTimer: Timer?
-    private static let isoFormatter: ISO8601DateFormatter = {
+    private static let isoFractionalFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    // 容忍带/不带小数秒的 ISO8601（不同来源时间戳格式不一致）
+    static func parseISO(_ value: String) -> Date? {
+        isoFractionalFormatter.date(from: value) ?? isoFormatter.date(from: value)
+    }
 
     enum PlaybackSpeed: Double, CaseIterable {
         case x1 = 1.0
@@ -66,8 +76,8 @@ class ReplayState {
             return Array(repeating: 0, count: 100)
         }
 
-        guard let startDate = Self.isoFormatter.date(from: first),
-              let endDate = Self.isoFormatter.date(from: last) else {
+        guard let startDate = Self.parseISO(first),
+              let endDate = Self.parseISO(last) else {
             return Array(repeating: 0, count: 100)
         }
 
@@ -81,7 +91,7 @@ class ReplayState {
         var buckets = Array(repeating: 0, count: 100)
         for entry in entries {
             guard let ts = entry.timestamp,
-                  let date = Self.isoFormatter.date(from: ts) else { continue }
+                  let date = Self.parseISO(ts) else { continue }
             let fraction = date.timeIntervalSince(startDate) / totalDuration
             let bucket = min(99, Int(fraction * 100))
             buckets[bucket] += 1

@@ -348,6 +348,103 @@ final class EngramServiceLauncherTests: XCTestCase {
         // The launcher releases its reference immediately on shutdown.
         XCTAssertFalse(launcher.isRunning)
     }
+
+    @MainActor
+    func testRestartReArmsHealthMonitorAndReportsRunning() async throws {
+        let executable = try makeSleeperExecutable()
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 1,
+            startupGraceNanoseconds: 0
+        )
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: executable.path,
+            socketPath: "/tmp/engram-restart.sock",
+            databasePath: "/tmp/engram-restart.sqlite",
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+
+        try launcher.start(configuration: config)
+        await launcher.restart(
+            configuration: config,
+            statusProbe: { .running(total: 3, todayParents: 0) },
+            onStatus: { status in recorder.append(status) },
+            onEvent: nil
+        )
+
+        let recovered = await recorder.waitUntil(timeoutNanoseconds: 1_000_000_000) { statuses in
+            statuses.contains(.running(total: 3, todayParents: 0))
+        }
+        launcher.stopIfOwned()
+
+        XCTAssertTrue(recorder.statuses.contains(.starting))
+        XCTAssertTrue(recovered, "restart must re-arm the monitor and recover to running")
+    }
+
+    @MainActor
+    func testRestartNoLeakedProcess() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-restart-leak-\(UUID().uuidString)")
+        let countingSleeper = try makeCountingSleeperExecutable(marker: marker)
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 5_000_000,
+            maximumRestartAttempts: 1,
+            startupGraceNanoseconds: 0
+        )
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: countingSleeper.path,
+            socketPath: "/tmp/engram-restart-leak.sock",
+            databasePath: "/tmp/engram-restart-leak.sqlite",
+            foreground: false
+        )
+
+        try launcher.start(configuration: config)
+        let markerAppeared = await waitForFile(at: marker, timeoutNanoseconds: 500_000_000)
+        XCTAssertTrue(markerAppeared)
+        await launcher.restart(
+            configuration: config,
+            statusProbe: { .running(total: 0, todayParents: 0) },
+            onStatus: { _ in },
+            onEvent: nil
+        )
+        // The restarted spawn appends a second 'start' line.
+        let sawTwo = await waitForMarkerLineCount(marker, count: 2, timeoutNanoseconds: 500_000_000)
+        launcher.stopIfOwned()
+
+        let lines = (try? String(contentsOf: marker, encoding: .utf8))?
+            .split(separator: "\n")
+            .count ?? 0
+        XCTAssertTrue(sawTwo)
+        // Exactly 2: original spawn + restarted spawn, proving the old process
+        // was terminated (not leaked) and a fresh one spawned.
+        XCTAssertEqual(lines, 2)
+    }
+
+    @MainActor
+    func testRestartWithMissingHelperSurfacesError() async throws {
+        let launcher = EngramServiceLauncher()
+        let config = EngramServiceLaunchConfiguration(
+            executablePath: "/tmp/engram-does-not-exist-\(UUID().uuidString)",
+            socketPath: "/tmp/engram-restart-missing.sock",
+            databasePath: "/tmp/engram-restart-missing.sqlite",
+            foreground: false
+        )
+        let recorder = ServiceStatusRecorder()
+
+        await launcher.restart(
+            configuration: config,
+            statusProbe: { .running(total: 0, todayParents: 0) },
+            onStatus: { status in recorder.append(status) },
+            onEvent: nil
+        )
+
+        XCTAssertTrue(recorder.statuses.contains { status in
+            if case .error = status { return true }
+            return false
+        })
+        XCTAssertFalse(launcher.isRunning)
+    }
 }
 
 @MainActor
@@ -396,6 +493,23 @@ private func waitForFile(at url: URL, timeoutNanoseconds: UInt64) async -> Bool 
         try? await Task.sleep(nanoseconds: 10_000_000)
     }
     return FileManager.default.fileExists(atPath: url.path)
+}
+
+private func markerLineCount(_ url: URL) -> Int {
+    (try? String(contentsOf: url, encoding: .utf8))?
+        .split(separator: "\n")
+        .count ?? 0
+}
+
+private func waitForMarkerLineCount(_ url: URL, count: Int, timeoutNanoseconds: UInt64) async -> Bool {
+    let deadline = ContinuousClock.now + .nanoseconds(Int(timeoutNanoseconds))
+    while ContinuousClock.now < deadline {
+        if markerLineCount(url) >= count {
+            return true
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return markerLineCount(url) >= count
 }
 
 private func makeSleeperExecutable() throws -> URL {

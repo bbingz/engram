@@ -9,6 +9,8 @@ struct SourcePulseView: View {
     @State private var sources: [EngramServiceSourceInfo] = []
     @State private var sourceDist: [(source: String, count: Int)] = []
     @State private var liveSessions: [EngramServiceLiveSessionInfo] = []
+    @State private var costs: EngramServiceCostsResponse? = nil
+    @State private var costsError: String? = nil
     @State private var isLoading = true
     @State private var error: String? = nil
     @State private var liveTimer: Timer?
@@ -71,6 +73,7 @@ struct SourcePulseView: View {
                 }
                 SectionHeader(icon: "antenna.radiowaves.left.and.right", title: "Sources",
                              onRefresh: { Task { await loadData() } })
+                    .help("Indexing runs automatically in the background; refresh re-reads current counts.")
                 if sources.isEmpty && !isLoading {
                     EmptyState(icon: "antenna.radiowaves.left.and.right", title: "No sources", message: "No adapter sources detected")
                         .accessibilityIdentifier("sourcePulse_emptyState")
@@ -92,9 +95,14 @@ struct SourcePulseView: View {
                                     }
                                 }
                                 HStack(spacing: 8) {
+                                    if source.liveSyncDisabled {
+                                        factPill("Cache only", color: Theme.gray)
+                                            .help("Live capture is off for this source; only cached/transcript data is indexed.")
+                                    }
                                     factPill("Search \(source.searchCoveragePercent)%")
                                     if source.failedIndexJobCount > 0 {
                                         factPill("\(source.failedIndexJobCount) issue\(source.failedIndexJobCount == 1 ? "" : "s")", color: Theme.orange)
+                                            .help("Index jobs that failed for this source. They retry automatically on the next indexing pass.")
                                     }
                                     factPill(Self.tokenCoveragePillText(source.tokenCoveragePercent))
                                     if source.costedSessionCount > 0 {
@@ -128,6 +136,11 @@ struct SourcePulseView: View {
                         BarChartItem(label: SourceColors.label(for: item.source), value: item.count, color: SourceColors.color(for: item.source))
                     })
                 }
+
+                if let costsError {
+                    AlertBanner(message: "Failed to load cost data: \(costsError)")
+                }
+                CostSummarySection(costs: costs, isLoading: isLoading && costs == nil)
             }
             .padding(24)
         }
@@ -174,6 +187,16 @@ struct SourcePulseView: View {
         // Distribution chart read also off-main.
         if let dist = try? await Task.detached(operation: { try db.sourceDistribution() }).value {
             sourceDist = dist
+        }
+        await loadCosts()
+    }
+
+    private func loadCosts() async {
+        do {
+            costs = try await serviceClient.costs()
+            costsError = nil
+        } catch {
+            costsError = error.localizedDescription
         }
     }
 

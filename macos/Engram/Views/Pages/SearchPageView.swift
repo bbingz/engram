@@ -39,6 +39,19 @@ private enum SearchTimeFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// Result-state of a keyword search. `failed` distinguishes a real backend
+/// fault (service AND local FTS both threw) from a genuine no-match so the UI
+/// doesn't read a down index as "your data is missing".
+enum SearchOutcome: Equatable {
+    case empty, results, failed
+
+    static func classify(query: String, results: [SearchResult], didFail: Bool) -> SearchOutcome {
+        if didFail { return .failed }
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .empty }
+        return results.isEmpty ? .empty : .results
+    }
+}
+
 struct SearchPageView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
@@ -48,7 +61,6 @@ struct SearchPageView: View {
     private let contentPadding: CGFloat
 
     @State private var query = ""
-    @State private var selectedMode: SearchMode = .keyword
     @State private var selectedProjectFilter: String?
     @State private var selectedSourceFilter: String?
     @State private var selectedTimeFilter: SearchTimeFilter = .all
@@ -58,16 +70,16 @@ struct SearchPageView: View {
     @State private var searchModes: [String] = []
     @State private var warning: String? = nil
     @State private var isSearching = false
+    @State private var searchFailed = false
     @State private var searchTask: Task<Void, Never>? = nil
-    @State private var embeddingStatus: EmbeddingStatus? = nil
     @State private var showAdvancedFilters = false
-
-    private var availableModes: [SearchMode] {
-        SearchMode.availableModes(embeddingAvailable: embeddingStatus?.available ?? false)
-    }
 
     private var emptySearchMessage: String {
         "Search sessions by keyword"
+    }
+
+    private var searchOutcome: SearchOutcome {
+        SearchOutcome.classify(query: query, results: results, didFail: searchFailed)
     }
 
     private var hasClearableFilters: Bool {
@@ -100,7 +112,6 @@ struct SearchPageView: View {
         }
         .accessibilityIdentifier("search_container")
         .task {
-            await loadEmbeddingStatus()
             await loadFilterOptions()
         }
         .onChange(of: query) { _, _ in
@@ -126,7 +137,7 @@ struct SearchPageView: View {
                         .textFieldStyle(.plain)
                         .onSubmit { triggerSearch() }
                     if !query.isEmpty {
-                        Button(action: { query = ""; results = []; searchModes = []; warning = nil }) {
+                        Button(action: { query = ""; results = []; searchModes = []; warning = nil; searchFailed = false }) {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.tertiaryText)
                         }.buttonStyle(.plain)
                     }
@@ -135,37 +146,6 @@ struct SearchPageView: View {
                 .background(Theme.inputBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .accessibilityIdentifier("search_input")
-
-                // Mode selector + embedding status
-                HStack(spacing: 12) {
-                    if availableModes.count > 1 {
-                        ForEach(availableModes, id: \.self) { mode in
-                            Button(action: { selectedMode = mode; triggerSearch() }) {
-                                Text(mode.rawValue.capitalized)
-                                    .font(.caption)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(selectedMode == mode
-                                        ? Theme.accent.opacity(0.25)
-                                        : Theme.surface)
-                                    .foregroundStyle(selectedMode == mode
-                                        ? Theme.sidebarSelectedText
-                                        : Theme.secondaryText)
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    Spacer()
-                    if let status = embeddingStatus, status.available {
-                        HStack(spacing: 4) {
-                            Circle().fill(Theme.green).frame(width: 6, height: 6)
-                            Text("\(status.embeddedCount)/\(status.totalSessions) embedded")
-                                .font(.caption2)
-                                .foregroundStyle(Theme.tertiaryText)
-                        }
-                    }
-                }
 
                 advancedFilterDisclosure
 
@@ -196,10 +176,13 @@ struct SearchPageView: View {
                         ProgressView().controlSize(.small)
                         Text("Searching...").font(.caption).foregroundStyle(Theme.secondaryText)
                     }
-                } else if results.isEmpty && !query.isEmpty {
-                    EmptyState(icon: "magnifyingglass", title: "No results", message: "Try a different search term or mode")
+                } else if searchOutcome == .failed {
+                    EmptyState(icon: "exclamationmark.triangle", title: "Search unavailable", message: "Could not reach the index. Try again.")
                         .accessibilityIdentifier("search_emptyState")
-                } else if results.isEmpty && query.isEmpty {
+                } else if searchOutcome == .empty && !query.isEmpty {
+                    EmptyState(icon: "magnifyingglass", title: "No results", message: "Try a different search term")
+                        .accessibilityIdentifier("search_emptyState")
+                } else if searchOutcome == .empty {
                     EmptyState(icon: "magnifyingglass", title: "Search sessions", message: emptySearchMessage)
                         .accessibilityIdentifier("search_emptyState")
                 } else {
@@ -219,7 +202,7 @@ struct SearchPageView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     if let session = result.session {
                                         SessionCard(session: session) {
-                                            NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                                            NotificationCenter.default.post(name: .openSession, object: SessionBox(session, searchTerm: query))
                                         }
                                     }
                                     if !result.snippet.isEmpty {
@@ -400,18 +383,16 @@ struct SearchPageView: View {
     }
 
     private func performSearch() async {
-        guard query.count >= 2 else { results = []; return }
-        if !availableModes.contains(selectedMode) {
-            selectedMode = availableModes.first ?? .keyword
-        }
+        guard query.count >= 2 else { results = []; searchFailed = false; return }
         isSearching = true
+        searchFailed = false
         defer { isSearching = false }
 
         do {
             let response = try await serviceClient.search(
                 EngramServiceSearchRequest(
                     query: query,
-                    mode: selectedMode.rawValue,
+                    mode: "keyword",
                     limit: 30,
                     project: selectedProjectFilter,
                     source: selectedSourceFilter,
@@ -450,12 +431,15 @@ struct SearchPageView: View {
                     SearchResult(id: r.session.id, session: r.session, snippet: r.snippet, matchType: "keyword", score: 0)
                 }
             } catch {
+                // Double-fault: service AND local FTS both threw. Surface a real
+                // failure state instead of a misleading "No results".
                 EngramLogger.error("SearchPage fallback search failed", module: .ui, error: error)
+                guard !Task.isCancelled else { return }
+                searchFailed = true
+                results = []
             }
         }
     }
-
-    // MARK: - Embedding Status
 
     private func loadFilterOptions() async {
         let db = self.db
@@ -473,27 +457,6 @@ struct SearchPageView: View {
             sourceFilters = sources
         } catch {
             EngramLogger.error("SearchPage filter load failed", module: .ui, error: error)
-        }
-    }
-
-    private func loadEmbeddingStatus() async {
-        do {
-            let resp = try await serviceClient.embeddingStatus()
-            embeddingStatus = EmbeddingStatus(
-                available: resp.available,
-                model: resp.model,
-                embeddedCount: resp.embeddedCount,
-                totalSessions: resp.totalSessions,
-                progress: resp.progress
-            )
-            if !availableModes.contains(selectedMode) {
-                selectedMode = availableModes.first ?? .keyword
-            }
-        } catch {
-            embeddingStatus = nil
-            if selectedMode != .keyword {
-                selectedMode = .keyword
-            }
         }
     }
 
@@ -534,4 +497,4 @@ struct SearchPageView: View {
     }
 }
 
-// SearchResult and EmbeddingStatus are defined in SearchSupport.swift.
+// SearchResult and SnippetHighlighter are defined in SearchSupport.swift.

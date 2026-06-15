@@ -16,6 +16,9 @@ private let transcriptPageSize = 500
 struct SessionDetailView: View {
     let session: Session
     var onBack: (() -> Void)? = nil
+    /// Prime the find bar with this query when the session opens from keyword
+    /// search (nil for every other entry point — find bar stays closed/empty).
+    var searchTerm: String? = nil
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
     @State private var isFavorite = false
@@ -25,10 +28,11 @@ struct SessionDetailView: View {
     @State private var showResume = false
     @State private var messages: [ChatMessage] = []
     @State private var isLoadingMessages = false
-    // UI-M3: removed dead summary state (`isSummarizing`/`summaryError`/
-    // `currentSummary`) + `generateSummary()` — there was no UI entry point and
-    // the service summary is extractive, not the advertised AI summary. Summary
-    // generation remains available via the MCP `generate_summary` tool.
+    // Per-session summary: seeded from session.summary, regeneratable on demand
+    // through EngramServiceClient.generateSummary (the service summarizer).
+    @State private var summaryText: String?
+    @State private var isSummarizing = false
+    @State private var summaryError: String?
 
     // Parent/child hierarchy
     @State private var confirmedParent: Session?
@@ -151,6 +155,13 @@ struct SessionDetailView: View {
         }.value
         if Task.isCancelled { return }
         matchIndices = indices
+        // Auto-scroll to the first match when navigation hasn't started yet
+        // (currentMatchIndex < 0). The guard keeps an in-progress Prev/Next from
+        // being yanked back to the top by a filter/page re-scan.
+        if currentMatchIndex < 0, let first = indices.first {
+            currentMatchIndex = 0
+            scrollTarget = snapshot[first].id
+        }
     }
 
     // MARK: - Body
@@ -269,6 +280,8 @@ struct SessionDetailView: View {
                 )
             }
 
+            summarySection
+
             // Confirmed parent breadcrumb
             if let parent = confirmedParent {
                 HStack(spacing: 8) {
@@ -367,7 +380,8 @@ struct SessionDetailView: View {
                                 }
                             case .text:
                                 ForEach(messages) { msg in
-                                    RawMessageRow(message: msg)
+                                    RawMessageRow(message: msg, searchText: searchText)
+                                        .id(msg.id)
                                     Divider().opacity(0.3)
                                 }
                             }
@@ -380,6 +394,22 @@ struct SessionDetailView: View {
                     .onChange(of: scrollTarget) { _, target in
                         if let target {
                             withAnimation { proxy.scrollTo(target, anchor: .center) }
+                        }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if displayIndexed.count > 1 {
+                            Button {
+                                scrollTarget = displayIndexed.first?.id
+                            } label: {
+                                Image(systemName: "chevron.up")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .padding(8)
+                                    .background(.regularMaterial, in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(16)
+                            .help("Scroll to top")
+                            .accessibilityIdentifier("detail_scrollToTop")
                         }
                     }
                 }
@@ -425,8 +455,13 @@ struct SessionDetailView: View {
             displayIndexed = []
             matchIndices = []
             currentMatchIndex = -1
-            searchText = ""
+            // Prime the find bar from a search-driven open; closed/empty otherwise.
+            searchText = searchTerm ?? ""
+            showFind = (searchTerm?.isEmpty == false)
             scrollTarget = nil
+            summaryText = session.summary
+            isSummarizing = false
+            summaryError = nil
             navPositions = Dictionary(uniqueKeysWithValues: MessageType.allCases.map { ($0, -1) })
             childrenSessions = []
             childrenSessionCount = 0
@@ -456,6 +491,9 @@ struct SessionDetailView: View {
         .onChange(of: typeVisibility) { _, _ in updateDisplayIndexed() }
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
         .onChange(of: showAgentComm) { _, _ in updateDisplayIndexed() }
+        // A new/edited query restarts find navigation from the top; the debounced
+        // scan then re-selects the first match (guarded by currentMatchIndex < 0).
+        .onChange(of: searchText) { _, _ in currentMatchIndex = -1; scrollTarget = nil }
         .task(id: matchScanToken) { await updateMatchIndicesDebounced() }
         .sheet(isPresented: $showReplay) {
             SessionReplayView(sessionId: session.id)
@@ -543,6 +581,64 @@ struct SessionDetailView: View {
             }
             .padding(.vertical, 8)
             .accessibilityIdentifier("detail_agentSessionsSection")
+        }
+    }
+
+    // MARK: - Summary
+
+    @ViewBuilder
+    private var summarySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Label("Summary", systemImage: "text.alignleft")
+                    .font(.caption.bold())
+                    .foregroundStyle(Theme.secondaryText)
+                Spacer()
+                if isSummarizing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button(summaryText?.isEmpty == false ? "Regenerate" : "Generate") {
+                        generateSummary()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("detail_generateSummary")
+                }
+            }
+            if let summaryText, !summaryText.isEmpty {
+                Text(summaryText)
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let summaryError {
+                Text(summaryError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("detail_summarySection")
+    }
+
+    private func generateSummary() {
+        guard !isSummarizing else { return }
+        let sessionId = session.id
+        isSummarizing = true
+        summaryError = nil
+        Task {
+            do {
+                let response = try await serviceClient.generateSummary(
+                    EngramServiceGenerateSummaryRequest(sessionId: sessionId)
+                )
+                guard favoriteLoadSessionId == sessionId else { return }
+                summaryText = response.summary
+            } catch {
+                guard favoriteLoadSessionId == sessionId else { return }
+                summaryError = "Summary failed: \(error.localizedDescription)"
+            }
+            if favoriteLoadSessionId == sessionId { isSummarizing = false }
         }
     }
 
@@ -891,6 +987,28 @@ struct SessionDetailView: View {
 
 struct RawMessageRow: View {
     let message: ChatMessage
+    var searchText: String = ""
+
+    /// Case-insensitive yellow highlight of `query` in `text`. Self-contained so
+    /// Text mode highlights without depending on ColorBarMessageView (not owned).
+    private func highlight(_ text: String, query: String) -> AttributedString {
+        var attr = AttributedString(text)
+        guard !query.isEmpty else { return attr }
+        var searchStart = text.startIndex
+        while let range = text.range(
+            of: query,
+            options: .caseInsensitive,
+            range: searchStart..<text.endIndex
+        ) {
+            if let attrRange = Range(NSRange(range, in: text), in: attr) {
+                attr[attrRange].backgroundColor = .yellow
+                attr[attrRange].foregroundColor = .black
+            }
+            searchStart = range.upperBound > range.lowerBound ? range.upperBound : text.index(after: range.lowerBound)
+            if searchStart >= text.endIndex { break }
+        }
+        return attr
+    }
 
     var roleColor: Color {
         if message.isSystem { return .secondary }
@@ -907,7 +1025,7 @@ struct RawMessageRow: View {
             Text(roleLabel)
                 .font(.caption.monospaced().bold())
                 .foregroundStyle(roleColor)
-            Text(verbatim: message.content)
+            Text(highlight(message.content, query: searchText))
                 .font(.caption.monospaced())
                 .textSelection(.enabled)
                 .foregroundStyle(message.isSystem ? .secondary : .primary)

@@ -7,6 +7,7 @@ struct RepoDetailView: View {
     @Environment(DatabaseManager.self) var db
     @State private var claudeMdContent: String?
     @State private var relatedSessions: [Session] = []
+    @State private var isLoading = true
 
     var body: some View {
         ScrollView {
@@ -103,43 +104,56 @@ struct RepoDetailView: View {
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
                     ForEach(relatedSessions) { session in
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(SourceColors.color(for: session.source))
-                                .frame(width: 6, height: 6)
-                            Text(session.displayTitle)
-                                .font(.caption)
-                                .lineLimit(1)
-                                .foregroundStyle(Theme.primaryText)
-                            Spacer()
-                            Text(session.source)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text(session.displayDate)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                        Button {
+                            NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                        } label: {
+                            HStack(spacing: 8) {
+                                Circle()
+                                    .fill(SourceColors.color(for: session.source))
+                                    .frame(width: 6, height: 6)
+                                Text(session.displayTitle)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .foregroundStyle(Theme.primaryText)
+                                Spacer()
+                                Text(session.source)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text(session.displayDate)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 8)
+                            .background(Theme.surface)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
-                        .padding(.vertical, 3)
-                        .padding(.horizontal, 8)
-                        .background(Theme.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("repos_detail_sessionRow")
                     }
+                } else if !isLoading {
+                    Text("No recent sessions for this repo")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 4)
                 }
             }
             .padding(20)
         }
         .task {
             // Load CLAUDE.md + related sessions off the main thread (UI-C1/C2).
+            isLoading = true
             let db = self.db
             let path = repo.path
             let loaded = await Task.detached { () -> (String?, [Session]) in
                 let claudePath = (path as NSString).appendingPathComponent("CLAUDE.md")
                 let claude = try? String(contentsOfFile: claudePath, encoding: .utf8)
-                let related = (try? db.getContext(cwd: path, limit: 10)) ?? []
+                let related = (try? db.sessionsForRepo(path: path, limit: 10)) ?? []
                 return (claude, related)
             }.value
             claudeMdContent = loaded.0
             relatedSessions = loaded.1
+            isLoading = false
         }
         .accessibilityIdentifier("repos_detail")
     }

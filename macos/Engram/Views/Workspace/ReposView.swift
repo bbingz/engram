@@ -26,6 +26,12 @@ struct ReposView: View {
     private var repoListView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if isLoading && repos.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                        .accessibilityIdentifier("repos_loading")
+                } else {
                 // KPI cards
                 HStack(spacing: 12) {
                     KPICard(value: "\(activeRepos.count)", label: "Active (24h)")
@@ -64,6 +70,7 @@ struct ReposView: View {
                         message: "Repos are discovered from session working directories. Start some sessions first."
                     )
                     .accessibilityIdentifier("repos_emptyState")
+                }
                 }
             }
             .padding(24)
