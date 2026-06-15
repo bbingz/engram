@@ -11,7 +11,7 @@
 // on the input. It operates at byte-level through Buffer/UTF-8 string round-
 // trip so Python mvp and TS produce byte-identical output (diff-test invariant).
 
-import { createReadStream } from 'node:fs';
+import { createReadStream, type Stats } from 'node:fs';
 import {
   chmod,
   open,
@@ -277,7 +277,7 @@ type FileSnapshot = {
   mtimeMs: number;
 };
 
-function snapshot(st: Awaited<ReturnType<typeof stat>>): FileSnapshot {
+function snapshot(st: Stats): FileSnapshot {
   return {
     dev: Number(st.dev),
     ino: Number(st.ino),
@@ -286,11 +286,7 @@ function snapshot(st: Awaited<ReturnType<typeof stat>>): FileSnapshot {
   };
 }
 
-function assertUnchanged(
-  filePath: string,
-  before: FileSnapshot,
-  after: Awaited<ReturnType<typeof stat>>,
-) {
+function assertUnchanged(filePath: string, before: FileSnapshot, after: Stats) {
   const next = snapshot(after);
   if (
     next.dev !== before.dev ||
@@ -329,7 +325,7 @@ async function patchFileStreaming(
   filePath: string,
   oldPath: string,
   newPath: string,
-  stBefore: Awaited<ReturnType<typeof stat>>,
+  stBefore: Stats,
 ): Promise<number> {
   const before = snapshot(stBefore);
   const tmp = tempPath(filePath);

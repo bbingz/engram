@@ -32,10 +32,10 @@
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
-    "@hono/node-server": "^1.19.10",
+    "@hono/node-server": "^2.0.4",
     "@modelcontextprotocol/sdk": "^1.10.2",
     "better-sqlite3": "^12.10.0",
-    "chokidar": "^4.0.3",
+    "chokidar": "^5.0.0",
     "hono": "^4.12.21",
     "openai": "^6.25.0",
     "sqlite-vec": "0.1.9",
@@ -47,16 +47,16 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^24.0.0",
+    "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^4.1.8",
     "husky": "^9.1.7",
     "knip": "^6.3.1",
     "lint-staged": "^16.4.0",
     "pixelmatch": "^6.0.0",
-    "sharp": "^0.33.5",
+    "sharp": "^0.34.5",
     "ssim.js": "^3.5.0",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.2",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
   "lint-staged": {
