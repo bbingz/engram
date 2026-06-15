@@ -59,6 +59,35 @@ for framework in EngramServiceCore.framework EngramCoreRead.framework EngramCore
     sign_path "$framework_dest"
   fi
 done
+
+# GRDB is the shared GRDB-dynamic SPM product (one dynamic framework, ONE copy
+# per process) instead of being statically embedded into each of the three
+# frameworks above. Three static copies put three GRDB.SchedulingWatchdog
+# registries in the EngramService process, which crashed with a false
+# "Database was not used on the correct thread" SIGTRAP. The dynamic product is
+# emitted under PackageFrameworks/; bundle it next to the others so the helper
+# and the app resolve the single shared copy through @rpath/../Frameworks.
+# Plain `xcodebuild build` emits the SPM dynamic product under PackageFrameworks/;
+# `xcodebuild archive` emits it directly in BUILT_PRODUCTS_DIR. Accept both.
+grdb_src=""
+for grdb_cand in \
+  "${BUILT_PRODUCTS_DIR}/PackageFrameworks/GRDB-dynamic.framework" \
+  "${BUILT_PRODUCTS_DIR}/GRDB-dynamic.framework"; do
+  if [ -d "$grdb_cand" ]; then
+    grdb_src="$grdb_cand"
+    break
+  fi
+done
+if [ -z "$grdb_src" ]; then
+  echo "[copy-service-helper] ERROR: GRDB-dynamic.framework not found in BUILT_PRODUCTS_DIR (checked PackageFrameworks/ and root) — GRDB-dynamic must be built before Engram." >&2
+  exit 1
+fi
+grdb_dest="${FRAMEWORKS_DIR}/GRDB-dynamic.framework"
+ditto "$grdb_src" "$grdb_dest"
+if sign_enabled; then
+  sign_path "$grdb_dest"
+fi
+
 if sign_enabled && [ ! -d "${APP}/Contents/PlugIns" ]; then
   debug_dylib="${APP}/Contents/MacOS/Engram.debug.dylib"
   if [ -f "$debug_dylib" ]; then
