@@ -5,7 +5,27 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
 
 ## Open
 
-No open TODO items as of 2026-05-24.
+Deferred follow-ups from the 2026-06-15 UX-flow alignment review (PR #74) —
+intentionally scoped out of that PR, not regressions:
+
+- **Readable gated-Observability logs.** WP17's blanket `privacy: .public`
+  redaction was reverted to `.private` (no system-log leak). The follow-up is a
+  sanitized in-process log buffer so the gated Observability page can show
+  readable recent logs without exposing message bodies to other processes.
+- **Sources page consolidation.** Finish unifying the Sources surface (status,
+  health, per-source ingest controls) rather than the current partial view.
+- **Manual arbitrary `linkSessions`.** Allow linking sessions beyond the
+  detected parent/child relationships.
+- **Orphaned `embeddingStatus()` cleanup.** Remove the dead embedding-status
+  path — the Swift product search is keyword-only (no embedding provider wired).
+
+Low-priority UX follow-ups (also fit `docs/followups.md`):
+
+- **Favorite toggle from browse.** Toggle favorite directly from list/browse
+  rows, not only from session detail.
+- **Command-palette no-results state.** Explicit empty/fail state in the `⌘K`
+  palette search.
+- **Cost/usage notifications.** Monthly-budget and long-session notify.
 
 ## Closed in cleanup
 
