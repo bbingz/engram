@@ -256,6 +256,31 @@ Checkpoint before context compaction. Pick up here.
 - Recent runtime verifier found no severe `Engram`/`EngramService` log entries
   matching fatal/fault/error/crash/known indexing failures and no new
   `Engram*.ips` or `Engram*.crash` reports in `~/Library/Logs/DiagnosticReports`.
+### Fixed: GRDB linked once as a shared dynamic framework (2026-06-15, Claude) — branch `fix/grdb-single-copy`
+
+- **Symptom:** `EngramService` crash-looped at runtime with a GRDB
+  `SchedulingWatchdog.preconditionValidQueue` SIGTRAP ("Database was not used on
+  the correct thread") from `SQLStatementCursor.next()`. Pre-existing on `main`
+  (crash reports dated 06-14 / 06-15 before the fix); also the host-only crash
+  that blocked DB-backed unit tests locally.
+- **Root cause:** the static SPM `GRDB` product was linked into all THREE dynamic
+  frameworks the service process loads (EngramCoreRead, EngramCoreWrite,
+  EngramServiceCore) → three GRDB copies, three independent `SchedulingWatchdog`
+  thread-local registries. A cursor created under one copy and iterated via
+  another tripped a false wrong-thread precondition. Same triple-embed produced
+  the objc "class implemented in both" warnings.
+- **Fix (GRDB's documented multi-target guidance):** switch every target from
+  `product: GRDB` to the dynamic `product: GRDB-dynamic`, so the process loads
+  ONE shared GRDB framework. `copy-service-helper.sh` bundles
+  `GRDB-dynamic.framework` into `Contents/Frameworks` (emitted under
+  `PackageFrameworks/` for plain builds, at `BUILT_PRODUCTS_DIR` root for
+  archives); `EngramMCP`/`EngramCoreSchemaTool` gain `@rpath` entries.
+- **Verified:** EngramServiceCoreTests **177/177** pass locally with 0
+  thread-crashes / 0 duplicate-class warnings (could not run on this host
+  before); `nm` shows one `GRDB-dynamic.framework` owning `SchedulingWatchdog`
+  and 0 embedded copies in the three frameworks; Developer ID release build +
+  deploy ran the live service **>2 min with 0 new crash reports** (was 4 in
+  ~80s). PR #75; independent of #74.
 
 ### Codex synchronized public docs with the Swift product state (2026-06-12, Codex)
 
