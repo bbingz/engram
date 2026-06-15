@@ -24,9 +24,14 @@ final class NavigationSmokeTests: XCTestCase {
                           "Sidebar item '\(page)' should exist")
             button.click()
 
-            // Verify a container loaded for this page — use the generic page container pattern
+            // Verify a container loaded for this page — use the generic page container pattern.
+            // 15s (not 5s): the Observability page renders heavy diagnostics
+            // (LogStreamView reads OSLog on first load) and intermittently took
+            // >5s to register its container on CI, flaking this smoke run while
+            // the full run passed. Light pages still resolve in well under 1s, so
+            // the larger ceiling only adds wall-time when a container is genuinely slow.
             let container = app.element(id: "\(page)_container")
-            let loaded = container.waitForExistence(timeout: 5)
+            let loaded = container.waitForExistence(timeout: 15)
             XCTAssertTrue(loaded,
                           "Container for '\(page)' should appear after sidebar click")
         }
