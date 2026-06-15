@@ -7,73 +7,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### HANDOFF / RESUME STATE (2026-06-15, Claude) — branch `ux-flow-alignment`
+### Fixed: de-flake jsonl-patch concurrent-modification test (2026-06-15, Claude) — PR #76
 
-Checkpoint before context compaction. Pick up here.
+The `jsonl-patch` CAS test "throws ConcurrentModificationError when mtime
+changes during patch" raced `patchFile`'s first async `stat` against a
+`queueMicrotask` + `utimesSync` mtime bump. On slow/contended CI the bump
+landed before that first stat, so the `before` snapshot already held the new
+mtime, the compare-and-swap never fired, and `patchFile` resolved instead of
+rejecting — an intermittent `typescript` job failure. Replaced the race with a
+deterministic, scoped `vi.mock('node:fs/promises')` stat wrapper (the 2nd+ stat
+for an armed path reports a bumped mtime). Production code untouched. Verified
+6/6 reruns + full `test:coverage` 1580/1580.
 
-- **Pushed** to `origin/ux-flow-alignment`; **PR #74** open against `main`
-  (https://github.com/bbingz/engram/pull/74). 4 commits:
-  `207a83ed` docs · `18f50047` service base · `388fe169` nav/tokens/palette ·
-  `c03da7e5` UI action layer (20 WPs).
-- **Local verified:** app `BUILD SUCCEEDED` (0 errors); **132 non-DB tests pass,
-  0 failures** (125 EngramTests + 7 ServiceTelemetryTests, re-run authoritatively).
-- **RESOLVED — option 2 (DB tests on a clean machine):** the 10 swift-unit
-  failures on run `27533077224` were **stale tests, not an impl bug** (commit
-  `b97be294`). Root cause confirmed by local repro (debug print of the swallowed
-  error): the WP14 `hygiene(_:databasePath:)` impl is correct; the failures were
-  `no such column: parent_session_id`.
-  1. `HygieneChecksTests` (8 fail): its `seedHygieneFixture` `CREATE TABLE
-     sessions` omitted `parent_session_id`, which the suggestions query
-     (`WHERE parent_session_id IS NULL`) and the real product schema both have.
-     The scan threw, the catch swallowed it to score 0, every assert failed.
-     Fix: add `parent_session_id TEXT` to the fixture. Verified locally **6/6
-     pass** (the host GRDB duplicate-linkage thread crash does NOT hit this
-     class).
-  2. `testFormerBridgeCommandsUseNativeServiceBehavior` (2 asserts): pinned the
-     old fail-closed bridge STUB (score 0, kind "hygiene"). Native hygiene now
-     real-scans; the `seedSearchFixture` s2 has a `suggested_parent_id` with NULL
-     parent → 1 pending-suggestions issue → score 99. Fix: assert the real native
-     output (99 / "pending-suggestions" / "info"). NOT verifiable locally (this
-     test trips the host-only GRDB "Database was not used on the correct thread"
-     crash); correct by fixture inspection + matches the exact CI-observed values.
-  Handler has **no net diff** — only the two test files changed. The Pool-vs-Queue
-  hypothesis was wrong (open succeeds; the column was the issue).
-  **DONE:** pushed `b97be294` + changelog `9adf0f54`; CI run `27534644391`
-  **swift-unit PASS (6m49s)** — all 10 failures fixed on the clean runner.
-  lint/typescript/macos-vitest/security-audit/dead-code/fixture-check all green.
-- **DONE — option 3 (release build + deploy + walkthrough):**
-  `ENGRAM_BUILD_NUMBER=20260615165309 build-release.sh --local-only` produced a
-  **full Developer ID-signed** `Engram.app` (release-verify PASS, not the
-  local-only fallback); `deploy-local.sh` installed it to `/Applications`
-  (CFBundleVersion 20260615165309, was 20260613125648). Bundle hygiene clean (no
-  node/dist), codesign --verify OK, EngramService+EngramMCP helpers bundled.
-  **Walkthrough (live service reads all returned real data during up-windows):**
-  stats=5602 sessions/14 sources · search FTS · get_costs $87,478 breakdown ·
-  get_insights — the alignment work's new costs/insights DTOs function end-to-end.
-- **⚠️ PRE-EXISTING runtime crash surfaced (NOT a regression) — GRDB triple-embed:**
-  `EngramService` **crash-loops** with `SchedulingWatchdog.preconditionValidQueue`
-  SIGTRAP ("Database was not used on the correct thread") from
-  `SQLStatementCursor.next()`. ROOT CAUSE confirmed: GRDB is **statically embedded
-  into all three frameworks** — `nm` shows EngramCoreRead/EngramCoreWrite/
-  EngramServiceCore each carry ~6450 GRDB symbols incl. `SchedulingWatchdog` ×9,
-  and there is **no shared GRDB.framework**. Three GRDB copies → three thread-local
-  watchdog registries → a DB cursor created in one framework's copy and iterated
-  via another's trips a false wrong-thread precondition. Evidence it pre-dates this
-  branch: `macos/project.yml` GRDB linkage is **unchanged vs main** (each target
-  links `package: GRDB, product: GRDB`), and EngramService crash reports exist on
-  **2026-06-14 18:50 and 2026-06-15 11:27** (before this deploy). This is the same
-  "pre-existing GRDB duplicate-linkage threading crash on the author's host" that
-  blocks local DB tests — now also seen at runtime. **FIX DIRECTION (separate
-  workstream, touches build graph on main):** make GRDB a single shared copy — one
-  dynamic GRDB framework (or a single Engram framework owning GRDB) that the others
-  link with `embed: false`, so only ONE SchedulingWatchdog loads. Out of scope for
-  the UX-flow-alignment PR; file/track independently.
-- **Workflow/review scratch (gitignored):** `.claude/wf-*.js` (the review/design/
-  batch workflows), `.claude/codex-design-review.md`, `.claude/codex-impl-review.md`.
-- **Deferred (not regressions):** readable gated-Observability logs (sanitized
-  buffer), `linkSessions` arbitrary linking, favorite toggle-from-browse,
-  monthly-budget/long-session notify, full Sources consolidation,
-  command-palette search-fail state, orphaned `embeddingStatus()` cleanup.
+### chore(deps): npm audit fix — esbuild + @grpc/grpc-js advisories (2026-06-15, Claude) — PR #77
+
+CI `security-audit` (`npm audit --audit-level=moderate`) went red on `main`
+after upstream published 3 high-severity advisories post-dating the green PR
+runs: `@grpc/grpc-js` 1.14.0–1.14.3 (malformed-request crash) and `esbuild`
+0.17–0.28 via `tsx` (Deno-module RCE + Windows dev-server file read) — all
+dev/build-tooling deps, not shipped in the Swift product. `npm audit fix` (no
+`--force`) patched all three within semver (package-lock.json only). Verified
+build clean, vitest 1580/1580, `npm audit` → 0 vulnerabilities.
 
 ### B4 review round 2 (Codex) landed — alignment complete (2026-06-15, Claude+Codex) — branch `ux-flow-alignment`
 

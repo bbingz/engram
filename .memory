@@ -1,5 +1,70 @@
 # Engram Local Memory
 
+## 2026-06-15 — GRDB must be the single dynamic `GRDB-dynamic` product (runtime crash fix)
+
+- **Hard rule:** every Xcode target links GRDB via the SPM **`GRDB-dynamic`**
+  product (a single shared dynamic framework), NOT the static `GRDB` product.
+  Do not switch back to `product: GRDB` — it regresses the crash below.
+- **Why:** the `EngramService` helper process loads three dynamic frameworks
+  (`EngramCoreRead` → `EngramCoreWrite` → `EngramServiceCore`). With the static
+  `GRDB` product, each one statically embeds a full GRDB copy (~6450 symbols,
+  `SchedulingWatchdog` ×9), so the process held THREE copies / three thread-local
+  watchdog registries. A DB cursor created under one copy and iterated via
+  another tripped a false `SchedulingWatchdog.preconditionValidQueue` SIGTRAP —
+  "Database was not used on the correct thread" from `SQLStatementCursor.next()` —
+  and `EngramService` crash-looped at runtime. Same triple-embed = the objc
+  "class implemented in both" warnings and the host-only crash that BLOCKED
+  DB-backed unit tests locally. (GRDB's own docs: pick `GRDB-dynamic` when
+  linking GRDB into multiple targets in one process.)
+- **Bundling:** `macos/scripts/copy-service-helper.sh` copies
+  `GRDB-dynamic.framework` into `Engram.app/Contents/Frameworks` so the helper +
+  app load the one shared copy via `@rpath/../Frameworks`. The SPM dynamic
+  product is emitted under `PackageFrameworks/` for plain `xcodebuild build` and
+  directly in `BUILT_PRODUCTS_DIR` for `archive` — the script checks BOTH.
+  `EngramMCP`/`EngramCoreSchemaTool` got `LD_RUNPATH_SEARCH_PATHS` entries.
+- **Side effect (good):** the host-local "GRDB duplicate-linkage thread crash"
+  is GONE — DB-backed `EngramServiceCoreTests` now run locally (177/177).
+- **UI tests:** Observability is gated behind `@AppStorage("showDeveloperTools")`
+  (default OFF; `SidebarView` filters it out). UI tests reach it by launching
+  with `-showDeveloperTools YES` (NSUserDefaults argument domain, same mechanism
+  as `-AppleLanguages` in `TestLaunchConfig`). Heavy diagnostics views
+  (LogStreamView) need a generous container wait (15s, not 5s) in the nav smoke.
+- **Shipped on `main`:** PR #74 (UX flow alignment, 20 WP) + #75 (GRDB-dynamic) +
+  #76 (de-flake jsonl-patch CAS test) + #77 (npm audit fix). Redeployed
+  `/Applications/Engram.app` build `20260615195924`; service stable, zero new
+  crash reports over the smoke window; MCP reads (stats/costs) functional.
+
+## 2026-06-13 - Codex rebuilt and redeployed current HEAD locally
+
+- Scope: local macOS deployment from `/Users/bing/-Code-/engram` on
+  `main`/`origin/main` commit `a9e3f61e`.
+- Build command: `ENGRAM_BUILD_NUMBER=20260613125648
+  macos/scripts/build-release.sh --local-only`.
+- Build result: archive succeeded, Developer ID export succeeded, and
+  `release-verify` passed full Developer ID checks for
+  `macos/build/EngramExport/Engram.app` as version `0.1.0`, build
+  `20260613125648`.
+- Deploy command: `macos/scripts/deploy-local.sh
+  macos/build/EngramExport/Engram.app`, followed by `open -a
+  /Applications/Engram.app`. The install replaced `/Applications/Engram.app`
+  and verified the installed `CFBundleVersion` matched `20260613125648`.
+- Live verification: installed plist reports `CFBundleVersion=20260613125648`;
+  `codesign --verify --deep --strict --verbose=2 /Applications/Engram.app`
+  passed; `Engram` PID `29619` and `EngramService` PID `29628` launched from
+  `/Applications/Engram.app`; after settle they were at about 0% CPU and
+  `~/.engram/run/engram-service.sock` existed.
+- MCP smoke: invoking `/Applications/Engram.app/Contents/Helpers/EngramMCP`
+  directly for initialize + `tools/list` exited 0, returned
+  `serverInfo.name=engram`, `version=0.1.0`, and listed 28 tools.
+- Runtime verifier: recent `Engram`/`EngramService` logs had no matching
+  fatal/fault/error/crash/known indexing-failure lines, and no new
+  `Engram*.ips` or `Engram*.crash` reports appeared under
+  `~/Library/Logs/DiagnosticReports`.
+- Residual risk: no full XCTest/npm regression suite was rerun during this
+  deploy-only pass; verification covered release archive/export, installed
+  code signature, live process launch, MCP helper smoke, service socket, and
+  short post-startup runtime health.
+
 ## 2026-06-12 - Codex synchronized GitHub-facing docs with Swift product state
 
 - Updated `README.md`, `docs/mcp-tools.md`, `docs/mcp-swift.md`,
