@@ -3099,10 +3099,14 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
 
+        // Native hygiene runs a real read-only scan over the fixture (no longer
+        // the fail-closed bridge stub). s2 carries a suggested_parent_id with a
+        // NULL parent → exactly one pending-suggestions issue, so score = 99.
         let hygiene = try await client.hygiene(force: false)
-        XCTAssertEqual(hygiene.score, 0)
-        XCTAssertEqual(hygiene.issues.first?.kind, "hygiene")
-        XCTAssertEqual(hygiene.issues.first?.severity, "info")
+        XCTAssertEqual(hygiene.score, 99)
+        let hygieneIssue = try XCTUnwrap(hygiene.issues.first)
+        XCTAssertEqual(hygieneIssue.kind, "pending-suggestions")
+        XCTAssertEqual(hygieneIssue.severity, "info")
         XCTAssertFalse(hygiene.checkedAt.isEmpty)
 
         let handoff = try await client.handoff(

@@ -119,6 +119,7 @@ final class HygieneChecksTests: XCTestCase {
                   message_count INTEGER NOT NULL DEFAULT 0,
                   size_bytes INTEGER NOT NULL DEFAULT 0,
                   hidden_at TEXT,
+                  parent_session_id TEXT,
                   suggested_parent_id TEXT,
                   orphan_status TEXT
                 );
