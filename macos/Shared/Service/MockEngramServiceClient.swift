@@ -11,7 +11,12 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let sourcesResult: Result<[EngramServiceSourceInfo], Error>
     let skillsResult: Result<[EngramServiceSkillInfo], Error>
     let memoryFilesResult: Result<[EngramServiceMemoryFile], Error>
+    let memoryFileContentResult: Result<EngramServiceMemoryFileContentResponse, Error>
     let hooksResult: Result<[EngramServiceHookInfo], Error>
+    let insightsResult: Result<[EngramServiceInsightInfo], Error>
+    let insightDetailResult: Result<EngramServiceInsightInfo?, Error>
+    let costsResult: Result<EngramServiceCostsResponse, Error>
+    let telemetryResult: Result<ServiceTelemetrySnapshot, Error>
     let hygieneResult: Result<EngramServiceHygieneResponse, Error>
     let handoffResult: Result<EngramServiceHandoffResponse, Error>
     let replayTimelineResult: Result<EngramServiceReplayTimelineResponse, Error>
@@ -50,7 +55,12 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         sources: [EngramServiceSourceInfo] = [],
         skills: [EngramServiceSkillInfo] = [],
         memoryFiles: [EngramServiceMemoryFile] = [],
+        memoryFileContent: EngramServiceMemoryFileContentResponse = EngramServiceMemoryFileContentResponse(path: "", content: "", truncated: false),
         hooks: [EngramServiceHookInfo] = [],
+        insights: [EngramServiceInsightInfo] = [],
+        insightDetail: EngramServiceInsightInfo? = nil,
+        costs: EngramServiceCostsResponse = EngramServiceCostsResponse(totalUsd: 0, perSource: [], perDay: [], monthToDateUsd: 0, todayUsd: 0),
+        telemetry: ServiceTelemetrySnapshot = ServiceTelemetrySnapshot(lastScanDurationMs: nil, lastScanIndexed: 0, lastScanTotal: 0, scanCount: 0, lastScanAt: nil, commands: [], spans: []),
         hygiene: EngramServiceHygieneResponse = EngramServiceHygieneResponse(issues: [], score: 100, checkedAt: "2026-01-01T00:00:00Z"),
         handoff: EngramServiceHandoffResponse = EngramServiceHandoffResponse(brief: "## Handoff\n\nNo recent sessions found.", sessionCount: 0),
         replayTimeline: EngramServiceReplayTimelineResponse = EngramServiceReplayTimelineResponse(sessionId: nil, source: nil, entries: [], totalEntries: 0, hasMore: false, offset: nil, limit: nil),
@@ -95,7 +105,12 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.sourcesResult = .success(sources)
         self.skillsResult = .success(skills)
         self.memoryFilesResult = .success(memoryFiles)
+        self.memoryFileContentResult = .success(memoryFileContent)
         self.hooksResult = .success(hooks)
+        self.insightsResult = .success(insights)
+        self.insightDetailResult = .success(insightDetail)
+        self.costsResult = .success(costs)
+        self.telemetryResult = .success(telemetry)
         self.hygieneResult = .success(hygiene)
         self.handoffResult = .success(handoff)
         self.replayTimelineResult = .success(replayTimeline)
@@ -142,7 +157,19 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func memoryFiles() async throws -> [EngramServiceMemoryFile] { try memoryFilesResult.get() }
 
+    func memoryFileContent(path: String) async throws -> EngramServiceMemoryFileContentResponse {
+        try memoryFileContentResult.get()
+    }
+
     func hooks() async throws -> [EngramServiceHookInfo] { try hooksResult.get() }
+
+    func insights() async throws -> [EngramServiceInsightInfo] { try insightsResult.get() }
+
+    func insightDetail(id: String) async throws -> EngramServiceInsightInfo? { try insightDetailResult.get() }
+
+    func costs() async throws -> EngramServiceCostsResponse { try costsResult.get() }
+
+    func telemetry() async throws -> ServiceTelemetrySnapshot { try telemetryResult.get() }
 
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse { try hygieneResult.get() }
 

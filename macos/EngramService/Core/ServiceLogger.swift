@@ -25,6 +25,11 @@ public enum ServiceLogger {
         loggers[category]!
     }
 
+    // Messages can carry project-migration src/dst paths, session ids, error
+    // text, and socket paths, so they stay `privacy: .private` to avoid leaking
+    // them into the system log readable by non-entitled processes. Making the
+    // gated Observability log viewer readable is deferred: the correct follow-up
+    // is a sanitized in-process buffer, NOT blanket `.public` here.
     public static func debug(_ message: String, category: ServiceLogCategory) {
         logger(for: category).debug("\(message, privacy: .private)")
     }

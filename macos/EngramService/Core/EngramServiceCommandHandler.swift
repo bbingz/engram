@@ -10,14 +10,32 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private let writerGate: ServiceWriterGate
     private let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
+    private let telemetry: ServiceTelemetryCollector?
     private let usageNow: @Sendable () -> Date
     private let usageTokenLimitsProvider: @Sendable () -> [String: StartupUsageTokenLimits]
     private let usageEmitter: @Sendable ([StartupUsageSnapshot]) -> Void
+
+    /// Commands excluded from telemetry span recording: `status` is a poll the
+    /// app/launcher fires continuously (would drown out real signal), `telemetry`
+    /// reads the collector itself (self-noise), and `costs` is the menu-bar
+    /// budget poll that fires on a timer (would fill the 200-span ring buffer).
+    private static let telemetryExcludedCommands: Set<String> = ["status", "telemetry", "costs"]
+
+    private static let emptyTelemetrySnapshot = ServiceTelemetrySnapshot(
+        lastScanDurationMs: nil,
+        lastScanIndexed: 0,
+        lastScanTotal: 0,
+        scanCount: 0,
+        lastScanAt: nil,
+        commands: [],
+        spans: []
+    )
 
     init(
         writerGate: ServiceWriterGate,
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
         statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor(),
+        telemetry: ServiceTelemetryCollector? = nil,
         usageNow: @escaping @Sendable () -> Date = { Date() },
         usageTokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits] = {
             EngramServiceRunner.readUsageTokenLimits(environment: ProcessInfo.processInfo.environment)
@@ -29,12 +47,45 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.writerGate = writerGate
         self.readProvider = readProvider
         self.statusMonitor = statusMonitor
+        self.telemetry = telemetry
         self.usageNow = usageNow
         self.usageTokenLimitsProvider = usageTokenLimitsProvider
         self.usageEmitter = usageEmitter
     }
 
     func handle(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
+        guard let telemetry, !Self.telemetryExcludedCommands.contains(request.command) else {
+            return await dispatch(request)
+        }
+        let clock = ContinuousClock()
+        let started = clock.now
+        // Capture the wall-clock start BEFORE dispatch so the span's `startedAt`
+        // reflects when the command began, not when telemetry recorded it.
+        let startedAt = Self.currentTimestamp()
+        let response = await dispatch(request)
+        let elapsed = started.duration(to: clock.now).components
+        let durationMs = Double(elapsed.seconds) * 1000
+            + Double(elapsed.attoseconds) / 1e15
+        let (ok, errorName): (Bool, String?)
+        switch response {
+        case .success:
+            (ok, errorName) = (true, nil)
+        case .failure(_, let error):
+            (ok, errorName) = (false, error.name)
+        }
+        await telemetry.record(
+            span: ServiceSpan(
+                command: request.command,
+                startedAt: startedAt,
+                durationMs: durationMs,
+                ok: ok,
+                errorName: errorName
+            )
+        )
+        return response
+    }
+
+    private func dispatch(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
         do {
             switch request.command {
             case "status":
@@ -74,16 +125,43 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(try await readProvider.memoryFiles())
                 )
+            case "memoryFileContent":
+                let payload = try decodePayload(EngramServiceMemoryFileContentRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await readProvider.memoryFileContent(payload))
+                )
             case "hooks":
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(try await readProvider.hooks())
                 )
+            case "insights":
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await readProvider.insights())
+                )
+            case "insightDetail":
+                let payload = try decodePayload(EngramServiceInsightDetailRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await readProvider.insightDetail(payload))
+                )
+            case "costs":
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await readProvider.costs())
+                )
+            case "telemetry":
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(await (telemetry?.snapshot() ?? Self.emptyTelemetrySnapshot))
+                )
             case "hygiene":
                 let payload = try decodePayload(EngramServiceHygieneRequest.self, from: request)
                 return .success(
                     requestId: request.requestId,
-                    result: try Self.encode(try Self.hygiene(payload))
+                    result: try Self.encode(try Self.hygiene(payload, databasePath: writerGate.databasePath))
                 )
             case "handoff":
                 let payload = try decodePayload(EngramServiceHandoffRequest.self, from: request)
@@ -807,24 +885,100 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         ])
     }
 
-    private static func hygiene(
-        _ request: EngramServiceHygieneRequest
+    // `internal` (not `private`) so HygieneChecksTests can call it directly
+    // under @testable import, mirroring readAIContext's access level.
+    static func hygiene(
+        _ request: EngramServiceHygieneRequest,
+        databasePath: String
     ) throws -> EngramServiceHygieneResponse {
-        let issues = [
-            EngramServiceHygieneIssue(
-                kind: "hygiene",
-                severity: "info",
-                message: "Swift service hygiene checks are not implemented",
-                detail: "The service returned this explicit placeholder instead of a misleading clean score.",
-                repo: nil,
-                action: request.force ? "force-refresh requested" : nil
+        // Real read-only DB scan. `force` no longer branches behavior — every
+        // call re-scans live state. On a read failure return a single
+        // severity:"error" issue rather than throwing, so the page degrades
+        // gracefully (HygieneView renders error issues through its red-card path).
+        do {
+            let queue = try DatabaseQueue(
+                path: databasePath,
+                configuration: ServiceSQLiteConnectionPolicy.readerConfiguration()
             )
-        ]
-        return EngramServiceHygieneResponse(
-            issues: issues,
-            score: 0,
-            checkedAt: currentTimestamp()
-        )
+            let counts = try queue.read { db -> (empty: Int, suggestions: Int, orphans: Int) in
+                let empty = try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM sessions
+                    WHERE message_count = 0 AND size_bytes < 1024 AND hidden_at IS NULL
+                """) ?? 0
+                let suggestions = try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM sessions
+                    WHERE suggested_parent_id IS NOT NULL
+                      AND parent_session_id IS NULL
+                      AND hidden_at IS NULL
+                """) ?? 0
+                let orphans = try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM sessions
+                    WHERE orphan_status IS NOT NULL AND orphan_status != ''
+                      AND hidden_at IS NULL
+                """) ?? 0
+                return (empty, suggestions, orphans)
+            }
+
+            var issues: [EngramServiceHygieneIssue] = []
+            if counts.empty > 0 {
+                issues.append(
+                    EngramServiceHygieneIssue(
+                        kind: "empty-sessions",
+                        severity: "warning",
+                        message: "\(counts.empty) empty session(s) clutter the index",
+                        detail: "Sessions with no messages and a tiny payload. Hide them to keep search results clean.",
+                        repo: nil,
+                        action: nil
+                    )
+                )
+            }
+            if counts.suggestions > 0 {
+                issues.append(
+                    EngramServiceHygieneIssue(
+                        kind: "pending-suggestions",
+                        severity: "info",
+                        message: "\(counts.suggestions) suggested parent link(s) awaiting review",
+                        detail: "Advisory groupings detected heuristically. Confirm or dismiss them from the session view.",
+                        repo: nil,
+                        action: nil
+                    )
+                )
+            }
+            if counts.orphans > 0 {
+                issues.append(
+                    EngramServiceHygieneIssue(
+                        kind: "orphans",
+                        severity: "warning",
+                        message: "\(counts.orphans) orphaned session(s)",
+                        detail: "Sessions whose parent or source link could not be resolved.",
+                        repo: nil,
+                        action: nil
+                    )
+                )
+            }
+
+            let score = max(0, min(100, 100 - 2 * counts.empty - counts.suggestions - 5 * counts.orphans))
+            return EngramServiceHygieneResponse(
+                issues: issues,
+                score: score,
+                checkedAt: currentTimestamp()
+            )
+        } catch {
+            return EngramServiceHygieneResponse(
+                issues: [
+                    EngramServiceHygieneIssue(
+                        kind: "hygiene-error",
+                        severity: "error",
+                        message: "Could not read the index for hygiene checks",
+                        detail: error.localizedDescription,
+                        repo: nil,
+                        action: nil
+                    )
+                ],
+                score: 0,
+                checkedAt: currentTimestamp()
+            )
+        }
     }
 
     private static func handoff(

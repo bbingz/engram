@@ -8,7 +8,12 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func sources() async throws -> [EngramServiceSourceInfo]
     func skills() async throws -> [EngramServiceSkillInfo]
     func memoryFiles() async throws -> [EngramServiceMemoryFile]
+    func memoryFileContent(path: String) async throws -> EngramServiceMemoryFileContentResponse
     func hooks() async throws -> [EngramServiceHookInfo]
+    func insights() async throws -> [EngramServiceInsightInfo]
+    func insightDetail(id: String) async throws -> EngramServiceInsightInfo?
+    func costs() async throws -> EngramServiceCostsResponse
+    func telemetry() async throws -> ServiceTelemetrySnapshot
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse
     func handoff(_ request: EngramServiceHandoffRequest) async throws -> EngramServiceHandoffResponse
     func replayTimeline(sessionId: String, limit: Int?) async throws -> EngramServiceReplayTimelineResponse
