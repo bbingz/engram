@@ -107,3 +107,31 @@ No open roadmap items as of 2026-05-24.
   cover the no-suggestion baseline.
 - **Related files:** `macos/EngramMCP/Core/MCPInsightsTool.swift`,
   `macos/EngramMCP/Core/MCPDatabase.swift`
+
+## Closed on 2026-06-15
+
+### UX flow alignment — wire the macOS UI to the service backend (20 WP, PR #74)
+
+- **Module:** `macos/Engram/Views`, `macos/Engram/Models/Screen.swift`,
+  `macos/EngramService/Core`
+- **Status:** done
+- **Acceptance evidence:** a 28-surface UI/UX flow review (144 findings) drove a
+  20-work-package alignment so isolated surfaces walk end-to-end. Sidebar is
+  grouped (OVERVIEW / MONITOR / WORKSPACE / CONFIG) with a `⌘K` command palette;
+  Observability is gated behind `showDeveloperTools` (default off); Hygiene,
+  Repos/Work Graph, Skills/Agents/Memory/Hooks, and Sources pages read live
+  service data. Two adversarial review rounds (Claude + Codex). CI green incl.
+  `swift-unit` and `ui-test-full` (UI tests reach Observability via
+  `-showDeveloperTools YES`).
+
+### GRDB linked once as a shared dynamic framework (PR #75)
+
+- **Module:** `macos/project.yml`, `macos/scripts/copy-service-helper.sh`
+- **Status:** done
+- **Acceptance evidence:** `EngramService` crash-looped on a GRDB
+  `SchedulingWatchdog` wrong-thread SIGTRAP because the static `GRDB` product was
+  embedded into all three frameworks the process loads (three watchdog
+  registries). Switched every target to the dynamic `GRDB-dynamic` product (one
+  shared copy). `EngramServiceCoreTests` 177/177 locally with zero thread-crashes
+  (these could not run on the author's host before); live service ran >2 min with
+  zero new crash reports.

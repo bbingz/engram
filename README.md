@@ -175,17 +175,27 @@ args = []
 
 Engram 的产品 UI 是原生 macOS App。`Engram.app` 启动后会管理 `EngramService`，并通过 Swift/GRDB 读取索引库。
 
-App 功能：
-- **Today Workbench**：默认入口聚合 Continue、Follow-ups、Changed Repos、Service State，直接面向继续工作和收口
-- **会话列表**：按来源、项目、时间筛选，支持多选过滤和分页
-- **父子会话归组**：Claude Code → Codex/Gemini 等派发子会话自动挂到父会话下
-- **今日父会话 badge**：菜单栏徽标显示今天的顶层父会话数量，而不是全部子任务总数
-- **会话详情**：完整对话内容、Markdown 渲染、收藏、导出
-- **搜索**：Swift 产品路径使用 SQLite FTS5 trigram 关键词搜索，支持中英文、UUID 直查和结果高亮；project/source/time 等低层过滤收在 Advanced filters 里
+侧边栏按四个分区组织页面，并支持 `⌘K` 命令面板在页面/操作间快速跳转：
+
+- **OVERVIEW**
+  - **Today**：默认入口工作台，聚合 Continue、Follow-ups、Changed Repos、Service State，面向继续工作和收口
+  - **Search**：SQLite FTS5 trigram 关键词搜索，支持中英文、UUID 直查和结果高亮；project/source/time 等低层过滤收在 Advanced filters 里
+- **MONITOR**
+  - **Sessions**：按来源/项目/时间筛选，多选过滤、分页；Claude Code → Codex/Gemini 等派发子会话自动归组到父会话下，可展开查看
+  - **Favorites / Timeline / Activity**：收藏列表、时间线、按天/工具的活动视图
+  - **Hygiene**：索引健康体检，列出空会话、待确认的父子建议、孤儿会话等可处理项
+  - **Observability**：日志流 / 错误面板 / 性能 / 追踪 / 系统健康等开发诊断，默认收在「Settings → General → Show Developer Tools」开关后（普通用户侧边栏不显示）
+- **WORKSPACE**
+  - **Projects**：项目 rename / move / archive / undo，走 Swift service single-writer pipeline
+  - **Sources / Repos / Work Graph**：来源状态、Git 仓库工作量、跨会话工作图
+- **CONFIG**
+  - **Skills / Agents / Memory / Hooks**：技能、子代理、记忆条目、`~/.claude` hooks 配置一览
+
+其他贯穿全局的能力：
+- **会话详情**：完整对话内容、Markdown 渲染、收藏、导出，工具栏含 Handoff / Replay / Resume
 - **价值提示**：索引时计算 `quality_score`，列表/搜索结果用高/中/低 value band 做快速判断
-- **会话整理**：收藏、重命名、隐藏低信号/空会话
-- **项目视图**：项目 rename / move / archive / undo 走 Swift service single-writer pipeline
-- **用量统计**：按来源 / 项目 / 天 / 周、模型成本、工具调用、文件活动分组统计
+- **用量与成本**：按来源/项目/天/周分组的用量统计、模型成本、工具调用、文件活动，以及费用洞察建议
+- **今日父会话 badge**：菜单栏徽标显示今天的顶层父会话数量，而不是全部子任务总数
 - **网络设置**：配置 MCP single-writer 策略，并明确 peer sync 在 Swift service 中未实现
 
 历史 TypeScript Web/API 代码仍保留为开发/reference material，不是当前 macOS 产品运行路径；其中部分 semantic/hybrid 路由是旧路径能力，不代表 Swift App/MCP 当前已启用语义搜索。
