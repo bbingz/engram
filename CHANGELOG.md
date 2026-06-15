@@ -7,6 +7,37 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### HANDOFF / RESUME STATE (2026-06-15, Claude) — branch `ux-flow-alignment`
+
+Checkpoint before context compaction. Pick up here.
+
+- **Pushed** to `origin/ux-flow-alignment`; **PR #74** open against `main`
+  (https://github.com/bbingz/engram/pull/74). 4 commits:
+  `207a83ed` docs · `18f50047` service base · `388fe169` nav/tokens/palette ·
+  `c03da7e5` UI action layer (20 WPs).
+- **Local verified:** app `BUILD SUCCEEDED` (0 errors); **132 non-DB tests pass,
+  0 failures** (125 EngramTests + 7 ServiceTelemetryTests, re-run authoritatively).
+- **IN PROGRESS — option 2 (DB tests on a clean machine):** PR #74 CI run
+  `27532646626` ("Tests" workflow). The `swift-unit` job runs
+  `xcodebuild test` for schemes `Engram` (incl. the DB-backed EngramTests
+  blocked locally by the pre-existing GRDB duplicate-linkage crash),
+  `EngramServiceCore`, `EngramMCPTests`; `ui-test-smoke` runs the UI screenshot
+  tests. Was watching via `gh run watch 27532646626`. **TO RESUME:** check
+  `gh pr checks 74` / `gh run view 27532646626` — if `swift-unit` is green the
+  DB-test gate is closed; if red, fix the real failures (not the GRDB env crash,
+  which only affects the author's host).
+- **PENDING — option 3 (release build + deploy + walkthrough):** after CI green,
+  run `ENGRAM_BUILD_NUMBER=<ts> macos/scripts/build-release.sh --local-only`,
+  then `macos/scripts/deploy-local.sh <exported app>` to replace
+  `/Applications/Engram.app` (must `rm -rf` then `cp -R`), `open -a`, and smoke
+  the live flows + service health (pattern: the 2026-06-13 Codex redeploy entry below).
+- **Workflow/review scratch (gitignored):** `.claude/wf-*.js` (the review/design/
+  batch workflows), `.claude/codex-design-review.md`, `.claude/codex-impl-review.md`.
+- **Deferred (not regressions):** readable gated-Observability logs (sanitized
+  buffer), `linkSessions` arbitrary linking, favorite toggle-from-browse,
+  monthly-budget/long-session notify, full Sources consolidation,
+  command-palette search-fail state, orphaned `embeddingStatus()` cleanup.
+
 ### B4 review round 2 (Codex) landed — alignment complete (2026-06-15, Claude+Codex) — branch `ux-flow-alignment`
 
 - **Codex (gpt-5.5) independent adversarial implementation review** found 9
