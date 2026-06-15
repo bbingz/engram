@@ -285,7 +285,7 @@ struct AISettingsSection: View {
                             Task {
                                 do {
                                     let response = try await serviceClient.regenerateAllTitles()
-                                    titleRegenerateStatus = .service(response.status)
+                                    titleRegenerateStatus = .service(response.status, response.total)
                                 } catch {
                                     titleRegenerateStatus = .error
                                 }
@@ -518,7 +518,7 @@ enum TitleConnectionStatus: Equatable {
 enum TitleRegenerationStatus: Equatable {
     case idle
     case queued
-    case service(String)
+    case service(String, Int?)
     case error
 
     var label: LocalizedStringKey? {
@@ -527,8 +527,12 @@ enum TitleRegenerationStatus: Equatable {
             return nil
         case .queued:
             return "Queued…"
-        case .service(let status):
-            return "Service status: \(status)"
+        case .service:
+            // The service runs regeneration fire-and-forget (os_log only, no
+            // progress channel) and always returns total:nil, so don't promise a
+            // count the service never sends. Report honestly that it is running
+            // in the background instead of freezing on the raw "started" status.
+            return "Regenerating in background — titles update as they finish"
         case .error:
             return "Error"
         }

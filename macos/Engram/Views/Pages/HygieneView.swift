@@ -12,6 +12,8 @@ struct HygieneView: View {
     @State private var errorsExpanded = true
     @State private var warningsExpanded = true
     @State private var infoExpanded = false
+    @State private var pendingHideConfirm = false
+    @State private var resultToast: String? = nil
 
     private var errorIssues: [EngramServiceHygieneIssue] {
         result?.issues.filter { $0.severity == "error" } ?? []
@@ -23,11 +25,32 @@ struct HygieneView: View {
         result?.issues.filter { $0.severity == "info" } ?? []
     }
 
+    private var emptySessionsIssue: EngramServiceHygieneIssue? {
+        result?.issues.first { $0.kind == "empty-sessions" }
+    }
+
+    /// Count to show in the confirmation dialog/button — re-derived from the
+    /// empty-sessions issue message (the service carries the count there).
+    private var pendingHideCount: Int {
+        emptySessionsIssue.map { Self.emptySessionCount(in: $0) } ?? 0
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 kpiSection
+                explainerCaption
                 headerBar
+                if let resultToast {
+                    Text(resultToast)
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.inputBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
+                        .accessibilityIdentifier("hygiene_resultToast")
+                }
                 if let error {
                     AlertBanner(message: error)
                 }
@@ -43,6 +66,18 @@ struct HygieneView: View {
         }
         .accessibilityIdentifier("hygiene_container")
         .task { await loadData(force: false) }
+        .confirmationDialog(
+            "Hide empty sessions?",
+            isPresented: $pendingHideConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Hide \(pendingHideCount) session(s)", role: .destructive) {
+                Task { await hideEmptySessions() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("These sessions have no messages and clutter search results. Hidden sessions are not deleted — view them again under Sessions → Show hidden sessions.")
+        }
     }
 
     // MARK: - KPI Section
@@ -66,6 +101,16 @@ struct HygieneView: View {
                 ForEach(0..<4, id: \.self) { _ in SkeletonRow() }
             }
         }
+    }
+
+    // MARK: - Explainer
+
+    private var explainerCaption: some View {
+        Text("Hiding sets sessions aside (kept under Sessions → Show hidden sessions); tiering (skip/lite) controls what gets indexed and searched.")
+        .font(.caption)
+        .foregroundStyle(Theme.secondaryText)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("hygiene_explainer")
     }
 
     // MARK: - Header Bar
@@ -146,7 +191,8 @@ struct HygieneView: View {
                 count: errorIssues.count,
                 severity: "error",
                 issues: errorIssues,
-                isExpanded: $errorsExpanded
+                isExpanded: $errorsExpanded,
+                onHideEmptySessions: requestHideEmptySessions
             )
             .accessibilityIdentifier("hygiene_section_errors")
         }
@@ -156,7 +202,8 @@ struct HygieneView: View {
                 count: warningIssues.count,
                 severity: "warning",
                 issues: warningIssues,
-                isExpanded: $warningsExpanded
+                isExpanded: $warningsExpanded,
+                onHideEmptySessions: requestHideEmptySessions
             )
             .accessibilityIdentifier("hygiene_section_warnings")
         }
@@ -166,9 +213,28 @@ struct HygieneView: View {
                 count: infoIssues.count,
                 severity: "info",
                 issues: infoIssues,
-                isExpanded: $infoExpanded
+                isExpanded: $infoExpanded,
+                onHideEmptySessions: requestHideEmptySessions
             )
             .accessibilityIdentifier("hygiene_section_info")
+        }
+    }
+
+    // MARK: - Remediation
+
+    private func requestHideEmptySessions() {
+        resultToast = nil
+        pendingHideConfirm = true
+    }
+
+    private func hideEmptySessions() async {
+        error = nil
+        do {
+            let response = try await serviceClient.hideEmptySessions()
+            resultToast = Self.hideResultToast(hiddenCount: response.hiddenCount)
+            await loadData(force: true)
+        } catch {
+            self.error = "Could not hide empty sessions: \(error.localizedDescription)"
         }
     }
 
@@ -193,6 +259,19 @@ struct HygieneView: View {
     }
 
     // MARK: - Helpers
+
+    /// Re-derives the empty-session count from the service issue message
+    /// (e.g. "12 empty session(s) clutter the index" → 12). The service does
+    /// not carry a structured count field, so we parse the leading integer.
+    static func emptySessionCount(in issue: EngramServiceHygieneIssue) -> Int {
+        let prefix = issue.message.prefix { $0.isNumber }
+        return Int(prefix) ?? 0
+    }
+
+    /// Reversibility-aware toast shown after a successful hide.
+    static func hideResultToast(hiddenCount: Int) -> String {
+        "Hid \(hiddenCount) session(s) — view them under Sessions → Show hidden sessions"
+    }
 
     private func formatRelativeTime(_ iso: String) -> String {
         let formatter = ISO8601DateFormatter()
@@ -219,6 +298,7 @@ private struct IssueSection: View {
     let severity: String
     let issues: [EngramServiceHygieneIssue]
     @Binding var isExpanded: Bool
+    let onHideEmptySessions: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -249,7 +329,10 @@ private struct IssueSection: View {
 
             if isExpanded {
                 ForEach(issues) { issue in
-                    IssueCard(issue: issue)
+                    IssueCard(
+                        issue: issue,
+                        onHideEmptySessions: issue.kind == "empty-sessions" ? onHideEmptySessions : nil
+                    )
                 }
             }
         }
@@ -268,8 +351,7 @@ private struct IssueSection: View {
 
 private struct IssueCard: View {
     let issue: EngramServiceHygieneIssue
-    @State private var copied = false
-    @State private var copyResetTask: Task<Void, Never>? = nil
+    var onHideEmptySessions: (() -> Void)? = nil
 
     private var severityColor: Color {
         switch issue.severity {
@@ -312,36 +394,21 @@ private struct IssueCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // Action suggestion with copy button
-            if let action = issue.action, !action.isEmpty {
-                HStack(spacing: 6) {
-                    Text("💡")
-                        .font(.system(size: 11))
-                    Text(action)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Theme.secondaryText)
-                        .lineLimit(2)
-                    Spacer()
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(action, forType: .string)
-                        copied = true
-                        copyResetTask?.cancel()
-                        copyResetTask = Task {
-                            try? await Task.sleep(nanoseconds: 1_500_000_000)
-                            if !Task.isCancelled { copied = false }
-                        }
-                    } label: {
-                        Text(copied ? "Copied!" : "Copy")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(copied ? .green : Theme.accent)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("hygiene_copy_\(issue.kind)")
+            // In-app remediation (empty-sessions only)
+            if let onHideEmptySessions {
+                Button {
+                    onHideEmptySessions()
+                } label: {
+                    Text("Hide empty sessions")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(severityColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                .padding(8)
-                .background(Theme.inputBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("hygiene_hideEmptyButton")
             }
         }
         .padding(12)
@@ -351,6 +418,5 @@ private struct IssueCard: View {
                 .stroke(Theme.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onDisappear { copyResetTask?.cancel(); copyResetTask = nil }
     }
 }

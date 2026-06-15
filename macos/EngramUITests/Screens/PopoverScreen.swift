@@ -13,7 +13,6 @@ struct PopoverScreen {
 
     var statusWeb: XCUIElement { app.element(id: "popover_status_web") }
     var statusService: XCUIElement { app.element(id: "popover_status_service") }
-    var statusEmbedding: XCUIElement { app.element(id: "popover_status_embedding") }
 
     // MARK: - Waits
 

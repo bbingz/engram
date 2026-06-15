@@ -9,7 +9,11 @@ protocol EngramServiceReadProvider: Sendable {
     func sources() async throws -> [EngramServiceSourceInfo]
     func skills() async throws -> [EngramServiceSkillInfo]
     func memoryFiles() async throws -> [EngramServiceMemoryFile]
+    func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse
     func hooks() async throws -> [EngramServiceHookInfo]
+    func insights() async throws -> [EngramServiceInsightInfo]
+    func insightDetail(_ request: EngramServiceInsightDetailRequest) async throws -> EngramServiceInsightInfo?
+    func costs() async throws -> EngramServiceCostsResponse
     func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse
     func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse
     func resumeCommand(_ request: EngramServiceResumeCommandRequest) async throws -> EngramServiceResumeCommandResponse
@@ -46,8 +50,24 @@ struct EmptyEngramServiceReadProvider: EngramServiceReadProvider {
         []
     }
 
+    func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse {
+        EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
+    }
+
     func hooks() async throws -> [EngramServiceHookInfo] {
         []
+    }
+
+    func insights() async throws -> [EngramServiceInsightInfo] {
+        []
+    }
+
+    func insightDetail(_ request: EngramServiceInsightDetailRequest) async throws -> EngramServiceInsightInfo? {
+        nil
+    }
+
+    func costs() async throws -> EngramServiceCostsResponse {
+        EngramServiceCostsResponse(totalUsd: 0, perSource: [], perDay: [], monthToDateUsd: 0, todayUsd: 0)
     }
 
     func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse {
@@ -176,13 +196,18 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
                 guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
                 let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
                 let content = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+                // LIST responses carry only a short preview, never the full body:
+                // up to 500 memory files × full content would blow past the
+                // 256 KiB IPC frame. The detail viewer fetches the full content
+                // on demand via `memoryFileContent`.
                 results.append(
                     EngramServiceMemoryFile(
                         name: fileURL.lastPathComponent,
                         project: projectURL.lastPathComponent.replacingOccurrences(of: "-", with: "/"),
                         path: displayPath(fileURL),
                         sizeBytes: values?.fileSize ?? 0,
-                        preview: content.prefixString(200)
+                        preview: content.prefixString(200),
+                        content: nil
                     )
                 )
             }
@@ -190,6 +215,43 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         return results.sorted { lhs, rhs in
             lhs.project == rhs.project ? lhs.name < rhs.name : lhs.project < rhs.project
         }
+    }
+
+    static let memoryFileContentCap = 200 * 1024
+
+    func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse {
+        // Resolve the ~-display path the list emitted back to an absolute path
+        // and confine it under ~/.claude/projects/*/memory so a malicious path
+        // can't read arbitrary files. Read the full body capped at ~200 KiB,
+        // appending a marker when truncated.
+        let resolved = resolveDisplayPath(request.path)
+        let memoryRoot = homeDirectory
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+            .standardizedFileURL.path
+        let standardized = URL(fileURLWithPath: resolved).standardizedFileURL
+        guard standardized.path.hasPrefix(memoryRoot + "/"),
+              standardized.pathExtension == "md",
+              (try? standardized.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+              let content = try? String(contentsOf: standardized, encoding: .utf8) else {
+            return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
+        }
+        if content.utf8.count > Self.memoryFileContentCap {
+            let capped = String(content.prefix(Self.memoryFileContentCap))
+            return EngramServiceMemoryFileContentResponse(
+                path: request.path,
+                content: capped + "\n\n… (truncated)",
+                truncated: true
+            )
+        }
+        return EngramServiceMemoryFileContentResponse(path: request.path, content: content, truncated: false)
+    }
+
+    private func resolveDisplayPath(_ path: String) -> String {
+        if path == "~" { return homeDirectory.path }
+        if path.hasPrefix("~/") {
+            return homeDirectory.path + String(path.dropFirst(1))
+        }
+        return path
     }
 
     func hooks() async throws -> [EngramServiceHookInfo] {
@@ -202,11 +264,23 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
                   let hooks = settings["hooks"] as? [String: Any] else { continue }
             for (event, handlers) in hooks.sorted(by: { $0.key < $1.key }) {
                 for command in hookCommands(from: handlers) {
-                    results.append(EngramServiceHookInfo(event: event, command: command, scope: scope))
+                    results.append(EngramServiceHookInfo(event: event, command: command, scope: scope, path: displayPath(url)))
                 }
             }
         }
         return results
+    }
+
+    func insights() async throws -> [EngramServiceInsightInfo] {
+        []
+    }
+
+    func insightDetail(_ request: EngramServiceInsightDetailRequest) async throws -> EngramServiceInsightInfo? {
+        nil
+    }
+
+    func costs() async throws -> EngramServiceCostsResponse {
+        EngramServiceCostsResponse(totalUsd: 0, perSource: [], perDay: [], monthToDateUsd: 0, todayUsd: 0)
     }
 
     func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse {
@@ -609,7 +683,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                         searchableSessionCount: searchable,
                         failedIndexJobCount: failed,
                         latestUsageStatus: usage?.status
-                    )
+                    ),
+                    liveSyncDisabled: LiveSyncDisabledSources.isLiveSyncDisabled(source)
                 )
             }
         }
@@ -623,20 +698,183 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         try await fileSystemProvider.memoryFiles()
     }
 
+    func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse {
+        try await fileSystemProvider.memoryFileContent(request)
+    }
+
     func hooks() async throws -> [EngramServiceHookInfo] {
         try await fileSystemProvider.hooks()
     }
 
+    /// Preview length for an insight LIST row. Full content is fetched on demand
+    /// via `insightDetail` so the list response stays under the IPC frame.
+    static let insightListPreviewLength = 280
+
+    func insights() async throws -> [EngramServiceInsightInfo] {
+        try await read { db in
+            // The `insights` table is created lazily (only on the first
+            // save/delete write), so a fresh DB does not have it. Guard the
+            // SELECT to avoid "no such table" — mirrors embeddingStatus's
+            // tableExists("session_embeddings") guard.
+            guard try tableExists("insights", db: db) else { return [] }
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT id, content, wing, room, importance, created_at
+                FROM insights
+                ORDER BY created_at DESC
+                LIMIT 500
+            """)
+            // Map to the Sendable DTO inside the read block — a GRDB Row is not
+            // Sendable and cannot cross the blocking-read queue hop. LIST rows
+            // carry only a truncated preview (up to 500 insights × full content
+            // would exceed the 256 KiB IPC frame); the detail viewer fetches the
+            // full body on demand via `insightDetail`.
+            return rows.map { row in
+                let content = (row["content"] as String?) ?? ""
+                return EngramServiceInsightInfo(
+                    id: row["id"],
+                    content: String(content.prefix(Self.insightListPreviewLength)),
+                    wing: row["wing"] as String?,
+                    room: row["room"] as String?,
+                    importance: (row["importance"] as Int?) ?? 5,
+                    createdAt: row["created_at"] as String?
+                )
+            }
+        }
+    }
+
+    func insightDetail(_ request: EngramServiceInsightDetailRequest) async throws -> EngramServiceInsightInfo? {
+        try await read { db in
+            guard try tableExists("insights", db: db) else { return nil }
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT id, content, wing, room, importance, created_at
+                FROM insights
+                WHERE id = ?
+            """, arguments: [request.id]) else {
+                return nil
+            }
+            return EngramServiceInsightInfo(
+                id: row["id"],
+                content: (row["content"] as String?) ?? "",
+                wing: row["wing"] as String?,
+                room: row["room"] as String?,
+                importance: (row["importance"] as Int?) ?? 5,
+                createdAt: row["created_at"] as String?
+            )
+        }
+    }
+
+    func costs() async throws -> EngramServiceCostsResponse {
+        try await read { db in
+            guard try tableExists("session_costs", db: db) else {
+                return EngramServiceCostsResponse(
+                    totalUsd: 0,
+                    perSource: [],
+                    perDay: [],
+                    monthToDateUsd: 0,
+                    todayUsd: 0
+                )
+            }
+
+            let perSourceRows = try Row.fetchAll(db, sql: """
+                SELECT s.source AS key,
+                       SUM(c.cost_usd) AS cost_usd,
+                       COUNT(*) AS session_count
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.hidden_at IS NULL
+                GROUP BY s.source
+                ORDER BY cost_usd DESC
+            """)
+            let perSource = perSourceRows.map { row in
+                EngramServiceCostsResponse.SourceRow(
+                    key: (row["key"] as String?) ?? "unknown",
+                    costUsd: Self.roundCents((row["cost_usd"] as Double?) ?? 0),
+                    sessionCount: (row["session_count"] as Int?) ?? 0
+                )
+            }
+
+            // Bucket by LOCAL calendar day so today/MTD/per-day match the budget
+            // dedup + dashboards (which use local time). Using UTC date() here
+            // produced wrong buckets near midnight in non-UTC zones.
+            let perDayRows = try Row.fetchAll(db, sql: """
+                SELECT date(s.start_time, 'localtime') AS day,
+                       SUM(c.cost_usd) AS cost_usd
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.hidden_at IS NULL
+                  AND s.start_time >= date('now', '-30 days', 'localtime')
+                GROUP BY date(s.start_time, 'localtime')
+                ORDER BY day ASC
+            """)
+            let perDay = perDayRows.compactMap { row -> EngramServiceCostsResponse.DayRow? in
+                guard let day = row["day"] as String? else { return nil }
+                return EngramServiceCostsResponse.DayRow(
+                    day: day,
+                    costUsd: Self.roundCents((row["cost_usd"] as Double?) ?? 0)
+                )
+            }
+
+            let totalUsd = perSource.reduce(0.0) { $0 + $1.costUsd }
+
+            let monthToDateUsd = try Double.fetchOne(db, sql: """
+                SELECT SUM(c.cost_usd)
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.hidden_at IS NULL
+                  AND date(s.start_time, 'localtime') >= date('now', 'start of month', 'localtime')
+            """) ?? 0
+
+            let todayUsd = try Double.fetchOne(db, sql: """
+                SELECT SUM(c.cost_usd)
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.hidden_at IS NULL
+                  AND date(s.start_time, 'localtime') = date('now', 'localtime')
+            """) ?? 0
+
+            return EngramServiceCostsResponse(
+                totalUsd: Self.roundCents(totalUsd),
+                perSource: perSource,
+                perDay: perDay,
+                monthToDateUsd: Self.roundCents(monthToDateUsd),
+                todayUsd: Self.roundCents(todayUsd)
+            )
+        }
+    }
+
+    private static func roundCents(_ value: Double) -> Double {
+        (value * 100).rounded() / 100
+    }
+
     func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse {
         let limit = max(1, min(request.limit ?? 500, 2_000))
-        let timeline = try await read { db -> (source: String?, rows: [ReplayFTSRow], total: Int) in
-            let source = try String.fetchOne(
+        // Step 1: fetch ONLY Sendable scalars inside read{} — source + the
+        // readable locator (same COALESCE as IndexJobRunner.sessionContentSource)
+        // + the FTS fallback rows/total so a single read covers both paths.
+        // The blocking read queue's @Sendable block cannot await the adapter
+        // stream, so streaming happens OUTSIDE this block (precedent:
+        // resumeTranscriptContextLines).
+        let timeline = try await read {
+            db -> (source: String?, locator: String, rows: [ReplayFTSRow], total: Int) in
+            let scalar = try Row.fetchOne(
                 db,
-                sql: "SELECT source FROM sessions WHERE id = ?",
+                sql: """
+                    SELECT s.source AS source,
+                           COALESCE(
+                             NULLIF(ls.local_readable_path, ''),
+                             NULLIF(s.file_path, ''),
+                             s.source_locator
+                           ) AS locator
+                    FROM sessions s
+                    LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                    WHERE s.id = ?
+                """,
                 arguments: [request.sessionId]
             )
+            let source = scalar?["source"] as String?
+            let locator = (scalar?["locator"] as String?) ?? ""
             guard source != nil, try tableExists("sessions_fts", db: db) else {
-                return (source, [], 0)
+                return (source, locator, [], 0)
             }
             let total = try Int.fetchOne(
                 db,
@@ -659,8 +897,42 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     content: ($0["content"] as String?) ?? ""
                 )
             }
-            return (source, rows, total)
+            return (source, locator, rows, total)
         }
+
+        // Step 2 (OUTSIDE read{}): source the timeline from the real per-message
+        // adapter stream (role incl. .tool, timestamp, token usage, tool calls)
+        // when the locator is a readable on-disk transcript. This carries the
+        // data the FTS blob lacks (roles/timestamps/tokens/tool entries).
+        //
+        // Fetch one sentinel row beyond `limit` so we can detect whether the
+        // transcript has more entries. `replayEntries(..., limit:)` then drops
+        // the sentinel back down to `limit`, so the response still returns at
+        // most `limit` entries while reporting `hasMore` truthfully (the old
+        // code streamed exactly `limit` rows, so `entries.count > limit` was
+        // never true and long transcripts were silently truncated).
+        if let source = timeline.source,
+           let streamed = try? await Self.streamReplayMessages(
+               source: source,
+               locator: timeline.locator,
+               limit: limit + 1
+           ),
+           !streamed.isEmpty {
+            let entries = Self.replayEntries(from: streamed, limit: limit)
+            return EngramServiceReplayTimelineResponse(
+                sessionId: request.sessionId,
+                source: source,
+                entries: entries,
+                totalEntries: entries.count,
+                hasMore: streamed.count > limit,
+                offset: 0,
+                limit: limit
+            )
+        }
+
+        // Fallback: synced-only / missing-file / sync:// / adapter unavailable
+        // → return the (role-less) FTS-derived timeline so the view degrades
+        // gracefully rather than going blank.
         let entries = Self.replayEntries(from: timeline.rows, source: timeline.source, limit: limit)
         return EngramServiceReplayTimelineResponse(
             sessionId: request.sessionId,
@@ -671,6 +943,47 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             offset: 0,
             limit: limit
         )
+    }
+
+    /// Stream the real per-message records for replay from the adapter layer.
+    /// Returns nil/empty when the locator is unusable (empty / sync:// /
+    /// adapter missing / not a MessageAdapter / stream throws) so the caller
+    /// falls back to the FTS-derived timeline. Unlike ServiceTranscriptReader,
+    /// this keeps .tool-role records (replay needs them).
+    private static func streamReplayMessages(
+        source: String,
+        locator: String,
+        limit: Int
+    ) async throws -> [ReplayMessage] {
+        let trimmed = locator.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("sync://") else { return [] }
+        let sourceName: SourceName? = source == "antigravity-legacy"
+            ? .antigravity
+            : SourceName(rawValue: source)
+        guard let sourceName,
+              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
+        else {
+            return []
+        }
+        let stream = try await adapter.streamMessages(
+            locator: trimmed,
+            options: StreamMessagesOptions(limit: limit)
+        )
+        var messages: [ReplayMessage] = []
+        for try await message in stream {
+            messages.append(
+                ReplayMessage(
+                    role: message.role.rawValue,
+                    content: message.content,
+                    timestamp: message.timestamp,
+                    toolName: message.toolCalls?.first?.name,
+                    inputTokens: message.usage?.inputTokens,
+                    outputTokens: message.usage?.outputTokens
+                )
+            )
+            if messages.count >= limit { break }
+        }
+        return messages
     }
 
     func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
@@ -893,6 +1206,84 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     struct ReplayFTSRow: Sendable {
         let rowid: Int64
         let content: String
+    }
+
+    /// Sendable mirror of the adapter-stream fields replay needs. Built outside
+    /// the GRDB read{} block (a NormalizedMessage is fine to cross actor hops,
+    /// but this small struct keeps the pure entry builder DB-free and testable).
+    struct ReplayMessage: Sendable {
+        let role: String
+        let content: String
+        let timestamp: String?
+        let toolName: String?
+        let inputTokens: Int?
+        let outputTokens: Int?
+    }
+
+    /// Build replay entries from the real per-message adapter stream. Roles are
+    /// preserved (user/assistant/tool), toolName is carried through from
+    /// whichever record the adapter attached toolCalls to, tokens map to
+    /// Tokens(input,output), and durationToNextMs is computed by diffing
+    /// consecutive ISO timestamps (ms, clamped >= 0, nil at the tail or when a
+    /// neighbor timestamp is missing/unparseable). The session summary is NEVER
+    /// appended, so the phantom trailing entry disappears.
+    static func replayEntries(
+        from messages: [ReplayMessage],
+        limit: Int
+    ) -> [EngramServiceReplayTimelineEntry] {
+        let bounded = Array(messages.prefix(max(0, limit)))
+        return bounded.enumerated().map { index, message in
+            let durationToNextMs: Int?
+            if index + 1 < bounded.count {
+                durationToNextMs = replayDurationMs(
+                    from: message.timestamp,
+                    to: bounded[index + 1].timestamp
+                )
+            } else {
+                durationToNextMs = nil
+            }
+            let tokens: EngramServiceReplayTimelineEntry.Tokens?
+            if message.inputTokens != nil || message.outputTokens != nil {
+                tokens = EngramServiceReplayTimelineEntry.Tokens(
+                    input: message.inputTokens ?? 0,
+                    output: message.outputTokens ?? 0
+                )
+            } else {
+                tokens = nil
+            }
+            return EngramServiceReplayTimelineEntry(
+                index: index,
+                role: message.role,
+                type: message.role,
+                preview: boundedReplayPreview(message.content),
+                timestamp: message.timestamp,
+                toolName: message.toolName,
+                tokens: tokens,
+                durationToNextMs: durationToNextMs
+            )
+        }
+    }
+
+    private static let replayISOFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let replayISOPlain: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static func replayParseISO(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return replayISOFractional.date(from: value) ?? replayISOPlain.date(from: value)
+    }
+
+    private static func replayDurationMs(from: String?, to: String?) -> Int? {
+        guard let start = replayParseISO(from), let end = replayParseISO(to) else { return nil }
+        return max(0, Int((end.timeIntervalSince(start) * 1000).rounded()))
     }
 
     static func replayEntries(

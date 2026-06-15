@@ -18,17 +18,17 @@ struct KPICard: View {
             if let delta {
                 Text(delta)
                     .font(.caption2)
-                    .foregroundStyle(deltaPositive ? Color(hex: 0x30D158) : Color(hex: 0xFF453A))
+                    .foregroundStyle(deltaPositive ? Theme.green : Theme.red)
             }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .background(Theme.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: Theme.cornerRadius)
                 .stroke(Theme.border, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
         // UI-H3: combine the value+label (and optional delta) into one VoiceOver
         // element with a real label/value instead of two disconnected strings.
         .accessibilityElement(children: .ignore)

@@ -1,4 +1,5 @@
 // macos/Engram/Views/Pages/SkillsView.swift
+import AppKit
 import SwiftUI
 
 struct SkillsView: View {
@@ -22,6 +23,12 @@ struct SkillsView: View {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(Theme.tertiaryText)
                     TextField("Search skills...", text: $searchText).textFieldStyle(.plain)
+                    Button { Task { await loadData() } } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoading)
+                    .accessibilityIdentifier("skills_refresh")
                 }
                 .padding(10)
                 .background(Theme.inputBackground)
@@ -29,6 +36,9 @@ struct SkillsView: View {
                 .accessibilityIdentifier("skills_search")
 
                 if let error { AlertBanner(message: error) }
+                if isLoading && skills.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                }
                 if !globalSkills.isEmpty {
                     SectionHeader(icon: "globe", title: "Global Commands")
                     ForEach(globalSkills) { skill in skillRow(skill) }
@@ -45,6 +55,7 @@ struct SkillsView: View {
             .padding(24)
             .accessibilityIdentifier("skills_list")
         }
+        .refreshable { await loadData() }
         .task { await loadData() }
     }
 
@@ -61,6 +72,15 @@ struct SkillsView: View {
         .background(Theme.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button { revealInFinder(skill.path) } label: { Label("Reveal in Finder", systemImage: "folder") }
+        }
+    }
+
+    private func revealInFinder(_ path: String) {
+        let expanded = NSString(string: path).expandingTildeInPath
+        NSWorkspace.shared.selectFile(expanded, inFileViewerRootedAtPath: "")
     }
 
     private func loadData() async {

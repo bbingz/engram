@@ -15,65 +15,66 @@ struct PopoverUsageSection: View {
         Self.groupedUsageItemsBySource(usageData)
     }
 
+    // PopoverView.usageSection only constructs this view when usageData is
+    // non-empty (it renders its own empty-state button otherwise), so there is
+    // no empty branch here.
     var body: some View {
-        if !usageData.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("USAGE")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    Button(showAll ? "Collapse" : "Show All") {
-                        showAll.toggle()
-                    }
-                    .font(.system(size: 10))
-                    .buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("USAGE")
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
+                Spacer()
+                Button(showAll ? "Collapse" : "Show All") {
+                    showAll.toggle()
                 }
+                .font(.system(size: 10))
+                .buttonStyle(.plain)
+                .foregroundStyle(.tertiary)
+            }
 
-                if showAll {
-                    // Expanded: all metrics grouped by source
-                    ForEach(groupedBySource, id: \.source) { group in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(SourceColors.label(for: group.source))
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(SourceColors.color(for: group.source))
-                            ForEach(group.items) { item in
-                                UsageMetricRow(
-                                    label: item.metric,
-                                    value: item.value,
-                                    unit: item.unit,
-                                    limit: item.limit,
-                                    resetAt: item.resetAt,
-                                    status: item.status,
-                                    metric: item.metric
-                                )
-                            }
-                        }
-                        .padding(6)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                } else {
-                    // Compact: most actionable metric per source.
-                    ForEach(groupedBySource, id: \.source) { group in
-                        if let item = Self.compactUsageItem(from: group.items) {
+            if showAll {
+                // Expanded: all metrics grouped by source
+                ForEach(groupedBySource, id: \.source) { group in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(SourceColors.label(for: group.source))
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(SourceColors.color(for: group.source))
+                        ForEach(group.items) { item in
                             UsageMetricRow(
-                                label: SourceColors.label(for: group.source),
+                                label: item.metric,
                                 value: item.value,
                                 unit: item.unit,
                                 limit: item.limit,
                                 resetAt: item.resetAt,
                                 status: item.status,
-                                metric: item.metric,
-                                suffix: Self.windowSuffix(for: item.metric)
+                                metric: item.metric
                             )
                         }
                     }
+                    .padding(6)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+            } else {
+                // Compact: most actionable metric per source.
+                ForEach(groupedBySource, id: \.source) { group in
+                    if let item = Self.compactUsageItem(from: group.items) {
+                        UsageMetricRow(
+                            label: SourceColors.label(for: group.source),
+                            value: item.value,
+                            unit: item.unit,
+                            limit: item.limit,
+                            resetAt: item.resetAt,
+                            status: item.status,
+                            metric: item.metric,
+                            suffix: Self.windowSuffix(for: item.metric)
+                        )
+                    }
                 }
             }
-            .padding(.top, 4)
         }
+        .padding(.top, 4)
     }
 
     static func compactUsageItem(from items: [EngramServiceUsageItem]) -> EngramServiceUsageItem? {

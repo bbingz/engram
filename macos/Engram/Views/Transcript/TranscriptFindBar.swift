@@ -20,6 +20,7 @@ struct TranscriptFindBar: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .focused($isFocused)
+                    .onSubmit { onNext() }
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""

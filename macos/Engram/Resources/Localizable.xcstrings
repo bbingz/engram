@@ -310,6 +310,15 @@
     "Hide empty sessions" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏空会话" } } }
     },
+    "Hide empty sessions?" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏空会话？" } } }
+    },
+    "Hide %lld session(s)" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏 %lld 个会话" } } }
+    },
+    "Hiding sets sessions aside (kept under Sessions → Show hidden sessions); tiering (skip/lite) controls what gets indexed and searched." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏只是把会话搁置一旁（仍可在 会话 → 显示已隐藏会话 中查看）；分级（skip/lite）则决定哪些内容会被索引和搜索。" } } }
+    },
     "Hide sub-agents and trivial sessions (default)" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐藏子代理和琐碎会话（默认）" } } }
     },
@@ -645,6 +654,9 @@
     },
     "These are low-level filters behind the simplified Session Filter control." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这些是简化版会话过滤控件背后的底层过滤项。" } } }
+    },
+    "These sessions have no messages and clutter search results. Hidden sessions are not deleted — view them again under Sessions → Show hidden sessions." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这些会话没有任何消息，会扰乱搜索结果。隐藏不会删除它们——你仍可在 会话 → 显示已隐藏会话 中再次查看。" } } }
     },
     "These settings power semantic search and memory. Changing model or dimension may require rebuilding vector indexes." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这些设置用于语义搜索和记忆。更改模型或维度后，可能需要重建向量索引。" } } }

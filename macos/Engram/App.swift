@@ -73,6 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let serviceClient: EngramServiceClient
     let serviceLauncher: EngramServiceLauncher
     private var serviceStatusTask: Task<Void, Never>?
+    private var restartObserverToken: NSObjectProtocol?
     private var menuBarController: MenuBarController?
     private var onboardingWindow: NSWindow?
     private var popoverWindow: NSWindow?
@@ -148,6 +149,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 serviceStatusStore.apply(.error(message: error.localizedDescription))
                 EngramLogger.error("EngramService launch failed", module: .daemon, error: error)
             }
+
+            // One-click recovery: WP09's menu-bar item / Service-State banner post
+            // .restartService when status is .error/.degraded. Gated on
+            // autoStartService so headless test runs never spawn the helper.
+            restartObserverToken = NotificationCenter.default.addObserver(
+                forName: .restartService, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.restartService() }
+            }
         }
 
         // Setup menu bar (or standalone popover window in test mode)
@@ -203,8 +213,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         serviceStatusTask?.cancel()
+        if let restartObserverToken {
+            NotificationCenter.default.removeObserver(restartObserverToken)
+        }
         serviceLauncher.stopIfOwned()
         serviceClient.close()
+    }
+
+    /// One-click recovery wrapper. Thin: flips the store to `.starting` for
+    /// instant feedback, re-attaches the detached event pump (the prior pump may
+    /// have died with the old process), then delegates to the single restart
+    /// sequencing point in `EngramServiceLauncher`. Reuses the exact closures
+    /// built at first launch; does NOT re-implement the start+monitor sequence.
+    @MainActor
+    func restartService() {
+        serviceStatusStore.apply(.starting)
+        let serviceConfiguration = environment.serviceLaunchConfiguration()
+        Task { @MainActor in
+            await serviceLauncher.restart(
+                configuration: serviceConfiguration,
+                statusProbe: { [serviceClient] in
+                    try await serviceClient.status()
+                },
+                onStatus: { [serviceStatusStore] status in
+                    serviceStatusStore.apply(status)
+                },
+                onEvent: { [serviceStatusStore] event in
+                    Self.applyServiceEvent(event, to: serviceStatusStore)
+                }
+            )
+            // Re-attach the status observation only after restart finishes
+            // (mirrors first-launch ordering) so a transient probe of the old/
+            // dead process can't flicker a wrong status into the store.
+            startServiceStatusObservation()
+        }
     }
 
     private func startServiceStatusObservation() {

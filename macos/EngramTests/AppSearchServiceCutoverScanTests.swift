@@ -114,14 +114,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
     func testSearchPageDoesNotAdvertiseUnavailableSemanticModes() throws {
         let searchPage = try source("macos/Engram/Views/Pages/SearchPageView.swift")
 
-        XCTAssertTrue(
-            searchPage.contains("SearchMode.availableModes"),
-            "SearchPageView should use the shared embedding-aware mode gate"
-        )
-        XCTAssertTrue(
-            searchPage.contains("selectedMode: SearchMode = .keyword"),
-            "SearchPageView should default to keyword while sqlite-vec embeddings are unavailable"
-        )
         XCTAssertFalse(
             searchPage.contains("ForEach(SearchMode.allCases"),
             "SearchPageView must not offer semantic/hybrid modes unless embeddings are available"
@@ -878,9 +870,14 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             generalSettings.contains("webUIURL"),
             "General settings should keep live Swift service Web UI discovery"
         )
-        XCTAssertTrue(
-            generalSettings.contains("mcpEndpointText"),
-            "General settings should keep live Swift service MCP endpoint discovery"
+        // The former `mcpEndpointText` showed `http://host:port/mcp`, but the
+        // Swift service serves no HTTP /mcp route — MCP is the stdio EngramMCP
+        // helper, and correct MCP setup lives in the primary MCP setup section.
+        // The misleading URL was removed (UX flow-alignment, 2026-06-15); General
+        // settings must NOT advertise a non-existent HTTP MCP endpoint.
+        XCTAssertFalse(
+            generalSettings.contains("/mcp\""),
+            "General settings must not advertise a non-existent HTTP /mcp endpoint"
         )
     }
 

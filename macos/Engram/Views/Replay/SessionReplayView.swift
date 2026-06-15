@@ -226,7 +226,9 @@ struct SessionReplayView: View {
         switch role {
         case "user": return MessageType.user.color
         case "assistant": return MessageType.assistant.color
-        default: return MessageType.tool.color
+        case "tool": return MessageType.tool.color
+        // FTS 回退路径可能出现 "unknown"，用中性色而非工具色
+        default: return Theme.secondaryText
         }
     }
 

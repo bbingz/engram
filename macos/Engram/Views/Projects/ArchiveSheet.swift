@@ -174,7 +174,7 @@ struct ArchiveSheet: View {
                         )
                         .foregroundStyle(.orange)
                         .font(.caption)
-                        Text("Run `engram project review` from the CLI to inspect.")
+                        Text("Re-run the move to retry the auto-fix, or open Migration History to review what changed.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }

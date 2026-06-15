@@ -3,29 +3,39 @@ import SwiftUI
 
 struct DataSourceDef {
     let name: String
-    let key: String
     let defaultPath: String
+    /// True for cache-only sources (Windsurf/Antigravity) whose adapters run
+    /// with live gRPC sync disabled.
+    var cacheOnly: Bool = false
+
+    /// Display name comes from `SourceColors.longLabel` so the Settings catalog
+    /// stays in sync with the rest of the app's source naming.
+    init(source: String, defaultPath: String, cacheOnly: Bool = false) {
+        self.name = SourceColors.longLabel(for: source)
+        self.defaultPath = defaultPath
+        self.cacheOnly = cacheOnly
+    }
 }
 
+// Mirrors SessionAdapterFactory.defaultAdapters() (17 registered adapters).
 private let dataSources: [DataSourceDef] = [
-    .init(name: "Claude Code",  key: "path.claude-code",  defaultPath: "~/.claude/projects"),
-    .init(name: "Codex",        key: "path.codex",        defaultPath: "~/.codex/sessions"),
-    .init(name: "Copilot CLI",  key: "path.copilot",      defaultPath: "~/.copilot/session-state"),
-    .init(name: "Pi",           key: "path.pi",           defaultPath: "~/.pi/agent/sessions"),
-    .init(name: "Gemini CLI",   key: "path.gemini-cli",   defaultPath: "~/.gemini/tmp"),
-    .init(name: "OpenCode",     key: "path.opencode",     defaultPath: "~/.local/share/opencode/opencode.db"),
-    .init(name: "iFlow",        key: "path.iflow",        defaultPath: "~/.iflow/projects"),
-    .init(name: "Qwen",         key: "path.qwen",         defaultPath: "~/.qwen/projects"),
-    .init(name: "Qoder",        key: "path.qoder",        defaultPath: "~/.qoder/projects"),
-    .init(name: "Kimi",         key: "path.kimi",         defaultPath: "~/.kimi/sessions"),
-    .init(name: "Command Code", key: "path.commandcode",  defaultPath: "~/.commandcode/projects"),
-    .init(name: "Cline",        key: "path.cline",        defaultPath: "~/.cline/data/tasks"),
-    .init(name: "Cursor",       key: "path.cursor",       defaultPath: "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
-    .init(name: "VS Code",      key: "path.vscode",       defaultPath: "~/Library/Application Support/Code/User/workspaceStorage"),
-    .init(name: "Antigravity",  key: "path.antigravity",  defaultPath: "~/.gemini/antigravity-cli/brain"),
-    .init(name: "Windsurf",     key: "path.windsurf",     defaultPath: "~/.codeium/windsurf/daemon"),
-    .init(name: "OpenClaw",     key: "path.openclaw",     defaultPath: "~/.openclaw/agents"),
-    .init(name: "Hermes",       key: "path.hermes",       defaultPath: "~/.hermes/sessions"),
+    .init(source: "claude-code", defaultPath: "~/.claude/projects"),
+    .init(source: "codex",       defaultPath: "~/.codex/sessions"),
+    .init(source: "minimax",     defaultPath: "~/.claude/projects"),
+    .init(source: "lobsterai",   defaultPath: "~/.claude/projects"),
+    .init(source: "gemini-cli",  defaultPath: "~/.gemini/tmp"),
+    .init(source: "opencode",    defaultPath: "~/.local/share/opencode/opencode.db"),
+    .init(source: "iflow",       defaultPath: "~/.iflow/projects"),
+    .init(source: "qwen",        defaultPath: "~/.qwen/projects"),
+    .init(source: "qoder",       defaultPath: "~/.qoder/projects"),
+    .init(source: "kimi",        defaultPath: "~/.kimi/sessions"),
+    .init(source: "commandcode", defaultPath: "~/.commandcode/projects"),
+    .init(source: "cline",       defaultPath: "~/.cline/data/tasks"),
+    .init(source: "cursor",      defaultPath: "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
+    .init(source: "vscode",      defaultPath: "~/Library/Application Support/Code/User/workspaceStorage"),
+    .init(source: "windsurf",    defaultPath: "~/.codeium/windsurf/daemon", cacheOnly: true),
+    .init(source: "antigravity", defaultPath: "~/.gemini/antigravity-cli/brain", cacheOnly: true),
+    .init(source: "copilot",     defaultPath: "~/.copilot/session-state"),
 ]
 
 struct SourcesSettingsSection: View {
@@ -33,11 +43,19 @@ struct SourcesSettingsSection: View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(icon: "folder", title: "Data Sources")
 
-            GroupBox("Adapter Paths") {
+            GroupBox("Detected source paths (read-only)") {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(dataSources, id: \.key) { ds in
+                    Text("Sources are auto-detected and indexed automatically. There is no per-source on/off yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(dataSources, id: \.name) { ds in
                         DataSourceRow(def: ds)
                     }
+                    Text("For live health, search and token coverage, see Workspace > Sources.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 4)
             }
@@ -87,6 +105,16 @@ struct DataSourceRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+            if def.cacheOnly {
+                Text("Cache only")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.gray)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Theme.gray.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .help("Live capture is off for this source; only cached/transcript data is indexed.")
+            }
             PathExistsIndicator(path: def.defaultPath)
         }
     }

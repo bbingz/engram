@@ -20,6 +20,11 @@ struct EngramLogger {
         loggers[module]!
     }
 
+    // Messages can carry paths, session ids, and error text, so they stay
+    // `privacy: .private` to avoid leaking them into the system log readable by
+    // non-entitled processes. Making the gated Observability log viewer readable
+    // is deferred: the correct follow-up is a sanitized in-process buffer, NOT
+    // blanket `.public` here.
     static func info(_ message: String, module: LogModule) {
         logger(for: module).info("\(message, privacy: .private)")
     }

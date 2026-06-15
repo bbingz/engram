@@ -32,6 +32,7 @@ enum ServiceCapabilityToken {
         "setFavorite",
         "setSessionHidden",
         "renameSession",
+        "recordSessionAccess",
         "hideEmptySessions",
         "linkSessions",
         "exportSession",

@@ -71,10 +71,12 @@ public enum EngramServiceRunner {
         }
 
         let statusMonitor = ServiceStatusMonitor()
+        let telemetry = ServiceTelemetryCollector()
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
             readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath),
-            statusMonitor: statusMonitor
+            statusMonitor: statusMonitor,
+            telemetry: telemetry
         )
         let server = UnixSocketServiceServer(socketPath: socketPath) { request in
             await handler.handle(request)
@@ -132,6 +134,7 @@ public enum EngramServiceRunner {
             await Self.runInitialScan(
                 gate: gate,
                 statusMonitor: statusMonitor,
+                telemetry: telemetry,
                 tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) }
             )
             // First product caller of observability retention. Restart-cadence
@@ -144,6 +147,7 @@ public enum EngramServiceRunner {
             await Self.runIndexingLoop(
                 gate: gate,
                 statusMonitor: statusMonitor,
+                telemetry: telemetry,
                 tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) }
             )
         }
@@ -283,6 +287,7 @@ public enum EngramServiceRunner {
     private static func runIndexingLoop(
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
+        telemetry: ServiceTelemetryCollector? = nil,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits]
     ) async {
         let intervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
@@ -294,6 +299,8 @@ public enum EngramServiceRunner {
                 break
             }
 
+            let scanClock = ContinuousClock()
+            let scanStarted = scanClock.now
             do {
                 let scan = try await gate.performWriteCommand(name: "indexRecent") { writer in
                     try await writer.indexRecentSessions()
@@ -349,6 +356,11 @@ public enum EngramServiceRunner {
                     todayParents: status.todayParents
                 ))
                 await statusMonitor.recordScanSuccess()
+                await telemetry?.recordScan(
+                    durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
+                    indexed: scan.indexed,
+                    total: status.total
+                )
                 await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
             } catch is CancellationError {
                 break
@@ -366,8 +378,11 @@ public enum EngramServiceRunner {
     private static func runInitialScan(
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
+        telemetry: ServiceTelemetryCollector? = nil,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits]
     ) async {
+        let scanClock = ContinuousClock()
+        let scanStarted = scanClock.now
         let defaultAdapters = SessionAdapterFactory.defaultAdapters()
         let emitBackfill: (StartupBackfillEvent) -> Void = { event in
             Self.emit(StartupBackfillEventEnvelope(event: event))
@@ -485,6 +500,18 @@ public enum EngramServiceRunner {
             if markPhase.failed { failedPhaseCount += 1 }
         }
 
+        // Record the initial scan into telemetry (Codex flagged: don't miss the
+        // first scan). Best-effort total via a gated indexStatus read; a failure
+        // here must not affect scan success accounting.
+        let initialTotal = (try? await gate.performWriteCommand(name: "initialScanTelemetryStatus") { writer in
+            try writer.indexStatus()
+        }.value.total) ?? 0
+        await telemetry?.recordScan(
+            durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
+            indexed: indexed,
+            total: initialTotal
+        )
+
         if failedPhaseCount == 0 {
             ServiceLogger.notice("initial startup scan complete", category: .runner)
             await statusMonitor.recordScanSuccess()
@@ -494,6 +521,12 @@ public enum EngramServiceRunner {
                 category: .runner
             )
         }
+    }
+
+    /// Elapsed milliseconds between a `ContinuousClock` instant and now.
+    private static func elapsedMs(from start: ContinuousClock.Instant, clock: ContinuousClock) -> Double {
+        let components = start.duration(to: clock.now).components
+        return Double(components.seconds) * 1000 + Double(components.attoseconds) / 1e15
     }
 
     private struct InitialScanPhaseOutcome<Value> {

@@ -311,7 +311,7 @@ struct UndoSheet: View {
                     // reverse move), but a half-failed reverse can leave
                     // some behind.
                     errorMessage =
-                        "Undo committed, but \(res.review.own.count) file(s) still reference the undone path. Run `engram project review` from CLI to inspect."
+                        "Undo committed, but \(res.review.own.count) file(s) still reference the undone path. Re-run undo to retry, or open Migration History to review."
                     retryPolicy = "never"
                     return
                 }

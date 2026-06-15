@@ -6,6 +6,7 @@ struct WorkGraphView: View {
     @State private var repos: [GitRepo] = []
     @State private var isLoading = true
     @State private var error: String? = nil
+    @State private var selectedRepo: GitRepo?
 
     private var activeCount: Int { repos.filter { $0.isActive }.count }
     private var idleCount: Int { repos.filter { isIdle($0) }.count }
@@ -14,8 +15,23 @@ struct WorkGraphView: View {
     private var maxSessions: Int { repos.map { $0.sessionCount }.max() ?? 1 }
 
     var body: some View {
+        if let repo = selectedRepo {
+            RepoDetailView(repo: repo, onBack: { selectedRepo = nil })
+                .accessibilityIdentifier("repos_detail")
+        } else {
+            repoActivityView
+        }
+    }
+
+    private var repoActivityView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if isLoading && repos.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                        .accessibilityIdentifier("workGraph_loading")
+                } else {
                 // KPI cards
                 HStack(spacing: 12) {
                     KPICard(value: "\(activeCount)", label: "Active (24h)")
@@ -29,29 +45,30 @@ struct WorkGraphView: View {
                 }
 
                 if !repos.isEmpty {
-                    SectionHeader(icon: "point.3.connected.trianglepath.dotted", title: "Repo Activity",
+                    SectionHeader(icon: "chart.bar.xaxis", title: "Repo Activity",
                                   onRefresh: { Task { await loadData() } })
 
                     LazyVStack(spacing: 6) {
                         ForEach(repos) { repo in
-                            WorkGraphRow(repo: repo, maxSessions: maxSessions)
+                            WorkGraphRow(repo: repo, maxSessions: maxSessions) { selectedRepo = repo }
                         }
                     }
                 }
 
                 if repos.isEmpty && !isLoading {
                     EmptyState(
-                        icon: "point.3.connected.trianglepath.dotted",
+                        icon: "chart.bar.xaxis",
                         title: "No repo data",
-                        message: "Work Graph builds as repos are discovered from session working directories."
+                        message: "Repo activity builds as repos are discovered from session working directories."
                     )
+                }
                 }
             }
             .padding(24)
         }
         .accessibilityIdentifier("workGraph_container")
-        // UI-H3: summarize the graph for VoiceOver (keeps the test identifier).
-        .accessibilityLabel("Work graph")
+        // UI-H3: summarize repo activity for VoiceOver (keeps the test identifier).
+        .accessibilityLabel("Repo activity")
         .accessibilityValue("\(repos.count) repos, \(activeCount) active, \(totalCommitSessions) sessions")
         .task { await loadData() }
     }
@@ -86,6 +103,7 @@ struct WorkGraphView: View {
 private struct WorkGraphRow: View {
     let repo: GitRepo
     let maxSessions: Int
+    let onTap: () -> Void
 
     private var barFraction: Double {
         guard maxSessions > 0 else { return 0 }
@@ -101,6 +119,7 @@ private struct WorkGraphRow: View {
     }
 
     var body: some View {
+        Button(action: onTap) {
         HStack(spacing: 10) {
             Circle()
                 .fill(statusColor)
@@ -146,9 +165,12 @@ private struct WorkGraphRow: View {
         .background(Theme.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
         // UI-H3: each repo row is a single labeled element with its session count.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(repo.name + (repo.branch.map { ", branch \($0)" } ?? ""))
         .accessibilityValue("\(repo.sessionCount) sessions")
+        .accessibilityIdentifier("workGraph_row")
     }
 }

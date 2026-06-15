@@ -481,6 +481,10 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     let latestUsageResetAt: String?
     let latestUsageStatus: String?
     let healthStatus: String
+    /// True for cache-only sources (Windsurf/Antigravity) whose adapters run
+    /// with live gRPC sync disabled. Defaulted false so all existing callers,
+    /// tests, and legacy JSON keep decoding/compiling.
+    let liveSyncDisabled: Bool
 
     init(
         name: String,
@@ -498,7 +502,8 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         latestUsageLimitValue: Double? = nil,
         latestUsageResetAt: String? = nil,
         latestUsageStatus: String? = nil,
-        healthStatus: String = "unknown"
+        healthStatus: String = "unknown",
+        liveSyncDisabled: Bool = false
     ) {
         self.name = name
         self.sessionCount = sessionCount
@@ -516,6 +521,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         self.latestUsageResetAt = latestUsageResetAt
         self.latestUsageStatus = latestUsageStatus
         self.healthStatus = healthStatus
+        self.liveSyncDisabled = liveSyncDisabled
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -535,6 +541,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         case latestUsageResetAt
         case latestUsageStatus
         case healthStatus
+        case liveSyncDisabled
     }
 
     init(from decoder: Decoder) throws {
@@ -555,6 +562,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         latestUsageResetAt = try container.decodeIfPresent(String.self, forKey: .latestUsageResetAt)
         latestUsageStatus = try container.decodeIfPresent(String.self, forKey: .latestUsageStatus)
         healthStatus = try container.decodeIfPresent(String.self, forKey: .healthStatus) ?? "unknown"
+        liveSyncDisabled = try container.decodeIfPresent(Bool.self, forKey: .liveSyncDisabled) ?? false
     }
 }
 
@@ -573,6 +581,66 @@ struct EngramServiceMemoryFile: Codable, Equatable, Identifiable, Sendable {
     let path: String
     let sizeBytes: Int
     let preview: String
+    /// Full file content. Optional so older/leaner service payloads (and the
+    /// existing `testStage3` round-trip, which omits it) still decode; the
+    /// detail viewer falls back to `preview` when nil.
+    let content: String?
+
+    init(
+        name: String,
+        project: String,
+        path: String,
+        sizeBytes: Int,
+        preview: String,
+        content: String? = nil
+    ) {
+        self.name = name
+        self.project = project
+        self.path = path
+        self.sizeBytes = sizeBytes
+        self.preview = preview
+        self.content = content
+    }
+}
+
+struct EngramServiceInsightInfo: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let content: String
+    let wing: String?
+    let room: String?
+    let importance: Int
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case content
+        case wing
+        case room
+        case importance
+        case createdAt = "created_at"
+    }
+}
+
+/// Detail-on-demand request for a single insight's full content. List responses
+/// return only a truncated preview to stay under the 256 KiB IPC frame; the
+/// detail viewer fetches the full row by id.
+struct EngramServiceInsightDetailRequest: Codable, Equatable, Sendable {
+    let id: String
+}
+
+/// Detail-on-demand request for a single memory file's full content. List
+/// responses omit `content` to stay under the IPC frame; the detail viewer
+/// fetches the full body by path.
+struct EngramServiceMemoryFileContentRequest: Codable, Equatable, Sendable {
+    let path: String
+}
+
+/// Full content of a single memory file, capped service-side at ~200 KiB with
+/// a truncation marker appended when the file exceeds the cap.
+struct EngramServiceMemoryFileContentResponse: Codable, Equatable, Sendable {
+    let path: String
+    let content: String
+    let truncated: Bool
 }
 
 struct EngramServiceHookInfo: Codable, Equatable, Identifiable, Sendable {
@@ -580,6 +648,11 @@ struct EngramServiceHookInfo: Codable, Equatable, Identifiable, Sendable {
     let event: String
     let command: String
     let scope: String
+    /// Source settings.json that defines the hook (~-expanded), so the UI can
+    /// reveal/open it. Populated by FileSystemEngramServiceReadProvider.hooks();
+    /// optional so payloads that predate the field (or omit a known source)
+    /// still decode rather than throwing keyNotFound.
+    let path: String?
 }
 
 struct EngramServiceHygieneRequest: Codable, Equatable, Sendable {
@@ -910,6 +983,56 @@ struct EngramServiceProjectCwdsRequest: Codable, Equatable, Sendable {
 struct EngramServiceProjectCwdsResponse: Codable, Equatable, Sendable {
     let project: String
     let cwds: [String]
+}
+
+struct EngramServiceCostsResponse: Codable, Equatable, Sendable {
+    struct SourceRow: Codable, Equatable, Identifiable, Sendable {
+        var id: String { key }
+        let key: String
+        let costUsd: Double
+        let sessionCount: Int
+    }
+
+    struct DayRow: Codable, Equatable, Identifiable, Sendable {
+        var id: String { day }
+        let day: String
+        let costUsd: Double
+    }
+
+    let totalUsd: Double
+    let perSource: [SourceRow]
+    let perDay: [DayRow]
+    let monthToDateUsd: Double
+    let todayUsd: Double
+}
+
+struct ServiceCommandLatency: Codable, Equatable, Identifiable, Sendable {
+    var id: String { command }
+    let command: String
+    let count: Int
+    let p50Ms: Double
+    let p95Ms: Double
+    let maxMs: Double
+    let errorCount: Int
+}
+
+struct ServiceSpan: Codable, Equatable, Identifiable, Sendable {
+    var id: String { "\(command)#\(startedAt)" }
+    let command: String
+    let startedAt: String
+    let durationMs: Double
+    let ok: Bool
+    let errorName: String?
+}
+
+struct ServiceTelemetrySnapshot: Codable, Equatable, Sendable {
+    let lastScanDurationMs: Double?
+    let lastScanIndexed: Int
+    let lastScanTotal: Int
+    let scanCount: Int
+    let lastScanAt: String?
+    let commands: [ServiceCommandLatency]
+    let spans: [ServiceSpan]
 }
 
 struct EngramServiceProjectMoveRequest: Codable, Equatable, Sendable {

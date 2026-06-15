@@ -70,12 +70,21 @@ struct HomeView: View {
             HStack(spacing: 12) {
                 KPICard(value: "\(serviceStatusStore.todayParentSessions)", label: "Today")
                     .accessibilityIdentifier("home_kpiCard_today")
-                KPICard(value: formatNumber(kpi.sessions), label: "Sessions")
-                    .accessibilityIdentifier("home_kpiCard_sessions")
-                KPICard(value: "\(kpi.projects)", label: "Projects")
-                    .accessibilityIdentifier("home_kpiCard_projects")
-                KPICard(value: serviceStateValue, label: "Service")
-                    .accessibilityIdentifier("home_kpiCard_service")
+                Button { navigate(to: .sessions) } label: {
+                    KPICard(value: formatNumber(kpi.sessions), label: "Sessions")
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("home_kpiCard_sessions")
+                Button { navigate(to: .projects) } label: {
+                    KPICard(value: "\(kpi.projects)", label: "Projects")
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("home_kpiCard_projects")
+                Button { navigate(to: .settings) } label: {
+                    KPICard(value: serviceStateValue, label: "Service")
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("home_kpiCard_service")
             }
             .accessibilityIdentifier("home_kpiCards")
         } else {
@@ -98,13 +107,27 @@ struct HomeView: View {
         }
     }
 
+    private var indexingState: some View {
+        EmptyState(
+            icon: "arrow.triangle.2.circlepath",
+            title: "Indexing your sessions…",
+            message: "This panel fills in as your sessions are indexed"
+        )
+        .frame(height: 120)
+    }
+
     private var continueSection: some View {
         WorkbenchPanel(
             icon: "play.circle",
             title: "Continue",
+            trailingAction: recentSessions.count > todayPanelRowLimit
+                ? (label: String(localized: "See all"), action: { navigate(to: .sessions) })
+                : nil,
             badge: recentSessions.isEmpty ? nil : "\(min(recentSessions.count, todayPanelRowLimit))"
         ) {
-            if recentSessions.isEmpty && !isLoading {
+            if recentSessions.isEmpty && isIndexing {
+                indexingState
+            } else if recentSessions.isEmpty && !isLoading {
                 EmptyState(
                     icon: "bubble.left.and.bubble.right",
                     title: "No recent work",
@@ -135,9 +158,14 @@ struct HomeView: View {
         WorkbenchPanel(
             icon: "checklist",
             title: "Follow-ups",
+            trailingAction: followUpSessions.count > todayPanelRowLimit
+                ? (label: String(localized: "See all"), action: { navigate(to: .sessions) })
+                : nil,
             badge: followUpSessions.isEmpty ? nil : "\(min(followUpSessions.count, todayPanelRowLimit))"
         ) {
-            if followUpSessions.isEmpty && !isLoading {
+            if followUpSessions.isEmpty && isIndexing {
+                indexingState
+            } else if followUpSessions.isEmpty && !isLoading {
                 EmptyState(
                     icon: "checklist",
                     title: "No follow-ups found",
@@ -169,9 +197,14 @@ struct HomeView: View {
         WorkbenchPanel(
             icon: "arrow.triangle.branch",
             title: "Changed Repos",
+            trailingAction: projectGroups.count > 5
+                ? (label: String(localized: "See all"), action: { navigate(to: .projects) })
+                : nil,
             badge: projectGroups.isEmpty ? nil : "\(projectGroups.count)"
         ) {
-            if projectGroups.isEmpty && !isLoading {
+            if projectGroups.isEmpty && isIndexing {
+                indexingState
+            } else if projectGroups.isEmpty && !isLoading {
                 EmptyState(
                     icon: "folder",
                     title: "No project activity",
@@ -188,7 +221,8 @@ struct HomeView: View {
                                 if let session = group.sessions.first {
                                     open(session)
                                 }
-                            }
+                            },
+                            onOpenWarning: { navigate(to: .projects) }
                         )
                         .accessibilityIdentifier("home_changedRepo_\(index)")
                     }
@@ -220,13 +254,8 @@ struct HomeView: View {
                     icon: "network",
                     title: "Web UI",
                     value: webEndpointLabel,
-                    tint: serviceStatusStore.endpointPort == nil ? Theme.orange : Theme.green
-                )
-                ServiceStateRow(
-                    icon: "brain",
-                    title: "Embeddings",
-                    value: serviceStatusStore.embeddingStatus ?? String(localized: "Check Advanced diagnostics"),
-                    tint: serviceStatusStore.embeddingStatus == "unavailable" ? Theme.orange : Theme.secondaryText
+                    tint: serviceStatusStore.endpointPort == nil ? Theme.orange : Theme.green,
+                    onTap: serviceStatusStore.endpointPort == nil ? nil : openWebUI
                 )
             }
         }
@@ -242,6 +271,14 @@ struct HomeView: View {
             return String(localized: "Unavailable")
         }
         return "\(serviceStatusStore.endpointHost ?? "127.0.0.1"):\(port)"
+    }
+
+    private func openWebUI() {
+        guard let port = serviceStatusStore.endpointPort else { return }
+        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
+        if let url = URL(string: "http://\(host):\(port)/") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func loadData() async {
@@ -302,6 +339,14 @@ struct HomeView: View {
         NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
     }
 
+    private func navigate(to screen: Screen) {
+        NotificationCenter.default.post(name: .navigateToScreen, object: screen.rawValue)
+    }
+
+    private var isIndexing: Bool {
+        serviceStatusStore.status == .starting
+    }
+
     private func copyResumeCommand(_ session: Session) {
         copyingSessionId = session.id
         Task {
@@ -352,12 +397,13 @@ struct HomeView: View {
 private struct WorkbenchPanel<Content: View>: View {
     let icon: String
     let title: String
+    var trailingAction: (label: String, action: () -> Void)? = nil
     var badge: String? = nil
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(icon: icon, title: title, badge: badge)
+            SectionHeader(icon: icon, title: title, badge: badge, trailingAction: trailingAction)
             content
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -455,6 +501,7 @@ private struct ChangedRepoRow: View {
     let group: DatabaseManager.ProjectGroup
     let warning: String?
     let onOpen: () -> Void
+    let onOpenWarning: () -> Void
 
     var body: some View {
         Button(action: onOpen) {
@@ -467,24 +514,28 @@ private struct ChangedRepoRow: View {
                         .font(.callout)
                         .lineLimit(1)
                         .foregroundStyle(Theme.primaryText)
-                    HStack(spacing: 6) {
-                        Text(
-                            String.localizedStringWithFormat(
-                                String(localized: "%lld recent transcripts"),
-                                group.sessionCount
-                            )
-                            + " · \(String(group.lastActive.prefix(10)))"
+                    Text(
+                        String.localizedStringWithFormat(
+                            String(localized: "%lld recent transcripts"),
+                            group.sessionCount
                         )
-                        if let warning {
-                            Text(warning)
-                                .foregroundStyle(Theme.orange)
-                        }
-                    }
+                        + " · \(String(group.lastActive.prefix(10)))"
+                    )
                         .font(.caption2)
                         .lineLimit(1)
                         .foregroundStyle(Theme.tertiaryText)
                 }
                 Spacer()
+                if let warning {
+                    Button(action: onOpenWarning) {
+                        Text(warning)
+                            .font(.caption2)
+                            .foregroundStyle(Theme.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open Projects")
+                    .accessibilityIdentifier("home_changedRepoWarning")
+                }
                 Image(systemName: "chevron.right")
                     .font(.caption2)
                     .foregroundStyle(Theme.tertiaryText.opacity(0.5))
@@ -555,8 +606,19 @@ private struct ServiceStateRow: View {
     let title: String
     let value: String
     let tint: Color
+    var onTap: (() -> Void)? = nil
 
     var body: some View {
+        if let onTap {
+            Button(action: onTap) { rowBody }
+                .buttonStyle(.plain)
+                .help("Open Web UI")
+        } else {
+            rowBody
+        }
+    }
+
+    private var rowBody: some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .foregroundStyle(tint)

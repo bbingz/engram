@@ -10,7 +10,12 @@ struct ProjectsView: View {
     @State private var isLoading = true
     @State private var renameTarget: String?
     @State private var archiveTarget: String?
+    @State private var aliasTarget: String?
     @State private var showUndoSheet = false
+    @State private var showHistorySheet = false
+    @State private var showBatchSheet = false
+    @State private var isSelecting = false
+    @State private var selectedProjects: Set<String> = []
     /// Three-state: nil = haven't fetched yet / last fetch failed (unknown),
     /// true = ≥1 committed migration exists, false = none.
     /// Reviewer: silently preserving the last-known true value when the
@@ -74,6 +79,36 @@ struct ProjectsView: View {
                         SectionHeader(icon: "folder", title: "Projects")
                         Spacer()
                         if nativeProjectMigrationCommandsEnabled {
+                            if isSelecting && !selectedProjects.isEmpty {
+                                Button {
+                                    showBatchSheet = true
+                                } label: {
+                                    Label("Move Selected (\(selectedProjects.count))…", systemImage: "arrow.right.doc.on.clipboard")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .accessibilityIdentifier("projects_batchMoveButton")
+                            }
+                            Button {
+                                isSelecting.toggle()
+                                if !isSelecting { selectedProjects.removeAll() }
+                            } label: {
+                                Label(isSelecting ? "Done" : "Select", systemImage: "checklist")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("projects_selectToggle")
+                            Button {
+                                showHistorySheet = true
+                            } label: {
+                                Label("History…", systemImage: "clock.arrow.circlepath")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("projects_historyButton")
                             Button {
                                 showUndoSheet = true
                             } label: {
@@ -94,6 +129,24 @@ struct ProjectsView: View {
                         LazyVStack(spacing: 4) {
                             ForEach(Array(projectGroups.enumerated()), id: \.element.id) { index, group in
                                 HStack(spacing: 0) {
+                                    if nativeProjectMigrationCommandsEnabled && isSelecting {
+                                        Button {
+                                            if selectedProjects.contains(group.project) {
+                                                selectedProjects.remove(group.project)
+                                            } else {
+                                                selectedProjects.insert(group.project)
+                                            }
+                                        } label: {
+                                            Image(systemName: selectedProjects.contains(group.project) ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(selectedProjects.contains(group.project) ? Theme.accent : Theme.tertiaryText)
+                                                .frame(width: 22, height: 22)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .padding(.leading, 8)
+                                        .accessibilityLabel("Select project")
+                                        .accessibilityIdentifier("projects_checkbox_\(index)")
+                                    }
                                     Button(action: { selectedProject = group }) {
                                         HStack {
                                             Text(group.project.split(separator: "/").last.map(String.init) ?? group.project)
@@ -128,6 +181,11 @@ struct ProjectsView: View {
                                                 archiveTarget = group.project
                                             } label: {
                                                 Label("Archive…", systemImage: "archivebox")
+                                            }
+                                            Button {
+                                                aliasTarget = group.project
+                                            } label: {
+                                                Label("Aliases…", systemImage: "tag")
                                             }
                                         } label: {
                                             Image(systemName: "ellipsis")
@@ -177,6 +235,11 @@ struct ProjectsView: View {
                                         } label: {
                                             Label("Archive…", systemImage: "archivebox")
                                         }
+                                        Button {
+                                            aliasTarget = group.project
+                                        } label: {
+                                            Label("Aliases…", systemImage: "tag")
+                                        }
                                     }
                                 }
                             }
@@ -201,10 +264,24 @@ struct ProjectsView: View {
         )) { wrapped in
             ArchiveSheet(projectName: wrapped.value)
         }
+        .sheet(item: Binding(
+            get: { aliasTarget.map(SheetWrappedString.init) },
+            set: { aliasTarget = $0?.value }
+        )) { wrapped in
+            AliasSheet(projectName: wrapped.value)
+        }
         .sheet(isPresented: $showUndoSheet) {
             UndoSheet()
         }
+        .sheet(isPresented: $showHistorySheet) {
+            MigrationHistoryView()
+        }
+        .sheet(isPresented: $showBatchSheet) {
+            BatchMoveSheet(projects: Array(selectedProjects).sorted())
+        }
         .onReceive(NotificationCenter.default.publisher(for: .projectsDidChange)) { _ in
+            isSelecting = false
+            selectedProjects.removeAll()
             Task { await loadData() }
         }
     }

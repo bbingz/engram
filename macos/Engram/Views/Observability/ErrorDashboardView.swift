@@ -28,6 +28,11 @@ struct ErrorDashboardView: View {
                     KPICard(value: "\(totalErrors24h)", label: "Errors (24h)")
                     KPICard(value: "\(errorsByModule.count)", label: "Affected Modules")
                 }
+                // observability-4: the unified log stores warnings at the error
+                // type, so this count includes warning-level entries.
+                Text("Includes warning-level entries (the unified log stores warnings at the error type).")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
 
                 // Errors by module
                 SectionHeader(icon: "exclamationmark.triangle", title: "Errors by Module", badge: "24h")

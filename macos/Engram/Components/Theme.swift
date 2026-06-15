@@ -83,6 +83,12 @@ enum Theme {
     static let orange = Color(hex: 0xFF9F0A)
     static let red = Color(hex: 0xFF453A)
     static let gray = Color(hex: 0x636366)
+
+    // MARK: - Layout
+
+    /// Dominant card / surface corner radius. Shared token so cards, banners,
+    /// and pills stop re-spelling the literal value.
+    static let cornerRadius: CGFloat = 8
 }
 
 // MARK: - Shared Utilities

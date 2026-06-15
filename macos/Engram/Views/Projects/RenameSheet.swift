@@ -78,7 +78,7 @@ struct RenameSheet: View {
                     .padding(.vertical, 20)
             } else if availableCwds.isEmpty {
                 Label(
-                    "This project has no recorded cwd — engram can't locate it on disk. Use `engram project move` from the CLI with an explicit path.",
+                    "This project has no recorded cwd — engram can't locate it on disk to rename.",
                     systemImage: "questionmark.folder"
                 )
                 .font(.caption)
@@ -394,7 +394,7 @@ struct RenameSheet: View {
             .foregroundStyle(.orange)
             .font(.caption)
             Text(
-                "This usually means the auto-fix regex didn't cover an edge case. Run `engram project review <old> <new>` from the CLI to list the remaining files."
+                "This usually means the auto-fix regex didn't cover an edge case. Re-run the move to retry the auto-fix, or open Migration History to review what changed."
             )
             .font(.caption2)
             .foregroundStyle(.secondary)

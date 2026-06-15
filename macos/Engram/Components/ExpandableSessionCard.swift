@@ -33,6 +33,12 @@ struct ExpandableSessionCard: View {
     var onReplay: ((Session) -> Void)? = nil
     var onConfirmSuggestion: ((Session) -> Void)? = nil
     var onDismissSuggestion: ((Session) -> Void)? = nil
+    var onHide: ((Session) -> Void)? = nil
+    var onRename: ((Session) -> Void)? = nil
+    var onExportMarkdown: ((Session) -> Void)? = nil
+    var onExportJSON: ((Session) -> Void)? = nil
+    var onToggleFavorite: ((Session) -> Void)? = nil
+    var isHidden = false
 
     @State private var isExpanded = false
     @State private var children: [Session] = []
@@ -107,10 +113,10 @@ struct ExpandableSessionCard: View {
                     .padding(.vertical, 10)
                     .background(Theme.surface)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: Theme.cornerRadius)
                             .stroke(Theme.border, lineWidth: 1)
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
@@ -126,6 +132,14 @@ struct ExpandableSessionCard: View {
                     Button("Replay") {
                         onReplay?(session)
                     }
+                    SessionWriteMenuItems(
+                        isHidden: isHidden,
+                        onToggleFavorite: onToggleFavorite.map { cb in { cb(session) } },
+                        onRename: onRename.map { cb in { cb(session) } },
+                        onExportMarkdown: onExportMarkdown.map { cb in { cb(session) } },
+                        onExportJSON: onExportJSON.map { cb in { cb(session) } },
+                        onHide: onHide.map { cb in { cb(session) } }
+                    )
                 }
             }
 
@@ -150,7 +164,13 @@ struct ExpandableSessionCard: View {
                                 onResume: { onResume?(child) },
                                 onCopyResumeCommand: { onCopyResumeCommand?(child) },
                                 onHandoff: { onHandoff?(child) },
-                                onReplay: { onReplay?(child) }
+                                onReplay: { onReplay?(child) },
+                                onHide: onHide.map { cb in { cb(child) } },
+                                onRename: onRename.map { cb in { cb(child) } },
+                                onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
+                                onExportJSON: onExportJSON.map { cb in { cb(child) } },
+                                onToggleFavorite: onToggleFavorite.map { cb in { cb(child) } },
+                                isHidden: child.hiddenAt != nil
                             )
                         }
 
@@ -179,7 +199,13 @@ struct ExpandableSessionCard: View {
                                 onHandoff: { onHandoff?(child) },
                                 onReplay: { onReplay?(child) },
                                 onConfirm: { onConfirmSuggestion?(child) },
-                                onDismiss: { onDismissSuggestion?(child) }
+                                onDismiss: { onDismissSuggestion?(child) },
+                                onHide: onHide.map { cb in { cb(child) } },
+                                onRename: onRename.map { cb in { cb(child) } },
+                                onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
+                                onExportJSON: onExportJSON.map { cb in { cb(child) } },
+                                onToggleFavorite: onToggleFavorite.map { cb in { cb(child) } },
+                                isHidden: child.hiddenAt != nil
                             )
                         }
                     }
@@ -298,6 +324,12 @@ struct CompactChildRow: View {
     var onReplay: (() -> Void)? = nil
     var onConfirm: (() -> Void)? = nil
     var onDismiss: (() -> Void)? = nil
+    var onHide: (() -> Void)? = nil
+    var onRename: (() -> Void)? = nil
+    var onExportMarkdown: (() -> Void)? = nil
+    var onExportJSON: (() -> Void)? = nil
+    var onToggleFavorite: (() -> Void)? = nil
+    var isHidden = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -351,6 +383,60 @@ struct CompactChildRow: View {
             }
             Button("Replay") {
                 onReplay?()
+            }
+            SessionWriteMenuItems(
+                isHidden: isHidden,
+                onToggleFavorite: onToggleFavorite,
+                onRename: onRename,
+                onExportMarkdown: onExportMarkdown,
+                onExportJSON: onExportJSON,
+                onHide: onHide
+            )
+        }
+    }
+}
+
+// MARK: - Shared write-action menu items
+
+/// Favorite / Rename / Export / Hide menu items shared by the parent card and
+/// child rows. Each item renders only when its closure is non-nil, so callers
+/// that pass none (e.g. SessionDetailView child rows) get an unchanged menu.
+private struct SessionWriteMenuItems: View {
+    let isHidden: Bool
+    var onToggleFavorite: (() -> Void)? = nil
+    var onRename: (() -> Void)? = nil
+    var onExportMarkdown: (() -> Void)? = nil
+    var onExportJSON: (() -> Void)? = nil
+    var onHide: (() -> Void)? = nil
+
+    private var hasAny: Bool {
+        onToggleFavorite != nil || onRename != nil
+            || onExportMarkdown != nil || onExportJSON != nil || onHide != nil
+    }
+
+    var body: some View {
+        if hasAny {
+            Divider()
+            if let onToggleFavorite {
+                // Browse-card menu always adds (no isFavorite flag on the read
+                // model yet), so the label states what it actually does.
+                Button("Add to Favorites") { onToggleFavorite() }
+            }
+            if let onRename {
+                Button("Rename…") { onRename() }
+            }
+            if onExportMarkdown != nil || onExportJSON != nil {
+                Menu("Export") {
+                    if let onExportMarkdown {
+                        Button("Markdown") { onExportMarkdown() }
+                    }
+                    if let onExportJSON {
+                        Button("JSON") { onExportJSON() }
+                    }
+                }
+            }
+            if let onHide {
+                Button(isHidden ? "Unhide" : "Hide") { onHide() }
             }
         }
     }

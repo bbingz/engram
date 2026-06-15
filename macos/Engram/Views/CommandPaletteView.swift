@@ -4,6 +4,8 @@ import SwiftUI
 struct CommandPaletteView: View {
     let onNavigate: (Screen) -> Void
     let onSelectSession: (String) -> Void
+    let onRefreshUsage: () -> Void
+    let onRegenerateTitles: () -> Void
 
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
@@ -13,6 +15,8 @@ struct CommandPaletteView: View {
     @State private var isSearching = false
     @State private var selectedIndex = 0
     @State private var searchTask: Task<Void, Never>? = nil
+    @State private var resumeSession: Session? = nil
+    @State private var exportMessage: String? = nil
     @FocusState private var isFocused: Bool
     @Environment(\.dismiss) private var dismiss
 
@@ -20,22 +24,30 @@ struct CommandPaletteView: View {
 
     private var filteredCommands: [PaletteItem] {
         let commands = PaletteItem.navigationCommands(navigate: onNavigate)
+            + PaletteItem.actionCommands(
+                navigate: onNavigate,
+                refreshUsage: onRefreshUsage,
+                regenerateTitles: onRegenerateTitles
+            )
         guard isCommandMode else { return [] }
         let search = String(query.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
         if search.isEmpty { return commands }
         return commands.filter { $0.title.lowercased().contains(search) }
     }
 
-    private var visibleItems: [AnyPaletteRow] {
+    private var visibleItems: [PaletteItem] {
         if isCommandMode {
-            return filteredCommands.map { cmd in
-                AnyPaletteRow(id: cmd.id, icon: cmd.icon, title: cmd.title, subtitle: nil, action: cmd.action)
-            }
+            return filteredCommands
         } else {
             return sessionResults.map { hit in
-                AnyPaletteRow(id: hit.id, icon: "bubble.left.and.bubble.right", title: hit.title, subtitle: hit.snippet) {
-                    onSelectSession(hit.id)
-                }
+                PaletteItem.sessionResult(
+                    id: hit.id,
+                    title: hit.title,
+                    subtitle: hit.snippet.isEmpty ? nil : hit.snippet,
+                    onSelect: { onSelectSession(hit.id) },
+                    onResume: { resume(id: hit.id) },
+                    onExport: { export(id: hit.id) }
+                )
             }
         }
     }
@@ -45,14 +57,6 @@ struct CommandPaletteView: View {
         let title: String
         let snippet: String
         let date: String
-    }
-
-    struct AnyPaletteRow: Identifiable {
-        let id: String
-        let icon: String
-        let title: String
-        let subtitle: String?
-        let action: () -> Void
     }
 
     var body: some View {
@@ -101,7 +105,12 @@ struct CommandPaletteView: View {
             Divider()
 
             // Results
-            if visibleItems.isEmpty && !query.isEmpty && !isSearching {
+            if let exportMessage {
+                Text(exportMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if visibleItems.isEmpty && !query.isEmpty && !isSearching {
                 VStack(spacing: 6) {
                     Text("No results")
                         .font(.caption)
@@ -124,63 +133,140 @@ struct CommandPaletteView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
-                            Button {
-                                item.action()
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: item.icon)
-                                        .font(.system(size: 12))
-                                        .frame(width: 20)
-                                        .foregroundStyle(index == selectedIndex ? .white : .secondary)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(item.title)
-                                            .font(.system(size: 13))
-                                            .foregroundStyle(index == selectedIndex ? .white : .primary)
-                                        if let subtitle = item.subtitle {
-                                            Text(subtitle)
-                                                .font(.system(size: 11))
-                                                .foregroundStyle(index == selectedIndex ? .white.opacity(0.7) : .secondary)
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(index == selectedIndex ? Color.accentColor : Color.clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                .contentShape(Rectangle())
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
+                                paletteRow(item, isSelected: index == selectedIndex)
+                                    .id(item.id)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 4)
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 4)
+                    .onChange(of: selectedIndex) { _, newIndex in
+                        guard visibleItems.indices.contains(newIndex) else { return }
+                        withAnimation { proxy.scrollTo(visibleItems[newIndex].id, anchor: .center) }
+                    }
                 }
             }
         }
         .onAppear { isFocused = true }
         .onDisappear { searchTask?.cancel(); searchTask = nil }
-        .onKeyPress(.upArrow) {
-            if selectedIndex > 0 { selectedIndex -= 1 }
-            return .handled
+        .onKeyPress { keyPress in
+            switch keyPress.key {
+            case .upArrow:
+                if selectedIndex > 0 { selectedIndex -= 1 }
+                return .handled
+            case .downArrow:
+                if selectedIndex < visibleItems.count - 1 { selectedIndex += 1 }
+                return .handled
+            case .escape:
+                dismiss()
+                return .handled
+            case .return:
+                if keyPress.modifiers.contains(.command) {
+                    runSecondary(0)
+                    return .handled
+                }
+                if keyPress.modifiers.contains(.option) {
+                    runSecondary(1)
+                    return .handled
+                }
+                return .ignored
+            default:
+                return .ignored
+            }
         }
-        .onKeyPress(.downArrow) {
-            if selectedIndex < visibleItems.count - 1 { selectedIndex += 1 }
-            return .handled
+        .sheet(item: $resumeSession) { session in
+            ResumeDialog(session: session)
         }
-        .onKeyPress(.escape) {
-            dismiss()
-            return .handled
+    }
+
+    @ViewBuilder
+    private func paletteRow(_ item: PaletteItem, isSelected: Bool) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                item.action()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: item.icon)
+                        .font(.system(size: 12))
+                        .frame(width: 20)
+                        .foregroundStyle(isSelected ? .white : .secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(item.title)
+                            .font(.system(size: 13))
+                            .foregroundStyle(isSelected ? .white : .primary)
+                        if let subtitle = item.subtitle {
+                            Text(subtitle)
+                                .font(.system(size: 11))
+                                .foregroundStyle(isSelected ? .white.opacity(0.7) : .secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // Secondary affordances (Resume / Export) only on the selected row.
+            if isSelected {
+                ForEach(item.secondaryActions) { secondary in
+                    Button {
+                        secondary.run()
+                    } label: {
+                        Image(systemName: secondary.icon)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .help(secondary.label)
+                }
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(isSelected ? Color.accentColor : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private func executeSelected() {
         guard !visibleItems.isEmpty, selectedIndex < visibleItems.count else { return }
         visibleItems[selectedIndex].action()
+    }
+
+    /// Run the Nth secondary action of the selected row (0 = Resume, 1 = Export).
+    private func runSecondary(_ index: Int) {
+        guard visibleItems.indices.contains(selectedIndex) else { return }
+        let actions = visibleItems[selectedIndex].secondaryActions
+        guard actions.indices.contains(index) else { return }
+        actions[index].run()
+    }
+
+    private func resume(id: String) {
+        let db = self.db
+        Task {
+            if let session = try? await Task.detached(operation: { try db.getSession(id: id) }).value {
+                resumeSession = session
+            }
+        }
+    }
+
+    private func export(id: String) {
+        Task {
+            do {
+                let response = try await serviceClient.exportSession(
+                    EngramServiceExportSessionRequest(id: id, format: "markdown", outputHome: nil, actor: nil)
+                )
+                exportMessage = "Exported to \(response.outputPath)"
+            } catch {
+                exportMessage = "Export failed"
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            exportMessage = nil
+        }
     }
 
     private func performSearch() {

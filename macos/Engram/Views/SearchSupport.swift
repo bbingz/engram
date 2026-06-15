@@ -11,14 +11,6 @@ enum SearchMode: String, CaseIterable {
     }
 }
 
-struct EmbeddingStatus {
-    let available: Bool
-    let model: String?
-    let embeddedCount: Int
-    let totalSessions: Int
-    let progress: Int
-}
-
 struct SearchResult: Identifiable {
     let id: String
     let session: Session?

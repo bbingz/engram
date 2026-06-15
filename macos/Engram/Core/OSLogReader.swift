@@ -52,7 +52,13 @@ enum OSLogReader {
     }
 
     /// Fetch recent Engram log entries (most recent last), optionally filtered by
-    /// level ("All"/debug/info/warn/error) and module/category ("All" or category).
+    /// level ("All"/debug/info/error) and module/category ("All" or category).
+    ///
+    /// observability-4: there is intentionally no "warn" level. macOS unified
+    /// logging stores os_log .warning at the .error log type, so `levelString`
+    /// maps it to "error" and never returns "warn". A "warn" filter would always
+    /// yield 0 rows, so callers must not offer it; warning-level entries surface
+    /// under the "error" filter and are counted in the 24h error totals.
     static func recentLogs(
         level: String = "All",
         module: String = "All",
