@@ -20,22 +20,25 @@ final class ObservabilityGateTests: XCTestCase {
         try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    func testEngramLoggerUsesPublicPrivacy() throws {
+    // SECURITY: message bodies must be privacy:.private so project-migration
+    // paths, session ids, error text, and socket paths are NOT leaked to the
+    // system log (Console.app / other processes). Readable gated-Observability
+    // logs are a deferred sanitized-in-process-buffer follow-up — NOT blanket
+    // .public. (Reverted the WP17 over-redaction in the UX flow alignment.)
+    func testEngramLoggerKeepsMessageBodiesPrivate() throws {
         let source = try source("macos/Engram/Core/EngramLogger.swift")
-        XCTAssertTrue(source.contains("privacy: .public"),
-                      "EngramLogger must log message bodies with privacy:.public")
-        // Load-bearing: catches a forgotten error()/msg path even though one
-        // stray .public would satisfy the positive half.
-        XCTAssertFalse(source.contains("privacy: .private"),
-                       "EngramLogger must not redact any log body with privacy:.private")
+        XCTAssertTrue(source.contains("privacy: .private"),
+                      "EngramLogger must log message bodies with privacy:.private")
+        XCTAssertFalse(source.contains("privacy: .public"),
+                       "EngramLogger must not log any body with privacy:.public (leaks to system log)")
     }
 
-    func testServiceLoggerUsesPublicPrivacy() throws {
+    func testServiceLoggerKeepsMessageBodiesPrivate() throws {
         let source = try source("macos/EngramService/Core/ServiceLogger.swift")
-        XCTAssertTrue(source.contains("privacy: .public"),
-                      "ServiceLogger must log message bodies with privacy:.public")
-        XCTAssertFalse(source.contains("privacy: .private"),
-                       "ServiceLogger must not redact any log body with privacy:.private")
+        XCTAssertTrue(source.contains("privacy: .private"),
+                      "ServiceLogger must log message bodies with privacy:.private")
+        XCTAssertFalse(source.contains("privacy: .public"),
+                       "ServiceLogger must not log any body with privacy:.public (leaks to system log)")
     }
 
     func testLogStreamHasNoWarnFilter() throws {
