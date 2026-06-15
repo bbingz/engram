@@ -30,6 +30,12 @@ enum TestLaunchConfig {
             "--fixture-db", Self.fixtureDBPath,
             "--mock-daemon",
             "--fixed-date", "2026-01-15T10:00:00Z",
+            // Observability is gated behind the `showDeveloperTools` setting,
+            // which defaults OFF for real users (SidebarView filters it out).
+            // The navigation/observability UI tests still traverse that page, so
+            // enable the gate through the NSUserDefaults argument domain — the
+            // same `-key value` mechanism as `localizationArguments` below.
+            "-showDeveloperTools", "YES",
         ] + Self.localizationArguments
 
         switch self {
