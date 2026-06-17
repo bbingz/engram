@@ -42,7 +42,7 @@
     "yaml": "^2.8.3"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "^3.4.0"
+    "@huggingface/transformers": "^4.2.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
