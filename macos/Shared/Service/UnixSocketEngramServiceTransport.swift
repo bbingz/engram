@@ -114,9 +114,11 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
                         // Transient connectivity errors (the socket file is gone
                         // during a service restart, or a connect timeout under
                         // load) must NOT permanently end the status stream. Yield
-                        // a degraded event and keep polling so the snappy 5s
-                        // status/badge path self-heals instead of relying solely
-                        // on the launcher's health monitor.
+                        // a degraded event and keep polling so this poll stream
+                        // self-heals. NOTE: the app no longer consumes events() —
+                        // status/badge freshness now rides solely on the launcher's
+                        // health monitor (startHealthMonitor). This 5s poll stream
+                        // is retained only for tests and any non-app consumer.
                         if Self.isTransientStreamError(error) {
                             continuation.yield(EngramServiceEvent(event: "warning", message: "Service unavailable"))
                             try? await Task.sleep(nanoseconds: 5_000_000_000)

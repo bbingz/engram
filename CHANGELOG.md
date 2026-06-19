@@ -7,6 +7,99 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Project-wide performance audit + idle-CPU fixes (2026-06-19, Claude)
+
+Multi-agent audit (6 angles → dedup → adversarial verify) of the macOS product
+runtime for remaining steady-state/idle CPU burn after Codex's poll-cache work.
+12 issues confirmed (11 idle-burn) / 7 rejected. Applied the four highest-impact,
+clearly-safe fixes (all reduce idle wakeups/queries/polling):
+
+- **[high] Gate periodic git-repo discovery on `scan.indexed > 0`**
+  (`EngramServiceRunner.runIndexingLoop`). It previously re-probed every session
+  cwd — up to ~5 `git` subprocess spawns per cwd, up to 200 cwds — every 5 min
+  unconditionally, even on a fully idle machine with no new sessions. Now an idle
+  cycle does zero git fan-out (mirrors the adjacent parent-backfill guard). This
+  was the largest remaining steady-state CPU/process-churn source.
+- **[med] Equality-guard `EngramServiceStatusStore.apply()`** so the ~5s idle
+  health poll no longer rewrites unchanged @Observable props. @Observable fires
+  on every assignment regardless of value, so the always-on menu-bar observers
+  (NSImage rebuild + badge refresh) were re-firing 12x/min for no change; the
+  guard makes the idle status poll free. Also restores the intended badge cadence
+  (the spurious 5s observer fire had been pulling the live-session IPC to ~5s).
+- **[med] Partial index `idx_sessions_visible ON sessions(hidden_at) WHERE
+  hidden_at IS NULL`** so the visible-session `COUNT(*)` refreshed by the status
+  poll (~every 10s) is an index-only scan instead of a full sessions-table scan
+  (~12.8k rows, ~5ms each, forever).
+- **[low] Menu-bar badge timer 10s → 30s** to match the service-side 30s
+  live-session cache TTL — removes ~2/3 of the always-on idle badge IPC traffic
+  that was just re-fetching the same cached payload.
+- Tests: source-scan regression for the repo-discovery gate; behavioral test that
+  an identical `.running` status does not refire observers (real change still
+  does); migration test asserts `idx_sessions_visible` exists.
+- Validation: full `EngramServiceCore` (210), `EngramCoreTests` (447), and
+  targeted `EngramTests` suites green, 0 failures.
+
+Reported but NOT applied (lower impact / tradeoffs — left for a follow-up):
+HomeView workbench reload debounce; directory-level mtime pruning for the
+indexer + live-session FS walks; health-monitor 5s cadence (kept for crash-
+detection responsiveness); `HeadingView` markdown re-parse caching
+(per-interaction, not idle).
+
+### Reviewed + hardened Codex's polling/CPU fix (2026-06-19, Claude)
+
+Multi-agent adversarial review of the uncommitted Codex perf change (live-session
+scan cache, `ServiceWriterGate.indexStatus()` cache, AppDelegate status-stream
+removal). Verdict: no real bugs — the implementation is sound. 11 findings
+confirmed, all low-severity polish/test-gaps after adversarial verification.
+Applied the worthwhile ones:
+
+- `EngramServiceReadProvider.scanLiveSessions`: sort+cap the candidate list ONCE
+  after the scan instead of re-sorting the whole array on every accepted file
+  (was O(M·N log N); now O(M log M), identical top-N result). Removes wasted CPU
+  inside the very scan the 30s cache was added to make cheap.
+- `ServiceWriterGate.indexStatus()`: guard the TTL check against a backward
+  wall-clock jump (`elapsed >= 0 && elapsed < TTL`) so an NTP/sleep correction
+  can't pin a stale cache past its TTL.
+- `UnixSocketEngramServiceTransport.events()`: corrected the now-stale "snappy 5s
+  self-healing status path" comment — the app no longer consumes `events()`;
+  status/badge freshness rides solely on the launcher health monitor. The poll
+  stream is retained (still protocol surface + test-covered), not deleted.
+- Tests: made the live-session cache clock/TTL injectable and added an
+  expiry-after-TTL test; added a `< vs <=` TTL-boundary assertion to the
+  writer-gate cache test; added a cross-source global-cap test proving the newest
+  active session from one source survives when another source floods 100+ files.
+- DELIBERATELY KEPT as intended trade-offs (user asked for less realtime/polling):
+  the 30s live-session TTL latency (new sessions/`activityLevel` lag up to 30s),
+  and the existing source-text regression-sentinel tests.
+- Validation: full `EngramServiceCore` suite green (209 tests, 0 failures),
+  including the 3 new tests and Codex's 6 cache tests.
+
+### Codex fixed menu/live-session polling load and redeployed locally (2026-06-19)
+
+- Fixed the menu-bar `liveSessions()` load path: `FileSystemEngramServiceReadProvider`
+  now streams recursive `FileManager` enumerators, keeps only the newest 100
+  candidates, parses metadata only for selected candidates, and reuses a 30s
+  cache across menu cadence calls.
+- Removed the duplicate AppDelegate service status/event stream. Service events
+  now flow through `EngramServiceLauncher`'s stdout event sink, and periodic
+  status updates stay on the single `startHealthMonitor()` path.
+- Added a generation-aware 10s `ServiceWriterGate.indexStatus()` cache. The
+  cache is cleared when a gated write starts, bypassed while writes are in
+  flight, and invalidated on successful or failed gated writes. Reviewer-found
+  actor-reentrancy stale-cache risk is covered by in-flight write and
+  mutate-then-throw tests.
+- Verified targeted live-session, status-poll, and status-cache regression
+  tests; full `EngramServiceCore` passed; `EngramTests` + `EngramCoreTests`
+  passed. Full `Engram` scheme was attempted but `EngramUITests-Runner` hung
+  before establishing the test-runner connection after 419s.
+- Built and locally deployed `/Applications/Engram.app` version `0.1.0`, build
+  `20260619100353` via `macos/scripts/build-release.sh --local-only` and
+  `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app`.
+  Developer ID export and `release-verify` passed; installed app `codesign
+  --verify --deep --strict --verbose=2` passed; live smoke showed `Engram` PID
+  19252 and `EngramService` PID 19255 running from `/Applications/Engram.app`,
+  with both sampling at 0.0% CPU after the startup indexing window.
+
 ### Fixed: de-flake jsonl-patch concurrent-modification test (2026-06-15, Claude) — PR #76
 
 The `jsonl-patch` CAS test "throws ConcurrentModificationError when mtime

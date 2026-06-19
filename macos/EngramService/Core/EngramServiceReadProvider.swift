@@ -109,12 +109,21 @@ struct EmptyEngramServiceReadProvider: EngramServiceReadProvider {
 }
 
 struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
+    private static let liveSessionResultLimit = 100
+    static let liveSessionCacheTTL: TimeInterval = 30
+
     private let homeDirectory: URL
+    private let liveSessionCache: LiveSessionScanCache
+    private let now: @Sendable () -> Date
 
     init(
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        liveSessionCacheTTL: TimeInterval = FileSystemEngramServiceReadProvider.liveSessionCacheTTL,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.homeDirectory = homeDirectory
+        self.now = now
+        self.liveSessionCache = LiveSessionScanCache(ttl: liveSessionCacheTTL)
     }
 
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
@@ -126,7 +135,9 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     }
 
     func liveSessions() async throws -> EngramServiceLiveSessionsResponse {
-        let sessions = try scanLiveSessions(now: Date())
+        let sessions = try await liveSessionCache.sessions(now: now()) { now in
+            try scanLiveSessions(now: now)
+        }
         return EngramServiceLiveSessionsResponse(sessions: sessions, count: sessions.count)
     }
 
@@ -362,63 +373,131 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         return "~" + String(path.dropFirst(home.count))
     }
 
+    private struct LiveSessionRoot {
+        var source: String
+        var url: URL
+        var extensions: Set<String>
+    }
+
+    private struct LiveSessionCandidate {
+        var source: String
+        var file: URL
+        var modifiedAt: Date
+    }
+
+    private actor LiveSessionScanCache {
+        private let ttl: TimeInterval
+        private var cachedAt: Date?
+        private var cachedSessions: [EngramServiceLiveSessionInfo]?
+
+        init(ttl: TimeInterval) {
+            self.ttl = ttl
+        }
+
+        func sessions(
+            now: Date,
+            load: @Sendable (Date) throws -> [EngramServiceLiveSessionInfo]
+        ) throws -> [EngramServiceLiveSessionInfo] {
+            if let cachedAt, let cachedSessions, now.timeIntervalSince(cachedAt) < ttl {
+                return cachedSessions
+            }
+            let sessions = try load(now)
+            cachedAt = now
+            cachedSessions = sessions
+            return sessions
+        }
+    }
+
     private func scanLiveSessions(now: Date) throws -> [EngramServiceLiveSessionInfo] {
-        let roots: [(source: String, url: URL, extensions: Set<String>)] = [
-            ("codex", homeDirectory.appendingPathComponent(".codex/sessions", isDirectory: true), ["jsonl"]),
-            ("claude-code", homeDirectory.appendingPathComponent(".claude/projects", isDirectory: true), ["jsonl"]),
-            ("gemini-cli", homeDirectory.appendingPathComponent(".gemini/tmp", isDirectory: true), ["json"]),
-            ("antigravity", homeDirectory.appendingPathComponent(".gemini/antigravity-cli/brain", isDirectory: true), ["json", "jsonl"]),
-            ("antigravity", homeDirectory.appendingPathComponent(".gemini/antigravity", isDirectory: true), ["json", "jsonl"]),
-            ("opencode", homeDirectory.appendingPathComponent(".local/share/opencode", isDirectory: true), ["db"]),
+        let roots: [LiveSessionRoot] = [
+            LiveSessionRoot(source: "codex", url: homeDirectory.appendingPathComponent(".codex/sessions", isDirectory: true), extensions: ["jsonl"]),
+            LiveSessionRoot(source: "claude-code", url: homeDirectory.appendingPathComponent(".claude/projects", isDirectory: true), extensions: ["jsonl"]),
+            LiveSessionRoot(source: "gemini-cli", url: homeDirectory.appendingPathComponent(".gemini/tmp", isDirectory: true), extensions: ["json"]),
+            LiveSessionRoot(source: "antigravity", url: homeDirectory.appendingPathComponent(".gemini/antigravity-cli/brain", isDirectory: true), extensions: ["json", "jsonl"]),
+            LiveSessionRoot(source: "antigravity", url: homeDirectory.appendingPathComponent(".gemini/antigravity", isDirectory: true), extensions: ["json", "jsonl"]),
+            LiveSessionRoot(source: "opencode", url: homeDirectory.appendingPathComponent(".local/share/opencode", isDirectory: true), extensions: ["db"]),
         ]
         let activeWindow: TimeInterval = 2 * 60
         let idleWindow: TimeInterval = 15 * 60
         let recentWindow: TimeInterval = 24 * 60 * 60
-        var results: [EngramServiceLiveSessionInfo] = []
+        var candidates: [LiveSessionCandidate] = []
         var seen = Set<String>()
 
         for root in roots {
             guard FileManager.default.fileExists(atPath: root.url.path) else { continue }
-            let files: [URL]
             if (try? root.url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
-                files = [root.url]
+                try considerLiveSessionCandidate(
+                    root.url,
+                    root: root,
+                    now: now,
+                    recentWindow: recentWindow,
+                    seen: &seen,
+                    candidates: &candidates
+                )
             } else {
                 let enumerator = FileManager.default.enumerator(
                     at: root.url,
                     includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey, .fileSizeKey],
                     options: [.skipsHiddenFiles]
                 )
-                files = (enumerator?.compactMap { $0 as? URL } ?? [])
-            }
-
-            for file in files {
-                guard results.count < 100 else { break }
-                guard root.extensions.contains(file.pathExtension.lowercased()) else { continue }
-                let values = try file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
-                guard values.isRegularFile == true, let modifiedAt = values.contentModificationDate else { continue }
-                let age = now.timeIntervalSince(modifiedAt)
-                guard age >= 0, age <= recentWindow else { continue }
-                guard seen.insert(file.path).inserted else { continue }
-                let metadata = parseLiveMetadata(from: file)
-                let level = age <= activeWindow ? "active" : (age <= idleWindow ? "idle" : "recent")
-                results.append(
-                    EngramServiceLiveSessionInfo(
-                        source: root.source,
-                        sessionId: metadata.sessionId,
-                        project: metadata.project,
-                        title: metadata.title,
-                        cwd: metadata.cwd,
-                        filePath: file.path,
-                        startedAt: metadata.startedAt,
-                        model: metadata.model,
-                        currentActivity: metadata.activity,
-                        lastModifiedAt: isoString(modifiedAt),
-                        activityLevel: level
-                    )
-                )
+                if let enumerator {
+                    while let file = enumerator.nextObject() as? URL {
+                        try considerLiveSessionCandidate(
+                            file,
+                            root: root,
+                            now: now,
+                            recentWindow: recentWindow,
+                            seen: &seen,
+                            candidates: &candidates
+                        )
+                    }
+                }
             }
         }
-        return results.sorted { $0.lastModifiedAt > $1.lastModifiedAt }
+        // Sort + cap ONCE after the full scan. The per-insert sort+truncate this
+        // replaces re-sorted the whole array on every accepted file (O(M·N log N));
+        // a single sort is O(M log M) and produces the identical top-N result set.
+        candidates.sort {
+            if $0.modifiedAt == $1.modifiedAt {
+                return $0.file.path < $1.file.path
+            }
+            return $0.modifiedAt > $1.modifiedAt
+        }
+        return candidates.prefix(Self.liveSessionResultLimit).map { candidate in
+            let metadata = parseLiveMetadata(from: candidate.file)
+            let age = now.timeIntervalSince(candidate.modifiedAt)
+            let level = age <= activeWindow ? "active" : (age <= idleWindow ? "idle" : "recent")
+            return EngramServiceLiveSessionInfo(
+                source: candidate.source,
+                sessionId: metadata.sessionId,
+                project: metadata.project,
+                title: metadata.title,
+                cwd: metadata.cwd,
+                filePath: candidate.file.path,
+                startedAt: metadata.startedAt,
+                model: metadata.model,
+                currentActivity: metadata.activity,
+                lastModifiedAt: isoString(candidate.modifiedAt),
+                activityLevel: level
+            )
+        }
+    }
+
+    private func considerLiveSessionCandidate(
+        _ file: URL,
+        root: LiveSessionRoot,
+        now: Date,
+        recentWindow: TimeInterval,
+        seen: inout Set<String>,
+        candidates: inout [LiveSessionCandidate]
+    ) throws {
+        guard root.extensions.contains(file.pathExtension.lowercased()) else { return }
+        let values = try file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+        guard values.isRegularFile == true, let modifiedAt = values.contentModificationDate else { return }
+        let age = now.timeIntervalSince(modifiedAt)
+        guard age >= 0, age <= recentWindow else { return }
+        guard seen.insert(file.path).inserted else { return }
+        candidates.append(LiveSessionCandidate(source: root.source, file: file, modifiedAt: modifiedAt))
     }
 
     private struct LiveMetadata {

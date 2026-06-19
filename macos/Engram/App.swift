@@ -72,7 +72,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let serviceStatusStore: EngramServiceStatusStore
     let serviceClient: EngramServiceClient
     let serviceLauncher: EngramServiceLauncher
-    private var serviceStatusTask: Task<Void, Never>?
     private var restartObserverToken: NSObjectProtocol?
     private var menuBarController: MenuBarController?
     private var onboardingWindow: NSWindow?
@@ -135,7 +134,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         Self.applyServiceEvent(event, to: serviceStatusStore)
                     }
                 )
-                startServiceStatusObservation()
                 serviceLauncher.startHealthMonitor(
                     configuration: serviceConfiguration,
                     statusProbe: { [serviceClient] in
@@ -212,7 +210,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        serviceStatusTask?.cancel()
         if let restartObserverToken {
             NotificationCenter.default.removeObserver(restartObserverToken)
         }
@@ -221,10 +218,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// One-click recovery wrapper. Thin: flips the store to `.starting` for
-    /// instant feedback, re-attaches the detached event pump (the prior pump may
-    /// have died with the old process), then delegates to the single restart
-    /// sequencing point in `EngramServiceLauncher`. Reuses the exact closures
-    /// built at first launch; does NOT re-implement the start+monitor sequence.
+    /// instant feedback, then delegates to the single restart sequencing point
+    /// in `EngramServiceLauncher`. Reuses the exact closures built at first
+    /// launch; does NOT re-implement the start+monitor sequence.
     @MainActor
     func restartService() {
         serviceStatusStore.apply(.starting)
@@ -242,47 +238,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     Self.applyServiceEvent(event, to: serviceStatusStore)
                 }
             )
-            // Re-attach the status observation only after restart finishes
-            // (mirrors first-launch ordering) so a transient probe of the old/
-            // dead process can't flicker a wrong status into the store.
-            startServiceStatusObservation()
-        }
-    }
-
-    private func startServiceStatusObservation() {
-        serviceStatusTask?.cancel()
-        serviceStatusTask = Task.detached { [serviceClient, serviceStatusStore] in
-            await Self.observeServiceStatus(client: serviceClient, store: serviceStatusStore)
-        }
-    }
-
-    nonisolated static func observeServiceStatus(
-        client serviceClient: any EngramServiceClientProtocol,
-        store serviceStatusStore: EngramServiceStatusStore
-    ) async {
-        do {
-            let status = try await serviceClient.status()
-            await MainActor.run {
-                serviceStatusStore.apply(status)
-            }
-        } catch {
-            await MainActor.run {
-                serviceStatusStore.apply(.degraded(message: error.localizedDescription))
-            }
-        }
-
-        do {
-            for try await event in serviceClient.events() {
-                await MainActor.run {
-                    Self.applyServiceEvent(event, to: serviceStatusStore)
-                }
-            }
-        } catch is CancellationError {
-            return
-        } catch {
-            await MainActor.run {
-                serviceStatusStore.apply(.degraded(message: error.localizedDescription))
-            }
         }
     }
 

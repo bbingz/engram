@@ -42,6 +42,24 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testAppDoesNotStartDuplicateStatusPollingStreams() throws {
+        let s = try source("macos/Engram/App.swift")
+        let directStatusObservationCalls = s
+            .split(whereSeparator: \.isNewline)
+            .filter { line in
+                line.trimmingCharacters(in: .whitespaces) == "startServiceStatusObservation()"
+            }
+
+        XCTAssertTrue(
+            directStatusObservationCalls.isEmpty,
+            "App should not run the legacy events() status stream alongside EngramServiceLauncher health polling"
+        )
+        XCTAssertTrue(
+            s.contains("serviceLauncher.startHealthMonitor"),
+            "EngramServiceLauncher health polling remains the single periodic status probe"
+        )
+    }
+
     func testSearchPageGuardsAgainstStaleResponses() throws {
         let s = try source("macos/Engram/Views/Pages/SearchPageView.swift")
         XCTAssertTrue(
