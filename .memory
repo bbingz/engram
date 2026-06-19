@@ -1,5 +1,148 @@
 # Engram Local Memory
 
+## Index
+
+<!-- AUTO-INDEX (rebuilt 2026-06-19): 70 dated entries; regenerate after adding sections -->
+- [2026-06-19 - Codex fixed menu/live-session polling load and redeployed](#2026-06-19---codex-fixed-menulive-session-polling-load-and-redeployed)
+- [2026-06-15 — GRDB must be the single dynamic `GRDB-dynamic` product (runtime crash fix)](#2026-06-15--grdb-must-be-the-single-dynamic-grdb-dynamic-product-runtime-crash-fix)
+- [2026-06-13 - Codex rebuilt and redeployed current HEAD locally](#2026-06-13---codex-rebuilt-and-redeployed-current-head-locally)
+- [2026-06-12 - Codex synchronized GitHub-facing docs with Swift product state](#2026-06-12---codex-synchronized-github-facing-docs-with-swift-product-state)
+- [2026-06-12 - Codex fixed EngramService startup crash and high CPU scan](#2026-06-12---codex-fixed-engramservice-startup-crash-and-high-cpu-scan)
+- [2026-06-10 - Codex completed full audit remediation](#2026-06-10---codex-completed-full-audit-remediation)
+- [2026-06-10 - Codex remediation for high-risk audit findings](#2026-06-10---codex-remediation-for-high-risk-audit-findings)
+- [2026-06-10 - Multi-expert audit (security dimension excluded)](#2026-06-10---multi-expert-audit-security-dimension-excluded)
+- [2026-06-10 - Multi-expert audit (security dimension excluded)](#2026-06-10---multi-expert-audit-security-dimension-excluded-1)
+- [2026-06-08 - Broad product-direction PR stack closeout](#2026-06-08---broad-product-direction-pr-stack-closeout)
+- [2026-06-08 - Split broad product-direction patch into stacked PR branches](#2026-06-08---split-broad-product-direction-patch-into-stacked-pr-branches)
+- [2026-06-06 — Project move Gemini/iFlow dry-run parity tests (Codex)](#2026-06-06--project-move-geminiiflow-dry-run-parity-tests-codex)
+- [2026-06-06 — Project move covers Codex rollout summaries (Codex)](#2026-06-06--project-move-covers-codex-rollout-summaries-codex)
+- [2026-06-06 — Gemini CLI projects cache refresh (Codex)](#2026-06-06--gemini-cli-projects-cache-refresh-codex)
+- [2026-06-06 — TypeScript generate_summary MCP status semantics (Codex)](#2026-06-06--typescript-generate_summary-mcp-status-semantics-codex)
+- [2026-06-06 — TypeScript database statement wrapper without Proxy (Codex)](#2026-06-06--typescript-database-statement-wrapper-without-proxy-codex)
+- [2026-06-06 — Swift service IPC project-move test cleanup (Codex)](#2026-06-06--swift-service-ipc-project-move-test-cleanup-codex)
+- [2026-06-06 — TypeScript migration_log state/start-time index parity (Codex)](#2026-06-06--typescript-migration_log-statestart-time-index-parity-codex)
+- [2026-06-06 — Swift export directory parity with TypeScript (Codex)](#2026-06-06--swift-export-directory-parity-with-typescript-codex)
+- [2026-06-06 — Swift hide_session not-found and local-state parity (Codex)](#2026-06-06--swift-hide_session-not-found-and-local-state-parity-codex)
+- [2026-06-06 — Gemini CLI adapter large sidecar/projects guard (Codex)](#2026-06-06--gemini-cli-adapter-large-sidecarprojects-guard-codex)
+- [2026-06-06 — Claude/Qoder grouped-dir reconcile for historical project moves (Codex)](#2026-06-06--claudeqoder-grouped-dir-reconcile-for-historical-project-moves-codex)
+- [2026-06-06 — CodeQL workflow Node 24 action cleanup (Codex)](#2026-06-06--codeql-workflow-node-24-action-cleanup-codex)
+- [2026-06-06 — Codex project-move compatibility verification (Codex)](#2026-06-06--codex-project-move-compatibility-verification-codex)
+- [2026-06-06 — TypeScript empty-reindex session fact preservation (Codex)](#2026-06-06--typescript-empty-reindex-session-fact-preservation-codex)
+- [2026-06-06 — Claude Code/Qoder project-dir encoding parity (Codex)](#2026-06-06--claude-codeqoder-project-dir-encoding-parity-codex)
+- [2026-06-06 — Session snapshot noop write reduction (Codex)](#2026-06-06--session-snapshot-noop-write-reduction-codex)
+- [2026-06-06 — MainActor UI trampoline cleanup (Codex)](#2026-06-06--mainactor-ui-trampoline-cleanup-codex)
+- [2026-06-06 — Synchronous service client close on app termination (Codex)](#2026-06-06--synchronous-service-client-close-on-app-termination-codex)
+- [2026-06-06 — Async MessageParser adapter stream bridge (Codex)](#2026-06-06--async-messageparser-adapter-stream-bridge-codex)
+- [2026-06-06 — Off-main segmented message parsing (Codex)](#2026-06-06--off-main-segmented-message-parsing-codex)
+- [2026-06-06 — Service writer gate timing test hardening (Codex)](#2026-06-06--service-writer-gate-timing-test-hardening-codex)
+- [2026-06-06 — Project archive gitdir marker validation (Codex)](#2026-06-06--project-archive-gitdir-marker-validation-codex)
+- [2026-06-06 — Node 24 agent-instruction drift cleanup (Codex)](#2026-06-06--node-24-agent-instruction-drift-cleanup-codex)
+- [2026-06-06 — Local build 752 deployed (Codex)](#2026-06-06--local-build-752-deployed-codex)
+- [2026-06-06 — Stale follow-up plan reconciliation (Codex)](#2026-06-06--stale-follow-up-plan-reconciliation-codex)
+- [2026-06-06 — Swift UI P3 cleanup follow-up (Codex)](#2026-06-06--swift-ui-p3-cleanup-follow-up-codex)
+- [2026-06-06 — MCP project_review Claude Code encoding parity (Codex)](#2026-06-06--mcp-project_review-claude-code-encoding-parity-codex)
+- [2026-06-06 — Project migration OpenCode SQLite compatibility (Codex)](#2026-06-06--project-migration-opencode-sqlite-compatibility-codex)
+- [2026-06-06 — Project migration Gemini/iFlow compatibility follow-up (Codex)](#2026-06-06--project-migration-geminiiflow-compatibility-follow-up-codex)
+- [2026-06-05 — Codex archived-session project migration compatibility (Codex)](#2026-06-05--codex-archived-session-project-migration-compatibility-codex)
+- [2026-06-05 — Claude Code dir-encoding compat fix (Claude)](#2026-06-05--claude-code-dir-encoding-compat-fix-claude)
+- [2026-06-05 — PR #49 CI follow-up (Codex)](#2026-06-05--pr-49-ci-follow-up-codex)
+- [2026-06-05 — Follow-up remediation closeout and PR prep (Codex)](#2026-06-05--follow-up-remediation-closeout-and-pr-prep-codex)
+- [2026-06-04 — TypeScript FTS table-swap rebuild PR (Codex)](#2026-06-04--typescript-fts-table-swap-rebuild-pr-codex)
+- [2026-06-04 — Database raw handle API cleanup (Codex)](#2026-06-04--database-raw-handle-api-cleanup-codex)
+- [2026-06-04 — Additional non-blocking follow-up remediation (Codex)](#2026-06-04--additional-non-blocking-follow-up-remediation-codex)
+- [2026-06-04 — Follow-up remediation branch closeout (Codex)](#2026-06-04--follow-up-remediation-branch-closeout-codex)
+- [2026-06-03 — Multi-model review adjudication and fixes (Codex)](#2026-06-03--multi-model-review-adjudication-and-fixes-codex)
+- [2026-06-02 — Web UI pager O(N²)→O(N) lazy streaming (Claude)](#2026-06-02--web-ui-pager-onon-lazy-streaming-claude)
+- [2026-06-02 — MCP fix + full Swift-product review/fix/cleanup (Claude)](#2026-06-02--mcp-fix--full-swift-product-reviewfixcleanup-claude)
+- [2026-06-01 — Advanced noise controls quieted (Codex)](#2026-06-01--advanced-noise-controls-quieted-codex)
+- [2026-06-01 — Today Workbench completion pass (Codex)](#2026-06-01--today-workbench-completion-pass-codex)
+- [2026-06-01 — Today Workbench i18n sync (Codex)](#2026-06-01--today-workbench-i18n-sync-codex)
+- [2026-06-01 — Today Workbench UI first pass (Codex)](#2026-06-01--today-workbench-ui-first-pass-codex)
+- [2026-06-01 — Copilot Critical hardening + Today Workbench spec (Codex)](#2026-06-01--copilot-critical-hardening--today-workbench-spec-codex)
+- [2026-05-30 — deferred follow-ups closed and local app deployed (Codex)](#2026-05-30--deferred-follow-ups-closed-and-local-app-deployed-codex)
+- [2026-05-30 — deep-dimension audit round 2 complete (Claude)](#2026-05-30--deep-dimension-audit-round-2-complete-claude)
+- [2026-05-30 — main audit round complete; resume point for next round (Claude)](#2026-05-30--main-audit-round-complete-resume-point-for-next-round-claude)
+- [2026-05-30 — PR #18 review/confirmation (Claude)](#2026-05-30--pr-18-reviewconfirmation-claude)
+- [2026-05-30 — PR #18 CI/test follow-up after Claude handoff](#2026-05-30--pr-18-citest-follow-up-after-claude-handoff)
+- [2026-05-27 — AI title/summary observability defect fixes (5-round review)](#2026-05-27--ai-titlesummary-observability-defect-fixes-5-round-review)
+- [2026-05-25 — Codex v0.133 MCP protocol compatibility fix](#2026-05-25--codex-v0133-mcp-protocol-compatibility-fix)
+- [2026-05-23 — TDD closeout of all open roadmap items](#2026-05-23--tdd-closeout-of-all-open-roadmap-items)
+- [2026-05-22 — Round-5 closeout + EngramUITests fully restored](#2026-05-22--round-5-closeout--engramuitests-fully-restored)
+- [2026-05-21 — Full remediation ship after multi-agent review](#2026-05-21--full-remediation-ship-after-multi-agent-review)
+- [2026-05-10 — Recent indexing must scan all active local session sources](#2026-05-10--recent-indexing-must-scan-all-active-local-session-sources)
+- [2026-05-08 — Swift-only cutover: drop stale Node schema compat gate](#2026-05-08--swift-only-cutover-drop-stale-node-schema-compat-gate)
+- [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
+- [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
+<!-- /AUTO-INDEX -->
+
+## 2026-06-19 - Codex fixed menu/live-session polling load and redeployed
+
+- Objective: investigate whether Engram was contributing to local sluggishness,
+  then implement and ship the performance fixes with TDD, review, and local
+  deploy.
+- Root causes found:
+  - `FileSystemEngramServiceReadProvider.liveSessions()` materialized full
+    recursive session roots on every menu cadence before applying the 100-result
+    cap.
+  - `AppDelegate` started a second service status/events stream while
+    `EngramServiceLauncher.startHealthMonitor()` already ran the periodic
+    status probe and stdout event sink.
+  - `ServiceWriterGate.indexStatus()` did two status COUNT reads per health
+    request; this was smaller than live-session scanning but still worth a short
+    cache.
+- Changes:
+  - `macos/EngramService/Core/EngramServiceReadProvider.swift`: live sessions
+    now stream enumerator candidates, keep only newest 100 candidates, parse
+    metadata only for selected candidates, and reuse a 30s live-session cache.
+  - `macos/Engram/App.swift`: removed the legacy `serviceClient.events()`
+    status/event pump; service events now flow through the launcher stdout sink
+    and status polling through the single health monitor.
+  - `macos/EngramService/Core/ServiceWriterGate.swift`: added a 10s
+    generation-aware `indexStatus()` cache that is cleared on write start,
+    bypassed while writes are in flight, and invalidated on successful or failed
+    gated writes.
+  - Added regression coverage in `EngramServiceIPCTests`,
+    `ServiceWriterGateTests`, `ViewMainThreadReadTests`, and
+    `ServiceEventRoutingTests`.
+- Review: an independent read-only reviewer found one Medium issue in the first
+  cache implementation: actor reentrancy could return stale cached status while
+  a write was suspended. Fixed by clearing/bypassing cache during in-flight
+  writes and adding tests for in-flight writes plus mutate-then-throw failures.
+- Verification:
+  - Targeted live-session RED/GREEN tests passed after implementation.
+  - Targeted duplicate status/event poll tests passed after removing the
+    legacy AppDelegate pump.
+  - Targeted index-status cache tests passed, including in-flight write and
+    mutate-then-throw coverage.
+  - Full `EngramServiceCore` scheme passed:
+    `rtk xcodebuild test -project macos/Engram.xcodeproj -scheme EngramServiceCore -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`.
+  - App/Core unit targets passed:
+    `rtk xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO -only-testing:EngramTests -only-testing:EngramCoreTests`.
+  - Full `Engram` scheme was attempted but `EngramUITests-Runner` hung before
+    establishing the test-runner connection after 419s; no product assertion
+    failure was emitted.
+- Deploy:
+  - Built with
+    `ENGRAM_BUILD_NUMBER=20260619100353 macos/scripts/build-release.sh --local-only`.
+    Developer ID export succeeded at `macos/build/EngramExport/Engram.app`;
+    `release-verify` passed full Developer ID checks.
+  - Installed with
+    `macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app`,
+    replacing `/Applications/Engram.app`.
+  - Live smoke: `/Applications/Engram.app` reports
+    `CFBundleVersion=20260619100353`; `codesign --verify --deep --strict
+    --verbose=2 /Applications/Engram.app` passed. `Engram` PID 19252 and
+    `EngramService` PID 19255 started from `/Applications/Engram.app`.
+    Startup CPU briefly reached indexing load, then after 60s both Engram and
+    EngramService sampled at 0.0% CPU. `mcp__engram.stats` returned today's
+    source counts, proving the installed MCP/service path stayed usable.
+- Residual risk:
+  - EngramUITests runner connection hang remains unproven/environmental; rerun
+    UI tests separately before treating the full UI suite as green.
+  - Several long-running `EngramMCP` helper processes existed before deploy and
+    remained at 0.0% CPU; they were not killed because they may belong to active
+    MCP client sessions.
+
 ## 2026-06-15 — GRDB must be the single dynamic `GRDB-dynamic` product (runtime crash fix)
 
 - **Hard rule:** every Xcode target links GRDB via the SPM **`GRDB-dynamic`**
