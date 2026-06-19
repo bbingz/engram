@@ -180,6 +180,22 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testHeadingViewReusesCachedMarkdownParse() throws {
+        let s = try source("macos/Engram/Views/ContentSegmentViews.swift")
+        let start = try XCTUnwrap(s.range(of: "struct HeadingView"))
+        let end = try XCTUnwrap(s.range(of: "struct CodeBlockView"))
+        let headingSource = String(s[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(
+            headingSource.contains("MarkdownText.cachedAttributed(text)"),
+            "HeadingView must route through the shared markdown cache"
+        )
+        XCTAssertFalse(
+            headingSource.contains("AttributedString(\n                markdown: text")
+                || headingSource.contains("AttributedString(markdown: text"),
+            "HeadingView must not re-parse markdown directly on every body evaluation"
+        )
+    }
+
     func testLiveAndReplayViewsReuseISO8601Formatters() throws {
         let live = try source("macos/Engram/Components/LiveSessionCard.swift")
         let elapsedStart = try XCTUnwrap(live.range(of: "private var elapsedText"))

@@ -39,11 +39,19 @@ clearly-safe fixes (all reduce idle wakeups/queries/polling):
 - Validation: full `EngramServiceCore` (210), `EngramCoreTests` (447), and
   targeted `EngramTests` suites green, 0 failures.
 
-Reported but NOT applied (lower impact / tradeoffs — left for a follow-up):
-HomeView workbench reload debounce; directory-level mtime pruning for the
-indexer + live-session FS walks; health-monitor 5s cadence (kept for crash-
-detection responsiveness); `HeadingView` markdown re-parse caching
-(per-interaction, not idle).
+Low-severity follow-ups:
+- DONE: `HeadingView` now reuses `MarkdownText`'s bounded NSCache instead of
+  re-parsing markdown on every body evaluation (per-interaction main-thread CPU,
+  zero behavior change).
+- NOT changed (deliberate):
+  - Health-monitor 5s cadence — kept for crash-detection responsiveness.
+  - Indexer/live-session FS-walk narrowing — directory-mtime pruning is unsafe
+    for trees whose files live in subdirs (would drop genuinely-active sessions),
+    and codex date-dir windowing only saves bounded I/O (not CPU) while changing
+    the full-history scan contract; not worth the correctness risk.
+  - HomeView workbench reload — already off-main-thread and fires only ~every
+    5 min when new sessions are indexed; debounce yields ~nothing and decoupling
+    would cost freshness.
 
 ### Reviewed + hardened Codex's polling/CPU fix (2026-06-19, Claude)
 
