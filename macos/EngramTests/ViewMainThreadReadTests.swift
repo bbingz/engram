@@ -42,6 +42,24 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testAppDoesNotStartDuplicateStatusPollingStreams() throws {
+        let s = try source("macos/Engram/App.swift")
+        let directStatusObservationCalls = s
+            .split(whereSeparator: \.isNewline)
+            .filter { line in
+                line.trimmingCharacters(in: .whitespaces) == "startServiceStatusObservation()"
+            }
+
+        XCTAssertTrue(
+            directStatusObservationCalls.isEmpty,
+            "App should not run the legacy events() status stream alongside EngramServiceLauncher health polling"
+        )
+        XCTAssertTrue(
+            s.contains("serviceLauncher.startHealthMonitor"),
+            "EngramServiceLauncher health polling remains the single periodic status probe"
+        )
+    }
+
     func testSearchPageGuardsAgainstStaleResponses() throws {
         let s = try source("macos/Engram/Views/Pages/SearchPageView.swift")
         XCTAssertTrue(
@@ -159,6 +177,22 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertFalse(
             functionSource.contains("DateFormatter()"),
             "formatDateLabel runs for every timeline group and must not allocate DateFormatter per call"
+        )
+    }
+
+    func testHeadingViewReusesCachedMarkdownParse() throws {
+        let s = try source("macos/Engram/Views/ContentSegmentViews.swift")
+        let start = try XCTUnwrap(s.range(of: "struct HeadingView"))
+        let end = try XCTUnwrap(s.range(of: "struct CodeBlockView"))
+        let headingSource = String(s[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(
+            headingSource.contains("MarkdownText.cachedAttributed(text)"),
+            "HeadingView must route through the shared markdown cache"
+        )
+        XCTAssertFalse(
+            headingSource.contains("AttributedString(\n                markdown: text")
+                || headingSource.contains("AttributedString(markdown: text"),
+            "HeadingView must not re-parse markdown directly on every body evaluation"
         )
     }
 

@@ -327,27 +327,35 @@ public enum EngramServiceRunner {
                 let status = try await gate.performWriteCommand(name: "periodicIndexStatus") { writer in
                     try writer.indexStatus()
                 }.value
-                let repoCandidates = try await gate.performWriteCommand(name: "periodicRepoCandidates") { writer in
-                    try writer.read { db in
-                        try RepoDiscovery.sessionCwdCounts(db)
-                    }
-                }.value
                 // Refresh git_repos from session cwds (replaces removed Node
                 // git-probe.ts; populates the otherwise-dormant Repos page).
-                // Git probes can be slow or wedged, so they run outside the
-                // serialized service write gate; only the final upsert is gated.
-                let repoEntries = RepoDiscovery.probeRepositories(repoCandidates)
-                let repos = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
-                    try writer.write { db in
-                        try RepoDiscovery.upsert(
-                            db,
-                            entries: repoEntries,
-                            probedAt: ISO8601DateFormatter().string(from: Date())
-                        )
-                    }
+                // Each probe spawns several `git` subprocesses per cwd (up to 200
+                // cwds), so only re-probe when this scan actually indexed new
+                // content — mirroring the parent-backfill gate above. An idle
+                // machine with no new sessions then does ZERO git fan-out per
+                // cycle instead of hundreds of subprocess spawns every 5 minutes.
+                var repoCount = 0
+                if scan.indexed > 0 {
+                    let repoCandidates = try await gate.performWriteCommand(name: "periodicRepoCandidates") { writer in
+                        try writer.read { db in
+                            try RepoDiscovery.sessionCwdCounts(db)
+                        }
+                    }.value
+                    // Git probes can be slow or wedged, so they run outside the
+                    // serialized service write gate; only the final upsert is gated.
+                    let repoEntries = RepoDiscovery.probeRepositories(repoCandidates)
+                    repoCount = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
+                        try writer.write { db in
+                            try RepoDiscovery.upsert(
+                                db,
+                                entries: repoEntries,
+                                probedAt: ISO8601DateFormatter().string(from: Date())
+                            )
+                        }
+                    }.value
                 }
                 ServiceLogger.notice(
-                    "index scan completed: indexed=\(scan.indexed) total=\(status.total) todayParents=\(status.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(repos.value)",
+                    "index scan completed: indexed=\(scan.indexed) total=\(status.total) todayParents=\(status.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(repoCount)",
                     category: .runner
                 )
                 emit(ServiceIndexEvent(

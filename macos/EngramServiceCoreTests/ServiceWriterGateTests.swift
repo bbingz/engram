@@ -86,6 +86,214 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertEqual(walSizeAfterTruncate, 0, "TRUNCATE must shrink WAL file to 0 bytes")
     }
 
+    func testIndexStatusUsesCacheWithinSameGenerationAndExpiresAfterTTL() async throws {
+        let paths = try makeGatePaths()
+        let clock = ManualDateProvider(Date(timeIntervalSince1970: 1_700_000_000))
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            indexStatusCacheTTL: 30,
+            now: clock.now
+        )
+        let startTime = ISO8601DateFormatter().string(from: clock.now())
+
+        _ = try await gate.performWriteCommand(name: "seed_sessions") { writer in
+            try writer.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE sessions(
+                        id TEXT PRIMARY KEY,
+                        hidden_at TEXT,
+                        parent_session_id TEXT,
+                        suggested_parent_id TEXT,
+                        tier TEXT,
+                        start_time TEXT NOT NULL
+                    )
+                    """)
+                try db.execute(
+                    sql: "INSERT INTO sessions(id, start_time) VALUES ('s1', ?)",
+                    arguments: [startTime]
+                )
+            }
+        }
+
+        let first = try await gate.indexStatus()
+        XCTAssertEqual(first.total, 1)
+
+        let bypassWriter = try EngramDatabaseWriter(path: paths.database.path)
+        try bypassWriter.write { db in
+            try db.execute(
+                sql: "INSERT INTO sessions(id, start_time) VALUES ('s2', ?)",
+                arguments: [startTime]
+            )
+        }
+
+        let cached = try await gate.indexStatus()
+        XCTAssertEqual(cached.total, 1)
+
+        clock.advance(by: 29)
+        let stillCached = try await gate.indexStatus()
+        XCTAssertEqual(stillCached.total, 1, "cache must still serve within the TTL window")
+
+        // Reaching exactly the TTL boundary must expire the cache (strict `<`):
+        // a `<=` off-by-one regression would keep serving the stale count here.
+        clock.advance(by: 1)
+        let refreshed = try await gate.indexStatus()
+        XCTAssertEqual(refreshed.total, 2)
+    }
+
+    func testIndexStatusCacheInvalidatesAfterGateWrite() async throws {
+        let paths = try makeGatePaths()
+        let clock = ManualDateProvider(Date(timeIntervalSince1970: 1_700_000_000))
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            indexStatusCacheTTL: 30,
+            now: clock.now
+        )
+        let startTime = ISO8601DateFormatter().string(from: clock.now())
+
+        _ = try await gate.performWriteCommand(name: "seed_sessions") { writer in
+            try writer.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE sessions(
+                        id TEXT PRIMARY KEY,
+                        hidden_at TEXT,
+                        parent_session_id TEXT,
+                        suggested_parent_id TEXT,
+                        tier TEXT,
+                        start_time TEXT NOT NULL
+                    )
+                    """)
+                try db.execute(
+                    sql: "INSERT INTO sessions(id, start_time) VALUES ('s1', ?)",
+                    arguments: [startTime]
+                )
+            }
+        }
+        let cachedBeforeWrite = try await gate.indexStatus()
+        XCTAssertEqual(cachedBeforeWrite.total, 1)
+
+        _ = try await gate.performWriteCommand(name: "insert_session") { writer in
+            try writer.write { db in
+                try db.execute(
+                    sql: "INSERT INTO sessions(id, start_time) VALUES ('s2', ?)",
+                    arguments: [startTime]
+                )
+            }
+        }
+
+        let refreshedAfterWrite = try await gate.indexStatus()
+        XCTAssertEqual(refreshedAfterWrite.total, 2)
+    }
+
+    func testIndexStatusBypassesCacheDuringInFlightWrite() async throws {
+        let paths = try makeGatePaths()
+        let clock = ManualDateProvider(Date(timeIntervalSince1970: 1_700_000_000))
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            indexStatusCacheTTL: 30,
+            now: clock.now
+        )
+        let startTime = ISO8601DateFormatter().string(from: clock.now())
+        let probe = CancellationProbe()
+
+        _ = try await gate.performWriteCommand(name: "seed_sessions") { writer in
+            try writer.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE sessions(
+                        id TEXT PRIMARY KEY,
+                        hidden_at TEXT,
+                        parent_session_id TEXT,
+                        suggested_parent_id TEXT,
+                        tier TEXT,
+                        start_time TEXT NOT NULL
+                    )
+                    """)
+                try db.execute(
+                    sql: "INSERT INTO sessions(id, start_time) VALUES ('s1', ?)",
+                    arguments: [startTime]
+                )
+            }
+        }
+        let cachedBeforeWrite = try await gate.indexStatus()
+        XCTAssertEqual(cachedBeforeWrite.total, 1)
+
+        let inFlightWrite = Task {
+            try await gate.performWriteCommand(name: "inflight_insert") { writer in
+                try writer.write { db in
+                    try db.execute(
+                        sql: "INSERT INTO sessions(id, start_time) VALUES ('s2', ?)",
+                        arguments: [startTime]
+                    )
+                }
+                await probe.markFirstStarted()
+                await probe.waitUntilRelease()
+                return "inserted"
+            }
+        }
+        await probe.waitUntilFirstStarted()
+
+        let duringWrite = try await gate.indexStatus()
+        XCTAssertEqual(duringWrite.total, 2)
+
+        await probe.releaseFirst()
+        _ = try await inFlightWrite.value
+    }
+
+    func testIndexStatusCacheInvalidatesWhenWriteMutatesThenThrows() async throws {
+        let paths = try makeGatePaths()
+        let clock = ManualDateProvider(Date(timeIntervalSince1970: 1_700_000_000))
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            indexStatusCacheTTL: 30,
+            now: clock.now
+        )
+        let startTime = ISO8601DateFormatter().string(from: clock.now())
+
+        _ = try await gate.performWriteCommand(name: "seed_sessions") { writer in
+            try writer.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE sessions(
+                        id TEXT PRIMARY KEY,
+                        hidden_at TEXT,
+                        parent_session_id TEXT,
+                        suggested_parent_id TEXT,
+                        tier TEXT,
+                        start_time TEXT NOT NULL
+                    )
+                    """)
+                try db.execute(
+                    sql: "INSERT INTO sessions(id, start_time) VALUES ('s1', ?)",
+                    arguments: [startTime]
+                )
+            }
+        }
+        let cachedBeforeWrite = try await gate.indexStatus()
+        XCTAssertEqual(cachedBeforeWrite.total, 1)
+
+        do {
+            _ = try await gate.performWriteCommand(name: "mutate_then_throw") { writer in
+                try writer.write { db in
+                    try db.execute(
+                        sql: "INSERT INTO sessions(id, start_time) VALUES ('s2', ?)",
+                        arguments: [startTime]
+                    )
+                }
+                throw EngramServiceError.serviceUnavailable(message: "simulated failure after mutation")
+            }
+            XCTFail("mutate_then_throw should fail")
+        } catch let error as EngramServiceError {
+            guard case .serviceUnavailable = error else {
+                return XCTFail("expected serviceUnavailable, got \(error)")
+            }
+        }
+
+        let refreshedAfterFailure = try await gate.indexStatus()
+        XCTAssertEqual(refreshedAfterFailure.total, 2)
+    }
+
     private static func fileSize(_ path: String, fileManager: FileManager) throws -> UInt64 {
         let attrs = try fileManager.attributesOfItem(atPath: path)
         return (attrs[.size] as? UInt64) ?? 0
@@ -255,6 +463,27 @@ private final class CountingWriterFactory {
     func makeWriter(path: String) throws -> EngramDatabaseWriter {
         count += 1
         return try EngramDatabaseWriter(path: path)
+    }
+}
+
+final class ManualDateProvider: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) {
+        self.value = value
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        value = value.addingTimeInterval(interval)
+        lock.unlock()
     }
 }
 

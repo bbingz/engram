@@ -61,6 +61,10 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC);
             CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
             CREATE INDEX IF NOT EXISTS idx_sessions_orphan_status ON sessions(orphan_status);
+            -- Serves `COUNT(*) FROM sessions WHERE hidden_at IS NULL`, the visible-
+            -- session count refreshed by the status poll every ~10s, as an
+            -- index-only scan instead of a full sessions-table scan.
+            CREATE INDEX IF NOT EXISTS idx_sessions_visible ON sessions(hidden_at) WHERE hidden_at IS NULL;
 
             DROP TRIGGER IF EXISTS trg_sessions_parent_cascade;
             CREATE TRIGGER trg_sessions_parent_cascade

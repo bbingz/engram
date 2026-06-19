@@ -18,17 +18,21 @@ struct MarkdownText: View {
         return cache
     }()
 
-    private var attributed: AttributedString? {
+    // Shared cached markdown parse. Other inline-markdown views (e.g. HeadingView)
+    // route through this so they don't re-parse on every body evaluation.
+    static func cachedAttributed(_ text: String) -> AttributedString? {
         let key = NSString(string: text)
-        if let cached = Self.attrCache.object(forKey: key) { return cached.value }
+        if let cached = attrCache.object(forKey: key) { return cached.value }
         let result = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )
         // Cost ≈ UTF-16 byte length of the source string.
-        Self.attrCache.setObject(CachedAttributedString(value: result), forKey: key, cost: text.utf16.count * 2)
+        attrCache.setObject(CachedAttributedString(value: result), forKey: key, cost: text.utf16.count * 2)
         return result
     }
+
+    private var attributed: AttributedString? { Self.cachedAttributed(text) }
 
     var body: some View {
         if let attributed {
@@ -147,10 +151,9 @@ struct HeadingView: View {
     let fontSize: Double
 
     var body: some View {
-        if let attributed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
+        // Reuse MarkdownText's bounded NSCache instead of re-parsing markdown on
+        // every body evaluation (scroll, font-size drag, theme/find-bar updates).
+        if let attributed = MarkdownText.cachedAttributed(text) {
             Text(attributed)
                 .font(.system(size: fontSize, weight: .bold))
                 .textSelection(.enabled)

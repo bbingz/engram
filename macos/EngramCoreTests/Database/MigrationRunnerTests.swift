@@ -37,6 +37,8 @@ final class MigrationRunnerTests: XCTestCase {
         }
         XCTAssertTrue(sessionIndexes.contains("idx_sessions_project"))
         XCTAssertTrue(sessionIndexes.contains("idx_sessions_last_accessed"))
+        // Partial index backing the visible-session COUNT refreshed on the status poll.
+        XCTAssertTrue(sessionIndexes.contains("idx_sessions_visible"))
         XCTAssertTrue(sessionIndexes.contains("idx_metrics_ts"))
         XCTAssertTrue(sessionIndexes.contains("idx_migration_log_state_started"))
 

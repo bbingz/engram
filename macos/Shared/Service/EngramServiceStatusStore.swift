@@ -63,10 +63,16 @@ final class EngramServiceStatusStore {
 
     func apply(_ newStatus: EngramServiceStatus) {
         lastEventAt = Date()
-        status = newStatus
+        // The health monitor calls this every ~5s with the SAME value at idle.
+        // @Observable fires observers on every assignment regardless of equality,
+        // so unguarded writes re-trigger the always-on menu-bar observers (NSImage
+        // rebuild + badge refresh) 12x/min for no change. Only write on a real
+        // change so the idle status poll becomes free. (lastEventAt has no
+        // observers, so its unconditional update costs nothing.)
+        if status != newStatus { status = newStatus }
         if case .running(let total, let todayParents) = newStatus {
-            totalSessions = total
-            todayParentSessions = todayParents
+            if totalSessions != total { totalSessions = total }
+            if todayParentSessions != todayParents { todayParentSessions = todayParents }
         }
     }
 
@@ -111,13 +117,14 @@ final class EngramServiceStatusStore {
     }
 
     private func applyTotals(from event: EngramServiceEvent) {
-        if let total = event.total {
+        if let total = event.total, totalSessions != total {
             totalSessions = total
         }
-        if let todayParents = event.todayParents {
+        if let todayParents = event.todayParents, todayParentSessions != todayParents {
             todayParentSessions = todayParents
         }
-        status = .running(total: totalSessions, todayParents: todayParentSessions)
+        let newStatus = EngramServiceStatus.running(total: totalSessions, todayParents: todayParentSessions)
+        if status != newStatus { status = newStatus }
     }
 
     private static func pressureSummaryCandidate(_ item: EngramServiceUsageItem) -> UsagePressureCandidate? {

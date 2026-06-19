@@ -1,3 +1,4 @@
+import Observation
 import XCTest
 @testable import Engram
 
@@ -21,33 +22,46 @@ final class ServiceEventRoutingTests: XCTestCase {
         try JSONDecoder().decode(EngramServiceEvent.self, from: Data(json.utf8))
     }
 
-    func testServiceStatusObservationUsesDetachedEventPump() throws {
+    func testAppRoutesServiceEventsThroughLauncherWithoutDuplicateEventPump() throws {
         let source = try appSource
-        let start = try XCTUnwrap(source.range(of: "private func startServiceStatusObservation()"))
-        let end = try XCTUnwrap(source.range(of: "/// OBS-O2:"))
-        let body = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(body.contains("serviceStatusTask = Task.detached"))
-        XCTAssertTrue(body.contains("await MainActor.run"))
+        XCTAssertTrue(source.contains("serviceLauncher.start("))
+        XCTAssertTrue(source.contains("onEvent: { [serviceStatusStore] event in"))
+        XCTAssertTrue(source.contains("Self.applyServiceEvent(event, to: serviceStatusStore)"))
         XCTAssertFalse(
-            body.contains("serviceStatusTask = Task {"),
-            "service event pump must not inherit AppDelegate's MainActor isolation"
+            source.contains("private func startServiceStatusObservation()"),
+            "AppDelegate must not run a duplicate service status/event stream next to EngramServiceLauncher"
         )
+        XCTAssertFalse(source.contains("observeServiceStatus(client:"))
     }
 
-    func testServiceStatusObservationKeepsEventPumpAfterInitialStatusFailure() async throws {
+    func testApplyIdenticalRunningStatusDoesNotRefireObservers() {
         let store = EngramServiceStatusStore()
-        let client = MockEngramServiceClient(
-            statusResult: .failure(EngramServiceError.serviceUnavailable(message: "starting")),
-            events: AsyncThrowingStream { continuation in
-                continuation.yield(EngramServiceEvent(event: "indexed", total: 9, todayParents: 1))
-                continuation.finish()
-            }
-        )
+        store.apply(.running(total: 5, todayParents: 2))
 
-        await AppDelegate.observeServiceStatus(client: client, store: store)
+        // The ~5s idle health poll calls apply() with an unchanged .running value.
+        // Re-assigning equal values to @Observable props would refire the always-on
+        // menu-bar observers; the equality guard must make the idle apply a no-op.
+        var firedOnIdentical = false
+        withObservationTracking {
+            _ = store.status
+            _ = store.totalSessions
+            _ = store.todayParentSessions
+        } onChange: {
+            firedOnIdentical = true
+        }
+        store.apply(.running(total: 5, todayParents: 2))
+        XCTAssertFalse(firedOnIdentical, "applying an identical status must not refire @Observable observers")
 
-        XCTAssertEqual(store.status, .running(total: 9, todayParents: 1))
+        var firedOnChange = false
+        withObservationTracking {
+            _ = store.status
+            _ = store.totalSessions
+            _ = store.todayParentSessions
+        } onChange: {
+            firedOnChange = true
+        }
+        store.apply(.running(total: 6, todayParents: 2))
+        XCTAssertTrue(firedOnChange, "a real status change must still fire observers")
     }
 
     func testIndexErrorEventSurfacesAsDegraded() throws {

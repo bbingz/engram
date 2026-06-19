@@ -2637,6 +2637,202 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(response.sessions.first?.activityLevel, "active")
     }
 
+    func testFileSystemProviderKeepsNewestLiveSessionsWhenCandidatesExceedLimit() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldDir = root
+            .appendingPathComponent(".codex/sessions/a-old", isDirectory: true)
+        let newDir = root
+            .appendingPathComponent(".codex/sessions/z-new", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: newDir, withIntermediateDirectories: true)
+        let oldBase = Date(timeIntervalSinceNow: -60 * 60)
+        for index in 0..<105 {
+            let id = String(format: "old-%03d", index)
+            let file = oldDir.appendingPathComponent("\(id).jsonl")
+            try """
+            {"type":"session_meta","payload":{"id":"\(id)","cwd":"/tmp/old","model":"gpt-5"}}
+            """.write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.modificationDate: oldBase.addingTimeInterval(Double(index))],
+                ofItemAtPath: file.path
+            )
+        }
+        let newest = newDir.appendingPathComponent("zz-newest.jsonl")
+        try """
+        {"type":"session_meta","payload":{"id":"newest","cwd":"/tmp/new","model":"gpt-5"}}
+        """.write(to: newest, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: newest.path)
+
+        let provider = FileSystemEngramServiceReadProvider(homeDirectory: root)
+        let response = try await provider.liveSessions()
+
+        XCTAssertEqual(response.sessions.count, 100)
+        XCTAssertEqual(response.sessions.first?.sessionId, "newest")
+        XCTAssertTrue(response.sessions.contains { $0.sessionId == "newest" })
+        XCTAssertFalse(response.sessions.contains { $0.sessionId == "old-000" })
+    }
+
+    func testPeriodicRepoDiscoveryIsGatedBehindIndexedSessions() throws {
+        // Repo discovery spawns several `git` subprocesses per cwd (up to 200).
+        // It must NOT run on every idle 5-min indexing tick — only when the scan
+        // actually indexed new content, mirroring the parent-backfill guard.
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        var guardIndices: [String.Index] = []
+        var searchStart = source.startIndex
+        while let range = source.range(of: "if scan.indexed > 0", range: searchStart..<source.endIndex) {
+            guardIndices.append(range.lowerBound)
+            searchStart = range.upperBound
+        }
+        XCTAssertGreaterThanOrEqual(
+            guardIndices.count, 2,
+            "repo discovery must add its own `if scan.indexed > 0` guard alongside parent-backfill"
+        )
+        let probe = try XCTUnwrap(source.range(of: "RepoDiscovery.probeRepositories"))
+        XCTAssertTrue(
+            guardIndices.contains { $0 < probe.lowerBound },
+            "RepoDiscovery.probeRepositories must be gated behind `if scan.indexed > 0`, not run unconditionally"
+        )
+    }
+
+    func testLiveSessionsStreamsEnumeratorInsteadOfMaterializingFullTree() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
+        let start = try XCTUnwrap(source.range(of: "private func scanLiveSessions(now: Date)"))
+        let end = try XCTUnwrap(source.range(of: "private struct LiveMetadata"))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertFalse(
+            body.contains("compactMap { $0 as? URL }"),
+            "liveSessions must not materialize the full directory tree before applying the result cap"
+        )
+        XCTAssertTrue(
+            body.contains("while let file = enumerator.nextObject() as? URL"),
+            "liveSessions should stream candidates from FileManager enumerators"
+        )
+    }
+
+    func testFileSystemProviderCachesLiveSessionsAcrossMenuCadence() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root
+            .appendingPathComponent(".codex/sessions/2026/05/24", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let first = sessionDir.appendingPathComponent("first.jsonl")
+        try """
+        {"type":"session_meta","payload":{"id":"first","cwd":"/tmp/engram","model":"gpt-5"}}
+        """.write(to: first, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: first.path)
+
+        let provider = FileSystemEngramServiceReadProvider(homeDirectory: root)
+        let initial = try await provider.liveSessions()
+        let second = sessionDir.appendingPathComponent("second.jsonl")
+        try """
+        {"type":"session_meta","payload":{"id":"second","cwd":"/tmp/engram","model":"gpt-5"}}
+        """.write(to: second, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: second.path)
+
+        let cached = try await provider.liveSessions()
+
+        XCTAssertEqual(initial.sessions.map(\.sessionId), ["first"])
+        XCTAssertEqual(
+            cached.sessions.map(\.sessionId),
+            ["first"],
+            "liveSessions should reuse a short-lived cache instead of rescanning on every 10s menu tick"
+        )
+    }
+
+    func testFileSystemProviderLiveSessionCacheExpiresAfterTTL() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root
+            .appendingPathComponent(".codex/sessions/2026/05/24", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let clock = ManualDateProvider(Date())
+        let first = sessionDir.appendingPathComponent("first.jsonl")
+        try """
+        {"type":"session_meta","payload":{"id":"first","cwd":"/tmp/engram","model":"gpt-5"}}
+        """.write(to: first, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: clock.now()], ofItemAtPath: first.path)
+
+        let provider = FileSystemEngramServiceReadProvider(
+            homeDirectory: root,
+            liveSessionCacheTTL: 30,
+            now: clock.now
+        )
+        let initial = try await provider.liveSessions()
+        XCTAssertEqual(initial.sessions.map(\.sessionId), ["first"])
+
+        let second = sessionDir.appendingPathComponent("second.jsonl")
+        try """
+        {"type":"session_meta","payload":{"id":"second","cwd":"/tmp/engram","model":"gpt-5"}}
+        """.write(to: second, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: clock.now()], ofItemAtPath: second.path)
+
+        // Within TTL: the cache still serves the pre-second snapshot.
+        clock.advance(by: 29)
+        let cachedWithinTTL = try await provider.liveSessions()
+        XCTAssertEqual(
+            cachedWithinTTL.sessions.map(\.sessionId),
+            ["first"],
+            "live-session cache must serve within the TTL window"
+        )
+
+        // Past TTL: the cache expires and a fresh scan picks up the new file.
+        clock.advance(by: 2)
+        let refreshed = try await provider.liveSessions()
+        XCTAssertEqual(
+            Set(refreshed.sessions.map(\.sessionId)),
+            ["first", "second"],
+            "live-session cache must expire after TTL and rescan the filesystem"
+        )
+    }
+
+    func testFileSystemProviderKeepsActiveSessionFromAnotherSourceUnderGlobalCap() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let codexDir = root.appendingPathComponent(".codex/sessions/2026/05/24", isDirectory: true)
+        let claudeDir = root.appendingPathComponent(".claude/projects/demo", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: claudeDir, withIntermediateDirectories: true)
+
+        // Flood one source with 105 recent-but-older files (idle/recent tier).
+        let base = Date(timeIntervalSinceNow: -30 * 60)
+        for index in 0..<105 {
+            let id = String(format: "codex-%03d", index)
+            let file = codexDir.appendingPathComponent("\(id).jsonl")
+            try """
+            {"type":"session_meta","payload":{"id":"\(id)","cwd":"/tmp/codex","model":"gpt-5"}}
+            """.write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.modificationDate: base.addingTimeInterval(Double(index))],
+                ofItemAtPath: file.path
+            )
+        }
+        // A single genuinely active (newest) session in a DIFFERENT source.
+        let active = claudeDir.appendingPathComponent("active.jsonl")
+        try """
+        {"type":"session_meta","payload":{"id":"active-claude","cwd":"/tmp/claude","model":"claude"}}
+        """.write(to: active, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: active.path)
+
+        let provider = FileSystemEngramServiceReadProvider(homeDirectory: root)
+        let response = try await provider.liveSessions()
+
+        // The global 100-cap keeps the newest-by-mtime across ALL sources, so a
+        // source flooding 100+ recent files must not crowd out a newer active
+        // session from another source.
+        XCTAssertEqual(response.sessions.count, 100)
+        XCTAssertEqual(response.sessions.first?.sessionId, "active-claude")
+        XCTAssertTrue(
+            response.sessions.contains { $0.sessionId == "active-claude" && $0.activityLevel == "active" },
+            "the newest active session must survive the global cap even when another source floods it"
+        )
+    }
+
     func testLinkSessionsRejectsPathsOutsideKnownSessionRoots() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

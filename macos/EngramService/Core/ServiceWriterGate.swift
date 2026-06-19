@@ -10,6 +10,12 @@ public struct ServiceWriterGateResult<Value: Sendable>: Sendable {
 public actor ServiceWriterGate {
     public typealias WriterFactory = @Sendable (_ path: String) throws -> EngramDatabaseWriter
 
+    private struct CachedIndexStatus {
+        let databaseGeneration: Int
+        let cachedAt: Date
+        let status: EngramDatabaseIndexStatus
+    }
+
     public let databasePath: String
     private let lockFD: Int32
     private let lockPath: String
@@ -18,7 +24,11 @@ public actor ServiceWriterGate {
     private let writer: EngramDatabaseWriter
     private let writeSemaphore = ServiceAsyncSemaphore(value: 1)
     private var databaseGeneration = 0
+    private var indexStatusCache: CachedIndexStatus?
     private var longRunningWriteInProgress = false
+    private var writeInProgress = false
+    private let indexStatusCacheTTL: TimeInterval
+    private let now: @Sendable () -> Date
     // Upper bound a queued write may wait for the gate before giving up. Sized
     // well above any legitimate single write (which complete in ms) so it only
     // trips when a normal holder is genuinely wedged. Project migration commands
@@ -31,9 +41,13 @@ public actor ServiceWriterGate {
         databasePath: String,
         runtimeDirectory: URL,
         queueTimeoutNanoseconds: UInt64? = 60_000_000_000,
+        indexStatusCacheTTL: TimeInterval = 10,
+        now: @escaping @Sendable () -> Date = { Date() },
         writerFactory: WriterFactory = { try EngramDatabaseWriter(path: $0) }
     ) throws {
         self.queueTimeoutNanoseconds = (queueTimeoutNanoseconds == 0) ? nil : queueTimeoutNanoseconds
+        self.indexStatusCacheTTL = indexStatusCacheTTL
+        self.now = now
         try Self.validateRuntimeDirectory(runtimeDirectory)
         self.databasePath = databasePath
         lockPath = runtimeDirectory.appendingPathComponent("engram-service.lock").path
@@ -75,15 +89,21 @@ public actor ServiceWriterGate {
         let timeout = longRunningWriteInProgress ? nil : queueTimeoutNanoseconds
         try await writeSemaphore.wait(timeoutNanoseconds: timeout)
         longRunningWriteInProgress = Self.isLongRunningWriteCommand(name)
+        writeInProgress = true
+        indexStatusCache = nil
         do {
             try Task.checkCancellation()
             let value = try await operation(writer)
             databaseGeneration += 1
+            indexStatusCache = nil
             longRunningWriteInProgress = false
+            writeInProgress = false
             await writeSemaphore.signal()
             return ServiceWriterGateResult(value: value, databaseGeneration: databaseGeneration)
         } catch {
             longRunningWriteInProgress = false
+            writeInProgress = false
+            indexStatusCache = nil
             await writeSemaphore.signal()
             throw error
         }
@@ -102,7 +122,33 @@ public actor ServiceWriterGate {
     }
 
     public func indexStatus() throws -> EngramDatabaseIndexStatus {
-        try writer.indexStatus()
+        guard indexStatusCacheTTL > 0 else {
+            return try writer.indexStatus()
+        }
+
+        let currentTime = now()
+        guard !writeInProgress else {
+            return try writer.indexStatus()
+        }
+        if let cached = indexStatusCache,
+           cached.databaseGeneration == databaseGeneration {
+            // `now()` defaults to wall-clock `Date()`, which is not monotonic: an
+            // NTP/manual/sleep correction can move it backward. A negative elapsed
+            // value is always `< TTL`, which would pin a stale cache past its TTL,
+            // so require non-negative elapsed too (treat a backward jump as expiry).
+            let elapsed = currentTime.timeIntervalSince(cached.cachedAt)
+            if elapsed >= 0, elapsed < indexStatusCacheTTL {
+                return cached.status
+            }
+        }
+
+        let status = try writer.indexStatus()
+        indexStatusCache = CachedIndexStatus(
+            databaseGeneration: databaseGeneration,
+            cachedAt: currentTime,
+            status: status
+        )
+        return status
     }
 
     func queuedWriteWaiterCountForTesting() async -> Int {

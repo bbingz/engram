@@ -68,7 +68,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             btn.target = self
         }
 
-        // Update badge: total sessions + live count (consolidated, 10s poll)
+        // Update badge: total sessions + live count (consolidated, 30s poll)
         self.updateBadge()
         // Re-update whenever totalSessions changes (Observation framework)
         self.observeTotalSessions()
@@ -78,8 +78,11 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         usagePressureNotifier.observe(summary: serviceStatusStore.usagePressureSummary)
         self.observeUsagePressure()
 
-        // Poll live sessions every 10s for badge update
-        badgeTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+        // Poll live sessions every 30s for badge update. The service caches the
+        // live-session scan for 30s, so polling faster (the old 10s) just paid
+        // extra IPC round-trips for the same cached payload; aligning the cadence
+        // to the cache TTL removes ~2/3 of the always-on idle badge IPC traffic.
+        badgeTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateBadge()
                 await self?.checkCostBudget()
