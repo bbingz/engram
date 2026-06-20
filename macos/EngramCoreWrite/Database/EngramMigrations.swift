@@ -43,7 +43,8 @@ enum EngramMigrations {
               link_checked_at TEXT,
               orphan_status TEXT,
               orphan_since TEXT,
-              orphan_reason TEXT
+              orphan_reason TEXT,
+              offload_state TEXT NOT NULL DEFAULT 'local'
             );
         """)
 
@@ -65,6 +66,8 @@ enum EngramMigrations {
             -- session count refreshed by the status poll every ~10s, as an
             -- index-only scan instead of a full sessions-table scan.
             CREATE INDEX IF NOT EXISTS idx_sessions_visible ON sessions(hidden_at) WHERE hidden_at IS NULL;
+            -- Serves remote-offload eligibility scans and read-path offloaded lookups.
+            CREATE INDEX IF NOT EXISTS idx_sessions_offload_state ON sessions(offload_state);
 
             DROP TRIGGER IF EXISTS trg_sessions_parent_cascade;
             CREATE TRIGGER trg_sessions_parent_cascade
@@ -372,6 +375,53 @@ enum EngramMigrations {
               created_at TEXT DEFAULT (datetime('now')),
               deleted_at TEXT
             );
+
+            -- Remote session offload: cold/archived sessions are pushed to a
+            -- self-hosted engram-remote server to reclaim local disk/CPU. Only
+            -- regenerable index artifacts (sessions_fts content + summary) leave;
+            -- the original transcript bytes on disk are never moved. sessions.offload_state
+            -- marks the per-session lifecycle ('local' -> 'offloaded'); the two queues
+            -- drive the background sync worker; sync_ledger is the idempotent,
+            -- resumable per-session sync history.
+            CREATE TABLE IF NOT EXISTS offload_queue (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','inflight','done','failed')),
+              since_generation INTEGER,
+              remote_key TEXT,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_offload_queue_status ON offload_queue(status);
+            CREATE INDEX IF NOT EXISTS idx_offload_queue_session ON offload_queue(session_id);
+            -- Serves the open-job existence check (session_id + status) on enqueue.
+            CREATE INDEX IF NOT EXISTS idx_offload_queue_session_status ON offload_queue(session_id, status);
+
+            CREATE TABLE IF NOT EXISTS rehydrate_queue (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','inflight','done','failed')),
+              attempts INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_rehydrate_queue_status ON rehydrate_queue(status);
+            CREATE INDEX IF NOT EXISTS idx_rehydrate_queue_session_status ON rehydrate_queue(session_id, status);
+
+            CREATE TABLE IF NOT EXISTS sync_ledger (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              remote_peer TEXT,
+              remote_session_id TEXT,
+              remote_key TEXT,
+              direction TEXT NOT NULL CHECK (direction IN ('out','in')),
+              content_hash TEXT,
+              synced_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sync_ledger_session ON sync_ledger(session_id, synced_at DESC);
         """)
         try migrateAuxTablesToV2(db)
     }
@@ -460,6 +510,7 @@ enum EngramMigrations {
             ("orphan_status", "TEXT"),
             ("orphan_since", "TEXT"),
             ("orphan_reason", "TEXT"),
+            ("offload_state", "TEXT NOT NULL DEFAULT 'local'"),
         ]
         for (name, definition) in columns where !existing.contains(name) {
             try db.execute(sql: "ALTER TABLE sessions ADD COLUMN \(name) \(definition)")

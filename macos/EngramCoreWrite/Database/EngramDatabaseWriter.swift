@@ -54,6 +54,25 @@ public final class EngramDatabaseWriter: Sendable {
         try SQLiteFileSecurity.secureDatabaseFiles(at: path)
     }
 
+    /// Number of free (reusable but not-yet-returned-to-OS) pages. After bulk
+    /// deletes (e.g. purging offloaded sessions' FTS rows) these pages stay in the
+    /// file; `wal_checkpoint(TRUNCATE)` only shrinks the WAL, not the main DB. A
+    /// large freelist is the signal that a `vacuum()` would actually return disk.
+    public func freelistPageCount() throws -> Int {
+        try pool.read { db in try Int.fetchOne(db, sql: "PRAGMA freelist_count") ?? 0 }
+    }
+
+    /// Rebuild the database file, returning free pages to the OS. Runs OUTSIDE a
+    /// transaction (SQLite forbids `VACUUM` inside one) and transiently needs up to
+    /// ~2x the file size in free disk. Callers must run this through the writer
+    /// gate as a long-running command so it serializes with other writes.
+    public func vacuum() throws {
+        try pool.writeWithoutTransaction { db in
+            try db.execute(sql: "VACUUM")
+        }
+        try SQLiteFileSecurity.secureDatabaseFiles(at: path)
+    }
+
     private static func writerConfiguration() -> Configuration {
         var configuration = Configuration()
         configuration.prepareDatabase { db in

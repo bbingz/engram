@@ -143,12 +143,20 @@ public enum EngramServiceRunner {
             await Self.runObservabilityRetention(gate: gate)
         }
 
+        // Opt-in remote session offload (default OFF). When enabled, the indexing
+        // loop drains the offload/rehydrate queues and reclaims disk via VACUUM.
+        let remoteSync = RemoteSyncCoordinator.makeIfEnabled(gate: gate, environment: environment)
+        if remoteSync != nil {
+            ServiceLogger.info("remote offload enabled; wiring into indexing loop", category: .runner)
+        }
+
         let indexingTask = Task {
             await Self.runIndexingLoop(
                 gate: gate,
                 statusMonitor: statusMonitor,
                 telemetry: telemetry,
-                tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) }
+                tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
+                remoteSync: remoteSync
             )
         }
 
@@ -288,7 +296,8 @@ public enum EngramServiceRunner {
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
-        tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits]
+        tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
+        remoteSync: RemoteSyncCoordinator? = nil
     ) async {
         let intervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
 
@@ -323,6 +332,24 @@ public enum EngramServiceRunner {
                     jobs.completed += drain.result.completed
                     jobs.notApplicable += drain.result.notApplicable
                     if drain.drained { break }
+                }
+                // Remote offload: drain offload/rehydrate queues + reclaim disk.
+                // Each DB step is its own gated write; network I/O runs between
+                // them (outside the gate). No-op when offload is disabled.
+                if let remoteSync {
+                    do {
+                        let sync = try await remoteSync.runOnce()
+                        if sync.offloaded > 0 || sync.rehydrated > 0 || sync.reclaimedDisk {
+                            ServiceLogger.notice(
+                                "remote offload cycle: offloaded=\(sync.offloaded) rehydrated=\(sync.rehydrated) vacuumed=\(sync.reclaimedDisk)",
+                                category: .runner
+                            )
+                        }
+                    } catch is CancellationError {
+                        break
+                    } catch {
+                        ServiceLogger.error("remote offload cycle failed", category: .runner, error: error)
+                    }
                 }
                 let status = try await gate.performWriteCommand(name: "periodicIndexStatus") { writer in
                     try writer.indexStatus()

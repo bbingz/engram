@@ -7,6 +7,204 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Remote session server — adversarial review + remediation (2026-06-20, Claude)
+
+Ran a 6-dimension adversarial review workflow (concurrency/gate, FTS integrity,
+crypto/credentials, server/HTTP, schema/migration, lifecycle) with per-finding
+verification against the real code: 16 raw findings → 12 confirmed (9 real issues
++ 3 positive confirmations). Fixed all real findings:
+
+- **[critical] Offload content race**: a re-index between bundle capture and commit
+  could collapse fresh content into the shadow while the uploaded bundle held the
+  old content. `OffloadRepo.bundleInputs` now captures `sync_version`;
+  `commitOffloaded(expectedSyncVersion:)` flips state guarded by
+  `sync_version = ? AND offload_state = 'local'` and throws `RemoteSyncError.offloadStale`
+  (no FTS purge) if it changed — callers re-queue and re-capture next cycle.
+- **[critical/high] Stuck `inflight` jobs**: a crashed/cancelled cycle left claimed
+  jobs unrecoverable. `OffloadRepo.requeueStaleInflight` (age-thresholded so it can't
+  disturb a concurrent cycle) runs at the start of every offload/rehydrate cycle.
+- **[high] Failed jobs never retried**: `failOffload`/`failRehydrate` now retry
+  (back to `pending`) until `maxAttempts` (5), then terminal `failed` — a transient
+  network error no longer permanently abandons a session.
+- **[high/medium] Orphaned ledger rows**: `sync_ledger.session_id` now has
+  `REFERENCES sessions(id) ON DELETE CASCADE`; the version-guarded commit avoids
+  inserting a ledger row for a session removed mid-flight.
+- **[medium] HEAD invalid-key**: returns 400 (was 404), consistent with GET/PUT.
+- **[low] Token compare**: `constantTimeEquals` now compares fixed-length SHA-256
+  digests (no length side-channel).
+- **[low] Queue indexes**: added composite `(session_id, status)` indexes on both queues.
+
+Confirmed-solid (no change needed): AES-GCM nonce handling, server key/token sourced
+only from env, Keychain `kSecAttrAccessibleAfterFirstUnlock` for the background helper.
+
+Tests: `RemoteOffloadTests` gains stale-version-abort, stale-inflight-requeue, and
+retry-until-cap cases. Full `EngramServiceCoreTests` (215) + targeted `EngramCoreTests`
++ `EngramRemoteServerCoreTests` green, 0 failures. (The review's synthesis agent and 2
+crypto-lens judges were blocked by the model's cybersecurity content filter on
+defensively-framed prompts — synthesis was done by hand from the verified findings.)
+
+### Remote session server — Phase 5 IPC + Phase 7 read-path lazy rehydrate (2026-06-20, Claude)
+
+Final two pieces; the feature is now end-to-end complete (all 8 phases).
+
+IPC commands (`EngramServiceCommandHandler+RemoteSync.swift`, added to `dispatch()`):
+- `remoteOffload` — run one offload/rehydrate/reclaim cycle now (no-op + `enabled:false`
+  when offload is unconfigured). Protected (capability token).
+- `remoteRehydrate {sessionId}` — force-rehydrate one offloaded session now. Protected.
+- `remoteSyncStatus` — read-only: enabled, backendKind, local/offloaded counts, pending
+  offload/rehydrate depths. Ungated, like other reads.
+`remoteOffload`/`remoteRehydrate` added to `ServiceCapabilityToken.protectedCommands`;
+`RemoteSyncCoordinator` gained `rehydrateNow(sessionId:)`.
+
+Read-path lazy rehydrate (Phase 7): `recordSessionAccess` (fired when a session is
+opened) now calls `OffloadRepo.enqueueRehydrate` — a no-op unless the session is
+offloaded — so opening an offloaded session queues it to be pulled back and made
+fully keyword-searchable again. The raw transcript stays on disk, so the detail
+view is never blocked on rehydrate.
+
+Fixture: regenerated `test-fixtures/test-index.sqlite` (added `offload_state` column
+defaulting to 'local' + the offload/rehydrate/sync_ledger tables) so it matches the
+migrated schema; updated the `seedSearchFixture` test helper's hand-rolled `sessions`
+schema with `offload_state` so the access-path read works under test.
+
+Tests (green): `RemoteSyncIPCTests` — token-gating of the mutating commands,
+`remoteSyncStatus` counts, `remoteOffload` no-op-when-disabled, and
+`recordSessionAccess` enqueues a rehydrate ONLY for an offloaded session. Full
+`EngramServiceCoreTests` (215) green — the one regression (the access hook hitting
+a legacy seed without `offload_state`) fixed by the fixture update.
+
+### Remote session server — Phase 2: self-hosted server + HTTP backend + Keychain (2026-06-20, Claude)
+
+The offload feature is now genuinely *remote*. New `EngramRemoteServer` —
+a standalone Swift/Hummingbird executable, NEVER bundled in `Engram.app`,
+deployed separately (Mac mini / private host):
+- `EngramRemoteServerCore` (framework): `BlobStore` (file-backed, content-addressed,
+  AES-GCM at-rest encryption under a server-held key per the owner's decision —
+  on-disk bytes are ciphertext; a path-traversal-safe key charset is enforced);
+  `EngramRemoteServerApp` (Hummingbird router: `HEAD/GET/PUT/DELETE /v1/bundles/{key}`
+  + unauthenticated `/v1/health`, Bearer auth with constant-time compare, 64MB body
+  cap); `EngramRemoteServerConfig` (env-only secrets — token + base64 at-rest key —
+  never from a settings file).
+- `EngramRemoteServer` (tool): `main.swift` + `keygen` subcommand to mint an at-rest key.
+- Transport security boundary: the server speaks plain HTTP and is meant to run
+  behind a TLS-terminating proxy / on a private network (standard self-hosting
+  pattern); the client refuses non-HTTPS, non-loopback URLs. In-process TLS
+  (HummingbirdTLS) is a documented follow-up.
+
+Client (`EngramCoreWrite/RemoteSync/`):
+- `EngramRemoteBackend` — `RemoteStorageBackend` over `URLSession` (HEAD/PUT/GET/DELETE,
+  Bearer auth, status→error mapping, 404→`bundleNotFound`). Refuses insecure URLs.
+- `RemoteCredentialStore` — Keychain (`kSecAttrAccessibleAfterFirstUnlock`) for the
+  bearer token; the non-secret server URL stays in settings.
+
+Wiring: `RemoteSyncConfig` gained `backendKind` ("local"|"http") + `serverURL`;
+`RemoteSyncCoordinator.makeIfEnabled` builds `EngramRemoteBackend` (URL from settings,
+token from Keychain/env) for `http`, else `LocalDirectoryBackend`.
+
+Tests (all green): `EngramRemoteServerCoreTests` — blob-store at-rest round-trip +
+on-disk-is-ciphertext, wrong-key decrypt fails, path-traversal rejection; live
+server ↔ `EngramRemoteBackend` full round-trip (bound on an OS-assigned port via
+`onServerRunning`); 401 on bad token; insecure-URL refusal. Builds clean:
+`EngramRemoteServerCore`, `EngramRemoteServer`, `EngramServiceCore`.
+
+REMAINING: Phase 5 IPC commands (manual offload/rehydrate/status) + capability-token
+gating; Phase 7 read-path lazy rehydrate in `EngramServiceReadProvider` (+ regenerate
+the binary UI fixture `test-index.sqlite` for the `offload_state` column the read
+path will SELECT).
+
+### Remote session server — engine + both BLOCKERs + in-product loop drive (2026-06-20, Claude)
+
+Implemented the client-side offload engine end-to-end and wired it into the
+service runtime. The feature now genuinely offloads cold/archived sessions and
+reclaims local disk, all behind an opt-in flag (default OFF), validated by tests.
+
+New `EngramCoreWrite/RemoteSync/`:
+- `RemoteSessionBundle` + `BundleCodec` — content-addressed (SHA-256), integrity-
+  verified bundle of a session's regenerable index artifacts (full `sessions_fts`
+  lines + summary + counts). Transcript bytes are never bundled or moved.
+- `RemoteStorageBackend` protocol + `LocalDirectoryBackend` (file/NAS-mount store;
+  also the layout the future self-hosted server exposes). The S3/HTTP backend is
+  the documented drop-in.
+- `OffloadPolicy` — eligibility (archived/hidden OR visible-but-cold past an age
+  threshold; never skip/subagent) + size×staleness scoring + `OffloadShadow` (the
+  one compact keyword line kept so offloaded sessions stay searchable — must-fix #8).
+- `OffloadRepo` — all offload/rehydrate DB ops, reusing `FTSRebuildPolicy.replaceFtsContent`
+  (full→shadow on offload, shadow→full on rehydrate); `offload_queue`/`rehydrate_queue`/
+  `sync_ledger` driven idempotently. `OffloadRunner` — gate-free orchestration (network
+  strictly between writes) used by tests.
+
+BLOCKER #1 (re-index guard): `IndexJobRunner.process` now short-circuits
+`offload_state='offloaded'` sessions to write only the shadow line (and marks the
+job complete). This single point covers BOTH the periodic re-index and the full
+FTS rebuild (the rebuild replays FTS jobs through the same path) and keeps the
+shadow in the rebuild table so it survives a table swap — a routine rescan can no
+longer re-materialize evicted FTS and erase the disk win.
+
+BLOCKER #2 (real disk reclaim): `EngramDatabaseWriter.vacuum()` + `freelistPageCount()`
+(no `VACUUM` existed before; `checkpointTruncate` is WAL-only). Wired into the
+coordinator as a gated long-running `remoteVacuum` command, run only past a
+free-page threshold.
+
+Service wiring (`EngramService/Core/RemoteSyncCoordinator.swift`): drains the
+offload/rehydrate queues and reclaims disk through `ServiceWriterGate`, each DB
+step its own gated write with network PUT/GET strictly OUTSIDE the gate; FTS purge
+happens only after a confirmed remote PUT. `RemoteSyncConfig` reads opt-in settings
+(`remoteOffloadEnabled`, store root, cold-age days, batch sizes, vacuum threshold)
+mirroring the web-UI posture. Driven from `EngramServiceRunner.runIndexingLoop`
+after the FTS drain. Phase-D archive enqueue was intentionally NOT hard-wired into
+`applyMigrationDb` — archived sessions are `hidden_at IS NOT NULL` and already
+eligible to the policy scan, avoiding coupling + unbounded queue rows when disabled.
+
+Tests (all green, 0 failures): `RemoteOffloadTests` (codec round-trip/tamper, policy
+eligibility, full offload→re-index-guard→rehydrate cycle, VACUUM reclaim);
+`RemoteSyncCoordinatorTests` (offload+rehydrate through a real `ServiceWriterGate`).
+Regression: FTSRebuildPolicy/IndexJobAndMaintenance/MigrationRunner/SchemaCompatibility
+(37 tests) green — no regression from the IndexJobRunner/migration/gate changes.
+`EngramServiceCore` builds clean.
+
+REMAINING (not yet built): Phase 2 self-hosted `engram-remote` HTTP server +
+`EngramRemoteBackend` URLSession client + Keychain credential store (v1 currently
+uses `LocalDirectoryBackend`); Phase 5 IPC commands (manual trigger/status) +
+capability-token gating; Phase 7 read-path lazy rehydrate trigger in
+`EngramServiceReadProvider` + UI fixture regen.
+
+### Remote session server — design + Phase 0 schema (2026-06-19, Claude)
+
+New feature in progress: offload a project's archived/cold sessions to a remote
+server to reclaim local disk/CPU. Multi-agent workflow (6-subsystem map →
+architecture brief → 3 candidate designs → adversarial multi-lens judging →
+synthesis) selected the **Tiered Cold-Storage Sync Engine**, sliced to a v1 that
+purges only regenerable index artifacts (`sessions_fts` content + `summary`) for
+offloaded sessions while the original transcript bytes on disk are never moved.
+
+Owner-locked v1 decisions: (1) backend = **self-hosted `engram-remote` Swift
+server** (separate package, never bundled in `Engram.app`); (2) **no remote
+analysis** in v1 (disk/CPU reclaim only); (3) **server-held encryption key**
+(transport TLS + server-side at-rest; not zero-knowledge — accepted residual risk
+for a self-hosted single-user server); (4) offload eligibility includes
+**visible-but-cold** sessions past an age threshold, which requires a local
+keyword shadow (must-fix #8) so cold sessions stay discoverable.
+
+Two BLOCKER must-fixes carried into the plan: (#1) gate
+`SessionSnapshotWriter.enqueueIndexJobs` + `FTSRebuildPolicy` replay on
+`offload_state='offloaded'` so a routine rescan does not re-materialize evicted
+FTS; (#2) add an explicit threshold `VACUUM`/`auto_vacuum=INCREMENTAL` because
+`checkpointTruncate` is WAL-only and no `VACUUM` exists today, so deletes alone
+do not return disk to the OS.
+
+Phase 0 (choice-invariant foundation) shipped: `EngramMigrations.swift` adds
+`sessions.offload_state TEXT NOT NULL DEFAULT 'local'` (CREATE + idempotent
+`addSessionColumnsIfNeeded` ALTER with backfill), `offload_queue` /
+`rehydrate_queue` / `sync_ledger` tables + indexes (`idx_sessions_offload_state`
+et al.). New `SchemaManifest.remoteOffloadTables` set kept OUT of `baseTables` on
+purpose so the legacy binary UI fixture (`test-index.sqlite`) compatibility test
+stays green. Tests: `MigrationRunnerTests` gains fresh-schema (column default
+`local`, tables/indexes present, status CHECK enforced), idempotency (column
+added exactly once across 3 migrate() runs), and legacy-backfill cases. Phases
+1–7 tracked as the remaining roadmap; Phases 4 and 7 carry the two BLOCKER
+must-fixes. Validation: `EngramCoreTests` MigrationRunner (11) +
+SchemaCompatibility (3) green, 0 failures.
+
 ### Project-wide performance audit + idle-CPU fixes (2026-06-19, Claude)
 
 Multi-agent audit (6 angles → dedup → adversarial verify) of the macOS product

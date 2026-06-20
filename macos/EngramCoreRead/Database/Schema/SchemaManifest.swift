@@ -29,6 +29,16 @@ public enum SchemaManifest {
         "memory_insights",
     ]
 
+    // Remote session-offload tables. Always created by the base migration, but
+    // kept out of `baseTables` on purpose: the UI test fixture (test-index.sqlite)
+    // is an older snapshot that predates them, and read paths must tolerate their
+    // absence on legacy DBs. Asserted separately in the migration tests.
+    public static let remoteOffloadTables: Set<String> = [
+        "offload_queue",
+        "rehydrate_queue",
+        "sync_ledger",
+    ]
+
     public static let lazyVectorTables: Set<String> = [
         "session_embeddings",
         "session_chunks",
