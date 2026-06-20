@@ -82,9 +82,10 @@
   self-hosted server to reclaim local disk/CPU. Designed + implemented across 8
   phases via multi-agent workflows, then hardened by a 6-dimension adversarial
   review.
-- Status: branch `feat/remote-session-server`, PR #87 (NOT yet merged to main;
-  local main was fast-forwarded to the same commit `af45624c`, not pushed).
-  Opt-in, default OFF.
+- Status: MERGED to main as `5fcac98c` (PR #87 squash-merged 2026-06-20; branch
+  deleted). Release-built + deployed to `/Applications/Engram.app` and running.
+  Opt-in, default OFF — NOT active until `remoteOffloadEnabled: true` in
+  `~/.engram/settings.json` + a backend configured (no sessions move otherwise).
 - What ships:
   - Only regenerable artifacts (`sessions_fts` content + summary) are offloaded;
     raw transcript bytes on disk are NEVER moved. Offloaded sessions keep one
@@ -109,12 +110,22 @@
   ON DELETE CASCADE, HEAD invalid-key 400, fixed-length-digest token compare.
   AES-GCM nonce handling, env-only server secrets, and Keychain accessibility
   were confirmed correct.
-- Tests: `EngramServiceCoreTests` (215), `EngramCoreTests` RemoteOffload/Migration,
-  `EngramRemoteServerCoreTests` all green. UI fixture `test-index.sqlite`
-  regenerated for the `offload_state` column.
+- Tests: `EngramServiceCoreTests` (215), `EngramCoreTests` RemoteOffload/Migration/
+  IndexerParity, `EngramRemoteServerCoreTests`, and full CI (incl. ui-test-full) green.
+  CI LESSONS (the local subset missed these): (1) the indexer-parity test now
+  EXCLUDES the Swift-only `offload_state` column vs the Node golden; (2)
+  `test-fixtures/test-index.sqlite` is `npm run generate:fixtures`-deterministic —
+  do NOT hand-edit it (the app migrates the DB at runtime, so read paths get
+  `offload_state` without baking it into the fixture).
 - Known follow-ups (not blockers): in-process TLS (currently via reverse proxy),
   Linux server build (CryptoKit -> swift-crypto + SPM), App UI to surface
-  offloaded state / manual trigger; full `EngramCoreTests` (447) + UI tests not run.
+  offloaded state / manual trigger; full `EngramCoreTests` (447) not run locally.
+- Resume next session: feature is merged + live. To exercise it end-to-end:
+  `EngramRemoteServer keygen` for the at-rest key, start the server with
+  `ENGRAM_REMOTE_TOKEN` + `ENGRAM_REMOTE_AT_REST_KEY` + `ENGRAM_REMOTE_STORE`, then
+  set `remoteOffloadEnabled` / `remoteOffloadBackend:"http"` / `remoteOffloadServerURL`
+  in settings + store the token via `RemoteCredentialStore`. Deploy build used plain
+  `xcodebuild` (CFBundleVersion=1, not the build-release.sh timestamp).
 - Detail: `CHANGELOG.md` [Unreleased].
 
 ## 2026-06-19 - Codex fixed menu/live-session polling load and redeployed
