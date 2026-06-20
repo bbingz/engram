@@ -441,6 +441,18 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             case "remoteSyncStatus":
                 let result = try await Self.remoteSyncStatus(writerGate: writerGate)
                 return .success(requestId: request.requestId, result: try Self.encode(result))
+            case "remoteProjectSyncPreview":
+                let payload = try decodePayload(EngramServiceRemoteProjectSyncRequest.self, from: request)
+                let result = try await Self.remoteProjectSyncPreview(payload, writerGate: writerGate)
+                return .success(requestId: request.requestId, result: try Self.encode(result))
+            case "remotePushProject":
+                let payload = try decodePayload(EngramServiceRemoteProjectSyncRequest.self, from: request)
+                let result = try await Self.remotePushProject(payload, writerGate: writerGate)
+                return .success(requestId: request.requestId, result: try Self.encode(result))
+            case "remotePullProject":
+                let payload = try decodePayload(EngramServiceRemoteProjectSyncRequest.self, from: request)
+                let result = try await Self.remotePullProject(payload, writerGate: writerGate)
+                return .success(requestId: request.requestId, result: try Self.encode(result))
             default:
                 return .failure(
                     requestId: request.requestId,

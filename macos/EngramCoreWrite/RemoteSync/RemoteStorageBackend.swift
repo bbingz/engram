@@ -11,6 +11,10 @@ public protocol RemoteStorageBackend: Sendable {
     func put(key: String, data: Data) async throws
     func get(key: String) async throws -> Data
     func delete(key: String) async throws
+    /// Aggregated per-peer manifests (`{schemaVersion, manifests:[...]}`) for Layer 2
+    /// catalog discovery. The HTTP server aggregates them; a directory store
+    /// aggregates its own `catalog.*.manifest` blobs.
+    func catalog() async throws -> Data
 }
 
 /// File-backed store. Bundles live as `<root>/<key>`. Works against a local
@@ -52,5 +56,20 @@ public struct LocalDirectoryBackend: RemoteStorageBackend {
         if FileManager.default.fileExists(atPath: target.path) {
             try FileManager.default.removeItem(at: target)
         }
+    }
+
+    /// Aggregate this store's `catalog.*.manifest` blobs into the same document
+    /// shape the HTTP server's `GET /v1/catalog` returns, so a directory/NAS-mount
+    /// backend supports Layer 2 catalog discovery. Unparseable manifests are skipped.
+    public func catalog() async throws -> Data {
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        var manifests: [Any] = []
+        for name in entries where name.hasPrefix("catalog.") && name.hasSuffix(".manifest") {
+            guard let data = try? Data(contentsOf: url(for: name)),
+                  let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
+            manifests.append(obj)
+        }
+        let payload: [String: Any] = ["schemaVersion": 1, "manifests": manifests]
+        return try JSONSerialization.data(withJSONObject: payload)
     }
 }

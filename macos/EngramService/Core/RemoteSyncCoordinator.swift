@@ -10,6 +10,11 @@ public struct RemoteSyncConfig: Sendable {
     /// `engram-remote` server via `EngramRemoteBackend`.
     public let backendKind: String
     public let serverURL: URL?
+    /// When true, the HTTP backend forces HTTPS for every non-loopback host. Default
+    /// OFF: plain HTTP is allowed to private / Tailscale hosts, where the LAN/VPN
+    /// already encrypts the transport. Sensitive users opt in via
+    /// `remoteOffloadRequireTLS`.
+    public let requireTLS: Bool
     public let storeRoot: URL
     public let policy: OffloadPolicy
     public let offloadBatch: Int
@@ -26,11 +31,13 @@ public struct RemoteSyncConfig: Sendable {
         rehydrateBatch: Int,
         vacuumFreelistThreshold: Int,
         backendKind: String = "local",
-        serverURL: URL? = nil
+        serverURL: URL? = nil,
+        requireTLS: Bool = false
     ) {
         self.enabled = enabled
         self.backendKind = backendKind
         self.serverURL = serverURL
+        self.requireTLS = requireTLS
         self.storeRoot = storeRoot
         self.policy = policy
         self.offloadBatch = offloadBatch
@@ -75,6 +82,12 @@ public struct RemoteSyncConfig: Sendable {
         let serverURL = (environment["ENGRAM_REMOTE_OFFLOAD_SERVER_URL"]
             ?? settings["remoteOffloadServerURL"] as? String)
             .flatMap { URL(string: $0) }
+        let requireTLS: Bool = {
+            if let env = environment["ENGRAM_REMOTE_OFFLOAD_REQUIRE_TLS"] {
+                return ["1", "true", "yes"].contains(env.lowercased())
+            }
+            return (settings["remoteOffloadRequireTLS"] as? Bool) ?? false
+        }()
         return RemoteSyncConfig(
             enabled: enabled,
             storeRoot: storeRoot,
@@ -83,7 +96,8 @@ public struct RemoteSyncConfig: Sendable {
             rehydrateBatch: (settings["remoteRehydrateBatch"] as? Int) ?? 20,
             vacuumFreelistThreshold: (settings["remoteOffloadVacuumFreelistPages"] as? Int) ?? 4_000,
             backendKind: backendKind,
-            serverURL: serverURL
+            serverURL: serverURL,
+            requireTLS: requireTLS
         )
     }
 }
@@ -124,7 +138,7 @@ public struct RemoteSyncCoordinator: Sendable {
             guard let url = config.serverURL else { return nil }
             let token = environment["ENGRAM_REMOTE_OFFLOAD_TOKEN"] ?? RemoteCredentialStore.loadToken()
             guard let token, !token.isEmpty else { return nil }
-            backend = try? EngramRemoteBackend(baseURL: url, token: token)
+            backend = try? EngramRemoteBackend(baseURL: url, token: token, requireTLS: config.requireTLS)
         default:
             backend = try? LocalDirectoryBackend(root: config.storeRoot)
         }
@@ -291,5 +305,196 @@ public struct RemoteSyncCoordinator: Sendable {
             try writer.vacuum()
         }
         return true
+    }
+}
+
+// MARK: - Layer 2: per-project session-record sync (manual, preview-first)
+
+/// Read-only summary of what a project sync WOULD do, for the confirm-first UX.
+/// Counts plus a small title sample; no writes happen to produce it.
+public struct ProjectSyncPreview: Codable, Sendable, Equatable {
+    /// "push" or "pull".
+    public let direction: String
+    public let project: String
+    /// Sessions that would be uploaded (push) or imported (pull).
+    public let actionable: Int
+    /// Sessions already present remotely (push) / already imported & current (pull).
+    public let skipped: Int
+    /// Up to ~10 titles of the actionable sessions, for display.
+    public let sampleTitles: [String]
+
+    public init(direction: String, project: String, actionable: Int, skipped: Int, sampleTitles: [String]) {
+        self.direction = direction
+        self.project = project
+        self.actionable = actionable
+        self.skipped = skipped
+        self.sampleTitles = sampleTitles
+    }
+}
+
+extension RemoteSyncCoordinator {
+    private static let previewSampleLimit = 10
+
+    /// Push every local-origin session of `project` to the hub, then republish this
+    /// peer's manifest. Network I/O (head/put) runs OUTSIDE the gate; only the
+    /// `publishOnlyCommit` ledger write is gated. Re-running is a no-op for unchanged
+    /// content (head skips the blob; publishOnlyCommit dedups per content hash).
+    public func pushProject(project: String, cwd: String) async throws -> (uploaded: Int, skipped: Int) {
+        let candidates = try await gate.performWriteCommand(name: "syncPushRead") { writer in
+            try writer.read { db in try OffloadRepo.pushCandidates(db, project: project, cwd: cwd) }
+        }.value
+
+        var uploaded = 0
+        var skipped = 0
+        for candidate in candidates {
+            let bundle = BundleCodec.makeBundle(
+                sessionId: candidate.id,
+                ftsContents: candidate.ftsContents,
+                summary: candidate.summary,
+                summaryMessageCount: candidate.summaryMessageCount,
+                messageCount: candidate.messageCount,
+                userMessageCount: candidate.userMessageCount,
+                assistantMessageCount: candidate.assistantMessageCount,
+                toolMessageCount: candidate.toolMessageCount,
+                systemMessageCount: candidate.systemMessageCount
+            )
+            let key = BundleCodec.contentKey(bundle)
+            let data = try BundleCodec.encode(bundle)
+            // Network — OUTSIDE the write gate.
+            let exists = try await backend.head(key: key)
+            if exists {
+                skipped += 1
+            } else {
+                try await backend.put(key: key, data: data)
+                uploaded += 1
+            }
+            _ = try await gate.performWriteCommand(name: "syncPublishCommit") { writer in
+                try writer.write { db in
+                    try OffloadRepo.publishOnlyCommit(
+                        db,
+                        sessionId: candidate.id,
+                        remoteKey: key,
+                        remoteSessionId: candidate.id,
+                        contentHash: bundle.contentHash,
+                        peer: peer
+                    )
+                }
+            }
+        }
+
+        // Republish this peer's full manifest (full-replace, no cross-Mac contention).
+        let entries = try await gate.performWriteCommand(name: "syncManifestRead") { writer in
+            try writer.read { db in
+                try OffloadRepo.publishedManifestEntries(db, project: project, cwd: cwd, peer: peer)
+            }
+        }.value
+        let manifest = SyncManifest(peer: peer, updatedAt: Self.timestamp(), entries: entries)
+        let manifestData = try ManifestCodec.encode(manifest)
+        try await backend.put(key: ManifestCodec.manifestKey(peer: peer), data: manifestData)
+
+        return (uploaded, skipped)
+    }
+
+    /// Pull peer-published sessions of `project` from the hub catalog and import any
+    /// that are new or changed. Skips this peer's own manifest (no echo) and entries
+    /// whose content hash already matches the imported row. Network I/O outside the
+    /// gate; each import committed in its own gated write.
+    public func pullProject(project: String) async throws -> (imported: Int, skipped: Int) {
+        let catalogData = try await backend.catalog()
+        let manifests = ManifestCodec.decodeCatalog(catalogData)
+
+        var imported = 0
+        var skipped = 0
+        for manifest in manifests where manifest.peer != peer {
+            for entry in manifest.entries where Self.matchesProject(entry, project: project) {
+                let needs = try await gate.performWriteCommand(name: "syncImportCheck") { writer in
+                    try writer.read { db in
+                        try ImportRepo.needsImport(db, peer: manifest.peer, entry: entry)
+                    }
+                }.value
+                guard needs else { skipped += 1; continue }
+                let data = try await backend.get(key: entry.remoteKey)
+                let bundle = try BundleCodec.decode(data, expectedSessionId: entry.sessionId)
+                _ = try await gate.performWriteCommand(name: "syncImportCommit") { writer in
+                    try writer.write { db in
+                        try ImportRepo.commitImported(db, entry: entry, peer: manifest.peer, bundle: bundle)
+                    }
+                }
+                imported += 1
+            }
+        }
+        return (imported, skipped)
+    }
+
+    /// READ-ONLY dry run: how many sessions a push/pull would act on, with sample
+    /// titles. Performs network HEAD (push) / catalog GET (pull) but NO writes.
+    public func previewProjectSync(
+        project: String, cwd: String, direction: String
+    ) async throws -> ProjectSyncPreview {
+        if direction == "push" {
+            let candidates = try await gate.performWriteCommand(name: "syncPreviewPushRead") { writer in
+                try writer.read { db in try OffloadRepo.pushCandidates(db, project: project, cwd: cwd) }
+            }.value
+            var actionable: [String] = []
+            var skipped = 0
+            for candidate in candidates {
+                let bundle = BundleCodec.makeBundle(
+                    sessionId: candidate.id,
+                    ftsContents: candidate.ftsContents,
+                    summary: candidate.summary,
+                    summaryMessageCount: candidate.summaryMessageCount,
+                    messageCount: candidate.messageCount,
+                    userMessageCount: candidate.userMessageCount,
+                    assistantMessageCount: candidate.assistantMessageCount,
+                    toolMessageCount: candidate.toolMessageCount,
+                    systemMessageCount: candidate.systemMessageCount
+                )
+                let exists = try await backend.head(key: BundleCodec.contentKey(bundle))
+                if exists {
+                    skipped += 1
+                } else {
+                    actionable.append(candidate.title ?? candidate.id)
+                }
+            }
+            return ProjectSyncPreview(
+                direction: "push", project: project, actionable: actionable.count,
+                skipped: skipped, sampleTitles: Array(actionable.prefix(Self.previewSampleLimit))
+            )
+        }
+
+        // pull preview
+        let catalogData = try await backend.catalog()
+        let manifests = ManifestCodec.decodeCatalog(catalogData)
+        var actionable: [String] = []
+        var skipped = 0
+        for manifest in manifests where manifest.peer != peer {
+            for entry in manifest.entries where Self.matchesProject(entry, project: project) {
+                let needs = try await gate.performWriteCommand(name: "syncPreviewImportCheck") { writer in
+                    try writer.read { db in
+                        try ImportRepo.needsImport(db, peer: manifest.peer, entry: entry)
+                    }
+                }.value
+                if needs {
+                    actionable.append(entry.title ?? entry.sessionId)
+                } else {
+                    skipped += 1
+                }
+            }
+        }
+        return ProjectSyncPreview(
+            direction: "pull", project: project, actionable: actionable.count,
+            skipped: skipped, sampleTitles: Array(actionable.prefix(Self.previewSampleLimit))
+        )
+    }
+
+    /// Case-insensitive project match for a manifest entry (project values are
+    /// inconsistently cased across adapters; an entry carries no cwd).
+    private static func matchesProject(_ entry: SyncManifestEntry, project: String) -> Bool {
+        (entry.project ?? "").lowercased() == project.lowercased()
+    }
+
+    private static func timestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        return formatter.string(from: Date())
     }
 }

@@ -231,6 +231,29 @@ final class RemoteOffloadTests: XCTestCase {
         }
     }
 
+    /// An imported peer-origin session (offload_state='local', origin=a peer) must
+    /// NEVER be picked up by the auto-offload candidate query — re-offloading it would
+    /// collapse its imported FTS and insert an 'out' ledger row (an echo loop the
+    /// design forbids). A genuine local-origin row is still selected.
+    func testCandidateRowsExcludesImportedPeerOrigin() throws {
+        let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("origin.sqlite").path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, size_bytes, origin)
+                VALUES ('local-1', 'codex', '2024-01-01T00:00:00Z', '/tmp/local-1.jsonl', 5000, 'local')
+            """)
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, size_bytes, origin)
+                VALUES ('remote:peerB:s9', 'codex', '2024-01-01T00:00:00Z', '/tmp/r.jsonl', 9000, 'peerB')
+            """)
+        }
+        let ids = try writer.read { db in
+            try OffloadRepo.candidateRows(db, limit: 100).map(\.id)
+        }
+        XCTAssertEqual(ids, ["local-1"], "imported peer-origin row must be excluded from offload candidates")
+    }
+
     /// A failed attempt retries (pending) until the cap, then becomes terminal.
     func testFailedOffloadRetriesUntilCap() throws {
         let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("retry.sqlite").path)

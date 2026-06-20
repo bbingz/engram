@@ -67,4 +67,15 @@ public struct BlobStore: Sendable {
             try FileManager.default.removeItem(at: target)
         }
     }
+
+    /// Flat list of valid blob keys whose name begins with `prefix` (e.g.
+    /// "catalog." for per-peer manifests). Names that fail `validate` are skipped
+    /// so a stray file can't surface as a key. Still format-agnostic — the store
+    /// never decodes the blobs it lists.
+    public func listKeys(prefix: String) throws -> [String] {
+        let names = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        return names
+            .filter { $0.hasPrefix(prefix) && ((try? Self.validate(key: $0)) != nil) }
+            .sorted()
+    }
 }

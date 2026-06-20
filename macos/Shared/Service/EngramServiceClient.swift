@@ -220,6 +220,24 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("exportSession", payload: request)
     }
 
+    func remoteProjectSyncPreview(
+        _ request: EngramServiceRemoteProjectSyncRequest
+    ) async throws -> EngramServiceRemoteProjectSyncPreviewResponse {
+        try await command("remoteProjectSyncPreview", payload: request, timeout: Self.migrationCommandTimeout)
+    }
+
+    func remotePushProject(
+        _ request: EngramServiceRemoteProjectSyncRequest
+    ) async throws -> EngramServiceRemotePushProjectResponse {
+        try await command("remotePushProject", payload: request, timeout: Self.migrationCommandTimeout)
+    }
+
+    func remotePullProject(
+        _ request: EngramServiceRemoteProjectSyncRequest
+    ) async throws -> EngramServiceRemotePullProjectResponse {
+        try await command("remotePullProject", payload: request, timeout: Self.migrationCommandTimeout)
+    }
+
     func events() -> AsyncThrowingStream<EngramServiceEvent, Error> {
         transport.events()
     }

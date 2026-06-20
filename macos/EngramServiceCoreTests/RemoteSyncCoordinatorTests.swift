@@ -162,6 +162,140 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         }
     }
 
+    // MARK: - Layer 2: per-project session-record sync
+
+    private func seedLocal(_ gate: ServiceWriterGate, id: String, fts: [String]) async throws {
+        _ = try await gate.performWriteCommand(name: "seed") { writer in
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions(id, source, start_time, end_time, file_path, cwd, project,
+                                         summary, summary_message_count, message_count,
+                                         user_message_count, assistant_message_count, generated_title, size_bytes)
+                    VALUES (?, 'codex','2024-01-01T00:00:00Z','2024-01-01T01:00:00Z',
+                            ?, '/Users/bing/-Code-/demo', 'demo', 'a summary', 2, 2, 1, 1, ?, 4096);
+                """, arguments: [id, "/tmp/\(id).jsonl", "Title \(id)"])
+                for line in fts {
+                    try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+                                   arguments: [id, line])
+                }
+            }
+        }
+    }
+
+    /// Full push (peer A) → pull (peer B) round trip through a shared directory
+    /// store: A publishes 2 sessions + manifest; B imports both as searchable
+    /// peer-origin rows; re-pull is a no-op (dedup on content hash).
+    func testPushThenPullProjectRoundTrip() async throws {
+        let store = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("engram-syncproj-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            .appendingPathComponent("store", isDirectory: true)
+        let pathsA = try makePaths(); let pathsB = try makePaths()
+        let (coordA, gateA, _) = try makeCoordinatorSharedStore(pathsA, store: store, peer: "macA")
+        let (coordB, gateB, _) = try makeCoordinatorSharedStore(pathsB, store: store, peer: "macB")
+        _ = try await gateA.performWriteCommand(name: "migrate") { try $0.migrate() }
+        _ = try await gateB.performWriteCommand(name: "migrate") { try $0.migrate() }
+
+        try await seedLocal(gateA, id: "a1", fts: ["alpha bravo", "charlie"])
+        try await seedLocal(gateA, id: "a2", fts: ["delta echo"])
+
+        let pushed = try await coordA.pushProject(project: "demo", cwd: "/Users/bing/-Code-/demo")
+        XCTAssertEqual(pushed.uploaded, 2)
+        XCTAssertEqual(pushed.skipped, 0)
+
+        let pulled = try await coordB.pullProject(project: "demo")
+        XCTAssertEqual(pulled.imported, 2)
+        XCTAssertEqual(pulled.skipped, 0)
+
+        _ = try await gateB.performWriteCommand(name: "verify") { writer in
+            try writer.read { db in
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE origin = 'macA'"), 2)
+                let id = ImportRepo.importedLocalId(peer: "macA", sessionId: "a1")
+                let hits = try Int.fetchOne(
+                    db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = ? AND content MATCH 'bravo'",
+                    arguments: [id]
+                )
+                XCTAssertEqual(hits, 1, "imported peer session is keyword searchable")
+            }
+        }
+
+        // Re-pull is idempotent: nothing new, both skipped.
+        let again = try await coordB.pullProject(project: "demo")
+        XCTAssertEqual(again.imported, 0)
+        XCTAssertEqual(again.skipped, 2)
+    }
+
+    /// Pull ignores this peer's OWN manifest (no echo / self-import).
+    func testPullSkipsOwnManifest() async throws {
+        let store = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("engram-syncself-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            .appendingPathComponent("store", isDirectory: true)
+        let paths = try makePaths()
+        let (coord, gate, _) = try makeCoordinatorSharedStore(paths, store: store, peer: "macA")
+        _ = try await gate.performWriteCommand(name: "migrate") { try $0.migrate() }
+        try await seedLocal(gate, id: "a1", fts: ["solo"])
+
+        _ = try await coord.pushProject(project: "demo", cwd: "/Users/bing/-Code-/demo")
+        let pulled = try await coord.pullProject(project: "demo")
+        XCTAssertEqual(pulled.imported, 0, "must not import own published sessions")
+        _ = try await gate.performWriteCommand(name: "verify") { writer in
+            try writer.read { db in
+                XCTAssertNil(try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE origin = 'macA'"),
+                             "no self-imported row")
+            }
+        }
+    }
+
+    /// Preview is read-only: push preview reports the actionable count + sample
+    /// titles without uploading; pull preview reflects what would import.
+    func testPreviewProjectSyncIsReadOnly() async throws {
+        let store = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("engram-syncprev-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            .appendingPathComponent("store", isDirectory: true)
+        let pathsA = try makePaths(); let pathsB = try makePaths()
+        let (coordA, gateA, backendA) = try makeCoordinatorSharedStore(pathsA, store: store, peer: "macA")
+        let (coordB, gateB, _) = try makeCoordinatorSharedStore(pathsB, store: store, peer: "macB")
+        _ = try await gateA.performWriteCommand(name: "migrate") { try $0.migrate() }
+        _ = try await gateB.performWriteCommand(name: "migrate") { try $0.migrate() }
+        try await seedLocal(gateA, id: "a1", fts: ["alpha"])
+
+        let pushPreview = try await coordA.previewProjectSync(
+            project: "demo", cwd: "/Users/bing/-Code-/demo", direction: "push"
+        )
+        XCTAssertEqual(pushPreview.direction, "push")
+        XCTAssertEqual(pushPreview.actionable, 1)
+        XCTAssertEqual(pushPreview.skipped, 0)
+        XCTAssertEqual(pushPreview.sampleTitles, ["Title a1"])
+        // Read-only: nothing uploaded.
+        let manifestPublished = try await backendA.head(key: ManifestCodec.manifestKey(peer: "macA"))
+        XCTAssertFalse(manifestPublished, "preview must not publish a manifest")
+
+        // After a real push, B's pull preview shows 1 actionable.
+        _ = try await coordA.pushProject(project: "demo", cwd: "/Users/bing/-Code-/demo")
+        let pullPreview = try await coordB.previewProjectSync(
+            project: "demo", cwd: "/Users/bing/-Code-/demo", direction: "pull"
+        )
+        XCTAssertEqual(pullPreview.direction, "pull")
+        XCTAssertEqual(pullPreview.actionable, 1)
+        _ = try await gateB.performWriteCommand(name: "verify") { writer in
+            try writer.read { db in
+                XCTAssertNil(try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE origin = 'macA'"),
+                             "pull preview must not import")
+            }
+        }
+    }
+
+    private func makeCoordinatorSharedStore(
+        _ paths: (runtime: URL, database: URL, store: URL), store: URL, peer: String
+    ) throws -> (RemoteSyncCoordinator, ServiceWriterGate, LocalDirectoryBackend) {
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let backend = try LocalDirectoryBackend(root: store)
+        let config = RemoteSyncConfig(
+            enabled: true, storeRoot: store, policy: OffloadPolicy(coldAgeDays: 90),
+            offloadBatch: 20, rehydrateBatch: 20, vacuumFreelistThreshold: 1_000_000
+        )
+        return (RemoteSyncCoordinator(gate: gate, backend: backend, config: config, peer: peer), gate, backend)
+    }
+
     /// Resolve live-test config from the environment first, then a
     /// `~/.engram-live-offload.json` file (xcodebuild strips the test-process env).
     private static func liveConfig() -> (url: URL, token: String)? {

@@ -41,6 +41,9 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func recordSessionAccess(sessionId: String) async throws
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse
     func exportSession(_ request: EngramServiceExportSessionRequest) async throws -> EngramServiceExportSessionResponse
+    // remoteProjectSyncPreview / remotePushProject / remotePullProject are intentionally
+    // NOT on this protocol — like the other remote* IPC commands they live only on the
+    // concrete EngramServiceClient; consumers that need them hold the concrete type.
     func events() -> AsyncThrowingStream<EngramServiceEvent, Error>
     func close()
 }
