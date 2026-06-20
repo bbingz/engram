@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-19): 70 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-20): 71 dated entries; regenerate after adding sections -->
+- [2026-06-20 - Remote session offload feature shipped (PR #87)](#2026-06-20---remote-session-offload-feature-shipped-pr-87)
 - [2026-06-19 - Codex fixed menu/live-session polling load and redeployed](#2026-06-19---codex-fixed-menulive-session-polling-load-and-redeployed)
 - [2026-06-15 — GRDB must be the single dynamic `GRDB-dynamic` product (runtime crash fix)](#2026-06-15--grdb-must-be-the-single-dynamic-grdb-dynamic-product-runtime-crash-fix)
 - [2026-06-13 - Codex rebuilt and redeployed current HEAD locally](#2026-06-13---codex-rebuilt-and-redeployed-current-head-locally)
@@ -74,6 +75,47 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-06-20 - Remote session offload feature shipped (PR #87)
+
+- Objective: offload cold/archived sessions' regenerable index artifacts to a
+  self-hosted server to reclaim local disk/CPU. Designed + implemented across 8
+  phases via multi-agent workflows, then hardened by a 6-dimension adversarial
+  review.
+- Status: branch `feat/remote-session-server`, PR #87 (NOT yet merged to main;
+  local main was fast-forwarded to the same commit `af45624c`, not pushed).
+  Opt-in, default OFF.
+- What ships:
+  - Only regenerable artifacts (`sessions_fts` content + summary) are offloaded;
+    raw transcript bytes on disk are NEVER moved. Offloaded sessions keep one
+    keyword "shadow" FTS line so they stay searchable; `VACUUM` returns disk to
+    the OS (`checkpointTruncate` is WAL-only, so deletes alone do not shrink).
+  - Self-hosted `engram-remote`: standalone Hummingbird target, bearer auth +
+    AES-GCM at-rest (server-held key), NEVER bundled in `Engram.app`. Client
+    `EngramRemoteBackend` (URLSession) refuses non-HTTPS non-loopback URLs.
+  - `RemoteSyncCoordinator` driven from `runIndexingLoop`; IPC commands
+    `remoteOffload`/`remoteRehydrate`/`remoteSyncStatus` (capability-token gated);
+    read-path lazy rehydrate via `recordSessionAccess`.
+- Owner-locked decisions: self-hosted server backend; server-held key (NOT
+  zero-knowledge); no remote analysis in v1; eligibility includes visible-but-
+  cold sessions (requires the keyword shadow so they stay discoverable).
+- Invariants in code: single SQLite writer via `ServiceWriterGate` (network runs
+  OUTSIDE the gate; FTS purge only after a confirmed remote PUT); the re-index
+  guard in `IndexJobRunner` covers BOTH periodic re-index AND full FTS rebuild;
+  offload commit uses an optimistic `sync_version` guard (abort + re-queue if
+  re-indexed mid-flight).
+- Adversarial review (per-finding verified against code): fixed a critical
+  content race, stuck-`inflight` recovery + retry-until-cap, `sync_ledger`
+  ON DELETE CASCADE, HEAD invalid-key 400, fixed-length-digest token compare.
+  AES-GCM nonce handling, env-only server secrets, and Keychain accessibility
+  were confirmed correct.
+- Tests: `EngramServiceCoreTests` (215), `EngramCoreTests` RemoteOffload/Migration,
+  `EngramRemoteServerCoreTests` all green. UI fixture `test-index.sqlite`
+  regenerated for the `offload_state` column.
+- Known follow-ups (not blockers): in-process TLS (currently via reverse proxy),
+  Linux server build (CryptoKit -> swift-crypto + SPM), App UI to surface
+  offloaded state / manual trigger; full `EngramCoreTests` (447) + UI tests not run.
+- Detail: `CHANGELOG.md` [Unreleased].
 
 ## 2026-06-19 - Codex fixed menu/live-session polling load and redeployed
 
