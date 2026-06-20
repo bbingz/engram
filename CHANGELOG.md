@@ -62,16 +62,21 @@ offloaded — so opening an offloaded session queues it to be pulled back and ma
 fully keyword-searchable again. The raw transcript stays on disk, so the detail
 view is never blocked on rehydrate.
 
-Fixture: regenerated `test-fixtures/test-index.sqlite` (added `offload_state` column
-defaulting to 'local' + the offload/rehydrate/sync_ledger tables) so it matches the
-migrated schema; updated the `seedSearchFixture` test helper's hand-rolled `sessions`
-schema with `offload_state` so the access-path read works under test.
+Fixture: the committed `test-fixtures/test-index.sqlite` is left as the TS
+generator's deterministic output (no `offload_state`) — the app migrates the DB at
+runtime, so read paths see the column without baking it into the fixture (an
+earlier hand-edit was reverted because `fixture-check` regenerates + diffs it).
+The `seedSearchFixture` test helper's hand-rolled `sessions` schema does get
+`offload_state` so the access-path read works under test.
 
 Tests (green): `RemoteSyncIPCTests` — token-gating of the mutating commands,
 `remoteSyncStatus` counts, `remoteOffload` no-op-when-disabled, and
 `recordSessionAccess` enqueues a rehydrate ONLY for an offloaded session. Full
-`EngramServiceCoreTests` (215) green — the one regression (the access hook hitting
-a legacy seed without `offload_state`) fixed by the fixture update.
+`EngramServiceCoreTests` (215) green. CI (which runs the fuller suite) additionally
+caught `IndexerParityTests` failing because the Swift indexer now emits
+`offload_state`, absent from the Node reference golden — fixed by excluding that
+Swift-only column from the cross-runtime parity comparison (not by editing the
+golden, which the TS generator owns).
 
 ### Remote session server — Phase 2: self-hosted server + HTTP backend + Keychain (2026-06-20, Claude)
 

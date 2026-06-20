@@ -1257,10 +1257,16 @@ final class IndexerParityTests: XCTestCase {
         return output
     }
 
+    /// Swift-product-only columns that have no counterpart in the Node reference
+    /// golden, so they are excluded from the cross-runtime parity comparison.
+    private static let parityExcludedColumns: Set<String> = [
+        "offload_state",
+    ]
+
     private func normalizedRows(_ rows: [Row]) -> [[String: AnyValue]] {
         rows.map { row in
             var output: [String: AnyValue] = [:]
-            for column in row.columnNames {
+            for column in row.columnNames where !Self.parityExcludedColumns.contains(column) {
                 output[column] = normalizedValue(row[column], column: column)
             }
             return output
