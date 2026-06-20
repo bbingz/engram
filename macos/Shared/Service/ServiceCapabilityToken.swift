@@ -36,6 +36,8 @@ enum ServiceCapabilityToken {
         "hideEmptySessions",
         "linkSessions",
         "exportSession",
+        "remoteOffload",
+        "remoteRehydrate",
     ]
 
     static func requiresToken(_ command: String) -> Bool {

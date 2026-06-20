@@ -110,6 +110,100 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertEqual(metadata, "1")
     }
 
+    func testCreatesRemoteOffloadSchema() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("offload.sqlite"))
+        try writer.migrate()
+
+        // sessions.offload_state column exists and defaults to 'local'.
+        let sessionColumns = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('sessions') ORDER BY cid")
+        }
+        XCTAssertTrue(sessionColumns.contains("offload_state"))
+
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path)
+                VALUES ('s-offload', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/s.jsonl');
+            """)
+        }
+        let defaultState = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT offload_state FROM sessions WHERE id = 's-offload'")
+        }
+        XCTAssertEqual(defaultState, "local")
+
+        // The three offload tables are present, kept out of baseTables on purpose.
+        let tableNames = try writer.read { db in
+            Set(try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'"))
+        }
+        XCTAssertTrue(
+            SchemaManifest.remoteOffloadTables.isSubset(of: tableNames),
+            "missing offload tables: \(SchemaManifest.remoteOffloadTables.subtracting(tableNames).sorted())"
+        )
+        XCTAssertTrue(SchemaManifest.baseTables.isDisjoint(with: SchemaManifest.remoteOffloadTables))
+
+        let indexes = try writer.read { db in
+            Set(try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'index'"))
+        }
+        XCTAssertTrue(indexes.contains("idx_sessions_offload_state"))
+        XCTAssertTrue(indexes.contains("idx_offload_queue_status"))
+        XCTAssertTrue(indexes.contains("idx_rehydrate_queue_status"))
+        XCTAssertTrue(indexes.contains("idx_sync_ledger_session"))
+
+        // The status CHECK constraint accepts a documented state and rejects others.
+        try writer.write { db in
+            try db.execute(sql: "INSERT INTO offload_queue(id, session_id, status) VALUES ('q1', 's-offload', 'pending')")
+        }
+        XCTAssertThrowsError(try writer.write { db in
+            try db.execute(sql: "INSERT INTO offload_queue(id, session_id, status) VALUES ('q2', 's-offload', 'bogus')")
+        })
+    }
+
+    func testRemoteOffloadSchemaIsIdempotent() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("offload-idempotent.sqlite"))
+        try writer.migrate()
+        try writer.migrate()
+        try writer.migrate()
+
+        let tableNames = try writer.read { db in
+            Set(try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'"))
+        }
+        XCTAssertTrue(SchemaManifest.remoteOffloadTables.isSubset(of: tableNames))
+
+        let columnCount = try writer.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT count(*) FROM pragma_table_info('sessions') WHERE name = 'offload_state'"
+            ) ?? 0
+        }
+        XCTAssertEqual(columnCount, 1, "offload_state must be added exactly once")
+    }
+
+    func testLegacySessionsBackfillOffloadStateToLocal() throws {
+        let path = databasePath("legacy-offload.sqlite")
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE sessions (
+                  id TEXT PRIMARY KEY,
+                  source TEXT NOT NULL,
+                  start_time TEXT NOT NULL,
+                  cwd TEXT NOT NULL DEFAULT '',
+                  file_path TEXT NOT NULL
+                );
+                INSERT INTO sessions(id, source, start_time, cwd, file_path)
+                VALUES ('legacy-off', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/s.jsonl');
+            """)
+        }
+
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+
+        let state = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT offload_state FROM sessions WHERE id = 'legacy-off'")
+        }
+        XCTAssertEqual(state, "local", "ALTER ADD COLUMN ... DEFAULT 'local' must backfill existing rows")
+    }
+
     func testAuxMigrationSkippedWhenStoredVersionMatches() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("aux-skip.sqlite"))
         try writer.migrate()

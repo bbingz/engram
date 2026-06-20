@@ -205,6 +205,10 @@ public actor ServiceWriterGate {
         switch name {
         case "projectMove", "projectArchive", "projectUndo", "projectMoveBatch":
             return true
+        // VACUUM rebuilds the whole DB file; let user writes queue (unbounded)
+        // rather than hit the 60s WriterBusy timeout while it runs.
+        case "remoteVacuum":
+            return true
         default:
             return false
         }

@@ -42,6 +42,9 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         let tier: String?
         let locator: String
         let summary: String?
+        let offloadState: String?
+        let generatedTitle: String?
+        let project: String?
     }
 
     // MARK: - StartupIndexJobRunning
@@ -143,6 +146,28 @@ public final class IndexJobRunner: StartupIndexJobRunning {
                 try Self.markNotApplicable(db, id: job.id)
             }
             return .notApplicable
+        }
+
+        // BLOCKER guard: an offloaded session keeps ONLY a compact keyword shadow
+        // in FTS — never re-materialize the full transcript from the still-present
+        // source file. This one branch covers both the periodic re-index AND the
+        // full FTS rebuild (the rebuild replays completed FTS jobs through this
+        // same path); writing via replaceFtsContent updates the rebuild table too,
+        // so the shadow survives a table swap. Without this, a routine rescan would
+        // silently re-index the offloaded session and the disk win would evaporate.
+        if contentSource.offloadState == "offloaded" {
+            let shadow = OffloadShadow.line(
+                title: contentSource.generatedTitle,
+                project: contentSource.project,
+                summary: contentSource.summary,
+                sessionId: job.sessionId
+            )
+            try writer.write { db in
+                try FTSRebuildPolicy.replaceFtsContent(db, sessionId: job.sessionId, contents: [shadow])
+                try Self.markCompleted(db, id: job.id)
+                try FTSRebuildPolicy.finalizeRebuildIfReady(db)
+            }
+            return .completed
         }
 
         if contentSource.tier == SessionTier.skip.rawValue {
@@ -268,6 +293,9 @@ public final class IndexJobRunner: StartupIndexJobRunning {
               s.source AS source,
               s.tier AS tier,
               s.summary AS summary,
+              s.offload_state AS offload_state,
+              s.generated_title AS generated_title,
+              s.project AS project,
               COALESCE(
                 NULLIF(ls.local_readable_path, ''),
                 NULLIF(s.file_path, ''),
@@ -285,7 +313,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             source: row["source"] ?? "",
             tier: row["tier"],
             locator: row["locator"] ?? "",
-            summary: row["summary"]
+            summary: row["summary"],
+            offloadState: row["offload_state"],
+            generatedTitle: row["generated_title"],
+            project: row["project"]
         )
     }
 

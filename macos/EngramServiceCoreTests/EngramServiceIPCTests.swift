@@ -3603,7 +3603,8 @@ private func seedSearchFixture(at path: String) throws {
               link_source TEXT,
               link_checked_at TEXT,
               orphan_status TEXT,
-              has_embedding INTEGER NOT NULL DEFAULT 0
+              has_embedding INTEGER NOT NULL DEFAULT 0,
+              offload_state TEXT NOT NULL DEFAULT 'local'
             );
             CREATE TABLE session_local_state (
               session_id TEXT PRIMARY KEY,

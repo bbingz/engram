@@ -257,6 +257,61 @@ targets:
         - "@executable_path"
         - "@executable_path/../Frameworks"
 
+  # Self-hosted remote offload server. A dumb content-addressed blob store with
+  # bearer auth + AES-GCM at-rest encryption (server-held key). NEVER bundled in
+  # Engram.app — it is deployed separately (e.g. on a Mac mini / private host).
+  EngramRemoteServerCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramRemoteServer/Core
+    dependencies:
+      - package: Hummingbird
+        product: Hummingbird
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.remote-server-core
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
+  EngramRemoteServer:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramRemoteServer/main.swift
+    dependencies:
+      - target: EngramRemoteServerCore
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.engram.remote-server
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+      SKIP_INSTALL: YES
+
+  EngramRemoteServerCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EngramRemoteServerCoreTests
+    dependencies:
+      - target: EngramRemoteServerCore
+      - target: EngramCoreWrite
+      - package: GRDB
+        product: GRDB-dynamic
+      - package: Hummingbird
+        product: Hummingbird
+    settings:
+      SWIFT_VERSION: "5.9"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: "-"
+
   EngramTests:
     type: bundle.unit-test
     platform: macOS
@@ -409,3 +464,18 @@ schemes:
         EngramCoreSchemaTool: all
     run:
       config: Debug
+  EngramRemoteServer:
+    build:
+      targets:
+        EngramRemoteServer: all
+    run:
+      config: Debug
+  EngramRemoteServerCore:
+    build:
+      targets:
+        EngramRemoteServerCore: all
+        EngramRemoteServerCoreTests: all
+    test:
+      config: Debug
+      targets:
+        - EngramRemoteServerCoreTests

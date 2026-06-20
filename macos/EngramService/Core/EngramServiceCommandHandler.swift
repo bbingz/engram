@@ -431,6 +431,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+            case "remoteOffload":
+                let result = try await Self.remoteOffloadNow(writerGate: writerGate)
+                return .success(requestId: request.requestId, result: try Self.encode(result))
+            case "remoteRehydrate":
+                let payload = try decodePayload(EngramServiceRemoteRehydrateRequest.self, from: request)
+                let result = try await Self.remoteRehydrateNow(payload, writerGate: writerGate)
+                return .success(requestId: request.requestId, result: try Self.encode(result))
+            case "remoteSyncStatus":
+                let result = try await Self.remoteSyncStatus(writerGate: writerGate)
+                return .success(requestId: request.requestId, result: try Self.encode(result))
             default:
                 return .failure(
                     requestId: request.requestId,
@@ -757,6 +767,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     details: ["session_id": .string(request.sessionId)]
                 )
             }
+            // Read-path lazy rehydrate: accessing (opening) an offloaded session
+            // queues it to be pulled back so its full keyword search is restored.
+            // No-op unless the session is currently offloaded. The raw transcript
+            // is still on disk, so the detail view is never blocked on this.
+            _ = try OffloadRepo.enqueueRehydrate(db, sessionId: request.sessionId)
         }
         return EmptyEncodableResult()
     }
