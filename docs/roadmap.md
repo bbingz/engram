@@ -54,6 +54,29 @@ correctly because `PopoverUsageSection` remains gated on real usage data.
 
 No open roadmap items as of 2026-05-24.
 
+## Closed on 2026-06-20
+
+### Remote session offload (self-hosted)
+
+- **Module:** `macos/EngramRemoteServer`, `macos/EngramCoreWrite/RemoteSync`,
+  `macos/EngramService/Core` (`RemoteSyncCoordinator`)
+- **Status:** done (opt-in, default OFF)
+- **Acceptance evidence:** offloads regenerable artifacts (`sessions_fts` +
+  summary, AES-GCM encrypted) of cold/archived sessions to a self-hosted
+  `engram-remote` server, keeping a keyword shadow and rehydrating on access; raw
+  transcripts never move. `EngramRemoteServerCoreTests`, `RemoteOffloadTests`,
+  `RemoteSyncCoordinatorTests` (incl. the gated
+  `testLiveOffloadRehydrateAgainstDeployedServer`) pass; deployed to a Tailscale
+  host behind an nginx TLS proxy and exercised end-to-end (5 offloads + rehydrate)
+  through the running app.
+- **Operations:** `docs/remote-offload.md`. The live app must reach the server
+  over a **Tailscale IP** — the background helper is blocked from the LAN by macOS
+  Local Network Privacy.
+- **Related files:** `macos/EngramRemoteServer/Core/*`,
+  `macos/EngramCoreWrite/RemoteSync/*`,
+  `macos/EngramService/Core/RemoteSyncCoordinator.swift`,
+  `macos/EngramService/Core/EngramServiceCommandHandler+RemoteSync.swift`
+
 ## Closed on 2026-05-24
 
 ### Real usage probes

@@ -54,6 +54,18 @@ By default, the macOS app talks to EngramService over a Unix domain socket under
 - **AI Summary** (optional): Sends session excerpts to your configured OpenAI-compatible chat provider when you request summary generation.
 - **Title Generation** (optional): Sends session excerpts to your configured title provider (Ollama, OpenAI, or custom OpenAI-compatible endpoint) when you request title generation.
 - **Embedding compatibility fields**: Older settings may contain Ollama/OpenAI embedding keys, but the current Swift product path does not generate embeddings or enable semantic search from those fields.
+- **Remote session offload** (optional, default **OFF**): When you explicitly enable it and configure a server, regenerable index artifacts for cold/archived sessions are uploaded to a server you control. See below.
+
+## Remote session offload (opt-in)
+
+Remote offload is **disabled by default** and moves data off your machine only after you set `remoteOffloadEnabled: true` and configure a server URL + token in `~/.engram/settings.json`. When enabled:
+
+- **What leaves the machine:** only **regenerable index artifacts** — a session's full-text-search (`sessions_fts`) content and its generated summary, bundled and **encrypted with AES-GCM** before upload. **Raw transcript files (`~/.claude`, `~/.codex`, etc.) are never moved or uploaded** — they stay on your disk untouched.
+- **Where it goes:** a **self-hosted server you run** (the `engram-remote` binary), never a third-party cloud and never bundled in `Engram.app`. The server holds the at-rest encryption key and requires a bearer token. The client refuses any non-HTTPS, non-loopback URL.
+- **What stays local:** every offloaded session keeps one keyword "shadow" line so it remains discoverable in keyword search; opening it transparently re-downloads (rehydrates) the full content.
+- **Eligibility:** archived/hidden sessions and visible sessions untouched longer than `remoteOffloadColdAgeDays`. `skip`-tier and subagent sessions are never offloaded.
+
+See `docs/remote-offload.md` for the full deployment and operations guide.
 
 ## Optional legacy HTTP tooling
 
