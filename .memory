@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-20): 71 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-20): 72 dated entries; regenerate after adding sections -->
+- [2026-06-20 - Remote offload server deployed to macmini-m1](#2026-06-20---remote-offload-server-deployed-to-macmini-m1)
 - [2026-06-20 - Remote session offload feature shipped (PR #87)](#2026-06-20---remote-session-offload-feature-shipped-pr-87)
 - [2026-06-19 - Codex fixed menu/live-session polling load and redeployed](#2026-06-19---codex-fixed-menulive-session-polling-load-and-redeployed)
 - [2026-06-15 — GRDB must be the single dynamic `GRDB-dynamic` product (runtime crash fix)](#2026-06-15--grdb-must-be-the-single-dynamic-grdb-dynamic-product-runtime-crash-fix)
@@ -75,6 +76,129 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-06-20 - Remote offload server deployed to macmini-m1
+
+- Objective: deploy + test the self-hosted `EngramRemoteServer` (the offload
+  backend) on the remote host `macmini-m1` (`ssh bing@macmini-m1`).
+- Remote env: Apple Silicon, macOS 26.6, **Command-Line-Tools only (no Xcode →
+  no remote `xcodebuild`)**, but has Swift 6.4 toolchain + git + rsync. Repo
+  also present at remote `~/engram` (different from local `~/-Code-/engram`).
+  Pre-existing LaunchAgent `com.engram.dashscope-proxy` (so the host runs user
+  agents; implies GUI auto-login).
+- Build/test (local, Debug): `EngramRemoteServerCoreTests` 6/6; HTTP smoke of
+  the shippable bundle 13/13; app-side `RemoteSyncCoordinatorTests`+
+  `RemoteSyncIPCTests` 5/5; `RemoteOffloadTests`+`MigrationRunnerTests` 19/19.
+- KEY DEPLOY FACT: `EngramRemoteServerCore.framework` **statically links
+  Hummingbird/NIO** (Build/Products has only `.o`, no Hummingbird dylib). So the
+  relocatable bundle is just `bin/EngramRemoteServer` +
+  `Frameworks/EngramRemoteServerCore.framework` +
+  `Frameworks/libswiftCompatibilitySpan.dylib`. Both binary and framework
+  already carry rpaths `@executable_path/../Frameworks` and `/usr/lib/swift`, so
+  it relocates with NO `install_name_tool` surgery — only an ad-hoc re-sign
+  (`codesign --force -s -`) after assembly so arm64 will exec it. The compat
+  span dylib also exists in the OS `/usr/lib/swift`, so it's belt-and-suspenders.
+- Deploy layout on remote (`~/.engram-remote/`): `bin/`, `Frameworks/`, `store/`
+  (0700), `env` (0600, holds `ENGRAM_REMOTE_TOKEN`=32B hex +
+  `ENGRAM_REMOTE_AT_REST_KEY`=32B base64 server-held + STORE/HOST/PORT),
+  `run.sh` (0700 wrapper: `set -a; . env; set +a; exec bin/EngramRemoteServer`).
+  LaunchAgent `~/Library/LaunchAgents/com.engram.remote-server.plist`
+  (RunAtLoad+KeepAlive, Background) runs `run.sh`. Secrets are NEVER in the
+  plist or argv — only in the 0600 env file. Logs: `~/.engram-remote/{stdout,
+  stderr}.log`.
+- App server bound **127.0.0.1:8787** (loopback only; behind the TLS proxy).
+  Loaded via `launchctl bootstrap gui/$(id -u) <plist>`.
+- Verified on remote: end-to-end 8/8 (health 200, no-auth PUT 401, auth
+  PUT/HEAD/GET/DELETE lifecycle, at-rest ciphertext); KeepAlive respawn
+  (kill pid → new pid + health 200); startup log
+  `engram-remote listening on 127.0.0.1:8787`.
+- LAN EXPOSURE (best practice, added same day): the app server is plain-HTTP by
+  design and the client refuses non-HTTPS non-loopback URLs, so LAN exposure is
+  via **nginx TLS reverse proxy**, NOT by binding the app server to the LAN.
+  macmini already runs homebrew nginx 1.31.2 (`--with-http_ssl_module`) via
+  `brew services`, with `include servers/*.conf`. Added
+  `/opt/homebrew/etc/nginx/servers/engram-remote.conf` (alongside untouched
+  campus/dingtalk vhosts): TLS on `*:8443`, `proxy_pass http://127.0.0.1:8787`
+  for `/v1/`, forwards `Authorization` (app server still does the bearer check),
+  `client_max_body_size 96m` (MUST exceed 64 MiB `maxBundleBytes`; nginx default
+  1m would 413), TLSv1.2/1.3. Private CA at `~/.engram-remote/tls/` (`ca.key`
+  4096 0600); server cert CA-signed, 825d, EKU serverAuth, SAN = `Bing-M1-
+  MacMini.local, macmini-m1, localhost, 10.0.8.9, 127.0.0.1`. Reload with
+  `nginx -t && nginx -s reload`. LAN IP 10.0.8.9.
+- Verified from a LAN peer (the dev Mac): `https://10.0.8.9:8443` +
+  `https://Bing-M1-MacMini.local:8443` health 200 against the CA; no-CA
+  connection REJECTED (real TLS, not `-k`); no-token → 401 through proxy; authed
+  PUT/HEAD/GET/DELETE + 3 MB bundle round-trip pass; 8787 still 127.0.0.1-only.
+- CLIENT TRUST (needs admin, per client): `EngramRemoteBackend` uses
+  `URLSession.shared` with NO custom delegate → standard TLS validation, no
+  pinning, no insecure escape hatch (only loopback is exempt). So each client
+  Mac must trust the CA once:
+  `sudo security add-trusted-cert -d -r trustRoot -k
+  /Library/Keychains/System.keychain <ca.crt>` (CA copied to
+  `/tmp/engram-remote-ca.crt` on the dev Mac).
+- LIVE offload→rehydrate VERIFIED (2026-06-20) against the deployed server via
+  `RemoteSyncCoordinatorTests.testLiveOffloadRehydrateAgainstDeployedServer` (a
+  gated sibling of the local-backend test; only diff = `EngramRemoteBackend`
+  instead of `LocalDirectoryBackend`; skips without `ENGRAM_LIVE_OFFLOAD_URL/_TOKEN`
+  env or `~/.engram-live-offload.json`). PASS: seeded session bundled +
+  AES-GCM-encrypted + PUT (macmini store 0→1, 513 B ciphertext); `offload_state`→
+  `offloaded` with only the keyword shadow; rehydrate GET restored `local` +
+  full FTS content byte-for-byte. Test bundle deleted after (store back to 0).
+- TWO CLIENT-REACHABILITY GOTCHAS (the client uses `URLSession` w/ no delegate →
+  standard validation; only loopback is exempt from the https guard):
+  1. macOS **Local Network Privacy** blocks a process from LAN private IPs until
+     granted — the xctest harness got `-1009 "Local network prohibited"` on
+     `10.0.8.9`. The shipping app triggers the "find devices on your local
+     network" consent on first LAN offload; must be granted.
+  2. mDNS `.local` does NOT resolve for URLSession under the active TUN/VPN
+     (Surge-style `198.18.0.1`): `Bing-M1-MacMini.local` → `-1009`, IP worked.
+     Prefer the IP / a real DNS name for `remoteOffloadServerURL`.
+  - Workaround that made the test pass: SSH loopback tunnel
+    `ssh -L 8788:127.0.0.1:8443 bing@macmini-m1` → `https://127.0.0.1:8788`
+    (loopback bypasses Local Network Privacy; cert SAN has 127.0.0.1 so TLS still
+    validates). Also a valid client transport when Local Network can't be granted.
+    NOTE: with the TUN up, the SSH ControlMaster (`-M`) to `macmini-m1` is flaky
+    ("port 22: Undefined error: 0"); use a plain `ssh -N -L` and curl-verify the
+    forward (health 200) before relying on it.
+- DONE (2026-06-20): the REAL `Engram.app` now auto-offloads over Tailscale.
+  Config in `~/.engram/settings.json`: `remoteOffloadEnabled:true`,
+  `remoteOffloadBackend:"http"`, `remoteOffloadServerURL:"https://100.108.19.20:8443"`
+  (macmini TAILSCALE IP), `remoteOffloadColdAgeDays:365`. Token in Keychain via
+  `security add-generic-password -A -s com.engram.remote-offload -a default -w <tok>`
+  (the `-A` makes it readable by the helper without an ACL prompt). `remoteSyncStatus`
+  IPC confirmed `enabled:true` + counts. Ran a real cycle: 5 cold (28 MB, >1 yr)
+  sessions offloaded (macmini store 0→5, each left with 1 keyword shadow), 1
+  rehydrated back to full FTS via `remoteRehydrate` IPC. Backup of settings at
+  `~/.engram/settings.json.bak.*`.
+- CRITICAL DEPLOY LESSON — use a TAILSCALE IP, NOT the LAN IP. Offload runs in the
+  `EngramService` HELPER (separate process, designated id `EngramService`), and
+  macOS **Local Network Privacy** prohibits the helper from the LAN subnet
+  (`10.0.8.9` → every PUT `-1009 "Local network prohibited"`; the app's only TCC
+  grant is Full-Disk-Access, and a background helper can't get a Local Network
+  consent prompt). **Tailscale IPs route over `utun`, are NOT the local subnet, so
+  they bypass Local Network Privacy** — switching the URL to the tailnet IP made
+  every PUT succeed. Required re-issuing the nginx server cert with the tailscale
+  IP added to the SAN (`IP:100.108.19.20`); the cert now covers LAN + tailscale +
+  loopback, nginx still listens `*:8443`.
+- Eligibility/candidate-window gotcha: `OffloadRepo.candidateRows` =
+  `WHERE offload_state='local' ORDER BY size_bytes DESC LIMIT 500`, THEN
+  `OffloadPolicy.isEligible`. So offload prioritizes the 500 LARGEST sessions; a
+  "hidden-only" run is a no-op if the hidden sessions are smaller than the
+  500th-largest (they were here). Lowering `coldAgeDays` brings large cold sessions
+  into range. The runner builds the auto-loop coordinator ONCE at startup, but the
+  IPC `remoteOffload`/`remoteSyncStatus` handlers rebuild it per-call from current
+  settings — so settings changes need a service restart for the AUTO-loop, but take
+  effect immediately for IPC-triggered cycles.
+- Manual IPC driver (uncommitted): `/tmp/engram_ipc.py` — 4-byte BE length + JSON
+  envelope `{request_id,kind:"request",command,payload(base64 Data),capability_token}`;
+  token at `~/.engram/run/cmd.token` (0600); response payload is the base64 field
+  `result`; commands `remoteOffload`/`remoteRehydrate`(payload `{"sessionId":...}`)/
+  `remoteSyncStatus`/`recordSessionAccess`.
+- Caveats: GUI LaunchAgent only runs while logged in (a LaunchDaemon needs
+  sudo for login-independent start). Deployed the Debug artifact (the one that
+  passed smoke); a Release rebuild can swap in later. To rotate the at-rest key
+  later: existing stored blobs become undecryptable (server-held key), so only
+  rotate against an empty/rehydrated store.
 
 ## 2026-06-20 - Remote session offload feature shipped (PR #87)
 
