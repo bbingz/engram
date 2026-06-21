@@ -323,9 +323,9 @@ struct CommandPaletteView: View {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                let sessions = try? await Task.detached {
+                let sessions = (try? await Task.detached {
                     try db.search(query: q, limit: 10)
-                }.value
+                }.value)
                 guard !Task.isCancelled else { return }
                 // Double-fault: service threw AND local FTS threw (nil) or returned
                 // nothing. Surface a real failure state instead of "No results".
