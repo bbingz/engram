@@ -115,11 +115,19 @@ final class SessionSyncTests: XCTestCase {
             // child session — excluded
             try insertLocalSession(db, id: "child-1")
             try db.execute(sql: "UPDATE sessions SET parent_session_id = 'local-1' WHERE id = 'child-1'")
+            // already offloaded — excluded (pushing it would republish the collapsed
+            // FTS shadow and overwrite the rehydrate ledger key)
+            try insertLocalSession(db, id: "offloaded-1")
+            try db.execute(sql: "UPDATE sessions SET offload_state = 'offloaded' WHERE id = 'offloaded-1'")
+            // subagent by agent_role (tier NOT skip) — excluded (defense-in-depth)
+            try insertLocalSession(db, id: "subagent-1")
+            try db.execute(sql: "UPDATE sessions SET agent_role = 'subagent' WHERE id = 'subagent-1'")
         }
         let candidates = try writer.read { db in
             try OffloadRepo.pushCandidates(db, project: "demo", cwd: "/Users/bing/-Code-/demo")
         }
-        XCTAssertEqual(candidates.map(\.id), ["local-1"], "only local-origin, non-skip, top-level sessions")
+        XCTAssertEqual(candidates.map(\.id), ["local-1"],
+                       "only local-origin, non-skip, non-subagent, non-offloaded, top-level sessions")
         XCTAssertEqual(candidates.first?.ftsContents, ["hello", "world"])
         XCTAssertEqual(candidates.first?.title, "Title")
     }
@@ -138,6 +146,22 @@ final class SessionSyncTests: XCTestCase {
             try OffloadRepo.pushCandidates(db, project: "ReadOut", cwd: "/Users/bing/-Code-/ReadOut")
         }
         XCTAssertEqual(Set(candidates.map(\.id)), ["s1", "s2"])
+    }
+
+    func testPushCandidatesBlankCwdDoesNotOverMatchEmptyCwdSessions() throws {
+        let writer = try freshWriter("blank-cwd")
+        try writer.write { db in
+            // Matching project, empty cwd → still returned via the project-only branch.
+            try insertLocalSession(db, id: "match", project: "demo", cwd: "")
+            // Unrelated project, empty cwd → must NOT be swept in when the cwd arg is
+            // blank (the regression: `cwd = ''` matched every empty-cwd session).
+            try insertLocalSession(db, id: "unrelated", project: "other", cwd: "")
+        }
+        let candidates = try writer.read { db in
+            try OffloadRepo.pushCandidates(db, project: "demo", cwd: "")
+        }
+        XCTAssertEqual(candidates.map(\.id), ["match"],
+                       "a blank cwd falls back to project-only matching; empty-cwd sessions of other projects are not over-matched")
     }
 
     // MARK: - publishedManifestEntries
@@ -163,6 +187,24 @@ final class SessionSyncTests: XCTestCase {
         XCTAssertEqual(entry.contentHash, "h2")
         XCTAssertEqual(entry.title, "Title")
         XCTAssertEqual(entry.messageCount, 2)
+    }
+
+    func testPublishedManifestEntriesNormalizeProjectToRequested() throws {
+        let writer = try freshWriter("manifest-normalize")
+        try writer.write { db in
+            // cwd-matched session whose stored project is blank/divergent from the
+            // requested name — its entry must carry the REQUESTED project so the
+            // pull side (which matches on project name only, no cwd) can find it.
+            try insertLocalSession(db, id: "s1", project: "", cwd: "/Users/bing/-Code-/ReadOut")
+            try OffloadRepo.publishOnlyCommit(db, sessionId: "s1", remoteKey: "h1.bundle",
+                                              remoteSessionId: "s1", contentHash: "h1", peer: "macA")
+        }
+        let entries = try writer.read { db in
+            try OffloadRepo.publishedManifestEntries(db, project: "ReadOut",
+                                                     cwd: "/Users/bing/-Code-/ReadOut", peer: "macA")
+        }
+        XCTAssertEqual(entries.map(\.project), ["ReadOut"],
+                       "cwd-only-matched entry project is normalized to the requested name (importable on pull)")
     }
 
     // MARK: - ImportRepo
@@ -250,6 +292,42 @@ final class SessionSyncTests: XCTestCase {
         }
     }
 
+    /// The load-bearing invariant: re-import must UPSERT (UPDATE in place), NOT
+    /// `INSERT OR REPLACE` (delete-then-insert), so a session's ON DELETE CASCADE
+    /// children survive every re-pull. Plants a `session_local_state` child and
+    /// asserts it survives a changed-hash re-import. Fails immediately under REPLACE.
+    func testCommitImportedPreservesCascadeChildrenOnReimport() throws {
+        let writer = try freshWriter("import-cascade")
+        let (entry, bundle) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih1", fts: ["one"])
+        let localId = ImportRepo.importedLocalId(peer: "macB", sessionId: "rs1")
+
+        try writer.write { db in try ImportRepo.commitImported(db, entry: entry, peer: "macB", bundle: bundle) }
+        // Plant an ON DELETE CASCADE child keyed by the imported row.
+        try writer.write { db in
+            try db.execute(
+                sql: "INSERT INTO session_local_state(session_id, custom_name) VALUES (?, 'pinned')",
+                arguments: [localId]
+            )
+        }
+        // Re-import with a CHANGED hash → row updated in place; the child must survive.
+        let (entry2, bundle2) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih2", fts: ["two"])
+        try writer.write { db in try ImportRepo.commitImported(db, entry: entry2, peer: "macB", bundle: bundle2) }
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_local_state WHERE session_id = ?", arguments: [localId]),
+                1, "UPSERT must preserve cascade children; INSERT OR REPLACE would delete them"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT custom_name FROM session_local_state WHERE session_id = ?", arguments: [localId]),
+                "pinned", "child row content intact across re-import"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT snapshot_hash FROM sessions WHERE id = ?", arguments: [localId]),
+                "ih2", "session row itself updated in place"
+            )
+        }
+    }
+
     func testNeedsImportLogic() throws {
         let writer = try freshWriter("needs")
         let (entry, bundle) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih1", fts: ["x"])
@@ -294,5 +372,23 @@ final class SessionSyncTests: XCTestCase {
         let manifests = ManifestCodec.decodeCatalog(data)
         XCTAssertEqual(manifests.count, 1, "corrupt manifest skipped, valid one survives")
         XCTAssertEqual(manifests.first, good)
+    }
+
+    /// LocalDirectoryBackend.catalog() selects ONLY `catalog.<peer>.manifest` blobs
+    /// (via ManifestCodec.isManifestKey), matching the server route's predicate: a
+    /// `catalog.*` blob without the `.manifest` suffix and a `catalog..manifest` key
+    /// (rejected by the server's BlobStore.validate) are both excluded here too.
+    func testLocalCatalogSelectsOnlyManifestKeys() async throws {
+        let dir = tempDir.appendingPathComponent("catalog-store", isDirectory: true)
+        let backend = try LocalDirectoryBackend(root: dir)
+        let (entry, _) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih1", fts: ["x"])
+        let manifest = SyncManifest(peer: "macB", updatedAt: "2024-02-02T00:00:00Z", entries: [entry])
+        try await backend.put(key: ManifestCodec.manifestKey(peer: "macB"), data: ManifestCodec.encode(manifest))
+        try await backend.put(key: "catalog.stray", data: Data("{}".utf8))         // no .manifest suffix
+        try await backend.put(key: "catalog..manifest", data: Data("{}".utf8))     // contains ".."
+        let catalogData = try await backend.catalog()
+        let manifests = ManifestCodec.decodeCatalog(catalogData)
+        XCTAssertEqual(manifests, [manifest],
+                       "only catalog.<peer>.manifest blobs are aggregated; stray and '..' keys excluded")
     }
 }

@@ -389,11 +389,19 @@ public enum OffloadRepo {
 
     /// Scope a project by case-insensitive `project` OR the deterministic dev cwd,
     /// because `project` is inconsistently cased across adapters but the cwd is not.
+    /// A BLANK cwd is treated as "no cwd scope" (the `? <> ''` guard) so a missing
+    /// cwd falls back to project-only matching instead of sweeping in every session
+    /// whose cwd column is empty. Bound args are always `[project, cwd, cwd]`.
     private static let projectScopeSQL =
-        "(lower(COALESCE(project, '')) = lower(?) OR cwd = ?)"
+        "(lower(COALESCE(project, '')) = lower(?) OR (? <> '' AND cwd = ?))"
 
-    /// Local-origin top-level sessions of a project, eligible to PUSH. Imported rows
-    /// (origin = a peer) and skip/subagent rows are excluded to prevent echo loops.
+    /// Local-origin top-level sessions of a project, eligible to PUSH. Excluded:
+    /// imported rows (origin = a peer) and skip/subagent rows (echo-loop guard), and
+    /// already-OFFLOADED rows — pushing an offloaded session would read its collapsed
+    /// one-line FTS shadow and republish that as the session's content, also
+    /// overwriting the rehydrate ledger key. The subagent guard is explicit on
+    /// `agent_role` (not just `tier != 'skip'`) for defense-in-depth symmetry with
+    /// `OffloadPolicy.isEligible`.
     public static func pushCandidates(_ db: Database, project: String, cwd: String) throws -> [PushCandidate] {
         let rows = try Row.fetchAll(
             db,
@@ -406,10 +414,12 @@ public enum OffloadRepo {
             WHERE \(projectScopeSQL)
               AND (origin IS NULL OR origin = 'local')
               AND (tier IS NULL OR tier != 'skip')
+              AND (agent_role IS NULL OR agent_role != 'subagent')
+              AND COALESCE(offload_state, 'local') = 'local'
               AND parent_session_id IS NULL
             ORDER BY start_time
             """,
-            arguments: [project, cwd]
+            arguments: [project, cwd, cwd]
         )
         return try rows.map { row in
             let id: String = row["id"]
@@ -473,6 +483,12 @@ public enum OffloadRepo {
     /// Build manifest entries from a project's PUBLISHED sessions: current session
     /// metadata joined to the latest 'out' ledger row (remote_key + content_hash).
     /// `peer` is the publishing identity stamped onto each entry's session id space.
+    ///
+    /// Each entry's `project` is normalized to the requested `project` (not the raw
+    /// row value), because the pull side matches on project name only — it has no cwd
+    /// — so a session scoped in by the `cwd` branch with a NULL/divergent project
+    /// would otherwise be uploaded but never importable. The per-peer manifest merge
+    /// in `pushProject` also relies on this to identify "this project's slice".
     public static func publishedManifestEntries(
         _ db: Database, project: String, cwd: String, peer _: String
     ) throws -> [SyncManifestEntry] {
@@ -489,13 +505,13 @@ public enum OffloadRepo {
                 SELECT session_id, remote_key, content_hash,
                        ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY synced_at DESC, id DESC) AS rn
                 FROM sync_ledger
-                WHERE direction = 'out' AND remote_key IS NOT NULL
+                WHERE direction = 'out' AND remote_key IS NOT NULL AND content_hash IS NOT NULL
             ) l ON l.session_id = s.id AND l.rn = 1
             WHERE \(projectScopeSQL)
               AND (s.origin IS NULL OR s.origin = 'local')
             ORDER BY s.start_time
             """,
-            arguments: [project, cwd]
+            arguments: [project, cwd, cwd]
         )
         return rows.map { row in
             let custom: String? = row["custom_name"]
@@ -503,7 +519,7 @@ public enum OffloadRepo {
             return SyncManifestEntry(
                 sessionId: row["id"],
                 source: row["source"],
-                project: row["project"],
+                project: project,
                 title: (custom?.isEmpty == false ? custom : generated),
                 startTime: row["start_time"],
                 endTime: row["end_time"],

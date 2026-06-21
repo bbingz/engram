@@ -51,6 +51,11 @@ final class RemoteSyncIPCTests: XCTestCase {
         XCTAssertTrue(ServiceCapabilityToken.requiresToken("remoteRehydrate"))
         // Read-only status is ungated, like other read commands.
         XCTAssertFalse(ServiceCapabilityToken.requiresToken("remoteSyncStatus"))
+        // Layer 2 per-project sync: push/pull mutate state and must be gated; the
+        // read-only preview stays ungated.
+        XCTAssertTrue(ServiceCapabilityToken.requiresToken("remotePushProject"))
+        XCTAssertTrue(ServiceCapabilityToken.requiresToken("remotePullProject"))
+        XCTAssertFalse(ServiceCapabilityToken.requiresToken("remoteProjectSyncPreview"))
     }
 
     func testRemoteSyncStatusReportsCounts() async throws {

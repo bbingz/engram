@@ -313,6 +313,17 @@ public struct RemoteSyncCoordinator: Sendable {
 /// Read-only summary of what a project sync WOULD do, for the confirm-first UX.
 /// Counts plus a small title sample; no writes happen to produce it.
 public struct ProjectSyncPreview: Codable, Sendable, Equatable {
+    /// One actionable session in the preview: its real session id plus a display
+    /// title (so a UI can key rows by a stable id, not a possibly-duplicate title).
+    public struct Sample: Codable, Sendable, Equatable {
+        public let id: String
+        public let title: String
+        public init(id: String, title: String) {
+            self.id = id
+            self.title = title
+        }
+    }
+
     /// "push" or "pull".
     public let direction: String
     public let project: String
@@ -320,15 +331,15 @@ public struct ProjectSyncPreview: Codable, Sendable, Equatable {
     public let actionable: Int
     /// Sessions already present remotely (push) / already imported & current (pull).
     public let skipped: Int
-    /// Up to ~10 titles of the actionable sessions, for display.
-    public let sampleTitles: [String]
+    /// Up to ~10 actionable sessions (real id + display title), for display.
+    public let samples: [Sample]
 
-    public init(direction: String, project: String, actionable: Int, skipped: Int, sampleTitles: [String]) {
+    public init(direction: String, project: String, actionable: Int, skipped: Int, samples: [Sample]) {
         self.direction = direction
         self.project = project
         self.actionable = actionable
         self.skipped = skipped
-        self.sampleTitles = sampleTitles
+        self.samples = samples
     }
 }
 
@@ -382,15 +393,43 @@ extension RemoteSyncCoordinator {
             }
         }
 
-        // Republish this peer's full manifest (full-replace, no cross-Mac contention).
+        // Republish this peer's manifest. The blob is per-peer (one
+        // `catalog.<peer>.manifest`), so a multi-project peer must MERGE: keep other
+        // projects' entries and replace only THIS project's slice. A full-replace
+        // would make every previously-pushed project undiscoverable to all peers.
         let entries = try await gate.performWriteCommand(name: "syncManifestRead") { writer in
             try writer.read { db in
                 try OffloadRepo.publishedManifestEntries(db, project: project, cwd: cwd, peer: peer)
             }
         }.value
-        let manifest = SyncManifest(peer: peer, updatedAt: Self.timestamp(), entries: entries)
+        let manifestKey = ManifestCodec.manifestKey(peer: peer)
+        // Entries published under THIS `project` all carry `entry.project == project`
+        // (publishedManifestEntries normalizes it), so "other projects' entries" are
+        // exactly those whose project differs — keep them, drop this project's old
+        // slice (so locally-removed sessions also disappear from the manifest).
+        // Network GET runs OUTSIDE the write gate, like the PUT below.
+        //
+        // FAIL-CLOSED: only an explicit "no manifest yet" (bundleNotFound) starts from
+        // an empty slice. A transient GET error (5xx/timeout) or a corrupt/undecodable
+        // existing manifest must NOT be swallowed — that would re-publish a manifest
+        // holding ONLY this project and drop every other project from discovery. We
+        // let those errors propagate so the push fails (it is idempotent; the user
+        // retries) rather than silently destroying other projects' discoverability.
+        var preserved: [SyncManifestEntry] = []
+        do {
+            let existingData = try await backend.get(key: manifestKey)
+            let existing = try ManifestCodec.decode(existingData)
+            preserved = existing.entries.filter {
+                ($0.project ?? "").lowercased() != project.lowercased()
+            }
+        } catch RemoteSyncError.bundleNotFound {
+            preserved = []
+        }
+        let manifest = SyncManifest(
+            peer: peer, updatedAt: Self.timestamp(), entries: preserved + entries
+        )
         let manifestData = try ManifestCodec.encode(manifest)
-        try await backend.put(key: ManifestCodec.manifestKey(peer: peer), data: manifestData)
+        try await backend.put(key: manifestKey, data: manifestData)
 
         return (uploaded, skipped)
     }
@@ -435,7 +474,7 @@ extension RemoteSyncCoordinator {
             let candidates = try await gate.performWriteCommand(name: "syncPreviewPushRead") { writer in
                 try writer.read { db in try OffloadRepo.pushCandidates(db, project: project, cwd: cwd) }
             }.value
-            var actionable: [String] = []
+            var actionable: [ProjectSyncPreview.Sample] = []
             var skipped = 0
             for candidate in candidates {
                 let bundle = BundleCodec.makeBundle(
@@ -453,19 +492,19 @@ extension RemoteSyncCoordinator {
                 if exists {
                     skipped += 1
                 } else {
-                    actionable.append(candidate.title ?? candidate.id)
+                    actionable.append(.init(id: candidate.id, title: candidate.title ?? candidate.id))
                 }
             }
             return ProjectSyncPreview(
                 direction: "push", project: project, actionable: actionable.count,
-                skipped: skipped, sampleTitles: Array(actionable.prefix(Self.previewSampleLimit))
+                skipped: skipped, samples: Array(actionable.prefix(Self.previewSampleLimit))
             )
         }
 
         // pull preview
         let catalogData = try await backend.catalog()
         let manifests = ManifestCodec.decodeCatalog(catalogData)
-        var actionable: [String] = []
+        var actionable: [ProjectSyncPreview.Sample] = []
         var skipped = 0
         for manifest in manifests where manifest.peer != peer {
             for entry in manifest.entries where Self.matchesProject(entry, project: project) {
@@ -475,7 +514,7 @@ extension RemoteSyncCoordinator {
                     }
                 }.value
                 if needs {
-                    actionable.append(entry.title ?? entry.sessionId)
+                    actionable.append(.init(id: entry.sessionId, title: entry.title ?? entry.sessionId))
                 } else {
                     skipped += 1
                 }
@@ -483,7 +522,7 @@ extension RemoteSyncCoordinator {
         }
         return ProjectSyncPreview(
             direction: "pull", project: project, actionable: actionable.count,
-            skipped: skipped, sampleTitles: Array(actionable.prefix(Self.previewSampleLimit))
+            skipped: skipped, samples: Array(actionable.prefix(Self.previewSampleLimit))
         )
     }
 

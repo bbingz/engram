@@ -115,8 +115,8 @@ extension EngramServiceCommandHandler {
             direction: dir
         )
         let action = dir == "pull" ? "pull" : "push"
-        let sessions = preview.sampleTitles.map {
-            EngramServiceRemoteProjectSyncPreviewResponse.SessionPreview(id: $0, title: $0, action: action)
+        let sessions = preview.samples.map {
+            EngramServiceRemoteProjectSyncPreviewResponse.SessionPreview(id: $0.id, title: $0.title, action: action)
         }
         return EngramServiceRemoteProjectSyncPreviewResponse(
             enabled: true,

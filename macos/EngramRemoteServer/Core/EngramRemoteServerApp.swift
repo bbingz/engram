@@ -40,7 +40,11 @@ public final class EngramRemoteServerApp: Sendable {
         router.get("/v1/catalog") { request, _ in
             guard Self.authorized(request, token: token) else { return Self.unauthorized() }
             var manifests: [Any] = []
-            let keys = (try? store.listKeys(prefix: "catalog.")) ?? []
+            // Manifests are keyed `catalog.<peer>.manifest`; require the suffix too so
+            // this selects the same blobs as LocalDirectoryBackend.catalog() (a stray
+            // `catalog.*` non-manifest blob is selected by neither producer).
+            let keys = ((try? store.listKeys(prefix: "catalog.")) ?? [])
+                .filter { $0.hasSuffix(".manifest") }
             for k in keys {
                 guard let data = try? store.get(k),
                       let obj = try? JSONSerialization.jsonObject(with: data) else { continue }

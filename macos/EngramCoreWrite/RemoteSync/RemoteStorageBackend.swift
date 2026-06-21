@@ -64,7 +64,7 @@ public struct LocalDirectoryBackend: RemoteStorageBackend {
     public func catalog() async throws -> Data {
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
         var manifests: [Any] = []
-        for name in entries where name.hasPrefix("catalog.") && name.hasSuffix(".manifest") {
+        for name in entries where ManifestCodec.isManifestKey(name) {
             guard let data = try? Data(contentsOf: url(for: name)),
                   let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
             manifests.append(obj)

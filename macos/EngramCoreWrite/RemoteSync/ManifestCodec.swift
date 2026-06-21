@@ -70,6 +70,19 @@ public enum ManifestCodec {
         return "catalog.\(safe.isEmpty ? "peer" : safe).manifest"
     }
 
+    /// True for a per-peer manifest blob key (`catalog.<peer>.manifest`). Both
+    /// catalog producers — `LocalDirectoryBackend.catalog()` and the HTTP server's
+    /// `GET /v1/catalog` route — must select with this same predicate so they yield
+    /// the same document; a stray `catalog.*` non-manifest blob is selected by
+    /// neither. The `..` rejection mirrors the server's `BlobStore.validate` (which
+    /// rejects any key containing `..`), so a pathological peer name that sanitizes
+    /// to `catalog..manifest` is excluded by BOTH producers, not just the server.
+    /// (The server, being storage-format-agnostic, mirrors the suffix check inline
+    /// rather than depending on this module.)
+    public static func isManifestKey(_ key: String) -> Bool {
+        key.hasPrefix("catalog.") && key.hasSuffix(".manifest") && !key.contains("..")
+    }
+
     public static func encode(_ manifest: SyncManifest) throws -> Data {
         try JSONEncoder().encode(manifest)
     }

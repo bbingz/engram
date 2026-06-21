@@ -164,7 +164,10 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
 
     // MARK: - Layer 2: per-project session-record sync
 
-    private func seedLocal(_ gate: ServiceWriterGate, id: String, fts: [String]) async throws {
+    private func seedLocal(
+        _ gate: ServiceWriterGate, id: String, fts: [String],
+        project: String = "demo", cwd: String = "/Users/bing/-Code-/demo"
+    ) async throws {
         _ = try await gate.performWriteCommand(name: "seed") { writer in
             try writer.write { db in
                 try db.execute(sql: """
@@ -172,8 +175,8 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
                                          summary, summary_message_count, message_count,
                                          user_message_count, assistant_message_count, generated_title, size_bytes)
                     VALUES (?, 'codex','2024-01-01T00:00:00Z','2024-01-01T01:00:00Z',
-                            ?, '/Users/bing/-Code-/demo', 'demo', 'a summary', 2, 2, 1, 1, ?, 4096);
-                """, arguments: [id, "/tmp/\(id).jsonl", "Title \(id)"])
+                            ?, ?, ?, 'a summary', 2, 2, 1, 1, ?, 4096);
+                """, arguments: [id, "/tmp/\(id).jsonl", cwd, project, "Title \(id)"])
                 for line in fts {
                     try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
                                    arguments: [id, line])
@@ -202,6 +205,21 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(pushed.uploaded, 2)
         XCTAssertEqual(pushed.skipped, 0)
 
+        // Publish-only invariant at the coordinator level: pushing must NOT collapse
+        // the publisher's local FTS or flip offload_state (that is offload's job, not
+        // publish's). Guards against a regression that routed push through
+        // commitOffloaded — which the round-trip's import assertions alone would miss.
+        _ = try await gateA.performWriteCommand(name: "verifyPublisher") { writer in
+            try writer.read { db in
+                XCTAssertEqual(
+                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'a1'"), 2,
+                    "push must not collapse the publisher's FTS"
+                )
+                XCTAssertEqual(try OffloadRepo.offloadState(db, sessionId: "a1"), "local",
+                               "push must not flip the publisher's offload_state")
+            }
+        }
+
         let pulled = try await coordB.pullProject(project: "demo")
         XCTAssertEqual(pulled.imported, 2)
         XCTAssertEqual(pulled.skipped, 0)
@@ -222,6 +240,100 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         let again = try await coordB.pullProject(project: "demo")
         XCTAssertEqual(again.imported, 0)
         XCTAssertEqual(again.skipped, 2)
+    }
+
+    /// Multi-project push must NOT drop earlier projects from the per-peer manifest
+    /// (it merges, not full-replaces), and pull must scope strictly to the requested
+    /// project. Peer A pushes "demo" then "other"; peer B pulling "demo" still imports
+    /// demo's session (merge kept it) and does NOT import "other"'s (pull scoping).
+    func testMultiProjectPushMergesManifestAndPullScopesByProject() async throws {
+        let store = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("engram-syncmulti-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            .appendingPathComponent("store", isDirectory: true)
+        let pathsA = try makePaths(); let pathsB = try makePaths()
+        let (coordA, gateA, _) = try makeCoordinatorSharedStore(pathsA, store: store, peer: "macA")
+        let (coordB, gateB, _) = try makeCoordinatorSharedStore(pathsB, store: store, peer: "macB")
+        _ = try await gateA.performWriteCommand(name: "migrate") { try $0.migrate() }
+        _ = try await gateB.performWriteCommand(name: "migrate") { try $0.migrate() }
+
+        try await seedLocal(gateA, id: "a1", fts: ["alpha demo"],
+                            project: "demo", cwd: "/Users/bing/-Code-/demo")
+        try await seedLocal(gateA, id: "b1", fts: ["bravo other"],
+                            project: "other", cwd: "/Users/bing/-Code-/other")
+
+        // Push demo, THEN other. The second push must not drop demo from the manifest.
+        let pushDemo = try await coordA.pushProject(project: "demo", cwd: "/Users/bing/-Code-/demo")
+        XCTAssertEqual(pushDemo.uploaded, 1)
+        let pushOther = try await coordA.pushProject(project: "other", cwd: "/Users/bing/-Code-/other")
+        XCTAssertEqual(pushOther.uploaded, 1)
+
+        // Pull "demo" on B: imports ONLY demo's a1 (merge kept it; scoping excludes b1).
+        let pulledDemo = try await coordB.pullProject(project: "demo")
+        XCTAssertEqual(pulledDemo.imported, 1, "demo survived the later 'other' push (manifest merge)")
+        _ = try await gateB.performWriteCommand(name: "verify") { writer in
+            try writer.read { db in
+                XCTAssertNotNil(
+                    try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE id = ?",
+                                        arguments: [ImportRepo.importedLocalId(peer: "macA", sessionId: "a1")]),
+                    "demo session imported"
+                )
+                XCTAssertNil(
+                    try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE id = ?",
+                                        arguments: [ImportRepo.importedLocalId(peer: "macA", sessionId: "b1")]),
+                    "pull 'demo' must NOT import the 'other'-project session b1 (project scoping)"
+                )
+            }
+        }
+
+        // The 'other' project is still independently pullable too.
+        let pulledOther = try await coordB.pullProject(project: "other")
+        XCTAssertEqual(pulledOther.imported, 1, "'other' remains discoverable after demo was pushed first")
+    }
+
+    /// FAIL-CLOSED: if reading the existing per-peer manifest fails with a transient
+    /// error (not a clean "absent"), pushProject must NOT full-replace the manifest
+    /// with only the current project — that would drop every other project from
+    /// discovery. It must throw and leave the existing manifest untouched.
+    func testPushFailsClosedWhenExistingManifestGetFails() async throws {
+        let store = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("engram-syncfailclosed-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            .appendingPathComponent("store", isDirectory: true)
+        let paths = try makePaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "migrate") { try $0.migrate() }
+        let inner = try LocalDirectoryBackend(root: store)
+        let backend = FailingGetBackend(inner: inner, failKeySubstring: "catalog.")
+        let config = RemoteSyncConfig(
+            enabled: true, storeRoot: store, policy: OffloadPolicy(coldAgeDays: 90),
+            offloadBatch: 20, rehydrateBatch: 20, vacuumFreelistThreshold: 1_000_000
+        )
+        let coord = RemoteSyncCoordinator(gate: gate, backend: backend, config: config, peer: "macA")
+
+        try await seedLocal(gate, id: "a1", fts: ["alpha demo"],
+                            project: "demo", cwd: "/Users/bing/-Code-/demo")
+        try await seedLocal(gate, id: "b1", fts: ["bravo other"],
+                            project: "other", cwd: "/Users/bing/-Code-/other")
+
+        // First push writes the demo manifest cleanly (failure not yet armed).
+        _ = try await coord.pushProject(project: "demo", cwd: "/Users/bing/-Code-/demo")
+        let manifestKey = ManifestCodec.manifestKey(peer: "macA")
+        let before = try await inner.get(key: manifestKey)
+
+        // Arm a transient GET failure on the manifest read, then push "other".
+        await backend.arm()
+        do {
+            _ = try await coord.pushProject(project: "other", cwd: "/Users/bing/-Code-/other")
+            XCTFail("push must fail closed when the existing-manifest GET fails transiently")
+        } catch {
+            // expected — the error propagates instead of being swallowed.
+        }
+
+        // The on-disk manifest is untouched: demo's slice survives, not overwritten.
+        let after = try await inner.get(key: manifestKey)
+        XCTAssertEqual(after, before, "fail-closed: manifest not overwritten on a transient GET failure")
+        let manifest = try ManifestCodec.decode(after)
+        XCTAssertTrue(manifest.entries.contains { ($0.project ?? "").lowercased() == "demo" },
+                      "demo entries preserved after the failed 'other' push")
     }
 
     /// Pull ignores this peer's OWN manifest (no echo / self-import).
@@ -264,7 +376,8 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(pushPreview.direction, "push")
         XCTAssertEqual(pushPreview.actionable, 1)
         XCTAssertEqual(pushPreview.skipped, 0)
-        XCTAssertEqual(pushPreview.sampleTitles, ["Title a1"])
+        XCTAssertEqual(pushPreview.samples.map(\.title), ["Title a1"])
+        XCTAssertEqual(pushPreview.samples.map(\.id), ["a1"], "preview carries the real session id, not the title")
         // Read-only: nothing uploaded.
         let manifestPublished = try await backendA.head(key: ManifestCodec.manifestKey(peer: "macA"))
         XCTAssertFalse(manifestPublished, "preview must not publish a manifest")
@@ -276,6 +389,8 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         )
         XCTAssertEqual(pullPreview.direction, "pull")
         XCTAssertEqual(pullPreview.actionable, 1)
+        XCTAssertEqual(pullPreview.samples.map(\.id), ["a1"],
+                       "pull preview carries the publisher's real session id, not the title")
         _ = try await gateB.performWriteCommand(name: "verify") { writer in
             try writer.read { db in
                 XCTAssertNil(try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE origin = 'macA'"),
@@ -312,4 +427,31 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
               let token = obj["token"], !token.isEmpty else { return nil }
         return (url, token)
     }
+}
+
+/// Test backend delegating to a real `LocalDirectoryBackend` but, once `arm()`ed,
+/// failing `get` for keys containing `failKeySubstring` with a transient (non
+/// "absent") error — to exercise pushProject's fail-closed manifest-merge path.
+private actor FailingGetBackend: RemoteStorageBackend {
+    private let inner: LocalDirectoryBackend
+    private let failKeySubstring: String
+    private var armed = false
+
+    init(inner: LocalDirectoryBackend, failKeySubstring: String) {
+        self.inner = inner
+        self.failKeySubstring = failKeySubstring
+    }
+
+    func arm() { armed = true }
+
+    func head(key: String) async throws -> Bool { try await inner.head(key: key) }
+    func put(key: String, data: Data) async throws { try await inner.put(key: key, data: data) }
+    func get(key: String) async throws -> Data {
+        if armed, key.contains(failKeySubstring) {
+            throw EngramRemoteBackendError.unexpectedStatus(503)
+        }
+        return try await inner.get(key: key)
+    }
+    func delete(key: String) async throws { try await inner.delete(key: key) }
+    func catalog() async throws -> Data { try await inner.catalog() }
 }

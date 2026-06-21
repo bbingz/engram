@@ -7,6 +7,48 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Multi-Mac sync L2 — pre-merge review remediation (PR #88, non-security findings) (2026-06-21, Claude)
+
+The prior session ran the pre-merge review workflow (`wlqv61o7n`, verdict `fix-before-merge`,
+2 must-fix HIGH + 12 followups) but derailed on the SECURITY dimension (Opus cyber-safety filter
+killed the turn) and merged nothing. This session collected ALL non-security findings and completed
+them, then re-verified each fix adversarially. The 1 security-flavored finding (no live-server
+path-traversal test) was intentionally EXCLUDED per the owner's instruction; it stays a followup.
+
+- **HIGH #1 multi-project manifest data loss** (`RemoteSyncCoordinator.pushProject`): the per-peer
+  manifest was full-replaced with only the current project's entries, so pushing project B dropped
+  project A from hub discovery. Fix: pushProject now READ-MERGES the existing per-peer manifest
+  (keep other projects' entries, replace only this project's slice). Pairs with
+  `publishedManifestEntries` normalizing each entry's `project` to the requested name (so the
+  cwd-scoped slice is identifiable and pull-matchable). FAIL-CLOSED: only an explicit
+  `bundleNotFound` starts from an empty slice; a transient GET error or a corrupt existing manifest
+  propagates (push throws, idempotent retry) rather than silently full-replacing.
+- **HIGH #2 offloaded-session republish** (`OffloadRepo.pushCandidates`): added
+  `AND COALESCE(offload_state,'local')='local'` so an already-offloaded session is never re-read as
+  its collapsed one-line FTS shadow and republished (which also overwrote the rehydrate ledger key).
+- **MED**: blank-cwd over-match — `projectScopeSQL` now `(... OR (? <> '' AND cwd = ?))`, bound
+  `[project, cwd, cwd]` in both callers, so a blank cwd falls back to project-only (was sweeping in
+  every empty-cwd session: 109 vs 2 in the live repro). + UPSERT FK-cascade-child survival test and
+  L2 capability-token gating test.
+- **LOW**: cwd-only-matched entries now importable (entry project normalized to request);
+  `publishedManifestEntries` content_hash NULL guard (`AND content_hash IS NOT NULL`) — no more
+  latent fatalError; coordinator publish-only invariant + negative pull-scoping assertions added.
+- **NIT**: `pushCandidates` explicit `agent_role != 'subagent'` (defense-in-depth); preview
+  `SessionPreview.id` now carries the real session id (via `ProjectSyncPreview.Sample{id,title}`),
+  not the title; protocol comment corrected; `ManifestCodec.isManifestKey` (prefix+suffix, rejects
+  `..`) used by both catalog producers so a stray `catalog.*` / `catalog..manifest` blob is excluded
+  symmetrically (server mirrors the suffix check inline, stays storage-format-agnostic).
+- **Deliberately NOT changed** (new observations from adversarial verify, out of the 15-finding
+  scope, no content loss): `publishedManifestEntries` keeps NO offload_state/agent_role guard — it
+  JOINs on the 'out' ledger (the chokepoint that already excludes subagents), and adding an
+  offload_state guard there would DROP a legitimately-pushed-then-offloaded session from discovery.
+- **Verification:** adversarial workflow (8 verifiers, one per fix) — 6 `yes`, 2 `partial` whose
+  real gaps (manifest fail-open, catalog `..` asymmetry) were then fixed + tested. Tests green:
+  `EngramCoreTests/SessionSyncTests` 14/14, `EngramServiceCore` RemoteSync 11/11 (1 live skipped),
+  `EngramRemoteServerCore` 9/9. Full `Engram` app build SUCCEEDED. 10 new/changed RemoteSync tests
+  (incl. a fail-closed manifest test with a failure-injection backend). NOT yet merged — PR #88 is
+  MERGEABLE with prior CI green; this adds new commits that re-trigger CI.
+
 ### Multi-Mac sync — Layer 2 client (per-project session push/pull) DONE + deployed + live-verified (2026-06-21, Claude)
 
 Completes the L2 session-record sync that the earlier entry left designed-only. Built via an
