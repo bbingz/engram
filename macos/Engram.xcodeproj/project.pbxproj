@@ -78,6 +78,7 @@
 		1F0BFE6537C90225761C770B /* AdapterRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B9F654F382E1F1DA027FD9A /* AdapterRegistry.swift */; };
 		1F16C2D9468ACFAE3A162F17 /* ScreenSectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD6B58C28284EBE9B9980BE3 /* ScreenSectionTests.swift */; };
 		1F9B5C5D1148C4E6ADA4EFE9 /* CodexAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6241BC63B4B0010E1081420 /* CodexAdapter.swift */; };
+		208DF7B9F3EF92BE3F48FE8F /* SessionSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB524C7D024C84A86B5E826 /* SessionSyncTests.swift */; };
 		20BE5017D98463BD36DB0828 /* SkeletonRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBDF2E74FDC6BE088A6B2E4 /* SkeletonRow.swift */; };
 		2210E93A466A4DF792A4C6AF /* LiveSessionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C37BCCB1ACAB67E7F8B9C8E /* LiveSessionCard.swift */; };
 		2243A460D591F994BA355947 /* EngramServiceReadProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1544BE45F851B69E9F5DD3EE /* EngramServiceReadProvider.swift */; };
@@ -286,6 +287,7 @@
 		8118A0F5B6E307050DFB1368 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 5ECA21BBE2149F21F956D0F2 /* GRDB-dynamic */; };
 		81420BC730F6E83743685AAA /* ExpandableSessionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2363A7466E2F5559010A452 /* ExpandableSessionCard.swift */; };
 		82AC9F191D52FA3BC6C9FD76 /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = 5CDCAD62ECCF9F31008E376B /* AGENTS.md */; };
+		8352A84898143779A0D84087 /* ImportRepo.swift in Sources */ = {isa = PBXBuildFile; fileRef = E82D19B2FEFE12422A15C4F9 /* ImportRepo.swift */; };
 		8459EBFCF9D8B7D931107A50 /* EngramRemoteServerCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5C1C8678A914AA14E36D52FF /* EngramRemoteServerCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		84CA919848FE27F9DC670F7A /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		84FC451B5E95245BD82626DE /* BarChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D04F3C79286C371A9D5E91B /* BarChart.swift */; };
@@ -362,6 +364,7 @@
 		AB0D3162C84E53901AFFC384 /* UsagePressureNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 588D02060B46B65BB11B8BFE /* UsagePressureNotifier.swift */; };
 		AB2B1C9CE3ACE02AEEE9E34B /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = CBDF29785DFFE67D4E31B6B0 /* GRDB-dynamic */; };
 		ACD374C4B3B602CE7A682547 /* MCPProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67732E532A4FF2BA35D84743 /* MCPProtocol.swift */; };
+		ACFCEDCCDB24AA8E04A5D59A /* ManifestCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 356D3ABD47C1337E464BFFA4 /* ManifestCodec.swift */; };
 		AD692C2DAB2B68CED07C0234 /* SessionAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0057C273F6977C308D9D2391 /* SessionAdapter.swift */; };
 		ADE2FEB9B60D117F4275D8D7 /* RepoDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00C8F570084AAEFC269D7D62 /* RepoDiscovery.swift */; };
 		ADE82B8D3031E2E30035A215 /* GeminiCliAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C7F5ECB22E57462D46830A /* GeminiCliAdapter.swift */; };
@@ -762,6 +765,7 @@
 		1C393A33D07F4F9E3F3742EE /* FixtureAssertions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureAssertions.swift; sourceTree = "<group>"; };
 		1D0235E45DAAFCBA57B29A6E /* ToolResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolResultView.swift; sourceTree = "<group>"; };
 		1D1BB361D9AC2D5B6AEB8F36 /* ServiceCapabilityToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceCapabilityToken.swift; sourceTree = "<group>"; };
+		1DB524C7D024C84A86B5E826 /* SessionSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSyncTests.swift; sourceTree = "<group>"; };
 		222AD926D3B392C205DB0EAE /* NetworkSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkSettingsSection.swift; sourceTree = "<group>"; };
 		22AACDDFF337D230DBDEB48F /* EngramServiceCostsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramServiceCostsTests.swift; sourceTree = "<group>"; };
 		2509C82AB14EA248EFB72E8A /* TestHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestHelpers.swift; sourceTree = "<group>"; };
@@ -792,6 +796,7 @@
 		3457E62B73BFD0770B3C2EE0 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		3462B0B41EFCDFDA7943AB92 /* EngramCoreSchemaTool */ = {isa = PBXFileReference; includeInIndex = 0; path = EngramCoreSchemaTool; sourceTree = BUILT_PRODUCTS_DIR; };
 		349F6EB71686737B6F265FC3 /* PopoverScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverScreen.swift; sourceTree = "<group>"; };
+		356D3ABD47C1337E464BFFA4 /* ManifestCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManifestCodec.swift; sourceTree = "<group>"; };
 		35A790DAD573FA6510B84F74 /* SigningVerificationTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningVerificationTest.swift; sourceTree = "<group>"; };
 		35D82B4242EFEB974EBC132E /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		36006D527ADCA5DD8673D6E3 /* GeneralSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsSection.swift; sourceTree = "<group>"; };
@@ -1075,6 +1080,7 @@
 		E739CEB4363175CED46FBCC7 /* SparklineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparklineView.swift; sourceTree = "<group>"; };
 		E7F69FC91F4241EB1992A3BC /* HooksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HooksTests.swift; sourceTree = "<group>"; };
 		E828A7A1B0155D561C0642AE /* RemoteSyncModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSyncModels.swift; sourceTree = "<group>"; };
+		E82D19B2FEFE12422A15C4F9 /* ImportRepo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportRepo.swift; sourceTree = "<group>"; };
 		E84E8C543D2B35FC67D38675 /* AboutSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutSettingsSection.swift; sourceTree = "<group>"; };
 		E8A3841D86B13AA2C3546896 /* SettingsIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsIO.swift; sourceTree = "<group>"; };
 		E91BD2CEB27BB9165CE31FBA /* MessageParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageParserTests.swift; sourceTree = "<group>"; };
@@ -1308,6 +1314,8 @@
 			children = (
 				45F72DE542471E0F577EEF92 /* BundleCodec.swift */,
 				882B9A183961F0512CB236EA /* EngramRemoteBackend.swift */,
+				E82D19B2FEFE12422A15C4F9 /* ImportRepo.swift */,
+				356D3ABD47C1337E464BFFA4 /* ManifestCodec.swift */,
 				37563194F8C63C0EEFD00625 /* OffloadPolicy.swift */,
 				133E92713E04F7D612FDECD6 /* OffloadRepo.swift */,
 				AF1C5F8DD455B62E573F6F5D /* OffloadRunner.swift */,
@@ -1774,6 +1782,7 @@
 			isa = PBXGroup;
 			children = (
 				E6BB1DCD80B561284D2F910B /* RemoteOffloadTests.swift */,
+				1DB524C7D024C84A86B5E826 /* SessionSyncTests.swift */,
 			);
 			path = RemoteSync;
 			sourceTree = "<group>";
@@ -2757,6 +2766,7 @@
 				3D66DEF0A5D8AAEF8CBFEBF5 /* SchemaCompatibilityTests.swift in Sources */,
 				EDBFCAC77E8CF61AE59BEF9D /* SessionSnapshotClassificationTests.swift in Sources */,
 				A6BDE22549CBF5C6338F83C5 /* SessionSourcesTests.swift in Sources */,
+				208DF7B9F3EF92BE3F48FE8F /* SessionSyncTests.swift in Sources */,
 				56C77E404EAD7E36C4C881DE /* SessionTierTests.swift in Sources */,
 				BDC7CDC23CEFB4B87EE72FB7 /* StartupBackfillTests.swift in Sources */,
 				334010BEDD7D6C2C233549F1 /* StartupUsageCollectorTests.swift in Sources */,
@@ -3093,9 +3103,11 @@
 				18CE5118160982669B036A68 /* FsOps.swift in Sources */,
 				3F730EB6829179690D3D66D1 /* GeminiProjectsJSON.swift in Sources */,
 				BDEF21F015D84D9C3B80D61B /* GitDirty.swift in Sources */,
+				8352A84898143779A0D84087 /* ImportRepo.swift in Sources */,
 				D4ED18A5D955D4CC52BD0152 /* IndexJobRunner.swift in Sources */,
 				1D9A26ABFB68C1D240DD3943 /* IndexingWriteSink.swift in Sources */,
 				9C8C3ACAC112AF5E6C874A55 /* JsonlPatch.swift in Sources */,
+				ACFCEDCCDB24AA8E04A5D59A /* ManifestCodec.swift in Sources */,
 				2301DAC9F54686E0DDC35212 /* MigrationLock.swift in Sources */,
 				B6F2EEDB6018EBE4322DE4D3 /* MigrationLogReaders.swift in Sources */,
 				9A519AF4D18B6436A3F7F6ED /* MigrationLogStore.swift in Sources */,

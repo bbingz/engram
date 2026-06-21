@@ -32,6 +32,31 @@ public final class EngramRemoteServerApp: Sendable {
             Self.text("ok\n")
         }
 
+        // Aggregate every per-peer manifest blob (key prefix "catalog.") into one
+        // JSON document so a client can DISCOVER sessions on the hub without a
+        // local ledger row. Manifests are client-authored JSON, sealed at rest
+        // like any blob; the server decrypts and concatenates them but never needs
+        // the manifest schema. Undecryptable / unparseable manifests are skipped.
+        router.get("/v1/catalog") { request, _ in
+            guard Self.authorized(request, token: token) else { return Self.unauthorized() }
+            var manifests: [Any] = []
+            // Manifests are keyed `catalog.<peer>.manifest`; require the suffix too so
+            // this selects the same blobs as LocalDirectoryBackend.catalog() (a stray
+            // `catalog.*` non-manifest blob is selected by neither producer).
+            let keys = ((try? store.listKeys(prefix: "catalog.")) ?? [])
+                .filter { $0.hasSuffix(".manifest") }
+            for k in keys {
+                guard let data = try? store.get(k),
+                      let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
+                manifests.append(obj)
+            }
+            let payload: [String: Any] = ["schemaVersion": 1, "manifests": manifests]
+            guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+                return Response(status: .internalServerError)
+            }
+            return Self.json(body)
+        }
+
         router.head("/v1/bundles/:key") { request, context in
             guard Self.authorized(request, token: token) else { return Self.unauthorized() }
             guard let key = context.parameters.get("key") else { return Self.badRequest("missing key") }
@@ -155,6 +180,13 @@ public final class EngramRemoteServerApp: Sendable {
     static func octetStream(_ data: Data) -> Response {
         var headers = HTTPFields()
         headers[.contentType] = "application/octet-stream"
+        headers[.contentLength] = "\(data.count)"
+        return Response(status: .ok, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(data: data)))
+    }
+
+    static func json(_ data: Data) -> Response {
+        var headers = HTTPFields()
+        headers[.contentType] = "application/json; charset=utf-8"
         headers[.contentLength] = "\(data.count)"
         return Response(status: .ok, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(data: data)))
     }

@@ -7,6 +7,177 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Multi-Mac sync L2 — pre-merge review remediation (PR #88, non-security findings) (2026-06-21, Claude)
+
+The prior session ran the pre-merge review workflow (`wlqv61o7n`, verdict `fix-before-merge`,
+2 must-fix HIGH + 12 followups) but derailed on the SECURITY dimension (Opus cyber-safety filter
+killed the turn) and merged nothing. This session collected ALL non-security findings and completed
+them, then re-verified each fix adversarially. The 1 security-flavored finding (no live-server
+path-traversal test) was intentionally EXCLUDED per the owner's instruction; it stays a followup.
+
+- **HIGH #1 multi-project manifest data loss** (`RemoteSyncCoordinator.pushProject`): the per-peer
+  manifest was full-replaced with only the current project's entries, so pushing project B dropped
+  project A from hub discovery. Fix: pushProject now READ-MERGES the existing per-peer manifest
+  (keep other projects' entries, replace only this project's slice). Pairs with
+  `publishedManifestEntries` normalizing each entry's `project` to the requested name (so the
+  cwd-scoped slice is identifiable and pull-matchable). FAIL-CLOSED: only an explicit
+  `bundleNotFound` starts from an empty slice; a transient GET error or a corrupt existing manifest
+  propagates (push throws, idempotent retry) rather than silently full-replacing.
+- **HIGH #2 offloaded-session republish** (`OffloadRepo.pushCandidates`): added
+  `AND COALESCE(offload_state,'local')='local'` so an already-offloaded session is never re-read as
+  its collapsed one-line FTS shadow and republished (which also overwrote the rehydrate ledger key).
+- **MED**: blank-cwd over-match — `projectScopeSQL` now `(... OR (? <> '' AND cwd = ?))`, bound
+  `[project, cwd, cwd]` in both callers, so a blank cwd falls back to project-only (was sweeping in
+  every empty-cwd session: 109 vs 2 in the live repro). + UPSERT FK-cascade-child survival test and
+  L2 capability-token gating test.
+- **LOW**: cwd-only-matched entries now importable (entry project normalized to request);
+  `publishedManifestEntries` content_hash NULL guard (`AND content_hash IS NOT NULL`) — no more
+  latent fatalError; coordinator publish-only invariant + negative pull-scoping assertions added.
+- **NIT**: `pushCandidates` explicit `agent_role != 'subagent'` (defense-in-depth); preview
+  `SessionPreview.id` now carries the real session id (via `ProjectSyncPreview.Sample{id,title}`),
+  not the title; protocol comment corrected; `ManifestCodec.isManifestKey` (prefix+suffix, rejects
+  `..`) used by both catalog producers so a stray `catalog.*` / `catalog..manifest` blob is excluded
+  symmetrically (server mirrors the suffix check inline, stays storage-format-agnostic).
+- **Deliberately NOT changed** (new observations from adversarial verify, out of the 15-finding
+  scope, no content loss): `publishedManifestEntries` keeps NO offload_state/agent_role guard — it
+  JOINs on the 'out' ledger (the chokepoint that already excludes subagents), and adding an
+  offload_state guard there would DROP a legitimately-pushed-then-offloaded session from discovery.
+- **Verification:** adversarial workflow (8 verifiers, one per fix) — 6 `yes`, 2 `partial` whose
+  real gaps (manifest fail-open, catalog `..` asymmetry) were then fixed + tested. Tests green:
+  `EngramCoreTests/SessionSyncTests` 14/14, `EngramServiceCore` RemoteSync 11/11 (1 live skipped),
+  `EngramRemoteServerCore` 9/9. Full `Engram` app build SUCCEEDED. 10 new/changed RemoteSync tests
+  (incl. a fail-closed manifest test with a failure-injection backend). NOT yet merged — PR #88 is
+  MERGEABLE with prior CI green; this adds new commits that re-trigger CI.
+
+### Multi-Mac sync — Layer 2 client (per-project session push/pull) DONE + deployed + live-verified (2026-06-21, Claude)
+
+Completes the L2 session-record sync that the earlier entry left designed-only. Built via an
+orchestrated workflow (implement→review→harden), then I finished the parts the workflow's
+harden/security stages dropped (API errors) and reconciled the Codex review. Manual, default-OFF,
+per-project, preview-first — exactly the owner's model: select a project → dry-run the impact →
+confirm → sync just that project.
+
+- **No-migration design (the safe simplification):** import state lives on EXISTING sessions
+  columns — `origin`/`authoritative_node` = publishing peer, `snapshot_hash` = bundle content hash
+  (the re-pull dedup key). Imported rows use a deterministic id `remote:<peer>:<sessionId>` and a
+  SQLite UPSERT (`ON CONFLICT(id) DO UPDATE`, NOT `INSERT OR REPLACE` — avoids FK cascade). So NO
+  sync_ledger CHECK migration was needed (Codex HIGH #4 dissolved). v1 bundle reused (FTS+summary+
+  counts), so no bundle-hash break (Codex HIGH #2). Push is publish-only (a sync_ledger 'out' row,
+  NEVER collapses local FTS / flips offload_state — Codex HIGH #3). Push only touches local-origin
+  sessions, never re-pushes imported rows (Codex HIGH #1 / echo-loop guard).
+- **Code:** `ManifestCodec` (per-peer manifest build/encode/decode/decodeCatalog); `OffloadRepo`
+  +publishOnlyCommit/+pushCandidates(project|cwd scope, excludes skip/subagent/imported)/
+  +publishedManifestEntries; new `ImportRepo` (commitImported UPSERT + FTS, needsImport);
+  `RemoteSyncCoordinator` +pushProject/+pullProject/+previewProjectSync (network outside the write
+  gate, DB writes gated); IPC `remoteProjectSyncPreview` (read-only) + `remotePushProject` +
+  `remotePullProject` (both added to `ServiceCapabilityToken.protectedCommands` — token-gated) +
+  DTOs + EngramServiceClient/protocol/mock.
+- **Tests:** EngramCore RemoteSync 19/19 (SessionSync + offload, incl. "offload excludes imported
+  peer-origin"), EngramServiceCore RemoteSync incl. push→pull round-trip / pull-skips-own-manifest /
+  preview-is-read-only, EngramRemoteServerCore 9/9. Fixed a pre-existing test that read the
+  developer's real settings.json (now env-hermetic).
+- **Deployed + LIVE-verified on ReadOut:** rebuilt+redeployed Engram.app; server catalog already
+  live. `remotePushProject ReadOut` → uploaded 2 top-level sessions + published
+  `catalog.<peer>.manifest`; `/v1/catalog` shows them; re-preview → toPush 0 (idempotent). A
+  simulated foreign-peer manifest pulled via `remotePullProject` → imported 1 searchable row
+  (origin=peer), skipped own manifest (no echo); cleaned up. Unified `engram-sync push|pull <proj>`
+  shows combined file + session preview behind one confirm.
+- **Operator:** `~/bin/engram-sync` (L1 Unison + L2 IPC), `~/bin/engram-ipc` (framed-JSON socket
+  client). Remaining enhancement (not blocking): schema-v2 bundle carrying the rendered transcript
+  so imported sessions get full role-tagged replay (today they are searchable + summary + metadata;
+  transcript view falls back to FTS).
+
+### Multi-Mac sync — Layer 1 (Unison files) live + Layer 2 server catalog shipped (2026-06-21, Claude)
+
+Toward an iCloud-like, MANUAL-CONFIRMED multi-Mac sync via the macmini-hub: each of
+the owner's Macs push/pulls a project's files + AI session records through the hub,
+on demand, with a diff preview + single confirm. Designed via workflow, reviewed by
+the Codex subagent (verdict: architecture sound, 4 HIGH impl traps to fix). Two
+layers: L1 = Unison bidirectional FILE sync; L2 = Engram cross-machine SESSION-RECORD
+sync on the existing offload foundation.
+
+- **L1 (files) — DONE + validated (pilot: ReadOut).** Matching Unison 2.54.0 binary
+  copied to the mini (`/Users/bing/bin/unison`, otool dep = libSystem only, ad-hoc
+  re-signed; no Homebrew needed). Profiles `~/.unison/readout.prf` (+ `readout-claude.prf`)
+  sync `/Users/bing/-Code-/ReadOut` ↔ `ssh://mini//Users/bing/sync/ReadOut` over the
+  tailnet; `Readout.app`/`.DS_Store`/`.codegraph`/VCS noise ignored. Wrapper
+  `~/bin/engram-sync push|pull <proj>`: read-only preview (`printf '' | unison -terse`,
+  EOF-aborts before propagating — empirically verified zero writes) → single confirm →
+  directional `-batch -force`. Conflict safety verified: a two-sided edit is reported
+  and SKIPPED, never silently overwritten.
+- **L2 server catalog — DONE + deployed + tested.** `BlobStore.listKeys(prefix:)` +
+  a bearer-gated `GET /v1/catalog` that decrypts and concatenates per-peer
+  `catalog.<peer>.manifest` blobs into `{schemaVersion,manifests:[...]}` (server stays
+  format-agnostic; corrupt/unparseable manifests skipped). `EngramRemoteBackend.catalog()`
+  client method. Tests in EngramRemoteServerCoreTests (catalog merge + auth-gate +
+  listKeys prefix); suite 9/9. Deployed to macmini-hub and verified live (auth → empty
+  manifests, no-auth → 401).
+- **L2 client — DESIGNED + Codex-vetted, NOT yet built/deployed.** Remaining:
+  `ManifestCodec` (build per-peer manifest from `sync_ledger` 'out' rows), a
+  `publishOnlyCommit` (push writes a ledger row WITHOUT collapsing local FTS /
+  flipping offload_state — the current `commitOffloaded` clobbers, so this is genuinely
+  new), `ImportRepo.commitImported` (INSERT-only foreign-origin row id
+  `remote:<peer>:<sid>` + FTS + ledger `direction='import'`), an idempotent
+  `sync_ledger` table-rebuild migration to extend the `direction` CHECK to include
+  'import', IPC `remotePushProject`/`remotePullProject`/`remoteProjectCatalog`
+  (mutating ones MUST be added to `ServiceCapabilityToken.protectedCommands`), and the
+  wrapper L2 hook. Deferred deliberately: it mutates the live 13k-session DB schema +
+  write path, so it needs its own tested + reviewed deploy rather than a blind push in
+  an autonomous run.
+- **Codex HIGH findings to honor when building L2 client:** (1) do NOT L1-sync AI
+  transcript dirs (raw *.jsonl) AND L2-import the same session → double-index; keep
+  L1 = project files only, sessions via L2. (2) version-aware bundle hash: a schema-v2
+  bundle's transcript must not break decoding existing v1 bundles. (3) publish-only
+  push must not clobber local FTS. (4) the `sync_ledger` CHECK can't auto-extend on
+  existing DBs — needs an explicit table rebuild.
+- **Operator artifacts:** `~/bin/engram-sync` (L1 wrapper), `~/.unison/readout*.prf`,
+  `/tmp/engram_ipc.py` (framed-JSON unix-socket client for remoteSyncStatus/Offload/
+  Rehydrate via `~/.engram/run/cmd.token`). Design plan + Codex review saved under the
+  session tasks dir (`multimac-sync-design` workflow `wc092o7ys`).
+
+### Remote offload — plain-HTTP-over-Tailscale + second server (macmini-hq) live (2026-06-20, Claude)
+
+Made TLS optional on trusted private/VPN transports and deployed a second offload
+server on `macmini-hq` (Tailscale `100.125.101.60`, **plain HTTP**) so the live app
+offloads with no nginx / private-CA / cert work.
+
+- **Product change — `EngramRemoteBackend` no longer hard-requires HTTPS.**
+  New `requireTLS` (default true at the primitive; product reads the new
+  `remoteOffloadRequireTLS` setting, default **OFF**) only forces HTTPS for
+  non-loopback hosts. Plain HTTP is now allowed to loopback + private / CGNAT
+  (`100.64/10` = Tailscale) / `.ts.net` / `.local` / bare-LAN hosts; **public
+  hosts still require TLS in both modes** so a misconfig can't leak the bearer
+  token to the internet. Rationale: WireGuard already encrypts+authenticates the
+  tailnet, so a separate TLS cert is redundant; sensitive users opt back into
+  strict mode. New `testRemoteBackendTLSPolicy`; EngramRemoteServerCore suite 7/7.
+  Touches `EngramRemoteBackend.swift`, `RemoteSyncCoordinator.swift`
+  (`RemoteSyncConfig.requireTLS` from settings/env).
+- **Server:** `EngramRemoteServer` built on dev Mac → relocatable bundle →
+  `~/.engram-remote` on macmini-hq; `ENGRAM_REMOTE_HOST=100.125.101.60` binds the
+  Tailscale interface (not 0.0.0.0/LAN), plain HTTP :8787, launchd KeepAlive.
+  Health ok from host + dev Mac over tailnet; sentinel PUT/GET proved auth
+  (401 w/o token) + at-rest round-trip.
+- **Client:** `settings.json remoteOffloadServerURL:"http://100.125.101.60:8787"`,
+  `remoteOffloadRequireTLS:false`; reused existing Keychain token; rebuilt+
+  redeployed `Engram.app`.
+- **DATA-SAFETY INCIDENT (caught + fixed, zero loss):** the 5 prior
+  `offload_state='offloaded'` sessions had bundles only on the OLD server
+  (`100.108.19.20`). Draining to local didn't stick because the still-running OLD
+  background loop re-offloaded them mid-deploy (audit risk #1/#3, live). Fixed by
+  a server→server bundle copy: `GET old` (decrypted plaintext) → `PUT new`
+  (re-encrypted with the new at-rest key) under the same content keys — no
+  DB/loop race. All 5 now on the new server.
+- **Verified e2e against the new server:** IPC rehydrate restored full FTS (shadow
+  321 B → 13 456 B), `offload_state`→local; re-offload settled offloaded=5;
+  invariant "every offloaded session has a bundle on the new server" = 0 misses;
+  raw transcripts untouched throughout. Drove drain/offload/rehydrate/status via a
+  tiny framed-JSON unix-socket client using `~/.engram/run/cmd.token`.
+- **Lesson:** before repointing/draining, STOP the offload loop (disable or freeze)
+  or it re-offloads to the old server during the deploy window.
+- **Open hardening (audit, non-blocking):** server 201 is non-fsynced `.atomic`;
+  no client read-back verify after PUT; no operator repair command for stranded
+  sessions; offloaded session that later gains content silently drops appends.
+
 ### Remote offload — REAL app-side offload→rehydrate working over Tailscale (2026-06-20, Claude)
 
 Wired the live `Engram.app` to the deployed server and ran a real offload→rehydrate

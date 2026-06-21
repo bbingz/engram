@@ -1214,3 +1214,51 @@ struct EngramServiceProjectMoveResult: Codable, Equatable, Sendable {
         let porcelain: String
     }
 }
+
+// MARK: - Remote per-project session sync (Layer 2)
+
+struct EngramServiceRemoteProjectSyncRequest: Codable, Sendable {
+    let project: String
+    /// Project working directory, used to scope sessions whose `project` column
+    /// is cased inconsistently across adapters. Optional for pull (manifest
+    /// entries carry no cwd); push uses it for the case-insensitive project OR
+    /// cwd scope. The service uses whatever it is given.
+    let cwd: String?
+    /// Preview direction: "push" or "pull". Only read by the preview command;
+    /// ignored by push/pull. Defaults to "push" when nil.
+    let direction: String?
+
+    init(project: String, cwd: String? = nil, direction: String? = nil) {
+        self.project = project
+        self.cwd = cwd
+        self.direction = direction
+    }
+}
+
+struct EngramServiceRemoteProjectSyncPreviewResponse: Codable, Sendable {
+    struct SessionPreview: Codable, Sendable {
+        let id: String
+        let title: String
+        let action: String
+    }
+
+    let enabled: Bool
+    let direction: String
+    let project: String
+    let sessions: [SessionPreview]
+    let toPush: Int
+    let toPull: Int
+    let skip: Int
+}
+
+struct EngramServiceRemotePushProjectResponse: Codable, Sendable {
+    let enabled: Bool
+    let uploaded: Int
+    let skipped: Int
+}
+
+struct EngramServiceRemotePullProjectResponse: Codable, Sendable {
+    let enabled: Bool
+    let imported: Int
+    let skipped: Int
+}

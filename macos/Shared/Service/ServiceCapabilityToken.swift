@@ -38,6 +38,8 @@ enum ServiceCapabilityToken {
         "exportSession",
         "remoteOffload",
         "remoteRehydrate",
+        "remotePushProject",
+        "remotePullProject",
     ]
 
     static func requiresToken(_ command: String) -> Bool {

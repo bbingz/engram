@@ -119,6 +119,46 @@ final class EngramRemoteServerTests: XCTestCase {
         XCTAssertFalse(present)
     }
 
+    func testCatalogAggregatesPerPeerManifestsAndGatesAuth() async throws {
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1", port: 0,
+            storeRoot: tempDir.appendingPathComponent("srv"),
+            bearerToken: "secret-token", atRestKey: SymmetricKey(size: .bits256)
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+        let backend = try EngramRemoteBackend(baseURL: URL(string: "http://127.0.0.1:\(port)")!, token: "secret-token")
+
+        // Two well-formed per-peer manifests + one corrupt one (must be skipped).
+        try await backend.put(key: "catalog.macA.manifest", data: Data(#"{"peer":"macA","entries":[{"sessionId":"s1"}]}"#.utf8))
+        try await backend.put(key: "catalog.macB.manifest", data: Data(#"{"peer":"macB","entries":[{"sessionId":"s2"}]}"#.utf8))
+        try await backend.put(key: "catalog.macC.manifest", data: Data("not json at all".utf8))
+        // A non-catalog blob must NOT appear in the catalog.
+        try await backend.put(key: "deadbeef.bundle", data: Data("a bundle".utf8))
+
+        let raw = try await backend.catalog()
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        let manifests = try XCTUnwrap(obj["manifests"] as? [[String: Any]])
+        XCTAssertEqual(manifests.count, 2, "corrupt manifest skipped, bundle excluded")
+        XCTAssertEqual(Set(manifests.compactMap { $0["peer"] as? String }), ["macA", "macB"])
+
+        // Unauthenticated /v1/catalog must be 401.
+        let (_, resp) = try await URLSession.shared.data(for: URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/catalog")!))
+        XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 401)
+    }
+
+    func testBlobStoreListKeysFiltersByPrefix() throws {
+        let store = try BlobStore(root: tempDir.appendingPathComponent("store"), key: SymmetricKey(size: .bits256))
+        try store.put("catalog.macA.manifest", plaintext: Data("{}".utf8))
+        try store.put("catalog.macB.manifest", plaintext: Data("{}".utf8))
+        try store.put("deadbeef.bundle", plaintext: Data("x".utf8))
+        XCTAssertEqual(try store.listKeys(prefix: "catalog."), ["catalog.macA.manifest", "catalog.macB.manifest"])
+        XCTAssertEqual(try store.listKeys(prefix: "deadbeef"), ["deadbeef.bundle"])
+    }
+
     func testRemoteBackendRejectsBadToken() async throws {
         let config = EngramRemoteServerConfig(
             host: "127.0.0.1", port: 0,
@@ -148,5 +188,42 @@ final class EngramRemoteServerTests: XCTestCase {
         }
         XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "https://example.com")!, token: "t"))
         XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "http://127.0.0.1:8787")!, token: "t"))
+    }
+
+    func testRemoteBackendTLSPolicy() throws {
+        // Default (strict, requireTLS: true): plain HTTP allowed only to loopback.
+        XCTAssertThrowsError(try EngramRemoteBackend(baseURL: URL(string: "http://100.125.101.60:8787")!, token: "t"))
+        XCTAssertThrowsError(try EngramRemoteBackend(baseURL: URL(string: "http://192.168.1.50:8787")!, token: "t"))
+        XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "http://127.0.0.1:8787")!, token: "t"))
+
+        // Permissive (requireTLS: false): plain HTTP allowed to private / Tailscale /
+        // .ts.net / .local / bare LAN hosts — the transport is already trusted.
+        for ok in ["http://100.125.101.60:8787",              // Tailscale CGNAT 100.64/10
+                   "http://192.168.1.50:8787",                // RFC1918
+                   "http://10.0.10.100:8787",                 // RFC1918
+                   "http://172.16.5.5:8787",                  // RFC1918
+                   "http://macmini-hq.tail1cb16.ts.net:8443", // Tailscale MagicDNS
+                   "http://macmini.local:8787",               // mDNS
+                   "http://macmini-hq:8787"] {                // bare single-label LAN name
+            XCTAssertNoThrow(
+                try EngramRemoteBackend(baseURL: URL(string: ok)!, token: "t", requireTLS: false),
+                "expected \(ok) to be allowed in permissive mode")
+        }
+
+        // ...but plaintext to a PUBLIC host is still refused, even permissive — a
+        // misconfig must not leak the bearer token onto the open internet.
+        XCTAssertThrowsError(
+            try EngramRemoteBackend(baseURL: URL(string: "http://example.com")!, token: "t", requireTLS: false)
+        ) { error in
+            guard case EngramRemoteBackendError.insecureURL = error else {
+                return XCTFail("expected insecureURL for public host, got \(error)")
+            }
+        }
+        XCTAssertThrowsError(
+            try EngramRemoteBackend(baseURL: URL(string: "http://93.184.216.34:8787")!, token: "t", requireTLS: false))
+
+        // HTTPS is always accepted, in either mode and for any host.
+        XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "https://example.com")!, token: "t", requireTLS: false))
+        XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "https://100.125.101.60:8443")!, token: "t"))
     }
 }

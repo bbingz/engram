@@ -83,7 +83,10 @@ public enum OffloadRepo {
     }
 
     /// Candidate rows the policy considers: not yet offloaded. The caller applies
-    /// `OffloadPolicy.isEligible`. Excludes rows already offloaded.
+    /// `OffloadPolicy.isEligible`. Excludes rows already offloaded AND imported peer
+    /// rows (origin = a peer) — imported sessions are accessed through the peer and
+    /// must never be re-offloaded (would collapse imported FTS + insert an 'out'
+    /// ledger row, an echo loop the design forbids). Mirrors `pushCandidates`' guard.
     public static func candidateRows(_ db: Database, limit: Int) throws -> [OffloadPolicy.SessionRow] {
         let rows = try Row.fetchAll(
             db,
@@ -92,6 +95,7 @@ public enum OffloadRepo {
                    COALESCE(end_time, start_time) AS last_activity
             FROM sessions
             WHERE COALESCE(offload_state, 'local') = 'local'
+              AND (origin IS NULL OR origin = 'local')
             ORDER BY size_bytes DESC
             LIMIT ?
             """,
@@ -356,5 +360,181 @@ public enum OffloadRepo {
 
     public static func offloadState(_ db: Database, sessionId: String) throws -> String? {
         try String.fetchOne(db, sql: "SELECT offload_state FROM sessions WHERE id = ?", arguments: [sessionId])
+    }
+
+    // MARK: - Session-record sync (Layer 2: publish/manifest)
+
+    /// One local session to publish: bundle inputs (FTS + counts) PLUS the manifest
+    /// metadata fields (source/timestamps/title/size/tier) that the bundle does not
+    /// carry, so a peer can reconstruct an imported row from manifest + bundle.
+    public struct PushCandidate: Sendable, Equatable {
+        public let id: String
+        public let source: String
+        public let startTime: String
+        public let endTime: String?
+        public let title: String?
+        public let project: String?
+        public let messageCount: Int
+        public let userMessageCount: Int
+        public let assistantMessageCount: Int
+        public let systemMessageCount: Int
+        public let toolMessageCount: Int
+        public let summary: String?
+        public let summaryMessageCount: Int?
+        public let sizeBytes: Int
+        public let tier: String?
+        public let syncVersion: Int
+        public let ftsContents: [String]
+    }
+
+    /// Scope a project by case-insensitive `project` OR the deterministic dev cwd,
+    /// because `project` is inconsistently cased across adapters but the cwd is not.
+    /// A BLANK cwd is treated as "no cwd scope" (the `? <> ''` guard) so a missing
+    /// cwd falls back to project-only matching instead of sweeping in every session
+    /// whose cwd column is empty. Bound args are always `[project, cwd, cwd]`.
+    private static let projectScopeSQL =
+        "(lower(COALESCE(project, '')) = lower(?) OR (? <> '' AND cwd = ?))"
+
+    /// Local-origin top-level sessions of a project, eligible to PUSH. Excluded:
+    /// imported rows (origin = a peer) and skip/subagent rows (echo-loop guard), and
+    /// already-OFFLOADED rows — pushing an offloaded session would read its collapsed
+    /// one-line FTS shadow and republish that as the session's content, also
+    /// overwriting the rehydrate ledger key. The subagent guard is explicit on
+    /// `agent_role` (not just `tier != 'skip'`) for defense-in-depth symmetry with
+    /// `OffloadPolicy.isEligible`.
+    public static func pushCandidates(_ db: Database, project: String, cwd: String) throws -> [PushCandidate] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, source, start_time, end_time, generated_title, custom_name, project,
+                   message_count, user_message_count, assistant_message_count,
+                   system_message_count, tool_message_count, summary, summary_message_count,
+                   size_bytes, tier, sync_version
+            FROM sessions
+            WHERE \(projectScopeSQL)
+              AND (origin IS NULL OR origin = 'local')
+              AND (tier IS NULL OR tier != 'skip')
+              AND (agent_role IS NULL OR agent_role != 'subagent')
+              AND COALESCE(offload_state, 'local') = 'local'
+              AND parent_session_id IS NULL
+            ORDER BY start_time
+            """,
+            arguments: [project, cwd, cwd]
+        )
+        return try rows.map { row in
+            let id: String = row["id"]
+            let contents = try String.fetchAll(
+                db, sql: "SELECT content FROM sessions_fts WHERE session_id = ?", arguments: [id]
+            )
+            let custom: String? = row["custom_name"]
+            let generated: String? = row["generated_title"]
+            return PushCandidate(
+                id: id,
+                source: row["source"],
+                startTime: row["start_time"],
+                endTime: row["end_time"],
+                title: (custom?.isEmpty == false ? custom : generated),
+                project: row["project"],
+                messageCount: row["message_count"] ?? 0,
+                userMessageCount: row["user_message_count"] ?? 0,
+                assistantMessageCount: row["assistant_message_count"] ?? 0,
+                systemMessageCount: row["system_message_count"] ?? 0,
+                toolMessageCount: row["tool_message_count"] ?? 0,
+                summary: row["summary"],
+                summaryMessageCount: row["summary_message_count"],
+                sizeBytes: row["size_bytes"] ?? 0,
+                tier: row["tier"],
+                syncVersion: row["sync_version"] ?? 0,
+                ftsContents: contents
+            )
+        }
+    }
+
+    /// Record a published session WITHOUT collapsing local FTS or flipping
+    /// `offload_state` (unlike `commitOffloaded`). Idempotent: skips when an 'out'
+    /// row with the same session_id + content_hash already exists, so re-publishing
+    /// unchanged content is a no-op.
+    public static func publishOnlyCommit(
+        _ db: Database,
+        sessionId: String,
+        remoteKey: String,
+        remoteSessionId: String,
+        contentHash: String,
+        peer: String
+    ) throws {
+        let existing = try Int.fetchOne(
+            db,
+            sql: """
+            SELECT COUNT(*) FROM sync_ledger
+            WHERE session_id = ? AND direction = 'out' AND content_hash = ?
+            """,
+            arguments: [sessionId, contentHash]
+        ) ?? 0
+        guard existing == 0 else { return }
+        try db.execute(
+            sql: """
+            INSERT INTO sync_ledger(session_id, remote_peer, remote_session_id, remote_key, direction, content_hash)
+            VALUES (?, ?, ?, ?, 'out', ?)
+            """,
+            arguments: [sessionId, peer, remoteSessionId, remoteKey, contentHash]
+        )
+    }
+
+    /// Build manifest entries from a project's PUBLISHED sessions: current session
+    /// metadata joined to the latest 'out' ledger row (remote_key + content_hash).
+    /// `peer` is the publishing identity stamped onto each entry's session id space.
+    ///
+    /// Each entry's `project` is normalized to the requested `project` (not the raw
+    /// row value), because the pull side matches on project name only — it has no cwd
+    /// — so a session scoped in by the `cwd` branch with a NULL/divergent project
+    /// would otherwise be uploaded but never importable. The per-peer manifest merge
+    /// in `pushProject` also relies on this to identify "this project's slice".
+    public static func publishedManifestEntries(
+        _ db: Database, project: String, cwd: String, peer _: String
+    ) throws -> [SyncManifestEntry] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT s.id, s.source, s.project, s.generated_title, s.custom_name,
+                   s.start_time, s.end_time, s.message_count, s.user_message_count,
+                   s.assistant_message_count, s.system_message_count, s.tool_message_count,
+                   s.summary, s.summary_message_count, s.size_bytes, s.tier,
+                   l.remote_key, l.content_hash
+            FROM sessions s
+            JOIN (
+                SELECT session_id, remote_key, content_hash,
+                       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY synced_at DESC, id DESC) AS rn
+                FROM sync_ledger
+                WHERE direction = 'out' AND remote_key IS NOT NULL AND content_hash IS NOT NULL
+            ) l ON l.session_id = s.id AND l.rn = 1
+            WHERE \(projectScopeSQL)
+              AND (s.origin IS NULL OR s.origin = 'local')
+            ORDER BY s.start_time
+            """,
+            arguments: [project, cwd, cwd]
+        )
+        return rows.map { row in
+            let custom: String? = row["custom_name"]
+            let generated: String? = row["generated_title"]
+            return SyncManifestEntry(
+                sessionId: row["id"],
+                source: row["source"],
+                project: project,
+                title: (custom?.isEmpty == false ? custom : generated),
+                startTime: row["start_time"],
+                endTime: row["end_time"],
+                messageCount: row["message_count"] ?? 0,
+                userMessageCount: row["user_message_count"] ?? 0,
+                assistantMessageCount: row["assistant_message_count"] ?? 0,
+                systemMessageCount: row["system_message_count"] ?? 0,
+                toolMessageCount: row["tool_message_count"] ?? 0,
+                summary: row["summary"],
+                summaryMessageCount: row["summary_message_count"],
+                sizeBytes: row["size_bytes"] ?? 0,
+                tier: row["tier"],
+                remoteKey: row["remote_key"],
+                contentHash: row["content_hash"]
+            )
+        }
     }
 }
