@@ -74,59 +74,14 @@ struct SourcePulseView: View {
                 SectionHeader(icon: "antenna.radiowaves.left.and.right", title: "Sources",
                              onRefresh: { Task { await loadData() } })
                     .help("Indexing runs automatically in the background; refresh re-reads current counts.")
-                if sources.isEmpty && !isLoading {
+                let rows = Self.mergedSourceRows(catalog: SourceCatalog.all, live: sources)
+                if rows.isEmpty && !isLoading {
                     EmptyState(icon: "antenna.radiowaves.left.and.right", title: "No sources", message: "No adapter sources detected")
                         .accessibilityIdentifier("sourcePulse_emptyState")
                 } else {
                     LazyVStack(spacing: 4) {
-                        ForEach(sources) { source in
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 12) {
-                                    SourcePill(source: source.name)
-                                    healthBadge(source.healthStatus)
-                                    Spacer()
-                                    Text("\(source.sessionCount) sessions")
-                                        .font(.caption)
-                                        .foregroundStyle(Theme.secondaryText)
-                                    if let latest = source.latestIndexed {
-                                        Text(latest.prefix(10))
-                                            .font(.caption)
-                                            .foregroundStyle(Theme.tertiaryText)
-                                    }
-                                }
-                                HStack(spacing: 8) {
-                                    if source.liveSyncDisabled {
-                                        factPill("Cache only", color: Theme.gray)
-                                            .help("Live capture is off for this source; only cached/transcript data is indexed.")
-                                    }
-                                    factPill("Search \(source.searchCoveragePercent)%")
-                                    if source.failedIndexJobCount > 0 {
-                                        factPill("\(source.failedIndexJobCount) issue\(source.failedIndexJobCount == 1 ? "" : "s")", color: Theme.orange)
-                                            .help("Index jobs that failed for this source. They retry automatically on the next indexing pass.")
-                                    }
-                                    factPill(Self.tokenCoveragePillText(source.tokenCoveragePercent))
-                                    if source.costedSessionCount > 0 {
-                                        factPill("\(source.costedSessionCount) costed")
-                                    }
-                                    if let metric = source.latestUsageMetric,
-                                       let value = source.latestUsageValue {
-                                        factPill(
-                                            Self.usagePillText(
-                                                metric: metric,
-                                                value: value,
-                                                unit: source.latestUsageUnit,
-                                                limit: source.latestUsageLimitValue
-                                            ),
-                                            color: usageColor(source.latestUsageStatus)
-                                        )
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(Theme.surface)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        ForEach(rows) { row in
+                            sourceRow(row)
                         }
                     }
                 }
@@ -205,6 +160,99 @@ struct SourcePulseView: View {
     }
 
     @ViewBuilder
+    private func sourceRow(_ row: SourceRow) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            switch row {
+            case let .detected(source):
+                detectedRow(source)
+            case let .catalogOnly(entry):
+                catalogOnlyRow(entry)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func detectedRow(_ source: EngramServiceSourceInfo) -> some View {
+        HStack(spacing: 12) {
+            SourcePill(source: source.name)
+            healthBadge(source.healthStatus)
+            Spacer()
+            Text("\(source.sessionCount) sessions")
+                .font(.caption)
+                .foregroundStyle(Theme.secondaryText)
+            if let latest = source.latestIndexed {
+                Text(latest.prefix(10))
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+        }
+        HStack(spacing: 8) {
+            if source.liveSyncDisabled {
+                factPill("Cache only", color: Theme.gray)
+                    .help("Live capture is off for this source; only cached/transcript data is indexed.")
+            }
+            factPill("Search \(source.searchCoveragePercent)%")
+            if source.failedIndexJobCount > 0 {
+                factPill("\(source.failedIndexJobCount) issue\(source.failedIndexJobCount == 1 ? "" : "s")", color: Theme.orange)
+                    .help("Index jobs that failed for this source. They retry automatically on the next indexing pass.")
+            }
+            factPill(Self.tokenCoveragePillText(source.tokenCoveragePercent))
+            if source.costedSessionCount > 0 {
+                factPill("\(source.costedSessionCount) costed")
+            }
+            if let metric = source.latestUsageMetric,
+               let value = source.latestUsageValue {
+                factPill(
+                    Self.usagePillText(
+                        metric: metric,
+                        value: value,
+                        unit: source.latestUsageUnit,
+                        limit: source.latestUsageLimitValue
+                    ),
+                    color: usageColor(source.latestUsageStatus)
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func catalogOnlyRow(_ entry: SourceCatalogEntry) -> some View {
+        HStack(spacing: 12) {
+            SourcePill(source: entry.id)
+            Text("NOT DETECTED")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.gray)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Theme.gray.opacity(0.14))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            Spacer()
+            Text("0 sessions")
+                .font(.caption)
+                .foregroundStyle(Theme.secondaryText)
+            PathExistsIndicator(path: entry.defaultPath)
+        }
+        HStack(spacing: 8) {
+            if entry.cacheOnly {
+                factPill("Cache only", color: Theme.gray)
+                    .help("Live capture is off for this source; only cached/transcript data is indexed.")
+            }
+            Text(verbatim: entry.defaultPath)
+                .font(.caption2)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(Theme.tertiaryText)
+                .textSelection(.enabled)
+        }
+        .accessibilityIdentifier("sourcePulse_catalogOnlyRow")
+    }
+
+    @ViewBuilder
     private func sessionGroup(_ label: String, color: Color, sessions: [EngramServiceLiveSessionInfo]) -> some View {
         if !sessions.isEmpty {
             let isExpanded = expandedGroups.contains(label)
@@ -247,6 +295,42 @@ struct SourcePulseView: View {
     private func formatNumber(_ n: Int) -> String {
         if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
         return "\(n)"
+    }
+
+    /// One row in the merged Sources list: either a live (detected) source with
+    /// indexed sessions and health, or a catalog source that the service did
+    /// not return because it has no indexed sessions yet.
+    enum SourceRow: Identifiable {
+        case detected(EngramServiceSourceInfo)
+        case catalogOnly(SourceCatalogEntry)
+
+        var id: String {
+            switch self {
+            case let .detected(source): return source.id
+            case let .catalogOnly(entry): return entry.id
+            }
+        }
+    }
+
+    /// Overlay the static catalog with live service rows, keyed by source id.
+    /// Catalog order is preserved; catalog sources with a live row render the
+    /// detected (health) row, the rest render a "not detected" row. Any live
+    /// source missing from the catalog is appended so nothing is dropped.
+    /// Pure (no SwiftUI / service) so it is unit-testable in isolation.
+    static func mergedSourceRows(
+        catalog: [SourceCatalogEntry],
+        live: [EngramServiceSourceInfo]
+    ) -> [SourceRow] {
+        let liveByID = Dictionary(live.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let catalogIDs = Set(catalog.map(\.id))
+        var rows: [SourceRow] = catalog.map { entry in
+            if let source = liveByID[entry.id] {
+                return .detected(source)
+            }
+            return .catalogOnly(entry)
+        }
+        rows.append(contentsOf: live.filter { !catalogIDs.contains($0.id) }.map(SourceRow.detected))
+        return rows
     }
 
     static func usagePillText(metric: String, value: Double, unit: String?, limit: Double? = nil) -> String {
