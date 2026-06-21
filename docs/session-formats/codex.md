@@ -201,8 +201,14 @@ Do **not** conflate the top-level record `type` with the nested `payload.type`:
 ### L1 (top-level) record types
 
 VERIFIED histogram in one real recent file: 65 `response_item`, 37 `event_msg`,
-1 `session_meta`, 1 `turn_context`. Across 200 files the same five types dominate
-(`response_item` ≫ `event_msg` ≫ `turn_context` > `session_meta` > `compacted`).
+1 `session_meta`, 1 `turn_context`. These dominate on disk, but the on-disk five are NOT the
+complete record set. Confirmed (official): the authoritative `RolloutItem` enum
+([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+has **SIX** variants (`serde(tag="type", content="payload", rename_all="snake_case")`):
+`SessionMeta`, `ResponseItem`, `InterAgentCommunication`, `Compacted`, `TurnContext`,
+`EventMsg`. Earlier drafts omitted **`inter_agent_communication`** — a real top-level rollout
+record (durable inter-agent delivery metadata reconstructed as a model-visible
+`agent_message`). It is added as the 6th L1 type below.
 
 | L1 `type` | Role | Purpose | When emitted | Engram consumes? |
 |---|---|---|---|---|
@@ -211,10 +217,11 @@ VERIFIED histogram in one real recent file: 65 `response_item`, 37 `event_msg`,
 | `response_item` | model-API conversation item | the actual transcript (msgs, reasoning, tool calls/results) | the bulk of lines | **Yes** — messages |
 | `event_msg` | runtime/UI event (not a model item) | token accounting, task lifecycle, tool telemetry, compaction marker | interleaved throughout | **Only `token_count`** |
 | `compacted` | context-compaction checkpoint | rewrites/compacts the conversation history | only when context is compacted | **No** (ignored) |
+| `inter_agent_communication` | durable inter-agent delivery record | inter-agent delivery metadata, reconstructed as a model-visible `agent_message` | multi-agent sessions only | **No** (ignored) |
 
 > Engram branches solely on `session_meta`, `response_item`, and `event_msg`. It ignores
-> `turn_context` and `compacted` entirely (`codex.ts` L78/L82/L201/L300;
-> `CodexAdapter.swift` L279/L283/L467/L519).
+> `turn_context`, `compacted`, and `inter_agent_communication` entirely (`codex.ts`
+> L78/L82/L201/L300; `CodexAdapter.swift` L279/L283/L467/L519).
 
 ### L2 (nested) types separated by record
 
@@ -245,6 +252,13 @@ VERIFIED histogram in one real recent file: 65 `response_item`, 37 `event_msg`,
 > for all 11 are in the Appendix (and the `collab_*` family is cross-referenced in the
 > Subagent section). **Engram drops every one of them** (none match the
 > `message`/`function_call`/`function_call_output`/`token_count` branches).
+>
+> Note (web-checked 2026-06-21): `thread_name_updated` is a real Codex notification type but
+> is **NOT** a variant of the core rollout `EventMsg` enum in `protocol.rs` — in source it is
+> an app-server/TUI notification (`ThreadNameUpdatedNotification`). On-disk `event_msg` lines
+> tagged `thread_name_updated` therefore most likely come from the desktop/app-server write
+> path, not the core rollout recorder.
+> ([common.rs](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs))
 
 ---
 
@@ -275,11 +289,12 @@ if `id` is missing/empty.
 | `cli_version` | string semver | Codex CLI version that wrote the file (field is `cli_version`; **no `version` alias**) | always (newer) | `"0.142.0-alpha.6"` / `"0.60.1"` |
 | `model_provider` | string | provider name only — **NOT the model id** | always | `"openai"` |
 | `source` | **string OR object** | launch surface; **polymorphic** (see Subagent section) | always | `"cli"` / `"vscode"` / `{"subagent":{...}}` |
-| `instructions` | string \| null | **LEGACY** (≤~0.6x): full system prompt or `null`. Replaced by `base_instructions`. | old files only | `null` |
-| `base_instructions` | object `{text}` | **NEW** (replaces `instructions`): baked-in system prompt; `.text` is multi-KB | newer files | `{"text":"You are Codex..."}` |
+| `instructions` | string \| null | **LEGACY** (≤~0.6x): stored `user_instructions`, gone from modern `session_meta`. Confirmed (official): per the `SessionMeta` source comment, this field's `user_instructions` were **moved to `TurnContext`** — not renamed to `base_instructions`. ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs)) | old files only | `null` |
+| `base_instructions` | object `{text}` | **A DISTINCT field, not a rename of `instructions`**: it holds the **base/system** instructions for the session; `.text` is multi-KB. (`instructions`/user_instructions migrated to `turn_context`; `base_instructions` is the separate base-prompt slot.) | newer files | `{"text":"You are Codex..."}` |
+| `agent_path` | string \| null | canonical agent path for AgentControl-spawned sub-agents. Confirmed (official): present on `SessionMeta`. ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs)) | subagent files | `"<path>"` |
 | `git` | object \| null | repo context `{commit_hash, branch, repository_url}`; `{}` when not a repo | most files (≈2242/2505) | `{"commit_hash":"d941...","branch":"main","repository_url":"..."}` |
-| `thread_source` | string enum | `"user"` \| `"subagent"` | newer | `"subagent"` |
-| `agent_role` | string \| null | subagent role → Engram `agentRole` (takes precedence over originator) | subagent files | `"explorer"` / `"review"` / `null` |
+| `thread_source` | string enum | dominant on-disk values `"user"` \| `"subagent"`. Confirmed (official): the `ThreadSource` enum actually has **four** variants — `User`, `Subagent`, `Feature(String)`, `MemoryConsolidation` — so the on-disk set can be wider than user/subagent. ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs)) | newer | `"subagent"` |
+| `agent_role` | string \| null | subagent role → Engram `agentRole` (takes precedence over originator). Confirmed (official): carries a serde alias **`agent_type`** (older payloads used `agent_type`), so both keys map to the same field. ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs)) | subagent files | `"explorer"` / `"review"` / `null` |
 | `agent_nickname` | string \| null | subagent display name (rotating scientist/plant names, `the Nth` on reuse) | subagent files | `"Euclid"`, `"Explorer the 12th"` |
 | `forked_from_id` | string (UUIDv7) \| null | session this was forked/resumed from | ≈276 files | `"019e8df9-551f-7e01-..."` |
 | `parent_thread_id` | string (UUIDv7) | parent thread for spawned subagents (also nested in `source`) | ≈239 files | `"019ee02d-c140-7813-8897-56f02fb68e88"` |
@@ -422,7 +437,7 @@ separately under `event_msg` (`exec_command_end`, `patch_apply_end`, `mcp_tool_c
 |---|---|---|
 | `type` | `"function_call_output"` | discriminator |
 | `call_id` | string | **matches the originating `function_call.call_id`** (does NOT repeat `name`) |
-| `output` | string (100% of sampled files) \| object | tool result. Object-form `{output, metadata}` is a defensive legacy branch never seen in this store. |
+| `output` | string (100% of sampled files) \| structured | tool result. Confirmed (official): the wire form is `FunctionCallOutputPayload`, which is **either** a plain string (`content`) **or** an array of structured content items (`content_items`) — NOT the `{output, metadata}` object earlier drafts described. `custom_tool_call_output` uses the same encoding. The "output may be non-string" premise holds; the specific `{output, metadata}` shape was wrong. ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs)) |
 
 ### `custom_tool_call` / `custom_tool_call_output` (freeform tools — `apply_patch`, `js_repl`, …)
 
@@ -537,7 +552,7 @@ is enabled.
 | Field | Type | Meaning | When present |
 |---|---|---|---|
 | `type` | `"reasoning"` | discriminator | always |
-| `encrypted_content` | string (Fernet-style base64, `gAAAAAB…`) | opaque encrypted CoT blob | almost always |
+| `encrypted_content` | string (opaque encrypted blob, observed `gAAAAAB…` prefix) | opaque encrypted CoT blob. Confirmed (official): source types this only as `Option<String>` and does NOT state any encryption scheme — the "Fernet-style" label and `gAAAAAB` prefix are observational, not source-stated. ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs)) | almost always |
 | `summary` | array of `{type:"summary_text", text}` (L3) | plaintext reasoning summary | always present, often empty `[]` |
 | `content` | array | legacy raw reasoning blocks (empty in practice) | legacy key-combo only |
 | `metadata` | object `{turn_id}` | links reasoning to its turn | newer |
@@ -816,12 +831,25 @@ generations**: `[message, replacement_history]` × **2050**, `+ window_id` × **
 `+ window_id + window_number` × **55** — i.e. the newest CLI emits BOTH `window_id` and
 `window_number`. (evidence: jq full-corpus `compacted` key-set histogram: 2050 / 113 / 55.)
 
+Confirmed (official) — and a correction: the authoritative `CompactedItem` struct
+([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+is `{ message: String, replacement_history: Option<Vec<ResponseItem>>, window_number:
+Option<u64>, first_window_id: Option<String>, previous_window_id: Option<String>, window_id:
+Option<String> }`. The window-field **types in older drafts of this doc were inverted**:
+`window_number` is the integer (`u64`) monotonic counter; `window_id` is a **UUIDv7 string**
+(the identity of this context window), NOT an int counter. There are also two fields beyond
+the key-set histogram: `first_window_id` and `previous_window_id` (both UUIDv7 strings,
+forming the window chain). The on-disk `"window_id": 1` examples below reflect an OLDER CLI
+generation; current source makes `window_id` a UUID string and `window_number` the integer.
+
 | Field | Type | Meaning | Optional? |
 |---|---|---|---|
 | `message` | string | compaction/summary text (often `""`; the summary often lives inside `replacement_history` developer turns) | required |
-| `replacement_history` | array of message objects | **the rebuilt context** that replaces prior turns. Each entry is `{type:"message", role, content:[{type:"input_text", text}]}`. Roles include `user`, `developer`, `assistant`. | required |
-| `window_id` | int | compaction generation counter (1, 2, …) | newer (2026-06+); absent earlier (113 + 55 records) |
-| `window_number` | int | second, co-occurring generation counter introduced in the newest CLI — appears only **alongside** `window_id` | newest only (55 records) |
+| `replacement_history` | array of message objects (`Option<Vec<ResponseItem>>`) | **the rebuilt context** that replaces prior turns. Each entry is `{type:"message", role, content:[{type:"input_text", text}]}`. Roles include `user`, `developer`, `assistant`. | optional in source |
+| `window_number` | int (`u64`) | **the integer monotonic compaction counter** (1, 2, …) — the actual generation counter | newest only (55 records) |
+| `window_id` | string (UUIDv7) | **UUIDv7 identity of this context window** — a string id, NOT an int counter (older on-disk samples show `1`, an earlier CLI generation) | newer (2026-06+); absent earlier |
+| `first_window_id` | string (UUIDv7) \| null | first window in the compaction chain (source-confirmed; not in the corpus key-set histogram) | source field |
+| `previous_window_id` | string (UUIDv7) \| null | previous window in the compaction chain (source-confirmed) | source field |
 
 ```json
 {
@@ -1170,9 +1198,13 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
    `token_count` are L2, never L1. `input_text`/`output_text`/`summary_text` are L3.
 3. **`source` is polymorphic** (string vs nested subagent object), in both `session_meta` and
    `threads.source`. Naive string consumers must handle the object form.
-4. **`instructions` → `base_instructions` rename** between v0.60 and v0.14x (exact boundary
-   unpinned). `git`, `agent_nickname`, `thread_source`, `parent_thread_id`,
-   `multi_agent_version` are all later additions absent in 0.60.1.
+4. **`instructions` and `base_instructions` are two different fields, not a rename.**
+   Confirmed (official): the legacy `instructions` held `user_instructions`, which was **moved
+   to `TurnContext`**; `base_instructions` is the separate base/system-prompt slot. Both shift
+   between v0.60 and v0.14x (exact boundary unpinned). `git`, `agent_nickname`,
+   `thread_source`, `parent_thread_id`, `multi_agent_version`, `agent_path` are all later
+   additions absent in 0.60.1.
+   ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
 5. **Text key trap:** value is always under `text`, never `input_text`/`output_text`. Adapter
    fallbacks on those keys are dead branches for modern data.
 6. **TS multi-block under-capture:** TS `extractText` returns only the first block; Swift joins
@@ -1194,9 +1226,13 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
     Codex native subagents are likely surfaced as independent sessions.
 12. **`token_count.info` can be `null`** (interrupted/credits-exhausted turns) — both adapters
     null-guard and skip.
-13. **`function_call_output.output` object-form** (`{output, metadata}`) is handled by both
-    adapters but never observed in this 2025–2026 store (100% string) — speculative legacy
-    branch.
+13. **`function_call_output.output` non-string form is `content_items`, not `{output,
+    metadata}`.** Confirmed (official): the wire payload (`FunctionCallOutputPayload`) is
+    **either** a plain string (`content`) **or** an array of structured content items
+    (`content_items`); `custom_tool_call_output` uses the same encoding. The 100%-string
+    observation in this 2025–2026 store still holds, but the earlier `{output, metadata}`
+    object shape was wrong.
+    ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs))
 14. **Two DB locations:** any future SQLite reader must target `~/.codex/*.sqlite` (current)
     and ignore `~/.codex/sqlite/` (legacy), distinguished by mtime and `_sqlx_migrations`
     `MAX(version)` (39 vs 35).
@@ -1207,7 +1243,10 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
     (`goal`, `threadId`, `turnId` all camelCase; only `type` is plain) while the rest of the
     schema is snake_case — a likely different emitting subsystem. `turnId` is present and was
     previously undocumented. (evidence: jq `thread_goal_updated` key histogram → every record
-    has exactly `[goal, threadId, turnId, type]`.)
+    has exactly `[goal, threadId, turnId, type]`.) (web-checked 2026-06-21: no authoritative
+    source found — `thread_goal_updated` is confirmed an `EventMsg` variant in `protocol.rs`,
+    but the inner `goal`/`threadId`/`turnId` field casing could not be confirmed against
+    source; treat the camelCase claim as on-disk observation.)
 
 ---
 
@@ -1428,7 +1467,7 @@ original taxonomy. The `collab_*` family is documented structurally in the Subag
 
 | payload.type | Keys | Meaning |
 |---|---|---|
-| `thread_name_updated` | `{type, thread_id, thread_name}` | the **title-update event** — DB-driven rename of the thread. Parallel to `session_index.jsonl.thread_name` and `threads.title`; this is the rollout-resident emission of the same title change. |
+| `thread_name_updated` | `{type, thread_id, thread_name}` | the **title-update event** — DB-driven rename of the thread. Parallel to `session_index.jsonl.thread_name` and `threads.title`; this is the rollout-resident emission of the same title change. Confirmed (official): `ThreadNameUpdated` is **NOT** a variant of the core rollout `EventMsg` enum in `protocol.rs`; in source it lives in the app-server-protocol / app-server / TUI notification layer (`ThreadNameUpdatedNotification`). So on-disk `event_msg` lines with `payload.type=thread_name_updated` most likely originate from the desktop/app-server write path, not the core rollout recorder. ([common.rs](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs)) |
 | `collab_agent_spawn_end` | `{type, call_id, sender_thread_id, new_thread_id, new_agent_nickname, new_agent_role, prompt, model, reasoning_effort, status}` | parent→child spawn edge inline in the parent rollout (see B-4). |
 | `collab_waiting_end` | `{type, call_id, sender_thread_id, agent_statuses, statuses}` | parent waited on children; `statuses`/`agent_statuses` map child id → result. |
 | `collab_close_end` | `{type, call_id, sender_thread_id, receiver_thread_id, receiver_agent_nickname, receiver_agent_role, status}` | parent closed a child; `status` = `{completed:"<summary>"}`. |
@@ -1544,3 +1583,137 @@ original taxonomy. The `collab_*` family is documented structurally in the Subag
 // Aux: session_index.jsonl line
 { "id":"019ca318-d9f3-7a12-a4f1-0352b065e5b6","thread_name":"<title>","updated_at":"2026-03-01T03:06:53.593906Z" }
 ```
+
+---
+
+## Open questions / web-confirmation status (2026-06-21)
+
+This doc's structural claims were cross-checked against the **official `openai/codex` Rust
+source** on 2026-06-21 (`web_access_ok=true`). The corpus statistics (file counts, originator
+distribution, model distribution, migration row counts) are this-machine measurements and are
+not web-verifiable by design. Status of each previously-open question:
+
+- **Confirmed (official):** L1 envelope shape is `RolloutLine = {timestamp, #[serde(flatten)]
+  item}` with `RolloutItem` `serde(tag="type", content="payload")`, so each line is
+  `{"timestamp", "type":"<snake_case>", "payload":{...}}`.
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Confirmed (official):** the L1 record set has **SIX** variants, not five —
+  `inter_agent_communication` is the missing 6th (folded into the taxonomy above).
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Confirmed (official):** `session_meta.payload` carries `id`, `forked_from_id`,
+  `parent_thread_id`, `timestamp`, `cwd`, `originator`, `cli_version`, `source`,
+  `thread_source`, `agent_nickname`, `agent_role` (alias `agent_type`), `agent_path`,
+  `model_provider`, `base_instructions`, `dynamic_tools`, `memory_mode`,
+  `multi_agent_version`; `git` is on the wrapper `SessionMetaLine` via `#[serde(flatten)]`.
+  `GitInfo = {commit_hash, branch, repository_url}`, all optional.
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Confirmed (official):** `originator` is a free-form `String` (open/extensible set, not a
+  closed enum); `DEFAULT_ORIGINATOR = "codex_cli_rs"`, overridable via
+  `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`. `codex_cli_rs`/`codex_exec`/`codex_sdk_ts` are literal
+  originator strings in source.
+  ([default_client.rs](https://github.com/openai/codex/blob/main/codex-rs/login/src/auth/default_client.rs))
+- **Confirmed (official):** `source` is polymorphic — `SessionSource` =
+  `Cli | VSCode | Exec | Mcp | Custom(String) | Internal | SubAgent(SubAgentSource) |
+  Unknown`; `SubAgentSource` = `Review | Compact | ThreadSpawn{parent_thread_id, depth,
+  agent_path, agent_nickname, agent_role(alias agent_type)} | MemoryConsolidation |
+  Other(String)`. Both the plain-string forms and the nested `{subagent:{thread_spawn:{…}}}` /
+  `{subagent:"review"}` forms are confirmed (with more variants than the doc's six).
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Confirmed (official):** L3 content blocks — `ContentItem` = `InputText{text}` |
+  `InputImage{image_url, detail:Option<ImageDetail>}` | `OutputText{text}`; the string is
+  always under `text`. `ImageDetail` = `Auto/Low/High/Original` (default `High`). No standalone
+  `text` block variant exists in the current enum (the legacy `text` block is removed/older).
+  ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs))
+- **Confirmed (official):** `ResponseItem::Message` has only `{id, role, content, phase,
+  metadata}` — **no `usage`, no `status`** field. Adapters reading assistant
+  `payload.usage`/`payload.status` hit dead paths for modern Codex; per-turn usage comes only
+  from `event_msg/token_count`. `phase` = `MessagePhase::{Commentary, FinalAnswer}`.
+  ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs))
+- **Confirmed (official):** no `ResponseItem` variant has a `model` field; the model lives on
+  `TurnContextItem.model` (required `String`). So a modern rollout carries no
+  `response_item.payload.model` — model comes from `turn_context`.
+  ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs),
+  [protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Confirmed (official):** `ResponseItem::Reasoning` = `{id, summary, content,
+  encrypted_content, metadata}`; `ResponseItemMetadata = {turn_id, source_call_id}`.
+  `encrypted_content` is an opaque `Option<String>` (no encryption scheme stated — see D8).
+  ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs))
+- **Confirmed (official) — with correction:** `FunctionCall` = `{id, name, namespace,
+  arguments:String (JSON-as-string), call_id, metadata}`. `function_call_output`'s structured
+  form is `content_items` (array), NOT `{output, metadata}` (see D3).
+  ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs))
+- **Confirmed (official):** `CustomToolCall` uses `input` (freeform `String`) and `name` is an
+  arbitrary `String` — the generic freeform-tool channel.
+  `ToolSearchCall.arguments` is `serde_json::Value` (a structured object), contrasting
+  `FunctionCall.arguments: String`.
+  ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs))
+- **Confirmed (official):** `TokenUsageInfo = {total_token_usage, last_token_usage,
+  model_context_window:Option<i64>}`; `TokenUsage = {input_tokens, cached_input_tokens,
+  output_tokens, reasoning_output_tokens, total_tokens}` (all `i64`). `TokenCountEvent.info`
+  is `Option` (can be null).
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Confirmed (official):** the `EventMsg` enum is large and version-evolving (open/growing,
+  not closed); `token_count`, `context_compacted`, `agent_reasoning`, the full `collab_*`
+  begin/end family, `view_image_tool_call`, `image_generation_end`, `item_completed`,
+  `dynamic_tool_call_request`/`response`, review-mode events, and the rest are all real
+  variants. `task_started`/`task_complete` are serde aliases of `TurnStarted`/`TurnComplete`.
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Confirmed (official):** `context_compacted` is a pure marker `EventMsg` variant, distinct
+  from the L1 `Compacted(CompactedItem)` record — confirming the L1-vs-L2 name trap.
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Confirmed (official):** `thread_spawn_edges` schema is `(parent_thread_id TEXT NOT NULL,
+  child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL)` + index
+  `idx_thread_spawn_edges_parent_status(parent_thread_id, status)` — one parent per child.
+  ([0021_thread_spawn_edges.sql](https://github.com/openai/codex/blob/main/codex-rs/state/migrations/0021_thread_spawn_edges.sql))
+- **Confirmed (official):** the `_N` migration-generation model and the `threads` schema —
+  `0001_threads.sql` creates the base `threads` table; later columns (`model`, `cli_version`,
+  `agent_role`, `agent_nickname`, `thread_source`, `memory_mode`, `recency_at`) arrive via
+  later migrations; `0039_threads_recency_at.sql` is the newest (adds `recency_at`, so legacy
+  DBs lack it).
+  ([migrations/](https://github.com/openai/codex/tree/main/codex-rs/state/migrations))
+- **Confirmed (official):** rollout filename grammar —
+  `sessions/YYYY/MM/DD/rollout-{date}-{conversation_id}.jsonl`; filename TS format
+  `[year]-[month]-[day]T[hour]-[minute]-[second]` (hyphens), JSON record TS
+  `…T[hour]:[minute]:[second].[subsecond:3]Z`; first line must be a `SessionMeta`. (The
+  filename=local / inner=UTC distinction is an on-disk observation, not encoded in the format
+  constants.)
+  ([recorder.rs](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs))
+- **Confirmed (official):** `TurnContextItem` carries per-turn config — `turn_id`, `cwd`,
+  `workspace_roots`, `current_date`, `timezone`, `approval_policy`, `sandbox_policy`,
+  `permission_profile`, `network`, `file_system_sandbox_policy`, `model:String`, `comp_hash`,
+  `personality`, `collaboration_mode`, `multi_agent_version`, `multi_agent_mode`,
+  `realtime_active`, `effort`, `summary` (compatibility-only). Whether Engram ignores it is an
+  Engram-internal design fact.
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Refuted → fixed (official):** `compacted` window-field types were inverted —
+  `window_number` is the `u64` integer counter, `window_id` is a UUIDv7 string; plus
+  `first_window_id`/`previous_window_id` exist (fixed in the Summary / compaction section, D2).
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Unknown (web-checked 2026-06-21: no authoritative source found):**
+  `thread_goal_updated` is a confirmed `EventMsg` variant, but its inner field casing
+  (`goal`/`threadId`/`turnId` camelCase) could not be confirmed against source — treat as
+  on-disk observation.
+  ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
+- **Engram-internal design — not web-verifiable:** whether the Swift product has its own
+  pricing path, and that `turn_context`/`compacted`/`inter_agent_communication` are ignored by
+  Engram, are Engram-internal facts, out of web scope.
+- **Out of scope — not web-verifiable by design:** `history.jsonl` / `session_index.jsonl`
+  shapes and all per-machine corpus statistics (file counts, originator/model distributions,
+  archived counts, migration row counts) are this-machine measurements, not tool-format facts.
+
+---
+
+## References (official sources)
+
+Verified 2026-06-21 against the `openai/codex` repository (`main` branch):
+
+- [codex-rs/protocol/src/protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs) — `RolloutLine`/`RolloutItem`/`SessionMeta`/`SessionMetaLine`/`GitInfo`/`CompactedItem`/`TurnContextItem`/`TokenUsage`/`TokenUsageInfo`/`EventMsg`/`SessionSource`/`ThreadSource`/`SubAgentSource`
+- [codex-rs/protocol/src/models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs) — `ResponseItem`/`ContentItem`/`Reasoning`/`FunctionCall`/`FunctionCallOutputPayload`/`CustomToolCall`
+- [codex-rs/rollout/src/recorder.rs](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs) — rollout path + filename + timestamp format
+- [codex-rs/login/src/auth/default_client.rs](https://github.com/openai/codex/blob/main/codex-rs/login/src/auth/default_client.rs) — `DEFAULT_ORIGINATOR = codex_cli_rs`, originator override env
+- [codex-rs/state/migrations/0021_thread_spawn_edges.sql](https://github.com/openai/codex/blob/main/codex-rs/state/migrations/0021_thread_spawn_edges.sql) — thread spawn edges table
+- [codex-rs/state/migrations/0001_threads.sql](https://github.com/openai/codex/blob/main/codex-rs/state/migrations/0001_threads.sql) — base `threads` table
+- [codex-rs/state/migrations/0039_threads_recency_at.sql](https://github.com/openai/codex/blob/main/codex-rs/state/migrations/0039_threads_recency_at.sql) — newest migration (`recency_at`)
+- [codex-rs/state/migrations/](https://github.com/openai/codex/tree/main/codex-rs/state/migrations) — full migration ledger
+- [codex-rs/app-server-protocol/src/protocol/common.rs](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs) — `ThreadNameUpdatedNotification` (app-server layer)
+- [DeepWiki — Rollout Persistence and Replay (openai/codex)](https://deepwiki.com/openai/codex/3.5.2-rollout-persistence-and-replay) — community reference

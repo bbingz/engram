@@ -295,6 +295,19 @@ appended after the compact point in the same file**. See §11 for the records.
     **absent in this store** (CC 2.1.x writes `last-prompt` + `ai-title`
     instead). Kept in both adapters' skip comments for backward compatibility.
 
+> **Confirmed (official):** transcripts are stored as JSONL at
+> `~/.claude/projects/<project>/<session-id>.jsonl` (where `<project>` is derived
+> from the working-directory path), one JSON object per line for a message, tool
+> use, or metadata entry; sessions are saved continuously and are resumable after
+> `/clear`. `CLAUDE_CONFIG_DIR` relocates storage; files are removed after 30 days
+> (`cleanupPeriodDays`); `CLAUDE_CODE_SKIP_PROMPT_HISTORY` / `--no-session-persistence`
+> suppress writes. **Branching** (`/branch`, `/rewind`, `--fork-session`) creates a
+> forked copy grouped under the root session — consistent with the tree/branching
+> model in §3.2 and §5.6. Official docs explicitly do **not** document the
+> per-record field schema, so on-disk reality remains the source of truth for the
+> rest of this document
+> ([Manage sessions docs](https://code.claude.com/docs/en/sessions)).
+
 ### 3.6 Crash/version robustness summary
 
 `version` is stamped on every conversation/attachment/system record (e.g.
@@ -507,11 +520,20 @@ human turn.
 | Field | Type | Meaning |
 |---|---|---|
 | `type` | string | `"thinking"` |
-| `thinking` | string | the chain-of-thought text |
+| `thinking` | string | the chain-of-thought text — **model-dependent**: full plaintext only when the model emits a visible/summarized thinking block; **empty when `display:"omitted"`** (see note) |
 | `signature` | string (base64, hundreds of chars) | cryptographic signature authenticating the block to the API |
 ```json
 { "type": "thinking", "thinking": "<reasoning text, redacted>", "signature": "<base64 sig, redacted>" }
 ```
+
+> **Confirmed (official) — `thinking` is NOT always plaintext.** Per Anthropic's
+> extended-thinking docs, the `display` parameter governs what lands in the block:
+> `display:"omitted"` is the **DEFAULT for Opus 4.8/4.7, Fable 5, and Mythos 5** —
+> for those models the `thinking` field is **empty (omitted) with only a
+> `signature`**, while Claude 4 defaults to `display:"summarized"`. Since this
+> store is dominated by `claude-opus-4-8`, many on-disk `thinking` blocks may be
+> empty-text + signature rather than full readable reasoning
+> ([extended-thinking docs](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)).
 
 #### `redacted_thinking` — **not observed on disk** (CC 2.1.x); Anthropic-API spec shape
 | Field | Type | Meaning |
@@ -521,6 +543,15 @@ human turn.
 ```json
 { "type": "redacted_thinking", "data": "<encrypted blob>" }
 ```
+
+> **Confirmed (official):** `redacted_thinking` is a real Anthropic API content
+> block. When Claude's internal reasoning is flagged by safety systems, the
+> thinking block is encrypted and returned as a `redacted_thinking` block whose
+> `data` field is an opaque encrypted blob that must be passed back **unchanged**
+> for multi-turn continuity. It is safety-triggered and therefore rare, which is
+> consistent with it being absent from this CC 2.1.x corpus
+> ([Bedrock: Claude thinking encryption](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-thinking-encryption.html),
+> [extended-thinking docs](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)).
 
 #### `tool_use` — keys `["caller","id","input","name","type"]`
 | Field | Type | Meaning | Present |
@@ -753,12 +784,23 @@ Reasoning is stored as a **`thinking` content block** inside assistant
 
 | Field | Type | Meaning |
 |---|---|---|
-| `thinking` | string | the chain-of-thought text (plaintext on disk) |
+| `thinking` | string | the chain-of-thought text — **plaintext on disk only when the block is visible/summarized; empty when `display:"omitted"`** (model-dependent, see below) |
 | `signature` | string (base64) | cryptographic signature authenticating the block to the Anthropic API on replay |
 
+> **Confirmed (official) — thinking text is model-dependent, not always plaintext.**
+> `display:"omitted"` is the DEFAULT for Opus 4.8/4.7, Fable 5, and Mythos 5, so
+> for those models the `thinking` field is empty (only `signature` survives);
+> Claude 4 defaults to `display:"summarized"`. The `signature` is "an encrypted
+> signature of the full thinking process" used to verify/reconstruct thinking when
+> blocks are passed back for multi-turn continuity and tool-use loops. Because this
+> store is dominated by `claude-opus-4-8`, expect many `thinking` blocks to be
+> empty-text + signature rather than full reasoning
+> ([extended-thinking docs](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)).
+
 - **`redacted_thinking`** (encrypted thinking, field `data`) is the Anthropic-API
-  shape for content the client can't read. It was **not observed as a live block**
-  anywhere in this CC 2.1.x corpus.
+  shape for content the client can't read. It is a **real, safety-triggered API
+  block** (confirmed — see §6.3) but was **not observed as a live block** anywhere
+  in this CC 2.1.x corpus.
 - There is **no separate "reasoning summary" record** in Claude Code's format —
   the legacy `type:"summary"` record (which would have held a compaction summary
   with `leafUuid`) does not exist in this store; modern compaction uses
@@ -897,19 +939,26 @@ cost = input/1e6 * price.input
 ### 10.1 The dispatch record (parent transcript)
 
 A subagent is spawned by an `assistant` record containing a `tool_use` content
-block named **`Agent`** (current 2.1.x; legacy name `Task`).
+block named **`Agent`** (current 2.1.x; legacy name `Task`, renamed in v2.1.63 —
+`Task(...)` references still work as aliases, per official docs).
 
 > **Naming correction.** The dispatch tool is **`Agent`**, not `Task`. The
 > `Task*` strings (`TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate`, `TaskStop`,
 > `TaskOutput`) are the **background-task/todo MCP toolset**, unrelated to
 > subagents. (Both adapters' `summarizeToolInput` handle `name == "Agent"` →
 > `input.description`: TS `claude-code.ts:458`; Swift `:521-522`.)
+>
+> **Confirmed (official):** the Task tool was renamed to `Agent` in **Claude Code
+> v2.1.63**; existing `Task(...)` references in settings and agent definitions
+> still work as aliases, and the tool name supports nested subagents (a subagent
+> can spawn its own subagents)
+> ([sub-agents docs](https://code.claude.com/docs/en/sub-agents)).
 
 | `tool_use` field | Type | Meaning | Example |
 |---|---|---|---|
 | `type` | string | always `"tool_use"` | `"tool_use"` |
 | `id` | string (`toolu_…`) | tool-use id; equals the subagent's `meta.json` `toolUseId` | `"toolu_014RWAea4dPmkLdEossEV1ez"` |
-| `name` | string | dispatch tool name | `"Agent"` (legacy `"Task"`) |
+| `name` | string | dispatch tool name | `"Agent"` (legacy `"Task"`, renamed v2.1.63) |
 | `input.description` | string | short task label | `"Privacy data flow audit"` |
 | `input.prompt` | string | full task prompt handed to subagent | `"<task instructions…>"` |
 | `input.subagent_type` | string | which agent persona to run | `"privacy"`, `"general-purpose"`, `"hallucination"` |
@@ -1021,6 +1070,17 @@ This matches the project rule "don't upgrade subagent tier."
 
 ### 11.1 Modern form (what actually exists, CC 2.1.x)
 
+> **Confirmed (community reverse-engineering):** a compaction is exactly two
+> adjacent JSONL lines — a `system` record with `subtype:"compact_boundary"`
+> carrying `compactMetadata` (with `trigger` = `manual` for `/compact` vs `auto`
+> for the context limit, plus pre-compaction token count and duration/preservation
+> details), immediately followed by a `user` record with `isCompactSummary:true`
+> holding the structured summary that becomes the new context head. The full
+> pre-compact records remain in the file
+> ([claude-compaction-viewer](https://github.com/swyxio/claude-compaction-viewer),
+> [ClaudeWorld session-storage](https://claude-world.com/tutorials/s16-session-storage/),
+> [trajectory-compression](https://kenhuangus.substack.com/p/chapter-5-trajectory-compression)).
+
 Two records bracket a compaction:
 
 **(a) `type:"system"`, `subtype:"compact_boundary"`** — the boundary marker
@@ -1096,6 +1156,19 @@ The pointer-described record `{"type":"summary","summary":"…","leafUuid":"<uui
 is the older Claude Code compaction artifact (`leafUuid` = the last real message
 the summary replaces). **Zero occurrences** in this store. Listed in both
 adapters' skip comments (`claude-code.ts:23`) but never parsed.
+
+> **Confirmed (community reverse-engineering) — the exact legacy schema.** Multiple
+> independent write-ups confirm the shape this doc states:
+> `{"type":"summary","summary":"<title/text>","leafUuid":"<uuid>"}`. The `summary`
+> record is a **compaction checkpoint**; `leafUuid` points to the leaf (most
+> recent) message of the compacted section so replay can walk the chain backward
+> and splice over the boundary. It remains absent from CC 2.1.x stores (modern
+> compaction uses `compact_boundary` + `isCompactSummary`), so the schema is
+> confirmed by community sources rather than fresh on-disk observation here
+> ([ClaudeWorld session-storage](https://claude-world.com/tutorials/s16-session-storage/),
+> [Inside Claude Code](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b),
+> [Parsing JSONL session logs](https://medium.com/@ywian/what-i-learned-parsing-claude-codes-jsonl-session-logs-268248be0a2c),
+> [trajectory-compression](https://kenhuangus.substack.com/p/chapter-5-trajectory-compression)).
 
 ### 11.4 Engram blind spot
 
@@ -1297,11 +1370,16 @@ fields `cache_creation{}`/`server_tool_use{}`/`service_tier`/`inference_geo`/
    `message.type` (always literal `"message"`).
 2. **`summary` top-level type does not exist** in this store (0 files). Modern
    compaction uses `system/compact_boundary` + `isCompactSummary` user record.
-   The legacy `{type:summary, summary, leafUuid}` shape is documented from adapter
-   comments only; capture from a pre-2.1 archive to confirm field schema.
+   The legacy `{type:summary, summary, leafUuid}` shape is **confirmed (community
+   reverse-engineering)** as exactly `{"type":"summary","summary":"…","leafUuid":"<uuid>"}`
+   — a compaction checkpoint whose `leafUuid` points to the leaf message so replay
+   can splice over the boundary (see §11.3) — but it is still absent on disk here
+   ([ClaudeWorld](https://claude-world.com/tutorials/s16-session-storage/)).
 3. **`Agent` not `Task`.** Subagent dispatch tool is `Agent`. `Task*` are the
-   background-task MCP toolset. Rename boundary version not pinned (no `Task`
-   dispatch observed on disk here).
+   background-task MCP toolset. **Confirmed (official):** rename boundary is
+   **v2.1.63** — the Task tool was renamed to `Agent` then, and `Task(...)`
+   references still work as aliases
+   ([sub-agents docs](https://code.claude.com/docs/en/sub-agents)).
 4. **Workflow-nested subagents are unindexed.** `subagents/workflows/wf_*/agent-*.jsonl`
    (and their `journal.jsonl`) are never discovered by either adapter — observed
    ~93% of one session's subagents missed. Intentional scope vs latent bug
@@ -1324,6 +1402,10 @@ fields `cache_creation{}`/`server_tool_use{}`/`service_tier`/`inference_geo`/
 9. **`<synthetic>` model** → all-zero usage → 0 cost; these are client-generated /
    error / injected assistant turns.
 10. **`userType:"ant"`** marks internal Anthropic builds; `"external"` is normal.
+    **Confirmed (community):** `"ant"` identifies Anthropic employees ("ants")
+    dogfooding ("antfooding") Claude Code, tied to internal features like
+    Undercover Mode; `"external"` is a normal user
+    ([Claude Code source write-up](https://linas.substack.com/p/claudecodesource)).
 11. **Side-channel records re-appended every turn.** `mode`/`last-prompt`/
     `permission-mode`/`ai-title` cluster repeatedly; **last occurrence wins**.
     A file with only side-channel records (no `user`/`assistant`) yields
@@ -1339,24 +1421,49 @@ fields `cache_creation{}`/`server_tool_use{}`/`service_tier`/`inference_geo`/
     builds. Adapters are forward-safe because they gate on the `{user,assistant}`
     allowlist, not a closed type list.
 15. **`bridge-session.lastSequenceNum`** was `0` (resp. small ints) in samples;
-    whether it is a true high-water sync counter vs placeholder is unconfirmed.
+    whether it is a true high-water sync counter vs placeholder is unconfirmed
+    (web-checked 2026-06-21: no authoritative source found — the `bridge-session`
+    record and `lastSequenceNum` are undocumented publicly, though bridged sessions
+    across desktop/CLI/web are acknowledged in
+    [official docs](https://code.claude.com/docs/en/sessions)).
 16. **`compactMetadata.preservedMessages.uuids` vs `allUuids`** (visible-kept
     subset vs full segment incl. intermediate tool turns) is inferred from set
-    membership, not confirmed against CC source.
+    membership, not confirmed against CC source (web-checked 2026-06-21: no
+    authoritative source found — CC is closed-source and these subfields are
+    undocumented at this level; the inference stands as reasonable but unconfirmed).
 
 ### Still uncertain (open questions)
-- Exact `{type:"summary", summary, leafUuid}` field schema (need pre-2.1 archive).
+- **Confirmed (community):** the exact `{type:"summary", summary, leafUuid}` field
+  schema — `summary` is a compaction checkpoint and `leafUuid` points to the leaf
+  message for replay/splice (see §11.3). Still absent on disk here; confirmed via
+  community reverse-engineering rather than fresh on-disk observation
+  ([ClaudeWorld](https://claude-world.com/tutorials/s16-session-storage/),
+  [Inside Claude Code](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b)).
 - Whether auto-compaction (`trigger:"auto"`) differs in any field beyond the
-  trigger value (only 1 auto sample seen).
-- The precise `Task` → `Agent` rename version boundary.
-- Whether the workflow-nested-subagent skip is intentional scope or a bug; the
-  `workflows/<wf>/journal.jsonl` full schema beyond `{started,result,key,agentId}`.
+  trigger value (only 1 auto sample seen) (web-checked 2026-06-21: no authoritative
+  source found — sources confirm the `trigger` field distinguishes auto vs manual
+  but none enumerate per-field differences; remains empirical).
+- **Confirmed (official):** the `Task` → `Agent` rename boundary is **v2.1.63**;
+  `Task(...)` references still work as aliases
+  ([sub-agents docs](https://code.claude.com/docs/en/sub-agents)).
+- Whether the workflow-nested-subagent skip is intentional scope or a bug
+  (Engram-internal design — not web-verifiable). Official docs do confirm **nested
+  subagents are a real CC feature** (a subagent can spawn its own subagents), which
+  supports the existence of nested workflow subagent transcripts
+  ([sub-agents docs](https://code.claude.com/docs/en/sub-agents)); the
+  `workflows/<wf>/journal.jsonl` schema beyond `{started,result,key,agentId}` is
+  not publicly documented (web-checked 2026-06-21: no authoritative source found).
 - Swift product-side cost computation location and whether a custom-pricing
-  override covers `claude-opus-4-8`.
-- Identity of the third-party plugin owning `memory/`/`MEMORY.md`/`memory.bak.*`.
+  override covers `claude-opus-4-8` (Engram-internal design — not web-verifiable).
+- Identity of the third-party plugin owning `memory/`/`MEMORY.md`/`memory.bak.*`
+  (Engram-internal / local-environment — not web-verifiable).
 - Populated shapes of `stop_details`, `container`, `context_management` (always
-  null/near-absent here).
-- Whether `caller.type` ever takes a value other than `direct` (100% in corpus).
+  null/near-absent here) (web-checked 2026-06-21: no authoritative source found —
+  their on-disk Claude Code population is not described in any public spec).
+- Whether `caller.type` ever takes a value other than `direct` (100% in corpus)
+  (web-checked 2026-06-21: no authoritative source found — the `caller` field on
+  `tool_use` blocks is undocumented publicly; non-`"direct"` values are plausible
+  for subagent/coordinator-invoked tools but unverifiable from public sources).
 
 ---
 
@@ -1526,3 +1633,26 @@ Minimal shape — workflow-nested subagents under `subagents/workflows/wf_*/`
   "created": "2026-02-19T09:53:20.037Z", "modified": "2026-02-19T09:56:17.931Z",
   "gitBranch": "", "projectPath": "/", "isSidechain": false } ] }
 ```
+
+---
+
+## References (official sources)
+
+Web confirmation pass 2026-06-21 (`web_access_ok=true`). Official Anthropic /
+Claude Code docs:
+
+- [Claude Code Docs — Manage sessions](https://code.claude.com/docs/en/sessions) — transcript storage path, JSONL append-only model, `/compact`, `/branch`, `--fork-session`, `cleanupPeriodDays`, `CLAUDE_CONFIG_DIR`.
+- [Claude Code Docs — Create custom subagents](https://code.claude.com/docs/en/sub-agents) — Task→Agent rename in v2.1.63, the `Agent` tool, `subagent_type`/background, nested subagents.
+- [Anthropic — Building with extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking) — thinking block fields (`thinking`/`signature`); `display` = summarized/omitted; `omitted` default for Opus 4.8/4.7, Fable 5, Mythos 5.
+- [Amazon Bedrock Docs — Claude thinking encryption / `redacted_thinking`](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-thinking-encryption.html) — encrypted `data` field, safety-triggered redaction.
+
+Community reverse-engineering (corroborating on-disk shapes the official docs do
+not specify):
+
+- [swyxio/claude-compaction-viewer](https://github.com/swyxio/claude-compaction-viewer) — `compact_boundary` subtype + `compactMetadata` trigger (auto/manual) + `isCompactSummary` user message.
+- [ClaudeWorld — Session Storage tutorial](https://claude-world.com/tutorials/s16-session-storage/) — `{type,summary,leafUuid}` summary entry; two-record compaction structure.
+- [Kenneth Huang — Trajectory Compression and Replay](https://kenhuangus.substack.com/p/chapter-5-trajectory-compression) — `leafUuid` replay, splice over compaction boundaries.
+- [Yi Huang — Inside Claude Code: The Session File Format](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b) — summary = compaction checkpoint; envelope fields.
+- [Yang Liu — What I Learned Parsing Claude Code's JSONL Session Logs](https://medium.com/@ywian/what-i-learned-parsing-claude-codes-jsonl-session-logs-268248be0a2c) — field inventory (incl. `leafUuid`, `teamName`, `summary`); "no spec exists."
+- [Claude Code source write-up](https://linas.substack.com/p/claudecodesource) — `userType:"ant"` = Anthropic employee dogfooding ("antfooding").
+- [KyleAMathews/claude-code-ui spec.md](https://github.com/KyleAMathews/claude-code-ui/blob/main/spec.md) — entry types: user/assistant/system/queue-operation/file-history-snapshot.

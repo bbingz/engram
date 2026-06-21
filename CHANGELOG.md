@@ -7,6 +7,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Session-format reference docs: ALL 17 sources, bilingual + official web-confirmation (2026-06-21, Claude)
+
+Expanded the two pilot docs into a complete `docs/session-formats/` reference set covering ALL 17
+Engram source adapters, each as an English authoritative doc + a Simplified-Chinese reading copy
+(`<tool>.md` + `<tool>.zh.md`), then layered official web-confirmation on top. 34 files, ~28.2k lines.
+EN is authoritative (what AIs read/write); ZH is a 1:1 structural mirror (identifiers/code/JSON/SQL/
+paths/file:line kept English, prose translated). Every EN/ZH pair verified for `##` heading +
+fenced-code-block parity.
+
+- **Tools**: claude-code, codex, gemini-cli, qwen, iflow, kimi, opencode, qoder, commandcode, cline,
+  cursor, vscode, copilot, windsurf, antigravity + the two Claude-Code-derived overlays minimax,
+  lobsterai (short "differs only in detection" docs).
+- **Method (per tool)**: multi-dimension research grounded in TWO sources of truth — the real on-disk
+  store (or repo `tests/fixtures/`) AND the Engram adapters (on-disk reality wins on conflict) →
+  synthesize EN → adversarial completeness critic → patch → ZH translate.
+- **Official web-confirmation pass**: each doc's "Open questions" were checked against authoritative
+  public sources, preferring open-source repo SOURCE CODE (openai/codex, google-gemini/gemini-cli,
+  QwenLM/qwen-code, sst/opencode, cline/cline, MoonshotAI kimi-cli, microsoft/vscode, …) > official
+  docs > reputable community. Findings folded in as "Confirmed (official):" with inline `[source]`
+  links, body fixes for refuted claims, "(web-checked …: no authoritative source found)" for unknowns,
+  and a final `## References (official sources)` section per doc.
+- **Notable official corrections**: Codex — 8 body corrections + 1 refutation (e.g. `compacted`
+  window-field types, `function_call_output` structured form is `content_items` not `{output,metadata}`,
+  `instructions` vs `base_instructions` are distinct fields not a rename, 6th L1 type
+  `inter_agent_communication`); Gemini CLI — 7 corrections / 3 refutations; Qwen — 4; iFlow — 3; Kimi
+  — 3 (15 official URLs). This validated the web pass: the disk+adapter-only docs did contain claims
+  the official sources corrected.
+- **Known gap**: `vscode` web-confirmation could not run — an automated content-safety classifier
+  repeatedly flagged the (benign) editor-session-storage research as a cybersecurity topic. Documented
+  honestly in-doc (EN+ZH); no sources fabricated. Authoritative next step noted: read microsoft/vscode
+  chat-session storage source directly.
+
 ### Session-format reference docs: Claude Code + Codex (2026-06-21, Claude)
 
 Sequestered the on-disk session-saving mechanism of the two primary sources into two definitive
