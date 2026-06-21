@@ -15,7 +15,6 @@ protocol EngramServiceReadProvider: Sendable {
     func insightDetail(_ request: EngramServiceInsightDetailRequest) async throws -> EngramServiceInsightInfo?
     func costs() async throws -> EngramServiceCostsResponse
     func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse
     func resumeCommand(_ request: EngramServiceResumeCommandRequest) async throws -> EngramServiceResumeCommandResponse
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse
     func projectCwds(_ request: EngramServiceProjectCwdsRequest) async throws -> EngramServiceProjectCwdsResponse
@@ -79,16 +78,6 @@ struct EmptyEngramServiceReadProvider: EngramServiceReadProvider {
             hasMore: false,
             offset: nil,
             limit: request.limit
-        )
-    }
-
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
-        EngramServiceEmbeddingStatusResponse(
-            available: false,
-            model: nil,
-            embeddedCount: 0,
-            totalSessions: 0,
-            progress: 0
         )
     }
 
@@ -303,16 +292,6 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
             hasMore: false,
             offset: nil,
             limit: request.limit
-        )
-    }
-
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
-        EngramServiceEmbeddingStatusResponse(
-            available: false,
-            model: nil,
-            embeddedCount: 0,
-            totalSessions: 0,
-            progress: 0
         )
     }
 
@@ -793,8 +772,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         try await read { db in
             // The `insights` table is created lazily (only on the first
             // save/delete write), so a fresh DB does not have it. Guard the
-            // SELECT to avoid "no such table" — mirrors embeddingStatus's
-            // tableExists("session_embeddings") guard.
+            // SELECT with tableExists to avoid "no such table".
             guard try tableExists("insights", db: db) else { return [] }
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, content, wing, room, importance, created_at
@@ -1063,35 +1041,6 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             if messages.count >= limit { break }
         }
         return messages
-    }
-
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
-        try await read { db in
-            let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL") ?? 0
-            guard try tableExists("session_embeddings", db: db) else {
-                return EngramServiceEmbeddingStatusResponse(
-                    available: false,
-                    model: nil,
-                    embeddedCount: 0,
-                    totalSessions: total,
-                    progress: 0
-                )
-            }
-            let embedded = try Int.fetchOne(db, sql: """
-                SELECT COUNT(DISTINCT e.session_id)
-                FROM session_embeddings e
-                JOIN sessions s ON s.id = e.session_id
-                WHERE s.hidden_at IS NULL
-            """) ?? 0
-            let progress = total > 0 ? Int((Double(embedded) / Double(total) * 100).rounded()) : 0
-            return EngramServiceEmbeddingStatusResponse(
-                available: embedded > 0,
-                model: nil,
-                embeddedCount: embedded,
-                totalSessions: total,
-                progress: min(100, max(0, progress))
-            )
-        }
     }
 
     func resumeCommand(_ request: EngramServiceResumeCommandRequest) async throws -> EngramServiceResumeCommandResponse {

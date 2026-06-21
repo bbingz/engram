@@ -718,14 +718,6 @@ struct EngramServiceReplayTimelineResponse: Codable, Equatable, Sendable {
     let limit: Int?
 }
 
-struct EngramServiceEmbeddingStatusResponse: Codable, Equatable, Sendable {
-    let available: Bool
-    let model: String?
-    let embeddedCount: Int
-    let totalSessions: Int
-    let progress: Int
-}
-
 struct EngramServiceGenerateSummaryRequest: Codable, Equatable, Sendable {
     let sessionId: String
 }

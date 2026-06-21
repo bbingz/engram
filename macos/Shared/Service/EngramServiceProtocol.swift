@@ -17,7 +17,6 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse
     func handoff(_ request: EngramServiceHandoffRequest) async throws -> EngramServiceHandoffResponse
     func replayTimeline(sessionId: String, limit: Int?) async throws -> EngramServiceReplayTimelineResponse
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse
     func saveInsight(_ request: EngramServiceSaveInsightRequest) async throws -> EngramServiceJSONValue
     func deleteInsight(_ request: EngramServiceDeleteInsightRequest) async throws -> EngramServiceJSONValue

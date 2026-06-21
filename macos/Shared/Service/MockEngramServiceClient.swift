@@ -20,7 +20,6 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let hygieneResult: Result<EngramServiceHygieneResponse, Error>
     let handoffResult: Result<EngramServiceHandoffResponse, Error>
     let replayTimelineResult: Result<EngramServiceReplayTimelineResponse, Error>
-    let embeddingStatusResult: Result<EngramServiceEmbeddingStatusResponse, Error>
     let generateSummaryResult: Result<EngramServiceGenerateSummaryResponse, Error>
     let saveInsightResult: Result<EngramServiceJSONValue, Error>
     let deleteInsightResult: Result<EngramServiceJSONValue, Error>
@@ -64,7 +63,6 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         hygiene: EngramServiceHygieneResponse = EngramServiceHygieneResponse(issues: [], score: 100, checkedAt: "2026-01-01T00:00:00Z"),
         handoff: EngramServiceHandoffResponse = EngramServiceHandoffResponse(brief: "## Handoff\n\nNo recent sessions found.", sessionCount: 0),
         replayTimeline: EngramServiceReplayTimelineResponse = EngramServiceReplayTimelineResponse(sessionId: nil, source: nil, entries: [], totalEntries: 0, hasMore: false, offset: nil, limit: nil),
-        embeddingStatus: EngramServiceEmbeddingStatusResponse = EngramServiceEmbeddingStatusResponse(available: false, model: nil, embeddedCount: 0, totalSessions: 0, progress: 0),
         generateSummary: EngramServiceGenerateSummaryResponse = EngramServiceGenerateSummaryResponse(summary: "Mock summary"),
         saveInsight: EngramServiceJSONValue = .object(["id": .string("mock-insight")]),
         deleteInsight: EngramServiceJSONValue = .object(["id": .string("mock-insight"), "deleted": .bool(true)]),
@@ -114,7 +112,6 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.hygieneResult = .success(hygiene)
         self.handoffResult = .success(handoff)
         self.replayTimelineResult = .success(replayTimeline)
-        self.embeddingStatusResult = .success(embeddingStatus)
         self.generateSummaryResult = .success(generateSummary)
         self.saveInsightResult = .success(saveInsight)
         self.deleteInsightResult = .success(deleteInsight)
@@ -179,10 +176,6 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func replayTimeline(sessionId: String, limit: Int?) async throws -> EngramServiceReplayTimelineResponse {
         try replayTimelineResult.get()
-    }
-
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
-        try embeddingStatusResult.get()
     }
 
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse {

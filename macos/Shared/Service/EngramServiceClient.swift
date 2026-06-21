@@ -95,10 +95,6 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         )
     }
 
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
-        try await command("embeddingStatus")
-    }
-
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse {
         try await command("generateSummary", payload: request, timeout: Self.frameBoundCommandTimeout)
     }

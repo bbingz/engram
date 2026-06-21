@@ -50,6 +50,15 @@ enum SearchOutcome: Equatable {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .empty }
         return results.isEmpty ? .empty : .results
     }
+
+    /// Result-agnostic overload for callers (e.g. CommandPaletteView) that track
+    /// emptiness as a Bool rather than a `[SearchResult]` array. Same precedence:
+    /// a real backend fault wins over both empty query and no-match.
+    static func classify(query: String, isEmptyResults: Bool, didFail: Bool) -> SearchOutcome {
+        if didFail { return .failed }
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .empty }
+        return isEmptyResults ? .empty : .results
+    }
 }
 
 struct SearchPageView: View {

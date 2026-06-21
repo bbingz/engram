@@ -78,8 +78,6 @@ final class EngramServiceClientTests: XCTestCase {
             case "replayTimeline":
                 XCTAssertEqual(try Self.payload(request.payload, as: EngramServiceReplayTimelineRequest.self), EngramServiceReplayTimelineRequest(sessionId: "s1", limit: 500))
                 return .success(requestId: request.requestId, result: #"{"sessionId":"s1","source":"codex","entries":[{"index":0,"role":"user","type":"message","preview":"hello","timestamp":"2026-04-23T01:04:00Z","tokens":{"input":4,"output":0},"durationToNextMs":15}],"totalEntries":1,"hasMore":false}"#.data(using: .utf8)!)
-            case "embeddingStatus":
-                return .success(requestId: request.requestId, result: #"{"available":true,"model":"text-embedding-3-small","embeddedCount":10,"totalSessions":20,"progress":50}"#.data(using: .utf8)!)
             case "generateSummary":
                 XCTAssertEqual(try Self.payload(request.payload, as: EngramServiceGenerateSummaryRequest.self), EngramServiceGenerateSummaryRequest(sessionId: "s1"))
                 return .success(requestId: request.requestId, result: #"{"summary":"Short summary"}"#.data(using: .utf8)!)
@@ -130,7 +128,6 @@ final class EngramServiceClientTests: XCTestCase {
         let hygiene = try await client.hygiene(force: true)
         let handoff = try await client.handoff(EngramServiceHandoffRequest(cwd: "/tmp/engram", sessionId: "s1", format: "markdown"))
         let timeline = try await client.replayTimeline(sessionId: "s1", limit: 500)
-        let embeddingStatus = try await client.embeddingStatus()
         let summary = try await client.generateSummary(EngramServiceGenerateSummaryRequest(sessionId: "s1"))
         let confirmSuggestion = try await client.confirmSuggestion(sessionId: "s1")
         try await client.dismissSuggestion(sessionId: "s1", suggestedParentId: "parent-1")
@@ -150,7 +147,6 @@ final class EngramServiceClientTests: XCTestCase {
         XCTAssertEqual(hygiene.issues.first?.kind, "config")
         XCTAssertEqual(handoff.sessionCount, 3)
         XCTAssertEqual(timeline.entries.first?.tokens?.input, 4)
-        XCTAssertEqual(embeddingStatus.progress, 50)
         XCTAssertEqual(summary.summary, "Short summary")
         XCTAssertTrue(confirmSuggestion.ok)
         XCTAssertEqual(sync.results.first?.pulled, 2)

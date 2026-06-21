@@ -175,11 +175,6 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(try await readProvider.replayTimeline(payload))
                 )
-            case "embeddingStatus":
-                return .success(
-                    requestId: request.requestId,
-                    result: try Self.encode(try await readProvider.embeddingStatus())
-                )
             case "generateSummary":
                 let payload = try decodePayload(EngramServiceGenerateSummaryRequest.self, from: request)
                 let result = try await Self.generateSummary(payload, writerGate: writerGate)

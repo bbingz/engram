@@ -82,7 +82,7 @@ final class EngramServiceIPCTests: XCTestCase {
     func testSQLiteReplayTimelineDoesNotDelegateToEmptyFileSystemStub() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
         let start = try XCTUnwrap(source.range(of: "func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse", options: [], range: source.range(of: "struct SQLiteEngramServiceReadProvider")!.lowerBound..<source.endIndex))
-        let end = try XCTUnwrap(source.range(of: "func embeddingStatus()", options: [], range: start.lowerBound..<source.endIndex))
+        let end = try XCTUnwrap(source.range(of: "func resumeCommand(", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertFalse(body.contains("fileSystemProvider.replayTimeline"))
@@ -1180,7 +1180,6 @@ final class EngramServiceIPCTests: XCTestCase {
         let memory = try await client.memoryFiles()
         let hooks = try await client.hooks()
         let replay = try await client.replayTimeline(sessionId: "session-1", limit: 25)
-        let embedding = try await client.embeddingStatus()
 
         XCTAssertEqual(health.status, "healthy")
         XCTAssertEqual(live.count, 0)
@@ -1189,10 +1188,9 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(memory, [])
         XCTAssertEqual(hooks, [])
         XCTAssertEqual(replay.sessionId, "session-1")
-        XCTAssertFalse(embedding.available)
     }
 
-    func testSQLiteReadProviderServesSearchSourcesAndEmbeddingStatus() async throws {
+    func testSQLiteReadProviderServesSearchAndSources() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -1225,12 +1223,6 @@ final class EngramServiceIPCTests: XCTestCase {
                 healthStatus: "healthy"
             )
         ])
-
-        let embedding = try await client.embeddingStatus()
-        XCTAssertTrue(embedding.available)
-        XCTAssertEqual(embedding.embeddedCount, 1)
-        XCTAssertEqual(embedding.totalSessions, 2)
-        XCTAssertEqual(embedding.progress, 50)
     }
 
     func testSQLiteReadProviderSourcesExposeArchiveHealthFacts() async throws {
@@ -1682,10 +1674,8 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let second = try await provider.sources()
         XCTAssertEqual(second, first)
-        let embedding = try await provider.embeddingStatus()
-        XCTAssertTrue(embedding.available)
         XCTAssertEqual(factory.makeCount, 1)
-        XCTAssertEqual(factory.reader?.readCount, 3)
+        XCTAssertEqual(factory.reader?.readCount, 2)
     }
 
     func testSQLiteReadProviderBuildsResumeCommand() async throws {

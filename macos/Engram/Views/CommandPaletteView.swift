@@ -13,6 +13,7 @@ struct CommandPaletteView: View {
     @State private var query = ""
     @State private var sessionResults: [SessionHit] = []
     @State private var isSearching = false
+    @State private var searchFailed = false
     @State private var selectedIndex = 0
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var resumeSession: Session? = nil
@@ -52,6 +53,16 @@ struct CommandPaletteView: View {
         }
     }
 
+    /// Session-search result-state. Commands mode never "fails", so the failed
+    /// branch only applies to keyword session search (`!isCommandMode`).
+    private var searchOutcome: SearchOutcome {
+        SearchOutcome.classify(
+            query: query,
+            isEmptyResults: visibleItems.isEmpty,
+            didFail: searchFailed && !isCommandMode
+        )
+    }
+
     struct SessionHit: Identifiable {
         let id: String
         let title: String
@@ -81,6 +92,7 @@ struct CommandPaletteView: View {
                             searchTask = nil
                             isSearching = false
                             sessionResults = []
+                            searchFailed = false
                         } else {
                             searchTask = nil
                             isSearching = false
@@ -110,6 +122,16 @@ struct CommandPaletteView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !query.isEmpty && !isSearching && searchOutcome == .failed {
+                VStack(spacing: 6) {
+                    Text("Search unavailable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Could not reach the index. Try again.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if visibleItems.isEmpty && !query.isEmpty && !isSearching {
                 VStack(spacing: 6) {
                     Text("No results")
@@ -290,6 +312,7 @@ struct CommandPaletteView: View {
                     EngramServiceSearchRequest(query: q, mode: "keyword", limit: 10)
                 )
                 guard !Task.isCancelled else { return }
+                searchFailed = false
                 sessionResults = response.items.map { item in
                     SessionHit(
                         id: item.id,
@@ -300,17 +323,25 @@ struct CommandPaletteView: View {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                let sessions = (try? await Task.detached {
+                let sessions = try? await Task.detached {
                     try db.search(query: q, limit: 10)
-                }.value) ?? []
+                }.value
                 guard !Task.isCancelled else { return }
-                sessionResults = sessions.map { session in
-                    SessionHit(
-                        id: session.id,
-                        title: session.displayTitle,
-                        snippet: "",
-                        date: session.displayDate
-                    )
+                // Double-fault: service threw AND local FTS threw (nil) or returned
+                // nothing. Surface a real failure state instead of "No results".
+                if sessions?.isEmpty ?? true {
+                    searchFailed = true
+                    sessionResults = []
+                } else {
+                    searchFailed = false
+                    sessionResults = (sessions ?? []).map { session in
+                        SessionHit(
+                            id: session.id,
+                            title: session.displayTitle,
+                            snippet: "",
+                            date: session.displayDate
+                        )
+                    }
                 }
             }
             guard !Task.isCancelled else { return }
