@@ -1043,6 +1043,28 @@ struct ServiceTelemetrySnapshot: Codable, Equatable, Sendable {
     let spans: [ServiceSpan]
 }
 
+/// One SANITIZED service log line surfaced through the `serviceLogs` read
+/// command. The `message` has already passed through `ServiceLogSanitizer`, so
+/// it carries no raw paths/ids/emails/error tails. Mirrors `ServiceSpan` as a
+/// flat Codable DTO stored directly in the in-process ring buffer.
+struct ServiceLogLineDTO: Codable, Equatable, Identifiable, Sendable {
+    var id: String { "\(timestamp)#\(category)" }
+    let timestamp: String
+    let level: String
+    let category: String
+    let message: String
+}
+
+struct ServiceLogSnapshot: Codable, Equatable, Sendable {
+    let lines: [ServiceLogLineDTO]
+}
+
+struct EngramServiceServiceLogsRequest: Codable, Equatable, Sendable {
+    let level: String?
+    let category: String?
+    let limit: Int?
+}
+
 struct EngramServiceProjectMoveRequest: Codable, Equatable, Sendable {
     let src: String
     let dst: String

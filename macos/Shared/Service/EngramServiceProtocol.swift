@@ -14,6 +14,7 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func insightDetail(id: String) async throws -> EngramServiceInsightInfo?
     func costs() async throws -> EngramServiceCostsResponse
     func telemetry() async throws -> ServiceTelemetrySnapshot
+    func serviceLogs(level: String?, category: String?, limit: Int?) async throws -> ServiceLogSnapshot
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse
     func handoff(_ request: EngramServiceHandoffRequest) async throws -> EngramServiceHandoffResponse
     func replayTimeline(sessionId: String, limit: Int?) async throws -> EngramServiceReplayTimelineResponse

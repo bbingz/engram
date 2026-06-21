@@ -72,11 +72,18 @@ public enum EngramServiceRunner {
 
         let statusMonitor = ServiceStatusMonitor()
         let telemetry = ServiceTelemetryCollector()
+        // Sanitized in-process log ring: tee a redacted copy of each service log
+        // line so the gated Observability "Logs" tab is readable (os_log stays
+        // `privacy: .private`). Install BEFORE the server starts so startup lines
+        // are captured.
+        let logRing = ServiceLogRing()
+        ServiceLogger.installRing(logRing)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
             readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath),
             statusMonitor: statusMonitor,
-            telemetry: telemetry
+            telemetry: telemetry,
+            logRing: logRing
         )
         let server = UnixSocketServiceServer(socketPath: socketPath) { request in
             await handler.handle(request)

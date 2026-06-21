@@ -17,6 +17,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let insightDetailResult: Result<EngramServiceInsightInfo?, Error>
     let costsResult: Result<EngramServiceCostsResponse, Error>
     let telemetryResult: Result<ServiceTelemetrySnapshot, Error>
+    let serviceLogsResult: Result<ServiceLogSnapshot, Error>
     let hygieneResult: Result<EngramServiceHygieneResponse, Error>
     let handoffResult: Result<EngramServiceHandoffResponse, Error>
     let replayTimelineResult: Result<EngramServiceReplayTimelineResponse, Error>
@@ -63,6 +64,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         insightDetail: EngramServiceInsightInfo? = nil,
         costs: EngramServiceCostsResponse = EngramServiceCostsResponse(totalUsd: 0, perSource: [], perDay: [], monthToDateUsd: 0, todayUsd: 0),
         telemetry: ServiceTelemetrySnapshot = ServiceTelemetrySnapshot(lastScanDurationMs: nil, lastScanIndexed: 0, lastScanTotal: 0, scanCount: 0, lastScanAt: nil, commands: [], spans: []),
+        serviceLogs: ServiceLogSnapshot = ServiceLogSnapshot(lines: []),
         hygiene: EngramServiceHygieneResponse = EngramServiceHygieneResponse(issues: [], score: 100, checkedAt: "2026-01-01T00:00:00Z"),
         handoff: EngramServiceHandoffResponse = EngramServiceHandoffResponse(brief: "## Handoff\n\nNo recent sessions found.", sessionCount: 0),
         replayTimeline: EngramServiceReplayTimelineResponse = EngramServiceReplayTimelineResponse(sessionId: nil, source: nil, entries: [], totalEntries: 0, hasMore: false, offset: nil, limit: nil),
@@ -115,6 +117,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.insightDetailResult = .success(insightDetail)
         self.costsResult = .success(costs)
         self.telemetryResult = .success(telemetry)
+        self.serviceLogsResult = .success(serviceLogs)
         self.hygieneResult = .success(hygiene)
         self.handoffResult = .success(handoff)
         self.replayTimelineResult = .success(replayTimeline)
@@ -176,6 +179,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     func costs() async throws -> EngramServiceCostsResponse { try costsResult.get() }
 
     func telemetry() async throws -> ServiceTelemetrySnapshot { try telemetryResult.get() }
+
+    func serviceLogs(level: String?, category: String?, limit: Int?) async throws -> ServiceLogSnapshot {
+        try serviceLogsResult.get()
+    }
 
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse { try hygieneResult.get() }
 

@@ -11,15 +11,17 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
     private let telemetry: ServiceTelemetryCollector?
+    private let logRing: ServiceLogRing?
     private let usageNow: @Sendable () -> Date
     private let usageTokenLimitsProvider: @Sendable () -> [String: StartupUsageTokenLimits]
     private let usageEmitter: @Sendable ([StartupUsageSnapshot]) -> Void
 
     /// Commands excluded from telemetry span recording: `status` is a poll the
     /// app/launcher fires continuously (would drown out real signal), `telemetry`
-    /// reads the collector itself (self-noise), and `costs` is the menu-bar
-    /// budget poll that fires on a timer (would fill the 200-span ring buffer).
-    private static let telemetryExcludedCommands: Set<String> = ["status", "telemetry", "costs"]
+    /// reads the collector itself (self-noise), `costs` is the menu-bar budget
+    /// poll that fires on a timer (would fill the 200-span ring buffer), and
+    /// `serviceLogs` reads the log ring (self-noise + Observability polls it).
+    private static let telemetryExcludedCommands: Set<String> = ["status", "telemetry", "costs", "serviceLogs"]
 
     private static let emptyTelemetrySnapshot = ServiceTelemetrySnapshot(
         lastScanDurationMs: nil,
@@ -31,11 +33,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         spans: []
     )
 
+    private static let emptyLogSnapshot = ServiceLogSnapshot(lines: [])
+
     init(
         writerGate: ServiceWriterGate,
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
         statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor(),
         telemetry: ServiceTelemetryCollector? = nil,
+        logRing: ServiceLogRing? = nil,
         usageNow: @escaping @Sendable () -> Date = { Date() },
         usageTokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits] = {
             EngramServiceRunner.readUsageTokenLimits(environment: ProcessInfo.processInfo.environment)
@@ -48,6 +53,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.readProvider = readProvider
         self.statusMonitor = statusMonitor
         self.telemetry = telemetry
+        self.logRing = logRing
         self.usageNow = usageNow
         self.usageTokenLimitsProvider = usageTokenLimitsProvider
         self.usageEmitter = usageEmitter
@@ -156,6 +162,20 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(await (telemetry?.snapshot() ?? Self.emptyTelemetrySnapshot))
+                )
+            case "serviceLogs":
+                // READ command: returns the sanitized in-process log ring. No
+                // capability token (it never mutates state); the ring sanitizes
+                // every line before storage so this surfaces no raw paths/ids.
+                let payload = try? decodePayload(EngramServiceServiceLogsRequest.self, from: request)
+                let snapshot = await logRing?.snapshot(
+                    level: payload?.level,
+                    category: payload?.category,
+                    limit: payload?.limit
+                ) ?? Self.emptyLogSnapshot
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(snapshot)
                 )
             case "hygiene":
                 let payload = try decodePayload(EngramServiceHygieneRequest.self, from: request)

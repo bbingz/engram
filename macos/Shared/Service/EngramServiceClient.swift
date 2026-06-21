@@ -80,6 +80,13 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("telemetry")
     }
 
+    func serviceLogs(level: String?, category: String?, limit: Int?) async throws -> ServiceLogSnapshot {
+        try await command(
+            "serviceLogs",
+            payload: EngramServiceServiceLogsRequest(level: level, category: category, limit: limit)
+        )
+    }
+
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse {
         try await command("hygiene", payload: EngramServiceHygieneRequest(force: force))
     }

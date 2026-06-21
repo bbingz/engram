@@ -4,6 +4,7 @@ import GRDB
 
 struct LogStreamView: View {
     @Environment(DatabaseManager.self) var db
+    @Environment(EngramServiceClient.self) var serviceClient
     @State private var logs: [LogEntry] = []
     @State private var selectedLevel: String = "All"
     @State private var selectedModule: String = "All"
@@ -96,32 +97,70 @@ struct LogStreamView: View {
     }
 
     private func reload() async {
-        // OBS-C1: stream Engram's own os_log entries (com.engram.*) from the
-        // unified log instead of the never-written `logs` table. Off-main (UI-C1/C2).
+        // OBS-C1 / WP17: app-process lines (com.engram.app) come from the unified
+        // log via OSLogReader, which is readable un-redacted for our own
+        // subsystem. Service lines (com.engram.service) are hardcoded
+        // `privacy: .private` in the system log, so we source them from the
+        // service's SANITIZED in-process ring over IPC instead — otherwise the
+        // viewer would only ever show "<private>" placeholders. Off-main (UI-C1/C2).
         isLoading = true
         let level = selectedLevel
         let module = selectedModule
+
+        // App lines from OSLogStore (only com.engram.app; service lines route
+        // through the ring below). osLogUnavailable degrades to the banner.
+        var appLines: [LogEntry] = []
+        var appModules: [String] = []
+        var osLogUnavailable = false
         do {
             let result = try await Task.detached {
                 try OSLogReader.recentLogs(level: level, module: module, hours: 24, limit: 200)
             }.value
-            guard !Task.isCancelled else { return }
-            // Most recent first for the list.
-            logs = result.entries.reversed()
-            if availableModules.isEmpty {
-                availableModules = result.modules
-            }
-            logsUnavailable = false
+            appLines = result.entries.filter { $0.source == "com.engram.app" }
+            appModules = result.modules
         } catch is OSLogReaderError {
-            guard !Task.isCancelled else { return }
-            logsUnavailable = true
-            logs = []
+            osLogUnavailable = true
         } catch {
-            guard !Task.isCancelled else { return }
             EngramLogger.error("LogStreamView load failed", module: .ui, error: error)
-            logs = []
         }
+
+        // Service lines from the sanitized in-process ring over IPC.
+        var serviceLines: [LogEntry] = []
+        if let snapshot = try? await serviceClient.serviceLogs(level: nil, category: nil, limit: 200) {
+            serviceLines = snapshot.lines.enumerated().map { index, line in
+                LogEntry(
+                    id: Int64(1_000_000 + index),
+                    ts: line.timestamp,
+                    level: line.level,
+                    module: line.category,
+                    message: line.message,
+                    traceId: nil,
+                    source: "com.engram.service",
+                    errorName: nil,
+                    errorMessage: nil
+                )
+            }
+            .filter { level == "All" || $0.level == level }
+            .filter { module == "All" || $0.module == module }
+        }
+
         guard !Task.isCancelled else { return }
+
+        // Merge, newest-first by timestamp, capped at 200.
+        let merged = (appLines + serviceLines)
+            .sorted { $0.ts > $1.ts }
+            .prefix(200)
+        logs = Array(merged)
+        if availableModules.isEmpty {
+            // Known service categories (mirror ServiceLogCategory, which lives in
+            // the service-only target and isn't linked into the app) plus the
+            // app modules OSLogReader observed.
+            let serviceModules = ["runner", "ipc", "checkpoint", "writer", "reader", "ai"]
+            availableModules = Array(Set(appModules + serviceModules)).sorted()
+        }
+        // Only banner when the app-log store is blocked AND we have no service
+        // lines either, so a working service log isn't masked by an OSLog block.
+        logsUnavailable = osLogUnavailable && serviceLines.isEmpty
         isLoading = false
     }
 }
