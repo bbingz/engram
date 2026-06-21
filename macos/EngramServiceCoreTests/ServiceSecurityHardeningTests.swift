@@ -214,6 +214,7 @@ final class ServiceSecurityHardeningTests: XCTestCase {
             "projectMoveBatch",
             "setFavorite",
             "setSessionHidden",
+            "setSourceEnabled",
             "renameSession",
             "hideEmptySessions",
             "linkSessions",
@@ -242,6 +243,17 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         XCTAssertFalse(
             ServiceCapabilityToken.requiresToken("relatedSessions"),
             "relatedSessions is a read and must not require a capability token"
+        )
+    }
+
+    func testSetSourceEnabledIsTokenProtectedButDisabledSourcesReadIsNot() {
+        XCTAssertTrue(
+            ServiceCapabilityToken.requiresToken("setSourceEnabled"),
+            "setSourceEnabled mutates ingest state + hides sessions and must require a token"
+        )
+        XCTAssertFalse(
+            ServiceCapabilityToken.requiresToken("disabledSources"),
+            "disabledSources is a read and must not require a capability token"
         )
     }
 

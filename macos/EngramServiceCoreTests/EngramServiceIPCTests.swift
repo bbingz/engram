@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import Darwin
 import Foundation
+import EngramCoreRead
 import EngramCoreWrite
 @testable import EngramServiceCore
 
@@ -693,11 +694,14 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(geminiApply.contains("GeminiProjectsJSON.apply(plan: plan)"))
     }
 
-    func testRunnerStartupScanUsesAllAdapters() throws {
+    func testRunnerStartupScanUsesAllEnabledAdapters() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
 
-        XCTAssertTrue(source.contains("let defaultAdapters = SessionAdapterFactory.defaultAdapters()"))
-        XCTAssertTrue(source.contains("let startupAdapters = defaultAdapters"))
+        // Feature #2 slice B — startup ingests every adapter EXCEPT user-disabled
+        // sources, which are filtered out of defaultAdapters() at scan time.
+        XCTAssertTrue(source.contains("SessionAdapterFactory.defaultAdapters()"))
+        XCTAssertTrue(source.contains("!disabled.contains($0.source.rawValue)"))
+        XCTAssertTrue(source.contains("let startupAdapters = enabledAdapters"))
         XCTAssertFalse(
             source.contains(": SessionAdapterFactory.recentActiveAdapters()"),
             "startup scan must not skip sessions solely because they are older than the recent-active window"
@@ -781,7 +785,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillCheck")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.needsBackfill"))
-        XCTAssertTrue(source.contains("let startupAdapters = defaultAdapters"))
+        XCTAssertTrue(source.contains("let startupAdapters = enabledAdapters"))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillMark")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.markComplete"))
     }
@@ -3174,6 +3178,84 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testSetSourceEnabledTogglesIngestHidesSessionsAndPreservesSettings() async throws {
+        // Feature #2 slice B round-trip via a temp settings.json. ENGRAM_SETTINGS_PATH
+        // points both the write (RMW) and read (disabledSources) paths at the temp file.
+        let settingsURL = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let seed: [String: Any] = ["webUIEnabled": true, "aiModel": "gpt-4o-mini"]
+        let seedData = try JSONSerialization.data(withJSONObject: seed)
+        try seedData.write(to: settingsURL)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            unsetenv("ENGRAM_SETTINGS_PATH")
+            try? FileManager.default.removeItem(at: settingsURL)
+        }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        // DISABLE codex (the seed fixture's only source): disabledSources contains
+        // it and its sessions are hidden.
+        try await client.setSourceEnabled(source: "codex", enabled: false)
+        let afterDisable = try await client.disabledSources()
+        XCTAssertTrue(afterDisable.contains("codex"))
+
+        let hiddenCount = try await queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE source = 'codex' AND hidden_at IS NOT NULL") ?? 0
+        }
+        XCTAssertEqual(hiddenCount, 2, "both seeded codex sessions must be hidden on disable")
+
+        // RMW preserved the pre-existing unrelated keys.
+        let preservedAfterDisable = try loadSettings(settingsURL)
+        XCTAssertEqual(preservedAfterDisable["webUIEnabled"] as? Bool, true)
+        XCTAssertEqual(preservedAfterDisable["aiModel"] as? String, "gpt-4o-mini")
+        XCTAssertEqual(preservedAfterDisable["disabledSources"] as? [String], ["codex"])
+
+        // ENABLE codex: removed from disabledSources and sessions unhidden.
+        try await client.setSourceEnabled(source: "codex", enabled: true)
+        let afterEnable = try await client.disabledSources()
+        XCTAssertFalse(afterEnable.contains("codex"))
+
+        let stillHidden = try await queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE source = 'codex' AND hidden_at IS NOT NULL") ?? 0
+        }
+        XCTAssertEqual(stillHidden, 0, "enabling must unhide the source's sessions")
+
+        let preservedAfterEnable = try loadSettings(settingsURL)
+        XCTAssertEqual(preservedAfterEnable["webUIEnabled"] as? Bool, true)
+        XCTAssertEqual(preservedAfterEnable["aiModel"] as? String, "gpt-4o-mini")
+        XCTAssertEqual(preservedAfterEnable["disabledSources"] as? [String], [])
+    }
+
+    func testReadDisabledSourcesFiltersAdapterListWithoutAffectingOthers() {
+        // ENGRAM_DISABLED_SOURCES env override drives readDisabledSources; the
+        // filtered adapter list drops only the disabled source.
+        let disabled = EngramServiceRunner.readDisabledSources(
+            environment: ["ENGRAM_DISABLED_SOURCES": "codex, windsurf"]
+        )
+        XCTAssertEqual(disabled, ["codex", "windsurf"])
+
+        let all = SessionAdapterFactory.defaultAdapters()
+        let enabled = all.filter { !disabled.contains($0.source.rawValue) }
+        XCTAssertEqual(enabled.count, all.count - 2)
+        let enabledIDs = Set(enabled.map { $0.source.rawValue })
+        XCTAssertFalse(enabledIDs.contains("codex"))
+        XCTAssertFalse(enabledIDs.contains("windsurf"))
+        XCTAssertTrue(enabledIDs.contains("claude-code"), "non-disabled sources must survive the filter")
+        XCTAssertTrue(enabledIDs.contains("gemini-cli"))
+    }
+
     func testInsightAndProjectAliasMutationsAreOwnedByServiceWriterGate() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -3713,6 +3795,11 @@ private func seedSearchFixture(at path: String) throws {
             );
         """)
     }
+}
+
+private func loadSettings(_ url: URL) throws -> [String: Any] {
+    let data = try Data(contentsOf: url)
+    return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
 }
 
 private func fixtureLinkState(

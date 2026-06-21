@@ -40,6 +40,8 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func projectUndo(_ request: EngramServiceProjectUndoRequest) async throws -> EngramServiceProjectMoveResult
     func setFavorite(sessionId: String, favorite: Bool) async throws
     func setSessionHidden(sessionId: String, hidden: Bool) async throws
+    func setSourceEnabled(source: String, enabled: Bool) async throws
+    func disabledSources() async throws -> [String]
     func renameSession(sessionId: String, name: String?) async throws
     func recordSessionAccess(sessionId: String) async throws
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse

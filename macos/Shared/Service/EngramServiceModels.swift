@@ -799,6 +799,20 @@ struct EngramServiceHideEmptySessionsResponse: Codable, Equatable, Sendable {
     let hiddenCount: Int
 }
 
+/// Feature #2 slice B — per-source ingest control. `enabled == false` adds the
+/// source to `disabledSources` (stops ingest + hides its sessions); `true`
+/// removes it (resumes ingest on the next scan + unhides its sessions).
+struct EngramServiceSetSourceEnabledRequest: Codable, Equatable, Sendable {
+    let source: String
+    let enabled: Bool
+}
+
+/// Current per-source ingest opt-out set, so the UI can render toggle state for
+/// every catalog source (including those with zero indexed sessions).
+struct EngramServiceDisabledSourcesResponse: Codable, Equatable, Sendable {
+    let sources: [String]
+}
+
 struct EngramServiceLinkSessionsRequest: Codable, Equatable, Sendable {
     let targetDir: String
     let actor: String?

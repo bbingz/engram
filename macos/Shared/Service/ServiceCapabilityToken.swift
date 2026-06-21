@@ -33,6 +33,7 @@ enum ServiceCapabilityToken {
         "regenerateAllTitles",
         "setFavorite",
         "setSessionHidden",
+        "setSourceEnabled",
         "renameSession",
         "recordSessionAccess",
         "hideEmptySessions",

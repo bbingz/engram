@@ -16,6 +16,7 @@ struct SourcePulseView: View {
     @State private var liveTimer: Timer?
     @State private var liveRefreshTask: Task<Void, Never>? = nil
     @State private var expandedGroups: Set<String> = []
+    @State private var disabledSources: Set<String> = []
 
     private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
     private var archiveStorePath: String { (db.path as NSString).abbreviatingWithTildeInPath }
@@ -143,7 +144,29 @@ struct SourcePulseView: View {
         if let dist = try? await Task.detached(operation: { try db.sourceDistribution() }).value {
             sourceDist = dist
         }
+        // Per-source ingest opt-out state (feature #2 slice B) for toggle render.
+        if let disabled = try? await serviceClient.disabledSources() {
+            disabledSources = Set(disabled)
+        }
         await loadCosts()
+    }
+
+    /// Toggle ingest for a source, then refresh so the list reflects the new
+    /// disabled set, hidden/unhidden counts, and toggle state.
+    private func setSourceEnabled(_ source: String, enabled: Bool) async {
+        do {
+            try await serviceClient.setSourceEnabled(source: source, enabled: enabled)
+            // Optimistic local update so the toggle reflects instantly; loadData
+            // reconciles with the authoritative service set right after.
+            if enabled {
+                disabledSources.remove(source)
+            } else {
+                disabledSources.insert(source)
+            }
+            await loadData()
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     private func loadCosts() async {
@@ -161,19 +184,55 @@ struct SourcePulseView: View {
 
     @ViewBuilder
     private func sourceRow(_ row: SourceRow) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            switch row {
-            case let .detected(source):
-                detectedRow(source)
-            case let .catalogOnly(entry):
-                catalogOnlyRow(entry)
+        let isDisabled = disabledSources.contains(row.id)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                switch row {
+                case let .detected(source):
+                    detectedRow(source)
+                case let .catalogOnly(entry):
+                    catalogOnlyRow(entry)
+                }
             }
+            .opacity(isDisabled ? 0.5 : 1)
+            sourceIngestToggle(sourceID: row.id, isDisabled: isDisabled)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Theme.surface)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Per-source ingest control (feature #2 slice B). Disabling stops indexing
+    /// the source and hides its existing sessions; enabling reverses both.
+    @ViewBuilder
+    private func sourceIngestToggle(sourceID: String, isDisabled: Bool) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { !isDisabled },
+                    set: { newValue in
+                        Task { await setSourceEnabled(sourceID, enabled: newValue) }
+                    }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .help(isDisabled ? "Indexing disabled — turn on to resume" : "Indexing enabled — turn off to stop and hide")
+            .accessibilityIdentifier("sourcePulse_ingestToggle_\(sourceID)")
+            if isDisabled {
+                Text("DISABLED")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.orange)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.orange.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
     }
 
     @ViewBuilder

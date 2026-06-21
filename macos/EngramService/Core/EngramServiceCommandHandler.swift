@@ -413,6 +413,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+            case "setSourceEnabled":
+                let payload = try decodePayload(EngramServiceSetSourceEnabledRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.setSourceEnabled(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "disabledSources":
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(Self.disabledSources())
+                )
             case "renameSession":
                 let payload = try decodePayload(EngramServiceRenameSessionRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
@@ -868,6 +883,83 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             )
         }
         return EmptyEncodableResult()
+    }
+
+    /// Feature #2 slice B — per-source ingest control (TRUE stop-indexing).
+    ///
+    /// Disabling a source (`enabled == false`) adds it to the `disabledSources`
+    /// array in `~/.engram/settings.json` AND hides its already-indexed sessions.
+    /// Enabling removes it from the array AND unhides its sessions. Re-ingesting
+    /// of NEW sessions resumes on the next service scan, because the adapter
+    /// filter is read at scan time (`EngramServiceRunner.readDisabledSources`),
+    /// not here. Settings are updated read-modify-write so all other keys are
+    /// preserved; the file is created with a minimal object when absent.
+    private static func setSourceEnabled(
+        _ request: EngramServiceSetSourceEnabledRequest,
+        writer: EngramDatabaseWriter,
+        settingsURL: URL = EngramServiceRunner.engramSettingsURL(
+            environment: ProcessInfo.processInfo.environment
+        )
+    ) throws -> EngramServiceLinkResponse {
+        let source = request.source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else {
+            throw EngramServiceError.commandFailed(
+                name: "InvalidSource",
+                message: "source-required",
+                retryPolicy: "never",
+                details: nil
+            )
+        }
+        try updateDisabledSourcesSetting(source: source, enabled: request.enabled, settingsURL: settingsURL)
+        try writer.write { db in
+            if request.enabled {
+                try db.execute(
+                    sql: "UPDATE sessions SET hidden_at = NULL WHERE source = ?",
+                    arguments: [source]
+                )
+            } else {
+                try db.execute(
+                    sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE source = ? AND hidden_at IS NULL",
+                    arguments: [source]
+                )
+            }
+        }
+        return EngramServiceLinkResponse(ok: true, error: nil)
+    }
+
+    /// Read-modify-write the `disabledSources` array, preserving every other key.
+    private static func updateDisabledSourcesSetting(
+        source: String,
+        enabled: Bool,
+        settingsURL: URL
+    ) throws {
+        var object: [String: Any] = [:]
+        if let data = try? Data(contentsOf: settingsURL),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            object = parsed
+        }
+        var disabled = (object["disabledSources"] as? [Any])?
+            .compactMap { $0 as? String } ?? []
+        if enabled {
+            disabled.removeAll { $0 == source }
+        } else if !disabled.contains(source) {
+            disabled.append(source)
+        }
+        object["disabledSources"] = disabled
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: settingsURL, options: [.atomic])
+    }
+
+    /// Current per-source ingest opt-out set (read path, no token required).
+    private static func disabledSources(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> EngramServiceDisabledSourcesResponse {
+        let sources = EngramServiceRunner.readDisabledSources(environment: environment)
+        return EngramServiceDisabledSourcesResponse(sources: sources.sorted())
     }
 
     private static func renameSession(

@@ -217,6 +217,18 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         )
     }
 
+    func setSourceEnabled(source: String, enabled: Bool) async throws {
+        let _: EmptyServiceResult = try await command(
+            "setSourceEnabled",
+            payload: EngramServiceSetSourceEnabledRequest(source: source, enabled: enabled)
+        )
+    }
+
+    func disabledSources() async throws -> [String] {
+        let response: EngramServiceDisabledSourcesResponse = try await command("disabledSources")
+        return response.sources
+    }
+
     func renameSession(sessionId: String, name: String?) async throws {
         let _: EmptyServiceResult = try await command(
             "renameSession",
