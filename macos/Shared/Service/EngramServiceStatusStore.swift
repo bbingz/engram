@@ -34,7 +34,6 @@ final class EngramServiceStatusStore {
     var usageData: [EngramServiceUsageItem] = []
     var endpointHost: String?
     var endpointPort: Int?
-    var embeddingStatus: String?
     var lastEventAt: Date?
 
     var displayString: String {

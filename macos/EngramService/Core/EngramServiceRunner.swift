@@ -72,11 +72,18 @@ public enum EngramServiceRunner {
 
         let statusMonitor = ServiceStatusMonitor()
         let telemetry = ServiceTelemetryCollector()
+        // Sanitized in-process log ring: tee a redacted copy of each service log
+        // line so the gated Observability "Logs" tab is readable (os_log stays
+        // `privacy: .private`). Install BEFORE the server starts so startup lines
+        // are captured.
+        let logRing = ServiceLogRing()
+        ServiceLogger.installRing(logRing)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
             readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath),
             statusMonitor: statusMonitor,
-            telemetry: telemetry
+            telemetry: telemetry,
+            logRing: logRing
         )
         let server = UnixSocketServiceServer(socketPath: socketPath) { request in
             await handler.handle(request)
@@ -418,7 +425,13 @@ public enum EngramServiceRunner {
     ) async {
         let scanClock = ContinuousClock()
         let scanStarted = scanClock.now
-        let defaultAdapters = SessionAdapterFactory.defaultAdapters()
+        // Feature #2 slice B — per-source ingest opt-out. Drop disabled sources
+        // from the indexing adapter list so the service stops ingesting them.
+        // Read once at scan time, so toggling a source resumes/stops ingest on
+        // the next scan. Their existing sessions are hidden by setSourceEnabled.
+        let disabled = readDisabledSources(environment: ProcessInfo.processInfo.environment)
+        let enabledAdapters = SessionAdapterFactory.defaultAdapters()
+            .filter { !disabled.contains($0.source.rawValue) }
         let emitBackfill: (StartupBackfillEvent) -> Void = { event in
             Self.emit(StartupBackfillEventEnvelope(event: event))
         }
@@ -437,7 +450,7 @@ public enum EngramServiceRunner {
         if usageParserBackfillCheck.cancelled { return }
         if usageParserBackfillCheck.failed { failedPhaseCount += 1 }
         let usageParserBackfillNeeded = usageParserBackfillCheck.value ?? false
-        let startupAdapters = defaultAdapters
+        let startupAdapters = enabledAdapters
 
         // Phase 1 — structural backfills, split into THREE gated write
         // commands so the single write gate is RELEASED between them and
@@ -504,7 +517,7 @@ public enum EngramServiceRunner {
                 statusMonitor: statusMonitor
             ) {
                 try await gate.performWriteCommand(name: "initialFtsDrain") { writer in
-                    try await IndexJobRunner(writer: writer, adapters: defaultAdapters)
+                    try await IndexJobRunner(writer: writer, adapters: enabledAdapters)
                         .runRecoverableJobsOnce()
                         .drained
                 }.value
@@ -746,6 +759,35 @@ public enum EngramServiceRunner {
         return false
     }
 
+    /// Reads the per-source ingest opt-out set (feature #2 slice B). A disabled
+    /// source is dropped from the indexing adapter list at scan time, so the
+    /// service stops ingesting it; its existing sessions are hidden separately by
+    /// `setSourceEnabled`. An env override (`ENGRAM_DISABLED_SOURCES`,
+    /// comma-separated source ids) is honored for tests/dev; otherwise the value
+    /// comes from the `disabledSources` JSON string array in
+    /// `~/.engram/settings.json`. Default empty.
+    static func readDisabledSources(
+        environment: [String: String],
+        settingsURL: URL? = nil
+    ) -> Set<String> {
+        let settingsURL = settingsURL ?? engramSettingsURL(environment: environment)
+        if let envValue = environment["ENGRAM_DISABLED_SOURCES"] {
+            return Set(
+                envValue
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            )
+        }
+        guard let data = try? Data(contentsOf: settingsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sources = object["disabledSources"] as? [Any]
+        else {
+            return []
+        }
+        return Set(sources.compactMap { $0 as? String }.filter { !$0.isEmpty })
+    }
+
     /// Reads explicit per-source token limits for local pressure snapshots.
     /// Env JSON wins for tests/dev; otherwise `~/.engram/settings.json` may
     /// contain `usageTokenLimits`.
@@ -771,6 +813,16 @@ public enum EngramServiceRunner {
             .homeDirectoryForCurrentUser
             .appendingPathComponent(".engram", isDirectory: true)
             .appendingPathComponent("settings.json")
+    }
+
+    /// Resolve the settings file, honoring the `ENGRAM_SETTINGS_PATH` env
+    /// override (tests point this at a temp file so per-source toggles can
+    /// round-trip without clobbering the real `~/.engram/settings.json`).
+    static func engramSettingsURL(environment: [String: String]) -> URL {
+        if let override = environment["ENGRAM_SETTINGS_PATH"], !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
+        return defaultEngramSettingsURL()
     }
 
     private static func parseUsageTokenLimitsJSON(_ value: String) -> [String: StartupUsageTokenLimits]? {

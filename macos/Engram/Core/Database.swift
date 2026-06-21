@@ -859,6 +859,31 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    /// Sessions symmetrically "related" to `sessionId` (untyped navigational
+    /// links, distinct from parent/child). The `id IN (...)` join against
+    /// `sessions` filters out dangling relation rows at read time — no cascade
+    /// is needed when a peer session disappears. Returns [] if the optional
+    /// `session_relations` table was never created.
+    func relatedSessions(sessionId: String) throws -> [Session] {
+        try readInBackground { db in
+            let hasTable = try Bool.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_relations'"
+            ) ?? false
+            guard hasTable else { return [] }
+            return try Session.fetchAll(db, sql: """
+                SELECT * FROM sessions
+                WHERE hidden_at IS NULL
+                  AND id IN (
+                    SELECT b_id FROM session_relations WHERE a_id = ?
+                    UNION
+                    SELECT a_id FROM session_relations WHERE b_id = ?
+                  )
+                ORDER BY start_time DESC
+            """, arguments: [sessionId, sessionId])
+        }
+    }
+
     // MARK: - Dashboard Queries
 
     struct KPIStats {

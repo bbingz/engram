@@ -67,12 +67,14 @@ final class SourcesSyncTests: XCTestCase {
         XCTAssertTrue(text.contains("read-only"))
     }
 
-    func testSourcesSettingsCatalogMatchesRegisteredAdapters() throws {
-        let text = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
-        // Added real Claude-Code-derived sources.
+    func testSourceCatalogMatchesRegisteredAdapters() throws {
+        // The static catalog moved out of Settings into SourceCatalog; assert it
+        // there now that Settings only points at Workspace > Sources.
+        let text = try source("macos/Engram/Models/SourceCatalog.swift")
+        // Real Claude-Code-derived sources.
         XCTAssertTrue(text.contains("minimax"))
         XCTAssertTrue(text.contains("lobsterai"))
-        // Removed unregistered sources.
+        // Never re-add unregistered sources.
         XCTAssertFalse(text.contains("OpenClaw"))
         XCTAssertFalse(text.contains("Hermes"))
         XCTAssertFalse(text.contains("openclaw"))

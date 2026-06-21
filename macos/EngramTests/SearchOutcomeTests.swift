@@ -44,4 +44,48 @@ final class SearchOutcomeTests: XCTestCase {
             .failed
         )
     }
+
+    // MARK: - Bool overload (CommandPaletteView session search)
+
+    func testBoolOverloadEmptyQueryIsEmpty() {
+        XCTAssertEqual(
+            SearchOutcome.classify(query: "", isEmptyResults: true, didFail: false),
+            .empty
+        )
+    }
+
+    func testBoolOverloadWhitespaceQueryIsEmpty() {
+        XCTAssertEqual(
+            SearchOutcome.classify(query: "   \n", isEmptyResults: true, didFail: false),
+            .empty
+        )
+    }
+
+    func testBoolOverloadWithResultsIsResults() {
+        XCTAssertEqual(
+            SearchOutcome.classify(query: "swift", isEmptyResults: false, didFail: false),
+            .results
+        )
+    }
+
+    func testBoolOverloadNoResultsNoFailureIsEmpty() {
+        XCTAssertEqual(
+            SearchOutcome.classify(query: "swift", isEmptyResults: true, didFail: false),
+            .empty
+        )
+    }
+
+    func testBoolOverloadDoubleFaultIsFailed() {
+        XCTAssertEqual(
+            SearchOutcome.classify(query: "swift", isEmptyResults: true, didFail: true),
+            .failed
+        )
+    }
+
+    func testBoolOverloadFailureWinsOverStaleResults() {
+        XCTAssertEqual(
+            SearchOutcome.classify(query: "swift", isEmptyResults: false, didFail: true),
+            .failed
+        )
+    }
 }

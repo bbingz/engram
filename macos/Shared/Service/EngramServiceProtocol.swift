@@ -14,10 +14,10 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func insightDetail(id: String) async throws -> EngramServiceInsightInfo?
     func costs() async throws -> EngramServiceCostsResponse
     func telemetry() async throws -> ServiceTelemetrySnapshot
+    func serviceLogs(level: String?, category: String?, limit: Int?) async throws -> ServiceLogSnapshot
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse
     func handoff(_ request: EngramServiceHandoffRequest) async throws -> EngramServiceHandoffResponse
     func replayTimeline(sessionId: String, limit: Int?) async throws -> EngramServiceReplayTimelineResponse
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse
     func saveInsight(_ request: EngramServiceSaveInsightRequest) async throws -> EngramServiceJSONValue
     func deleteInsight(_ request: EngramServiceDeleteInsightRequest) async throws -> EngramServiceJSONValue
@@ -27,6 +27,9 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func clearParentSession(sessionId: String) async throws -> EngramServiceLinkResponse
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse
     func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws
+    func addSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse
+    func removeSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse
+    func relatedSessions(sessionId: String) async throws -> [String]
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse
     func refreshUsage() async throws -> EngramServiceRefreshUsageResponse
     func regenerateAllTitles() async throws -> EngramServiceRegenerateTitlesResponse
@@ -37,6 +40,8 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func projectUndo(_ request: EngramServiceProjectUndoRequest) async throws -> EngramServiceProjectMoveResult
     func setFavorite(sessionId: String, favorite: Bool) async throws
     func setSessionHidden(sessionId: String, hidden: Bool) async throws
+    func setSourceEnabled(source: String, enabled: Bool) async throws
+    func disabledSources() async throws -> [String]
     func renameSession(sessionId: String, name: String?) async throws
     func recordSessionAccess(sessionId: String) async throws
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse

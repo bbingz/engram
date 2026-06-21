@@ -1,63 +1,18 @@
 // macos/Engram/Views/Settings/SourcesSettingsSection.swift
 import SwiftUI
 
-struct DataSourceDef {
-    let name: String
-    let defaultPath: String
-    /// True for cache-only sources (Windsurf/Antigravity) whose adapters run
-    /// with live gRPC sync disabled.
-    var cacheOnly: Bool = false
-
-    /// Display name comes from `SourceColors.longLabel` so the Settings catalog
-    /// stays in sync with the rest of the app's source naming.
-    init(source: String, defaultPath: String, cacheOnly: Bool = false) {
-        self.name = SourceColors.longLabel(for: source)
-        self.defaultPath = defaultPath
-        self.cacheOnly = cacheOnly
-    }
-}
-
-// Mirrors SessionAdapterFactory.defaultAdapters() (17 registered adapters).
-private let dataSources: [DataSourceDef] = [
-    .init(source: "claude-code", defaultPath: "~/.claude/projects"),
-    .init(source: "codex",       defaultPath: "~/.codex/sessions"),
-    .init(source: "minimax",     defaultPath: "~/.claude/projects"),
-    .init(source: "lobsterai",   defaultPath: "~/.claude/projects"),
-    .init(source: "gemini-cli",  defaultPath: "~/.gemini/tmp"),
-    .init(source: "opencode",    defaultPath: "~/.local/share/opencode/opencode.db"),
-    .init(source: "iflow",       defaultPath: "~/.iflow/projects"),
-    .init(source: "qwen",        defaultPath: "~/.qwen/projects"),
-    .init(source: "qoder",       defaultPath: "~/.qoder/projects"),
-    .init(source: "kimi",        defaultPath: "~/.kimi/sessions"),
-    .init(source: "commandcode", defaultPath: "~/.commandcode/projects"),
-    .init(source: "cline",       defaultPath: "~/.cline/data/tasks"),
-    .init(source: "cursor",      defaultPath: "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
-    .init(source: "vscode",      defaultPath: "~/Library/Application Support/Code/User/workspaceStorage"),
-    .init(source: "windsurf",    defaultPath: "~/.codeium/windsurf/daemon", cacheOnly: true),
-    .init(source: "antigravity", defaultPath: "~/.gemini/antigravity-cli/brain", cacheOnly: true),
-    .init(source: "copilot",     defaultPath: "~/.copilot/session-state"),
-]
-
 struct SourcesSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(icon: "folder", title: "Data Sources")
 
-            GroupBox("Detected source paths (read-only)") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Sources are auto-detected and indexed automatically. There is no per-source on/off yet.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    ForEach(dataSources, id: \.name) { ds in
-                        DataSourceRow(def: ds)
-                    }
-                    Text("For live health, search and token coverage, see Workspace > Sources.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.vertical, 4)
+            GroupBox("Data sources (read-only)") {
+                Text("Sources are auto-detected and indexed automatically. The full source catalog — live health, search and token coverage, and undetected sources — lives in Workspace > Sources.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
             }
 
             GroupBox("MCP Client Setup") {
@@ -88,35 +43,6 @@ struct PathExistsIndicator: View {
             .fill(exists ? Color.green : Color.red)
             .frame(width: 8, height: 8)
             .help(exists ? LocalizedStringKey("Path exists") : LocalizedStringKey("Path not found"))
-    }
-}
-
-// MARK: - Data Source Row
-
-struct DataSourceRow: View {
-    let def: DataSourceDef
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(verbatim: def.name)
-                .frame(width: 90, alignment: .leading)
-            Text(verbatim: def.defaultPath)
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-            if def.cacheOnly {
-                Text("Cache only")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.gray)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Theme.gray.opacity(0.14))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .help("Live capture is off for this source; only cached/transcript data is indexed.")
-            }
-            PathExistsIndicator(path: def.defaultPath)
-        }
     }
 }
 

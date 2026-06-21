@@ -24,6 +24,7 @@ struct SessionsPageView: View {
     @State private var replayTarget: Session? = nil
     @State private var renameTarget: Session? = nil
     @State private var renameText = ""
+    @State private var relateTarget: Session? = nil
     @State private var actionStatus: String? = nil
 
     private let timeOptions = ["Today", "This Week", "This Month", "All Time"]
@@ -115,6 +116,7 @@ struct SessionsPageView: View {
                                 onReplay: { replayTarget = $0 },
                                 onConfirmSuggestion: { child in confirmSuggestion(child) },
                                 onDismissSuggestion: { child in dismissSuggestion(child) },
+                                onRelate: { relateTarget = $0 },
                                 onHide: { handlers.setHidden($0, hidden: $0.hiddenAt == nil) },
                                 onRename: { beginRename($0) },
                                 onExportMarkdown: { handlers.export($0, format: "markdown") },
@@ -154,6 +156,16 @@ struct SessionsPageView: View {
                     handlers.rename(target, to: renameText)
                     renameTarget = nil
                 }
+            )
+        }
+        .sheet(item: $relateTarget) { target in
+            // Candidates are deduped server-side via INSERT OR IGNORE, so the
+            // list-card path passes an empty existing set (the detail view, which
+            // already holds the related list, passes the real set).
+            RelatedSessionPicker(
+                source: target,
+                existingRelatedIds: [],
+                onLinked: {}
             )
         }
         // Single id-keyed task: any filter change cancels the in-flight load and

@@ -80,6 +80,13 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("telemetry")
     }
 
+    func serviceLogs(level: String?, category: String?, limit: Int?) async throws -> ServiceLogSnapshot {
+        try await command(
+            "serviceLogs",
+            payload: EngramServiceServiceLogsRequest(level: level, category: category, limit: limit)
+        )
+    }
+
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse {
         try await command("hygiene", payload: EngramServiceHygieneRequest(force: force))
     }
@@ -93,10 +100,6 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
             "replayTimeline",
             payload: EngramServiceReplayTimelineRequest(sessionId: sessionId, limit: limit)
         )
-    }
-
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
-        try await command("embeddingStatus")
     }
 
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse {
@@ -142,6 +145,22 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
                 suggestedParentId: suggestedParentId
             )
         )
+    }
+
+    func addSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
+        try await command("addSessionRelation", payload: EngramServiceRelationRequest(aId: aId, bId: bId))
+    }
+
+    func removeSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
+        try await command("removeSessionRelation", payload: EngramServiceRelationRequest(aId: aId, bId: bId))
+    }
+
+    func relatedSessions(sessionId: String) async throws -> [String] {
+        let response: EngramServiceRelatedSessionsResponse = try await command(
+            "relatedSessions",
+            payload: EngramServiceRelatedSessionsRequest(sessionId: sessionId)
+        )
+        return response.ids
     }
 
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse {
@@ -196,6 +215,18 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
             "setSessionHidden",
             payload: EngramServiceSessionHiddenRequest(sessionId: sessionId, hidden: hidden)
         )
+    }
+
+    func setSourceEnabled(source: String, enabled: Bool) async throws {
+        let _: EmptyServiceResult = try await command(
+            "setSourceEnabled",
+            payload: EngramServiceSetSourceEnabledRequest(source: source, enabled: enabled)
+        )
+    }
+
+    func disabledSources() async throws -> [String] {
+        let response: EngramServiceDisabledSourcesResponse = try await command("disabledSources")
+        return response.sources
     }
 
     func renameSession(sessionId: String, name: String?) async throws {

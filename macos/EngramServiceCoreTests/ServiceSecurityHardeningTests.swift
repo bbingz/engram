@@ -205,6 +205,8 @@ final class ServiceSecurityHardeningTests: XCTestCase {
             "manageProjectAlias",
             "confirmSuggestion",
             "dismissSuggestion",
+            "addSessionRelation",
+            "removeSessionRelation",
             "regenerateAllTitles",
             "projectMove",
             "projectArchive",
@@ -212,6 +214,7 @@ final class ServiceSecurityHardeningTests: XCTestCase {
             "projectMoveBatch",
             "setFavorite",
             "setSessionHidden",
+            "setSourceEnabled",
             "renameSession",
             "hideEmptySessions",
             "linkSessions",
@@ -232,6 +235,64 @@ final class ServiceSecurityHardeningTests: XCTestCase {
             }
             XCTAssertEqual(error.name, "Unauthorized", command)
         }
+    }
+
+    func testSessionRelationMutationsAreTokenProtectedButReadIsNot() {
+        XCTAssertTrue(ServiceCapabilityToken.requiresToken("addSessionRelation"))
+        XCTAssertTrue(ServiceCapabilityToken.requiresToken("removeSessionRelation"))
+        XCTAssertFalse(
+            ServiceCapabilityToken.requiresToken("relatedSessions"),
+            "relatedSessions is a read and must not require a capability token"
+        )
+    }
+
+    func testSetSourceEnabledIsTokenProtectedButDisabledSourcesReadIsNot() {
+        XCTAssertTrue(
+            ServiceCapabilityToken.requiresToken("setSourceEnabled"),
+            "setSourceEnabled mutates ingest state + hides sessions and must require a token"
+        )
+        XCTAssertFalse(
+            ServiceCapabilityToken.requiresToken("disabledSources"),
+            "disabledSources is a read and must not require a capability token"
+        )
+    }
+
+    func testRelatedSessionsReadSucceedsWithoutCapabilityToken() async throws {
+        let paths = try makePaths()
+        try seedProjectFixture(at: paths.database.path, src: "/tmp")
+        // The service read pool enforces WAL (readerConfiguration); seed it so the
+        // read path can open the DB.
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+        }
+        let queue = try DatabaseQueue(path: paths.database.path, configuration: configuration)
+        try await queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO sessions (id, source, start_time, file_path, indexed_at) VALUES ('s1','codex','t','/tmp/s1','t')"
+            )
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        // Talk to the transport with an explicit envelope carrying NO token; a
+        // read command must still be served (returns empty, table absent).
+        let transport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        let request = EngramServiceRequestEnvelope(
+            command: "relatedSessions",
+            payload: try JSONEncoder().encode(EngramServiceRelatedSessionsRequest(sessionId: "s1"))
+        )
+        let response = try await transport.send(request, timeout: 2)
+        guard case .success(_, let data, _) = response else {
+            return XCTFail("relatedSessions read should succeed without a token")
+        }
+        let decoded = try JSONDecoder().decode(EngramServiceRelatedSessionsResponse.self, from: data)
+        XCTAssertEqual(decoded.ids, [])
     }
 
     func testCapabilityTokenFileIsWrittenWithOwnerOnlyPermissions() throws {

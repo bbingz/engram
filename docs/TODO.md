@@ -5,29 +5,35 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
 
 ## Open
 
-Deferred follow-ups from the 2026-06-15 UX-flow alignment review (PR #74) —
-intentionally scoped out of that PR, not regressions:
-
-- **Readable gated-Observability logs.** WP17's blanket `privacy: .public`
-  redaction was reverted to `.private` (no system-log leak). The follow-up is a
-  sanitized in-process log buffer so the gated Observability page can show
-  readable recent logs without exposing message bodies to other processes.
-- **Sources page consolidation.** Finish unifying the Sources surface (status,
-  health, per-source ingest controls) rather than the current partial view.
-- **Manual arbitrary `linkSessions`.** Allow linking sessions beyond the
-  detected parent/child relationships.
-- **Orphaned `embeddingStatus()` cleanup.** Remove the dead embedding-status
-  path — the Swift product search is keyword-only (no embedding provider wired).
-
-Low-priority UX follow-ups (also fit `docs/followups.md`):
-
-- **Favorite toggle from browse.** Toggle favorite directly from list/browse
-  rows, not only from session detail.
-- **Command-palette no-results state.** Explicit empty/fail state in the `⌘K`
-  palette search.
-- **Cost/usage notifications.** Monthly-budget and long-session notify.
+No open TODO items as of 2026-06-21. All 2026-06-15 UX-flow-alignment (PR #74)
+follow-ups are resolved — see "Closed in cleanup".
 
 ## Closed in cleanup
+
+Implemented on 2026-06-21 (branch `feat/backlog-5-followups`):
+
+- **Readable gated-Observability logs.** Sanitized in-process log ring
+  (`ServiceLogRing` + `ServiceLogSanitizer`) teed from `ServiceLogger`, exposed
+  over IPC (`serviceLogs`); `LogStreamView` reads service lines via IPC while
+  `os_log` stays `.private`.
+- **Sources page consolidation.** `SourcePulseView` is the single Sources
+  surface (shared `SourceCatalog` overlaid on live rows) plus per-source ingest
+  stop (`setSourceEnabled`/`disabledSources`, adapter filter in `runInitialScan`,
+  hide/unhide existing sessions).
+- **Manual arbitrary related sessions.** Symmetric `session_relations` +
+  `addSessionRelation`/`removeSessionRelation`/`relatedSessions` IPC + a detail
+  section and list context menu (distinct from parent/child).
+- **Orphaned `embeddingStatus()` cleanup.** Dead IPC command removed end-to-end.
+- **Command-palette no-results state.** `SearchOutcome`-driven failed-vs-empty
+  distinction in the `⌘K` palette.
+
+Retired on 2026-06-21 — already shipped, confirmed against current main:
+
+- **Favorite toggle from browse.** Shipped with PR #74: session actions incl.
+  favorite on the browse pages (`ExpandableSessionCard.onToggleFavorite`).
+- **Cost/usage notifications.** Shipped: monthly-budget + long-session notify
+  in `SettingsView` (`monthlyBudget`, `notifyOnLongSession`) — the cost
+  dashboard's budget notifier.
 
 The previous cleanup TODO items were completed and verified:
 

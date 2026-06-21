@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import Darwin
 import Foundation
+import EngramCoreRead
 import EngramCoreWrite
 @testable import EngramServiceCore
 
@@ -82,7 +83,7 @@ final class EngramServiceIPCTests: XCTestCase {
     func testSQLiteReplayTimelineDoesNotDelegateToEmptyFileSystemStub() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceReadProvider.swift")
         let start = try XCTUnwrap(source.range(of: "func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse", options: [], range: source.range(of: "struct SQLiteEngramServiceReadProvider")!.lowerBound..<source.endIndex))
-        let end = try XCTUnwrap(source.range(of: "func embeddingStatus()", options: [], range: start.lowerBound..<source.endIndex))
+        let end = try XCTUnwrap(source.range(of: "func resumeCommand(", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertFalse(body.contains("fileSystemProvider.replayTimeline"))
@@ -162,6 +163,61 @@ final class EngramServiceIPCTests: XCTestCase {
         }
         XCTAssertEqual(row?["access_count"] as Int?, 2)
         XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
+    }
+
+    func testSessionRelationRoundTripIsSymmetricIdempotentAndRemovable() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        // No relations yet (table not even created): read returns empty.
+        let before = try await client.relatedSessions(sessionId: "s1")
+        XCTAssertEqual(before, [])
+
+        // add(s2, s1) — order reversed from a<b normalization on purpose.
+        let added = try await client.addSessionRelation(aId: "s2", bId: "s1")
+        XCTAssertTrue(added.ok)
+
+        // Symmetric: each side sees the other.
+        let s1Related = try await client.relatedSessions(sessionId: "s1")
+        XCTAssertEqual(s1Related, ["s2"])
+        let s2Related = try await client.relatedSessions(sessionId: "s2")
+        XCTAssertEqual(s2Related, ["s1"])
+
+        // Idempotent: a duplicate add (either order) yields exactly one row.
+        let dup = try await client.addSessionRelation(aId: "s1", bId: "s2")
+        XCTAssertTrue(dup.ok)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let rowCount = try await queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_relations") ?? -1
+        }
+        XCTAssertEqual(rowCount, 1)
+
+        // Self-link rejected.
+        let selfLink = try await client.addSessionRelation(aId: "s1", bId: "s1")
+        XCTAssertFalse(selfLink.ok)
+        XCTAssertEqual(selfLink.error, "self-link")
+
+        // Nonexistent session rejected.
+        let missing = try await client.addSessionRelation(aId: "s1", bId: "does-not-exist")
+        XCTAssertFalse(missing.ok)
+        XCTAssertEqual(missing.error, "session-not-found")
+
+        // remove clears it (either order resolves to the same row).
+        let removed = try await client.removeSessionRelation(aId: "s2", bId: "s1")
+        XCTAssertTrue(removed.ok)
+        let s1After = try await client.relatedSessions(sessionId: "s1")
+        XCTAssertEqual(s1After, [])
+        let s2After = try await client.relatedSessions(sessionId: "s2")
+        XCTAssertEqual(s2After, [])
     }
 
     func testSecondUnixSocketServerStartDoesNotRewriteCapabilityToken() throws {
@@ -638,11 +694,14 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(geminiApply.contains("GeminiProjectsJSON.apply(plan: plan)"))
     }
 
-    func testRunnerStartupScanUsesAllAdapters() throws {
+    func testRunnerStartupScanUsesAllEnabledAdapters() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
 
-        XCTAssertTrue(source.contains("let defaultAdapters = SessionAdapterFactory.defaultAdapters()"))
-        XCTAssertTrue(source.contains("let startupAdapters = defaultAdapters"))
+        // Feature #2 slice B — startup ingests every adapter EXCEPT user-disabled
+        // sources, which are filtered out of defaultAdapters() at scan time.
+        XCTAssertTrue(source.contains("SessionAdapterFactory.defaultAdapters()"))
+        XCTAssertTrue(source.contains("!disabled.contains($0.source.rawValue)"))
+        XCTAssertTrue(source.contains("let startupAdapters = enabledAdapters"))
         XCTAssertFalse(
             source.contains(": SessionAdapterFactory.recentActiveAdapters()"),
             "startup scan must not skip sessions solely because they are older than the recent-active window"
@@ -726,7 +785,7 @@ final class EngramServiceIPCTests: XCTestCase {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillCheck")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.needsBackfill"))
-        XCTAssertTrue(source.contains("let startupAdapters = defaultAdapters"))
+        XCTAssertTrue(source.contains("let startupAdapters = enabledAdapters"))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillMark")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.markComplete"))
     }
@@ -1180,7 +1239,6 @@ final class EngramServiceIPCTests: XCTestCase {
         let memory = try await client.memoryFiles()
         let hooks = try await client.hooks()
         let replay = try await client.replayTimeline(sessionId: "session-1", limit: 25)
-        let embedding = try await client.embeddingStatus()
 
         XCTAssertEqual(health.status, "healthy")
         XCTAssertEqual(live.count, 0)
@@ -1189,10 +1247,9 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(memory, [])
         XCTAssertEqual(hooks, [])
         XCTAssertEqual(replay.sessionId, "session-1")
-        XCTAssertFalse(embedding.available)
     }
 
-    func testSQLiteReadProviderServesSearchSourcesAndEmbeddingStatus() async throws {
+    func testSQLiteReadProviderServesSearchAndSources() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -1225,12 +1282,6 @@ final class EngramServiceIPCTests: XCTestCase {
                 healthStatus: "healthy"
             )
         ])
-
-        let embedding = try await client.embeddingStatus()
-        XCTAssertTrue(embedding.available)
-        XCTAssertEqual(embedding.embeddedCount, 1)
-        XCTAssertEqual(embedding.totalSessions, 2)
-        XCTAssertEqual(embedding.progress, 50)
     }
 
     func testSQLiteReadProviderSourcesExposeArchiveHealthFacts() async throws {
@@ -1682,10 +1733,8 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let second = try await provider.sources()
         XCTAssertEqual(second, first)
-        let embedding = try await provider.embeddingStatus()
-        XCTAssertTrue(embedding.available)
         XCTAssertEqual(factory.makeCount, 1)
-        XCTAssertEqual(factory.reader?.readCount, 3)
+        XCTAssertEqual(factory.reader?.readCount, 2)
     }
 
     func testSQLiteReadProviderBuildsResumeCommand() async throws {
@@ -3129,6 +3178,84 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testSetSourceEnabledTogglesIngestHidesSessionsAndPreservesSettings() async throws {
+        // Feature #2 slice B round-trip via a temp settings.json. ENGRAM_SETTINGS_PATH
+        // points both the write (RMW) and read (disabledSources) paths at the temp file.
+        let settingsURL = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let seed: [String: Any] = ["webUIEnabled": true, "aiModel": "gpt-4o-mini"]
+        let seedData = try JSONSerialization.data(withJSONObject: seed)
+        try seedData.write(to: settingsURL)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            unsetenv("ENGRAM_SETTINGS_PATH")
+            try? FileManager.default.removeItem(at: settingsURL)
+        }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        // DISABLE codex (the seed fixture's only source): disabledSources contains
+        // it and its sessions are hidden.
+        try await client.setSourceEnabled(source: "codex", enabled: false)
+        let afterDisable = try await client.disabledSources()
+        XCTAssertTrue(afterDisable.contains("codex"))
+
+        let hiddenCount = try await queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE source = 'codex' AND hidden_at IS NOT NULL") ?? 0
+        }
+        XCTAssertEqual(hiddenCount, 2, "both seeded codex sessions must be hidden on disable")
+
+        // RMW preserved the pre-existing unrelated keys.
+        let preservedAfterDisable = try loadSettings(settingsURL)
+        XCTAssertEqual(preservedAfterDisable["webUIEnabled"] as? Bool, true)
+        XCTAssertEqual(preservedAfterDisable["aiModel"] as? String, "gpt-4o-mini")
+        XCTAssertEqual(preservedAfterDisable["disabledSources"] as? [String], ["codex"])
+
+        // ENABLE codex: removed from disabledSources and sessions unhidden.
+        try await client.setSourceEnabled(source: "codex", enabled: true)
+        let afterEnable = try await client.disabledSources()
+        XCTAssertFalse(afterEnable.contains("codex"))
+
+        let stillHidden = try await queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE source = 'codex' AND hidden_at IS NOT NULL") ?? 0
+        }
+        XCTAssertEqual(stillHidden, 0, "enabling must unhide the source's sessions")
+
+        let preservedAfterEnable = try loadSettings(settingsURL)
+        XCTAssertEqual(preservedAfterEnable["webUIEnabled"] as? Bool, true)
+        XCTAssertEqual(preservedAfterEnable["aiModel"] as? String, "gpt-4o-mini")
+        XCTAssertEqual(preservedAfterEnable["disabledSources"] as? [String], [])
+    }
+
+    func testReadDisabledSourcesFiltersAdapterListWithoutAffectingOthers() {
+        // ENGRAM_DISABLED_SOURCES env override drives readDisabledSources; the
+        // filtered adapter list drops only the disabled source.
+        let disabled = EngramServiceRunner.readDisabledSources(
+            environment: ["ENGRAM_DISABLED_SOURCES": "codex, windsurf"]
+        )
+        XCTAssertEqual(disabled, ["codex", "windsurf"])
+
+        let all = SessionAdapterFactory.defaultAdapters()
+        let enabled = all.filter { !disabled.contains($0.source.rawValue) }
+        XCTAssertEqual(enabled.count, all.count - 2)
+        let enabledIDs = Set(enabled.map { $0.source.rawValue })
+        XCTAssertFalse(enabledIDs.contains("codex"))
+        XCTAssertFalse(enabledIDs.contains("windsurf"))
+        XCTAssertTrue(enabledIDs.contains("claude-code"), "non-disabled sources must survive the filter")
+        XCTAssertTrue(enabledIDs.contains("gemini-cli"))
+    }
+
     func testInsightAndProjectAliasMutationsAreOwnedByServiceWriterGate() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -3668,6 +3795,11 @@ private func seedSearchFixture(at path: String) throws {
             );
         """)
     }
+}
+
+private func loadSettings(_ url: URL) throws -> [String: Any] {
+    let data = try Data(contentsOf: url)
+    return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
 }
 
 private func fixtureLinkState(

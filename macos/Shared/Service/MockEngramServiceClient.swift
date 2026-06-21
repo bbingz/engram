@@ -17,10 +17,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let insightDetailResult: Result<EngramServiceInsightInfo?, Error>
     let costsResult: Result<EngramServiceCostsResponse, Error>
     let telemetryResult: Result<ServiceTelemetrySnapshot, Error>
+    let serviceLogsResult: Result<ServiceLogSnapshot, Error>
     let hygieneResult: Result<EngramServiceHygieneResponse, Error>
     let handoffResult: Result<EngramServiceHandoffResponse, Error>
     let replayTimelineResult: Result<EngramServiceReplayTimelineResponse, Error>
-    let embeddingStatusResult: Result<EngramServiceEmbeddingStatusResponse, Error>
     let generateSummaryResult: Result<EngramServiceGenerateSummaryResponse, Error>
     let saveInsightResult: Result<EngramServiceJSONValue, Error>
     let deleteInsightResult: Result<EngramServiceJSONValue, Error>
@@ -30,6 +30,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let clearParentSessionResult: Result<EngramServiceLinkResponse, Error>
     let confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
     let dismissSuggestionResult: Result<Void, Error>
+    let addSessionRelationResult: Result<EngramServiceLinkResponse, Error>
+    let removeSessionRelationResult: Result<EngramServiceLinkResponse, Error>
+    let relatedSessionsResult: Result<[String], Error>
     let triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
     let refreshUsageResult: Result<EngramServiceRefreshUsageResponse, Error>
     let regenerateAllTitlesResult: Result<EngramServiceRegenerateTitlesResponse, Error>
@@ -40,6 +43,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let projectUndoResult: Result<EngramServiceProjectMoveResult, Error>
     let setFavoriteResult: Result<Void, Error>
     let setSessionHiddenResult: Result<Void, Error>
+    let setSourceEnabledResult: Result<Void, Error>
+    let disabledSourcesResult: Result<[String], Error>
     let renameSessionResult: Result<Void, Error>
     let recordSessionAccessResult: Result<Void, Error>
     let hideEmptySessionsResult: Result<EngramServiceHideEmptySessionsResponse, Error>
@@ -61,10 +66,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         insightDetail: EngramServiceInsightInfo? = nil,
         costs: EngramServiceCostsResponse = EngramServiceCostsResponse(totalUsd: 0, perSource: [], perDay: [], monthToDateUsd: 0, todayUsd: 0),
         telemetry: ServiceTelemetrySnapshot = ServiceTelemetrySnapshot(lastScanDurationMs: nil, lastScanIndexed: 0, lastScanTotal: 0, scanCount: 0, lastScanAt: nil, commands: [], spans: []),
+        serviceLogs: ServiceLogSnapshot = ServiceLogSnapshot(lines: []),
         hygiene: EngramServiceHygieneResponse = EngramServiceHygieneResponse(issues: [], score: 100, checkedAt: "2026-01-01T00:00:00Z"),
         handoff: EngramServiceHandoffResponse = EngramServiceHandoffResponse(brief: "## Handoff\n\nNo recent sessions found.", sessionCount: 0),
         replayTimeline: EngramServiceReplayTimelineResponse = EngramServiceReplayTimelineResponse(sessionId: nil, source: nil, entries: [], totalEntries: 0, hasMore: false, offset: nil, limit: nil),
-        embeddingStatus: EngramServiceEmbeddingStatusResponse = EngramServiceEmbeddingStatusResponse(available: false, model: nil, embeddedCount: 0, totalSessions: 0, progress: 0),
         generateSummary: EngramServiceGenerateSummaryResponse = EngramServiceGenerateSummaryResponse(summary: "Mock summary"),
         saveInsight: EngramServiceJSONValue = .object(["id": .string("mock-insight")]),
         deleteInsight: EngramServiceJSONValue = .object(["id": .string("mock-insight"), "deleted": .bool(true)]),
@@ -78,6 +83,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         setParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         clearParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         confirmSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        addSessionRelation: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        removeSessionRelation: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        relatedSessions: [String] = [],
         triggerSync: EngramServiceTriggerSyncResponse = EngramServiceTriggerSyncResponse(results: []),
         refreshUsage: EngramServiceRefreshUsageResponse = EngramServiceRefreshUsageResponse(snapshotCount: 0, sources: []),
         regenerateAllTitles: EngramServiceRegenerateTitlesResponse = EngramServiceRegenerateTitlesResponse(
@@ -96,6 +104,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
             format: "markdown",
             messageCount: 0
         ),
+        disabledSources: [String] = [],
         events: AsyncThrowingStream<EngramServiceEvent, Error> = AsyncThrowingStream { $0.finish() }
     ) {
         self.statusResult = statusResult ?? .success(status)
@@ -111,10 +120,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.insightDetailResult = .success(insightDetail)
         self.costsResult = .success(costs)
         self.telemetryResult = .success(telemetry)
+        self.serviceLogsResult = .success(serviceLogs)
         self.hygieneResult = .success(hygiene)
         self.handoffResult = .success(handoff)
         self.replayTimelineResult = .success(replayTimeline)
-        self.embeddingStatusResult = .success(embeddingStatus)
         self.generateSummaryResult = .success(generateSummary)
         self.saveInsightResult = .success(saveInsight)
         self.deleteInsightResult = .success(deleteInsight)
@@ -124,6 +133,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.clearParentSessionResult = .success(clearParentSession)
         self.confirmSuggestionResult = .success(confirmSuggestion)
         self.dismissSuggestionResult = .success(())
+        self.addSessionRelationResult = .success(addSessionRelation)
+        self.removeSessionRelationResult = .success(removeSessionRelation)
+        self.relatedSessionsResult = .success(relatedSessions)
         self.triggerSyncResult = .success(triggerSync)
         self.refreshUsageResult = .success(refreshUsage)
         self.regenerateAllTitlesResult = .success(regenerateAllTitles)
@@ -134,6 +146,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.projectUndoResult = .success(projectUndo)
         self.setFavoriteResult = .success(())
         self.setSessionHiddenResult = .success(())
+        self.setSourceEnabledResult = .success(())
+        self.disabledSourcesResult = .success(disabledSources)
         self.renameSessionResult = .success(())
         self.recordSessionAccessResult = .success(())
         self.hideEmptySessionsResult = .success(hideEmptySessions)
@@ -171,6 +185,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func telemetry() async throws -> ServiceTelemetrySnapshot { try telemetryResult.get() }
 
+    func serviceLogs(level: String?, category: String?, limit: Int?) async throws -> ServiceLogSnapshot {
+        try serviceLogsResult.get()
+    }
+
     func hygiene(force: Bool) async throws -> EngramServiceHygieneResponse { try hygieneResult.get() }
 
     func handoff(_ request: EngramServiceHandoffRequest) async throws -> EngramServiceHandoffResponse {
@@ -179,10 +197,6 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func replayTimeline(sessionId: String, limit: Int?) async throws -> EngramServiceReplayTimelineResponse {
         try replayTimelineResult.get()
-    }
-
-    func embeddingStatus() async throws -> EngramServiceEmbeddingStatusResponse {
-        try embeddingStatusResult.get()
     }
 
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse {
@@ -219,6 +233,18 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws {
         _ = try dismissSuggestionResult.get()
+    }
+
+    func addSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
+        try addSessionRelationResult.get()
+    }
+
+    func removeSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
+        try removeSessionRelationResult.get()
+    }
+
+    func relatedSessions(sessionId: String) async throws -> [String] {
+        try relatedSessionsResult.get()
     }
 
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse {
@@ -259,6 +285,14 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func setSessionHidden(sessionId: String, hidden: Bool) async throws {
         _ = try setSessionHiddenResult.get()
+    }
+
+    func setSourceEnabled(source: String, enabled: Bool) async throws {
+        _ = try setSourceEnabledResult.get()
+    }
+
+    func disabledSources() async throws -> [String] {
+        try disabledSourcesResult.get()
     }
 
     func renameSession(sessionId: String, name: String?) async throws {

@@ -11,15 +11,17 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
     private let telemetry: ServiceTelemetryCollector?
+    private let logRing: ServiceLogRing?
     private let usageNow: @Sendable () -> Date
     private let usageTokenLimitsProvider: @Sendable () -> [String: StartupUsageTokenLimits]
     private let usageEmitter: @Sendable ([StartupUsageSnapshot]) -> Void
 
     /// Commands excluded from telemetry span recording: `status` is a poll the
     /// app/launcher fires continuously (would drown out real signal), `telemetry`
-    /// reads the collector itself (self-noise), and `costs` is the menu-bar
-    /// budget poll that fires on a timer (would fill the 200-span ring buffer).
-    private static let telemetryExcludedCommands: Set<String> = ["status", "telemetry", "costs"]
+    /// reads the collector itself (self-noise), `costs` is the menu-bar budget
+    /// poll that fires on a timer (would fill the 200-span ring buffer), and
+    /// `serviceLogs` reads the log ring (self-noise + Observability polls it).
+    private static let telemetryExcludedCommands: Set<String> = ["status", "telemetry", "costs", "serviceLogs"]
 
     private static let emptyTelemetrySnapshot = ServiceTelemetrySnapshot(
         lastScanDurationMs: nil,
@@ -31,11 +33,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         spans: []
     )
 
+    private static let emptyLogSnapshot = ServiceLogSnapshot(lines: [])
+
     init(
         writerGate: ServiceWriterGate,
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
         statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor(),
         telemetry: ServiceTelemetryCollector? = nil,
+        logRing: ServiceLogRing? = nil,
         usageNow: @escaping @Sendable () -> Date = { Date() },
         usageTokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits] = {
             EngramServiceRunner.readUsageTokenLimits(environment: ProcessInfo.processInfo.environment)
@@ -48,6 +53,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.readProvider = readProvider
         self.statusMonitor = statusMonitor
         self.telemetry = telemetry
+        self.logRing = logRing
         self.usageNow = usageNow
         self.usageTokenLimitsProvider = usageTokenLimitsProvider
         self.usageEmitter = usageEmitter
@@ -157,6 +163,20 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(await (telemetry?.snapshot() ?? Self.emptyTelemetrySnapshot))
                 )
+            case "serviceLogs":
+                // READ command: returns the sanitized in-process log ring. No
+                // capability token (it never mutates state); the ring sanitizes
+                // every line before storage so this surfaces no raw paths/ids.
+                let payload = try? decodePayload(EngramServiceServiceLogsRequest.self, from: request)
+                let snapshot = await logRing?.snapshot(
+                    level: payload?.level,
+                    category: payload?.category,
+                    limit: payload?.limit
+                ) ?? Self.emptyLogSnapshot
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(snapshot)
+                )
             case "hygiene":
                 let payload = try decodePayload(EngramServiceHygieneRequest.self, from: request)
                 return .success(
@@ -174,11 +194,6 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(try await readProvider.replayTimeline(payload))
-                )
-            case "embeddingStatus":
-                return .success(
-                    requestId: request.requestId,
-                    result: try Self.encode(try await readProvider.embeddingStatus())
                 )
             case "generateSummary":
                 let payload = try decodePayload(EngramServiceGenerateSummaryRequest.self, from: request)
@@ -263,6 +278,34 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
+                )
+            case "addSessionRelation":
+                let payload = try decodePayload(EngramServiceRelationRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.addSessionRelation(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "removeSessionRelation":
+                let payload = try decodePayload(EngramServiceRelationRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.removeSessionRelation(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "relatedSessions":
+                let payload = try decodePayload(EngramServiceRelatedSessionsRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(
+                        try Self.relatedSessions(payload, databasePath: writerGate.databasePath)
+                    )
                 )
             case "projectMigrations":
                 let payload = try decodePayload(EngramServiceProjectMigrationsRequest.self, from: request)
@@ -369,6 +412,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
+                )
+            case "setSourceEnabled":
+                let payload = try decodePayload(EngramServiceSetSourceEnabledRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.setSourceEnabled(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "disabledSources":
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(Self.disabledSources())
                 )
             case "renameSession":
                 let payload = try decodePayload(EngramServiceRenameSessionRequest.self, from: request)
@@ -687,6 +745,90 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return EmptyEncodableResult()
     }
 
+    /// Symmetric, untyped "related" link. Normalizes the pair to a_id < b_id so
+    /// either order maps to one row (dedup-safe). Validates both sessions exist
+    /// and rejects self-links. Navigational only — no tier/grouping/count impact.
+    private static func addSessionRelation(
+        _ request: EngramServiceRelationRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EngramServiceLinkResponse {
+        guard request.aId != request.bId else {
+            return EngramServiceLinkResponse(ok: false, error: "self-link")
+        }
+        let (low, high) = request.aId < request.bId
+            ? (request.aId, request.bId)
+            : (request.bId, request.aId)
+        return try writer.write { db in
+            try ensureSessionRelationsTable(db)
+            for id in [low, high] {
+                guard try Row.fetchOne(db, sql: "SELECT id FROM sessions WHERE id = ?", arguments: [id]) != nil else {
+                    return EngramServiceLinkResponse(ok: false, error: "session-not-found")
+                }
+            }
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO session_relations (a_id, b_id) VALUES (?, ?)",
+                arguments: [low, high]
+            )
+            return EngramServiceLinkResponse(ok: true, error: nil)
+        }
+    }
+
+    private static func removeSessionRelation(
+        _ request: EngramServiceRelationRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EngramServiceLinkResponse {
+        let (low, high) = request.aId < request.bId
+            ? (request.aId, request.bId)
+            : (request.bId, request.aId)
+        return try writer.write { db in
+            try ensureSessionRelationsTable(db)
+            try db.execute(
+                sql: "DELETE FROM session_relations WHERE a_id = ? AND b_id = ?",
+                arguments: [low, high]
+            )
+            return EngramServiceLinkResponse(ok: true, error: nil)
+        }
+    }
+
+    /// Read-only: ids related to `sessionId` in either direction. The IN-join is
+    /// against `sessions` at read time on the app side, so dangling rows (where a
+    /// peer no longer exists) are filtered out naturally there; here we just
+    /// return the stored peer ids. Returns [] if the table was never created.
+    static func relatedSessions(
+        _ request: EngramServiceRelatedSessionsRequest,
+        databasePath: String
+    ) throws -> EngramServiceRelatedSessionsResponse {
+        let pool = try readOnlyPool(path: databasePath)
+        let ids = try pool.read { db -> [String] in
+            let exists = try Bool.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_relations'"
+            ) ?? false
+            guard exists else { return [] }
+            return try String.fetchAll(
+                db,
+                sql: """
+                    SELECT b_id FROM session_relations WHERE a_id = ?
+                    UNION
+                    SELECT a_id FROM session_relations WHERE b_id = ?
+                """,
+                arguments: [request.sessionId, request.sessionId]
+            )
+        }
+        return EngramServiceRelatedSessionsResponse(ids: ids)
+    }
+
+    private static func ensureSessionRelationsTable(_ db: GRDB.Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS session_relations (
+                a_id TEXT NOT NULL,
+                b_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (a_id, b_id)
+            );
+        """)
+    }
+
     private static func setFavorite(
         _ request: EngramServiceFavoriteRequest,
         writer: EngramDatabaseWriter
@@ -741,6 +883,83 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             )
         }
         return EmptyEncodableResult()
+    }
+
+    /// Feature #2 slice B — per-source ingest control (TRUE stop-indexing).
+    ///
+    /// Disabling a source (`enabled == false`) adds it to the `disabledSources`
+    /// array in `~/.engram/settings.json` AND hides its already-indexed sessions.
+    /// Enabling removes it from the array AND unhides its sessions. Re-ingesting
+    /// of NEW sessions resumes on the next service scan, because the adapter
+    /// filter is read at scan time (`EngramServiceRunner.readDisabledSources`),
+    /// not here. Settings are updated read-modify-write so all other keys are
+    /// preserved; the file is created with a minimal object when absent.
+    private static func setSourceEnabled(
+        _ request: EngramServiceSetSourceEnabledRequest,
+        writer: EngramDatabaseWriter,
+        settingsURL: URL = EngramServiceRunner.engramSettingsURL(
+            environment: ProcessInfo.processInfo.environment
+        )
+    ) throws -> EngramServiceLinkResponse {
+        let source = request.source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else {
+            throw EngramServiceError.commandFailed(
+                name: "InvalidSource",
+                message: "source-required",
+                retryPolicy: "never",
+                details: nil
+            )
+        }
+        try updateDisabledSourcesSetting(source: source, enabled: request.enabled, settingsURL: settingsURL)
+        try writer.write { db in
+            if request.enabled {
+                try db.execute(
+                    sql: "UPDATE sessions SET hidden_at = NULL WHERE source = ?",
+                    arguments: [source]
+                )
+            } else {
+                try db.execute(
+                    sql: "UPDATE sessions SET hidden_at = datetime('now') WHERE source = ? AND hidden_at IS NULL",
+                    arguments: [source]
+                )
+            }
+        }
+        return EngramServiceLinkResponse(ok: true, error: nil)
+    }
+
+    /// Read-modify-write the `disabledSources` array, preserving every other key.
+    private static func updateDisabledSourcesSetting(
+        source: String,
+        enabled: Bool,
+        settingsURL: URL
+    ) throws {
+        var object: [String: Any] = [:]
+        if let data = try? Data(contentsOf: settingsURL),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            object = parsed
+        }
+        var disabled = (object["disabledSources"] as? [Any])?
+            .compactMap { $0 as? String } ?? []
+        if enabled {
+            disabled.removeAll { $0 == source }
+        } else if !disabled.contains(source) {
+            disabled.append(source)
+        }
+        object["disabledSources"] = disabled
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: settingsURL, options: [.atomic])
+    }
+
+    /// Current per-source ingest opt-out set (read path, no token required).
+    private static func disabledSources(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> EngramServiceDisabledSourcesResponse {
+        let sources = EngramServiceRunner.readDisabledSources(environment: environment)
+        return EngramServiceDisabledSourcesResponse(sources: sources.sorted())
     }
 
     private static func renameSession(

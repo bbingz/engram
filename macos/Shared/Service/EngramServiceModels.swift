@@ -718,14 +718,6 @@ struct EngramServiceReplayTimelineResponse: Codable, Equatable, Sendable {
     let limit: Int?
 }
 
-struct EngramServiceEmbeddingStatusResponse: Codable, Equatable, Sendable {
-    let available: Bool
-    let model: String?
-    let embeddedCount: Int
-    let totalSessions: Int
-    let progress: Int
-}
-
 struct EngramServiceGenerateSummaryRequest: Codable, Equatable, Sendable {
     let sessionId: String
 }
@@ -805,6 +797,20 @@ struct EngramServiceSessionAccessRequest: Codable, Equatable, Sendable {
 
 struct EngramServiceHideEmptySessionsResponse: Codable, Equatable, Sendable {
     let hiddenCount: Int
+}
+
+/// Feature #2 slice B — per-source ingest control. `enabled == false` adds the
+/// source to `disabledSources` (stops ingest + hides its sessions); `true`
+/// removes it (resumes ingest on the next scan + unhides its sessions).
+struct EngramServiceSetSourceEnabledRequest: Codable, Equatable, Sendable {
+    let source: String
+    let enabled: Bool
+}
+
+/// Current per-source ingest opt-out set, so the UI can render toggle state for
+/// every catalog source (including those with zero indexed sessions).
+struct EngramServiceDisabledSourcesResponse: Codable, Equatable, Sendable {
+    let sources: [String]
 }
 
 struct EngramServiceLinkSessionsRequest: Codable, Equatable, Sendable {
@@ -899,6 +905,22 @@ struct EngramServiceDismissSuggestionRequest: Codable, Equatable, Sendable {
 struct EngramServiceLinkResponse: Codable, Equatable, Sendable {
     let ok: Bool
     let error: String?
+}
+
+/// Untyped, symmetric "related" association between two sessions (distinct from
+/// parent/child). The pair is normalized a_id < b_id on write, so either order
+/// resolves to the same row.
+struct EngramServiceRelationRequest: Codable, Equatable, Sendable {
+    let aId: String
+    let bId: String
+}
+
+struct EngramServiceRelatedSessionsRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+}
+
+struct EngramServiceRelatedSessionsResponse: Codable, Equatable, Sendable {
+    let ids: [String]
 }
 
 struct EngramServiceTriggerSyncRequest: Codable, Equatable, Sendable {
@@ -1033,6 +1055,28 @@ struct ServiceTelemetrySnapshot: Codable, Equatable, Sendable {
     let lastScanAt: String?
     let commands: [ServiceCommandLatency]
     let spans: [ServiceSpan]
+}
+
+/// One SANITIZED service log line surfaced through the `serviceLogs` read
+/// command. The `message` has already passed through `ServiceLogSanitizer`, so
+/// it carries no raw paths/ids/emails/error tails. Mirrors `ServiceSpan` as a
+/// flat Codable DTO stored directly in the in-process ring buffer.
+struct ServiceLogLineDTO: Codable, Equatable, Identifiable, Sendable {
+    var id: String { "\(timestamp)#\(category)" }
+    let timestamp: String
+    let level: String
+    let category: String
+    let message: String
+}
+
+struct ServiceLogSnapshot: Codable, Equatable, Sendable {
+    let lines: [ServiceLogLineDTO]
+}
+
+struct EngramServiceServiceLogsRequest: Codable, Equatable, Sendable {
+    let level: String?
+    let category: String?
+    let limit: Int?
 }
 
 struct EngramServiceProjectMoveRequest: Codable, Equatable, Sendable {
