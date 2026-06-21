@@ -21,13 +21,18 @@ intentionally scoped out of that PR, not regressions:
 
 Low-priority UX follow-ups (also fit `docs/followups.md`):
 
-- **Favorite toggle from browse.** Toggle favorite directly from list/browse
-  rows, not only from session detail.
 - **Command-palette no-results state.** Explicit empty/fail state in the `⌘K`
   palette search.
-- **Cost/usage notifications.** Monthly-budget and long-session notify.
 
 ## Closed in cleanup
+
+Retired on 2026-06-21 — already shipped, confirmed against current main:
+
+- **Favorite toggle from browse.** Shipped with PR #74: session actions incl.
+  favorite on the browse pages (`ExpandableSessionCard.onToggleFavorite`).
+- **Cost/usage notifications.** Shipped: monthly-budget + long-session notify
+  in `SettingsView` (`monthlyBudget`, `notifyOnLongSession`) — the cost
+  dashboard's budget notifier.
 
 The previous cleanup TODO items were completed and verified:
 
