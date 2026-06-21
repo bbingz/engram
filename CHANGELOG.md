@@ -7,6 +7,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Session-format reference docs: Claude Code + Codex (2026-06-21, Claude)
+
+Sequestered the on-disk session-saving mechanism of the two primary sources into two definitive
+reference docs so we never re-investigate per task. Produced by a 16-agent Workflow
+(`wf_994231d5-4ca`): 5 parallel dimension researchers per tool → synthesize → adversarial
+completeness critic → patch. Every claim cross-checked against the REAL on-disk store AND both
+Engram adapters; on-disk reality wins on conflict.
+
+- `docs/session-formats/claude-code.md` (1528 lines, critic 93/100): 3-layer type model
+  (top-level record `type` vs nested content-block `type` vs attachment/system subtypes); cwd→dir
+  encoding is lossy (`decodeCwd` never trusted — real cwd comes from the `cwd` field); modern
+  compaction = `system`/`compact_boundary` + `isCompactSummary` (NOT a top-level `summary` record);
+  dispatch tool renamed `Task`→`Agent`; subagent parent linkage is PATH-based
+  (`<parent>/subagents/<child>.jsonl`), not `isSidechain`; `~/.claude/` also has `history.jsonl`
+  (`{display,pastedContents,timestamp,project,sessionId}`), `sessions/`, `file-history/`; full
+  Engram-mapping table with TS+Swift file:line per row; 16 anonymized line samples.
+- `docs/session-formats/codex.md` (1546 lines, critic 86/100): dual-layer architecture — rollout
+  JSONL (`~/.codex/sessions/YYYY/MM/DD/rollout-<localtime>-<uuid>.jsonl`, authoritative for
+  content) + SQLite (authoritative for state/index/relationships). SQLite fully documented:
+  `state_5.sqlite` is active (migration 39, 2510 threads) vs `~/.codex/sqlite/state_5.sqlite`
+  legacy (migration 35, 2267 threads); `threads` = rollout index (join `threads.id ==
+  rollout-uuid == session_meta.id`, `rollout_path` → file); `thread_spawn_edges` (1561 rows) =
+  subagent parent→child graph; `memories_1` (stage1/consolidate pipeline), `goals_1`
+  (long-running thread goals), `logs_2` (~419k structured log rows). Dispatch detection:
+  `session_meta.originator=="Claude Code"` AND `threads.source` JSON subagent tag.
+
+Verification this session: re-confirmed `state_5` threads schema column-for-column, 2510
+threads / 1561 spawn_edges / migration 39 live; spot-checked Claude Engram-mapping file:line
+citations (`listSessionFiles:41`, `extractContent:347`, subagents regex `:151`, Swift
+`parentSessionId(from:):528`) — all accurate. Docs-only change; no code/runtime touched.
+Open items flagged inside each doc's §15 (e.g. exact CLI-version boundary for the
+`instructions`→`base_instructions` rename; legacy pre-2.1 `{type:summary}` schema).
+
 ### Multi-Mac sync L2 — pre-merge review remediation (PR #88, non-security findings) (2026-06-21, Claude)
 
 The prior session ran the pre-merge review workflow (`wlqv61o7n`, verdict `fix-before-merge`,
