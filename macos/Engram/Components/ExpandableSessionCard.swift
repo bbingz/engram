@@ -33,6 +33,7 @@ struct ExpandableSessionCard: View {
     var onReplay: ((Session) -> Void)? = nil
     var onConfirmSuggestion: ((Session) -> Void)? = nil
     var onDismissSuggestion: ((Session) -> Void)? = nil
+    var onRelate: ((Session) -> Void)? = nil
     var onHide: ((Session) -> Void)? = nil
     var onRename: ((Session) -> Void)? = nil
     var onExportMarkdown: ((Session) -> Void)? = nil
@@ -131,6 +132,11 @@ struct ExpandableSessionCard: View {
                     }
                     Button("Replay") {
                         onReplay?(session)
+                    }
+                    if let onRelate {
+                        Button("Link related session…") {
+                            onRelate(session)
+                        }
                     }
                     SessionWriteMenuItems(
                         isHidden: isHidden,

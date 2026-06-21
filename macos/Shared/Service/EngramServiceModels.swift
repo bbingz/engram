@@ -893,6 +893,22 @@ struct EngramServiceLinkResponse: Codable, Equatable, Sendable {
     let error: String?
 }
 
+/// Untyped, symmetric "related" association between two sessions (distinct from
+/// parent/child). The pair is normalized a_id < b_id on write, so either order
+/// resolves to the same row.
+struct EngramServiceRelationRequest: Codable, Equatable, Sendable {
+    let aId: String
+    let bId: String
+}
+
+struct EngramServiceRelatedSessionsRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+}
+
+struct EngramServiceRelatedSessionsResponse: Codable, Equatable, Sendable {
+    let ids: [String]
+}
+
 struct EngramServiceTriggerSyncRequest: Codable, Equatable, Sendable {
     let peer: String?
 }

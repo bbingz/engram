@@ -46,6 +46,11 @@ struct SessionDetailView: View {
     // so the 3 entry points (initial load, confirm, dismiss) can't interleave writes.
     @State private var parentInfoTask: Task<Void, Never>? = nil
 
+    // Related sessions (symmetric, untyped navigational links — see RelatedSessionPicker)
+    @State private var relatedSessions: [Session] = []
+    @State private var relatedTask: Task<Void, Never>? = nil
+    @State private var showRelatedPicker = false
+
     @AppStorage("showSystemPrompts") var showSystemPrompts: Bool = false
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
 
@@ -341,6 +346,8 @@ struct SessionDetailView: View {
                 .padding(.vertical, 6)
             }
 
+            relatedSessionsSection
+
             if isLoadingMessages {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -487,6 +494,7 @@ struct SessionDetailView: View {
             if Task.isCancelled { return }
             isLoadingMessages = false
             loadParentInfo()
+            loadRelated()
         }
         .onChange(of: typeVisibility) { _, _ in updateDisplayIndexed() }
         .onChange(of: showSystemPrompts) { _, _ in updateDisplayIndexed() }
@@ -502,10 +510,67 @@ struct SessionDetailView: View {
         .sheet(isPresented: $showResume) {
             ResumeDialog(session: session)
         }
+        .sheet(isPresented: $showRelatedPicker) {
+            RelatedSessionPicker(
+                source: session,
+                existingRelatedIds: Set(relatedSessions.map(\.id)),
+                onLinked: { loadRelated() }
+            )
+        }
         .onDisappear {
             parentInfoTask?.cancel(); parentInfoTask = nil
+            relatedTask?.cancel(); relatedTask = nil
             transcriptLoadTask?.cancel(); transcriptLoadTask = nil
         }
+    }
+
+    // MARK: - Related Sessions
+
+    @ViewBuilder
+    private var relatedSessionsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Label("Related sessions", systemImage: "link")
+                    .font(.caption.bold())
+                    .foregroundStyle(Theme.secondaryText)
+                Spacer()
+                Button {
+                    showRelatedPicker = true
+                } label: {
+                    Label("Link a session…", systemImage: "plus")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accent)
+                .accessibilityIdentifier("detail_relatedLinkButton")
+            }
+
+            ForEach(relatedSessions, id: \.id) { related in
+                HStack(spacing: 8) {
+                    Button(action: { navigateToSession(related) }) {
+                        HStack(spacing: 6) {
+                            SourcePill(source: related.source)
+                            Text(related.displayTitle)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .foregroundStyle(Theme.primaryText)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Button(action: { removeRelated(related) }) {
+                        Image(systemName: "xmark.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.tertiaryText)
+                    .help("Remove related session")
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("detail_relatedSessionsSection")
     }
 
     // MARK: - Parent/Child Helpers
@@ -680,6 +745,24 @@ struct SessionDetailView: View {
                 suggestedChildrenSessions = suggestedChildren ?? []
                 suggestedChildrenSessionCount = suggestedChildCount
             }
+        }
+    }
+
+    private func loadRelated() {
+        let sessionId = session.id
+        let dbRef = db
+        relatedTask?.cancel()
+        relatedTask = Task.detached {
+            let loaded = (try? dbRef.relatedSessions(sessionId: sessionId)) ?? []
+            if Task.isCancelled { return }
+            await MainActor.run { relatedSessions = loaded }
+        }
+    }
+
+    private func removeRelated(_ related: Session) {
+        Task {
+            _ = try? await serviceClient.removeSessionRelation(aId: session.id, bId: related.id)
+            loadRelated()
         }
     }
 

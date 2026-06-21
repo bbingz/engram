@@ -29,6 +29,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let clearParentSessionResult: Result<EngramServiceLinkResponse, Error>
     let confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
     let dismissSuggestionResult: Result<Void, Error>
+    let addSessionRelationResult: Result<EngramServiceLinkResponse, Error>
+    let removeSessionRelationResult: Result<EngramServiceLinkResponse, Error>
+    let relatedSessionsResult: Result<[String], Error>
     let triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
     let refreshUsageResult: Result<EngramServiceRefreshUsageResponse, Error>
     let regenerateAllTitlesResult: Result<EngramServiceRegenerateTitlesResponse, Error>
@@ -76,6 +79,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         setParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         clearParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         confirmSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        addSessionRelation: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        removeSessionRelation: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        relatedSessions: [String] = [],
         triggerSync: EngramServiceTriggerSyncResponse = EngramServiceTriggerSyncResponse(results: []),
         refreshUsage: EngramServiceRefreshUsageResponse = EngramServiceRefreshUsageResponse(snapshotCount: 0, sources: []),
         regenerateAllTitles: EngramServiceRegenerateTitlesResponse = EngramServiceRegenerateTitlesResponse(
@@ -121,6 +127,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.clearParentSessionResult = .success(clearParentSession)
         self.confirmSuggestionResult = .success(confirmSuggestion)
         self.dismissSuggestionResult = .success(())
+        self.addSessionRelationResult = .success(addSessionRelation)
+        self.removeSessionRelationResult = .success(removeSessionRelation)
+        self.relatedSessionsResult = .success(relatedSessions)
         self.triggerSyncResult = .success(triggerSync)
         self.refreshUsageResult = .success(refreshUsage)
         self.regenerateAllTitlesResult = .success(regenerateAllTitles)
@@ -212,6 +221,18 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws {
         _ = try dismissSuggestionResult.get()
+    }
+
+    func addSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
+        try addSessionRelationResult.get()
+    }
+
+    func removeSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
+        try removeSessionRelationResult.get()
+    }
+
+    func relatedSessions(sessionId: String) async throws -> [String] {
+        try relatedSessionsResult.get()
     }
 
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse {

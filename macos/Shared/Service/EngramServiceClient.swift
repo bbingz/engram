@@ -140,6 +140,22 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         )
     }
 
+    func addSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
+        try await command("addSessionRelation", payload: EngramServiceRelationRequest(aId: aId, bId: bId))
+    }
+
+    func removeSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
+        try await command("removeSessionRelation", payload: EngramServiceRelationRequest(aId: aId, bId: bId))
+    }
+
+    func relatedSessions(sessionId: String) async throws -> [String] {
+        let response: EngramServiceRelatedSessionsResponse = try await command(
+            "relatedSessions",
+            payload: EngramServiceRelatedSessionsRequest(sessionId: sessionId)
+        )
+        return response.ids
+    }
+
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse {
         try await command("triggerSync", payload: request)
     }

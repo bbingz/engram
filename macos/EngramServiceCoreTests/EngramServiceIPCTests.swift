@@ -164,6 +164,61 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
     }
 
+    func testSessionRelationRoundTripIsSymmetricIdempotentAndRemovable() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        // No relations yet (table not even created): read returns empty.
+        let before = try await client.relatedSessions(sessionId: "s1")
+        XCTAssertEqual(before, [])
+
+        // add(s2, s1) — order reversed from a<b normalization on purpose.
+        let added = try await client.addSessionRelation(aId: "s2", bId: "s1")
+        XCTAssertTrue(added.ok)
+
+        // Symmetric: each side sees the other.
+        let s1Related = try await client.relatedSessions(sessionId: "s1")
+        XCTAssertEqual(s1Related, ["s2"])
+        let s2Related = try await client.relatedSessions(sessionId: "s2")
+        XCTAssertEqual(s2Related, ["s1"])
+
+        // Idempotent: a duplicate add (either order) yields exactly one row.
+        let dup = try await client.addSessionRelation(aId: "s1", bId: "s2")
+        XCTAssertTrue(dup.ok)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let rowCount = try await queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_relations") ?? -1
+        }
+        XCTAssertEqual(rowCount, 1)
+
+        // Self-link rejected.
+        let selfLink = try await client.addSessionRelation(aId: "s1", bId: "s1")
+        XCTAssertFalse(selfLink.ok)
+        XCTAssertEqual(selfLink.error, "self-link")
+
+        // Nonexistent session rejected.
+        let missing = try await client.addSessionRelation(aId: "s1", bId: "does-not-exist")
+        XCTAssertFalse(missing.ok)
+        XCTAssertEqual(missing.error, "session-not-found")
+
+        // remove clears it (either order resolves to the same row).
+        let removed = try await client.removeSessionRelation(aId: "s2", bId: "s1")
+        XCTAssertTrue(removed.ok)
+        let s1After = try await client.relatedSessions(sessionId: "s1")
+        XCTAssertEqual(s1After, [])
+        let s2After = try await client.relatedSessions(sessionId: "s2")
+        XCTAssertEqual(s2After, [])
+    }
+
     func testSecondUnixSocketServerStartDoesNotRewriteCapabilityToken() throws {
         let paths = try makeServiceIPCPaths()
         let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in

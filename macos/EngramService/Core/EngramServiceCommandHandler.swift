@@ -259,6 +259,34 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+            case "addSessionRelation":
+                let payload = try decodePayload(EngramServiceRelationRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.addSessionRelation(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "removeSessionRelation":
+                let payload = try decodePayload(EngramServiceRelationRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.removeSessionRelation(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "relatedSessions":
+                let payload = try decodePayload(EngramServiceRelatedSessionsRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(
+                        try Self.relatedSessions(payload, databasePath: writerGate.databasePath)
+                    )
+                )
             case "projectMigrations":
                 let payload = try decodePayload(EngramServiceProjectMigrationsRequest.self, from: request)
                 return .success(
@@ -680,6 +708,90 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             )
         }
         return EmptyEncodableResult()
+    }
+
+    /// Symmetric, untyped "related" link. Normalizes the pair to a_id < b_id so
+    /// either order maps to one row (dedup-safe). Validates both sessions exist
+    /// and rejects self-links. Navigational only — no tier/grouping/count impact.
+    private static func addSessionRelation(
+        _ request: EngramServiceRelationRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EngramServiceLinkResponse {
+        guard request.aId != request.bId else {
+            return EngramServiceLinkResponse(ok: false, error: "self-link")
+        }
+        let (low, high) = request.aId < request.bId
+            ? (request.aId, request.bId)
+            : (request.bId, request.aId)
+        return try writer.write { db in
+            try ensureSessionRelationsTable(db)
+            for id in [low, high] {
+                guard try Row.fetchOne(db, sql: "SELECT id FROM sessions WHERE id = ?", arguments: [id]) != nil else {
+                    return EngramServiceLinkResponse(ok: false, error: "session-not-found")
+                }
+            }
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO session_relations (a_id, b_id) VALUES (?, ?)",
+                arguments: [low, high]
+            )
+            return EngramServiceLinkResponse(ok: true, error: nil)
+        }
+    }
+
+    private static func removeSessionRelation(
+        _ request: EngramServiceRelationRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EngramServiceLinkResponse {
+        let (low, high) = request.aId < request.bId
+            ? (request.aId, request.bId)
+            : (request.bId, request.aId)
+        return try writer.write { db in
+            try ensureSessionRelationsTable(db)
+            try db.execute(
+                sql: "DELETE FROM session_relations WHERE a_id = ? AND b_id = ?",
+                arguments: [low, high]
+            )
+            return EngramServiceLinkResponse(ok: true, error: nil)
+        }
+    }
+
+    /// Read-only: ids related to `sessionId` in either direction. The IN-join is
+    /// against `sessions` at read time on the app side, so dangling rows (where a
+    /// peer no longer exists) are filtered out naturally there; here we just
+    /// return the stored peer ids. Returns [] if the table was never created.
+    static func relatedSessions(
+        _ request: EngramServiceRelatedSessionsRequest,
+        databasePath: String
+    ) throws -> EngramServiceRelatedSessionsResponse {
+        let pool = try readOnlyPool(path: databasePath)
+        let ids = try pool.read { db -> [String] in
+            let exists = try Bool.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_relations'"
+            ) ?? false
+            guard exists else { return [] }
+            return try String.fetchAll(
+                db,
+                sql: """
+                    SELECT b_id FROM session_relations WHERE a_id = ?
+                    UNION
+                    SELECT a_id FROM session_relations WHERE b_id = ?
+                """,
+                arguments: [request.sessionId, request.sessionId]
+            )
+        }
+        return EngramServiceRelatedSessionsResponse(ids: ids)
+    }
+
+    private static func ensureSessionRelationsTable(_ db: GRDB.Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS session_relations (
+                a_id TEXT NOT NULL,
+                b_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (a_id, b_id)
+            );
+        """)
     }
 
     private static func setFavorite(

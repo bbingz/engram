@@ -112,6 +112,24 @@ final class EngramServiceClientTests: XCTestCase {
                     EngramServiceLinkSessionsRequest(targetDir: "/tmp/engram", actor: "mcp")
                 )
                 return .success(requestId: request.requestId, result: #"{"created":2,"skipped":1,"errors":[],"targetDir":"/tmp/engram","projectNames":["engram","engram-legacy"],"truncated":false}"#.data(using: .utf8)!)
+            case "addSessionRelation":
+                XCTAssertEqual(
+                    try Self.payload(request.payload, as: EngramServiceRelationRequest.self),
+                    EngramServiceRelationRequest(aId: "s1", bId: "s2")
+                )
+                return .success(requestId: request.requestId, result: #"{"ok":true,"error":null}"#.data(using: .utf8)!)
+            case "removeSessionRelation":
+                XCTAssertEqual(
+                    try Self.payload(request.payload, as: EngramServiceRelationRequest.self),
+                    EngramServiceRelationRequest(aId: "s1", bId: "s2")
+                )
+                return .success(requestId: request.requestId, result: #"{"ok":true,"error":null}"#.data(using: .utf8)!)
+            case "relatedSessions":
+                XCTAssertEqual(
+                    try Self.payload(request.payload, as: EngramServiceRelatedSessionsRequest.self),
+                    EngramServiceRelatedSessionsRequest(sessionId: "s1")
+                )
+                return .success(requestId: request.requestId, result: #"{"ids":["s2"]}"#.data(using: .utf8)!)
             default:
                 XCTFail("Unexpected command \(request.command)")
                 return .success(requestId: request.requestId, result: Data("{}".utf8))
@@ -137,6 +155,9 @@ final class EngramServiceClientTests: XCTestCase {
         let migrations = try await client.projectMigrations(EngramServiceProjectMigrationsRequest(state: "committed", limit: 5))
         let cwds = try await client.projectCwds(project: "engram")
         let linkSessions = try await client.linkSessions(EngramServiceLinkSessionsRequest(targetDir: "/tmp/engram", actor: "mcp"))
+        let addRelation = try await client.addSessionRelation(aId: "s1", bId: "s2")
+        let removeRelation = try await client.removeSessionRelation(aId: "s1", bId: "s2")
+        let related = try await client.relatedSessions(sessionId: "s1")
 
         XCTAssertEqual(health.status, "healthy")
         XCTAssertEqual(liveSessions.sessions.first?.sessionId, "s-live")
@@ -157,6 +178,9 @@ final class EngramServiceClientTests: XCTestCase {
         XCTAssertEqual(cwds.cwds, ["/tmp/engram"])
         XCTAssertEqual(linkSessions.projectNames, ["engram", "engram-legacy"])
         XCTAssertEqual(linkSessions.created, 2)
+        XCTAssertTrue(addRelation.ok)
+        XCTAssertTrue(removeRelation.ok)
+        XCTAssertEqual(related, ["s2"])
     }
 
     func testStage3ProjectMutationRequestsPreserveDaemonJsonFieldNames() async throws {
