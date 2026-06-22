@@ -32,7 +32,13 @@ final class GeminiProjectsJSONTests: XCTestCase {
             filePath: file.path, oldCwd: "/a/proj", newCwd: "/a/proj-v2"
         )
         XCTAssertEqual(plan.oldEntry, GeminiProjectsEntry(cwd: "/a/proj", name: "proj"))
-        XCTAssertEqual(plan.newEntry, GeminiProjectsEntry(cwd: "/a/proj-v2", name: "proj-v2"))
+        XCTAssertEqual(
+            plan.newEntry,
+            GeminiProjectsEntry(
+                cwd: "/a/proj-v2",
+                name: "a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417"
+            )
+        )
         XCTAssertNotNil(plan.originalText)
     }
 
@@ -41,7 +47,10 @@ final class GeminiProjectsJSONTests: XCTestCase {
             filePath: file.path, oldCwd: "/a/proj", newCwd: "/a/proj-v2"
         )
         XCTAssertNil(plan.oldEntry)
-        XCTAssertEqual(plan.newEntry.name, "proj-v2")
+        XCTAssertEqual(
+            plan.newEntry.name,
+            "a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417"
+        )
         XCTAssertNil(plan.originalText)
     }
 
@@ -59,18 +68,26 @@ final class GeminiProjectsJSONTests: XCTestCase {
             filePath: file.path, oldCwd: "/a/proj", newCwd: "/a/proj-v2"
         )
         XCTAssertNil(plan.oldEntry)
-        XCTAssertEqual(plan.newEntry, GeminiProjectsEntry(cwd: "/a/proj-v2", name: "proj-v2"))
+        XCTAssertEqual(
+            plan.newEntry,
+            GeminiProjectsEntry(
+                cwd: "/a/proj-v2",
+                name: "a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417"
+            )
+        )
     }
 
-    func testPlanSlugifiesNewEntryName() throws {
-        // newEntry.name must match the Gemini slug (lowercase, '_' → '-',
-        // strip wrapping dashes) so projects.json stays consistent with the
-        // renamed ~/.gemini/tmp/<slug>/ dir and the collision probe.
+    func testPlanUsesGeminiHashForNewEntryName() throws {
+        // newEntry.name must match Gemini CLI's SHA-256 project directory so
+        // projects.json stays consistent with the renamed ~/.gemini/tmp/<hash>/ dir.
         try writeJson(["projects": ["/a/old": "old"]])
         let plan = try GeminiProjectsJSON.plan(
             filePath: file.path, oldCwd: "/a/old", newCwd: "/Users/bing/-Code-/WebSite_Gemini"
         )
-        XCTAssertEqual(plan.newEntry.name, "website-gemini")
+        XCTAssertEqual(
+            plan.newEntry.name,
+            "14c0b06be029ed0eec4a9c32d825e06252ec7b3893898df56a8891dba6fdebf2"
+        )
     }
 
     func testPlanThrowsOnInvalidJson() throws {
@@ -100,7 +117,10 @@ final class GeminiProjectsJSONTests: XCTestCase {
         XCTAssertNotNil(after["projects"])
         let projects = after["projects"] as? [String: String] ?? [:]
         XCTAssertNil(projects["/a/proj"])
-        XCTAssertEqual(projects["/a/proj-v2"], "proj-v2")
+        XCTAssertEqual(
+            projects["/a/proj-v2"],
+            "a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417"
+        )
         XCTAssertEqual(projects["/b/other"], "other")
     }
 
@@ -114,7 +134,10 @@ final class GeminiProjectsJSONTests: XCTestCase {
         let after = try readMap()
         // Legacy: no `projects` wrapper at top level.
         XCTAssertNil(after["projects"])
-        XCTAssertEqual(after["/a/proj-v2"] as? String, "proj-v2")
+        XCTAssertEqual(
+            after["/a/proj-v2"] as? String,
+            "a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417"
+        )
         XCTAssertNil(after["/a/proj"])
     }
 
@@ -125,7 +148,10 @@ final class GeminiProjectsJSONTests: XCTestCase {
         try GeminiProjectsJSON.apply(plan: plan)
         let after = try readMap()
         let projects = after["projects"] as? [String: String] ?? [:]
-        XCTAssertEqual(projects["/a/proj-v2"], "proj-v2")
+        XCTAssertEqual(
+            projects["/a/proj-v2"],
+            "a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417"
+        )
     }
 
     // MARK: - reverse
@@ -171,9 +197,9 @@ final class GeminiProjectsJSONTests: XCTestCase {
         )
     }
 
-    // MARK: - collectOtherCwdsSharingBasename
+    // MARK: - collectOtherCwdsSharingProjectName
 
-    func testFlagsOtherCwdsSharingBasename() throws {
+    func testFlagsOtherCwdsSharingProjectName() throws {
         try writeJson([
             "projects": [
                 "/a/proj": "proj",
@@ -181,9 +207,9 @@ final class GeminiProjectsJSONTests: XCTestCase {
                 "/c/unrelated": "unrelated",
             ],
         ])
-        let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingBasename(
+        let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingProjectName(
             filePath: file.path,
-            targetBasename: "proj",
+            targetProjectName: "proj",
             srcCwd: "/a/proj"
         )
         XCTAssertEqual(conflicts, ["/b/proj"])
@@ -191,15 +217,15 @@ final class GeminiProjectsJSONTests: XCTestCase {
 
     func testReturnsEmptyWhenNoConflict() throws {
         try writeJson(["projects": ["/a/proj": "proj", "/b/other": "other"]])
-        let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingBasename(
-            filePath: file.path, targetBasename: "proj", srcCwd: "/a/proj"
+        let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingProjectName(
+            filePath: file.path, targetProjectName: "proj", srcCwd: "/a/proj"
         )
         XCTAssertTrue(conflicts.isEmpty)
     }
 
     func testTreatsMissingFileAsEmptyConflicts() throws {
-        let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingBasename(
-            filePath: file.path, targetBasename: "proj", srcCwd: "/a/proj"
+        let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingProjectName(
+            filePath: file.path, targetProjectName: "proj", srcCwd: "/a/proj"
         )
         XCTAssertTrue(conflicts.isEmpty)
     }

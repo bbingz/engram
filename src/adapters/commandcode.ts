@@ -221,7 +221,7 @@ export class CommandCodeAdapter implements SessionAdapter {
         const c = item as Record<string, unknown>;
         return {
           name: c.toolName as string,
-          input: truncateJSON(c.input, 500),
+          input: truncateJSON(c.input ?? c.args, 500),
         };
       });
     return calls.length > 0 ? calls : undefined;

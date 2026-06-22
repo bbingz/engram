@@ -54,6 +54,35 @@ describe('ClineAdapter', () => {
       cacheCreationTokens: 0,
     });
   });
+
+  it('lists legacy claude_messages.json when ui_messages.json is absent', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cline-legacy-${Date.now()}`);
+    const taskDir = join(tmpRoot, 'tasks', 'legacy-task');
+    const legacyPath = join(taskDir, 'claude_messages.json');
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(
+      legacyPath,
+      JSON.stringify([
+        {
+          ts: 1771392000000,
+          type: 'say',
+          say: 'task',
+          text: 'legacy task',
+        },
+      ]),
+    );
+    try {
+      const adapter = new ClineAdapter(join(tmpRoot, 'tasks'));
+      const files: string[] = [];
+      for await (const file of adapter.listSessionFiles()) files.push(file);
+      expect(files).toEqual([legacyPath]);
+      const info = await adapter.parseSessionInfo(legacyPath);
+      expect(info?.id).toBe('legacy-task');
+      expect(info?.summary).toBe('legacy task');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ClineAdapter cwd with parentheses (R5-32)', () => {
@@ -84,5 +113,28 @@ describe('ClineAdapter cwd with parentheses (R5-32)', () => {
     // Previously the [^)]+ pattern stopped at the first ')', truncating to
     // '/Users/test/proj (work'. Anchoring on ') Files' keeps the full path.
     expect(info?.cwd).toBe(cwdWithParen);
+  });
+
+  it('does not treat multi-root Primary labels as cwd paths', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-cline-primary-'));
+    const taskDir = join(tmp, 'task-primary');
+    mkdirSync(taskDir, { recursive: true });
+    const filePath = join(taskDir, 'ui_messages.json');
+    const ui = [
+      {
+        ts: 1770000000000,
+        type: 'say',
+        say: 'api_req_started',
+        text: JSON.stringify({
+          request:
+            '# Current Working Directory (Primary: workspace-a) Files\n- file.ts',
+        }),
+      },
+      { ts: 1770000000001, type: 'say', say: 'task', text: 'hello' },
+    ];
+    writeFileSync(filePath, JSON.stringify(ui));
+    const adapter = new ClineAdapter(tmp);
+    const info = await adapter.parseSessionInfo(filePath);
+    expect(info?.cwd).toBe('');
   });
 });

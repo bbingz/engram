@@ -27,6 +27,11 @@ final class ClineAdapter: SessionAdapter, Sendable {
             let messagesURL = taskURL.appendingPathComponent("ui_messages.json")
             if JSONLAdapterSupport.fileExists(messagesURL.path) {
                 locators.append(messagesURL.path)
+                continue
+            }
+            let legacyURL = taskURL.appendingPathComponent("claude_messages.json")
+            if JSONLAdapterSupport.fileExists(legacyURL.path) {
+                locators.append(legacyURL.path)
             }
         }
         return locators.sorted()
@@ -187,7 +192,7 @@ final class ClineAdapter: SessionAdapter, Sendable {
                 in: request,
                 pattern: #"Current Working Directory \(([^)]+)\)"#
             ) {
-                return cwd
+                return cwd.hasPrefix("Primary: ") ? "" : cwd
             }
         }
         return ""

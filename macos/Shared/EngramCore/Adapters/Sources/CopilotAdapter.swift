@@ -369,8 +369,20 @@ final class CopilotAdapter: SessionAdapter, Sendable {
             let key = String(line[..<separatorIndex])
             guard key.range(of: #"^\w+$"#, options: .regularExpression) != nil else { continue }
             let valueStart = line.index(after: separatorIndex)
-            result[key] = String(line[valueStart...]).trimmingCharacters(in: .whitespaces)
+            result[key] = stripYAMLQuotes(String(line[valueStart...]).trimmingCharacters(in: .whitespaces))
         }
         return result
+    }
+
+    private static func stripYAMLQuotes(_ value: String) -> String {
+        guard value.count >= 2,
+              let first = value.first,
+              let last = value.last,
+              (first == "\"" || first == "'"),
+              first == last
+        else {
+            return value
+        }
+        return String(value.dropFirst().dropLast())
     }
 }

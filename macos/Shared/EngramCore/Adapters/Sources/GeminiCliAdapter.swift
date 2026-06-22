@@ -94,7 +94,8 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
             let chatsURL = projectURL.appendingPathComponent("chats")
             guard JSONLAdapterSupport.isDirectory(chatsURL) else { continue }
             for fileURL in JSONLAdapterSupport.directChildren(of: chatsURL)
-                where fileURL.lastPathComponent.hasPrefix("session-") && fileURL.pathExtension == "json"
+                where !fileURL.lastPathComponent.hasSuffix(".engram.json") &&
+                (fileURL.pathExtension == "json" || fileURL.pathExtension == "jsonl")
             {
                 locators.append(fileURL.path)
             }
@@ -104,7 +105,7 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         do {
-            let object = try Phase4AdapterSupport.readJSONObject(locator: locator, limits: limits)
+            let object = try Self.readSession(locator: locator, limits: limits)
             guard let sessionId = JSONLAdapterSupport.string(object["sessionId"]),
                   let startTime = JSONLAdapterSupport.string(object["startTime"]),
                   let messages = JSONLAdapterSupport.array(object["messages"])
@@ -122,7 +123,9 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
                     return type == "gemini" || type == "model"
                 }
             let projectName = Self.projectName(from: locator)
-            let cwd = resolveProject(projectName: projectName) ?? projectName
+            let cwd = resolveProjectRoot(projectName: projectName) ??
+                resolveProject(projectName: projectName) ??
+                projectName
             let firstUserText = userMessages.first.map { Self.extractText($0["content"]) } ?? ""
             let sidecar = Self.readSidecar(locator: locator, sessionId: sessionId)
             let originator = JSONLAdapterSupport.string(sidecar?["originator"])
@@ -166,7 +169,7 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let object = try Phase4AdapterSupport.readJSONObject(locator: locator, limits: limits)
+        let object = try Self.readSession(locator: locator, limits: limits)
         let messages = JSONLAdapterSupport.array(object["messages"])?
             .compactMap { JSONLAdapterSupport.object($0) }
             .compactMap(Self.message(from:)) ?? []
@@ -192,6 +195,15 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
         return nil
     }
 
+    private func resolveProjectRoot(projectName: String) -> String? {
+        let rootURL = tmpRoot
+            .appendingPathComponent(projectName, isDirectory: true)
+            .appendingPathComponent(".project_root")
+        guard let content = try? String(contentsOf: rootURL, encoding: .utf8) else { return nil }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private static func projectName(from locator: String) -> String {
         let components = URL(fileURLWithPath: locator).pathComponents
         guard let chatsIndex = components.firstIndex(of: "chats"), chatsIndex > 0 else {
@@ -206,6 +218,46 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
             .appendingPathComponent("\(sessionId).engram.json")
         guard let data = try? Data(contentsOf: sidecarURL) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject
+    }
+
+    private static func readSession(locator: String, limits: ParserLimits) throws -> Phase4AdapterSupport.JSONObject {
+        if URL(fileURLWithPath: locator).pathExtension == "jsonl" {
+            return try readJSONLSession(locator: locator, limits: limits)
+        }
+        return try Phase4AdapterSupport.readJSONObject(locator: locator, limits: limits)
+    }
+
+    private static func readJSONLSession(locator: String, limits: ParserLimits) throws -> Phase4AdapterSupport.JSONObject {
+        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits, reportFailures: true)
+        if let failure { throw failure }
+
+        var metadata: Phase4AdapterSupport.JSONObject = [:]
+        var messages: [Phase4AdapterSupport.JSONObject] = []
+        for object in objects {
+            if let update = JSONLAdapterSupport.object(object["$set"]) {
+                for (key, value) in update { metadata[key] = value }
+                if let updatedMessages = JSONLAdapterSupport.array(update["messages"]) {
+                    messages = updatedMessages.compactMap { JSONLAdapterSupport.object($0) }
+                }
+                continue
+            }
+            if let rewindTo = JSONLAdapterSupport.string(object["$rewindTo"]) {
+                if let index = messages.firstIndex(where: { JSONLAdapterSupport.string($0["id"]) == rewindTo }) {
+                    messages = Array(messages.prefix(index + 1))
+                }
+                continue
+            }
+            if JSONLAdapterSupport.string(object["type"]) != nil {
+                messages.append(object)
+                continue
+            }
+            for (key, value) in object { metadata[key] = value }
+            if let initialMessages = JSONLAdapterSupport.array(object["messages"]) {
+                messages = initialMessages.compactMap { JSONLAdapterSupport.object($0) }
+            }
+        }
+        metadata["messages"] = messages
+        return metadata
     }
 
     private static func message(from object: Phase4AdapterSupport.JSONObject) -> NormalizedMessage? {

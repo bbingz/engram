@@ -75,12 +75,23 @@ final class SessionSourcesTests: XCTestCase {
         XCTAssertEqual(cc?("/Users/a/b/proj"), "-Users-a-b-proj")
 
         let gemini = roots.first { $0.id == .geminiCli }?.encodeProjectDir
-        XCTAssertEqual(gemini?("/Users/a/b/proj"), "proj")
-        // Gemini slugifies the basename: lowercase, '_' → '-', strip wrapping
-        // dashes. Verified against real ~/.gemini/projects.json values.
-        XCTAssertEqual(gemini?("/Users/bing/-Code-"), "code")
-        XCTAssertEqual(gemini?("/Users/bing/-Code-/WebSite_Gemini"), "website-gemini")
-        XCTAssertEqual(gemini?("/Users/bing/-Code-/java_charge"), "java-charge")
+        XCTAssertEqual(
+            gemini?("/Users/a/b/proj"),
+            "fb8ca3065078b192b450d6b162f97aea0d9af077c3eae1fc83efe185896b8be4"
+        )
+        // Gemini CLI names project directories with SHA-256(projectRoot).
+        XCTAssertEqual(
+            gemini?("/Users/bing/-Code-"),
+            "f2b35ab42fab408079d691fc1e4b5fcc3721611ee3fc5a01e5d295dadfd4a01e"
+        )
+        XCTAssertEqual(
+            gemini?("/Users/bing/-Code-/WebSite_Gemini"),
+            "14c0b06be029ed0eec4a9c32d825e06252ec7b3893898df56a8891dba6fdebf2"
+        )
+        XCTAssertEqual(
+            gemini?("/Users/bing/-Code-/java_charge"),
+            "5f3981f56dac06ba6e0042d1c632b29de18c0ef9d2715d005e4fb5090c9f0644"
+        )
 
         let iflow = roots.first { $0.id == .iflow }?.encodeProjectDir
         XCTAssertEqual(iflow?("/Users/a/b/proj"), "-Users-a-b-proj")
@@ -134,40 +145,49 @@ final class SessionSourcesTests: XCTestCase {
 
     // MARK: - encodeGemini
 
-    func testEncodeGeminiSlugifiesBasename() {
-        // lowercase + strip wrapping dashes
-        XCTAssertEqual(SessionSources.encodeGemini("/Users/bing/-Code-"), "code")
-        // lowercase only
+    func testEncodeGeminiUsesProjectRootSha256() {
+        XCTAssertEqual(
+            SessionSources.encodeGemini("/Users/bing/-Code-"),
+            "f2b35ab42fab408079d691fc1e4b5fcc3721611ee3fc5a01e5d295dadfd4a01e"
+        )
         XCTAssertEqual(
             SessionSources.encodeGemini("/Users/bing/-NetWork-/Screen-disconnet-erro"),
-            "screen-disconnet-erro"
+            "6faefbf4c9b088f7c662b7ed311080cd0eae9a994198e6b81bca6f79108e2eea"
         )
-        // '_' → '-' plus lowercase
         XCTAssertEqual(
             SessionSources.encodeGemini("/Users/bing/-Code-/WebSite_Gemini"),
-            "website-gemini"
+            "14c0b06be029ed0eec4a9c32d825e06252ec7b3893898df56a8891dba6fdebf2"
         )
         XCTAssertEqual(
             SessionSources.encodeGemini("/Users/bing/-Code-/mac_Book_Pro_Debug"),
-            "mac-book-pro-debug"
+            "d4a081da72ab6feb63ddbbacad9c14d4bf185694ba07a984f3b03d24a2e9020b"
         )
     }
 
-    func testEncodeGeminiStripsWrappingDashesAfterUnderscoreSwap() {
-        // Underscore-to-dash happens before wrapping-dash strip, so a
-        // leading/trailing underscore must not survive as an edge dash.
-        XCTAssertEqual(SessionSources.encodeGemini("/a/_foo_"), "foo")
+    func testEncodeGeminiDoesNotCollapseSimilarBasenames() {
+        XCTAssertNotEqual(
+            SessionSources.encodeGemini("/a/_foo_"),
+            SessionSources.encodeGemini("/a/foo")
+        )
+        XCTAssertEqual(
+            SessionSources.encodeGemini("/a/_foo_"),
+            "380ff7c65714acba22d3ab3c5550fb6a1e96c89b3692093b0852866016f46aef"
+        )
     }
 
     // MARK: - walkSessionFiles
 
-    func testWalkYieldsJsonlAndJsonOnly() throws {
+    func testWalkYieldsSessionJsonAndGeminiProjectRootMarkers() throws {
         try "x".write(
             to: tmpRoot.appendingPathComponent("session.jsonl"),
             atomically: true, encoding: .utf8
         )
         try "x".write(
             to: tmpRoot.appendingPathComponent("config.json"),
+            atomically: true, encoding: .utf8
+        )
+        try "x".write(
+            to: tmpRoot.appendingPathComponent(".project_root"),
             atomically: true, encoding: .utf8
         )
         try "x".write(
@@ -183,6 +203,7 @@ final class SessionSourcesTests: XCTestCase {
         SessionSources.walkSessionFiles(root: tmpRoot.path) { seen.append($0) }
         seen.sort()
         XCTAssertEqual(seen, [
+            tmpRoot.appendingPathComponent(".project_root").path,
             tmpRoot.appendingPathComponent("config.json").path,
             tmpRoot.appendingPathComponent("session.jsonl").path,
         ].sorted())
@@ -338,6 +359,23 @@ final class SessionSourcesTests: XCTestCase {
             needle: "/Users/bing/foo"
         )
         XCTAssertEqual(hits, [tmpRoot.appendingPathComponent("a.jsonl").path])
+    }
+
+    func testFindIncludesGeminiProjectRootMarkers() throws {
+        try "/Users/bing/gemini-proj\n".write(
+            to: tmpRoot.appendingPathComponent(".project_root"),
+            atomically: true, encoding: .utf8
+        )
+        try "{\"cwd\":\"/Users/bing/other\"}".write(
+            to: tmpRoot.appendingPathComponent("a.jsonl"),
+            atomically: true, encoding: .utf8
+        )
+
+        let hits = SessionSources.findReferencingFiles(
+            root: tmpRoot.path,
+            needle: "/Users/bing/gemini-proj"
+        )
+        XCTAssertEqual(hits, [tmpRoot.appendingPathComponent(".project_root").path])
     }
 
     func testFindHandlesUtf8Needles() throws {

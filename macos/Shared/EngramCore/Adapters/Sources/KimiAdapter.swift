@@ -64,7 +64,7 @@ final class KimiAdapter: SessionAdapter, Sendable {
                 .path, limits: limits)
             let fileDate = (try? FileManager.default.attributesOfItem(atPath: locator)[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
             let fallbackStart = ISO8601DateFormatter().string(from: fileDate.addingTimeInterval(-60))
-            let firstUserText = JSONLAdapterSupport.string(userMessages.first?["content"]) ?? ""
+            let firstUserText = Self.extractContent(userMessages.first?["content"])
             let sessionId = URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
 
             return .success(
@@ -179,22 +179,26 @@ final class KimiAdapter: SessionAdapter, Sendable {
         let directory = url.deletingLastPathComponent()
         var files = [locator]
         let subFiles = JSONLAdapterSupport.directChildren(of: directory)
-            .filter {
-                $0.lastPathComponent.hasPrefix("context_sub_") && $0.pathExtension == "jsonl"
-            }
+            .filter { contextShardIndex($0.lastPathComponent) != nil }
             .sorted {
-                subContextIndex($0.lastPathComponent) < subContextIndex($1.lastPathComponent)
+                (contextShardIndex($0.lastPathComponent) ?? 0) <
+                    (contextShardIndex($1.lastPathComponent) ?? 0)
             }
             .map(\.path)
         files.append(contentsOf: subFiles)
         return files
     }
 
-    private static func subContextIndex(_ filename: String) -> Int {
-        let value = filename
-            .replacingOccurrences(of: "context_sub_", with: "")
-            .replacingOccurrences(of: ".jsonl", with: "")
-        return Int(value) ?? 0
+    private static func contextShardIndex(_ filename: String) -> Int? {
+        guard filename.hasSuffix(".jsonl") else { return nil }
+        let stem = String(filename.dropLast(".jsonl".count))
+        if stem.hasPrefix("context_sub_") {
+            return Int(stem.dropFirst("context_sub_".count))
+        }
+        if stem.hasPrefix("context_") {
+            return Int(stem.dropFirst("context_".count))
+        }
+        return nil
     }
 
     private static func readTimestamps(
@@ -255,11 +259,25 @@ final class KimiAdapter: SessionAdapter, Sendable {
         }
         return NormalizedMessage(
             role: role == "user" ? .user : .assistant,
-            content: JSONLAdapterSupport.string(object["content"]) ?? "",
+            content: extractContent(object["content"]),
             timestamp: timestamp,
             toolCalls: nil,
             usage: role == "assistant" ? usage : nil
         )
+    }
+
+    private static func extractContent(_ content: Any?) -> String {
+        if let string = JSONLAdapterSupport.string(content) { return string }
+        guard let parts = JSONLAdapterSupport.array(content) else { return "" }
+        return parts.compactMap { item in
+            guard let object = JSONLAdapterSupport.object(item),
+                  JSONLAdapterSupport.string(object["type"]) == "text",
+                  let text = JSONLAdapterSupport.string(object["text"]),
+                  !text.isEmpty
+            else { return nil }
+            return text
+        }
+        .joined(separator: "\n\n")
     }
 
     private static func usage(from tokenUsage: Phase4AdapterSupport.JSONObject?) -> TokenUsage? {

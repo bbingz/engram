@@ -198,6 +198,7 @@ export class QwenAdapter implements SessionAdapter {
       const texts: string[] = [];
       for (const part of parts) {
         const p = part as Record<string, unknown>;
+        if (p.thought === true) continue;
         if (typeof p.text === 'string' && p.text) texts.push(p.text);
       }
       return texts.join('\n');

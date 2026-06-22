@@ -504,7 +504,7 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(db.listMigrations()).toEqual([]); // no log row
   });
 
-  it('dry-run previews custom Gemini slug and observed iFlow dirs without side effects', async () => {
+  it('dry-run previews custom Gemini project name and observed iFlow dirs without side effects', async () => {
     const projects = join(tmp, 'projects');
     const driftSrc = join(projects, 'WebSite_Gemini');
     const driftDst = join(projects, 'mac_Book_Pro_Debug');
@@ -682,13 +682,13 @@ describe('runProjectMove — orchestrator integration', () => {
     expect(logs[0].error).toBeTruthy();
   });
 
-  it('renames per-project dirs for gemini (basename) and iflow (encoded)', async () => {
+  it('renames per-project dirs for gemini (hash) and iflow (encoded)', async () => {
     // Phase B regression: earlier the orchestrator only renamed the CC dir.
-    // Gemini's tmp groups chats under basename(cwd); iFlow uses its own
+    // Gemini's tmp groups chats under SHA-256(cwd); iFlow uses its own
     // dash-stripped encoding. Both must be renamed so adapters pick up the
     // moved project at the new path, not stay orphaned at the old name.
     const geminiOld = join(home, '.gemini', 'tmp', 'old-proj');
-    const geminiNew = join(home, '.gemini', 'tmp', 'new-proj');
+    const geminiNew = join(home, '.gemini', 'tmp', encodeGemini(dst));
     mkdirSync(join(geminiOld, 'chats'), { recursive: true });
     writeFileSync(
       join(geminiOld, 'chats', 'session.json'),
@@ -777,22 +777,22 @@ describe('runProjectMove — orchestrator integration', () => {
     ).toBe(true);
   });
 
-  it('pre-flight: refuses Gemini shared-basename hijack', async () => {
-    // Gemini MAJOR #3: dst basename 'new-proj' collides with another
-    // cwd's gemini entry. Renaming the tmp dir would steal their sessions.
+  it('pre-flight: refuses Gemini shared project-name hijack', async () => {
+    // Gemini project dir names are SHA-256 of cwd. If another cwd already
+    // claims the target hash in projects.json, renaming would steal sessions.
     const geminiOld = join(home, '.gemini', 'tmp', 'old-proj');
     mkdirSync(join(geminiOld, 'chats'), { recursive: true });
     writeFileSync(
       join(geminiOld, 'chats', 'session.json'),
       `{"cwd":"${src}"}\n`,
     );
-    // Another project whose basename is the same as dst's basename
+    // Another project claiming the same target project name.
     writeFileSync(
       join(home, '.gemini', 'projects.json'),
       JSON.stringify({
         projects: {
           [src]: 'old-proj',
-          '/some/other/path/new-proj': 'new-proj', // conflict!
+          '/some/other/path/new-proj': encodeGemini(dst), // conflict!
         },
       }),
     );
@@ -828,10 +828,40 @@ describe('runProjectMove — orchestrator integration', () => {
       readFileSync(join(home, '.gemini', 'projects.json'), 'utf8'),
     ) as { projects: Record<string, string> };
     expect(updated.projects[src]).toBeUndefined();
-    expect(updated.projects[dst]).toBe('new-proj');
+    expect(updated.projects[dst]).toBe(encodeGemini(dst));
   });
 
-  it('uses Gemini projects.json old slug when it differs from encoded src', async () => {
+  it('renames and patches Gemini dirs discovered from .project_root without projects.json', async () => {
+    const geminiRoot = join(home, '.gemini', 'tmp');
+    const geminiOld = join(
+      geminiRoot,
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    );
+    const geminiNew = join(geminiRoot, encodeGemini(dst));
+    mkdirSync(join(geminiOld, 'chats'), { recursive: true });
+    writeFileSync(join(geminiOld, '.project_root'), `${src}\n`);
+    writeFileSync(
+      join(geminiOld, 'chats', 'session-from-marker.jsonl'),
+      '{"sessionId":"gemini-marker","startTime":"2026-06-21T00:00:00.000Z"}\n',
+    );
+
+    const result = await runProjectMove(db, { src, dst, home, actor: 'cli' });
+
+    expect(result.state).toBe('committed');
+    expect(existsSync(geminiOld)).toBe(false);
+    expect(existsSync(geminiNew)).toBe(true);
+    expect(
+      result.renamedDirs.some(
+        (d) => d.sourceId === 'gemini-cli' && d.oldDir === geminiOld,
+      ),
+    ).toBe(true);
+    expect(readFileSync(join(geminiNew, '.project_root'), 'utf8')).toBe(
+      `${dst}\n`,
+    );
+    expect(result.review.own).not.toContain(join(geminiNew, '.project_root'));
+  });
+
+  it('uses Gemini projects.json old name when it differs from encoded src', async () => {
     const projects = join(tmp, 'projects');
     const geminiSrc = join(projects, 'WebSite_Gemini');
     const geminiDst = join(projects, 'mac_Book_Pro_Debug');
@@ -839,7 +869,7 @@ describe('runProjectMove — orchestrator integration', () => {
     writeFileSync(join(geminiSrc, 'main.py'), 'print("hi")');
 
     const geminiOld = join(home, '.gemini', 'tmp', 'custom-old');
-    const geminiNew = join(home, '.gemini', 'tmp', 'mac-book-pro-debug');
+    const geminiNew = join(home, '.gemini', 'tmp', encodeGemini(geminiDst));
     mkdirSync(join(geminiOld, 'chats'), { recursive: true });
     writeFileSync(
       join(geminiOld, 'chats', 'session.json'),
@@ -881,7 +911,7 @@ describe('runProjectMove — orchestrator integration', () => {
       readFileSync(join(home, '.gemini', 'projects.json'), 'utf8'),
     ) as { projects: Record<string, string> };
     expect(updated.projects[geminiSrc]).toBeUndefined();
-    expect(updated.projects[geminiDst]).toBe('mac-book-pro-debug');
+    expect(updated.projects[geminiDst]).toBe(encodeGemini(geminiDst));
   });
 
   it('compensation: restores Gemini projects.json on later failure', async () => {

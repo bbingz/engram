@@ -46,6 +46,14 @@ export class ClineAdapter implements SessionAdapter {
         try {
           await stat(uiPath);
           yield uiPath;
+          continue;
+        } catch {
+          /* skip */
+        }
+        const legacyPath = join(this.tasksRoot, dir, 'claude_messages.json');
+        try {
+          await stat(legacyPath);
+          yield legacyPath;
         } catch {
           /* skip */
         }
@@ -161,7 +169,10 @@ export class ClineAdapter implements SessionAdapter {
         const match =
           request.match(/Current Working Directory \((.+?)\) Files/s) ??
           request.match(/Current Working Directory \(([^)]+)\)/);
-        if (match) return match[1];
+        if (match) {
+          const cwd = match[1];
+          return cwd.startsWith('Primary: ') ? '' : cwd;
+        }
       } catch {
         /* skip */
       }

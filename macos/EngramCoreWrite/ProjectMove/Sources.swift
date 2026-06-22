@@ -6,6 +6,7 @@
 // supplies the recursive walk + literal-substring grep used by the
 // orchestrator and the post-move review.
 import Darwin
+import CryptoKit
 import Foundation
 import GRDB
 
@@ -409,6 +410,9 @@ public struct WalkIssue: Equatable, Sendable {
 }
 
 public enum SessionSources {
+    public static let defaultSessionExtensions: Set<String> = [".jsonl", ".json"]
+    public static let defaultSessionFilenames: Set<String> = [".project_root"]
+
     /// The session roots a project move must consider. Ordering matches
     /// Node parity: known-active first (claude-code → Codex stores →
     /// gemini-cli → iflow → qoder), then flat-layout tail (opencode →
@@ -519,18 +523,12 @@ public enum SessionSources {
         return conflicts.sorted()
     }
 
-    /// Encode a project cwd into the Gemini CLI project slug used both as the
-    /// `~/.gemini/tmp/<slug>/` directory name and as the `projects.json` value.
-    /// Gemini slugifies the cwd basename: lowercase, `_` → `-`, then strip the
-    /// wrapping dashes. e.g. `/Users/bing/-Code-` → `code`,
-    /// `/Users/bing/-Code-/WebSite_Gemini` → `website-gemini`. Lossy by design.
+    /// Encode a project cwd into Gemini CLI's project directory name.
+    /// Current Gemini CLI uses SHA-256 of the project root path string.
     public static func encodeGemini(_ absolutePath: String) -> String {
-        var s = (absolutePath as NSString).lastPathComponent
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")[...]
-        while s.first == "-" { s = s.dropFirst() }
-        while s.last == "-" { s = s.dropLast() }
-        return String(s)
+        SHA256.hash(data: Data(absolutePath.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     /// Recursively walk `root` invoking `onFile` for each session file
@@ -540,7 +538,8 @@ public enum SessionSources {
     /// no array materialisation.
     public static func walkSessionFiles(
         root: String,
-        extensions: Set<String> = [".jsonl", ".json"],
+        extensions: Set<String> = defaultSessionExtensions,
+        filenames: Set<String> = defaultSessionFilenames,
         maxFileBytes: Int64 = Int64.max,
         onIssue: ((WalkIssue) -> Void)? = nil,
         onFile: (String) -> Void
@@ -591,9 +590,8 @@ public enum SessionSources {
                     ))
                     continue
                 }
-                guard let dot = name.lastIndex(of: ".") else { continue }
-                let ext = String(name[dot...])
-                if !extensions.contains(ext) { continue }
+                let ext = name.lastIndex(of: ".").map { String(name[$0...]) } ?? ""
+                if !filenames.contains(name), !extensions.contains(ext) { continue }
                 if Int64(info.st_size) > maxFileBytes {
                     onIssue?(WalkIssue(
                         path: full,
@@ -607,7 +605,7 @@ public enum SessionSources {
         }
     }
 
-    /// Find JSONL/JSON files under `root` containing `needle` or its canonical
+    /// Find patchable session files under `root` containing `needle` or its canonical
     /// Unicode path variants as literal byte substrings. Tries `grep -rlF`
     /// first (~100× faster); falls back to the in-process walk on grep failure.
     public static func findReferencingFiles(
@@ -657,6 +655,7 @@ public enum SessionSources {
                 "grep", "-rlF",
                 "--include=*.jsonl",
                 "--include=*.json",
+                "--include=.project_root",
                 "--",
                 needle, root,
             ]

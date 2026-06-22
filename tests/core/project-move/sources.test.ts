@@ -80,14 +80,18 @@ describe('getSourceRoots', () => {
       '-Users-a-b-proj',
     );
     const geminiRoot = roots.find((r) => r.id === 'gemini-cli');
-    expect(geminiRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe('proj');
-    expect(geminiRoot?.encodeProjectDir?.('/Users/bing/-Code-')).toBe('code');
+    expect(geminiRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
+      'fb8ca3065078b192b450d6b162f97aea0d9af077c3eae1fc83efe185896b8be4',
+    );
+    expect(geminiRoot?.encodeProjectDir?.('/Users/bing/-Code-')).toBe(
+      'f2b35ab42fab408079d691fc1e4b5fcc3721611ee3fc5a01e5d295dadfd4a01e',
+    );
     expect(
       geminiRoot?.encodeProjectDir?.('/Users/bing/-Code-/WebSite_Gemini'),
-    ).toBe('website-gemini');
+    ).toBe('14c0b06be029ed0eec4a9c32d825e06252ec7b3893898df56a8891dba6fdebf2');
     expect(
       geminiRoot?.encodeProjectDir?.('/Users/bing/-Code-/java_charge'),
-    ).toBe('java-charge');
+    ).toBe('5f3981f56dac06ba6e0042d1c632b29de18c0ef9d2715d005e4fb5090c9f0644');
     const iflowRoot = roots.find((r) => r.id === 'iflow');
     expect(iflowRoot?.encodeProjectDir?.('/Users/a/b/proj')).toBe(
       '-Users-a-b-proj',
@@ -115,18 +119,22 @@ describe('encodeIflow', () => {
 });
 
 describe('encodeGemini', () => {
-  it('mirrors Gemini CLI project slug values observed in projects.json', () => {
-    expect(encodeGemini('/Users/bing/-Code-')).toBe('code');
+  it('mirrors Gemini CLI project-root SHA-256 directory names', () => {
+    expect(encodeGemini('/Users/bing/-Code-')).toBe(
+      'f2b35ab42fab408079d691fc1e4b5fcc3721611ee3fc5a01e5d295dadfd4a01e',
+    );
     expect(encodeGemini('/Users/bing/-NetWork-/Screen-disconnet-erro')).toBe(
-      'screen-disconnet-erro',
+      '6faefbf4c9b088f7c662b7ed311080cd0eae9a994198e6b81bca6f79108e2eea',
     );
     expect(encodeGemini('/Users/bing/-Code-/WebSite_Gemini')).toBe(
-      'website-gemini',
+      '14c0b06be029ed0eec4a9c32d825e06252ec7b3893898df56a8891dba6fdebf2',
     );
     expect(encodeGemini('/Users/bing/-Code-/mac_Book_Pro_Debug')).toBe(
-      'mac-book-pro-debug',
+      'd4a081da72ab6feb63ddbbacad9c14d4bf185694ba07a984f3b03d24a2e9020b',
     );
-    expect(encodeGemini('/a/_foo_')).toBe('foo');
+    expect(encodeGemini('/a/_foo_')).toBe(
+      '380ff7c65714acba22d3ab3c5550fb6a1e96c89b3692093b0852866016f46aef',
+    );
   });
 });
 
@@ -141,16 +149,21 @@ describe('walkSessionFiles + findReferencingFiles', () => {
     rmSync(tmp, { recursive: true });
   });
 
-  it('yields .jsonl and .json files, skips other extensions', async () => {
+  it('yields session JSON files and Gemini project root markers', async () => {
     writeFileSync(join(tmp, 'session.jsonl'), 'x');
     writeFileSync(join(tmp, 'config.json'), 'x');
+    writeFileSync(join(tmp, '.project_root'), 'x');
     writeFileSync(join(tmp, 'readme.md'), 'x');
     writeFileSync(join(tmp, 'binary.bin'), 'x');
 
     const seen: string[] = [];
     for await (const f of walkSessionFiles(tmp)) seen.push(f);
     expect(seen.sort()).toEqual(
-      [join(tmp, 'config.json'), join(tmp, 'session.jsonl')].sort(),
+      [
+        join(tmp, '.project_root'),
+        join(tmp, 'config.json'),
+        join(tmp, 'session.jsonl'),
+      ].sort(),
     );
   });
 
@@ -192,6 +205,14 @@ describe('walkSessionFiles + findReferencingFiles', () => {
 
     const hits = await findReferencingFiles(tmp, '/Users/bing/foo');
     expect(hits).toEqual([join(tmp, 'a.jsonl')]);
+  });
+
+  it('findReferencingFiles includes Gemini .project_root markers', async () => {
+    writeFileSync(join(tmp, '.project_root'), '/Users/bing/gemini-proj\n');
+    writeFileSync(join(tmp, 'a.jsonl'), '{"cwd":"/Users/bing/other"}');
+
+    const hits = await findReferencingFiles(tmp, '/Users/bing/gemini-proj');
+    expect(hits).toEqual([join(tmp, '.project_root')]);
   });
 
   it('findReferencingFiles handles UTF-8 needles', async () => {

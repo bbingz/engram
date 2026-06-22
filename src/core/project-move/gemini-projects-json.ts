@@ -2,10 +2,10 @@
 // project registry during a project move.
 //
 // Gemini CLI stores a `~/.gemini/projects.json` file mapping
-// { absoluteCwd → projectSlug }. The adapter uses this reverse map to
-// resolve a session file (`tmp/<slug>/chats/…`) back to its real cwd.
+// { absoluteCwd → projectName }. The adapter uses this reverse map to
+// resolve a session file (`tmp/<projectName>/chats/…`) back to its real cwd.
 // If we rename the tmp dir but leave this file stale, the adapter either
-// mis-resolves cwd or falls back to the slug string — silently
+// mis-resolves cwd or falls back to the project-name string — silently
 // detaching the migrated sessions from the renamed project.
 //
 // This module keeps the two sides in sync. The orchestrator calls
@@ -123,7 +123,7 @@ export async function planGeminiProjectsJsonUpdate(
 /**
  * Apply the planned update: remove the old entry (if any) and add the new
  * entry. Writes atomically. Caller must have already run the preflight
- * collision check (`collectOtherGeminiCwdsSharingBasename`).
+ * collision check (`collectOtherGeminiCwdsSharingProjectName`).
  */
 export async function applyGeminiProjectsJsonUpdate(
   plan: GeminiProjectsJsonUpdatePlan,
@@ -170,20 +170,20 @@ export async function reverseGeminiProjectsJsonUpdate(
 
 /**
  * Collision probe (Gemini major #3): find other cwds in projects.json
- * that share the target slug but are NOT the project being moved.
+ * that share the target project name but are NOT the project being moved.
  * If any exist, renaming the tmp dir would steal their sessions.
  *
  * Returns the list of conflicting cwds (empty = safe).
  */
-export async function collectOtherGeminiCwdsSharingBasename(
+export async function collectOtherGeminiCwdsSharingProjectName(
   filePath: string,
-  targetBasename: string,
+  targetProjectName: string,
   srcCwd: string,
 ): Promise<string[]> {
   const { shape } = await loadProjectsJson(filePath);
   const conflicts: string[] = [];
   for (const [cwd, name] of Object.entries(shape.map)) {
-    if (name === targetBasename && cwd !== srcCwd) {
+    if (name === targetProjectName && cwd !== srcCwd) {
       conflicts.push(cwd);
     }
   }

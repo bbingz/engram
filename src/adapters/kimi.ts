@@ -121,9 +121,8 @@ export class KimiAdapter implements SessionAdapter {
 
             if (role === 'user') {
               userCount++;
-              if (!firstUserText && typeof obj.content === 'string') {
-                firstUserText = obj.content;
-              }
+              if (!firstUserText)
+                firstUserText = this.extractContent(obj.content);
             } else {
               assistantCount++;
             }
@@ -223,7 +222,7 @@ export class KimiAdapter implements SessionAdapter {
 
           yield {
             role: role as 'user' | 'assistant',
-            content: typeof obj.content === 'string' ? obj.content : '',
+            content: this.extractContent(obj.content),
             timestamp: lineTs || wireTs,
           };
           yielded++;
@@ -243,8 +242,8 @@ export class KimiAdapter implements SessionAdapter {
   }
 
   /**
-   * Get all context files for a session: context.jsonl + context_sub_1.jsonl ... context_sub_N.jsonl
-   * Returns files in order (main first, then subs sorted numerically).
+   * Get all context files for a session: context.jsonl plus legacy
+   * context_sub_N.jsonl and current context_N.jsonl rotation shards.
    */
   private async getAllContextFiles(contextPath: string): Promise<string[]> {
     const dir = dirname(contextPath);
@@ -252,18 +251,10 @@ export class KimiAdapter implements SessionAdapter {
     try {
       const entries = await readdir(dir);
       const subs = entries
-        .filter((f) => f.startsWith('context_sub_') && f.endsWith('.jsonl'))
-        .sort((a, b) => {
-          const numA = parseInt(
-            a.replace('context_sub_', '').replace('.jsonl', ''),
-            10,
-          );
-          const numB = parseInt(
-            b.replace('context_sub_', '').replace('.jsonl', ''),
-            10,
-          );
-          return numA - numB;
-        });
+        .filter((f) => this.contextShardIndex(f) !== null)
+        .sort(
+          (a, b) => this.contextShardIndex(a)! - this.contextShardIndex(b)!,
+        );
       for (const sub of subs) {
         files.push(join(dir, sub));
       }
@@ -271,6 +262,26 @@ export class KimiAdapter implements SessionAdapter {
       // can't read directory — just use the main file
     }
     return files;
+  }
+
+  private contextShardIndex(filename: string): number | null {
+    const match = /^context(?:_sub)?_(\d+)\.jsonl$/.exec(filename);
+    return match ? Number.parseInt(match[1], 10) : null;
+  }
+
+  private extractContent(content: unknown): string {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    return content
+      .map((item) => {
+        const block = item as Record<string, unknown>;
+        if (block.type === 'text' && typeof block.text === 'string') {
+          return block.text;
+        }
+        return undefined;
+      })
+      .filter(Boolean)
+      .join('\n\n');
   }
 
   private async resolveCwd(sessionId: string): Promise<string> {

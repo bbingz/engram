@@ -38,6 +38,37 @@ describe('CommandCodeAdapter', () => {
     );
   });
 
+  it('falls back to args for tool-call input when input is absent', async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'engram-commandcode-args-'));
+    const path = join(tmpRoot, 'args.jsonl');
+    try {
+      writeFileSync(
+        path,
+        `${JSON.stringify({
+          id: 'm1',
+          sessionId: 'cc-args',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolName: 'read_file',
+              args: { path: '/tmp/file.txt' },
+            },
+          ],
+          timestamp: '2026-05-20T02:00:00.000Z',
+        })}\n`,
+      );
+
+      const messages = [];
+      for await (const msg of adapter.streamMessages(path)) messages.push(msg);
+      expect(messages.flatMap((msg) => msg.toolCalls ?? [])[0]?.input).toBe(
+        '{"path":"/tmp/file.txt"}',
+      );
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   describe('system injection classification (round-4 NEW-2)', () => {
     const tmpRoot = mkdtempSync(join(tmpdir(), 'engram-commandcode-'));
     const path = join(tmpRoot, 'inject.jsonl');

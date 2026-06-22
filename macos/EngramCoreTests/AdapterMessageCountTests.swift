@@ -90,6 +90,47 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.filter { $0.role == .user }.count, info.userMessageCount)
     }
 
+    func testVsCodeReplaysAppendMutationLog() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-1/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let initial: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-replay",
+                "creationDate": 1_700_000_000_000,
+                "requests": [],
+            ],
+        ]
+        let request: [String: Any] = [
+            "requestId": "r1",
+            "timestamp": 1_700_000_005_000,
+            "message": ["text": "request from mutation log"],
+            "response": [
+                ["value": ["kind": "markdownContent", "content": ["value": "answer from mutation log"]]]
+            ],
+        ]
+        let push: [String: Any] = [
+            "kind": 2,
+            "k": ["requests"],
+            "v": [request],
+        ]
+        let file = chatDir.appendingPathComponent("sess.jsonl")
+        try ([try jsonLine(initial), try jsonLine(push)].joined(separator: "\n") + "\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(workspaceStorageDir: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.summary, "request from mutation log")
+        XCTAssertEqual(streamed.map(\.content), ["request from mutation log", "answer from mutation log"])
+    }
+
     // MARK: - Gemini CLI
 
     func testGeminiCountsOnlyNonEmptyTurns() async throws {
@@ -169,6 +210,75 @@ final class AdapterMessageCountTests: XCTestCase {
             streamed.last?.usage,
             TokenUsage(inputTokens: 500, outputTokens: 50, cacheReadTokens: 300, cacheCreationTokens: 0)
         )
+    }
+
+    func testGeminiParsesCurrentJsonlEventLogAndProjectRoot() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("tmp/hash-001", isDirectory: true)
+        let chatsDir = projectDir.appendingPathComponent("chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+        try "/Users/test/gemini-jsonl".write(
+            to: projectDir.appendingPathComponent(".project_root"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let lines: [[String: Any]] = [
+            [
+                "kind": "main",
+                "sessionId": "gemini-jsonl-1",
+                "projectHash": "hash-001",
+                "startTime": "2026-06-21T01:33:00.000Z",
+                "lastUpdated": "2026-06-21T01:33:00.000Z",
+            ],
+            [
+                "id": "m1",
+                "timestamp": "2026-06-21T01:33:05.000Z",
+                "type": "user",
+                "content": [["text": "jsonl prompt"]],
+            ],
+            [
+                "id": "m2",
+                "timestamp": "2026-06-21T01:33:09.000Z",
+                "type": "gemini",
+                "content": "jsonl answer",
+            ],
+            [
+                "$set": [
+                    "lastUpdated": "2026-06-21T01:33:09.000Z",
+                    "summary": "derived jsonl title",
+                ],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("jsonl-session-1.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        try jsonLine(["originator": "claude-code"])
+            .write(
+                to: chatsDir.appendingPathComponent("jsonl-session-1.engram.json"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path
+        )
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
+            [file.standardizedFileURL.path]
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.id, "gemini-jsonl-1")
+        XCTAssertEqual(info.cwd, "/Users/test/gemini-jsonl")
+        XCTAssertEqual(info.endTime, "2026-06-21T01:33:09.000Z")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(streamed.map(\.content), ["jsonl prompt", "jsonl answer"])
     }
 
     // MARK: - Iflow
@@ -323,6 +433,43 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    func testKimiReadsCurrentContextRotationAndArrayTextContent() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace-1/kimi-session-rotation", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        let contextFile = sessionDir.appendingPathComponent("context.jsonl")
+        try (try jsonLine(["role": "user", "content": "main question"]) + "\n")
+            .write(to: contextFile, atomically: true, encoding: .utf8)
+        let shardLines: [[String: Any]] = [
+            [
+                "role": "assistant",
+                "content": [
+                    ["type": "think", "think": "private reasoning", "encrypted": NSNull()],
+                    ["type": "text", "text": "visible answer"],
+                ],
+            ],
+            [
+                "role": "user",
+                "content": [["type": "text", "text": "follow-up from shard"]],
+            ],
+        ]
+        try shardLines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: sessionDir.appendingPathComponent("context_1.jsonl"), atomically: true, encoding: .utf8)
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: contextFile.path))
+        let streamed = try await drain(adapter, locator: contextFile.path)
+
+        XCTAssertEqual(info.userMessageCount, 2)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(streamed.map(\.content), ["main question", "visible answer", "follow-up from shard"])
+    }
+
     // MARK: - Qwen
 
     func testQwenAttachesAssistantUsageMetadata() async throws {
@@ -465,6 +612,97 @@ final class AdapterMessageCountTests: XCTestCase {
         let streamed = try await drain(adapter, locator: file.path)
 
         XCTAssertEqual(streamed.map(\.content), ["first\n\nsecond"])
+    }
+
+    func testQwenSkipsThoughtTextParts() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-1/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "assistant",
+                "sessionId": "qwen-thought-1",
+                "cwd": "/tmp/qwen-project",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "message": [
+                    "role": "model",
+                    "parts": [
+                        ["text": "private reasoning", "thought": true],
+                        ["text": "final answer"],
+                    ],
+                ],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("qwen-thought.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(projectsRoot: root.path)
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(streamed.map(\.content), ["final answer"])
+    }
+
+    // MARK: - Cline
+
+    func testClineListsLegacyClaudeMessagesWhenUiMessagesMissing() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("legacy-task", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let legacyFile = taskDir.appendingPathComponent("claude_messages.json")
+        let messages: [[String: Any]] = [
+            [
+                "ts": 1_771_392_000_000,
+                "type": "say",
+                "say": "task",
+                "text": "legacy task",
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: messages, options: [.withoutEscapingSlashes])
+        try data.write(to: legacyFile)
+
+        let adapter = ClineAdapter(tasksRoot: root.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
+            [legacyFile.standardizedFileURL.path]
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: legacyFile.path))
+
+        XCTAssertEqual(info.id, "legacy-task")
+        XCTAssertEqual(info.summary, "legacy task")
+    }
+
+    func testClineRejectsPrimaryWorkspaceLabelAsCwd() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("primary-task", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        let messages: [[String: Any]] = [
+            [
+                "ts": 1_771_392_000_000,
+                "type": "say",
+                "say": "api_req_started",
+                "text": ##"{"request":"# Current Working Directory (Primary: workspace-a) Files\n- file.ts"}"##,
+            ],
+            [
+                "ts": 1_771_392_001_000,
+                "type": "say",
+                "say": "task",
+                "text": "hello",
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: messages, options: [.withoutEscapingSlashes])
+        try data.write(to: file)
+
+        let adapter = ClineAdapter(tasksRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(info.cwd, "")
     }
 
     // MARK: - Codex
@@ -771,6 +1009,32 @@ final class AdapterMessageCountTests: XCTestCase {
             </work_done>
             """
         ])
+    }
+
+    func testCopilotStripsMatchedYamlQuotePairs() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-quoted", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try """
+        id: "quoted-id"
+        cwd: "/tmp/path with space"
+        created_at: '2026-01-01T00:00:00Z'
+        updated_at: 2026-01-01T00:05:00Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try [
+            jsonLine(["type": "user.message", "timestamp": "2026-01-01T00:01:00Z", "data": ["content": "hi"]]),
+            jsonLine(["type": "assistant.message", "timestamp": "2026-01-01T00:02:00Z", "data": ["content": "ok"]]),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: events.path))
+
+        XCTAssertEqual(info.id, "quoted-id")
+        XCTAssertEqual(info.cwd, "/tmp/path with space")
+        XCTAssertEqual(info.startTime, "2026-01-01T00:00:00Z")
     }
 
     // MARK: - OpenCode

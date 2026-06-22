@@ -1,9 +1,7 @@
 // src/adapters/vscode.ts
-import { createReadStream } from 'node:fs';
 import { glob, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
 import type {
   Message,
@@ -26,10 +24,12 @@ interface VsSessionData {
   requests: VsRequest[];
 }
 
-interface VsLine0 {
-  kind: 0;
-  v: VsSessionData;
-}
+type VsLogPath = (string | number)[];
+type VsLogEntry =
+  | { kind: 0; v: VsSessionData }
+  | { kind: 1; k: VsLogPath; v: unknown }
+  | { kind: 2; k: VsLogPath; v?: unknown[]; i?: number }
+  | { kind: 3; k: VsLogPath };
 
 export class VsCodeAdapter implements SessionAdapter {
   readonly name = 'vscode' as const;
@@ -219,15 +219,8 @@ export class VsCodeAdapter implements SessionAdapter {
 
   private async readSession(filePath: string): Promise<VsSessionData | null> {
     try {
-      // The session payload lives entirely on line 0. Stream just that line
-      // instead of readFile-then-split — chat session files can be many MB and
-      // we discard everything after the first line anyway (matches R4 fix
-      // applied to the windsurf adapter).
-      const firstLine = await readFirstLine(filePath);
-      if (!firstLine) return null;
-      const parsed = JSON.parse(firstLine) as VsLine0;
-      if (parsed.kind !== 0 || !parsed.v) return null;
-      return parsed.v;
+      const raw = await readFile(filePath, 'utf8');
+      return replayMutationLog(raw);
     } catch {
       return null;
     }
@@ -257,21 +250,64 @@ export class VsCodeAdapter implements SessionAdapter {
   }
 }
 
-async function readFirstLine(filePath: string): Promise<string | null> {
-  // Stream the file and bail after the first non-empty line. VS Code chat
-  // session files can be several MB; readFile-then-split would load it all.
-  const stream = createReadStream(filePath, { encoding: 'utf8' });
-  const reader = createInterface({ input: stream, crlfDelay: Infinity });
-  try {
-    for await (const line of reader) {
-      const trimmed = line.trim();
-      return trimmed || null;
+function replayMutationLog(raw: string): VsSessionData | null {
+  let state: unknown;
+  let sawInitial = false;
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry: VsLogEntry;
+    try {
+      entry = JSON.parse(trimmed) as VsLogEntry;
+    } catch {
+      continue;
     }
-    return null;
-  } finally {
-    reader.close();
-    stream.destroy();
+    if (entry.kind === 0) {
+      state = entry.v;
+      sawInitial = true;
+    } else if (sawInitial && entry.kind === 1) {
+      applySet(state, entry.k, entry.v);
+    } else if (sawInitial && entry.kind === 2) {
+      applyPush(state, entry.k, entry.v, entry.i);
+    } else if (sawInitial && entry.kind === 3) {
+      applySet(state, entry.k, undefined);
+    }
   }
+  return sawInitial && state ? (state as VsSessionData) : null;
+}
+
+function applySet(state: unknown, path: VsLogPath, value: unknown): void {
+  if (!path.length) return;
+  let current = state as Record<string | number, unknown>;
+  for (let i = 0; i < path.length - 1; i++) {
+    const segment = path[i];
+    const next = current[segment];
+    if (!next || typeof next !== 'object') return;
+    current = next as Record<string | number, unknown>;
+  }
+  current[path[path.length - 1]] = value;
+}
+
+function applyPush(
+  state: unknown,
+  path: VsLogPath,
+  values: unknown[] | undefined,
+  startIndex: number | undefined,
+): void {
+  if (!path.length) return;
+  let current = state as Record<string | number, unknown>;
+  for (let i = 0; i < path.length - 1; i++) {
+    const segment = path[i];
+    const next = current[segment];
+    if (!next || typeof next !== 'object') return;
+    current = next as Record<string | number, unknown>;
+  }
+  const key = path[path.length - 1];
+  const existing = current[key];
+  const array = Array.isArray(existing) ? existing : [];
+  if (startIndex !== undefined) array.length = startIndex;
+  if (values?.length) array.push(...values);
+  current[key] = array;
 }
 
 // Decode a file:// URI to a local path. Non-file URIs (vscode-remote://,

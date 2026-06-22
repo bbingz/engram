@@ -1,6 +1,7 @@
 // tests/adapters/gemini-cli.test.ts
 
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -47,6 +48,83 @@ describe('GeminiCliAdapter', () => {
     ).toBe(true);
     expect(messages[0].content).toBe('帮我优化这段 SQL 查询');
     expect(messages[1].role).toBe('assistant');
+  });
+
+  it('lists and replays current JSONL event logs', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'engram-gemini-jsonl-'));
+    try {
+      const projectDir = join(tmp, 'tmp', 'hash-001');
+      const chatsDir = join(projectDir, 'chats');
+      mkdirSync(chatsDir, { recursive: true });
+      writeFileSync(
+        join(projectDir, '.project_root'),
+        '/Users/test/gemini-jsonl',
+      );
+      const jsonlPath = join(chatsDir, 'jsonl-session-001.jsonl');
+      writeFileSync(
+        jsonlPath,
+        [
+          JSON.stringify({
+            kind: 'main',
+            sessionId: 'jsonl-session-001',
+            projectHash: 'hash-001',
+            startTime: '2026-06-21T01:33:00.000Z',
+            lastUpdated: '2026-06-21T01:33:00.000Z',
+          }),
+          JSON.stringify({
+            id: 'm1',
+            timestamp: '2026-06-21T01:33:05.000Z',
+            type: 'user',
+            content: [{ text: 'jsonl prompt' }],
+          }),
+          JSON.stringify({
+            id: 'm2',
+            timestamp: '2026-06-21T01:33:09.000Z',
+            type: 'gemini',
+            content: 'jsonl answer',
+          }),
+          JSON.stringify({
+            $set: {
+              lastUpdated: '2026-06-21T01:33:09.000Z',
+              summary: 'derived jsonl title',
+            },
+          }),
+          '',
+        ].join('\n'),
+      );
+      writeFileSync(
+        join(chatsDir, 'jsonl-session-001.engram.json'),
+        JSON.stringify({ originator: 'claude-code' }),
+      );
+
+      const adapter = new GeminiCliAdapter(
+        join(tmp, 'tmp'),
+        join(tmp, 'no.json'),
+      );
+      const files: string[] = [];
+      for await (const file of adapter.listSessionFiles()) files.push(file);
+      expect(files).toEqual([jsonlPath]);
+
+      const info = await adapter.parseSessionInfo(jsonlPath);
+      expect(info).toMatchObject({
+        id: 'jsonl-session-001',
+        cwd: '/Users/test/gemini-jsonl',
+        userMessageCount: 1,
+        assistantMessageCount: 1,
+        summary: 'jsonl prompt',
+        endTime: '2026-06-21T01:33:09.000Z',
+      });
+
+      const messages = [];
+      for await (const msg of adapter.streamMessages(jsonlPath))
+        messages.push(msg);
+      expect(messages.map((msg) => msg.content)).toEqual([
+        'jsonl prompt',
+        'jsonl answer',
+      ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('resolveProject returns cwd for projectName', async () => {

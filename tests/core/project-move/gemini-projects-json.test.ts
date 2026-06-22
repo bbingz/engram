@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   applyGeminiProjectsJsonUpdate,
-  collectOtherGeminiCwdsSharingBasename,
+  collectOtherGeminiCwdsSharingProjectName,
   planGeminiProjectsJsonUpdate,
   reverseGeminiProjectsJsonUpdate,
 } from '../../../src/core/project-move/gemini-projects-json.js';
@@ -45,11 +45,14 @@ describe('gemini-projects-json', () => {
         '/a/proj-v2',
       );
       expect(plan.oldEntry).toEqual({ cwd: '/a/proj', name: 'proj' });
-      expect(plan.newEntry).toEqual({ cwd: '/a/proj-v2', name: 'proj-v2' });
+      expect(plan.newEntry).toEqual({
+        cwd: '/a/proj-v2',
+        name: 'a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417',
+      });
       expect(plan.originalText).not.toBeNull();
     });
 
-    it('uses Gemini slug rules for new project names', async () => {
+    it('uses Gemini SHA-256 project dir names for new project names', async () => {
       writeFileSync(
         file,
         JSON.stringify({
@@ -67,7 +70,7 @@ describe('gemini-projects-json', () => {
 
       expect(plan.newEntry).toEqual({
         cwd: '/Users/bing/-Code-/WebSite_Gemini',
-        name: 'website-gemini',
+        name: '14c0b06be029ed0eec4a9c32d825e06252ec7b3893898df56a8891dba6fdebf2',
       });
     });
 
@@ -78,7 +81,9 @@ describe('gemini-projects-json', () => {
         '/a/proj-v2',
       );
       expect(plan.oldEntry).toBeNull();
-      expect(plan.newEntry.name).toBe('proj-v2');
+      expect(plan.newEntry.name).toBe(
+        'a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417',
+      );
       expect(plan.originalText).toBeNull();
     });
 
@@ -106,7 +111,10 @@ describe('gemini-projects-json', () => {
         '/a/proj-v2',
       );
       expect(plan.oldEntry).toBeNull();
-      expect(plan.newEntry).toEqual({ cwd: '/a/proj-v2', name: 'proj-v2' });
+      expect(plan.newEntry).toEqual({
+        cwd: '/a/proj-v2',
+        name: 'a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417',
+      });
     });
 
     it('throws on invalid JSON (refuses to silently clobber)', async () => {
@@ -135,7 +143,9 @@ describe('gemini-projects-json', () => {
         projects: Record<string, string>;
       };
       expect(after.projects['/a/proj']).toBeUndefined();
-      expect(after.projects['/a/proj-v2']).toBe('proj-v2');
+      expect(after.projects['/a/proj-v2']).toBe(
+        'a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417',
+      );
       expect(after.projects['/b/other']).toBe('other');
     });
 
@@ -152,7 +162,9 @@ describe('gemini-projects-json', () => {
         string
       >;
       // legacy flat layout — no `projects` wrapper
-      expect(after['/a/proj-v2']).toBe('proj-v2');
+      expect(after['/a/proj-v2']).toBe(
+        'a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417',
+      );
       expect(after['/a/proj']).toBeUndefined();
     });
 
@@ -166,7 +178,9 @@ describe('gemini-projects-json', () => {
       const after = JSON.parse(readFileSync(file, 'utf8')) as {
         projects: Record<string, string>;
       };
-      expect(after.projects['/a/proj-v2']).toBe('proj-v2');
+      expect(after.projects['/a/proj-v2']).toBe(
+        'a6170e3f8a116ca9f104bb61bcb6b32eb2c200ad23eb97afa32e229e5970d417',
+      );
     });
   });
 
@@ -228,21 +242,21 @@ describe('gemini-projects-json', () => {
     });
   });
 
-  describe('collectOtherGeminiCwdsSharingBasename', () => {
-    it('flags OTHER cwds sharing the target basename', async () => {
+  describe('collectOtherGeminiCwdsSharingProjectName', () => {
+    it('flags OTHER cwds sharing the target project name', async () => {
       writeFileSync(
         file,
         JSON.stringify({
           projects: {
             '/a/proj': 'proj',
-            '/b/proj': 'proj', // shares basename with src's new name
+            '/b/proj': 'proj', // shares project name with src's new name
             '/c/unrelated': 'unrelated',
           },
         }),
       );
       // src is moving to something that would be called 'proj' — check
       // if any OTHER cwd already claims that name.
-      const conflicts = await collectOtherGeminiCwdsSharingBasename(
+      const conflicts = await collectOtherGeminiCwdsSharingProjectName(
         file,
         'proj',
         '/a/proj',
@@ -250,14 +264,14 @@ describe('gemini-projects-json', () => {
       expect(conflicts).toEqual(['/b/proj']);
     });
 
-    it('returns empty when no other cwd shares the basename', async () => {
+    it('returns empty when no other cwd shares the project name', async () => {
       writeFileSync(
         file,
         JSON.stringify({
           projects: { '/a/proj': 'proj', '/b/other': 'other' },
         }),
       );
-      const conflicts = await collectOtherGeminiCwdsSharingBasename(
+      const conflicts = await collectOtherGeminiCwdsSharingProjectName(
         file,
         'proj',
         '/a/proj',
@@ -266,7 +280,7 @@ describe('gemini-projects-json', () => {
     });
 
     it('treats missing file as empty (no conflicts)', async () => {
-      const conflicts = await collectOtherGeminiCwdsSharingBasename(
+      const conflicts = await collectOtherGeminiCwdsSharingProjectName(
         file,
         'proj',
         '/a/proj',

@@ -584,23 +584,41 @@ VS Code 是一个庞大家族的根：所有源自 Code 的编辑器都 fork 了
 
 ### 待办 / 未验证
 
-- **已填充 request/response 超集。** 所有 live 会话均为空，所以
+- **已填充 request/response 复杂负载。** 所有 live 会话均为空，所以
   `markdownContent` 之外的响应部分 kind（`toolInvocationSerialized`、
-  `progressTask`、`textEditGroup`、…）以及 request 级字段（`result`、
-  `followups`、`agent`、`modelId`、`variableData`）是依据 VS Code
-  源码/网络 + 适配器注释记录的，**未**在本地采样。需在有活跃
-  Copilot Chat 使用的机器上重新采样，以验证 `toolInvocationSerialized`
-  （`toolCallId`/`resultDetails`）的确切嵌套，并确认 `modelId`/`usage` 是否会出现。
+  `progressTaskSerialized`、`textEditGroup`、`thinking`、…）以及 tool/progress
+  负载的确切嵌套，是依据 VS Code 源码 + 适配器注释记录的，**未**在本地采样。
+  需在有活跃 Copilot Chat 使用的机器上重新采样，以验证真实
+  `toolInvocationSerialized` 负载形状（`toolCallId`/`resultDetails` 及任何漂移）。
+  `modelId` 和若干 usage-like 字段已不再未知：当前官方 schema 已包含它们，
+  但 Engram 会忽略它们。
 - **`kind:1` 补丁语义。** 从一个 live 的 2 行文件推断；VS Code 是否
   曾把最近的轮次*只*留作 `kind:1` 增量（使它们对 Engram 不可见）
   未经验证，因为两个适配器都忽略补丁行。
-- **`version:4`+ 漂移。** 只观察到 `version 3`；未交叉核对上游
-  VS Code changelog。
+- **`version:4`+ 漂移。** 本地只观察到 `version 3`，且当前官方
+  `storageSchema` 仍发出 `version:3`；未来 schema 漂移仍是解析风险。
 - **来源拆分。** Engram 是否打算（通过 `responderUsername`）将 Copilot 与
   Gemini-in-VS-Code 拆分为子来源，是一个设计
   问题，无法从代码中解决。
 
-> Web 确认 2026-06-21：无法完成（被自动内容安全过滤器拦截）；权威的下一步是直接阅读开源的 microsoft/vscode 聊天会话存储代码。
+### Official source confirmation (2026-06-21)
+
+- **官方已确认:** `ChatSessionStore` 将索引存于 `chat.ChatSessionStore.index`，
+  常规 workspace 使用 `workspaceStorageHome/<workspaceId>/chatSessions`，空窗口使用
+  profile 下的 `emptyWindowChatSessions` 根目录。
+- **官方已确认:** 当前存储在 `chat.useLogSessionStorage !== false` 时默认写
+  `.jsonl` append log，并保留 flat `.json` fallback。读取时优先读 `.jsonl` log，
+  再回退到 flat JSON 文件。
+- **官方已确认:** `ObjectMutationLog` entry 为 `kind:0` initial、`kind:1` set、
+  `kind:2` push/splice、`kind:3` delete。任何 mutation entry 若出现在 initial
+  entry 之前，都会抛出 `Log file is missing an initial entry`。
+- **官方已确认:** `ChatSessionOperationLog.storageSchema` 发出 `version:3`、
+  `creationDate`、`initialLocation`、`inputState`、`responderUsername`、`sessionId`、
+  `requests`、`hasPendingEdits`、`repoData`、`pendingRequests`、`workingDirectory`。
+  每个 request 的 schema 包含 `agent`、`modelId`、`variableData`、`response`、
+  `result`、`followups`、`modelState`、`completionTokens`、`promptTokens`、
+  `outputBuffer`、`promptTokenDetails`、`copilotCredits`；Engram 当前适配器仍丢弃这些
+  更丰富的 model/usage 字段，只发出上文记录的 user/assistant 文本对。
 
 ---
 
@@ -687,3 +705,11 @@ CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
   "sizeBytes": 779
 }
 ```
+
+## References (official sources)
+
+于 2026-06-21 对照 `microsoft/vscode` `main` 验证:
+
+- [chatSessionStore.ts](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/chat/common/model/chatSessionStore.ts) — storage roots、`chat.ChatSessionStore.index`、`.jsonl` vs `.json` storage、read/write flow。
+- [chatSessionOperationLog.ts](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/chat/common/model/chatSessionOperationLog.ts) — `storageSchema`、request schema、current `version:3`、model and usage-like fields。
+- [objectMutationLog.ts](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/chat/common/model/objectMutationLog.ts) — append-log entry kinds、initial-entry requirement、diff/append behavior。

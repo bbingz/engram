@@ -7,6 +7,58 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Codex remediated session parser drift from the 17-source format audit (2026-06-21, Codex)
+
+Compared the 17-source session-format analysis against current Swift product adapters, TypeScript
+reference adapters, and related migration/resume surfaces, then fixed confirmed drift with focused
+regression tests.
+
+- Fixed Gemini CLI current `.jsonl` event-log ingestion in Swift and TS: adapters now enumerate
+  `.json`/`.jsonl` chat logs without requiring a `session-` prefix, skip `.engram.json` sidecars,
+  replay metadata/message/`$set`/`$rewindTo` records, and prefer the native `.project_root` cwd marker
+  before the legacy `projects.json` reverse map.
+- Fixed VS Code chat-session mutation-log handling in Swift and TS: adapters now replay valid
+  `ObjectMutationLog` kind `0/1/2/3` entries instead of reading only line 0.
+- Fixed Kimi transcript coverage in Swift and TS: current `context_<N>.jsonl` rotation shards are
+  included, and array-form `{type:"text"}` content is extracted while `think` blocks remain excluded.
+- Fixed Qwen assistant content extraction in Swift and TS to skip `parts[]` entries with
+  `thought: true`; fixed TS CommandCode `tool-call.args` fallback parity with Swift.
+- Fixed Cline legacy `claude_messages.json` discovery and prevented multi-root `Primary: <name>`
+  labels from being stored as cwd paths; fixed Swift Copilot `workspace.yaml` quote stripping parity.
+- Fixed related Gemini project-move drift in Swift and TS: migration now scans/patches `.project_root`,
+  discovers marker-only Gemini dirs, renames migrated Gemini dirs using SHA-256(projectRoot), writes
+  the same hash into new `projects.json` entries, and still honors legacy/custom old `projects.json`
+  names when locating the source dir.
+- Resume command behavior did not need a direct command change (`gemini --resume <sessionId>` remains
+  DB-backed), but the Gemini listing fix makes non-`session-` current logs visible to indexing and
+  therefore to resume.
+- Verification: targeted Vitest adapter/project-move/resume tests passed (`137` tests); focused resume
+  endpoint/coordinator checks passed (`8` tests in the filtered run); `npm run typecheck:test`,
+  `npm run lint`, `npm run build`, `npm run check:adapter-parity-fixtures`, `npm run check:fixtures`,
+  full `xcodebuild test -scheme EngramCoreTests`, and `git diff --check` passed. `npm run lint`
+  still reports only the pre-existing `tests/scripts/screenshot-compare.test.ts:136` warning.
+
+### Codex reviewed and completed VS Code session-format source confirmation (2026-06-21, Codex)
+
+Reviewed Claude's `docs/session-formats-claude-codex` work against the current branch state,
+adapter registry, document set, and official sources. Claude's handoff state had the claimed
+17-source / 34-file EN+ZH document set and 28,244-line count; after completing the VS Code
+source pass the set has 28,299 lines. Every EN/ZH pair has matching heading counts, matching
+fenced-code counts, and byte-identical fenced-code contents.
+
+- Completed the one declared gap from Claude's handoff: `vscode` now has official
+  `microsoft/vscode` source confirmation and a `## References (official sources)` section in
+  both EN and ZH docs.
+- Corrected the VS Code open-question wording: current upstream `chatSessionOperationLog.ts`
+  explicitly includes `modelId` and usage-like request fields (`promptTokens`, `outputBuffer`,
+  `promptTokenDetails`, `copilotCredits`), so those fields are official schema facts, though
+  Engram still ignores them.
+- Verification: `rtk node` structural checks returned 34 files, 17 bases, 28,299 total lines,
+  and no missing references; the EN/ZH heading/fence/code-block parity check returned no
+  errors. `npm run typecheck:test`, `npm run lint`, `npm run build`, and `git diff --check`
+  passed. `npm run lint` still reports the pre-existing
+  `tests/scripts/screenshot-compare.test.ts:136` warning.
+
 ### Session-format reference docs: ALL 17 sources, bilingual + official web-confirmation (2026-06-21, Claude)
 
 Expanded the two pilot docs into a complete `docs/session-formats/` reference set covering ALL 17

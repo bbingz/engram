@@ -588,23 +588,44 @@ is the Copilot extension *inside* the editor, persisted in VS Code's
 
 ### Open / unverified
 
-- **Populated request/response superset.** All live sessions are empty, so
-  response-part kinds beyond `markdownContent` (`toolInvocationSerialized`,
-  `progressTask`, `textEditGroup`, …) and request-level fields (`result`,
-  `followups`, `agent`, `modelId`, `variableData`) are documented from VS Code
-  source/web + adapter comments, **not** sampled locally. Re-sample a machine with
-  active Copilot Chat usage to verify exact nesting of `toolInvocationSerialized`
-  (`toolCallId`/`resultDetails`) and confirm whether `modelId`/`usage` ever appear.
+- **Populated request/response complex payloads.** All live sessions are empty,
+  so response-part kinds beyond `markdownContent` (`toolInvocationSerialized`,
+  `progressTaskSerialized`, `textEditGroup`, `thinking`, …) and the exact nesting
+  of tool/progress payloads are documented from VS Code source + adapter comments,
+  **not** sampled locally. Re-sample a machine with active Copilot Chat usage to
+  verify real `toolInvocationSerialized` payload shape (`toolCallId`/`resultDetails`
+  and any drift). `modelId` and several usage-like fields are no longer unknown:
+  the current official schema includes them, but Engram ignores them.
 - **`kind:1` patch semantics.** Inferred from one live 2-line file; whether VS Code
   ever leaves recent turns *only* as `kind:1` deltas (making them invisible to
   Engram) is unverified, since both adapters ignore patch lines.
-- **`version:4`+ drift.** Only `version 3` observed; no upstream VS Code changelog
-  cross-checked.
+- **`version:4`+ drift.** Only `version 3` observed locally, and the current
+  official `storageSchema` still emits `version:3`; future schema drift remains a
+  parser risk.
 - **Provenance split.** Whether Engram intends to split Copilot vs
   Gemini-in-VS-Code (via `responderUsername`) into sub-sources is a design
   question, not resolvable from code.
 
-> Web confirmation 2026-06-21: could not be completed (blocked by an automated content-safety filter); the authoritative next step is reading the open-source microsoft/vscode chat-session storage code directly.
+### Official source confirmation (2026-06-21)
+
+- **Confirmed (official):** `ChatSessionStore` stores the index under
+  `chat.ChatSessionStore.index`, uses `workspaceStorageHome/<workspaceId>/chatSessions`
+  for normal workspaces, and uses the profile `emptyWindowChatSessions` root for an
+  empty window.
+- **Confirmed (official):** current storage writes `.jsonl` append logs by default
+  when `chat.useLogSessionStorage !== false`, with a flat `.json` fallback. Reads
+  prefer the `.jsonl` log and fall back to the flat JSON file.
+- **Confirmed (official):** `ObjectMutationLog` entries are `kind:0` initial,
+  `kind:1` set, `kind:2` push/splice, and `kind:3` delete. Any mutation entry
+  before an initial entry throws `Log file is missing an initial entry`.
+- **Confirmed (official):** `ChatSessionOperationLog.storageSchema` emits
+  `version:3`, `creationDate`, `initialLocation`, `inputState`,
+  `responderUsername`, `sessionId`, `requests`, `hasPendingEdits`, `repoData`,
+  `pendingRequests`, and `workingDirectory`. Per-request schema includes `agent`,
+  `modelId`, `variableData`, `response`, `result`, `followups`, `modelState`,
+  `completionTokens`, `promptTokens`, `outputBuffer`, `promptTokenDetails`, and
+  `copilotCredits`; Engram's current adapter still drops these richer model/usage
+  fields and emits only the user/assistant text pairs documented above.
 
 ---
 
@@ -691,3 +712,11 @@ CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
   "sizeBytes": 779
 }
 ```
+
+## References (official sources)
+
+Validated against `microsoft/vscode` `main` on 2026-06-21:
+
+- [chatSessionStore.ts](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/chat/common/model/chatSessionStore.ts) — storage roots, `chat.ChatSessionStore.index`, `.jsonl` vs `.json` storage, read/write flow.
+- [chatSessionOperationLog.ts](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/chat/common/model/chatSessionOperationLog.ts) — `storageSchema`, request schema, current `version:3`, model and usage-like fields.
+- [objectMutationLog.ts](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/chat/common/model/objectMutationLog.ts) — append-log entry kinds, initial-entry requirement, diff/append behavior.

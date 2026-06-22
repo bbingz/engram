@@ -204,7 +204,7 @@ export function humanizeForMcp(err: unknown): string {
       );
     case 'SharedEncodingCollisionError':
       return (
-        'The target dir is shared by multiple projects because this source uses a lossy encoding (e.g. iFlow/Gemini basename-per-project). Renaming would silently steal sessions from the other projects listed in details.sharingCwds. Do not retry; the user must manually separate the dirs.\n' +
+        'The target dir is shared by multiple projects because this source uses a non-unique project directory name (for example, iFlow lossy encoding or a stale Gemini projects.json entry). Renaming would silently steal sessions from the other projects listed in details.sharingCwds. Do not retry; the user must manually separate the dirs.\n' +
         base
       );
     default:

@@ -141,12 +141,104 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
     ) throws -> Phase4AdapterSupport.JSONObject? {
         let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
         if let failure { throw failure }
-        guard let line0 = objects.first,
-              (line0["kind"] as? NSNumber)?.intValue == 0
-        else {
-            return nil
+        return replayMutationLog(objects)
+    }
+
+    private static func replayMutationLog(_ objects: [Phase4AdapterSupport.JSONObject]) -> Phase4AdapterSupport.JSONObject? {
+        var state: Any?
+        var sawInitial = false
+        for entry in objects {
+            guard let kind = Phase4AdapterSupport.int64(entry["kind"]) else { continue }
+            switch kind {
+            case 0:
+                state = entry["v"]
+                sawInitial = true
+            case 1 where sawInitial:
+                guard let path = JSONLAdapterSupport.array(entry["k"]) else { continue }
+                state = setting(state, path: path, value: entry["v"])
+            case 2 where sawInitial:
+                guard let path = JSONLAdapterSupport.array(entry["k"]) else { continue }
+                state = pushing(
+                    state,
+                    path: path,
+                    values: JSONLAdapterSupport.array(entry["v"]),
+                    startIndex: Phase4AdapterSupport.int64(entry["i"]).map(Int.init)
+                )
+            case 3 where sawInitial:
+                guard let path = JSONLAdapterSupport.array(entry["k"]) else { continue }
+                state = setting(state, path: path, value: nil)
+            default:
+                continue
+            }
         }
-        return JSONLAdapterSupport.object(line0["v"])
+        return JSONLAdapterSupport.object(state)
+    }
+
+    private static func setting(_ container: Any?, path: [Any], value: Any?) -> Any? {
+        guard let head = path.first else { return container }
+        let rest = Array(path.dropFirst())
+        if let key = pathKey(head) {
+            var object = JSONLAdapterSupport.object(container) ?? [:]
+            if rest.isEmpty {
+                object[key] = value
+            } else {
+                object[key] = setting(object[key], path: rest, value: value)
+            }
+            return object
+        }
+        guard let index = pathIndex(head), index >= 0 else { return container }
+        var array = JSONLAdapterSupport.array(container) ?? []
+        while array.count <= index { array.append([String: Any]()) }
+        if rest.isEmpty {
+            array[index] = value as Any
+        } else {
+            array[index] = setting(array[index], path: rest, value: value) as Any
+        }
+        return array
+    }
+
+    private static func pushing(
+        _ container: Any?,
+        path: [Any],
+        values: [Any]?,
+        startIndex: Int?
+    ) -> Any? {
+        guard let head = path.first else { return container }
+        let rest = Array(path.dropFirst())
+        if let key = pathKey(head) {
+            var object = JSONLAdapterSupport.object(container) ?? [:]
+            if rest.isEmpty {
+                var array = JSONLAdapterSupport.array(object[key]) ?? []
+                if let startIndex { array = Array(array.prefix(max(startIndex, 0))) }
+                if let values { array.append(contentsOf: values) }
+                object[key] = array
+            } else {
+                object[key] = pushing(object[key], path: rest, values: values, startIndex: startIndex)
+            }
+            return object
+        }
+        guard let index = pathIndex(head), index >= 0 else { return container }
+        var array = JSONLAdapterSupport.array(container) ?? []
+        while array.count <= index { array.append([String: Any]()) }
+        if rest.isEmpty {
+            var target = JSONLAdapterSupport.array(array[index]) ?? []
+            if let startIndex { target = Array(target.prefix(max(startIndex, 0))) }
+            if let values { target.append(contentsOf: values) }
+            array[index] = target
+        } else {
+            array[index] = pushing(array[index], path: rest, values: values, startIndex: startIndex) as Any
+        }
+        return array
+    }
+
+    private static func pathKey(_ value: Any) -> String? {
+        JSONLAdapterSupport.string(value)
+    }
+
+    private static func pathIndex(_ value: Any) -> Int? {
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? Int { return value }
+        return nil
     }
 
     private static func readWorkspaceCwd(for locator: String) -> String {

@@ -11,7 +11,7 @@
 //   0.5 acquireLock                      (cross-process advisory lock)
 //   1. safeMoveDir physical
 //   2. Rename per-project dirs for each source that groups by project
-//      (Claude Code = encoded cwd, Gemini = slug, iFlow = iflow-encoded)
+//      (Claude Code = encoded cwd, Gemini = SHA-256 cwd, iFlow = iflow-encoded)
 //   3. Scan all source roots → findReferencingFiles → patchFile (per-file CAS)
 //   B. markFsDone                        (state='fs_done', detail = stats)
 //   C. applyMigrationDb in transaction   (state='committed')
@@ -458,9 +458,9 @@ public enum ProjectMoveOrchestrator {
                         .deletingLastPathComponent as NSString)
                         .appendingPathComponent("projects.json")
 
-                    let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingBasename(
+                    let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingProjectName(
                         filePath: projectsFile,
-                        targetBasename: SessionSources.encodeGemini(dst),
+                        targetProjectName: SessionSources.encodeGemini(dst),
                         srcCwd: src
                     )
                     if !conflicts.isEmpty {
@@ -520,8 +520,8 @@ public enum ProjectMoveOrchestrator {
             let ccDirRenamed = renamedDirs.contains { $0.sourceId == .claudeCode }
 
             // Step 2.5: apply Gemini projects.json rewrite (after the dir
-            // rename). A lossy same-slug move can skip the directory rename as
-            // noop while still needing the registry key rewritten from src to dst.
+            // rename). A no-op source-specific project name can skip the
+            // directory rename while still needing the registry key rewritten.
             let geminiDirTouched = renamedDirs.contains { $0.sourceId == .geminiCli }
                 || skippedDirs.contains { $0.sourceId == .geminiCli && $0.reason == .noop }
             if let plan = geminiProjectsPlan,
@@ -1134,6 +1134,9 @@ private func fileHasStructuredCwd(_ file: String, cwd: String) -> Bool {
         for line in text.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
+            if (file as NSString).lastPathComponent == ".project_root", trimmed == cwd {
+                return true
+            }
             guard let data = trimmed.data(using: .utf8) else { continue }
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }

@@ -230,6 +230,7 @@ final class QwenAdapter: SessionAdapter, Sendable {
         var textParts: [String] = []
         for part in parts {
             guard let object = JSONLAdapterSupport.object(part),
+                  (object["thought"] as? Bool) != true,
                   let text = JSONLAdapterSupport.string(object["text"]),
                   !text.isEmpty
             else {

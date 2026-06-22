@@ -15,6 +15,7 @@ interface GeminiSession {
   projectHash: string;
   startTime: string;
   lastUpdated?: string;
+  summary?: string;
   messages: GeminiMessage[];
 }
 
@@ -96,7 +97,10 @@ export class GeminiCliAdapter implements SessionAdapter {
         try {
           const files = await readdir(chatsDir);
           for (const file of files) {
-            if (file.startsWith('session-') && file.endsWith('.json')) {
+            if (
+              !file.endsWith('.engram.json') &&
+              (file.endsWith('.json') || file.endsWith('.jsonl'))
+            ) {
               yield join(chatsDir, file);
             }
           }
@@ -113,21 +117,28 @@ export class GeminiCliAdapter implements SessionAdapter {
     try {
       const fileStat = await stat(filePath);
       if (fileStat.size > MAX_SESSION_JSON_BYTES) return null;
-      const raw = await readFile(filePath, 'utf8');
-      const session = JSON.parse(raw) as GeminiSession;
+      const session = await this.readSessionFile(filePath);
+      if (!session) return null;
 
-      const userMessages = session.messages.filter((m) => m.type === 'user');
-      const assistantMessages = session.messages.filter(
+      const messageObjects = session.messages.filter(
+        (m) => extractText(m.content) !== '',
+      );
+      const userMessages = messageObjects.filter((m) => m.type === 'user');
+      const assistantMessages = messageObjects.filter(
         (m) => m.type === 'gemini' || m.type === 'model',
       );
 
-      // 从文件路径提取 projectName：.../tmp/<projectName>/chats/session-*.json
+      // 从文件路径提取 projectName：.../tmp/<projectName>/chats/<session>.json[l]
       const parts = filePath.split('/');
       const chatsIdx = parts.indexOf('chats');
       const projectName = chatsIdx > 0 ? parts[chatsIdx - 1] : '';
 
-      // 通过 projects.json 解析真实 cwd
-      const cwd = (await this.resolveProject(projectName)) ?? projectName;
+      // Prefer Gemini CLI's native project root marker; older plugin-created
+      // stores may still need the projects.json reverse map fallback.
+      const cwd =
+        (await this.resolveProjectRoot(projectName)) ??
+        (await this.resolveProject(projectName)) ??
+        projectName;
 
       const firstUserText = userMessages[0]
         ? extractText(userMessages[0].content)
@@ -189,8 +200,8 @@ export class GeminiCliAdapter implements SessionAdapter {
     const fileStat = await stat(filePath);
     if (fileStat.size > MAX_SESSION_JSON_BYTES) return;
 
-    const raw = await readFile(filePath, 'utf8');
-    const session = JSON.parse(raw) as GeminiSession;
+    const session = await this.readSessionFile(filePath);
+    if (!session) return;
 
     const relevant = session.messages.filter(isConversation);
     const sliced = relevant.slice(
@@ -216,6 +227,29 @@ export class GeminiCliAdapter implements SessionAdapter {
       if (name === projectName) return cwd;
     }
     return null;
+  }
+
+  private async resolveProjectRoot(
+    projectName: string,
+  ): Promise<string | null> {
+    try {
+      const root = await readFile(
+        join(this.tmpRoot, projectName, '.project_root'),
+        'utf8',
+      );
+      const trimmed = root.trim();
+      return trimmed || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readSessionFile(
+    filePath: string,
+  ): Promise<GeminiSession | null> {
+    const raw = await readFile(filePath, 'utf8');
+    if (filePath.endsWith('.jsonl')) return replayJsonlSession(raw);
+    return JSON.parse(raw) as GeminiSession;
   }
 
   private async loadProjects(): Promise<Map<string, string>> {
@@ -252,4 +286,51 @@ export class GeminiCliAdapter implements SessionAdapter {
   async isAccessible(locator: string): Promise<boolean> {
     return isFileAccessible(locator);
   }
+}
+
+function replayJsonlSession(raw: string): GeminiSession | null {
+  const metadata: Partial<GeminiSession> = {};
+  let messages: GeminiMessage[] = [];
+
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const record = JSON.parse(trimmed) as Record<string, unknown>;
+    const set = record.$set as Partial<GeminiSession> | undefined;
+    if (set && typeof set === 'object') {
+      Object.assign(metadata, set);
+      if (Array.isArray(set.messages)) messages = set.messages;
+      continue;
+    }
+    if (typeof record.$rewindTo === 'string') {
+      const index = messages.findIndex(
+        (message) => message.id === record.$rewindTo,
+      );
+      if (index >= 0) messages = messages.slice(0, index + 1);
+      continue;
+    }
+    if (typeof record.type === 'string') {
+      messages.push(record as unknown as GeminiMessage);
+      continue;
+    }
+    Object.assign(metadata, record);
+    if (Array.isArray(record.messages)) {
+      messages = record.messages as GeminiMessage[];
+    }
+  }
+
+  if (
+    typeof metadata.sessionId !== 'string' ||
+    typeof metadata.startTime !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    sessionId: metadata.sessionId,
+    projectHash: metadata.projectHash ?? '',
+    startTime: metadata.startTime,
+    lastUpdated: metadata.lastUpdated,
+    summary: metadata.summary,
+    messages,
+  };
 }

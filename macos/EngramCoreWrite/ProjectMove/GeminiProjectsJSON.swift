@@ -2,7 +2,7 @@
 // Mirrors src/core/project-move/gemini-projects-json.ts (Node parity baseline).
 //
 // Maintains the Gemini CLI project registry (`~/.gemini/projects.json`)
-// during a project move. The file maps absoluteCwd → projectBasename and
+// during a project move. The file maps absoluteCwd → projectName and
 // the Gemini adapter uses it to reverse-resolve session files. If we
 // rename the tmp dir without updating the JSON, sessions detach silently.
 //
@@ -78,7 +78,7 @@ public enum GeminiProjectsJSON {
 
     /// Apply the plan: remove the old entry (if any), add the new entry,
     /// write atomically. Caller MUST have already cleared collision via
-    /// `collectOtherCwdsSharingBasename`.
+    /// `collectOtherCwdsSharingProjectName`.
     public static func apply(plan: GeminiProjectsJsonUpdatePlan) throws {
         var (shape, _) = try load(plan.filePath)
         if let old = plan.oldEntry {
@@ -107,17 +107,17 @@ public enum GeminiProjectsJSON {
         try writeAtomic(plan.filePath, content: serialize(shape))
     }
 
-    /// Collision probe: find OTHER cwds that share the target basename
+    /// Collision probe: find OTHER cwds that share the target project name
     /// (excluding `srcCwd`). Renaming the tmp dir without resolving these
     /// would steal sessions from those projects.
-    public static func collectOtherCwdsSharingBasename(
+    public static func collectOtherCwdsSharingProjectName(
         filePath: String,
-        targetBasename: String,
+        targetProjectName: String,
         srcCwd: String
     ) throws -> [String] {
         let (shape, _) = try load(filePath)
         return shape.map.compactMap { (cwd, name) in
-            (name == targetBasename && cwd != srcCwd) ? cwd : nil
+            (name == targetProjectName && cwd != srcCwd) ? cwd : nil
         }
         .sorted()
     }

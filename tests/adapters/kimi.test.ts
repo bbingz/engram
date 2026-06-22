@@ -57,6 +57,53 @@ describe('KimiAdapter', () => {
     expect(firstAsst?.timestamp).toBe('2026-02-02T02:41:00.000Z');
   });
 
+  it('reads current context_<N> rotation shards and extracts visible text blocks', async () => {
+    const tmpRoot = join(
+      tmpdir(),
+      `engram-kimi-context-rotation-${Date.now()}`,
+    );
+    const sessionsRoot = join(tmpRoot, 'sessions');
+    const sessDir = join(sessionsRoot, 'ws', 'sess-rotation');
+    const ctxPath = join(sessDir, 'context.jsonl');
+    mkdirSync(sessDir, { recursive: true });
+    writeFileSync(ctxPath, '{"role":"user","content":"main question"}\n');
+    writeFileSync(
+      join(sessDir, 'context_1.jsonl'),
+      [
+        JSON.stringify({
+          role: 'assistant',
+          content: [
+            { type: 'think', think: 'private reasoning', encrypted: null },
+            { type: 'text', text: 'visible answer' },
+          ],
+        }),
+        JSON.stringify({
+          role: 'user',
+          content: [{ type: 'text', text: 'follow-up from shard' }],
+        }),
+        '',
+      ].join('\n'),
+    );
+
+    try {
+      const adapter = new KimiAdapter(sessionsRoot, FIXTURE_KIMI_JSON);
+      const info = await adapter.parseSessionInfo(ctxPath);
+      expect(info?.userMessageCount).toBe(2);
+      expect(info?.assistantMessageCount).toBe(1);
+
+      const messages = [];
+      for await (const msg of adapter.streamMessages(ctxPath))
+        messages.push(msg);
+      expect(messages.map((msg) => msg.content)).toEqual([
+        'main question',
+        'visible answer',
+        'follow-up from shard',
+      ]);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   describe('turn-pair robustness when a TurnEnd is missing', () => {
     const tmpRoot = join(tmpdir(), `engram-kimi-turns-${Date.now()}`);
     const sessionsRoot = join(tmpRoot, 'sessions');

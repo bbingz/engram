@@ -132,7 +132,7 @@ final class OrchestratorTests: XCTestCase {
         }
     }
 
-    func testDryRunPreviewsGeminiSlugAndObservedIflowDirsWithoutSideEffects() async throws {
+    func testDryRunPreviewsGeminiProjectNameAndObservedIflowDirsWithoutSideEffects() async throws {
         let (src, _) = try makeProjectFixture(name: "WebSite_Gemini")
         let dst = tempRoot.appendingPathComponent("mac_Book_Pro_Debug").path
 
@@ -454,7 +454,7 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertFalse(patched.contains("working on \(src)/main.py"))
     }
 
-    func testGeminiOldSlugComesFromProjectsJsonWhenItDiffersFromEncodedSrc() async throws {
+    func testGeminiOldNameComesFromProjectsJsonWhenItDiffersFromEncodedSrc() async throws {
         let (src, _) = try makeProjectFixture(name: "WebSite_Gemini")
         let dst = tempRoot.appendingPathComponent("mac_Book_Pro_Debug").path
 
@@ -468,7 +468,10 @@ final class OrchestratorTests: XCTestCase {
         {"projects":{"\(src)":"custom-old"}}
         """.write(to: projectsJson, atomically: true, encoding: .utf8)
 
-        let expectedNew = tempRoot.appendingPathComponent(".gemini/tmp/mac-book-pro-debug", isDirectory: true)
+        let expectedNew = tempRoot.appendingPathComponent(
+            ".gemini/tmp/\(SessionSources.encodeGemini(dst))",
+            isDirectory: true
+        )
 
         let result = try await ProjectMoveOrchestrator.run(
             writer: writer,
@@ -485,7 +488,55 @@ final class OrchestratorTests: XCTestCase {
         let updated = try JSONSerialization.jsonObject(with: Data(contentsOf: projectsJson)) as? [String: Any]
         let projects = updated?["projects"] as? [String: String]
         XCTAssertNil(projects?[src])
-        XCTAssertEqual(projects?[dst], "mac-book-pro-debug")
+        XCTAssertEqual(projects?[dst], SessionSources.encodeGemini(dst))
+    }
+
+    func testGeminiDirDiscoveredFromProjectRootWhenProjectsJsonIsAbsent() async throws {
+        let (src, _) = try makeProjectFixture(name: "old-proj")
+        let dst = tempRoot.appendingPathComponent("new-proj").path
+
+        let geminiOld = tempRoot.appendingPathComponent(
+            ".gemini/tmp/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: geminiOld.appendingPathComponent("chats", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try "\(src)\n".write(
+            to: geminiOld.appendingPathComponent(".project_root"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        {"sessionId":"gemini-marker","startTime":"2026-06-21T00:00:00.000Z"}
+        """.write(
+            to: geminiOld.appendingPathComponent("chats/session-from-marker.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let expectedNew = tempRoot.appendingPathComponent(
+            ".gemini/tmp/\(SessionSources.encodeGemini(dst))",
+            isDirectory: true
+        )
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: geminiOld.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedNew.path))
+        XCTAssertTrue(result.renamedDirs.contains {
+            $0.sourceId == .geminiCli && $0.oldDir == geminiOld.path
+        })
+        XCTAssertEqual(
+            try String(contentsOf: expectedNew.appendingPathComponent(".project_root"), encoding: .utf8),
+            "\(dst)\n"
+        )
+        XCTAssertFalse(result.review.own.contains(expectedNew.appendingPathComponent(".project_root").path))
     }
 
     func testUnrelatedIflowDirMentioningOldPathIsNotRenamed() async throws {

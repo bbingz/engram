@@ -213,7 +213,7 @@ private func mcpGuidancePrefix(for name: String) -> String? {
     case "DirCollisionError":
         return "The target directory already exists on disk for one of the session sources (see details.sourceId/newDir). Another project is using that path — engram refuses to overwrite. Tell the user to move the target aside (or pick a different destination) and retry."
     case "SharedEncodingCollisionError":
-        return "The target dir is shared by multiple projects because this source uses a lossy encoding (e.g. iFlow/Gemini basename-per-project). Renaming would silently steal sessions from the other projects listed in details.sharingCwds. Do not retry; the user must manually separate the dirs."
+        return "The target dir is shared by multiple projects because this source uses a non-unique project directory name (for example, iFlow lossy encoding or a stale Gemini projects.json entry). Renaming would silently steal sessions from the other projects listed in details.sharingCwds. Do not retry; the user must manually separate the dirs."
     default:
         return nil
     }

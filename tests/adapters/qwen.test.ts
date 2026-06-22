@@ -74,6 +74,38 @@ describe('QwenAdapter', () => {
     }
   });
 
+  it('drops thought text parts from assistant content', async () => {
+    const tmpRoot = join(tmpdir(), `engram-qwen-thought-${Date.now()}`);
+    const filePath = join(tmpRoot, 'thought.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 'a1',
+          sessionId: 'thought-001',
+          timestamp: '2026-04-01T00:00:00Z',
+          type: 'assistant',
+          cwd: '/x',
+          message: {
+            role: 'model',
+            parts: [
+              { text: 'private reasoning', thought: true },
+              { text: 'final answer' },
+            ],
+          },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+      expect(messages[0].content).toBe('final answer');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('streamMessages respects limit', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(FIXTURE, { limit: 1 })) {

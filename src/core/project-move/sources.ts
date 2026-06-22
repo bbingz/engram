@@ -7,10 +7,11 @@
 // single source of truth.
 
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { encodeCC } from './encode-cc.js';
 
@@ -40,19 +41,9 @@ export function encodeIflow(abs: string): string {
     .join('-');
 }
 
-/**
- * Encode a project cwd into the Gemini CLI project slug used under
- * `~/.gemini/tmp/<slug>/` and in `~/.gemini/projects.json`.
- *
- * Observed Gemini CLI rule: slugify basename by lowercasing, converting `_` to
- * `-`, then stripping wrapping dashes.
- */
+/** Encode a project cwd into Gemini CLI's SHA-256 project directory name. */
 export function encodeGemini(abs: string): string {
-  return basename(abs)
-    .toLowerCase()
-    .replace(/_/g, '-')
-    .replace(/^-+/, '')
-    .replace(/-+$/, '');
+  return createHash('sha256').update(abs).digest('hex');
 }
 
 export type SourceId =
@@ -172,6 +163,9 @@ export interface WalkIssue {
   detail?: string;
 }
 
+const DEFAULT_SESSION_EXTENSIONS = new Set(['.jsonl', '.json']);
+const DEFAULT_SESSION_FILENAMES = new Set(['.project_root']);
+
 /**
  * Recursively walk `root` and yield file paths. Issues (errors + skips)
  * are collected on `onIssue` for caller inspection — never silently lost.
@@ -188,11 +182,13 @@ export async function* walkSessionFiles(
   root: string,
   opts: {
     extensions?: Set<string>;
+    filenames?: Set<string>;
     maxFileBytes?: number;
     onIssue?: (issue: WalkIssue) => void;
   } = {},
 ): AsyncGenerator<string> {
-  const exts = opts.extensions ?? new Set(['.jsonl', '.json']);
+  const exts = opts.extensions ?? DEFAULT_SESSION_EXTENSIONS;
+  const filenames = opts.filenames ?? DEFAULT_SESSION_FILENAMES;
   const maxBytes = opts.maxFileBytes ?? Number.POSITIVE_INFINITY;
   const report = opts.onIssue ?? (() => {});
   try {
@@ -229,9 +225,8 @@ export async function* walkSessionFiles(
       }
       if (!entry.isFile()) continue;
       const dot = name.lastIndexOf('.');
-      if (dot < 0) continue;
-      const ext = name.slice(dot);
-      if (!exts.has(ext)) continue; // not an error — just not a session file
+      const ext = dot >= 0 ? name.slice(dot) : '';
+      if (!filenames.has(name) && !exts.has(ext)) continue; // not an error — just not a session file
       let fileStat: Awaited<ReturnType<typeof stat>>;
       try {
         fileStat = await stat(full);
@@ -284,7 +279,7 @@ export async function findReferencingFiles(
 }
 
 /**
- * Fast path: `grep -rlF --include=*.jsonl --include=*.json <needle> <root>`.
+ * Fast path: `grep -rlF --include=*.jsonl --include=*.json --include=.project_root <needle> <root>`.
  * Returns null on any grep failure (not found, permission, unknown flag)
  * so the caller falls back to the TS walk. Returns [] on "no matches" —
  * grep exits with code 1 for zero matches; we treat that as success.
@@ -302,6 +297,7 @@ async function tryGrepFastPath(
           '-rlF',
           '--include=*.jsonl',
           '--include=*.json',
+          '--include=.project_root',
           '--', // end of options (safety; `needle` may start with `-`)
           needle,
           root,

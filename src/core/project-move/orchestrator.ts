@@ -9,7 +9,7 @@
 //   0.5. acquireLock (prevents concurrent project moves)
 //   1. safeMoveDir physical
 //   2. Rename per-project dirs for each source that groups by project
-//      (Claude Code = encoded cwd, Gemini = slug, iFlow = iflow-encoded)
+//      (Claude Code = encoded cwd, Gemini = SHA-256 cwd, iFlow = iflow-encoded)
 //   3. Scan all source roots → findReferencingFiles → patchFile (per-file CAS)
 //   4. auto_fix_dot_quote on the patched files
 //   B. markFsDone (state='fs_done', detail=per-source stats + manifest)
@@ -26,13 +26,18 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, unlinkSync } from 'node:fs';
 import { readFile, rename, stat } from 'node:fs/promises';
-import { isAbsolute, join, resolve as pathResolve } from 'node:path';
+import {
+  isAbsolute,
+  join,
+  basename as pathBasename,
+  resolve as pathResolve,
+} from 'node:path';
 import BetterSqlite3, { type Database as SqliteDatabase } from 'better-sqlite3';
 import type { Database } from '../db.js';
 import { safeMoveDir } from './fs-ops.js';
 import {
   applyGeminiProjectsJsonUpdate,
-  collectOtherGeminiCwdsSharingBasename,
+  collectOtherGeminiCwdsSharingProjectName,
   planGeminiProjectsJsonUpdate,
   reverseGeminiProjectsJsonUpdate,
 } from './gemini-projects-json.js';
@@ -358,8 +363,8 @@ export async function runProjectMove(
       for (const oldDir of oldDirs) {
         if (basename(oldDir) === newName) {
           // Lossy encoding may collapse (e.g. iflow `/a/-foo-/p` and
-          // `/a/foo/p` both → `-a-foo-p`). Or cross-parent move where
-          // the Gemini slug stayed the same. Either way, no rename needed.
+          // `/a/foo/p` both → `-a-foo-p`). Or the source-specific encoder
+          // produced an identical target name. Either way, no rename needed.
           skippedDirs.push({ sourceId: root.id, reason: 'noop' });
           continue;
         }
@@ -412,7 +417,7 @@ export async function runProjectMove(
       throw new DirCollisionError(plan.sourceId, plan.oldDir, plan.newDir);
     }
 
-    // Step 0.7: Gemini-specific probes. Shared-slug hijack + plan the
+    // Step 0.7: Gemini-specific probes. Shared project-name hijack + plan the
     // projects.json rewrite. Only runs if gemini-cli is in the plan list.
     const geminiPlan = dirRenamePlans.find((d) => d.sourceId === 'gemini-cli');
     if (geminiPlan) {
@@ -421,10 +426,10 @@ export async function runProjectMove(
         ? join(geminiRoot.path, '..', 'projects.json')
         : null;
       if (projectsFile) {
-        // Gemini major #3: shared-slug hijack. If another cwd maps to
-        // the same slug as dst, renaming the dir would steal their
+        // Gemini major #3: shared project-name hijack. If another cwd maps to
+        // the same project name as dst, renaming the dir would steal their
         // sessions.
-        const conflicts = await collectOtherGeminiCwdsSharingBasename(
+        const conflicts = await collectOtherGeminiCwdsSharingProjectName(
           projectsFile,
           encodeGemini(dst),
           src,
@@ -760,6 +765,9 @@ async function fileHasStructuredCwd(
     if (st.size > DRY_RUN_READ_CAP) return false;
     const text = await readFile(file, 'utf8');
     const lines = text.includes('\n') ? text.split(/\r?\n/) : [text];
+    if (pathBasename(file) === '.project_root') {
+      return lines.some((line) => line.trim() === cwd);
+    }
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -1099,7 +1107,7 @@ export async function buildDryRunPlan(
     for (const oldDir of oldDirs) {
       if (basename(oldDir) === newName) {
         // encodeProjectDir produced the same name — lossy encoding (iFlow)
-        // or semantically equivalent rename. Content still gets patched.
+        // or an equivalent source-specific project name. Content still gets patched.
         skippedDirs.push({ sourceId: root.id, reason: 'noop' });
         continue;
       }

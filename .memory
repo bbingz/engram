@@ -2,7 +2,9 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-20): 72 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-21): 74 dated entries; regenerate after adding sections -->
+- [2026-06-21 - Session parser drift remediation from 17-source audit (Codex)](#2026-06-21---session-parser-drift-remediation-from-17-source-audit-codex)
+- [2026-06-21 - Session-format docs source confirmation completed (Codex)](#2026-06-21---session-format-docs-source-confirmation-completed-codex)
 - [2026-06-21 - Multi-Mac sync L2: PR #88 non-security review remediation](#2026-06-21---multi-mac-sync-l2-pr-88-non-security-review-remediation)
 - [2026-06-21 - Multi-Mac sync: L1 Unison files live + L2 server catalog shipped](#2026-06-21---multi-mac-sync-l1-unison-files-live--l2-server-catalog-shipped)
 - [2026-06-20 - Plain-HTTP-over-Tailscale offload + second server macmini-hq live](#2026-06-20---plain-http-over-tailscale-offload--second-server-macmini-hq-live)
@@ -79,6 +81,93 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-06-21 - Session parser drift remediation from 17-source audit (Codex)
+
+- Branch/worktree: `/Users/bing/-Code-/engram` on
+  `docs/session-formats-claude-codex`.
+- Context: compared the 17-source `docs/session-formats/` analysis against the
+  current Swift product adapters, TypeScript reference adapters, and related
+  migration/resume surfaces. Treated data-loss/product-choice notes as non-fixes
+  unless they caused invisible sessions, wrong cwd/content attribution,
+  migration drift, resume invisibility, or Swift/TS parser drift.
+- Fixed confirmed parser and related-surface drift:
+  - Gemini CLI: Swift+TS now enumerate current `.json`/`.jsonl` logs under
+    `chats/` without requiring a `session-` prefix, exclude `.engram.json`
+    sidecars from indexing, replay current event-sourced JSONL logs (metadata,
+    message appends, `$set`, `$rewindTo`), and prefer native `.project_root` cwd
+    resolution before the legacy `projects.json` map.
+  - VS Code: Swift+TS now replay valid `ObjectMutationLog` kind `0/1/2/3`
+    records, so appended `requests` mutations are visible; malformed trailing
+    lines remain tolerated.
+  - Kimi: Swift+TS now include current `context_<N>.jsonl` rotation shards and
+    extract visible `{type:"text"}` content from array-form messages while
+    excluding `think` blocks.
+  - Qwen: Swift+TS now skip assistant `parts[]` entries carrying
+    `thought: true`, preventing reasoning text from entering normalized
+    content.
+  - CommandCode: TS tool-call parsing now falls back from `input` to `args`,
+    matching Swift.
+  - Copilot: Swift `workspace.yaml` parsing now strips matched YAML quote pairs,
+    matching TS.
+  - Cline: Swift+TS now discover legacy `claude_messages.json` when
+    `ui_messages.json` is absent and reject multi-root `Primary: <name>` labels
+    as cwd paths.
+  - Project move/migration: Swift+TS project-move code now scans and patches
+    Gemini `.project_root` markers, discovers Gemini grouped dirs from
+    marker-only stores, names migrated Gemini dirs and new `projects.json` values
+    with SHA-256(projectRoot), and still honors a legacy/custom old
+    `projects.json` name when locating the source dir.
+  - Resume/recent indexing: no direct resume command change was needed. Resume
+    still uses the indexed session id/cwd (`gemini --resume <sessionId>`), and
+    the Gemini listing fix ensures non-`session-` current logs are indexed and
+    therefore visible to resume.
+- Tests added: targeted TS adapter tests for Gemini CLI, VS Code, Kimi, Qwen,
+  CommandCode, and Cline; TS project-move tests for Gemini `.project_root`,
+  SHA-256 dir names, and `projects.json`; TS resume tests; Swift product
+  coverage in `EngramCoreTests/AdapterMessageCountTests.swift`,
+  `SessionSourcesTests.swift`, `GeminiProjectsJSONTests.swift`, and
+  `OrchestratorTests.swift`.
+- Verification passed: targeted Vitest file set (`137` tests), focused resume
+  endpoint/coordinator checks (`8` tests in the filtered run), `npm run
+  typecheck:test`, `npm run lint`, `npm run build`, `npm run
+  check:adapter-parity-fixtures`, `npm run check:fixtures`, full `xcodebuild
+  test -project Engram.xcodeproj -scheme EngramCoreTests -destination
+  'platform=macOS'`, and `git diff --check`.
+- Remaining risk: source-format docs still document several intentional or
+  unresolved product choices not fixed here, including tool I/O omission,
+  TS-only usage gaps for some reference adapters, Kimi turn timestamp
+  limitations in complex agentic sessions, and VS Code complex response-part
+  provenance. These are design/backlog items, not silent parser regressions
+  fixed by this pass.
+
+## 2026-06-21 - Session-format docs source confirmation completed (Codex)
+
+- Branch/worktree: `/Users/bing/-Code-/engram` on `docs/session-formats-claude-codex`.
+- Context: reviewed Claude's two-commit session-format docs handoff (`dcc7f693`,
+  `b1d55d4d`) against current repo state, `SessionAdapterFactory.defaultAdapters`,
+  the 34-file `docs/session-formats/` tree, and official source evidence.
+- Confirmed: the Claude handoff state had 17 EN/ZH source pairs and 28,244 total
+  doc lines; all 17 pairs had matching heading counts, matching fenced-code
+  counts, and byte-identical fenced-code contents.
+- Completed gap: Claude left `vscode` official web/source confirmation blocked.
+  Codex read the official `microsoft/vscode` sources and updated
+  `docs/session-formats/vscode.md` plus `docs/session-formats/vscode.zh.md` with
+  an official source confirmation section and `## References (official sources)`.
+- Correction made: current upstream `chatSessionOperationLog.ts` includes
+  `modelId` and usage-like request fields (`promptTokens`, `outputBuffer`,
+  `promptTokenDetails`, `copilotCredits`), so these are official schema facts;
+  Engram still intentionally ignores them in the current `vscode` adapter docs.
+- Verification: doc structural `rtk node` checks returned 34 files, 17 bases,
+  28,299 total lines after the VS Code completion, no missing references, and no
+  EN/ZH heading/fence/code-block parity errors. `npm run typecheck:test`,
+  `npm run lint`, `npm run build`, and `git diff --check` passed. `npm run lint`
+  still has the existing `tests/scripts/screenshot-compare.test.ts:136`
+  warning unrelated to this docs work.
+- Remaining risk: VS Code live sampling is still weak because local live
+  sessions were empty stubs. Complex response payloads such as
+  `toolInvocationSerialized` should be re-sampled on a machine with active
+  Copilot Chat history before changing parser behavior.
 
 ## 2026-06-21 - Multi-Mac sync L2: PR #88 non-security review remediation
 
