@@ -1361,6 +1361,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func normalizedGeneratedWorkItemTitle(_ title: String) -> String? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     /// On-demand per-project work-item semantic titles. Mirrors `generateSummary`:
     /// AI/network calls happen OUTSIDE the writer gate; only the short upsert
     /// runs inside it. With no title AI config the command is a no-op (it does
@@ -1443,6 +1448,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                         do {
                             let title = try await generateTitle(input.intent, input.outcome, titleConfig)
                             try Task.checkCancellation()
+                            guard let title = normalizedGeneratedWorkItemTitle(title) else { return nil }
                             return GeneratedTitle(workKey: input.workKey, title: title, intentHash: input.intentHash)
                         } catch let error as CancellationError {
                             throw error
@@ -1467,6 +1473,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                             do {
                                 let title = try await generateTitle(input.intent, input.outcome, titleConfig)
                                 try Task.checkCancellation()
+                                guard let title = normalizedGeneratedWorkItemTitle(title) else { return nil }
                                 return GeneratedTitle(workKey: input.workKey, title: title, intentHash: input.intentHash)
                             } catch let error as CancellationError {
                                 throw error

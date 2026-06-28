@@ -142,6 +142,13 @@
   generate` is stable plus the focused app read-join tests (3), service
   generateProjectWorkTitles tests (3), migration schema test (1), and
   `git diff --check`.
+- Ready-for-review subagent pass before merging PR #93 found one real blocker:
+  empty/whitespace AI work-item titles could be persisted with the current
+  `intent_hash`, causing later generation passes to treat the item as cached
+  while the app ignored the empty semantic title and kept showing the heuristic.
+  Fixed by trimming generated titles and skipping empty results before upsert;
+  added `testGenerateProjectWorkTitlesSkipsEmptyTitlesSoTheyCanRetry` to prove
+  the empty attempt persists nothing and retries successfully.
 
 ## 2026-06-28 - Full-project audit remediation pass (Codex)
 

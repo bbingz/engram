@@ -3793,6 +3793,36 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(rows, 0, "no-config path must not persist heuristic titles")
     }
 
+    func testGenerateProjectWorkTitlesSkipsEmptyTitlesSoTheyCanRetry() async throws {
+        let gate = try await makeWorkTitleGate()
+        let counter = WorkTitleCallCounter()
+        let emptyGen: @Sendable (String, String, EngramServiceCommandHandler.ServiceAISettings.ChatConfig) async throws -> String = { _, _, _ in
+            await counter.increment()
+            return ""
+        }
+        let req = EngramServiceGenerateProjectWorkTitlesRequest(project: "p")
+
+        _ = try await EngramServiceCommandHandler.generateProjectWorkTitles(
+            req, writerGate: gate, titleConfig: Self.fakeTitleConfig, generateTitle: emptyGen
+        )
+        let afterEmpty = await counter.value
+        XCTAssertEqual(afterEmpty, 2)
+        var rows = try await workItemTitleCount(gate: gate, project: "p")
+        XCTAssertEqual(rows, 0, "empty generated titles must not be persisted as cache hits")
+
+        let recoveredGen: @Sendable (String, String, EngramServiceCommandHandler.ServiceAISettings.ChatConfig) async throws -> String = { intent, _, _ in
+            await counter.increment()
+            return "Recovered \(intent)"
+        }
+        _ = try await EngramServiceCommandHandler.generateProjectWorkTitles(
+            req, writerGate: gate, titleConfig: Self.fakeTitleConfig, generateTitle: recoveredGen
+        )
+        let afterRecovery = await counter.value
+        XCTAssertEqual(afterRecovery, 4, "work items with empty title attempts must be retried")
+        rows = try await workItemTitleCount(gate: gate, project: "p")
+        XCTAssertEqual(rows, 2)
+    }
+
     func testProjectMigrationCommandsSurfacePipelineErrors() async throws {
         // Stage 4 ships native project move/archive/undo/move-batch handlers
         // wired through ProjectMoveOrchestrator. The previous fail-closed

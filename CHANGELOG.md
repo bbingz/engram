@@ -56,6 +56,12 @@ implementers + build-fix loop + 3 adversarial reviewers.
   convention. Re-verified `xcodegen generate` stability, focused app read-join
   tests, service `generateProjectWorkTitles` tests, migration schema creation,
   and `git diff --check`.
+- **Ready-for-review fix**: a subagent review before marking PR #93 ready found
+  that empty/whitespace generated work-item titles could be persisted with the
+  current `intent_hash`, making future generation passes skip the item while the
+  app fell back to the heuristic title forever. Generated titles are now trimmed
+  and empty results are skipped before upsert; added an IPC regression test that
+  proves empty attempts persist nothing and are retried successfully.
 
 ### Full-project audit remediation pass (2026-06-28, Codex)
 
