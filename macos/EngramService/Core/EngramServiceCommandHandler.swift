@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import CryptoKit
 import EngramCoreRead
 import EngramCoreWrite
 import Security
@@ -198,6 +199,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             case "generateSummary":
                 let payload = try decodePayload(EngramServiceGenerateSummaryRequest.self, from: request)
                 let result = try await Self.generateSummary(payload, writerGate: writerGate)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
+            case "generateProjectWorkTitles":
+                let payload = try decodePayload(EngramServiceGenerateProjectWorkTitlesRequest.self, from: request)
+                let result = try await Self.generateProjectWorkTitles(payload, writerGate: writerGate)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -1344,6 +1353,176 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
     }
 
+    /// Lowercase hex SHA256 of (intent + U+0001 + outcome). Stable cache key for
+    /// a work item's semantic title; regenerate only when the underlying
+    /// intent/outcome text changes. NEVER use Swift `hashValue` for this.
+    private static func intentHash(intent: String, outcome: String) -> String {
+        let digest = SHA256.hash(data: Data((intent + "\u{1}" + outcome).utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func normalizedGeneratedWorkItemTitle(_ title: String) -> String? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// On-demand per-project work-item semantic titles. Mirrors `generateSummary`:
+    /// AI/network calls happen OUTSIDE the writer gate; only the short upsert
+    /// runs inside it. With no title AI config the command is a no-op (it does
+    /// NOT persist heuristic titles) so the app keeps its heuristic fallback.
+    /// - Parameters injected for testing (production defaults read the real
+    ///   settings + call the real model): `titleConfig` nil means no AI config
+    ///   (no-op, no persistence); `generateTitle` produces a title from an
+    ///   item's intent+outcome.
+    static func generateProjectWorkTitles(
+        _ request: EngramServiceGenerateProjectWorkTitlesRequest,
+        writerGate: ServiceWriterGate,
+        titleConfig: ServiceAISettings.ChatConfig? = ServiceAISettings.read().titleConfig,
+        generateTitle: @escaping @Sendable (String, String, ServiceAISettings.ChatConfig) async throws -> String
+            = ServiceAIClient.workItemTitle(intent:outcome:config:)
+    ) async throws -> ServiceWriterGateResult<EngramServiceGenerateProjectWorkTitlesResponse> {
+        let project = request.project
+        let items = try readProjectWorkItems(project: project, databasePath: writerGate.databasePath)
+        let persisted = try readPersistedWorkItemTitles(project: project, databasePath: writerGate.databasePath)
+
+        // Aggregate beats by work_key; a work_key can span multiple batch items,
+        // but the title table is keyed by (project, work_key), so one title per key.
+        var beatsByWorkKey: [String: [SessionImplementationBeat]] = [:]
+        var orderedWorkKeys: [String] = []
+        for item in items {
+            if beatsByWorkKey[item.workKey] == nil { orderedWorkKeys.append(item.workKey) }
+            beatsByWorkKey[item.workKey, default: []].append(contentsOf: item.beats)
+        }
+
+        struct WorkItemInput: Sendable {
+            let workKey: String
+            let intent: String
+            let outcome: String
+            let intentHash: String
+        }
+
+        // Select work items whose stored hash differs from the freshly computed
+        // one (missing or stale).
+        var pending: [WorkItemInput] = []
+        for workKey in orderedWorkKeys {
+            let beats = beatsByWorkKey[workKey] ?? []
+            let intent = beats.map(\.humanIntent).joined(separator: "\n")
+            let outcome = beats.map(\.assistantOutcome).joined(separator: "\n")
+            let hash = intentHash(intent: intent, outcome: outcome)
+            if persisted[workKey]?.intentHash == hash { continue }
+            pending.append(WorkItemInput(workKey: workKey, intent: intent, outcome: outcome, intentHash: hash))
+        }
+
+        guard let titleConfig else {
+            // No AI config: keep the app's heuristic. Persist nothing; echo the
+            // already-persisted titles (likely empty) so the app reload is a no-op.
+            let titles = persisted.map { workKey, value in
+                EngramServiceWorkItemTitle(project: project, workKey: workKey, title: value.title)
+            }
+            return ServiceWriterGateResult(
+                value: EngramServiceGenerateProjectWorkTitlesResponse(titles: titles),
+                databaseGeneration: 0
+            )
+        }
+
+        // Generate missing/stale titles concurrently (AI calls OUTSIDE the gate).
+        struct GeneratedTitle: Sendable {
+            let workKey: String
+            let title: String
+            let intentHash: String
+        }
+        var generated: [GeneratedTitle] = []
+        let maxConcurrency = 4
+        if !pending.isEmpty {
+            // Sliding-window concurrency mirroring generateTitlesForContexts: at
+            // most `maxConcurrency` in flight, per-item failures skipped, but a
+            // CancellationError aborts the whole batch.
+            let effectiveConcurrency = max(1, min(maxConcurrency, pending.count))
+            var nextIndex = 0
+            try await withThrowingTaskGroup(of: GeneratedTitle?.self) { group in
+                for _ in 0..<effectiveConcurrency {
+                    let input = pending[nextIndex]
+                    nextIndex += 1
+                    group.addTask {
+                        try Task.checkCancellation()
+                        do {
+                            let title = try await generateTitle(input.intent, input.outcome, titleConfig)
+                            try Task.checkCancellation()
+                            guard let title = normalizedGeneratedWorkItemTitle(title) else { return nil }
+                            return GeneratedTitle(workKey: input.workKey, title: title, intentHash: input.intentHash)
+                        } catch let error as CancellationError {
+                            throw error
+                        } catch {
+                            ServiceLogger.error(
+                                "generateProjectWorkTitles skipped project=\(project) workKey=\(input.workKey)",
+                                category: .ai,
+                                error: error
+                            )
+                            return nil
+                        }
+                    }
+                }
+                while let result = try await group.next() {
+                    if let result { generated.append(result) }
+                    try Task.checkCancellation()
+                    if nextIndex < pending.count {
+                        let input = pending[nextIndex]
+                        nextIndex += 1
+                        group.addTask {
+                            try Task.checkCancellation()
+                            do {
+                                let title = try await generateTitle(input.intent, input.outcome, titleConfig)
+                                try Task.checkCancellation()
+                                guard let title = normalizedGeneratedWorkItemTitle(title) else { return nil }
+                                return GeneratedTitle(workKey: input.workKey, title: title, intentHash: input.intentHash)
+                            } catch let error as CancellationError {
+                                throw error
+                            } catch {
+                                ServiceLogger.error(
+                                    "generateProjectWorkTitles skipped project=\(project) workKey=\(input.workKey)",
+                                    category: .ai,
+                                    error: error
+                                )
+                                return nil
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let model = titleConfig.model
+        let generatedToWrite = generated
+        return try await writerGate.performWriteCommand(name: "generateProjectWorkTitles") { writer in
+            try writer.write { db in
+                for entry in generatedToWrite {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO work_item_titles (project, work_key, title, intent_hash, model, updated_at)
+                        VALUES (?, ?, ?, ?, ?, datetime('now'))
+                        ON CONFLICT(project, work_key) DO UPDATE SET
+                            title = excluded.title,
+                            intent_hash = excluded.intent_hash,
+                            model = excluded.model,
+                            updated_at = datetime('now')
+                        """,
+                        arguments: [project, entry.workKey, entry.title, entry.intentHash, model]
+                    )
+                }
+            }
+            // Return only what we just generated. The app ignores this response
+            // and reloads titles from the DB, so we avoid a fragile read-after-
+            // write of work_item_titles (which would touch the table even when
+            // nothing was generated). When `generatedToWrite` is empty, the write
+            // block accesses no table at all.
+            return EngramServiceGenerateProjectWorkTitlesResponse(
+                titles: generatedToWrite.map { entry in
+                    EngramServiceWorkItemTitle(project: project, workKey: entry.workKey, title: entry.title)
+                }
+            )
+        }
+    }
+
     private static func saveInsight(
         _ request: EngramServiceSaveInsightRequest,
         writer: EngramDatabaseWriter
@@ -1993,6 +2172,116 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         try DatabasePool(path: path, configuration: ServiceSQLiteConnectionPolicy.readerConfiguration())
     }
 
+    /// Service-side mirror of `DatabaseManager.implementationTimeline`, forced to
+    /// a single project and the human-driven filter (matching ProjectWorkTimeline
+    /// `humanDriven: true`). Used to feed per-work-item semantic-title prompts.
+    static func readProjectWorkItems(
+        project: String,
+        days: Int = 90,
+        databasePath: String
+    ) throws -> [ImplementationTimelineItem] {
+        let pool = try readOnlyPool(path: databasePath)
+        return try pool.read { db in
+            let exists = try Bool.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_work_beats'"
+            ) ?? false
+            guard exists else { return [] }
+            var parts = ["""
+                SELECT b.session_id, b.beat_index, b.action_date, b.action_timestamp,
+                       b.work_key, b.work_title, b.human_intent, b.assistant_outcome,
+                       b.kind, b.status, b.operation_events, b.confidence
+                FROM session_work_beats b
+                JOIN sessions s ON s.id = b.session_id
+                WHERE s.hidden_at IS NULL
+                  AND s.parent_session_id IS NULL
+                  AND s.suggested_parent_id IS NULL
+                  AND (s.tier IS NULL OR s.tier != 'skip')
+                  AND s.project = ?
+                  AND \(HumanDrivenFilter.sqlPredicate(alias: "s"))
+            """]
+            var args: [DatabaseValueConvertible] = [project]
+            if days < 100_000,
+               let cutoff = Calendar(identifier: .gregorian).date(byAdding: .day, value: -days, to: Date()) {
+                let formatter = DateFormatter()
+                formatter.calendar = Calendar(identifier: .gregorian)
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = TimeZone(secondsFromGMT: 0)
+                formatter.dateFormat = "yyyy-MM-dd"
+                parts.append("AND b.action_date >= ?")
+                args.append(formatter.string(from: cutoff))
+            }
+            parts.append("ORDER BY b.action_date ASC, b.action_timestamp ASC, b.session_id ASC, b.beat_index ASC")
+            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
+            let beats = rows.map(decodeWorkBeat(row:))
+            return ImplementationTimelineBuilder.build(beats: beats)
+        }
+    }
+
+    /// Service-local copy of `DatabaseManager.sessionImplementationBeat`; the
+    /// app decoder is private, so the service decodes the same columns
+    /// (including the operation_events JSON array) itself.
+    private static func decodeWorkBeat(row: Row) -> SessionImplementationBeat {
+        let eventsJSON: String = row["operation_events"] ?? "[]"
+        let events: [SessionOperationEvent]
+        if let data = eventsJSON.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([SessionOperationEvent].self, from: data) {
+            events = decoded
+        } else {
+            events = []
+        }
+        return SessionImplementationBeat(
+            sessionId: row["session_id"],
+            beatIndex: row["beat_index"],
+            actionDate: row["action_date"],
+            actionTimestamp: row["action_timestamp"],
+            workKey: row["work_key"],
+            workTitle: row["work_title"],
+            humanIntent: row["human_intent"],
+            assistantOutcome: row["assistant_outcome"],
+            kind: SessionImplementationKind(rawValue: row["kind"]) ?? .implementation,
+            status: SessionImplementationStatus(rawValue: row["status"]) ?? .partial,
+            operationEvents: events,
+            confidence: row["confidence"]
+        )
+    }
+
+    private struct PersistedWorkItemTitle: Sendable {
+        let title: String
+        let intentHash: String
+    }
+
+    /// Read the project's already-persisted work-item titles, keyed by work_key.
+    /// Returns an empty map when the (service-owned) table has not been created
+    /// yet so the read-only pool never throws "no such table".
+    private static func readPersistedWorkItemTitles(
+        project: String,
+        databasePath: String
+    ) throws -> [String: PersistedWorkItemTitle] {
+        let pool = try readOnlyPool(path: databasePath)
+        return try pool.read { db in
+            let exists = try Bool.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_titles'"
+            ) ?? false
+            guard exists else { return [:] }
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT work_key, title, intent_hash FROM work_item_titles WHERE project = ?",
+                arguments: [project]
+            )
+            var result: [String: PersistedWorkItemTitle] = [:]
+            for row in rows {
+                let workKey: String = row["work_key"]
+                result[workKey] = PersistedWorkItemTitle(
+                    title: row["title"],
+                    intentHash: row["intent_hash"]
+                )
+            }
+            return result
+        }
+    }
+
     static func aiContext(from row: Row, db: Database) throws -> AIContext {
         let id = row["id"] as String? ?? ""
         // FTS stores one row per message; aggregate them in order so the AI
@@ -2407,6 +2696,36 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             \(source)
             """
             let raw = try await chat(purpose: "title", sessionID: context.id, config: config, messages: [["role": "user", "content": prompt]])
+            return cleanTitle(raw)
+        }
+
+        /// Generate a concise semantic title for a single implementation work
+        /// item from its aggregated human intent + assistant outcome. Reuses
+        /// chat() + cleanTitle() exactly like title(context:). Inputs are
+        /// bounded before prompting because titleConfig caps output tokens but
+        /// not the request body size.
+        static func workItemTitle(
+            intent: String,
+            outcome: String,
+            config: ServiceAISettings.ChatConfig
+        ) async throws -> String {
+            let boundedIntent = String(intent.prefix(600))
+            let boundedOutcome = String(outcome.prefix(1200))
+            // Generate a concise title for what was built or fixed, matching input language.
+            let prompt = """
+            Generate a concise title (30 characters or fewer) describing what was
+            built or fixed in this unit of engineering work. Match the input
+            language, including Chinese for Chinese input. Return only the title, no quotes, no prefix.
+
+            Intent: \(boundedIntent)
+            Outcome: \(boundedOutcome)
+            """
+            let raw = try await chat(
+                purpose: "workItemTitle",
+                sessionID: "workItem",
+                config: config,
+                messages: [["role": "user", "content": prompt]]
+            )
             return cleanTitle(raw)
         }
 

@@ -726,6 +726,20 @@ struct EngramServiceGenerateSummaryResponse: Codable, Equatable, Sendable {
     let summary: String
 }
 
+struct EngramServiceGenerateProjectWorkTitlesRequest: Codable, Equatable, Sendable {
+    let project: String
+}
+
+struct EngramServiceWorkItemTitle: Codable, Equatable, Sendable {
+    let project: String
+    let workKey: String
+    let title: String
+}
+
+struct EngramServiceGenerateProjectWorkTitlesResponse: Codable, Equatable, Sendable {
+    let titles: [EngramServiceWorkItemTitle]
+}
+
 struct EngramServiceSaveInsightRequest: Codable, Equatable, Sendable {
     let content: String
     let wing: String?

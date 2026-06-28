@@ -596,12 +596,20 @@ final class DatabaseManager: @unchecked Sendable {
     ) throws -> [ImplementationTimelineItem] {
         try readInBackground { db in
             guard try Self.tableExists("session_work_beats", db: db) else { return [] }
+            // work_item_titles is service/writer-owned, so the read-only app pool
+            // must guard it and fall back to heuristic titles when the table is absent.
+            let hasTitles = try Self.tableExists("work_item_titles", db: db)
+            let titleColumn = hasTitles ? ", wt.title AS semantic_title" : ""
+            let titleJoin = hasTitles
+                ? "LEFT JOIN work_item_titles wt ON wt.project = s.project AND wt.work_key = b.work_key"
+                : ""
             var parts = ["""
                 SELECT b.session_id, b.beat_index, b.action_date, b.action_timestamp,
                        b.work_key, b.work_title, b.human_intent, b.assistant_outcome,
-                       b.kind, b.status, b.operation_events, b.confidence
+                       b.kind, b.status, b.operation_events, b.confidence\(titleColumn)
                 FROM session_work_beats b
                 JOIN sessions s ON s.id = b.session_id
+                \(titleJoin)
                 WHERE s.hidden_at IS NULL
                   AND s.parent_session_id IS NULL
                   AND s.suggested_parent_id IS NULL
@@ -624,7 +632,22 @@ final class DatabaseManager: @unchecked Sendable {
 
             let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
             let beats = rows.map(Self.sessionImplementationBeat(row:))
-            return ImplementationTimelineBuilder.build(beats: beats)
+            let items = ImplementationTimelineBuilder.build(beats: beats)
+            // Semantic titles are scoped by (project, work_key); the cross-project
+            // global timeline keeps heuristic titles.
+            guard hasTitles, project != nil else { return items }
+            var titleByWorkKey: [String: String] = [:]
+            for row in rows {
+                if let title = row["semantic_title"] as String?, !title.isEmpty {
+                    titleByWorkKey[row["work_key"] as String] = title
+                }
+            }
+            guard !titleByWorkKey.isEmpty else { return items }
+            return items.map { item in
+                var copy = item
+                copy.semanticTitle = titleByWorkKey[item.workKey]
+                return copy
+            }
         }
     }
 

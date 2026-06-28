@@ -102,6 +102,25 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertTrue(sessionIndexes.contains("idx_session_work_beats_date"))
         XCTAssertTrue(sessionIndexes.contains("idx_session_work_beats_work"))
 
+        let workItemTitleColumns = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('work_item_titles') ORDER BY cid")
+        }
+        XCTAssertEqual(workItemTitleColumns, [
+            "project",
+            "work_key",
+            "title",
+            "intent_hash",
+            "model",
+            "updated_at",
+        ])
+        let workItemTitlePK = try writer.read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT name FROM pragma_table_info('work_item_titles') WHERE pk > 0 ORDER BY pk"
+            )
+        }
+        XCTAssertEqual(workItemTitlePK, ["project", "work_key"])
+
         let observabilityColumns = try writer.read { db in
             try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('logs') ORDER BY cid")
         }

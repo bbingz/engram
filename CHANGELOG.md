@@ -7,6 +7,62 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Project-detail timeline: vertical rail + AI semantic titles + click-through (2026-06-28, Claude Code, ultracode workflow)
+
+Embedded a per-project work timeline in the Projects detail view (Workspace →
+Projects → select a project), shown directly under the project header. Built via
+a 2-workflow flow: parallel code-mapping/design, then 4 disjoint-file parallel
+implementers + build-fix loop + 3 adversarial reviewers.
+
+- **Vertical-rail UI** (`macos/Engram/Components/ProjectWorkTimeline.swift`): left
+  rail + color-coded node dots (per `SessionImplementationKind`), date + kind
+  badge + title + outcome. `TimelineRail`/`TimelineNode` private subviews;
+  `WorkTimelineCard` stays `private` to `TimelinePageView` (global Timeline only).
+- **AI per-work-item semantic titles**: new service-owned `work_item_titles`
+  table (`project, work_key, title, intent_hash, model, updated_at`; idempotent
+  migration, excluded from `SchemaManifest.baseTables`). New service command
+  `generateProjectWorkTitles` generates a ≤30-char title per work item from its
+  intent+outcome via the user's configured title model (mimo), reusing
+  `ServiceAIClient.chat`+`cleanTitle`. AI calls run OUTSIDE the writer gate; only
+  the upsert runs inside `ServiceWriterGate`. `intent_hash` (SHA256) drives
+  skip-already-generated. App reads via a `tableExists`-guarded LEFT JOIN in
+  `DatabaseManager.implementationTimeline` (project-scoped); display prefers
+  `item.semanticTitle ?? item.title`. On-demand: opening a project triggers one
+  generation pass (guarded by `requestedTitleGen`) then an in-place reload.
+- **Click-through**: tapping a node opens the latest beat's session via the
+  existing `.openSession`/`SessionBox` path.
+- **IPC**: full 6-layer wiring (protocol, client, mock, DTOs, dispatch,
+  capability-token allowlist `generateProjectWorkTitles`).
+- **Post-review fixes**: (1) reload no longer flashes a spinner / blanks the rail
+  (`load(showSpinner:)`); (2) hardened `generateProjectWorkTitles` to return the
+  generated titles directly instead of a fragile post-write re-SELECT that threw
+  `no such table` when `work_item_titles` was absent (app ignores the response
+  and reloads from DB anyway).
+- **Test seam**: `generateProjectWorkTitles` gained injectable `titleConfig` +
+  `generateTitle` params (production defaults read real settings / call the real
+  model) so cache/no-op paths are deterministically testable without network.
+- **Tests (all green)**: `DatabaseManagerTests` semantic-title surfaced + null-safe
+  when table absent + project scoping (3); `MigrationRunnerTests` work_item_titles
+  columns/PK (in suite, 14); `EngramServiceIPCTests` generateProjectWorkTitles
+  authorized + empty-result no-crash, intent_hash skip-cached + regenerate-on-
+  change, and no-AI-config-persists-nothing-with-work-items (3). Full Debug build
+  SUCCEEDED.
+- **Residual**: full Swift/UI suites, lint, packaging not run.
+- **Note (unrelated)**: `~/.claude/projects/-Users-bing--Code--engram/memory`
+  symlinks to `.memory`, a regular file not a directory — auto-memory writes are
+  currently broken. Left as-is (out of scope).
+- **Codex review follow-up**: no behavior blocker found. Cleaned the newly added
+  Swift comments/prompt text to match the repo's English/ASCII source-comment
+  convention. Re-verified `xcodegen generate` stability, focused app read-join
+  tests, service `generateProjectWorkTitles` tests, migration schema creation,
+  and `git diff --check`.
+- **Ready-for-review fix**: a subagent review before marking PR #93 ready found
+  that empty/whitespace generated work-item titles could be persisted with the
+  current `intent_hash`, making future generation passes skip the item while the
+  app fell back to the heuristic title forever. Generated titles are now trimmed
+  and empty results are skipped before upsert; added an IPC regression test that
+  proves empty attempts persist nothing and are retried successfully.
+
 ### Full-project audit remediation pass (2026-06-28, Codex)
 
 Closed the actionable 2026-06-28 audit items across Swift product runtime and

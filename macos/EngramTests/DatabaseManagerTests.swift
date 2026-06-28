@@ -1085,6 +1085,133 @@ final class DatabaseManagerTests: XCTestCase {
             """, arguments: [id, startTime, cwd])
         }
     }
+
+    // MARK: - implementationTimeline project scoping
+
+    /// ProjectWorkTimeline (project-detail embedded timeline) relies on
+    /// `implementationTimeline(project:)` returning only the requested project's
+    /// work. Lock that contract; it previously had no coverage.
+    func testImplementationTimelineScopesToProject() throws {
+        try seedWorkBeats(at: dbPath)
+
+        let alpha = try db.implementationTimeline(days: 100_000, project: "alpha", humanDriven: false)
+        XCTAssertFalse(alpha.isEmpty, "alpha should have a timeline item")
+        XCTAssertTrue(
+            alpha.allSatisfy { $0.beats.allSatisfy { $0.sessionId == "s-alpha" } },
+            "alpha timeline must not include other projects' beats"
+        )
+
+        let beta = try db.implementationTimeline(days: 100_000, project: "beta", humanDriven: false)
+        XCTAssertFalse(beta.isEmpty, "beta should have a timeline item")
+        XCTAssertTrue(
+            beta.allSatisfy { $0.beats.allSatisfy { $0.sessionId == "s-beta" } },
+            "beta timeline must not include other projects' beats"
+        )
+
+        let unknown = try db.implementationTimeline(days: 100_000, project: "ghost", humanDriven: false)
+        XCTAssertTrue(unknown.isEmpty, "unknown project should yield no timeline items")
+    }
+
+    /// When a matching `work_item_titles` row exists, the project-scoped read
+    /// LEFT-joins it and surfaces the AI semantic title; absent rows keep nil.
+    func testImplementationTimelineSurfacesSemanticTitle() throws {
+        try seedWorkBeats(at: dbPath)
+        try seedWorkItemTitles(at: dbPath)
+
+        let alpha = try db.implementationTimeline(days: 100_000, project: "alpha", humanDriven: false)
+        XCTAssertEqual(alpha.count, 1)
+        XCTAssertEqual(alpha.first?.semanticTitle, "AI Alpha Title",
+                       "semantic title from work_item_titles must override the heuristic")
+
+        // beta has a work beat but no titles row -> semanticTitle stays nil (heuristic).
+        let beta = try db.implementationTimeline(days: 100_000, project: "beta", humanDriven: false)
+        XCTAssertEqual(beta.count, 1)
+        XCTAssertNil(beta.first?.semanticTitle)
+        XCTAssertEqual(beta.first?.title, "Beta fix", "missing title row falls back to heuristic title")
+    }
+
+    /// When the service-owned `work_item_titles` table is absent (read-only app
+    /// never creates it), the read must not crash and must return heuristic titles.
+    func testImplementationTimelineWithoutTitleTableUsesHeuristic() throws {
+        try seedWorkBeats(at: dbPath) // no seedWorkItemTitles -> table does not exist
+
+        let alpha = try db.implementationTimeline(days: 100_000, project: "alpha", humanDriven: false)
+        XCTAssertEqual(alpha.count, 1)
+        XCTAssertNil(alpha.first?.semanticTitle)
+        XCTAssertEqual(alpha.first?.title, "Alpha feature")
+    }
+
+    /// Seed `session_work_beats` (a service/daemon-owned table the app read model
+    /// does not create) plus two top-level sessions in distinct projects.
+    private func seedWorkBeats(at path: String) throws {
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS session_work_beats (
+                  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                  beat_index INTEGER NOT NULL,
+                  action_date TEXT NOT NULL,
+                  action_timestamp TEXT,
+                  work_key TEXT NOT NULL,
+                  work_title TEXT NOT NULL,
+                  human_intent TEXT NOT NULL,
+                  assistant_outcome TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  operation_events TEXT NOT NULL DEFAULT '[]',
+                  confidence REAL NOT NULL DEFAULT 0,
+                  PRIMARY KEY (session_id, beat_index)
+                );
+            """)
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                    id, source, start_time, end_time, cwd, project,
+                    message_count, file_path, size_bytes, tier
+                ) VALUES
+                    ('s-alpha', 'claude-code', '2026-06-01T10:00:00Z', '2026-06-01T11:00:00Z',
+                     '/tmp/alpha', 'alpha', 10, '/tmp/alpha.jsonl', 0, 'normal'),
+                    ('s-beta',  'claude-code', '2026-06-02T10:00:00Z', '2026-06-02T11:00:00Z',
+                     '/tmp/beta',  'beta',  10, '/tmp/beta.jsonl',  0, 'normal');
+            """)
+            try db.execute(sql: """
+                INSERT INTO session_work_beats (
+                    session_id, beat_index, action_date, action_timestamp,
+                    work_key, work_title, human_intent, assistant_outcome,
+                    kind, status, operation_events, confidence
+                ) VALUES
+                    ('s-alpha', 0, '2026-06-01', '2026-06-01T10:30:00Z',
+                     'wk-alpha', 'Alpha feature', 'build alpha', 'built alpha',
+                     'implementation', 'complete', '[]', 0.9),
+                    ('s-beta',  0, '2026-06-02', '2026-06-02T10:30:00Z',
+                     'wk-beta',  'Beta fix',     'fix beta',    'fixed beta',
+                     'fix', 'complete', '[]', 0.9);
+            """)
+        }
+    }
+
+    /// Seed `work_item_titles` (a service/writer-owned table the read-only app
+    /// pool never creates) with one AI title row for the alpha work item, so the
+    /// project-scoped read can LEFT-join it. Mirrors `seedWorkBeats(at:)`.
+    private func seedWorkItemTitles(at path: String) throws {
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS work_item_titles (
+                  project TEXT NOT NULL,
+                  work_key TEXT NOT NULL,
+                  title TEXT NOT NULL,
+                  intent_hash TEXT NOT NULL,
+                  model TEXT,
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  PRIMARY KEY (project, work_key)
+                );
+            """)
+            try db.execute(sql: """
+                INSERT INTO work_item_titles (project, work_key, title, intent_hash, model)
+                VALUES ('alpha', 'wk-alpha', 'AI Alpha Title', 'deadbeef', 'mimo-v2.5-pro');
+            """)
+        }
+    }
 }
 
 private func createLegacySessionsTableWithoutAccessMetadata(at path: String) throws {
