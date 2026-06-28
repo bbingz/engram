@@ -106,6 +106,10 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("generateSummary", payload: request, timeout: Self.frameBoundCommandTimeout)
     }
 
+    func generateProjectWorkTitles(_ request: EngramServiceGenerateProjectWorkTitlesRequest) async throws -> EngramServiceGenerateProjectWorkTitlesResponse {
+        try await command("generateProjectWorkTitles", payload: request, timeout: Self.bulkAICommandTimeout)
+    }
+
     func saveInsight(_ request: EngramServiceSaveInsightRequest) async throws -> EngramServiceJSONValue {
         try await command("saveInsight", payload: request)
     }

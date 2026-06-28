@@ -250,6 +250,16 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_session_work_beats_work
               ON session_work_beats(work_key, action_date);
 
+            CREATE TABLE IF NOT EXISTS work_item_titles (
+              project TEXT NOT NULL,
+              work_key TEXT NOT NULL,
+              title TEXT NOT NULL,
+              intent_hash TEXT NOT NULL,
+              model TEXT,
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (project, work_key)
+            );
+
             CREATE TABLE IF NOT EXISTS session_files (
               session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
               file_path TEXT NOT NULL,

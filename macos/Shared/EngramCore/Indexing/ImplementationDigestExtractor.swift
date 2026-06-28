@@ -80,6 +80,7 @@ public struct ImplementationTimelineItem: Equatable, Sendable {
     public var batchIndex: Int
     public var kind: SessionImplementationKind
     public var beats: [SessionImplementationBeat]
+    public var semanticTitle: String?
 
     public init(
         id: String,
@@ -89,7 +90,8 @@ public struct ImplementationTimelineItem: Equatable, Sendable {
         endDate: String,
         batchIndex: Int,
         kind: SessionImplementationKind,
-        beats: [SessionImplementationBeat]
+        beats: [SessionImplementationBeat],
+        semanticTitle: String? = nil
     ) {
         self.id = id
         self.workKey = workKey
@@ -99,6 +101,7 @@ public struct ImplementationTimelineItem: Equatable, Sendable {
         self.batchIndex = batchIndex
         self.kind = kind
         self.beats = beats
+        self.semanticTitle = semanticTitle
     }
 }
 

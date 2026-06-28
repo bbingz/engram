@@ -19,6 +19,7 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func handoff(_ request: EngramServiceHandoffRequest) async throws -> EngramServiceHandoffResponse
     func replayTimeline(sessionId: String, limit: Int?) async throws -> EngramServiceReplayTimelineResponse
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse
+    func generateProjectWorkTitles(_ request: EngramServiceGenerateProjectWorkTitlesRequest) async throws -> EngramServiceGenerateProjectWorkTitlesResponse
     func saveInsight(_ request: EngramServiceSaveInsightRequest) async throws -> EngramServiceJSONValue
     func deleteInsight(_ request: EngramServiceDeleteInsightRequest) async throws -> EngramServiceJSONValue
     func manageProjectAlias(_ request: EngramServiceProjectAliasRequest) async throws -> EngramServiceJSONValue

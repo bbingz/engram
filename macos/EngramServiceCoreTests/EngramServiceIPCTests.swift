@@ -3652,6 +3652,147 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertNil(titles.total)
     }
 
+    func testGenerateProjectWorkTitlesWithoutAIConfigReturnsEmptyTitles() async throws {
+        // With no title AI config in the test home, the on-demand command must be
+        // a no-op: it returns a response (empty titles) so the app keeps its
+        // heuristic title, and it must be authorized (not UnsupportedCommand).
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        let response = try await client.generateProjectWorkTitles(
+            EngramServiceGenerateProjectWorkTitlesRequest(project: "engram")
+        )
+        XCTAssertTrue(response.titles.isEmpty)
+    }
+
+    // MARK: - generateProjectWorkTitles caching / no-op (via injected AI seam)
+
+    private actor WorkTitleCallCounter {
+        private(set) var value = 0
+        func increment() { value += 1 }
+    }
+
+    private static let fakeTitleConfig = EngramServiceCommandHandler.ServiceAISettings.ChatConfig(
+        provider: "custom", baseURL: "http://localhost", apiKey: "",
+        model: "test-model", maxTokens: 120, temperature: 0.3
+    )
+
+    /// Migrated DB with one human-driven session and two work items (wk-a, wk-b)
+    /// under project "p". Source 'cursor' + NULL instruction_count passes the
+    /// human-driven filter that `readProjectWorkItems` applies.
+    private func makeWorkTitleGate() async throws -> ServiceWriterGate {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedWorkBeats") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, project, tier)
+                    VALUES ('p1', 'cursor', '2026-06-25T10:00:00Z', '/tmp/p1.jsonl', 'p', 'normal')
+                    """)
+                try db.execute(sql: """
+                    INSERT INTO session_work_beats
+                        (session_id, beat_index, action_date, action_timestamp, work_key,
+                         work_title, human_intent, assistant_outcome, kind, status,
+                         operation_events, confidence)
+                    VALUES
+                        ('p1', 0, '2026-06-25', '2026-06-25T10:00:00Z', 'wk-a',
+                         'A', 'intent A', 'outcome A', 'implementation', 'completed', '[]', 0.9),
+                        ('p1', 1, '2026-06-25', '2026-06-25T10:05:00Z', 'wk-b',
+                         'B', 'intent B', 'outcome B', 'fix', 'completed', '[]', 0.9)
+                    """)
+            }
+        }
+        return gate
+    }
+
+    private func workItemTitleCount(gate: ServiceWriterGate, project: String) async throws -> Int {
+        try await gate.performWriteCommand(name: "readTitles") { writer in
+            try writer.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM work_item_titles WHERE project = ?",
+                    arguments: [project]
+                ) ?? 0
+            }
+        }.value
+    }
+
+    func testGenerateProjectWorkTitlesSkipsCachedAndRegeneratesOnChange() async throws {
+        let gate = try await makeWorkTitleGate()
+        let counter = WorkTitleCallCounter()
+        let gen: @Sendable (String, String, EngramServiceCommandHandler.ServiceAISettings.ChatConfig) async throws -> String = { intent, _, _ in
+            await counter.increment()
+            return "T:\(intent)"
+        }
+        let req = EngramServiceGenerateProjectWorkTitlesRequest(project: "p")
+
+        // Call 1: both work items missing -> 2 generations, 2 rows persisted.
+        _ = try await EngramServiceCommandHandler.generateProjectWorkTitles(
+            req, writerGate: gate, titleConfig: Self.fakeTitleConfig, generateTitle: gen
+        )
+        let afterFirst = await counter.value
+        XCTAssertEqual(afterFirst, 2)
+        let rowsAfterFirst = try await workItemTitleCount(gate: gate, project: "p")
+        XCTAssertEqual(rowsAfterFirst, 2)
+
+        // Call 2: unchanged content -> intent_hash matches -> no new generation.
+        _ = try await EngramServiceCommandHandler.generateProjectWorkTitles(
+            req, writerGate: gate, titleConfig: Self.fakeTitleConfig, generateTitle: gen
+        )
+        let afterSecond = await counter.value
+        XCTAssertEqual(afterSecond, 2, "cached titles must not be regenerated")
+
+        // Mutate wk-a's outcome -> its intent_hash changes.
+        _ = try await gate.performWriteCommand(name: "mutate") { writer in
+            try writer.write { db in
+                try db.execute(sql: "UPDATE session_work_beats SET assistant_outcome = 'outcome A v2' WHERE work_key = 'wk-a'")
+            }
+        }
+        // Call 3: only wk-a is stale -> exactly one more generation.
+        _ = try await EngramServiceCommandHandler.generateProjectWorkTitles(
+            req, writerGate: gate, titleConfig: Self.fakeTitleConfig, generateTitle: gen
+        )
+        let afterThird = await counter.value
+        XCTAssertEqual(afterThird, 3, "only the changed work item must regenerate")
+    }
+
+    func testGenerateProjectWorkTitlesNoAIConfigPersistsNothingWithWorkItems() async throws {
+        let gate = try await makeWorkTitleGate()
+        let gen: @Sendable (String, String, EngramServiceCommandHandler.ServiceAISettings.ChatConfig) async throws -> String = { _, _, _ in
+            XCTFail("generateTitle must not be called when titleConfig is nil")
+            return ""
+        }
+        let result = try await EngramServiceCommandHandler.generateProjectWorkTitles(
+            EngramServiceGenerateProjectWorkTitlesRequest(project: "p"),
+            writerGate: gate, titleConfig: nil, generateTitle: gen
+        )
+        XCTAssertTrue(result.value.titles.isEmpty, "no-config path returns no titles")
+        let rows = try await workItemTitleCount(gate: gate, project: "p")
+        XCTAssertEqual(rows, 0, "no-config path must not persist heuristic titles")
+    }
+
     func testProjectMigrationCommandsSurfacePipelineErrors() async throws {
         // Stage 4 ships native project move/archive/undo/move-batch handlers
         // wired through ProjectMoveOrchestrator. The previous fail-closed

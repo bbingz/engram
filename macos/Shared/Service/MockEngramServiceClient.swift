@@ -22,6 +22,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let handoffResult: Result<EngramServiceHandoffResponse, Error>
     let replayTimelineResult: Result<EngramServiceReplayTimelineResponse, Error>
     let generateSummaryResult: Result<EngramServiceGenerateSummaryResponse, Error>
+    let generateProjectWorkTitlesResult: Result<EngramServiceGenerateProjectWorkTitlesResponse, Error>
     let saveInsightResult: Result<EngramServiceJSONValue, Error>
     let deleteInsightResult: Result<EngramServiceJSONValue, Error>
     let manageProjectAliasResult: Result<EngramServiceJSONValue, Error>
@@ -72,6 +73,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         handoff: EngramServiceHandoffResponse = EngramServiceHandoffResponse(brief: "## Handoff\n\nNo recent sessions found.", sessionCount: 0),
         replayTimeline: EngramServiceReplayTimelineResponse = EngramServiceReplayTimelineResponse(sessionId: nil, source: nil, entries: [], totalEntries: 0, hasMore: false, offset: nil, limit: nil),
         generateSummary: EngramServiceGenerateSummaryResponse = EngramServiceGenerateSummaryResponse(summary: "Mock summary"),
+        generateProjectWorkTitles: EngramServiceGenerateProjectWorkTitlesResponse = EngramServiceGenerateProjectWorkTitlesResponse(titles: []),
         saveInsight: EngramServiceJSONValue = .object(["id": .string("mock-insight")]),
         deleteInsight: EngramServiceJSONValue = .object(["id": .string("mock-insight"), "deleted": .bool(true)]),
         manageProjectAlias: EngramServiceJSONValue = .object(["ok": .bool(true)]),
@@ -126,6 +128,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.handoffResult = .success(handoff)
         self.replayTimelineResult = .success(replayTimeline)
         self.generateSummaryResult = .success(generateSummary)
+        self.generateProjectWorkTitlesResult = .success(generateProjectWorkTitles)
         self.saveInsightResult = .success(saveInsight)
         self.deleteInsightResult = .success(deleteInsight)
         self.manageProjectAliasResult = .success(manageProjectAlias)
@@ -203,6 +206,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func generateSummary(_ request: EngramServiceGenerateSummaryRequest) async throws -> EngramServiceGenerateSummaryResponse {
         try generateSummaryResult.get()
+    }
+
+    func generateProjectWorkTitles(_ request: EngramServiceGenerateProjectWorkTitlesRequest) async throws -> EngramServiceGenerateProjectWorkTitlesResponse {
+        try generateProjectWorkTitlesResult.get()
     }
 
     func saveInsight(_ request: EngramServiceSaveInsightRequest) async throws -> EngramServiceJSONValue {

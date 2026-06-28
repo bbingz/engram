@@ -33,6 +33,7 @@ enum ServiceCapabilityToken {
         "addSessionRelation",
         "removeSessionRelation",
         "regenerateAllTitles",
+        "generateProjectWorkTitles",
         "setFavorite",
         "setSessionHidden",
         "setSourceEnabled",

@@ -366,6 +366,7 @@
 		9C42D805D89319FA0A76202C /* ColorBarMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F04D2B6A04B8D34ED8B4D8F2 /* ColorBarMessageView.swift */; };
 		9C63E15B05F86CD0992ABC00 /* CommandCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CECC3C3E504230086600D35A /* CommandCodeAdapter.swift */; };
 		9C8C3ACAC112AF5E6C874A55 /* JsonlPatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DA97DD6E739DF83DD84BB1B /* JsonlPatch.swift */; };
+		9CFB021F5D8C20C8BFC96508 /* ProjectWorkTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31C71D93D6C3E40EFBDD6106 /* ProjectWorkTimeline.swift */; };
 		9D69F7D9533199C578B4F181 /* PaletteItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51B808E895E84072B2527F95 /* PaletteItem.swift */; };
 		9DD8C537F1916BC1A08BDFF2 /* ReplayDataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9B917785DFF021D380C8B74 /* ReplayDataTests.swift */; };
 		9E6F45A22643329373FCAB29 /* cascade.proto in Resources */ = {isa = PBXBuildFile; fileRef = 40753C4A672675967CBD4EA7 /* cascade.proto */; };
@@ -844,6 +845,7 @@
 		2E7F585E46AD2DB588B3F30D /* IndexJobRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexJobRunner.swift; sourceTree = "<group>"; };
 		2EF78E4EF7AA7613D39D1160 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		30505616D8C40D30A35D138D /* MCPFileTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFileTools.swift; sourceTree = "<group>"; };
+		31C71D93D6C3E40EFBDD6106 /* ProjectWorkTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectWorkTimeline.swift; sourceTree = "<group>"; };
 		31D903BD85D36FAC47363151 /* ClaudeCodeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeCodeAdapter.swift; sourceTree = "<group>"; };
 		31F84C4D0860A06E7036F321 /* QoderAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QoderAdapter.swift; sourceTree = "<group>"; };
 		320BE8A8D898FEE82D4C4E49 /* ParserLimits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParserLimits.swift; sourceTree = "<group>"; };
@@ -2206,6 +2208,7 @@
 				DD55A13FC016BAD5E5F5B88E /* KPICard.swift */,
 				1C37BCCB1ACAB67E7F8B9C8E /* LiveSessionCard.swift */,
 				972CB1998A34BD047FE48B94 /* ProjectBadge.swift */,
+				31C71D93D6C3E40EFBDD6106 /* ProjectWorkTimeline.swift */,
 				AFB811E3F5CB59716B1B99A2 /* SectionHeader.swift */,
 				9A94C4C2EF2178B28617F61B /* SessionCard.swift */,
 				58F564930C9AEF2E0AF20609 /* SharedPickers.swift */,
@@ -3385,6 +3388,7 @@
 				5FC7F55BFF4B35D133BBBB19 /* PopoverView.swift in Sources */,
 				BB25C042817932DB0C71BE55 /* ProjectBadge.swift in Sources */,
 				71887F5355982E47D58ADF03 /* ProjectMoveServiceError.swift in Sources */,
+				9CFB021F5D8C20C8BFC96508 /* ProjectWorkTimeline.swift in Sources */,
 				EC4EC62F0E2A2AC5CA7C1B0C /* ProjectsView.swift in Sources */,
 				90CB386B2D156A805D6E093D /* QoderAdapter.swift in Sources */,
 				F9FFF4F196756553BF0274E2 /* QwenAdapter.swift in Sources */,

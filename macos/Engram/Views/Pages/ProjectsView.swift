@@ -63,6 +63,7 @@ struct ProjectsView: View {
                         Spacer()
                     }
                     SectionHeader(icon: "folder", title: selected.project)
+                    ProjectWorkTimeline(project: selected.project)
                     SearchPageView(
                         projectFilter: selected.project,
                         locksProject: true,
